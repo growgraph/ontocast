@@ -65,7 +65,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         super().__init__(
             uri=uri, auth=auth, env_uri="FUSEKI_URI", env_auth="FUSEKI_AUTH", **kwargs
         )
-        self.dataset = dataset
+        self.dataset = "test" if dataset is None else dataset
         self.clean = clean
         self.init_dataset(self.dataset)
         if self.dataset is None:
@@ -153,29 +153,10 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         if response.status_code == 200 or response.status_code == 201:
             logger.info(f"Dataset '{dataset_name}' created successfully.")
         else:
-            logger.error(f"Failed to upload data. Status code: {response.status_code}")
+            logger.error(
+                f"Failed to create dataset {dataset_name}. Status code: {response.status_code}"
+            )
             logger.error(f"Response: {response.text}")
-
-    def _parse_dataset_from_uri(self, uri: str) -> Optional[str]:
-        """Extract dataset name from a Fuseki URI.
-
-        This method parses a Fuseki URI to extract the dataset name.
-        It expects URIs in the format "http://host:port/dataset".
-
-        Args:
-            uri: The Fuseki URI to parse.
-
-        Returns:
-            Optional[str]: The dataset name if found, None otherwise.
-
-        Example:
-            >>> manager._parse_dataset_from_uri("http://localhost:3030/test")
-            "test"
-        """
-        parts = uri.rstrip("/").split("/")
-        if len(parts) > 0:
-            return parts[-1]
-        return None
 
     def _get_dataset_url(self):
         """Get the full URL for the dataset.

@@ -470,14 +470,16 @@ class SemanticTriplesFactsReport(BaseModel):
         "the document in turtle (ttl) format.",
     )
     ontology_relevance_score: Optional[float] = Field(
-        description="Score 0-100 for how relevant "
-        "the ontology is to the document. "
-        "0 is the worst, 100 is the best."
+        description=(
+            "Score between 0 and 100 of how well "
+            "the ontology represents the domain  of the document."
+        )
     )
     triples_generation_score: Optional[float] = Field(
-        description="Score 0-100 for how well "
-        "the facts extraction / triples generation was performed. "
-        "0 is the worst, 100 is the best."
+        description=(
+            "Score 0-100 for how well the semantic triples "
+            "represent the document. 0 is the worst, 100 is the best."
+        )
     )
 
 
@@ -527,8 +529,7 @@ class KGCritiqueReport(BaseModel):
     """
 
     facts_graph_derivation_success: bool = Field(
-        description="True if the facts graph derivation "
-        "was performed successfully, False otherwise."
+        description="True if the facts triples fully represent the document, False otherwise. "
     )
     facts_graph_derivation_score: float = Field(
         description="Score 0-100 for how well the triples of facts "
@@ -978,7 +979,7 @@ class AgentState(BasePydanticModel):
     )
     failure_stage: str | None = None
     failure_reason: str | None = None
-    success_score: Optional[float] = 0.0
+    success_score: float = 0.0
     status: Status = Status.SUCCESS
     node_visits: defaultdict[WorkflowNode, int] = Field(
         default_factory=lambda: defaultdict(int),
@@ -987,7 +988,7 @@ class AgentState(BasePydanticModel):
     max_visits: int = Field(
         default=3, description="Maximum number of visits allowed per node"
     )
-    max_chunks: Optional[int] = None
+    max_chunks: int | None = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
     skip_ontology_development: bool = Field(
         default=False, description="Skip ontology create/improve steps if True"

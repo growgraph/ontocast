@@ -1,10 +1,9 @@
 import pathlib
-from typing import Optional
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
-from ontocast.onto import Ontology, OntologyProperties, RDFGraph
+from ontocast.onto import AgentState, Ontology, OntologyProperties, RDFGraph
 from ontocast.tool import (
     ChunkerTool,
     ConverterTool,
@@ -68,18 +67,21 @@ class ToolBox:
     """
 
     def __init__(self, **kwargs):
-        working_directory: pathlib.Path = kwargs.pop("working_directory")
+        working_directory: pathlib.Path | None = kwargs.pop("working_directory")
         ontology_directory: pathlib.Path | None = kwargs.pop("ontology_directory")
         model_name: str = kwargs.pop("model_name")
-        llm_base_url: Optional[str] = kwargs.pop("llm_base_url")
+        llm_base_url: str | None = kwargs.pop("llm_base_url")
         temperature: float = kwargs.pop("temperature")
         llm_provider: str = kwargs.pop("llm_provider", "openai")
 
-        neo4j_uri: Optional[str] = kwargs.pop("neo4j_uri", None)
-        neo4j_auth: Optional[str] = kwargs.pop("neo4j_auth", None)
+        neo4j_uri: str | None = kwargs.pop("neo4j_uri", None)
+        neo4j_auth: str | None = kwargs.pop("neo4j_auth", None)
 
-        fuseki_uri: Optional[str] = kwargs.pop("fuseki_uri", None)
-        fuseki_auth: Optional[str] = kwargs.pop("fuseki_auth", None)
+        fuseki_uri: str | None = kwargs.pop("fuseki_uri", None)
+        fuseki_auth: str | None = kwargs.pop("fuseki_auth", None)
+        dataset: str | None = kwargs.pop("dataset", "dataset0")
+        self.present_fsm: bool = False
+        self.present_tm: bool = True
 
         clean: bool = kwargs.pop("clean", False)
 
@@ -94,20 +96,18 @@ class ToolBox:
 
         # Filesystem manager for initial ontology loading (if ontology_directory provided)
         self.filesystem_manager: FilesystemTripleStoreManager | None = None
-        if ontology_directory is not None:
+        if ontology_directory is not None and working_directory is not None:
             self.filesystem_manager = FilesystemTripleStoreManager(
                 working_directory=working_directory,
                 ontology_path=ontology_directory,
             )
+            self.present_fsm = True
 
         self.triple_store_manager: TripleStoreManager
 
         # Main triple store manager - prefer Fuseki over Neo4j, fallback to filesystem
         if fuseki_uri and fuseki_auth:
             # Extract dataset name from URI if not provided
-            dataset = None
-            if "/" in fuseki_uri:
-                dataset = fuseki_uri.split("/")[-1]
             self.triple_store_manager = FusekiTripleStoreManager(
                 uri=fuseki_uri, auth=fuseki_auth, dataset=dataset, clean=clean
             )
@@ -116,14 +116,32 @@ class ToolBox:
                 uri=neo4j_uri, auth=neo4j_auth, clean=clean
             )
         else:
-            self.triple_store_manager = FilesystemTripleStoreManager(
-                working_directory=working_directory,
-                ontology_path=ontology_directory,
-            )
+            self.present_fsm = False
+
         self.ontology_manager: OntologyManager = OntologyManager()
         self.converter: ConverterTool = ConverterTool()
         self.chunker: ChunkerTool = ChunkerTool()
         self.aggregator: ChunkRDFGraphAggregator = ChunkRDFGraphAggregator()
+
+    def serialize(self, state: AgentState) -> None:
+        if not state.skip_ontology_development:
+            if self.present_fsm:
+                self.filesystem_manager.serialize_ontology(state.current_ontology)
+            if self.present_tm:
+                self.triple_store_manager.serialize_ontology(state.current_ontology)
+        if len(state.aggregated_facts) > 0:
+            if self.present_fsm:
+                self.filesystem_manager.serialize_facts(
+                    state.aggregated_facts,
+                    spec=state.doc_namespace,
+                    chunk_uri=state.chunk_uri,
+                )
+            if self.present_tm:
+                self.triple_store_manager.serialize_facts(
+                    state.aggregated_facts,
+                    spec=state.doc_namespace,
+                    chunk_uri=state.chunk_uri,
+                )
 
 
 def init_toolbox(toolbox: ToolBox):
@@ -140,15 +158,21 @@ def init_toolbox(toolbox: ToolBox):
     # If we have a filesystem manager, use it to load initial ontologies
     if toolbox.filesystem_manager is not None:
         initial_ontologies = toolbox.filesystem_manager.fetch_ontologies()
-        # Store these ontologies in the main triple store manager
-        for ontology in initial_ontologies:
-            toolbox.triple_store_manager.serialize_ontology(ontology)
+
+        if toolbox.triple_store_manager is not None:
+            # Store these ontologies in the main triple store manager
+            for ontology in initial_ontologies:
+                toolbox.triple_store_manager.serialize_ontology(ontology)
 
     # Now fetch ontologies from the main triple store manager
-    toolbox.ontology_manager.ontologies = (
-        toolbox.triple_store_manager.fetch_ontologies()
+    tm = (
+        toolbox.triple_store_manager
+        if toolbox.triple_store_manager is not None
+        else toolbox.filesystem_manager
     )
-    update_ontology_manager(om=toolbox.ontology_manager, llm_tool=toolbox.llm)
+    if tm is not None:
+        toolbox.ontology_manager.ontologies = tm.fetch_ontologies()
+        update_ontology_manager(om=toolbox.ontology_manager, llm_tool=toolbox.llm)
 
 
 def render_ontology_summary(graph: RDFGraph, llm_tool) -> OntologyProperties:
