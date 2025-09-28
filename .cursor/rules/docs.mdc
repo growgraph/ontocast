@@ -1,0 +1,13 @@
+---
+description: "Documentation conventions"
+globs:
+  - "docs/**/*.md"
+  - "mkdocs.yaml"
+alwaysApply: false
+---
+
+# Documentation Rules
+- Write docs in Markdown with clear headings and code examples.
+- Update `mkdocs.yaml` navigation when adding new docs.
+- Keep `README.md` concise, and move long explanations to `/docs`.
+- Use Python code fences (```python … ```) in examples.

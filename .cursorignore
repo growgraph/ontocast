@@ -1,0 +1,9 @@
+*
+!ontocast/
+!ontocast/**
+!ontocast/**/*py
+!test/**/*py 
+!docs/**
+!.env.example
+!pyproject.toml
+!mkdocs.yaml

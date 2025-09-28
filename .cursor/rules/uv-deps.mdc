@@ -1,0 +1,11 @@
+---
+description: "Dependency management with uv"
+globs:
+  - "pyproject.toml"
+  - "uv.lock"
+alwaysApply: false
+---
+
+# Dependency Management
+- Pin versions in `pyproject.toml` for reproducibility.
+- Run `uv pip check` to validate the dependency tree.

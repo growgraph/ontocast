@@ -1,0 +1,14 @@
+---
+description: "Follow project style guidelines for Python code"
+globs:
+  - "**/*.py"
+alwaysApply: true
+---
+
+# Python Coding Rules
+- Use type hints everywhere (PEP 484).
+- Use snake_case for functions and variables, PascalCase for classes.
+- Prefer `pydantic.BaseModel` for structured data.
+- Avoid unused imports.
+- Use `async`/`await` where appropriate.
+- Always keep functions small and composable.
