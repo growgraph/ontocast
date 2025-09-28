@@ -1,8 +1,7 @@
-import pathlib
-
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
+from ontocast.config import Config
 from ontocast.onto import AgentState, Ontology, OntologyProperties, RDFGraph
 from ontocast.tool import (
     ChunkerTool,
@@ -10,7 +9,6 @@ from ontocast.tool import (
     FilesystemTripleStoreManager,
     FusekiTripleStoreManager,
     Neo4jTripleStoreManager,
-    TripleStoreManager,
 )
 from ontocast.tool.aggregate import ChunkRDFGraphAggregator
 from ontocast.tool.llm import LLMTool
@@ -51,48 +49,20 @@ class ToolBox:
     ontology management, and LLM interactions.
 
     Args:
-        working_directory: Path to the working directory.
-        ontology_directory: Optional path to ontology directory.
-        model_name: Name of the LLM model to use.
-        llm_base_url: Optional base URL for LLM API.
-        temperature: Temperature setting for LLM.
-        llm_provider: Provider for LLM service (default: "openai").
-        neo4j_uri: (optional) URI for Neo4j connection. If provided with neo4j_auth,
-                    neo4j will be used as triple store (unless Fuseki is also provided).
-        neo4j_auth: (optional) Auth string (user/password) for Neo4j connection.
-        fuseki_uri: (optional) URI for Fuseki connection. If provided with fuseki_auth,
-                    Fuseki will be used as triple store (preferred over Neo4j).
-        fuseki_auth: (optional) Auth string (user/password) for Fuseki connection.
-        clean: (optional, default False) If True, triple store (Neo4j or Fuseki) will be initialized as clean (all data deleted on startup).
+        config: Configuration object containing all necessary settings.
     """
 
-    def __init__(self, **kwargs):
-        working_directory: pathlib.Path | None = kwargs.pop("working_directory")
-        ontology_directory: pathlib.Path | None = kwargs.pop("ontology_directory")
-        model_name: str = kwargs.pop("model_name")
-        llm_base_url: str | None = kwargs.pop("llm_base_url")
-        temperature: float = kwargs.pop("temperature")
-        llm_provider: str = kwargs.pop("llm_provider", "openai")
+    def __init__(self, config: Config):
+        # Get tool configuration
+        tool_config = config.get_tool_config()
 
-        neo4j_uri: str | None = kwargs.pop("neo4j_uri", None)
-        neo4j_auth: str | None = kwargs.pop("neo4j_auth", None)
+        # Extract configuration values
+        working_directory = tool_config.paths.working_directory
+        ontology_directory = tool_config.paths.ontology_directory
 
-        fuseki_uri: str | None = kwargs.pop("fuseki_uri", None)
-        fuseki_auth: str | None = kwargs.pop("fuseki_auth", None)
-        dataset: str | None = kwargs.pop("dataset", "dataset0")
-        self.present_fsm: bool = False
-        self.present_tm: bool = True
-
-        clean: bool = kwargs.pop("clean", False)
-
-        self.llm_provider = llm_provider
-
-        self.llm: LLMTool = LLMTool.create(
-            provider=llm_provider,
-            model=model_name,
-            temperature=temperature,
-            base_url=llm_base_url,
-        )
+        # LLM configuration - pass the entire LLM config to the tool
+        self.llm_provider = tool_config.llm.provider
+        self.llm: LLMTool = LLMTool.create(config=tool_config.llm)
 
         # Filesystem manager for initial ontology loading (if ontology_directory provided)
         self.filesystem_manager: FilesystemTripleStoreManager | None = None
@@ -103,20 +73,27 @@ class ToolBox:
             )
             self.present_fsm = True
 
-        self.triple_store_manager: TripleStoreManager
+        # Initialize triple store manager flags
+        self.present_tm: bool = True
 
         # Main triple store manager - prefer Fuseki over Neo4j, fallback to filesystem
-        if fuseki_uri and fuseki_auth:
-            # Extract dataset name from URI if not provided
+        # Get clean flag from server config
+        clean = config.server.clean
+
+        if tool_config.fuseki.uri and tool_config.fuseki.auth:
             self.triple_store_manager = FusekiTripleStoreManager(
-                uri=fuseki_uri, auth=fuseki_auth, dataset=dataset, clean=clean
+                uri=tool_config.fuseki.uri,
+                auth=tool_config.fuseki.auth,
+                dataset="dataset0",  # Default dataset name
+                clean=clean,
             )
-        elif neo4j_uri and neo4j_auth:
+        elif tool_config.neo4j.uri and tool_config.neo4j.auth:
             self.triple_store_manager = Neo4jTripleStoreManager(
-                uri=neo4j_uri, auth=neo4j_auth, clean=clean
+                uri=tool_config.neo4j.uri, auth=tool_config.neo4j.auth, clean=clean
             )
         else:
-            self.present_fsm = False
+            self.triple_store_manager = None
+            self.present_tm = False
 
         self.ontology_manager: OntologyManager = OntologyManager()
         self.converter: ConverterTool = ConverterTool()
@@ -125,22 +102,22 @@ class ToolBox:
 
     def serialize(self, state: AgentState) -> None:
         if not state.skip_ontology_development:
-            if self.present_fsm:
+            if self.present_fsm and self.filesystem_manager is not None:
                 self.filesystem_manager.serialize_ontology(state.current_ontology)
-            if self.present_tm:
+            if self.present_tm and self.triple_store_manager is not None:
                 self.triple_store_manager.serialize_ontology(state.current_ontology)
-        if len(state.aggregated_facts) > 0:
-            if self.present_fsm:
+        if state.aggregated_facts and len(state.aggregated_facts) > 0:
+            if self.present_fsm and self.filesystem_manager is not None:
                 self.filesystem_manager.serialize_facts(
                     state.aggregated_facts,
                     spec=state.doc_namespace,
-                    chunk_uri=state.chunk_uri,
+                    chunk_uri=getattr(state, "chunk_uri", None),
                 )
-            if self.present_tm:
+            if self.present_tm and self.triple_store_manager is not None:
                 self.triple_store_manager.serialize_facts(
                     state.aggregated_facts,
                     spec=state.doc_namespace,
-                    chunk_uri=state.chunk_uri,
+                    chunk_uri=getattr(state, "chunk_uri", None),
                 )
 
 

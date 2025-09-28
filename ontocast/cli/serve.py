@@ -32,7 +32,7 @@ from langgraph.graph.state import CompiledStateGraph
 from robyn import Headers, Request, Response, Robyn, jsonify
 
 from ontocast.cli.util import crawl_directories
-from ontocast.config import Config
+from ontocast.config import Config, ServerConfig
 from ontocast.onto import AgentState
 from ontocast.stategraph import create_agent_graph
 from ontocast.toolbox import ToolBox, init_toolbox
@@ -41,42 +41,41 @@ logger = logging.getLogger(__name__)
 
 
 def calculate_recursion_limit(
-    max_visits: int,
-    head_chunks: int | None = None,
-    base_recursion_limit: int = 1000,
-    estimated_chunks: int = 30,
+    head_chunks: int | None,
+    server_config: ServerConfig,
 ) -> int:
     """Calculate the recursion limit based on max_visits and head_chunks.
 
     Args:
-        max_visits: Maximum number of visits allowed per node
         head_chunks: Optional maximum number of chunks to process
-        base_recursion_limit: Base recursion limit from config
-        estimated_chunks: Estimated number of chunks from config
 
     Returns:
         int: Calculated recursion limit
     """
     if head_chunks is not None:
         # If we know the number of chunks, calculate exact limit
-        return max(base_recursion_limit, max_visits * head_chunks * 10)
+        return max(
+            server_config.base_recursion_limit,
+            server_config.max_visits * head_chunks * 10,
+        )
     else:
         # If we don't know chunks, use a conservative estimate
-        return max(base_recursion_limit, max_visits * estimated_chunks * 10)
+        return max(
+            server_config.base_recursion_limit,
+            server_config.max_visits * server_config.estimated_chunks * 10,
+        )
 
 
 def create_app(
     tools: ToolBox,
+    server_config: ServerConfig,
     head_chunks: int | None = None,
-    max_visits: int = 3,
-    skip_ontology_development=False,
-    base_recursion_limit: int = 1000,
-    estimated_chunks: int = 30,
 ):
     app = Robyn(__file__)
     workflow: CompiledStateGraph = create_agent_graph(tools)
     recursion_limit = calculate_recursion_limit(
-        max_visits, head_chunks, base_recursion_limit, estimated_chunks
+        head_chunks,
+        server_config,
     )
 
     @app.get("/health")
@@ -186,9 +185,9 @@ def create_app(
 
             initial_state = AgentState(
                 files=files,
-                max_visits=max_visits,
+                max_visits=server_config.max_visits,
                 max_chunks=head_chunks,
-                skip_ontology_development=skip_ontology_development,
+                skip_ontology_development=server_config.skip_ontology_development,
             )
 
             async for chunk in workflow.astream(
@@ -303,33 +302,23 @@ def run(
             logger.error(f"could set logging level correctly {e}")
 
     # Use CLI arguments or fall back to config values
-    if config.paths.working_directory is not None:
-        config.paths.working_directory = pathlib.Path(
-            config.paths.working_directory
+    if config.tools.paths.working_directory is not None:
+        config.tools.paths.working_directory = pathlib.Path(
+            config.tools.paths.working_directory
         ).expanduser()
-        config.paths.working_directory.mkdir(parents=True, exist_ok=True)
+        config.tools.paths.working_directory.mkdir(parents=True, exist_ok=True)
     else:
         raise ValueError(
             "Working directory must be provided via CLI argument or WORKING_DIRECTORY config"
         )
 
-    if config.paths.ontology_directory is not None:
-        config.paths.ontology_directory = pathlib.Path(
-            config.paths.ontology_directory
+    if config.tools.paths.ontology_directory is not None:
+        config.tools.paths.ontology_directory = pathlib.Path(
+            config.tools.paths.ontology_directory
         ).expanduser()
 
-    # Get triple store configuration
-    triple_store_config = config.get_triple_store_config()
-
-    # Get LLM configuration
-    llm_config = config.get_llm_config()
-
-    tools: ToolBox = ToolBox(
-        working_directory=config.paths.working_directory,
-        ontology_directory=config.paths.ontology_directory,
-        **llm_config,
-        **{k: v for k, v in triple_store_config.items() if k != "type"},
-    )
+    # Create ToolBox with config directly
+    tools: ToolBox = ToolBox(config)
     init_toolbox(tools)
 
     workflow: CompiledStateGraph = create_agent_graph(tools)
@@ -345,10 +334,8 @@ def run(
         )
 
         recursion_limit = calculate_recursion_limit(
-            config.server.max_visits,
             head_chunks,
-            config.server.recursion_limit,
-            config.server.estimated_chunks,
+            config.server,
         )
 
         async def process_files():
@@ -358,7 +345,7 @@ def run(
                         files={file_path.as_posix(): file_path.read_bytes()},
                         max_visits=config.server.max_visits,
                         max_chunks=head_chunks,
-                        skip_ontology_development=config.skip_ontology_development,
+                        skip_ontology_development=config.server.skip_ontology_development,
                     )
                     async for _ in workflow.astream(
                         state,
@@ -373,16 +360,12 @@ def run(
         asyncio.run(process_files())
     else:
         app = create_app(
-            tools,
-            head_chunks,
-            max_visits=config.server.max_visits,
-            skip_ontology_development=config.skip_ontology_development,
-            base_recursion_limit=config.server.recursion_limit,
-            estimated_chunks=config.server.estimated_chunks,
+            tools=tools,
+            server_config=config.server,
+            head_chunks=head_chunks,
         )
-        server_config = config.get_server_config()
-        logger.info(f"Starting Ontocast server on port {server_config['port']}")
-        app.start(port=server_config["port"])
+        logger.info(f"Starting Ontocast server on port {config.server.port}")
+        app.start(port=config.server.port)
 
 
 if __name__ == "__main__":

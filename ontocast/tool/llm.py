@@ -7,13 +7,15 @@ structured data extraction capabilities.
 
 import asyncio
 import logging
-from typing import Any, Optional, Type, TypeVar
+from typing import Any, Type, TypeVar
 
 from langchain.output_parsers import PydanticOutputParser
 from langchain_core.language_models import BaseChatModel
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
+
+from ontocast.config import LLMConfig
 
 from .onto import Tool
 
@@ -30,18 +32,10 @@ class LLMTool(Tool):
     asynchronous operations.
 
     Attributes:
-        provider: The LLM provider to use (default: "openai").
-        model: The specific model to use (default: "gpt-4o-mini").
-        api_key: Optional API key for the provider.
-        base_url: Optional base URL for the provider.
-        temperature: Temperature parameter for generation (default: 0.1).
+        config: LLMConfig object containing all LLM settings.
     """
 
-    provider: str = Field(default="openai")
-    model: str = Field(default="gpt-4o-mini")
-    api_key: Optional[str] = None
-    base_url: Optional[str] = None
-    temperature: float = 0.1
+    config: LLMConfig = Field(default_factory=LLMConfig)
 
     def __init__(
         self,
@@ -56,29 +50,31 @@ class LLMTool(Tool):
         self._llm = None
 
     @classmethod
-    def create(cls, **kwargs):
+    def create(cls, config: LLMConfig, **kwargs):
         """Create a new LLM tool instance synchronously.
 
         Args:
-            **kwargs: Keyword arguments for initialization.
+            config: LLMConfig object containing LLM settings.
+            **kwargs: Additional keyword arguments for initialization.
 
         Returns:
             LLMTool: A new instance of the LLM tool.
         """
-        return asyncio.run(cls.acreate(**kwargs))
+        return asyncio.run(cls.acreate(config=config, **kwargs))
 
     @classmethod
-    async def acreate(cls, **kwargs):
+    async def acreate(cls, config: LLMConfig, **kwargs):
         """Create a new LLM tool instance asynchronously.
 
         Args:
-            **kwargs: Keyword arguments for initialization.
+            config: LLMConfig object containing LLM settings.
+            **kwargs: Additional keyword arguments for initialization.
 
         Returns:
             LLMTool: A new instance of the LLM tool.
         """
-        self = cls.__new__(cls)
-        self.__init__(**kwargs)
+        # Create and initialize the instance with the config
+        self = cls(config=config, **kwargs)
         await self.setup()
         return self
 
@@ -88,22 +84,26 @@ class LLMTool(Tool):
         Raises:
             ValueError: If the provider is not supported.
         """
-        if self.provider == "openai":
-            if self.model.startswith("gpt-5"):
-                self.temperature = 1.0
+        if self.config.provider == "openai":
+            if self.config.model_name.startswith("gpt-5"):
+                self.config.temperature = 1.0
                 logger.warning(
-                    f"Setting temperature to {self.temperature} for gpt-5 class model {self.model}"
+                    f"Setting temperature to {self.config.temperature} for gpt-5 class model {self.config.model_name}"
                 )
             self._llm = ChatOpenAI(
-                model=self.model,
-                temperature=self.temperature,
+                model=self.config.model_name,
+                temperature=self.config.temperature,
+                base_url=self.config.base_url,
+                api_key=SecretStr(self.config.api_key) if self.config.api_key else None,
             )
-        elif self.provider == "ollama":
+        elif self.config.provider == "ollama":
             self._llm = ChatOllama(
-                model=self.model, base_url=self.base_url, temperature=self.temperature
+                model=self.config.model_name,
+                base_url=self.config.base_url,
+                temperature=self.config.temperature,
             )
         else:
-            raise ValueError(f"Unsupported provider: {self.provider}")
+            raise ValueError(f"Unsupported provider: {self.config.provider}")
 
     def __call__(self, *args: Any, **kwds: Any) -> Any:
         """Call the language model directly.
