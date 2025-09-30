@@ -16,7 +16,8 @@ from ontocast.agent import (
     select_ontology,
     sublimate_ontology,
 )
-from ontocast.onto import AgentState, OntologyDecision, Status, WorkflowNode
+from ontocast.onto.enum import OntologyDecision, Status, WorkflowNode
+from ontocast.onto.state import AgentState
 from ontocast.stategraph.util import count_visits_conditional_success, wrap_with
 from ontocast.toolbox import ToolBox
 
@@ -113,7 +114,6 @@ def create_agent_graph(tools: ToolBox) -> CompiledStateGraph:
     workflow.add_edge(START, WorkflowNode.CONVERT_TO_MD)
     workflow.add_edge(WorkflowNode.CONVERT_TO_MD, WorkflowNode.CHUNK)
     workflow.add_edge(WorkflowNode.CHUNK, WorkflowNode.CHUNKS_EMPTY)
-    # workflow.add_edge(WorkflowNode.SELECT_ONTOLOGY, WorkflowNode.TEXT_TO_ONTOLOGY)
     workflow.add_edge(WorkflowNode.SUBLIMATE_ONTOLOGY, WorkflowNode.CRITICISE_FACTS)
     workflow.add_edge(WorkflowNode.AGGREGATE_FACTS, END)
 

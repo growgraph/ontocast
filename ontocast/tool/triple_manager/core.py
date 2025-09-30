@@ -11,7 +11,7 @@ from typing import Optional
 from pydantic import Field
 from rdflib import Graph
 
-from ontocast.onto import Ontology
+from ontocast.onto.ontology import Ontology
 from ontocast.tool import Tool
 
 

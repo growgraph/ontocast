@@ -4,7 +4,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from ontocast.onto import AgentState
+from ontocast.onto.state import AgentState
 
 console = Console()
 

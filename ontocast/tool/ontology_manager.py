@@ -8,8 +8,10 @@ import logging
 
 from pydantic import Field
 
-from ontocast.onto import NULL_ONTOLOGY, Ontology, RDFGraph, derive_ontology_id
-
+from ..onto.extras import NULL_ONTOLOGY
+from ..onto.ontology import Ontology
+from ..onto.rdfgraph import RDFGraph
+from ..onto.util import derive_ontology_id
 from .onto import Tool
 
 

@@ -7,7 +7,9 @@ documents.
 
 import logging
 
-from ontocast.onto import AgentState, Chunk, Status
+from ontocast.onto.chunk import Chunk
+from ontocast.onto.enum import Status
+from ontocast.onto.state import AgentState
 from ontocast.toolbox import ToolBox
 from ontocast.util import render_text_hash
 

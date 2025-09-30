@@ -1,7 +1,8 @@
 import pytest
 
 from ontocast.agent import criticise_facts, render_facts, sublimate_ontology
-from ontocast.onto import AgentState, Status
+from ontocast.onto.enum import Status
+from ontocast.onto.state import AgentState
 
 
 def test_render_facts(

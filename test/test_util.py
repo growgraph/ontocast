@@ -1,4 +1,5 @@
-from ontocast.onto import AgentState, WorkflowNode
+from ontocast.onto.enum import WorkflowNode
+from ontocast.onto.state import AgentState
 from ontocast.stategraph.util import count_visits_conditional_success, wrap_with
 
 

@@ -10,12 +10,10 @@ import logging
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import PromptTemplate
 
-from ontocast.onto import (
-    NULL_ONTOLOGY,
-    AgentState,
-    FailureStages,
-    OntologySelectorReport,
-)
+from ontocast.onto.enum import FailureStages
+from ontocast.onto.extras import NULL_ONTOLOGY
+from ontocast.onto.model import OntologySelectorReport
+from ontocast.onto.state import AgentState
 from ontocast.prompt.select_ontology import template_prompt
 from ontocast.tool import OntologyManager
 from ontocast.toolbox import ToolBox

@@ -10,7 +10,9 @@ from typing import Any, Optional, Set
 
 from rdflib import RDF, RDFS, Literal, URIRef
 
-from ontocast.onto import PROV, SCHEMA, Chunk, RDFGraph
+from ontocast.onto.chunk import Chunk
+from ontocast.onto.constants import PROV, SCHEMA
+from ontocast.onto.rdfgraph import RDFGraph
 
 logger = logging.getLogger(__name__)
 

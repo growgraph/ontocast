@@ -4,7 +4,8 @@ import pytest
 from rdflib import Literal, URIRef
 from rdflib.namespace import FOAF, RDF, RDFS, SKOS
 
-from ontocast.onto import Chunk, RDFGraph
+from ontocast.onto.chunk import Chunk
+from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.aggregate import ChunkRDFGraphAggregator
 from ontocast.tool.validate import (
     RDFGraphConnectivityValidator,

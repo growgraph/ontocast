@@ -12,7 +12,9 @@ from typing import Dict, List, Optional, Set, Union
 from rdflib import Literal, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 
-from ontocast.onto import PROV, Chunk, RDFGraph
+from ontocast.onto.chunk import Chunk
+from ontocast.onto.constants import PROV
+from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.disambiguator import EntityDisambiguator
 from ontocast.tool.onto import EntityMetadata, PredicateMetadata
 

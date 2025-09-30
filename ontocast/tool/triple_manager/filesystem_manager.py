@@ -11,7 +11,7 @@ from typing import Optional
 
 from rdflib import Graph
 
-from ontocast.onto import Ontology
+from ontocast.onto.ontology import Ontology
 from ontocast.tool.triple_manager.core import TripleStoreManager
 
 logger = logging.getLogger(__name__)

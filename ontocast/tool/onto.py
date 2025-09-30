@@ -10,7 +10,7 @@ from typing import Set
 
 from rdflib import URIRef
 
-from ontocast.onto import BasePydanticModel
+from ontocast.onto.model import BasePydanticModel
 
 
 class Tool(BasePydanticModel):

@@ -9,7 +9,9 @@ import logging
 
 from rdflib import Namespace
 
-from ontocast.onto import AgentState, FailureStages, RDFGraph
+from ontocast.onto.enum import FailureStages
+from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.state import AgentState
 from ontocast.tool.validate import validate_and_connect_chunk
 from ontocast.toolbox import ToolBox
 

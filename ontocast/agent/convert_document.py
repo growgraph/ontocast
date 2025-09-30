@@ -8,7 +8,8 @@ import json
 import logging
 import pathlib
 
-from ontocast.onto import AgentState, Status
+from ontocast.onto.enum import Status
+from ontocast.onto.state import AgentState
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)

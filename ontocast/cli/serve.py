@@ -33,7 +33,7 @@ from robyn import Headers, Request, Response, Robyn, jsonify
 
 from ontocast.cli.util import crawl_directories
 from ontocast.config import Config, ServerConfig
-from ontocast.onto import AgentState
+from ontocast.onto.state import AgentState
 from ontocast.stategraph import create_agent_graph
 from ontocast.toolbox import ToolBox, init_toolbox
 

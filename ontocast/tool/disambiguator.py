@@ -4,7 +4,8 @@ from typing import Dict, List, Optional, Set, Tuple
 from rapidfuzz import fuzz
 from rdflib import RDF, RDFS, Literal, URIRef
 
-from ontocast.onto import RDFGraph, derive_ontology_id
+from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.util import derive_ontology_id
 from ontocast.tool.onto import EntityMetadata, PredicateMetadata
 
 

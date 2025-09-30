@@ -4,7 +4,10 @@ from pathlib import Path
 import pytest
 from suthing import FileHandle
 
-from ontocast.onto import DEFAULT_DOMAIN, AgentState, Ontology, RDFGraph
+from ontocast.onto.constants import DEFAULT_DOMAIN
+from ontocast.onto.ontology import Ontology
+from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.state import AgentState
 from ontocast.tool import (
     FilesystemTripleStoreManager,
     LLMTool,

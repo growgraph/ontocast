@@ -9,7 +9,10 @@ import logging
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import PromptTemplate
 
-from ontocast.onto import AgentState, FailureStages, KGCritiqueReport
+from ontocast.onto.constants import DEFAULT_CHUNK_IRI
+from ontocast.onto.enum import FailureStages
+from ontocast.onto.model import KGCritiqueReport
+from ontocast.onto.state import AgentState
 from ontocast.prompt.criticise_facts import prompt as criticise_facts_prompt
 from ontocast.toolbox import ToolBox
 
@@ -64,6 +67,10 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
 
     if critique.facts_graph_derivation_success:
         logger.debug("Facts critique successful, clearing failure state")
+
+        state.current_chunk.graph.remap_namespaces(
+            old_namespace=DEFAULT_CHUNK_IRI, new_namespace=state.current_chunk.namespace
+        )
         state.clear_failure()
     else:
         logger.debug("Facts critique failed, setting failure state")

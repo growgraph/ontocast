@@ -1,4 +1,4 @@
-from ontocast.onto import ToolType
+from ontocast.onto.enum import ToolType
 from ontocast.tool import LLMTool, OntologyManager, TripleStoreManager
 from ontocast.toolbox import update_ontology_manager
 

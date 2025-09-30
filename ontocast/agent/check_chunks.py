@@ -14,7 +14,8 @@ The module supports:
 import logging
 from collections import defaultdict
 
-from ontocast.onto import AgentState, Status
+from ontocast.onto.enum import Status
+from ontocast.onto.state import AgentState
 
 logger = logging.getLogger(__name__)
 

@@ -20,7 +20,9 @@ except ImportError:
 
 from pydantic import Field
 
-from ontocast.onto import Ontology, RDFGraph, derive_ontology_id
+from ontocast.onto.ontology import Ontology
+from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.util import derive_ontology_id
 
 logger = logging.getLogger(__name__)
 

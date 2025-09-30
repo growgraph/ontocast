@@ -6,14 +6,15 @@ and facts, with proper authentication and dataset management.
 """
 
 import logging
-from typing import Optional
 
 import requests
 from pydantic import Field
 from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF
 
-from ontocast.onto import Ontology, RDFGraph, derive_ontology_id
+from ontocast.onto.ontology import Ontology
+from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.util import derive_ontology_id
 from ontocast.tool.triple_manager.core import TripleStoreManagerWithAuth
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         clean: Whether to clean the dataset on initialization.
     """
 
-    dataset: Optional[str] = Field(default=None, description="Fuseki dataset name")
+    dataset: str | None = Field(default=None, description="Fuseki dataset name")
 
     def __init__(self, uri=None, auth=None, dataset=None, clean=False, **kwargs):
         """Initialize the Fuseki triple store manager.
@@ -86,7 +87,10 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         each cleanup operation.
         """
         try:
-            # Delete all graphs in the dataset
+            # Get the SPARQL update endpoint
+            sparql_update_url = f"{self._get_dataset_url()}/update"
+
+            # Delete all named graphs
             sparql_url = f"{self._get_dataset_url()}/sparql"
             query = """
             SELECT DISTINCT ?g WHERE {
@@ -103,9 +107,13 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                 results = response.json()
                 for binding in results.get("results", {}).get("bindings", []):
                     graph_uri = binding["g"]["value"]
-                    # Delete the named graph
-                    delete_url = f"{self._get_dataset_url()}/data?graph={graph_uri}"
-                    delete_response = requests.delete(delete_url, auth=self.auth)
+                    # Delete the named graph using SPARQL UPDATE
+                    drop_query = f"DROP GRAPH <{graph_uri}>"
+                    delete_response = requests.post(
+                        sparql_update_url,
+                        data={"update": drop_query},
+                        auth=self.auth,
+                    )
                     if delete_response.status_code in (200, 204):
                         logger.debug(f"Deleted named graph: {graph_uri}")
                     else:
@@ -113,9 +121,13 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                             f"Failed to delete graph {graph_uri}: {delete_response.status_code}"
                         )
 
-            # Clear the default graph
-            clear_url = f"{self._get_dataset_url()}/data"
-            clear_response = requests.delete(clear_url, auth=self.auth)
+            # Clear the default graph using SPARQL UPDATE
+            clear_query = "CLEAR DEFAULT"
+            clear_response = requests.post(
+                sparql_update_url,
+                data={"update": clear_query},
+                auth=self.auth,
+            )
             if clear_response.status_code in (200, 204):
                 logger.debug("Cleared default graph")
             else:

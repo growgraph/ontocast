@@ -2,7 +2,9 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.config import Config
-from ontocast.onto import AgentState, Ontology, OntologyProperties, RDFGraph
+from ontocast.onto.ontology import Ontology, OntologyProperties
+from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.state import AgentState
 from ontocast.tool import (
     ChunkerTool,
     ConverterTool,
@@ -13,6 +15,7 @@ from ontocast.tool import (
 from ontocast.tool.aggregate import ChunkRDFGraphAggregator
 from ontocast.tool.llm import LLMTool
 from ontocast.tool.ontology_manager import OntologyManager
+from ontocast.tool.triple_manager.core import TripleStoreManagerWithAuth
 
 
 def update_ontology_properties(o: Ontology, llm_tool: LLMTool):
@@ -66,15 +69,13 @@ class ToolBox:
 
         # Filesystem manager for initial ontology loading (if ontology_directory provided)
         self.filesystem_manager: FilesystemTripleStoreManager | None = None
+        self.triple_store_manager: TripleStoreManagerWithAuth | None = None
+
         if ontology_directory is not None and working_directory is not None:
             self.filesystem_manager = FilesystemTripleStoreManager(
                 working_directory=working_directory,
                 ontology_path=ontology_directory,
             )
-            self.present_fsm = True
-
-        # Initialize triple store manager flags
-        self.present_tm: bool = True
 
         # Main triple store manager - prefer Fuseki over Neo4j, fallback to filesystem
         # Get clean flag from server config
@@ -91,9 +92,6 @@ class ToolBox:
             self.triple_store_manager = Neo4jTripleStoreManager(
                 uri=tool_config.neo4j.uri, auth=tool_config.neo4j.auth, clean=clean
             )
-        else:
-            self.triple_store_manager = None
-            self.present_tm = False
 
         self.ontology_manager: OntologyManager = OntologyManager()
         self.converter: ConverterTool = ConverterTool()
@@ -102,18 +100,18 @@ class ToolBox:
 
     def serialize(self, state: AgentState) -> None:
         if not state.skip_ontology_development:
-            if self.present_fsm and self.filesystem_manager is not None:
+            if self.filesystem_manager is not None:
                 self.filesystem_manager.serialize_ontology(state.current_ontology)
-            if self.present_tm and self.triple_store_manager is not None:
+            if self.triple_store_manager is not None:
                 self.triple_store_manager.serialize_ontology(state.current_ontology)
         if state.aggregated_facts and len(state.aggregated_facts) > 0:
-            if self.present_fsm and self.filesystem_manager is not None:
+            if self.filesystem_manager is not None:
                 self.filesystem_manager.serialize_facts(
                     state.aggregated_facts,
                     spec=state.doc_namespace,
                     chunk_uri=getattr(state, "chunk_uri", None),
                 )
-            if self.present_tm and self.triple_store_manager is not None:
+            if self.triple_store_manager is not None:
                 self.triple_store_manager.serialize_facts(
                     state.aggregated_facts,
                     spec=state.doc_namespace,

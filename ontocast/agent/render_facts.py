@@ -10,7 +10,10 @@ import logging
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import PromptTemplate
 
-from ontocast.onto import AgentState, FailureStages, SemanticTriplesFactsReport, Status
+from ontocast.onto.constants import DEFAULT_CHUNK_IRI
+from ontocast.onto.enum import FailureStages, Status
+from ontocast.onto.model import SemanticTriplesFactsReport
+from ontocast.onto.state import AgentState
 from ontocast.prompt.render_facts import (
     ontology_instruction,
 )
@@ -60,7 +63,8 @@ def render_facts(state: AgentState, tools: ToolBox) -> AgentState:
 
     try:
         if state.status != Status.SUCCESS and state.failure_reason is not None:
-            failure_instruction = "The previous attempt to generate triples failed."
+            failure_instruction = "# FAILURE INSTRUCTION\n"
+            failure_instruction += "The previous attempt to generate triples failed."
             if state.failure_stage is not None:
                 failure_instruction += (
                     f"\n\nIt failed at the stage: {state.failure_stage}"
@@ -76,7 +80,8 @@ def render_facts(state: AgentState, tools: ToolBox) -> AgentState:
         response = llm_tool(
             prompt.format_prompt(
                 ontology_namespace=state.current_ontology.namespace,
-                current_doc_namespace=state.current_chunk.namespace,
+                ontology_prefix=state.current_ontology.prefix,
+                current_doc_namespace=DEFAULT_CHUNK_IRI,
                 text=state.current_chunk.text,
                 ontology_instruction=ontology_instruction_str,
                 failure_instruction=failure_instruction,

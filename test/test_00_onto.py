@@ -1,4 +1,4 @@
-from ontocast.onto import OntologyProperties
+from ontocast.onto.ontology import OntologyProperties
 from ontocast.toolbox import render_ontology_summary
 
 

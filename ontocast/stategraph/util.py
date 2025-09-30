@@ -1,7 +1,8 @@
 from functools import wraps
 from typing import Callable
 
-from ontocast.onto import AgentState, Status, WorkflowNode
+from ontocast.onto.enum import Status, WorkflowNode
+from ontocast.onto.state import AgentState
 from ontocast.util import logger
 
 

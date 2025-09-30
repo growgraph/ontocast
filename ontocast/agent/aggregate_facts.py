@@ -7,7 +7,7 @@ disambiguation.
 
 import logging
 
-from ontocast.onto import AgentState
+from ontocast.onto.state import AgentState
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
