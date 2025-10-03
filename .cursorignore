@@ -2,6 +2,8 @@
 !ontocast/
 !ontocast/**
 !ontocast/**/*py
+!test/
+!test/**
 !test/**/*py 
 !docs/**
 !.env.example

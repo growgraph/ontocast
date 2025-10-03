@@ -9,6 +9,7 @@ import logging
 
 from rdflib import Namespace
 
+from ontocast.onto.constants import DEFAULT_CHUNK_IRI
 from ontocast.onto.enum import FailureStages
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
@@ -31,7 +32,7 @@ def _sublimate_ontology(state: AgentState):
     graph_facts_pure.bind("cd", cd_ns)
 
     query_ontology = f"""
-    PREFIX cd: <{state.current_chunk.namespace}>
+    PREFIX cd: <{DEFAULT_CHUNK_IRI}>
 
     SELECT ?s ?p ?o
     WHERE {{
@@ -46,14 +47,13 @@ def _sublimate_ontology(state: AgentState):
     }}
     """
     results = state.current_chunk.graph.query(query_ontology)
-    logger.info(f"Found {len(results)} ontology triples")
 
     # Add filtered triples to the new graph
     for s, p, o in results:
         graph_onto_addendum.add((s, p, o))
 
     query_facts = f"""
-        PREFIX cd: <{state.current_chunk.namespace}>
+        PREFIX cd: <{DEFAULT_CHUNK_IRI}>
 
         SELECT ?s ?p ?o
         WHERE {{
@@ -67,12 +67,14 @@ def _sublimate_ontology(state: AgentState):
     """
 
     results = state.current_chunk.graph.query(query_facts)
-    logger.info(f"Found {len(results)} facts triples")
 
     # Add filtered triples to the new graph
     for s, p, o in results:
         graph_facts_pure.add((s, p, o))
 
+    logger.info(
+        f"Found triples: facts {len(graph_facts_pure)}; ontology {len(graph_onto_addendum)}"
+    )
     return graph_onto_addendum, graph_facts_pure
 
 

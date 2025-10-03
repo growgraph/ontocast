@@ -15,7 +15,7 @@ def test_rdfgraph_iadd_reuses_add_and_binds_prefixes():
     graph1 = RDFGraph()
     graph2 = RDFGraph()
 
-    # Define namespaces
+    # Define namespacesЙ
     ns1 = Namespace("http://example.org/ns1/")
     ns2 = Namespace("http://example.org/ns2/")
 

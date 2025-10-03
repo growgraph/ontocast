@@ -313,7 +313,7 @@ class RDFGraph(Graph):
 
         return new_graph
 
-    def remap_namespaces(self, old_namespace, new_namespace, rebind=False) -> None:
+    def remap_namespaces(self, old_namespace, new_namespace) -> None:
         updates = {}
         for s, p, o in self:
             new_s, new_p, new_o = s, p, o
@@ -336,6 +336,3 @@ class RDFGraph(Graph):
         for (s, p, o), (new_s, new_p, new_o) in updates.items():
             self.remove((s, p, o))
             self.add((new_s, new_p, new_o))
-
-        if rebind:
-            self.bind("cd", new_namespace)

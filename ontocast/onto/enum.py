@@ -23,7 +23,7 @@ class OntologyDecision(StrEnum):
     """Enumeration of Ontology Decisions used in the workflow."""
 
     SKIP_TO_FACTS = "ontology found; skip to facts"
-    FAILURE_NO_ONTOLOGY = "ontology not found; fast forward to END"
+    FAILURE_NO_ONTOLOGY = "ontology not found; ffwd to END"
     IMPROVE_CREATE_ONTOLOGY = "improve/create ontology"
 
 

@@ -99,11 +99,11 @@ class ToolBox:
         self.aggregator: ChunkRDFGraphAggregator = ChunkRDFGraphAggregator()
 
     def serialize(self, state: AgentState) -> None:
-        if not state.skip_ontology_development:
-            if self.filesystem_manager is not None:
-                self.filesystem_manager.serialize_ontology(state.current_ontology)
-            if self.triple_store_manager is not None:
-                self.triple_store_manager.serialize_ontology(state.current_ontology)
+        if self.filesystem_manager is not None:
+            self.filesystem_manager.serialize_ontology(state.current_ontology)
+        if self.triple_store_manager is not None:
+            self.triple_store_manager.serialize_ontology(state.current_ontology)
+
         if state.aggregated_facts and len(state.aggregated_facts) > 0:
             if self.filesystem_manager is not None:
                 self.filesystem_manager.serialize_facts(
