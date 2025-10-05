@@ -58,8 +58,9 @@ nav:
     -   Quick Start: getting_started/quickstart.md
 -   User Guide:
     -   Core Concepts: user_guide/concepts.md
+    -   Configuration System: user_guide/configuration.md
     -   Triple Store Configuration: user_guide/triple_stores.md
-#    -   Workflow: user_guide/workflow.md
+    -   Workflow: user_guide/workflow.md
 -   API Reference: reference/
 -   Contributing: contributing.md
 
@@ -102,5 +103,3 @@ markdown_extensions:
 
 -   toc:
         permalink: true
-
-

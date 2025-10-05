@@ -19,18 +19,45 @@ When multiple triple stores are configured, OntoCast uses the following priority
 
 ---
 
-## Environment Variables
+## Configuration
 
-Configure your triple store connection using environment variables in your main `.env` file:
+### Environment Variables
+
+Configure your triple store connection using environment variables in your `.env` file:
 
 ```bash
 # Fuseki Configuration (Preferred)
 FUSEKI_URI=http://localhost:3032/test
-FUSEKI_AUTH=admin/abc123-qwe
+FUSEKI_AUTH=admin:password
+FUSEKI_DATASET=dataset_name
 
 # Neo4j Configuration (Alternative)
 NEO4J_URI=bolt://localhost:7689
-NEO4J_AUTH=neo4j/test!passfortesting
+NEO4J_AUTH=neo4j:password
+
+# Clean startup (optional)
+CLEAN=true
+```
+
+### Configuration Hierarchy
+
+The new configuration system provides better organization:
+
+```python
+from ontocast.config import Config
+
+config = Config()
+
+# Access triple store configuration
+tool_config = config.get_tool_config()
+
+# Check which triple store is configured
+if tool_config.fuseki.uri and tool_config.fuseki.auth:
+    print("Using Fuseki triple store")
+elif tool_config.neo4j.uri and tool_config.neo4j.auth:
+    print("Using Neo4j triple store")
+else:
+    print("Using filesystem storage")
 ```
 
 ---
@@ -76,6 +103,15 @@ docker compose stop test.fuseki
 - Default dataset: `/test`
 - SPARQL endpoint: http://localhost:3032/test/sparql
 
+**4. Configure OntoCast for Fuseki:**
+
+```bash
+# In your .env file
+FUSEKI_URI=http://localhost:3032/test
+FUSEKI_AUTH=admin:abc123-qwe
+FUSEKI_DATASET=dataset_name
+```
+
 ---
 
 ## Neo4j with n10s Plugin Setup
@@ -116,13 +152,21 @@ docker compose stop neo4j
 - Password: `test!passfortesting`
 - Bolt: bolt://localhost:7689
 
+**4. Configure OntoCast for Neo4j:**
+
+```bash
+# In your .env file
+NEO4J_URI=bolt://localhost:7689
+NEO4J_AUTH=neo4j:test!passfortesting
+```
+
 ---
 
 ## Filesystem Storage (Fallback)
 
 If neither Fuseki nor Neo4j is configured, OntoCast will store ontologies and facts as Turtle files in the working directory.
 
-**No setup required.**
+**No setup required - works out of the box.**
 
 ---
 
@@ -135,16 +179,18 @@ If neither Fuseki nor Neo4j is configured, OntoCast will store ontologies and fa
 | **Setup Complexity** | ✅ Simple | ⚠️ Moderate | ✅ Very Simple |
 | **Visualization** | ⚠️ Basic | ✅ Excellent | ❌ None |
 | **Production Ready** | ✅ Yes | ✅ Yes | ❌ No |
+| **Configuration** | ✅ Environment vars | ✅ Environment vars | ✅ Automatic |
 
 ---
 
 ## Best Practices
 
-- Use **Filesystem** for quick setup and testing.
-- Use **Fuseki** for RDF-focused or production deployments.
-- Use **Neo4j** if you need advanced graph analytics or visualization.
-- Monitor triple store performance and logs.
-- Backup your data regularly.
+- Use **Filesystem** for quick setup and testing
+- Use **Fuseki** for RDF-focused or production deployments
+- Use **Neo4j** if you need advanced graph analytics or visualization
+- Monitor triple store performance and logs
+- Backup your data regularly
+- Use the `CLEAN` environment variable to reset triple stores during development
 
 ---
 
@@ -157,6 +203,9 @@ curl http://localhost:3032/$/ping
 
 # Restart Fuseki
 docker compose restart fuseki
+
+# Check dataset exists
+curl http://localhost:3032/$/datasets
 ```
 
 ### Neo4j
@@ -170,18 +219,44 @@ cypher-shell -u neo4j -p test!passfortesting "CALL n10s.graphconfig.show()"
 
 ### Common Problems
 - **Connection Refused**: Triple store not running
-- **Authentication Failed**: Incorrect credentials
+- **Authentication Failed**: Incorrect credentials in environment variables
 - **Dataset Not Found**: Dataset not created in Fuseki
 - **Plugin Not Loaded**: n10s plugin not installed in Neo4j
+- **Configuration Not Loaded**: Check `.env` file and environment variable names
 
 ---
 
 ## Clean Triple Store Initialization
 
-You can start OntoCast with the `--clean` option to initialize the triple store (Neo4j or Fuseki) as clean. This will delete all data from the triple store on startup.
+You can start OntoCast with the `--clean` option or set `CLEAN=true` in your environment to initialize the triple store (Neo4j or Fuseki) as clean. This will delete all data from the triple store on startup.
 
 ```bash
-serve --working-directory WORKING_DIR --ontology-directory ONTOLOGY_DIR --clean
+# Via CLI
+ontocast serve --working-directory WORKING_DIR --ontology-directory ONTOLOGY_DIR --clean
+
+# Via environment variable
+CLEAN=true
+ontocast serve --working-directory WORKING_DIR --ontology-directory ONTOLOGY_DIR
 ```
 
 - **Warning:** This will delete all data from the configured triple store (Neo4j or Fuseki) on startup. Use with caution in production environments!
+
+---
+
+## Migration from Previous Versions
+
+If you're upgrading from a previous version of OntoCast:
+
+1. **Update Environment Variables**: The configuration system has been refactored
+2. **Check Triple Store Settings**: Ensure your triple store configuration is properly set
+3. **Test Configuration**: Use the new configuration system to verify your setup
+
+```python
+# Test your configuration
+from ontocast.config import Config
+
+config = Config()
+print("Configuration loaded successfully!")
+print(f"LLM Provider: {config.tools.llm.provider}")
+print(f"Working Directory: {config.tools.paths.working_directory}")
+```

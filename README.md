@@ -25,6 +25,8 @@ OntoCast is a framework for extracting semantic triples (creating a Knowledge Gr
 - **MCP Compatibility**: Implements Model Control Protocol endpoints
 - **RDF Output**: Produces standardized RDF/Turtle
 - **Triple Store Integration**: Supports Neo4j (n10s) and Apache Fuseki
+- **Hierarchical Configuration**: Type-safe configuration system with environment variable support
+- **CLI Parameters**: Flexible command-line interface with `--skip-ontology-critique` option
 
 ---
 
@@ -50,188 +52,208 @@ pip install ontocast
 
 ---
 
-## Configuration
+## Quick Start
 
-### Environment Variables
+### 1. Configuration
 
-Copy the example file and edit as needed:
+Create a `.env` file with your configuration:
 
-```bash
-cp env.example .env
-# Edit with your values
-```
-
-**Main options:**
 ```bash
 # LLM Configuration
-# common
-LLM_PROVIDER=openai # or ollama
-LLM_MODEL_NAME=gpt-4o-mini # ollama model
-LLM_TEMPERATURE=0.0
+LLM_PROVIDER=openai
+LLM_API_KEY=your-api-key-here
+LLM_MODEL_NAME=gpt-4o-mini
+LLM_TEMPERATURE=0.1
 
-# openai
-OPENAI_API_KEY=your_openai_api_key_here
-
-# ollama
-LLM_BASE_URL=
-
-# Server
+# Server Configuration
 PORT=8999
+MAX_VISITS=3
 RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
 
-# Optional: Triple Store Configuration (Fuseki preferred over Neo4j)
-FUSEKI_URI=http://localhost:3032/test
-FUSEKI_AUTH=admin/abc123-qwe
+# Path Configuration
+WORKING_DIRECTORY=/path/to/working
+ONTOLOGY_DIRECTORY=/path/to/ontologies
 
+# Optional: Triple Store Configuration
+FUSEKI_URI=http://localhost:3032/test
+FUSEKI_AUTH=admin:password
+FUSEKI_DATASET=ontocast
+
+# Optional: Skip ontology critique
+SKIP_ONTOLOGY_DEVELOPMENT=false
+```
+
+### 2. Start Server
+
+```bash
+ontocast serve \
+    --working-directory /path/to/working \
+    --ontology-directory /path/to/ontologies
+```
+
+### 3. Process Documents
+
+```bash
+curl -X POST http://localhost:8999/process -F "file=@document.pdf"
+```
+
+---
+
+## Configuration System
+
+OntoCast uses a hierarchical configuration system built on Pydantic BaseSettings:
+
+### Environment Variables
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `LLM_API_KEY` | API key for LLM provider | - | Yes |
+| `LLM_PROVIDER` | LLM provider (openai, ollama) | openai | No |
+| `LLM_MODEL_NAME` | Model name | gpt-4o-mini | No |
+| `LLM_TEMPERATURE` | Temperature setting | 0.1 | No |
+| `WORKING_DIRECTORY` | Working directory path | - | Yes |
+| `ONTOLOGY_DIRECTORY` | Ontology files directory | - | No |
+| `PORT` | Server port | 8999 | No |
+| `MAX_VISITS` | Maximum visits per node | 3 | No |
+| `SKIP_ONTOLOGY_DEVELOPMENT` | Skip ontology critique | false | No |
+
+### Triple Store Configuration
+
+```bash
+# Fuseki (Preferred)
+FUSEKI_URI=http://localhost:3032/test
+FUSEKI_AUTH=admin:password
+FUSEKI_DATASET=dataset_name
+
+# Neo4j (Alternative)
 NEO4J_URI=bolt://localhost:7689
-NEO4J_AUTH=neo4j/test!passfortesting
+NEO4J_AUTH=neo4j:password
+```
+
+### CLI Parameters
+
+```bash
+# Skip ontology critique step
+ontocast serve --skip-ontology-critique
+
+# Process only first N chunks (for testing)
+ontocast serve --head-chunks 5
+
+# Clean triple store on startup
+ontocast serve --clean
 ```
 
 ---
 
 ## Triple Store Setup
 
-OntoCast supports multiple triple store backends. When both Fuseki and Neo4j are configured, **Fuseki is preferred**.
+OntoCast supports multiple triple store backends with automatic fallback:
 
-- See [Triple Store Setup](docs/user_guide/triple_stores.md) for detailed Docker Compose instructions and sample `.env.example` files.
-- Quick summary: copy and edit the provided `.env.example` in `docker/fuseki` or `docker/neo4j`, then run `docker compose --env-file .env <service> up -d` in the respective directory.
+1. **Apache Fuseki** (Recommended) - Native RDF with SPARQL support
+2. **Neo4j with n10s** - Graph database with RDF capabilities  
+3. **Filesystem** (Fallback) - Local file-based storage
 
----
+When multiple triple stores are configured, **Fuseki is preferred over Neo4j**.
 
-## Running OntoCast Server
+### Quick Setup with Docker
 
+**Fuseki:**
 ```bash
-uv run serve \
-    --ontology-directory ONTOLOGY_DIR \
-    --working-directory WORKING_DIR
+cd docker/fuseki
+cp .env.example .env
+# Edit .env with your values
+docker compose --env-file .env fuseki up -d
 ```
 
----
-
-## API Usage
-
-- **POST /process**: Accepts `application/json` or file uploads (`multipart/form-data`).
-- Returns: JSON with extracted facts (Turtle), ontology (Turtle), and processing metadata. Triples are also serialized to the configured triple store.
-
-**Example:**
+**Neo4j:**
 ```bash
-curl -X POST http://localhost:8999/process \
-    -H "Content-Type: application/json" \
-    -d '{"text": "Your document text here"}'
-    
-# Process a PDF file
-curl -X POST http://url:port/process -F "file=@data/pdf/sample.pdf"
-
-# Process a json file
-curl -X POST http://url:port/process -F "file=@test2/sample.json"
+cd docker/neo4j
+cp .env.example .env
+# Edit .env with your values
+docker compose --env-file .env neo4j up -d
 ```
 
----
-
-## MCP Endpoints
-
-- `GET /health`: Health check
-- `GET /info`: Service info
-- `POST /process`: Document processing
-
----
-
-## Filesystem Mode
-
-If no triple store is configured, OntoCast stores ontologies and facts as Turtle files in the working directory.
-
----
-
-## Notes
-
-- JSON documents must contain a `text` field, e.g.:
-  ```json
-  { "text": "abc" }
-  ```
-- `recursion_limit` is calculated as `max_visits * estimated_chunks` (default 30, or set via `.env`)
-- Default port: 8999
-
----
-
-## Docker
-
-To build the OntoCast Docker image:
-```sh
-docker buildx build -t growgraph/ontocast:0.1.4 . 2>&1 | tee build.log
-```
-
----
-
-## Project Structure
-
-```
-ontocast/
-├── agent/           # Agent workflow and orchestration
-├── cli/             # CLI utilities and server
-├── prompt/          # LLM prompt templates
-├── stategraph/      # State graph logic
-├── tool/            # Triple store, chunking, and ontology tools
-├── toolbox.py       # Toolbox for agent tools
-├── onto.py          # Ontology and RDF graph handling
-├── util.py          # Utilities
-```
-Other directories:
-- `docker/` – Docker Compose and .env.example files for triple stores
-- `data/` – Example data, ontologies, and test files
-- `docs/` – Documentation and user guides
-- `test/` – Test suite
-
----
-
-## Workflow
-
-The extraction follows a multi-stage workflow:
-
-<img src="https://github.com/growgraph/ontocast/blob/main/docs/assets/graph.png?raw=true" alt="Workflow diagram" width="350" style="float: right; margin-left: 20px;"/>
-
-1. **Document Preparation**
-    - [Optional] Convert to Markdown
-    - Text chunking
-2. **Ontology Processing**
-    - Ontology selection
-    - Text to ontology triples
-    - Ontology critique
-3. **Fact Extraction**
-    - Text to facts
-    - Facts critique
-    - Ontology sublimation
-4. **Chunk Normalization**
-    - Chunk KG aggregation
-    - Entity/Property Disambiguation
-5. **Storage**
-    - Triple/KG serialization
+See [Triple Store Setup](docs/user_guide/triple_stores.md) for detailed instructions.
 
 ---
 
 ## Documentation
 
-- Full documentation: [growgraph.github.io/ontocast](https://growgraph.github.io/ontocast)
+- [Quick Start Guide](docs/getting_started/quickstart.md) - Get started quickly
+- [Configuration System](docs/user_guide/configuration.md) - Detailed configuration guide
+- [Triple Store Setup](docs/user_guide/triple_stores.md) - Triple store configuration
+- [User Guide](docs/user_guide/concepts.md) - Core concepts and workflow
+- [API Reference](docs/reference/onto.md) - Detailed API documentation
 
 ---
 
-## Roadmap
+## Recent Changes
 
-- [x] Add Jena Fuseki triple store for triple serialization
-- [x] Add Neo4j n10s for triple serialization
-- [ ] Replace triple prompting with a tool for local graph retrieval
+### Configuration System Overhaul
+
+- **Hierarchical Configuration**: New `ToolConfig` and `ServerConfig` structure
+- **Environment Variables**: Support for `.env` files and environment variables
+- **Type Safety**: Full type safety with Python 3.12 union syntax
+- **API Key**: Changed from `OPENAI_API_KEY` to `LLM_API_KEY` for consistency
+- **Dependency Injection**: Removed global variables, implemented proper DI
+
+### Enhanced Features
+
+- **CLI Parameters**: New `--skip-ontology-critique` parameter
+- **RDFGraph Operations**: Improved `__iadd__` method with proper prefix binding
+- **Triple Store Management**: Better separation between filesystem and external stores
+- **Error Handling**: Improved error handling and validation
+
+See [CHANGELOG.md](CHANGELOG.md) for complete details.
+
+---
+
+## Examples
+
+### Basic Usage
+
+```python
+from ontocast.config import Config
+from ontocast.toolbox import ToolBox
+
+# Load configuration
+config = Config()
+
+# Initialize tools
+tools = ToolBox(config)
+
+# Process documents
+# ... (use tools for processing)
+```
+
+### Server Usage
+
+```bash
+# Start server with custom configuration
+ontocast serve \
+    --working-directory /data/working \
+    --ontology-directory /data/ontologies \
+    --skip-ontology-critique \
+    --head-chunks 10
+```
 
 ---
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+We welcome contributions! Please see our [Contributing Guide](docs/contributing.md) for details.
 
 ---
 
-## Acknowledgments
+## License
 
-- Uses RDFlib for semantic triple management
-- Uses docling for pdf/pptx conversion
-- Uses OpenAI language models / open models served via Ollama for fact extraction
-- Uses langchain/langgraph
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+
+---
+
+## Support
+
+- **Documentation**: [docs/](docs/)
+- **Issues**: [GitHub Issues](https://github.com/growgraph/ontocast/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/growgraph/ontocast/discussions)
