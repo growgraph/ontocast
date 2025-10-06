@@ -1,11 +1,12 @@
 import os
 from collections import defaultdict
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import ConfigDict, Field
 
 from ontocast.onto.chunk import Chunk
 from ontocast.onto.constants import DEFAULT_DOMAIN, ONTOLOGY_NULL_ID, ONTOLOGY_NULL_IRI
+from ontocast.onto.context import AgentContext, AgentType, ContextManager
 from ontocast.onto.enum import Status, WorkflowNode
 from ontocast.onto.model import BasePydanticModel
 from ontocast.onto.ontology import Ontology
@@ -103,6 +104,10 @@ class AgentState(BasePydanticModel):
     skip_ontology_development: bool = Field(
         default=False, description="Skip ontology create/improve steps if True"
     )
+    context_manager: ContextManager = Field(
+        default_factory=ContextManager,
+        description="Context manager for passing information between agents",
+    )
 
     def model_post_init(self, __context):
         """Post-initialization hook for the model."""
@@ -159,3 +164,78 @@ class AgentState(BasePydanticModel):
             str: The document namespace.
         """
         return iri2namespace(self.doc_iri, ontology=False)
+
+    def get_context_for_agent(
+        self, agent_name: str, agent_type: AgentType
+    ) -> AgentContext:
+        """Get or create context for a specific agent.
+
+        Args:
+            agent_name: Name of the agent requesting context.
+            agent_type: Type of agent (renderer, critic, etc.).
+
+        Returns:
+            AgentContext: The context for the agent.
+        """
+        # Try to get existing context for this agent
+        existing_context = self.context_manager.get_latest_context_by_agent(agent_name)
+
+        if existing_context:
+            return existing_context
+
+        # Create new context if none exists
+        return self.context_manager.create_context(
+            agent_name=agent_name, agent_type=agent_type
+        )
+
+    def update_context_for_agent(
+        self,
+        agent_name: str,
+        ontology_version: Optional[Any] = None,
+        facts_version: Optional[Any] = None,
+        ontology_operations: Optional[List[Any]] = None,
+        facts_operations: Optional[List[Any]] = None,
+        ontology_critique: Optional[Dict[str, Any]] = None,
+        facts_critique: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> AgentContext:
+        """Update context for a specific agent.
+
+        Args:
+            agent_name: Name of the agent updating context.
+            ontology_version: New ontology version if available.
+            facts_version: New facts version if available.
+            ontology_operations: New ontology operations if available.
+            facts_operations: New facts operations if available.
+            ontology_critique: New ontology critique if available.
+            facts_critique: New facts critique if available.
+            metadata: Additional metadata for the context.
+
+        Returns:
+            AgentContext: The updated context.
+        """
+        return self.context_manager.update_context(
+            agent_name=agent_name,
+            ontology_version=ontology_version,
+            facts_version=facts_version,
+            ontology_operations=ontology_operations,
+            facts_operations=facts_operations,
+            ontology_critique=ontology_critique,
+            facts_critique=facts_critique,
+            metadata=metadata,
+        )
+
+    def get_context_summary_for_agent(self, agent_name: str) -> str:
+        """Get a context summary for a specific agent.
+
+        Args:
+            agent_name: Name of the agent requesting context summary.
+
+        Returns:
+            str: A formatted context summary.
+        """
+        context = self.context_manager.get_latest_context_by_agent(agent_name)
+        if not context:
+            return "No context available for this agent."
+
+        return context.get_full_context_summary()

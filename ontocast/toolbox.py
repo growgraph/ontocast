@@ -13,8 +13,11 @@ from ontocast.tool import (
     Neo4jTripleStoreManager,
 )
 from ontocast.tool.aggregate import ChunkRDFGraphAggregator
+from ontocast.tool.graph_diff import DiffTool
+from ontocast.tool.graph_version_manager import GraphVersionManager
 from ontocast.tool.llm import LLMTool
 from ontocast.tool.ontology_manager import OntologyManager
+from ontocast.tool.sparql import SPARQLTool
 from ontocast.tool.triple_manager.core import TripleStoreManagerWithAuth
 
 
@@ -97,6 +100,13 @@ class ToolBox:
         self.converter: ConverterTool = ConverterTool()
         self.chunker: ChunkerTool = ChunkerTool()
         self.aggregator: ChunkRDFGraphAggregator = ChunkRDFGraphAggregator()
+
+        # SPARQL, version management, and diff tools
+        self.sparql_tool: SPARQLTool = SPARQLTool(
+            triple_store_manager=self.triple_store_manager
+        )
+        self.version_manager: GraphVersionManager = GraphVersionManager()
+        self.diff_tool: DiffTool = DiffTool()
 
     def serialize(self, state: AgentState) -> None:
         if self.filesystem_manager is not None:

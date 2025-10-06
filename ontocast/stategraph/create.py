@@ -9,12 +9,14 @@ from ontocast.agent import (
     check_chunks_empty,
     chunk_text,
     convert_document,
-    criticise_facts,
-    criticise_ontology,
-    render_facts,
-    render_onto_triples,
     select_ontology,
     sublimate_ontology,
+)
+from ontocast.agent.enhanced_criticise_facts import enhanced_criticise_facts
+from ontocast.agent.enhanced_criticise_ontology import enhanced_criticise_ontology
+from ontocast.agent.structured_hybrid_render_facts import structured_hybrid_render_facts
+from ontocast.agent.structured_hybrid_render_ontology import (
+    structured_hybrid_render_ontology,
 )
 from ontocast.onto.enum import OntologyDecision, Status, WorkflowNode
 from ontocast.onto.state import AgentState
@@ -44,23 +46,24 @@ def create_agent_graph(tools: ToolBox) -> CompiledStateGraph:
     chunk_text_ = partial(chunk_text, tools=tools)
     check_chunks_empty_ = partial(check_chunks_empty)
 
+    # Use structured hybrid agents with Turtle/SPARQL decision logic
     render_ontology_tuple = wrap_with(
-        partial(render_onto_triples, tools=tools),
+        partial(structured_hybrid_render_ontology, tools=tools),
         WorkflowNode.TEXT_TO_ONTOLOGY,
         count_visits_conditional_success,
     )
     render_facts_tuple = wrap_with(
-        partial(render_facts, tools=tools),
+        partial(structured_hybrid_render_facts, tools=tools),
         WorkflowNode.TEXT_TO_FACTS,
         count_visits_conditional_success,
     )
     criticise_ontology_tuple = wrap_with(
-        partial(criticise_ontology, tools=tools),
+        partial(enhanced_criticise_ontology, tools=tools),
         WorkflowNode.CRITICISE_ONTOLOGY,
         count_visits_conditional_success,
     )
     criticise_facts_tuple = wrap_with(
-        partial(criticise_facts, tools=tools),
+        partial(enhanced_criticise_facts, tools=tools),
         WorkflowNode.CRITICISE_FACTS,
         count_visits_conditional_success,
     )

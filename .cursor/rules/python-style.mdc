@@ -6,9 +6,10 @@ alwaysApply: true
 ---
 
 # Python Coding Rules
+- Use python 3.12 conventions: use `type | None` instead of `Optional` etc
 - Use type hints everywhere (PEP 484).
 - Use snake_case for functions and variables, PascalCase for classes.
-- Prefer `pydantic.BaseModel` for structured data.
+- USe `pydantic.BaseModel` for structured data, not dataclasses
 - Avoid unused imports.
 - Use `async`/`await` where appropriate.
 - Always keep functions small and composable.

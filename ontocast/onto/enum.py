@@ -54,3 +54,14 @@ class WorkflowNode(StrEnum):
     CRITICISE_FACTS = "Criticise Facts"
     CHUNKS_EMPTY = "Chunks Empty?"
     AGGREGATE_FACTS = "Aggregate Facts"
+
+
+class SPARQLOperationType(StrEnum):
+    """Enumeration of SPARQL operation types.
+
+    This enum is used across the system for type-safe SPARQL operations.
+    """
+
+    INSERT = "INSERT"
+    UPDATE = "UPDATE"
+    DELETE = "DELETE"
