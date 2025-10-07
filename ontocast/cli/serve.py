@@ -300,19 +300,21 @@ def run(
             logger.error(f"could set logging level correctly {e}")
 
     # Use CLI arguments or fall back to config values
-    if config.tools.paths.working_directory is not None:
-        config.tools.paths.working_directory = pathlib.Path(
-            config.tools.paths.working_directory
+    if config.tool_config.path_config.working_directory is not None:
+        config.tool_config.path_config.working_directory = pathlib.Path(
+            config.tool_config.path_config.working_directory
         ).expanduser()
-        config.tools.paths.working_directory.mkdir(parents=True, exist_ok=True)
+        config.tool_config.path_config.working_directory.mkdir(
+            parents=True, exist_ok=True
+        )
     else:
         raise ValueError(
             "Working directory must be provided via CLI argument or WORKING_DIRECTORY config"
         )
 
-    if config.tools.paths.ontology_directory is not None:
-        config.tools.paths.ontology_directory = pathlib.Path(
-            config.tools.paths.ontology_directory
+    if config.tool_config.path_config.ontology_directory is not None:
+        config.tool_config.path_config.ontology_directory = pathlib.Path(
+            config.tool_config.path_config.ontology_directory
         ).expanduser()
 
     # Create ToolBox with config directly

@@ -28,14 +28,18 @@ class ChunkerTool(Tool):
         **kwargs,
     ):
         super().__init__(**kwargs)
+        self._model = None
 
-        self._model = HuggingFaceEmbeddings(
-            model_name=self.model,
-            model_kwargs={"device": "cuda" if torch.cuda.is_available() else "cpu"},
-            encode_kwargs={"normalize_embeddings": False},
-        )
+    def _init_model(self):
+        if self._model is None:
+            self._model = HuggingFaceEmbeddings(
+                model_name=self.model,
+                model_kwargs={"device": "cuda" if torch.cuda.is_available() else "cpu"},
+                encode_kwargs={"normalize_embeddings": False},
+            )
 
     def __call__(self, doc: str) -> list[str]:
+        self._init_model()
         documents = [doc]
 
         text_splitter = SemanticChunker(

@@ -64,15 +64,18 @@ LLM_API_KEY=your_key_here
 ```
 
 ### Configuration Usage
+
 ```python
 # Old way (no longer supported)
 from ontocast.config import config
-llm_provider = config.llm.provider
+
+llm_provider = config.llm_config.provider
 
 # New way
 from ontocast.config import Config
+
 config = Config()
-llm_provider = config.tools.llm.provider
+llm_provider = config.tool_config.llm_config.provider
 ```
 
 ### ToolBox Initialization

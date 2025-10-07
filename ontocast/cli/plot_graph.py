@@ -3,7 +3,16 @@ from pathlib import Path
 
 import pygraphviz as pgv
 
+from ontocast.config import (
+    Config,
+    LLMConfig,
+    LLMProvider,
+    OllamaModel,
+    PathConfig,
+    ToolConfig,
+)
 from ontocast.stategraph import create_agent_graph
+from ontocast.toolbox import ToolBox
 
 
 def update_mermaid_graph_in_markdown(file_path: str, new_graph: str):
@@ -43,12 +52,23 @@ frontmatter_config = {
     }
 }
 
-tools = {}
-
 
 def main():
+    # Create a minimal config for plotting (no API keys needed)
+    config = Config(
+        tool_config=ToolConfig(
+            path_config=PathConfig(ontology_directory=None),
+            llm_config=LLMConfig(
+                provider=LLMProvider.OLLAMA,
+                model_name=OllamaModel.LLAMA3_1,
+                base_url="http://localhost:11434",
+            ),
+        )
+    )
+    toolbox = ToolBox(config)
+
     # Get the graph and save it as PNG
-    app = create_agent_graph(tools)
+    app = create_agent_graph(toolbox)
     graph = app.get_graph()
     mmd_data = graph.draw_mermaid(frontmatter_config=frontmatter_config)
 
@@ -99,6 +119,15 @@ def main():
 
     tweak_draw("docs/assets/graph", "svg")
     tweak_draw("docs/assets/graph", "png")
+
+    # Clean up temporary directory
+    import shutil
+
+    if (
+        config.tool_config.path_config.working_directory is not None
+        and config.tool_config.path_config.working_directory.exists()
+    ):
+        shutil.rmtree(config.tool_config.path_config.working_directory)
 
     # from langchain_core.runnables.graph import MermaidDrawMethod
 

@@ -16,7 +16,8 @@ for path in sorted(Path(pname).rglob("*.py")):
         parts = parts[:-1]
     if not parts:
         continue
-    nav[parts] = str(full_doc_path)
+    parts_str: tuple[str] = tuple(parts)
+    nav[parts_str] = str(full_doc_path)
 
     with mkdocs_gen_files.open(full_doc_path, "w") as f:
         ident = ".".join([pname] + parts)

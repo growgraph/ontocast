@@ -257,6 +257,6 @@ from ontocast.config import Config
 
 config = Config()
 print("Configuration loaded successfully!")
-print(f"LLM Provider: {config.tools.llm.provider}")
-print(f"Working Directory: {config.tools.paths.working_directory}")
+print(f"LLM Provider: {config.tool_config.llm_config.provider}")
+print(f"Working Directory: {config.tool_config.path_config.working_directory}")
 ```

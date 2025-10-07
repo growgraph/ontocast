@@ -63,10 +63,9 @@ def hybrid_render_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     else:
         previous_context_str = "No previous context available."
 
-    # Determine if this is a fresh ontology or an update
-    ontology_id = state.ontology_id
     is_fresh_ontology = (
-        ontology_id == ONTOLOGY_NULL_ID or ontology_id not in tools.ontology_manager
+        state.ontology_id == ONTOLOGY_NULL_ID
+        or state.ontology_id not in tools.ontology_manager
     )
 
     if is_fresh_ontology:

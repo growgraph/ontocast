@@ -107,8 +107,8 @@ tool_config = config.get_tool_config()
 server_config = config.get_server_config()
 
 # Access specific settings
-llm_provider = config.tools.llm.provider
-working_dir = config.tools.paths.working_directory
+llm_provider = config.tool_config.llm_config.provider
+working_dir = config.tool_config.path_config.working_directory
 server_port = config.server.port
 ```
 
@@ -223,12 +223,14 @@ LLM_API_KEY=your-key
 ```python
 # Old way (deprecated)
 from ontocast.config import config
-llm_provider = config.llm.provider
+
+llm_provider = config.llm_config.provider
 
 # New way (current)
 from ontocast.config import Config
+
 config = Config()
-llm_provider = config.tools.llm.provider
+llm_provider = config.tool_config.llm_config.provider
 ```
 
 ### ToolBox Initialization Changes
@@ -303,8 +305,8 @@ from ontocast.config import Config
 config = Config()
 
 print("Configuration loaded successfully!")
-print(f"LLM Provider: {config.tools.llm.provider}")
-print(f"Working Directory: {config.tools.paths.working_directory}")
+print(f"LLM Provider: {config.tool_config.llm_config.provider}")
+print(f"Working Directory: {config.tool_config.path_config.working_directory}")
 print(f"Server Port: {config.server.port}")
 
 # Validate configuration

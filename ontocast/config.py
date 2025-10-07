@@ -4,19 +4,59 @@ This module provides hierarchical configuration classes that map to the
 environment variables and usage patterns in the OntoCast system.
 """
 
+from enum import StrEnum
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class LLMProvider(StrEnum):
+    """Supported LLM providers."""
+
+    OPENAI = "openai"
+    OLLAMA = "ollama"
+
+
+class ModelName(StrEnum):
+    """Abstract base class for all model names."""
+
+
+class OpenAIModel(ModelName):
+    """OpenAI model names."""
+
+    GPT4_O = "gpt-4o"
+    GPT4_O_MINI = "gpt-4o-mini"
+    GPT4_1 = "gpt-41"
+    GPT4_1_MINI = "gpt-41-mini"
+    GPT5 = "gpt-5"
+    GPT5_MINI = "gpt-5-mini"
+    GPT5_NANO = "gpt-5-nano"
+
+
+class OllamaModel(ModelName):
+    """Ollama model names."""
+
+    QWEN2_5 = "qwen2.5"
+    QWEN2_5_72B = "qwen2.5:72b"
+    LLAMA3_1 = "llama3.1"
+    LLAMA3_1_70B = "llama3.1:70b"
+    GRANITE3_3_2B = "granite3.3:2b"
+    GRANITE3_3_8B = "granite3.3:8b"
+
+
+ModelNameType = OpenAIModel | OllamaModel
 
 
 class LLMConfig(BaseSettings):
     """LLM configuration settings."""
 
-    provider: str = Field(
-        default="openai", description="LLM provider (openai, ollama, etc.)"
+    provider: LLMProvider = Field(
+        default=LLMProvider.OPENAI, description="LLM provider"
     )
-    model_name: str = Field(default="gpt-4.1-mini", description="LLM model name")
+    model_name: ModelNameType = Field(
+        default=OpenAIModel.GPT4_O_MINI, description="LLM model name"
+    )
     temperature: float = Field(default=0.0, description="LLM temperature setting")
     base_url: str | None = Field(
         default=None, description="LLM base URL (for ollama, etc.)"
@@ -27,6 +67,27 @@ class LLMConfig(BaseSettings):
         env_prefix="LLM_",
         case_sensitive=False,
     )
+
+    @field_validator("model_name")
+    @classmethod
+    def validate_model_name(cls, v: ModelNameType, info) -> ModelNameType:
+        """Validate that model_name is compatible with the provider."""
+        if "provider" not in info.data:
+            return v
+
+        provider = info.data["provider"]
+
+        if provider == LLMProvider.OPENAI and not isinstance(v, OpenAIModel):
+            raise ValueError(
+                f"Model {v} is not compatible with OpenAI provider. Use OpenAIModel values."
+            )
+
+        if provider == LLMProvider.OLLAMA and not isinstance(v, OllamaModel):
+            raise ValueError(
+                f"Model {v} is not compatible with Ollama provider. Use OllamaModel values."
+            )
+
+        return v
 
 
 class ServerConfig(BaseSettings):
@@ -106,11 +167,11 @@ class PathConfig(BaseSettings):
 class ToolConfig(BaseSettings):
     """Configuration for tools (LLM, triple stores, paths)."""
 
-    llm: LLMConfig = Field(default_factory=LLMConfig)
+    llm_config: LLMConfig = Field(default_factory=LLMConfig)
+    path_config: PathConfig = Field(default_factory=PathConfig)
     neo4j: Neo4jConfig = Field(default_factory=Neo4jConfig)
     fuseki: FusekiConfig = Field(default_factory=FusekiConfig)
     domain: DomainConfig = Field(default_factory=DomainConfig)
-    paths: PathConfig = Field(default_factory=PathConfig)
 
 
 class Config(BaseSettings):
@@ -121,7 +182,7 @@ class Config(BaseSettings):
     """
 
     # Tool configuration (for ToolBox)
-    tools: ToolConfig = Field(default_factory=ToolConfig)
+    tool_config: ToolConfig = Field(default_factory=ToolConfig)
 
     # Server configuration (for serve.py)
     server: ServerConfig = Field(default_factory=ServerConfig)
@@ -140,11 +201,14 @@ class Config(BaseSettings):
         Returns:
             ToolConfig: Configuration for tools
         """
-        return self.tools
+        return self.tool_config
 
     def validate_llm_config(self) -> None:
         """Validate LLM configuration and raise errors for missing required settings."""
-        if self.tools.llm.provider == "openai" and not self.tools.llm.api_key:
+        if (
+            self.tool_config.llm_config.provider == LLMProvider.OPENAI
+            and not self.tool_config.llm_config.api_key
+        ):
             raise ValueError(
                 "LLM_API_KEY environment variable is required for OpenAI provider"
             )

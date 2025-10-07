@@ -175,6 +175,15 @@ class AgentState(BasePydanticModel):
         """
         return iri2namespace(self.doc_iri, ontology=False)
 
+    @property
+    def ontology_id(self):
+        """Get the document namespace.
+
+        Returns:
+            str: The document namespace.
+        """
+        return self.current_ontology.ontology_id
+
     def get_context_for_agent(self, agent_type: AgentType) -> AgentContext:
         """Get or create context for a specific agent.
 

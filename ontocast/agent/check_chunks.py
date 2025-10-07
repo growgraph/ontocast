@@ -14,7 +14,8 @@ The module supports:
 import logging
 from collections import defaultdict
 
-from ontocast.onto.constants import DEFAULT_CHUNK_IRI
+from ontocast.onto.chunk import Chunk
+from ontocast.onto.constants import CHUNK_NULL_IRI, DEFAULT_CHUNK_IRI
 from ontocast.onto.enum import Status
 from ontocast.onto.state import AgentState
 
@@ -53,7 +54,7 @@ def check_chunks_empty(state: AgentState) -> AgentState:
         f"Setting up current chunk"
     )
 
-    if state.current_chunk is not None:
+    if state.current_chunk.iri != CHUNK_NULL_IRI:
         state.current_chunk.graph.remap_namespaces(
             old_namespace=DEFAULT_CHUNK_IRI, new_namespace=state.current_chunk.namespace
         )
@@ -68,7 +69,11 @@ def check_chunks_empty(state: AgentState) -> AgentState:
             " and proceeding to SELECT_ONTOLOGY"
         )
     else:
-        state.current_chunk = None
+        state.current_chunk = Chunk(
+            text="",
+            hid="default",
+            doc_iri=CHUNK_NULL_IRI,
+        )
         state.status = Status.SUCCESS
         logger.info(
             "No more chunks, setting status to SUCCESS "

@@ -63,12 +63,12 @@ class ToolBox:
         tool_config = config.get_tool_config()
 
         # Extract configuration values
-        working_directory = tool_config.paths.working_directory
-        ontology_directory = tool_config.paths.ontology_directory
+        working_directory = tool_config.path_config.working_directory
+        ontology_directory = tool_config.path_config.ontology_directory
 
         # LLM configuration - pass the entire LLM config to the tool
-        self.llm_provider = tool_config.llm.provider
-        self.llm: LLMTool = LLMTool.create(config=tool_config.llm)
+        self.llm_provider = tool_config.llm_config.provider
+        self.llm: LLMTool = LLMTool.create(config=tool_config.llm_config)
 
         # Filesystem manager for initial ontology loading (if ontology_directory provided)
         self.filesystem_manager: FilesystemTripleStoreManager | None = None
