@@ -20,8 +20,10 @@ logger = logging.getLogger(__name__)
 class AgentType(StrEnum):
     """Enumeration of agent types for type safety."""
 
-    RENDERER = "renderer"
-    CRITIC = "critic"
+    RENDERER_FACTS = "renderer_facts"
+    RENDERER_ONTOLOGY = "renderer_ontology"
+    CRITIC_FACTS = "critic_facts"
+    CRITIC_ONTOLOGY = "critic_ontology"
     AGGREGATOR = "aggregator"
     CONVERTER = "converter"
     CHUNKER = "chunker"
@@ -43,7 +45,6 @@ class AgentContext(BaseModel):
     """
 
     # Agent identification
-    agent_name: str = Field(description="Name of the agent")
     agent_type: AgentType = Field(description="Type of agent for type safety")
 
     # Previous work context
@@ -134,7 +135,7 @@ FACTS CONTEXT:
 {facts_context}
 
 CONTEXT METADATA:
-- Agent: {self.agent_name} ({self.agent_type})
+- Agent type: `{self.agent_type}`
 - Timestamp: {self.context_timestamp.isoformat()}
 - Additional metadata: {self.context_metadata}
 """
@@ -156,7 +157,7 @@ CONTEXT METADATA:
             "metadata": metadata or {},
         }
         self.conversation_memory.append(entry)
-        logger.debug(f"Added conversation memory for {self.agent_name}: {role.value}")
+        logger.debug(f"Added conversation memory for {self.agent_type}: {role.value}")
 
     def get_conversation_context(self, max_entries: int = 10) -> str:
         """Get conversation context for LLM calls.
@@ -195,7 +196,6 @@ CONTEXT METADATA:
         dynamic_context = {
             "interaction_type": interaction_type,
             "timestamp": datetime.now().isoformat(),
-            "agent_name": self.agent_name,
             "agent_type": self.agent_type,
             "context_summary": self.get_full_context_summary(),
             "conversation_context": self.get_conversation_context(),
@@ -205,7 +205,6 @@ CONTEXT METADATA:
         # Update the dynamic context
         self.dynamic_context.update(dynamic_context)
 
-        logger.debug(f"Built dynamic context for {self.agent_name}: {interaction_type}")
         return dynamic_context
 
     def get_llm_context(self) -> str:
@@ -238,7 +237,6 @@ class ContextManager:
 
     def create_context(
         self,
-        agent_name: str,
         agent_type: AgentType,
         previous_ontology_version: GraphVersion | None = None,
         previous_facts_version: GraphVersion | None = None,
@@ -251,7 +249,7 @@ class ContextManager:
         """Create a new context for an agent.
 
         Args:
-            agent_name: Name of the agent creating the context.
+            agent_type: Name of the agent creating the context.
             agent_type: Type of agent (renderer, critic, etc.).
             previous_ontology_version: Previous ontology version if available.
             previous_facts_version: Previous facts version if available.
@@ -265,7 +263,6 @@ class ContextManager:
             AgentContext: The created context.
         """
         context = AgentContext(
-            agent_name=agent_name,
             agent_type=agent_type,
             previous_ontology_version=previous_ontology_version,
             previous_facts_version=previous_facts_version,
@@ -279,7 +276,7 @@ class ContextManager:
         self.context_history.append(context)
         self.current_context = context
 
-        logger.info(f"Created context for {agent_name} ({agent_type})")
+        logger.info(f"Created context for {agent_type} ({agent_type})")
         return context
 
     def get_current_context(self) -> AgentContext | None:
@@ -298,32 +295,32 @@ class ContextManager:
         """
         return self.context_history
 
-    def get_context_by_agent(self, agent_name: str) -> list[AgentContext]:
+    def get_context_by_agent(self, agent_type: AgentType) -> list[AgentContext]:
         """Get context history for a specific agent.
 
         Args:
-            agent_name: Name of the agent to get context for.
+            agent_type: Name of the agent to get context for.
 
         Returns:
             list[AgentContext]: Context history for the specified agent.
         """
-        return [ctx for ctx in self.context_history if ctx.agent_name == agent_name]
+        return [ctx for ctx in self.context_history if ctx.agent_type == agent_type]
 
-    def get_latest_context_by_agent(self, agent_name: str) -> AgentContext | None:
+    def get_latest_context_by_agent(self, agent_type: AgentType) -> AgentContext | None:
         """Get the latest context for a specific agent.
 
         Args:
-            agent_name: Name of the agent to get latest context for.
+            agent_type: Name of the agent to get latest context for.
 
         Returns:
             AgentContext | None: The latest context for the specified agent, or None.
         """
-        agent_contexts = self.get_context_by_agent(agent_name)
+        agent_contexts = self.get_context_by_agent(agent_type)
         return agent_contexts[-1] if agent_contexts else None
 
     def update_context(
         self,
-        agent_name: str,
+        agent_type: AgentType,
         ontology_version: GraphVersion | None = None,
         facts_version: GraphVersion | None = None,
         ontology_operations: list[SPARQLOperationModel] | None = None,
@@ -335,7 +332,7 @@ class ContextManager:
         """Update the current context with new information.
 
         Args:
-            agent_name: Name of the agent updating the context.
+            agent_type: Name of the agent updating the context.
             ontology_version: New ontology version if available.
             facts_version: New facts version if available.
             ontology_operations: New ontology operations if available.
@@ -350,8 +347,7 @@ class ContextManager:
         if not self.current_context:
             # Create new context if none exists
             return self.create_context(
-                agent_name=agent_name,
-                agent_type=AgentType.RENDERER,
+                agent_type=agent_type,
                 previous_ontology_version=ontology_version,
                 previous_facts_version=facts_version,
                 previous_ontology_operations=ontology_operations,
@@ -379,7 +375,7 @@ class ContextManager:
 
         self.current_context.context_timestamp = datetime.now()
 
-        logger.info(f"Updated context for {agent_name}")
+        logger.info(f"Updated context for {agent_type}")
         return self.current_context
 
     def clear_context(self):

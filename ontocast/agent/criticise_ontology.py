@@ -46,7 +46,7 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
         return state
 
     # Get context for this agent with conversation memory
-    agent_context = state.get_context_for_agent("ontology_critic", AgentType.CRITIC)
+    agent_context = state.get_context_for_agent(AgentType.CRITIC_ONTOLOGY)
 
     # Add current interaction to conversation memory
     agent_context.add_conversation_memory(
@@ -118,7 +118,7 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
 
                 # Update context with critique information
                 state.update_context_for_agent(
-                    agent_name="ontology_critic",
+                    agent_type=AgentType.CRITIC_ONTOLOGY,
                     ontology_critique={
                         "issues": critique.issues,
                         "score": critique.score,

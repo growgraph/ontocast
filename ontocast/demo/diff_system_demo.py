@@ -185,7 +185,7 @@ def demonstrate_diff_with_context():
     print("1. Created agent state with sample text")
 
     # Get context for ontology renderer
-    agent_context = state.get_context_for_agent("ontology_renderer", AgentType.RENDERER)
+    agent_context = state.get_context_for_agent(AgentType.RENDERER_FACTS)
 
     # Add conversation memory about diff processing
     agent_context.add_conversation_memory(

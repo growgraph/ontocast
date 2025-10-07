@@ -175,32 +175,26 @@ class AgentState(BasePydanticModel):
         """
         return iri2namespace(self.doc_iri, ontology=False)
 
-    def get_context_for_agent(
-        self, agent_name: str, agent_type: AgentType
-    ) -> AgentContext:
+    def get_context_for_agent(self, agent_type: AgentType) -> AgentContext:
         """Get or create context for a specific agent.
 
         Args:
-            agent_name: Name of the agent requesting context.
             agent_type: Type of agent (renderer, critic, etc.).
 
         Returns:
             AgentContext: The context for the agent.
         """
-        # Try to get existing context for this agent
-        existing_context = self.context_manager.get_latest_context_by_agent(agent_name)
+        existing_context = self.context_manager.get_latest_context_by_agent(agent_type)
 
         if existing_context:
             return existing_context
 
         # Create new context if none exists
-        return self.context_manager.create_context(
-            agent_name=agent_name, agent_type=agent_type
-        )
+        return self.context_manager.create_context(agent_type=agent_type)
 
     def update_context_for_agent(
         self,
-        agent_name: str,
+        agent_type: AgentType,
         ontology_version: Any | None = None,
         facts_version: Any | None = None,
         ontology_operations: list[Any] | None = None,
@@ -212,7 +206,7 @@ class AgentState(BasePydanticModel):
         """Update context for a specific agent.
 
         Args:
-            agent_name: Name of the agent updating context.
+            agent_type: Name of the agent updating context.
             ontology_version: New ontology version if available.
             facts_version: New facts version if available.
             ontology_operations: New ontology operations if available.
@@ -225,7 +219,7 @@ class AgentState(BasePydanticModel):
             AgentContext: The updated context.
         """
         return self.context_manager.update_context(
-            agent_name=agent_name,
+            agent_type=agent_type,
             ontology_version=ontology_version,
             facts_version=facts_version,
             ontology_operations=ontology_operations,
@@ -235,16 +229,16 @@ class AgentState(BasePydanticModel):
             metadata=metadata,
         )
 
-    def get_context_summary_for_agent(self, agent_name: str) -> str:
+    def get_context_summary_for_agent(self, agent_type: AgentType) -> str:
         """Get a context summary for a specific agent.
 
         Args:
-            agent_name: Name of the agent requesting context summary.
+            agent_type: Name of the agent requesting context summary.
 
         Returns:
             str: A formatted context summary.
         """
-        context = self.context_manager.get_latest_context_by_agent(agent_name)
+        context = self.context_manager.get_latest_context_by_agent(agent_type)
         if not context:
             return "No context available for this agent."
 

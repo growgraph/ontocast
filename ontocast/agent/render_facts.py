@@ -127,8 +127,7 @@ def structured_hybrid_render_facts(state: AgentState, tools: ToolBox) -> AgentSt
 
     # Get context for this agent
     agent_context = state.get_context_for_agent(
-        agent_name="structured_hybrid_facts_renderer",
-        agent_type=AgentType.RENDERER,
+        agent_type=AgentType.RENDERER_FACTS,
     )
 
     # Build previous context from memory
@@ -195,7 +194,7 @@ def structured_hybrid_render_facts(state: AgentState, tools: ToolBox) -> AgentSt
 
     # Update context for this agent
     state.update_context_for_agent(
-        agent_name="structured_hybrid_facts_renderer",
+        agent_type=AgentType.RENDERER_FACTS,
         facts_version=None,  # Will be created after execution
         metadata={
             "is_fresh_facts": is_fresh_facts,

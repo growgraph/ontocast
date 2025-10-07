@@ -15,9 +15,7 @@ from ontocast.agent import (
 from ontocast.agent.criticise_facts import criticise_facts
 from ontocast.agent.criticise_ontology import criticise_ontology
 from ontocast.agent.render_facts import structured_hybrid_render_facts
-from ontocast.agent.structured_hybrid_render_ontology import (
-    structured_hybrid_render_ontology,
-)
+from ontocast.agent.render_ontology_triples import hybrid_render_ontology
 from ontocast.onto.enum import OntologyDecision, Status, WorkflowNode
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.util import count_visits_conditional_success, wrap_with
@@ -48,7 +46,7 @@ def create_agent_graph(tools: ToolBox) -> CompiledStateGraph:
 
     # Use structured hybrid agents with Turtle/SPARQL decision logic
     render_ontology_tuple = wrap_with(
-        partial(structured_hybrid_render_ontology, tools=tools),
+        partial(hybrid_render_ontology, tools=tools),
         WorkflowNode.TEXT_TO_ONTOLOGY,
         count_visits_conditional_success,
     )

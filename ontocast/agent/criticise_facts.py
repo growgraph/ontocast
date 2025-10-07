@@ -45,7 +45,7 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
     parser = PydanticOutputParser(pydantic_object=KGCritiqueReport)
 
     # Get context for this agent with conversation memory
-    agent_context = state.get_context_for_agent("facts_critic", AgentType.CRITIC)
+    agent_context = state.get_context_for_agent(AgentType.CRITIC_FACTS)
 
     # Add current interaction to conversation memory
     agent_context.add_conversation_memory(
@@ -110,7 +110,7 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
 
                 # Update context with critique information
                 state.update_context_for_agent(
-                    agent_name="facts_critic",
+                    agent_type=AgentType.CRITIC_FACTS,
                     facts_critique={
                         "issues": critique.facts_graph_derivation_critique_comment,
                         "score": critique.facts_graph_derivation_score,
