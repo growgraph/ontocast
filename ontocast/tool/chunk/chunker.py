@@ -1,10 +1,10 @@
 import logging
-from typing import Literal
 
 import torch
 from langchain_huggingface import HuggingFaceEmbeddings
 from pydantic import Field
 
+from ontocast.config import ChunkConfig
 from ontocast.tool.chunk.util import SemanticChunker
 from ontocast.tool.onto import Tool
 
@@ -12,21 +12,27 @@ logger = logging.getLogger(__name__)
 
 
 class ChunkerTool(Tool):
+    """Tool for semantic chunking of documents."""
+
     model: str = Field(
-        default="sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+        default="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+        description="HuggingFace model name for embeddings",
     )
-    breakpoint_threshold_type: Literal[
-        "percentile", "standard_deviation", "interquartile", "gradient"
-    ] = Field(default="percentile")
-    breakpoint_threshold_amount: float = Field(default=95)
-    buffer_size: int = Field(default=5)
-    min_chunk_size: int = Field(default=2000)
-    max_chunk_size: int = Field(default=20000)
+    config: ChunkConfig = Field(
+        default_factory=ChunkConfig, description="Chunking configuration parameters"
+    )
 
     def __init__(
         self,
+        chunk_config: ChunkConfig | None = None,
         **kwargs,
     ):
+        """Initialize the ChunkerTool.
+
+        Args:
+            chunk_config: Chunking configuration. If None, uses default ChunkConfig.
+            **kwargs: Additional keyword arguments passed to the parent class.
+        """
         super().__init__(**kwargs)
         self._model = None
 
@@ -43,11 +49,11 @@ class ChunkerTool(Tool):
         documents = [doc]
 
         text_splitter = SemanticChunker(
-            buffer_size=self.buffer_size,
-            breakpoint_threshold_type=self.breakpoint_threshold_type,
-            breakpoint_threshold_amount=self.breakpoint_threshold_amount,
+            buffer_size=self.config.buffer_size,
+            breakpoint_threshold_type=self.config.breakpoint_threshold_type,
+            breakpoint_threshold_amount=self.config.breakpoint_threshold_amount,
             embeddings=self._model,
-            min_chunk_size=self.min_chunk_size,
+            min_chunk_size=self.config.min_size,
             sentence_split_regex=r"(?:(?:\n{2,}(?=#+))|(?:\n{2,}(?=- ))"
             r"|(?<=[a-z][.?!])\s+(?=\b[A-Z]\w{8,}\b)|(?<!#)(?=#+))",
         )
@@ -55,15 +61,15 @@ class ChunkerTool(Tool):
         def recursive_chunking(docs, stop_flag=False):
             lens = [len(d) for d in docs]
             logger.info(f"chunk lengths: {lens}")
-            if all(len(doc) < self.max_chunk_size for doc in docs) or stop_flag:
+            if all(len(doc) < self.config.max_size for doc in docs) or stop_flag:
                 return docs
             else:
                 new_docs = []
                 for d in docs:
-                    if len(d) > self.max_chunk_size:
+                    if len(d) > self.config.max_size:
                         cdocs_ = text_splitter.create_documents([d])
                         cdocs = [d.page_content for d in cdocs_]
-                        if len(cdocs[-1]) < self.min_chunk_size:
+                        if len(cdocs[-1]) < self.config.min_size:
                             cdocs = cdocs[:-2] + [cdocs[-2] + cdocs[-1]]
                         new_docs.extend(cdocs)
                     else:

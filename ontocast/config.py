@@ -6,6 +6,7 @@ environment variables and usage patterns in the OntoCast system.
 
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -90,6 +91,27 @@ class LLMConfig(BaseSettings):
         return v
 
 
+class ChunkConfig(BaseSettings):
+    """Chunking configuration settings."""
+
+    breakpoint_threshold_type: Literal[
+        "percentile", "standard_deviation", "interquartile", "gradient"
+    ] = Field(
+        default="percentile", description="Type of threshold calculation for chunking"
+    )
+    breakpoint_threshold_amount: float = Field(
+        default=95.0, description="Threshold amount for breakpoint detection"
+    )
+    buffer_size: int = Field(default=5, description="Buffer size for semantic chunking")
+    min_size: int = Field(default=3000, description="Minimum chunk size in characters")
+    max_size: int = Field(default=12000, description="Maximum chunk size in characters")
+
+    model_config = SettingsConfigDict(
+        env_prefix="CHUNK_",
+        case_sensitive=False,
+    )
+
+
 class ServerConfig(BaseSettings):
     """Server configuration settings."""
 
@@ -165,9 +187,10 @@ class PathConfig(BaseSettings):
 
 
 class ToolConfig(BaseSettings):
-    """Configuration for tools (LLM, triple stores, paths)."""
+    """Configuration for tools (LLM, triple stores, paths, chunking)."""
 
     llm_config: LLMConfig = Field(default_factory=LLMConfig)
+    chunk_config: ChunkConfig = Field(default_factory=ChunkConfig)
     path_config: PathConfig = Field(default_factory=PathConfig)
     neo4j: Neo4jConfig = Field(default_factory=Neo4jConfig)
     fuseki: FusekiConfig = Field(default_factory=FusekiConfig)

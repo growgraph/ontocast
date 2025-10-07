@@ -98,7 +98,7 @@ class ToolBox:
 
         self.ontology_manager: OntologyManager = OntologyManager()
         self.converter: ConverterTool = ConverterTool()
-        self.chunker: ChunkerTool = ChunkerTool()
+        self.chunker: ChunkerTool = ChunkerTool(chunk_config=tool_config.chunk_config)
         self.aggregator: ChunkRDFGraphAggregator = ChunkRDFGraphAggregator()
 
         # SPARQL, version management, and diff tools
