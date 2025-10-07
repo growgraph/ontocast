@@ -36,13 +36,6 @@ structured_sparql_template = """
 
 Document to process:
 {document}
-
-Current Ontology:
-{ontology_desc}
-
-Generate structured SPARQL operations to update the ontology based on the document content.
-
-{pydantic_format_instructions}
 """
 
 # Pydantic output format instructions
@@ -80,3 +73,32 @@ The JSON should have the following structure:
 
 Each query should be a complete, valid SPARQL operation with proper syntax.
 """
+ontology_sparql_prompt_template = """
+{ontology_instruction}
+
+
+{structured_sparql_instruction}
+
+
+{failure_instruction}
+
+
+{previous_context}
+
+
+Document to process:
+```
+{document}
+```
+"""
+failure_instruction = """
+IMPORTANT: The previous attempt to generate ontology triples failed/was unsatisfactory.
+
+
+It failed at the stage: {failure_stage}
+
+
+{failure_reason}
+
+
+Please address ALL the issues outlined in the critique. We will be penalized :( for each unaddressed issue."""

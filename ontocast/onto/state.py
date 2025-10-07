@@ -102,6 +102,10 @@ class AgentState(BasePydanticModel):
     failure_reason: str | None = None
     success_score: float = 0.0
     status: Status = Status.SUCCESS
+    statuses: defaultdict[WorkflowNode, Status] = Field(
+        default_factory=lambda: defaultdict(Status),
+        description="Status of each node",
+    )
     node_visits: defaultdict[WorkflowNode, int] = Field(
         default_factory=lambda: defaultdict(int),
         description="Number of visits per node",

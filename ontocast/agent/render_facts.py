@@ -14,7 +14,6 @@ from ontocast.onto.constants import DEFAULT_CHUNK_IRI
 from ontocast.onto.context import AgentType, Role
 from ontocast.onto.enum import FailureStages, Status
 from ontocast.onto.model import SemanticTriplesFactsReport
-from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import StructuredSPARQLQueryModel
 from ontocast.onto.state import AgentState
 from ontocast.prompt.render_facts import (
@@ -23,7 +22,7 @@ from ontocast.prompt.render_facts import (
 from ontocast.prompt.render_facts import (
     template_prompt as template_prompt_str,
 )
-from ontocast.prompt.structured_sparql_facts import (
+from ontocast.prompt.render_facts_update import (
     pydantic_facts_format_instructions,
     structured_sparql_instruction,
 )
@@ -110,7 +109,7 @@ def render_facts(state: AgentState, tools: ToolBox) -> AgentState:
         return state
 
 
-def structured_hybrid_render_facts(state: AgentState, tools: ToolBox) -> AgentState:
+def hybrid_render_facts(state: AgentState, tools: ToolBox) -> AgentState:
     """Structured hybrid facts renderer with Turtle/SPARQL decision logic.
 
     This function decides between generating bare Turtle for fresh facts
@@ -130,40 +129,22 @@ def structured_hybrid_render_facts(state: AgentState, tools: ToolBox) -> AgentSt
         agent_type=AgentType.RENDERER_FACTS,
     )
 
-    # Build previous context from memory
-    previous_context = agent_context.get_conversation_context()
-    if previous_context:
-        previous_context_str = f"Previous context: {previous_context}"
-    else:
-        previous_context_str = "No previous context available."
-
-    # Determine if this is fresh facts or an update
-    current_facts = getattr(state.current_chunk, "graph", None)
-    is_fresh_facts = (
-        current_facts is None
-        or not isinstance(current_facts, RDFGraph)
-        or len(current_facts) == 0
-    )
+    is_fresh_facts = len(state.current_chunk.graph) == 0
 
     if is_fresh_facts:
         logger.info("Generating fresh facts as Turtle")
         # Generate fresh facts as Turtle
-        turtle_result = _generate_fresh_facts_turtle(state, tools)
-
-        # Update state with fresh facts
-        if turtle_result:
-            # Update the chunk with the new facts
-            if not state.current_chunk.graph:
-                state.current_chunk.graph = RDFGraph()
-            state.current_chunk.graph += turtle_result
-            state.status = Status.SUCCESS
-            logger.info("Fresh facts generated successfully")
-        else:
-            state.status = Status.FAILED
-            state.failure_stage = FailureStages.GENERATE_TTL_FOR_FACTS
-            logger.error("Failed to generate fresh facts")
+        return render_facts(state, tools)
     else:
         logger.info("Generating facts updates as SPARQL operations")
+
+        # Build previous context from memory
+        previous_context = agent_context.get_conversation_context()
+        if previous_context:
+            previous_context_str = f"Previous context: {previous_context}"
+        else:
+            previous_context_str = "No previous context available."
+
         # Generate SPARQL operations for updates
         sparql_operations = _generate_facts_sparql_updates(
             state, tools, previous_context_str
@@ -205,41 +186,6 @@ def structured_hybrid_render_facts(state: AgentState, tools: ToolBox) -> AgentSt
     return state
 
 
-def _generate_fresh_facts_turtle(state: AgentState, tools: ToolBox) -> None | RDFGraph:
-    """Generate fresh facts as Turtle using the original renderer.
-
-    Args:
-        state: Current agent state
-        tools: Toolbox with necessary tools
-
-    Returns:
-        RDFGraph object or None if failed
-    """
-    try:
-        # Create a temporary state for the original renderer
-        temp_state = AgentState(
-            document=state.document,
-            ontology_id=state.ontology_id,
-            skip_ontology_development=state.skip_ontology_development,
-            max_visits=state.max_visits,
-            context_manager=state.context_manager,
-            current_chunk=state.current_chunk,
-        )
-
-        # Call the original renderer
-        result_state = render_facts(temp_state, tools)
-
-        if result_state.status == Status.SUCCESS and result_state.current_chunk:
-            return result_state.current_chunk.graph
-        else:
-            logger.error("Original renderer failed to generate fresh facts")
-            return None
-
-    except Exception as e:
-        logger.error(f"Error generating fresh facts: {e}")
-        return None
-
-
 def _generate_facts_sparql_updates(
     state: AgentState, tools: ToolBox, previous_context: str
 ) -> StructuredSPARQLQueryModel | None:
@@ -255,17 +201,10 @@ def _generate_facts_sparql_updates(
     """
     try:
         llm_tool = tools.llm
-        chunk_id = getattr(state.current_chunk, "chunk_id", DEFAULT_CHUNK_IRI)
-
-        # Get current facts for context
-        current_facts = getattr(state.current_chunk, "graph", None)
-        if not current_facts or not isinstance(current_facts, RDFGraph):
-            logger.error("Could not find current facts graph")
-            return None
 
         # Build prompt for SPARQL updates
         prompt = _build_facts_sparql_prompt(
-            state.document, chunk_id, current_facts, previous_context
+            state.document, state.failure_previous_context
         )
 
         # Parse response with Pydantic
@@ -290,24 +229,16 @@ def _generate_facts_sparql_updates(
         return None
 
 
-def _build_facts_sparql_prompt(
-    document: str, chunk_id: str, current_facts: RDFGraph, previous_context: str
-) -> str:
+def _build_facts_sparql_prompt(document: str, previous_context: str) -> str:
     """Build prompt for facts SPARQL updates.
 
     Args:
         document: Input document
-        chunk_id: Current chunk ID
-        current_facts: Current facts graph
         previous_context: Previous context string
 
     Returns:
         Formatted prompt string
     """
-    # Get current facts description
-    facts_desc = f"Chunk ID: {chunk_id}\n"
-    facts_desc += f"Current facts count: {len(current_facts)}\n"
-
     # Build the prompt using structured SPARQL template
     prompt_template = f"""
 {structured_sparql_instruction}
@@ -316,9 +247,6 @@ def _build_facts_sparql_prompt(
 
 Document to process:
 {{document}}
-
-Current Facts:
-{facts_desc}
 
 {pydantic_facts_format_instructions}
 """

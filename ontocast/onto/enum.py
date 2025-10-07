@@ -4,6 +4,7 @@ from enum import StrEnum
 class Status(StrEnum):
     """Enumeration of possible workflow status values."""
 
+    NOT_VISITED = "not visited"
     SUCCESS = "success"
     FAILED = "failed"
     COUNTS_EXCEEDED = "counts exceeded"

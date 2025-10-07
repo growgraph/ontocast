@@ -14,7 +14,7 @@ from ontocast.agent import (
 )
 from ontocast.agent.criticise_facts import criticise_facts
 from ontocast.agent.criticise_ontology import criticise_ontology
-from ontocast.agent.render_facts import structured_hybrid_render_facts
+from ontocast.agent.render_facts import hybrid_render_facts
 from ontocast.agent.render_ontology_triples import hybrid_render_ontology
 from ontocast.onto.enum import OntologyDecision, Status, WorkflowNode
 from ontocast.onto.state import AgentState
@@ -51,7 +51,7 @@ def create_agent_graph(tools: ToolBox) -> CompiledStateGraph:
         count_visits_conditional_success,
     )
     render_facts_tuple = wrap_with(
-        partial(structured_hybrid_render_facts, tools=tools),
+        partial(hybrid_render_facts, tools=tools),
         WorkflowNode.TEXT_TO_FACTS,
         count_visits_conditional_success,
     )

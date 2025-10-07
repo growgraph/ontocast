@@ -14,22 +14,22 @@ from langchain_core.prompts import PromptTemplate
 
 from ontocast.onto.constants import ONTOLOGY_NULL_ID
 from ontocast.onto.context import AgentType, Role
-from ontocast.onto.enum import FailureStages, Status
+from ontocast.onto.enum import FailureStages, Status, WorkflowNode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.sparql_models import StructuredSPARQLQueryModel
 from ontocast.onto.state import AgentState
 from ontocast.prompt.render_ontology import (
-    failure_instruction,
-    instructions,
-    ontology_instruction_fresh,
-    ontology_instruction_update,
-    specific_ontology_instruction_fresh,
-    specific_ontology_instruction_update,
+    general_ontology_instruction,
+    intro_instruction_first_visit_no_seed,
+    intro_instruction_first_visit_seed,
+    output_instruction_sparql,
+    output_instruction_ttl,
+    system_preamble,
     template_prompt,
 )
-from ontocast.prompt.structured_sparql_ontology import (
-    pydantic_format_instructions,
-    structured_sparql_instruction,
+from ontocast.prompt.render_ontology_update import (
+    failure_instruction,
+    ontology_sparql_prompt_template,
 )
 from ontocast.toolbox import ToolBox
 
@@ -65,31 +65,19 @@ def hybrid_render_ontology(state: AgentState, tools: ToolBox) -> AgentState:
 
     is_fresh_ontology = (
         state.ontology_id == ONTOLOGY_NULL_ID
-        or state.ontology_id not in tools.ontology_manager
+        or state.statuses[WorkflowNode.TEXT_TO_ONTOLOGY] == Status.NOT_VISITED
     )
 
     if is_fresh_ontology:
         logger.info("Generating fresh ontology as Turtle")
-        # Generate fresh ontology as Turtle
-        turtle_result = _generate_fresh_ontology_turtle(state, tools)
+        return render_onto_first_visit(state, tools)
 
-        # Update state with fresh ontology
-        if turtle_result:
-            state.ontology = turtle_result
-            state.status = Status.SUCCESS
-            logger.info("Fresh ontology generated successfully")
-        else:
-            state.status = Status.FAILED
-            state.failure_stage = FailureStages.GENERATE_TTL_FOR_ONTOLOGY
-            logger.error("Failed to generate fresh ontology")
     else:
         logger.info("Generating ontology updates as SPARQL operations")
-        # Generate SPARQL operations for updates
-        sparql_operations = _generate_ontology_sparql_updates(
+        sparql_operations = generate_onto_update_sparql(
             state, tools, previous_context_str
         )
 
-        # Update state with SPARQL operations
         if sparql_operations:
             # Store operations in context for later execution
             agent_context.add_conversation_memory(
@@ -125,7 +113,7 @@ def hybrid_render_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     return state
 
 
-def render_onto_triples(state: AgentState, tools: ToolBox) -> AgentState:
+def render_onto_first_visit(state: AgentState, tools: ToolBox) -> AgentState:
     """Render ontology triples into a human-readable format.
 
     This function takes the triples from the current ontology and renders them
@@ -139,64 +127,50 @@ def render_onto_triples(state: AgentState, tools: ToolBox) -> AgentState:
     Returns:
         AgentState: Updated state with rendered triples.
     """
-    logger.info("Starting to render ontology triples")
-    llm_tool = tools.llm
-
     parser = PydanticOutputParser(pydantic_object=Ontology)
-
-    logger.debug(f"Using domain: {state.current_domain}")
-
-    if state.current_ontology.ontology_id == ONTOLOGY_NULL_ID or (
-        state.current_ontology.iri not in tools.ontology_manager
-    ):
-        logger.info("Creating a fresh ontology")
-        ontology_instruction = ontology_instruction_fresh
-        specific_ontology_instruction = specific_ontology_instruction_fresh.format(
-            current_domain=state.current_domain
-        )
+    if state.current_ontology.ontology_id == ONTOLOGY_NULL_ID:
+        logger.info("Creating fresh ontology")
+        intro_instruction = intro_instruction_first_visit_no_seed
+        output_instruction = output_instruction_ttl
+        ontology_ttl = ""
     else:
         ontology_iri = state.current_ontology.iri
         ontology_str = state.current_ontology.graph.serialize(format="turtle")
         ontology_desc = state.current_ontology.describe()
-        ontology_instruction = ontology_instruction_update.format(
-            ontology_iri=ontology_iri,
-            ontology_desc=ontology_desc,
-            ontology_str=ontology_str,
-        )
-        specific_ontology_instruction = specific_ontology_instruction_update.format(
+        # ontology_instruction = intro_instruction_first_visit_seed.format(
+        #     ontology_iri=ontology_iri,
+        #     ontology_desc=ontology_desc,
+        #     ontology_str=ontology_str,
+        #
+        ontology_ttl = state.current_ontology.graph.serialize(format="turtle")
+        intro_instruction = intro_instruction_first_visit_seed
+        output_instruction = output_instruction_sparql
+        specific_ontology_instruction = general_ontology_instruction.format(
             ontology_namespace=state.current_ontology.namespace
         )
-
-    _instructions = instructions.format(
-        specific_ontology_instruction=specific_ontology_instruction
-    )
 
     prompt = PromptTemplate(
         template=template_prompt,
         input_variables=[
-            "text",
-            "instructions",
+            "system_preamble",
+            "intro_instruction",
             "ontology_instruction",
-            "failure_instruction",
+            "output_instruction",
+            "ontology_ttl",
+            "text",
             "format_instructions",
         ],
     )
 
-    if state.status != Status.SUCCESS and state.failure_reason is not None:
-        _failure_instruction = failure_instruction.format(
-            failure_stage=state.failure_stage,
-            failure_reason=state.failure_reason,
-        )
-    else:
-        _failure_instruction = ""
-
     try:
-        response = llm_tool(
+        response = tools.llm(
             prompt.format_prompt(
+                system_preamble=system_preamble,
+                intro_instruction=intro_instruction,
+                ontology_instruction=general_ontology_instruction,
+                output_instruction=output_instruction,
+                ontology_ttl=ontology_ttl,
                 text=state.current_chunk.text,
-                instructions=_instructions,
-                ontology_instruction=ontology_instruction,
-                failure_instruction=_failure_instruction,
                 format_instructions=parser.get_format_instructions(),
             )
         )
@@ -208,57 +182,50 @@ def render_onto_triples(state: AgentState, tools: ToolBox) -> AgentState:
             f"Ontology addendum has {len(state.ontology_addendum.graph)} triples."
         )
         state.clear_failure()
+        state.statuses[WorkflowNode.TEXT_TO_ONTOLOGY] = Status.SUCCESS
         return state
 
     except Exception as e:
         logger.error(f"Failed to generate triples: {str(e)}")
+        state.statuses[WorkflowNode.TEXT_TO_ONTOLOGY] = Status.FAILED
         state.set_failure(FailureStages.GENERATE_TTL_FOR_ONTOLOGY, str(e))
         return state
 
 
 def _build_ontology_sparql_prompt(
-    document: str, ontology_id: str, current_ontology: Ontology, previous_context: str
+    state: AgentState, document: str, ontology_id: str
 ) -> str:
     """Build prompt for ontology SPARQL updates.
 
     Args:
         document: Input document
         ontology_id: Current ontology ID
-        current_ontology: Current ontology object
-        previous_context: Previous context string
 
     Returns:
         Formatted prompt string
     """
     # Get current ontology description
     ontology_desc = f"Ontology ID: {ontology_id}\n"
-    if hasattr(current_ontology, "description"):
-        ontology_desc += f"Description: {current_ontology.description}\n"
 
     # Build the prompt using structured SPARQL template
-    prompt_template = f"""
-{structured_sparql_instruction}
 
-{previous_context}
-
-Document to process:
-{{document}}
-
-Current Ontology:
-{ontology_desc}
-
-{pydantic_format_instructions}
-"""
+    if state.status != Status.SUCCESS and state.failure_reason is not None:
+        _failure_instruction = failure_instruction.format(
+            failure_stage=state.failure_stage,
+            failure_reason=state.failure_reason,
+        )
+    else:
+        _failure_instruction = ""
 
     prompt = PromptTemplate(
-        template=prompt_template,
+        template=ontology_sparql_prompt_template,
         input_variables=["document"],
     )
 
     return prompt.format(document=document)
 
 
-def _generate_ontology_sparql_updates(
+def generate_onto_update_sparql(
     state: AgentState, tools: ToolBox, previous_context: str
 ) -> StructuredSPARQLQueryModel | None:
     """Generate SPARQL operations for ontology updates.
@@ -272,24 +239,29 @@ def _generate_ontology_sparql_updates(
         StructuredSPARQLQueryModel or None if failed
     """
     try:
+        ontology_iri = state.current_ontology.iri
+        ontology_str = state.current_ontology.graph.serialize(format="turtle")
+        ontology_desc = state.current_ontology.describe()
+        # ontology_instruction = ontology_instruction_update.format(
+        #     ontology_iri=ontology_iri,
+        #     ontology_desc=ontology_desc,
+        #     ontology_str=ontology_str,
+        # )
+        # specific_ontology_instruction = specific_ontology_instruction_update.format(
+        #     ontology_namespace=state.current_ontology.namespace
+        # )
+
         llm_tool = tools.llm
         ontology_id = state.ontology_id
 
-        # Get current ontology for context
-        current_ontology = tools.ontology_manager.get_ontology(ontology_id)
-        if not current_ontology:
-            logger.error(f"Could not find current ontology: {ontology_id}")
-            return None
-
         # Build prompt for SPARQL updates
         prompt = _build_ontology_sparql_prompt(
-            state.document, ontology_id, current_ontology, previous_context
+            state.document, ontology_id, previous_context
         )
 
         # Parse response with Pydantic
         parser = PydanticOutputParser(pydantic_object=StructuredSPARQLQueryModel)
 
-        # Get LLM response
         response = llm_tool(prompt)
         if not response or not response.content:
             logger.error("No response from LLM")
@@ -305,40 +277,4 @@ def _generate_ontology_sparql_updates(
 
     except Exception as e:
         logger.error(f"Error generating SPARQL operations: {e}")
-        return None
-
-
-def _generate_fresh_ontology_turtle(
-    state: AgentState, tools: ToolBox
-) -> Ontology | None:
-    """Generate fresh ontology as Turtle using the original renderer.
-
-    Args:
-        state: Current agent state
-        tools: Toolbox with necessary tools
-
-    Returns:
-        Ontology object or None if failed
-    """
-    try:
-        # Create a temporary state for the original renderer
-        # temp_state = AgentState(
-        #     document=state.document,
-        #     ontology_id=state.current_ontology.ontology_id,
-        #     skip_ontology_development=state.skip_ontology_development,
-        #     max_visits=state.max_visits,
-        #     context_manager=state.context_manager,
-        # )
-
-        # Call the original renderer
-        result_state = render_onto_triples(state, tools)
-
-        if result_state.status == Status.SUCCESS:
-            return result_state.ontology
-        else:
-            logger.error("Original renderer failed to generate fresh ontology")
-            return None
-
-    except Exception as e:
-        logger.error(f"Error generating fresh ontology: {e}")
         return None
