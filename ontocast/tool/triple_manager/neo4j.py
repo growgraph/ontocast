@@ -7,22 +7,17 @@ triple storage for accurate reconstruction.
 """
 
 import logging
-from typing import Optional
+from typing import Any
 
-from rdflib.namespace import OWL, RDF
-
-from ontocast.tool.triple_manager.core import TripleStoreManagerWithAuth
-
-try:
-    from neo4j import GraphDatabase
-except ImportError:
-    GraphDatabase = None
-
+from neo4j import GraphDatabase
 from pydantic import Field
+from rdflib import Graph
+from rdflib.namespace import OWL, RDF
 
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.util import derive_ontology_id
+from ontocast.tool.triple_manager.core import TripleStoreManagerWithAuth
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +43,7 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
     clean: bool = Field(
         default=False, description="If True, clean the database on init."
     )
-    _driver = None  # private attribute, not a pydantic field
+    _driver: Any = None  # private attribute, not a pydantic field
 
     def __init__(self, uri=None, auth=None, clean=False, **kwargs):
         """Initialize the Neo4j triple store manager.
@@ -79,7 +74,12 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
         self.clean = clean
         if GraphDatabase is None:
             raise ImportError("neo4j Python driver is not installed.")
+        if self.uri is None:
+            raise ValueError("Neo4j URI is required but not provided.")
         self._driver = GraphDatabase.driver(self.uri, auth=self.auth)
+
+        # Type assertion: we know _driver is not None after initialization
+        assert self._driver is not None
 
         with self._driver.session() as session:
             # Clean database if requested
@@ -231,6 +231,8 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
         """
         ontologies = []
 
+        # Type assertion: we know _driver is not None after initialization
+        assert self._driver is not None
         with self._driver.session() as session:
             try:
                 # First, try to get explicitly stored ontology metadata
@@ -276,7 +278,7 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
         iris = [iri for iri in iris if iri is not None]
         return iris
 
-    def _reconstruct_ontology_from_metadata(self, session, iri) -> Optional[Ontology]:
+    def _reconstruct_ontology_from_metadata(self, session, iri) -> Ontology | None:
         """Reconstruct an ontology from its metadata and related entities.
 
         This method takes an ontology IRI and reconstructs the complete
@@ -287,7 +289,7 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
             iri: The ontology IRI to reconstruct.
 
         Returns:
-            Optional[Ontology]: The reconstructed ontology, or None if failed.
+            Ontology | None: The reconstructed ontology, or None if failed.
         """
         namespace_uri, _ = self._extract_namespace_prefix(iri)
 
@@ -300,7 +302,7 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
 
     def _export_namespace_via_n10s(
         self, session, namespace_uri: str
-    ) -> Optional[RDFGraph]:
+    ) -> RDFGraph | None:
         """Export entities belonging to a namespace using n10s.
 
         This method uses Neo4j's n10s plugin to export all entities
@@ -311,7 +313,7 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
             namespace_uri: The namespace URI to export.
 
         Returns:
-            Optional[RDFGraph]: The exported RDF graph, or None if failed.
+            RDFGraph | None: The exported RDF graph, or None if failed.
         """
         try:
             result = session.run(
@@ -404,6 +406,8 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
         """
         turtle_data = o.graph.serialize(format="turtle")
 
+        # Type assertion: we know _driver is not None after initialization
+        assert self._driver is not None
         with self._driver.session() as session:
             # Store via n10s for graph queries
             result = session.run(
@@ -413,7 +417,7 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
 
         return summary
 
-    def serialize_facts(self, g: RDFGraph, **kwargs):
+    def serialize_facts(self, g: Graph, **kwargs):
         """Serialize facts (RDF graph) to Neo4j.
 
         This method stores the given RDF graph containing facts in Neo4j
@@ -426,8 +430,19 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
         Returns:
             Any: The result summary from n10s import operation.
         """
+        # Convert to RDFGraph if needed
+        if not isinstance(g, RDFGraph):
+            rdf_graph = RDFGraph()
+            for triple in g:
+                rdf_graph.add(triple)
+            for prefix, namespace in g.namespaces():
+                rdf_graph.bind(prefix, namespace)
+            g = rdf_graph
+
         turtle_data = g.serialize(format="turtle")
 
+        # Type assertion: we know _driver is not None after initialization
+        assert self._driver is not None
         with self._driver.session() as session:
             # Store via n10s
             result = session.run(

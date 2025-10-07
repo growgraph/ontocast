@@ -9,8 +9,9 @@ import logging
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import PromptTemplate
 
+from ontocast.agent.render_ontology_triples import render_onto_triples
 from ontocast.onto.constants import ONTOLOGY_NULL_ID
-from ontocast.onto.context import AgentType
+from ontocast.onto.context import AgentType, Role
 from ontocast.onto.enum import FailureStages, Status
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.sparql_models import StructuredSPARQLQueryModel
@@ -61,9 +62,7 @@ def structured_hybrid_render_ontology(state: AgentState, tools: ToolBox) -> Agen
     if is_fresh_ontology:
         logger.info("Generating fresh ontology as Turtle")
         # Generate fresh ontology as Turtle
-        turtle_result = _generate_fresh_ontology_turtle(
-            state, tools, previous_context_str
-        )
+        turtle_result = _generate_fresh_ontology_turtle(state, tools)
 
         # Update state with fresh ontology
         if turtle_result:
@@ -72,7 +71,7 @@ def structured_hybrid_render_ontology(state: AgentState, tools: ToolBox) -> Agen
             logger.info("Fresh ontology generated successfully")
         else:
             state.status = Status.FAILED
-            state.failure_stage = FailureStages.RENDER_ONTOLOGY
+            state.failure_stage = FailureStages.GENERATE_TTL_FOR_ONTOLOGY
             logger.error("Failed to generate fresh ontology")
     else:
         logger.info("Generating ontology updates as SPARQL operations")
@@ -85,11 +84,15 @@ def structured_hybrid_render_ontology(state: AgentState, tools: ToolBox) -> Agen
         if sparql_operations:
             # Store operations in context for later execution
             agent_context.add_conversation_memory(
-                {
+                role=Role.SYSTEM,
+                content=f"Generated {len(sparql_operations.operations)} SPARQL operations for ontology updates",
+                metadata={
                     "type": "ontology_sparql_operations",
-                    "operations": [op.dict() for op in sparql_operations.operations],
+                    "operations": [
+                        op.model_dump_json() for op in sparql_operations.operations
+                    ],
                     "namespaces": sparql_operations.namespaces,
-                }
+                },
             )
             state.status = Status.SUCCESS
             logger.info(
@@ -97,7 +100,7 @@ def structured_hybrid_render_ontology(state: AgentState, tools: ToolBox) -> Agen
             )
         else:
             state.status = Status.FAILED
-            state.failure_stage = FailureStages.RENDER_ONTOLOGY
+            state.failure_stage = FailureStages.GENERATE_SPARQL_UPDATE_FOR_ONTOLOGY
             logger.error("Failed to generate SPARQL operations")
 
     # Update context for this agent
@@ -114,33 +117,29 @@ def structured_hybrid_render_ontology(state: AgentState, tools: ToolBox) -> Agen
 
 
 def _generate_fresh_ontology_turtle(
-    state: AgentState, tools: ToolBox, previous_context: str
+    state: AgentState, tools: ToolBox
 ) -> Ontology | None:
     """Generate fresh ontology as Turtle using the original renderer.
 
     Args:
         state: Current agent state
         tools: Toolbox with necessary tools
-        previous_context: Previous context string
 
     Returns:
         Ontology object or None if failed
     """
     try:
-        # Use the original render_onto_triples logic for fresh content
-        from ontocast.agent.render_ontology_triples import render_onto_triples
-
         # Create a temporary state for the original renderer
-        temp_state = AgentState(
-            document=state.document,
-            ontology_id=state.ontology_id,
-            skip_ontology_development=state.skip_ontology_development,
-            max_visits=state.max_visits,
-            context_manager=state.context_manager,
-        )
+        # temp_state = AgentState(
+        #     document=state.document,
+        #     ontology_id=state.current_ontology.ontology_id,
+        #     skip_ontology_development=state.skip_ontology_development,
+        #     max_visits=state.max_visits,
+        #     context_manager=state.context_manager,
+        # )
 
         # Call the original renderer
-        result_state = render_onto_triples(temp_state, tools)
+        result_state = render_onto_triples(state, tools)
 
         if result_state.status == Status.SUCCESS:
             return result_state.ontology
@@ -185,7 +184,7 @@ def _generate_ontology_sparql_updates(
         parser = PydanticOutputParser(pydantic_object=StructuredSPARQLQueryModel)
 
         # Get LLM response
-        response = llm_tool.acreate(prompt)
+        response = llm_tool(prompt)
         if not response or not response.content:
             logger.error("No response from LLM")
             return None

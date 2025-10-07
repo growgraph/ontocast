@@ -5,8 +5,6 @@ tools in the OntoCast system. It provides common functionality and interface
 for tool implementations.
 """
 
-from typing import Set
-
 from pydantic import BaseModel, Field
 from rdflib import URIRef
 
@@ -36,6 +34,8 @@ class Tool(BasePydanticModel):
 class EntityMetadata(BaseModel):
     """Metadata for an entity in the graph."""
 
+    model_config = {"arbitrary_types_allowed": True}
+
     local_name: str = Field(description="The local name of the entity")
     label: str | None = Field(
         default=None, description="Optional human-readable label for the entity"
@@ -43,13 +43,15 @@ class EntityMetadata(BaseModel):
     comment: str | None = Field(
         default=None, description="Optional comment describing the entity"
     )
-    types: Set[URIRef] = Field(
+    types: set[URIRef] = Field(
         default_factory=set, description="Set of RDF types for this entity"
     )
 
 
 class PredicateMetadata(BaseModel):
     """Metadata for a predicate in the graph."""
+
+    model_config = {"arbitrary_types_allowed": True}
 
     local_name: str = Field(description="The local name of the predicate")
     label: str | None = Field(

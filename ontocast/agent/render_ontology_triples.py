@@ -115,5 +115,5 @@ def render_onto_triples(state: AgentState, tools: ToolBox) -> AgentState:
 
     except Exception as e:
         logger.error(f"Failed to generate triples: {str(e)}")
-        state.set_failure(FailureStages.PARSE_TEXT_TO_ONTOLOGY_TRIPLES, str(e))
+        state.set_failure(FailureStages.GENERATE_TTL_FOR_ONTOLOGY, str(e))
         return state

@@ -4,7 +4,7 @@ This module provides Pydantic models for structured SPARQL queries
 that can be used with PydanticOutputParser for LLM integration.
 """
 
-from typing import Any, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -45,7 +45,7 @@ class StructuredSPARQLQueryModel(BaseModel):
         namespaces: Dictionary mapping prefixes to URIs
     """
 
-    operations: List[SPARQLOperationModel] = Field(
+    operations: list[SPARQLOperationModel] = Field(
         default_factory=list, description="List of SPARQL operations to execute"
     )
     namespaces: dict[str, str] = Field(
@@ -84,7 +84,7 @@ class StructuredSPARQLQueryModel(BaseModel):
             f"{remove_count} REMOVE operations"
         )
 
-    def get_all_operations(self) -> List[SPARQLOperationModel]:
+    def get_all_operations(self) -> list[SPARQLOperationModel]:
         """Get all operations in execution order (INSERT, UPDATE, DELETE)."""
         # Sort operations by type: INSERT first, then UPDATE, then DELETE
         type_order = {
@@ -94,7 +94,7 @@ class StructuredSPARQLQueryModel(BaseModel):
         }
         return sorted(self.operations, key=lambda op: type_order[op.operation_type])
 
-    def get_add_operations(self) -> List[SPARQLOperationModel]:
+    def get_add_operations(self) -> list[SPARQLOperationModel]:
         """Get all INSERT operations."""
         return [
             op
@@ -102,7 +102,7 @@ class StructuredSPARQLQueryModel(BaseModel):
             if op.operation_type == SPARQLOperationType.INSERT
         ]
 
-    def get_update_operations(self) -> List[SPARQLOperationModel]:
+    def get_update_operations(self) -> list[SPARQLOperationModel]:
         """Get all UPDATE operations."""
         return [
             op
@@ -110,7 +110,7 @@ class StructuredSPARQLQueryModel(BaseModel):
             if op.operation_type == SPARQLOperationType.UPDATE
         ]
 
-    def get_remove_operations(self) -> List[SPARQLOperationModel]:
+    def get_remove_operations(self) -> list[SPARQLOperationModel]:
         """Get all DELETE operations."""
         return [
             op
@@ -146,7 +146,7 @@ class OntologyUpdateReport(BaseModel):
     remove_count: int = Field(
         description="Number of REMOVE operations in the structured query"
     )
-    critique: Optional[str] = Field(
+    critique: str | None = Field(
         None, description="Optional critique or explanation of the update process"
     )
 
@@ -178,7 +178,7 @@ class FactsUpdateReport(BaseModel):
     remove_count: int = Field(
         description="Number of REMOVE operations in the structured query"
     )
-    critique: Optional[str] = Field(
+    critique: str | None = Field(
         None, description="Optional critique or explanation of the update process"
     )
 
@@ -200,10 +200,10 @@ class FreshOntologyReport(BaseModel):
         default_factory=RDFGraph,
         description="The generated ontology as an RDFGraph in Turtle format",
     )
-    ontology_score: Optional[float] = Field(
+    ontology_score: float | None = Field(
         None, description="Score 0-100 for ontology quality and completeness"
     )
-    critique: Optional[str] = Field(
+    critique: str | None = Field(
         None, description="Optional critique or explanation of the ontology generation"
     )
 
@@ -225,9 +225,9 @@ class FreshFactsReport(BaseModel):
         default_factory=RDFGraph,
         description="The generated facts as an RDFGraph in Turtle format",
     )
-    facts_score: Optional[float] = Field(
+    facts_score: float | None = Field(
         None, description="Score 0-100 for facts quality and completeness"
     )
-    critique: Optional[str] = Field(
+    critique: str | None = Field(
         None, description="Optional critique or explanation of the facts generation"
     )

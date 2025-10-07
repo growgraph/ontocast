@@ -1,11 +1,16 @@
 import os
 from collections import defaultdict
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import ConfigDict, Field
 
 from ontocast.onto.chunk import Chunk
-from ontocast.onto.constants import DEFAULT_DOMAIN, ONTOLOGY_NULL_ID, ONTOLOGY_NULL_IRI
+from ontocast.onto.constants import (
+    CHUNK_NULL_IRI,
+    DEFAULT_DOMAIN,
+    ONTOLOGY_NULL_ID,
+    ONTOLOGY_NULL_IRI,
+)
 from ontocast.onto.context import AgentContext, AgentType, ContextManager
 from ontocast.onto.enum import Status, WorkflowNode
 from ontocast.onto.model import BasePydanticModel
@@ -25,7 +30,7 @@ class AgentState(BasePydanticModel):
         current_domain: IRI used for forming document namespace.
         doc_hid: An almost unique hash/id for the parent document.
         files: Files to process.
-        current_chunk: Current document chunk for processing.
+        current_chunk: Current document chunk for processing (property, accessed via index).
         chunks: List of chunks of the input text.
         chunks_processed: List of processed chunks.
         current_ontology: Current ontology object.
@@ -43,18 +48,23 @@ class AgentState(BasePydanticModel):
     current_domain: str = Field(
         description="IRI used for forming document namespace", default=DEFAULT_DOMAIN
     )
-    doc_hid: str | None = Field(
+    doc_hid: str = Field(
         description="An almost unique hash / id for the parent document of the chunk",
-        default=None,
+        default="default_doc",
     )
     files: dict[str, bytes] = Field(
         default_factory=lambda: dict(), description="Files to process"
     )
-    current_chunk: Optional[Chunk] = Field(
-        description="Current document chunk for processing", default=None
-    )
     chunks: list[Chunk] = Field(
         default_factory=lambda: list(), description="Chunks of the input text"
+    )
+    current_chunk: Chunk = Field(
+        default_factory=lambda: Chunk(
+            text="",
+            hid="default",
+            doc_iri=CHUNK_NULL_IRI,
+        ),
+        description="Chunks of the input text",
     )
     chunks_processed: list[Chunk] = Field(
         default_factory=lambda: list(), description="Chunks of the input text"
@@ -71,7 +81,7 @@ class AgentState(BasePydanticModel):
         "as well as the description, name, short name, version, "
         "and IRI of the ontology",
     )
-    aggregated_facts: Optional[RDFGraph] = Field(
+    aggregated_facts: RDFGraph = Field(
         description="RDF triples representing aggregated facts "
         "from the current document",
         default_factory=RDFGraph,
@@ -191,13 +201,13 @@ class AgentState(BasePydanticModel):
     def update_context_for_agent(
         self,
         agent_name: str,
-        ontology_version: Optional[Any] = None,
-        facts_version: Optional[Any] = None,
-        ontology_operations: Optional[List[Any]] = None,
-        facts_operations: Optional[List[Any]] = None,
-        ontology_critique: Optional[Dict[str, Any]] = None,
-        facts_critique: Optional[Dict[str, Any]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        ontology_version: Any | None = None,
+        facts_version: Any | None = None,
+        ontology_operations: list[Any] | None = None,
+        facts_operations: list[Any] | None = None,
+        ontology_critique: dict[str, Any] | None = None,
+        facts_critique: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> AgentContext:
         """Update context for a specific agent.
 

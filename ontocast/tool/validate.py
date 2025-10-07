@@ -6,7 +6,7 @@ including connectivity validation and graph structure verification.
 
 import logging
 from collections import defaultdict, deque
-from typing import Any, Optional, Set
+from typing import Any
 
 from rdflib import RDF, RDFS, Literal, URIRef
 
@@ -93,11 +93,11 @@ class RDFGraphConnectivityValidator:
         """
         self.graph = graph
 
-    def get_all_entities(self) -> Set[URIRef]:
+    def get_all_entities(self) -> set[URIRef]:
         """Extract all unique entities from the graph.
 
         Returns:
-            Set[URIRef]: Set of all unique entity URIs in the graph.
+            set[URIRef]: Set of all unique entity URIs in the graph.
         """
         entities = set()
 
@@ -109,11 +109,11 @@ class RDFGraphConnectivityValidator:
 
         return entities
 
-    def build_adjacency_graph(self) -> dict[URIRef, Set[URIRef]]:
+    def build_adjacency_graph(self) -> dict[URIRef, set[URIRef]]:
         """Build an adjacency representation of the RDF graph.
 
         Returns:
-            dict[URIRef, Set[URIRef]]: Dictionary mapping entities to their neighbors.
+            dict[URIRef, set[URIRef]]: Dictionary mapping entities to their neighbors.
         """
         adjacency = defaultdict(set)
 
@@ -124,11 +124,11 @@ class RDFGraphConnectivityValidator:
 
         return adjacency
 
-    def find_connected_components(self) -> list[Set[URIRef]]:
+    def find_connected_components(self) -> list[set[URIRef]]:
         """Find all connected components in the graph using BFS.
 
         Returns:
-            list[Set[URIRef]]: List of sets, each containing entities in a component.
+            list[set[URIRef]]: List of sets, each containing entities in a component.
         """
         entities = self.get_all_entities()
         adjacency = self.build_adjacency_graph()
@@ -314,7 +314,7 @@ class RDFGraphConnectivityValidator:
         return connected_graph
 
     def _connect_via_chunk_hub(
-        self, graph: RDFGraph, components: list[Set[URIRef]], chunk_iri
+        self, graph: RDFGraph, components: list[set[URIRef]], chunk_iri
     ) -> RDFGraph:
         """Connect components by creating a chunk hub entity.
 
@@ -339,15 +339,16 @@ class RDFGraphConnectivityValidator:
             # Choose representative entity (could be improved with better heuristics)
             representative = self._choose_representative_entity(component, graph)
 
-            # Add bidirectional connections
-            graph.add((hub_uri, SCHEMA.hasPart, representative))
-            graph.add((representative, PROV.wasQuotedFrom, hub_uri))
+            if representative is not None:
+                # Add bidirectional connections
+                graph.add((hub_uri, SCHEMA.hasPart, representative))
+                graph.add((representative, PROV.wasQuotedFrom, hub_uri))
 
         return graph
 
     def _choose_representative_entity(
-        self, component: Set[URIRef], graph: RDFGraph
-    ) -> Optional[URIRef]:
+        self, component: set[URIRef], graph: RDFGraph
+    ) -> URIRef | None:
         """Choose the best representative entity from a component.
 
         Args:
@@ -355,7 +356,7 @@ class RDFGraphConnectivityValidator:
             graph: The RDF graph containing the entities.
 
         Returns:
-            Optional[URIRef]: The chosen representative entity, or None if empty.
+            URIRef | None: The chosen representative entity, or None if empty.
         """
         if not component:
             return None

@@ -25,24 +25,22 @@ class OntologyProperties(BaseModel):
         iri: Ontology IRI (Internationalized Resource Identifier).
     """
 
-    ontology_id: str | None = Field(
-        default=None,
-        description="Ontology identifier, an human readable lower case abbreviation. Must be provided.",
+    ontology_id: str = Field(
+        default=ONTOLOGY_NULL_ID,
+        description="Ontology identifier, an human readable lower case abbreviation.",
     )
-    title: str | None = Field(
-        default=None, description="Ontology title. Must be provided."
-    )
-    description: str | None = Field(
-        default=None,
+    title: str = Field(default="Untitled Ontology", description="Ontology title.")
+    description: str = Field(
+        default="No description provided.",
         description="A concise description (3-4 sentences) of the ontology "
         "(domain, purpose, applicability, etc.)",
     )
-    version: str | None = Field(
-        default=None,
+    version: str = Field(
+        default="1.0.0",
         description="Version of the ontology (use semantic versioning)",
     )
-    iri: str | None = Field(
-        default=None,
+    iri: str = Field(
+        default=ONTOLOGY_NULL_IRI,
         description="Ontology IRI (Internationalized Resource Identifier)",
     )
 
@@ -54,23 +52,6 @@ class OntologyProperties(BaseModel):
             str: The namespace string.
         """
         return iri2namespace(self.iri, ontology=True)
-
-    @property
-    def prefix(self) -> str | None:
-        """Get the namespace for this ontology.
-
-        Returns:
-            str: The namespace string.
-        """
-        prefixes = [
-            prefix
-            for prefix, iri in self.graph.namespaces()
-            if iri == URIRef(self.namespace)
-        ]
-        if len(prefixes) == 0:
-            return None
-        else:
-            return prefixes[0]
 
 
 class Ontology(OntologyProperties):
@@ -96,7 +77,8 @@ class Ontology(OntologyProperties):
     def __init__(self, **kwargs):
         # Pop current_domain if provided, else use DEFAULT_DOMAIN
         current_domain = kwargs.pop("current_domain", DEFAULT_DOMAIN)
-        super().__init__(current_domain=current_domain, **kwargs)
+        super().__init__(**kwargs)
+        self.current_domain = current_domain
         # --- Only apply fallback logic if graph does not contain a proper owl:Ontology subject ---
         # Try to sync from graph first
         graph_had_ontology = False
@@ -126,6 +108,23 @@ class Ontology(OntologyProperties):
                 self.ontology_id = derive_ontology_id(self.iri)
         # Always ensure graph is up to date with properties
         self.sync_properties_to_graph()
+
+    @property
+    def prefix(self) -> str | None:
+        """Get the namespace prefix for this ontology.
+
+        Returns:
+            str | None: The namespace prefix if found, None otherwise.
+        """
+        prefixes = [
+            prefix
+            for prefix, iri in self.graph.namespaces()
+            if iri == URIRef(self.namespace)
+        ]
+        if len(prefixes) == 0:
+            return None
+        else:
+            return prefixes[0]
 
     def set_properties(self, **kwargs):
         """Set ontology properties from keyword arguments and sync to graph.
@@ -182,7 +181,7 @@ class Ontology(OntologyProperties):
         elif self.iri:
             self.ontology_id = derive_ontology_id(self.iri)
 
-        if self.iri is ONTOLOGY_NULL_IRI or self.iri is None:
+        if self.iri is ONTOLOGY_NULL_IRI:
             return
         else:
             onto_iri = URIRef(self.iri)

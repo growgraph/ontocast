@@ -7,7 +7,6 @@ ontologies and facts as Turtle files.
 
 import logging
 import pathlib
-from typing import Optional
 
 from rdflib import Graph
 
@@ -35,8 +34,8 @@ class FilesystemTripleStoreManager(TripleStoreManager):
         ontology_path: Optional path to the ontology directory for loading ontologies.
     """
 
-    working_directory: Optional[pathlib.Path]
-    ontology_path: Optional[pathlib.Path]
+    working_directory: pathlib.Path | None
+    ontology_path: pathlib.Path | None
 
     def __init__(self, **kwargs):
         """Initialize the filesystem triple store manager.

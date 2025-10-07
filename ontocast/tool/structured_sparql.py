@@ -5,7 +5,6 @@ with separate ADD, UPDATE, and REMOVE sections.
 """
 
 import logging
-from typing import Dict, List, Optional
 
 from ontocast.onto.enum import SPARQLOperationType
 from ontocast.onto.rdfgraph import RDFGraph
@@ -66,14 +65,14 @@ class StructuredSPARQLParser:
         self.logger.info(f"Parsed structured query: {structured_query.get_summary()}")
         return structured_query
 
-    def _split_into_sections(self, query_text: str) -> Dict[str, str]:
+    def _split_into_sections(self, query_text: str) -> dict[str, str]:
         """Split query text into ADD, UPDATE, REMOVE sections.
 
         Args:
             query_text: The query text to split
 
         Returns:
-            Dict[str, str]: Dictionary mapping section names to content
+            dict[str, str]: Dictionary mapping section names to content
         """
         sections = {}
         current_section = None
@@ -117,7 +116,7 @@ class StructuredSPARQLParser:
 
     def _parse_section_operations(
         self, section_content: str, default_type: SPARQLOperationType
-    ) -> List[SPARQLOperationModel]:
+    ) -> list[SPARQLOperationModel]:
         """Parse operations from a section.
 
         Args:
@@ -125,7 +124,7 @@ class StructuredSPARQLParser:
             default_type: Default operation type for the section
 
         Returns:
-            List[SPARQLOperationModel]: List of parsed operations
+            list[SPARQLOperationModel]: List of parsed operations
         """
         operations = []
 
@@ -143,14 +142,14 @@ class StructuredSPARQLParser:
 
         return operations
 
-    def _split_into_blocks(self, content: str) -> List[str]:
+    def _split_into_blocks(self, content: str) -> list[str]:
         """Split content into SPARQL operation blocks.
 
         Args:
             content: The content to split
 
         Returns:
-            List[str]: List of operation blocks
+            list[str]: List of operation blocks
         """
         blocks = []
         current_block = []
@@ -194,7 +193,7 @@ class StructuredSPARQLParser:
 
     def _create_operation_from_block(
         self, block: str, default_type: SPARQLOperationType
-    ) -> Optional[SPARQLOperationModel]:
+    ) -> SPARQLOperationModel | None:
         """Create a SPARQL operation from a block.
 
         Args:
@@ -202,7 +201,7 @@ class StructuredSPARQLParser:
             default_type: Default operation type
 
         Returns:
-            Optional[SPARQLOperationModel]: Created operation or None if invalid
+            SPARQLOperationModel | None: Created operation or None if invalid
         """
         if not block.strip():
             return None
@@ -219,14 +218,14 @@ class StructuredSPARQLParser:
 
         return SPARQLOperationModel(operation_type=operation_type, query=block.strip())
 
-    def _extract_namespaces(self, query_text: str) -> Dict[str, str]:
+    def _extract_namespaces(self, query_text: str) -> dict[str, str]:
         """Extract namespace declarations from query text.
 
         Args:
             query_text: The query text
 
         Returns:
-            Dict[str, str]: Dictionary mapping prefixes to URIs
+            dict[str, str]: Dictionary mapping prefixes to URIs
         """
         namespaces = {}
 
@@ -338,7 +337,7 @@ class StructuredSPARQLExecutor:
         )
 
     def _execute_operations(
-        self, operations: List[SPARQLOperationModel], section_name: str
+        self, operations: list[SPARQLOperationModel], section_name: str
     ) -> bool:
         """Execute a list of operations.
 

@@ -27,24 +27,24 @@ graph TD;
 	Chunks_Empty_(Chunks Empty?)
 	Aggregate_Facts(Aggregate Facts)
 	__end__([<p>__end__</p>]):::last
-	Aggregate_Facts --> __end__;
 	Chunk_Text --> Chunks_Empty_;
-	Convert_to_Markdown --> Chunk_Text;
-	Sublimate_Ontology --> Criticise_Facts;
-	__start__ --> Convert_to_Markdown;
 	Chunks_Empty_ -. &nbsp;success&nbsp; .-> Aggregate_Facts;
 	Chunks_Empty_ -. &nbsp;failed&nbsp; .-> Select_Ontology;
-	Select_Ontology -. &nbsp;ontology not found; fast forward to END&nbsp; .-> __end__;
-	Select_Ontology -. &nbsp;improve/create ontology&nbsp; .-> Text_to_Ontology;
-	Select_Ontology -. &nbsp;ontology found; skip to facts&nbsp; .-> Text_to_Facts;
-	Text_to_Ontology -. &nbsp;success&nbsp; .-> Criticise_Ontology;
-	Criticise_Ontology -. &nbsp;success&nbsp; .-> Text_to_Facts;
-	Criticise_Ontology -. &nbsp;failed&nbsp; .-> Text_to_Ontology;
-	Text_to_Facts -. &nbsp;success&nbsp; .-> Sublimate_Ontology;
+	Convert_to_Markdown --> Chunk_Text;
 	Criticise_Facts -. &nbsp;success&nbsp; .-> Chunks_Empty_;
 	Criticise_Facts -. &nbsp;failed&nbsp; .-> Text_to_Facts;
-	Text_to_Ontology -. &nbsp;failed&nbsp; .-> Text_to_Ontology;
+	Criticise_Ontology -. &nbsp;success&nbsp; .-> Text_to_Facts;
+	Criticise_Ontology -. &nbsp;failed&nbsp; .-> Text_to_Ontology;
+	Select_Ontology -. &nbsp;ontology found; skip to facts&nbsp; .-> Text_to_Facts;
+	Select_Ontology -. &nbsp;improve/create ontology&nbsp; .-> Text_to_Ontology;
+	Select_Ontology -. &nbsp;ontology not found; ffwd to END&nbsp; .-> __end__;
+	Sublimate_Ontology --> Criticise_Facts;
+	Text_to_Facts -. &nbsp;success&nbsp; .-> Sublimate_Ontology;
+	Text_to_Ontology -. &nbsp;success&nbsp; .-> Criticise_Ontology;
+	__start__ --> Convert_to_Markdown;
+	Aggregate_Facts --> __end__;
 	Text_to_Facts -. &nbsp;failed&nbsp; .-> Text_to_Facts;
+	Text_to_Ontology -. &nbsp;failed&nbsp; .-> Text_to_Ontology;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc

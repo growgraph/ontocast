@@ -6,7 +6,7 @@ from typing import Any, Union
 
 from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
-from rdflib import Graph, Namespace, URIRef
+from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import NamespaceManager
 
 from ontocast.onto.constants import COMMON_PREFIXES
@@ -336,3 +336,47 @@ class RDFGraph(Graph):
         for (s, p, o), (new_s, new_p, new_o) in updates.items():
             self.remove((s, p, o))
             self.add((new_s, new_p, new_o))
+
+    def add_triple(self, subject: str, predicate: str, object_: str) -> None:
+        """Add a triple to the graph.
+
+        Args:
+            subject: Subject URI as string
+            predicate: Predicate URI as string
+            object_: Object URI as string or literal value
+        """
+        # Convert strings to appropriate RDFLib objects
+        subj = URIRef(subject)
+        pred = URIRef(predicate)
+
+        # Handle object - could be URI or literal
+        if object_.startswith("http://") or object_.startswith("https://"):
+            obj = URIRef(object_)
+        else:
+            # Treat as literal
+            obj = Literal(object_)
+
+        self.add((subj, pred, obj))
+        logger.debug(f"Added triple: {subj} {pred} {obj}")
+
+    def remove_triple(self, subject: str, predicate: str, object_: str) -> None:
+        """Remove a triple from the graph.
+
+        Args:
+            subject: Subject URI as string
+            predicate: Predicate URI as string
+            object_: Object URI as string or literal value
+        """
+        # Convert strings to appropriate RDFLib objects
+        subj = URIRef(subject)
+        pred = URIRef(predicate)
+
+        # Handle object - could be URI or literal
+        if object_.startswith("http://") or object_.startswith("https://"):
+            obj = URIRef(object_)
+        else:
+            # Treat as literal
+            obj = Literal(object_)
+
+        self.remove((subj, pred, obj))
+        logger.debug(f"Removed triple: {subj} {pred} {obj}")

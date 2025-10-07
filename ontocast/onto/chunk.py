@@ -1,5 +1,3 @@
-from typing import Optional
-
 from pydantic import BaseModel, Field
 
 from ontocast.onto.rdfgraph import RDFGraph
@@ -20,7 +18,7 @@ class Chunk(BaseModel):
     text: str = Field(description="Text of the chunk")
     hid: str = Field(description="An almost unique (hash) id for the chunk")
     doc_iri: str = Field(description="IRI of parent doc")
-    graph: Optional[RDFGraph] = Field(
+    graph: RDFGraph = Field(
         description="RDF triples representing the facts from a document chunk in turtle format "
         "as a string in compact form: use prefixes for namespaces, do NOT add comments",
         default_factory=RDFGraph,

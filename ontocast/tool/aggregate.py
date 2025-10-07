@@ -7,7 +7,7 @@ consistent namespace usage across the aggregated graph.
 
 import logging
 from collections import defaultdict
-from typing import Dict, List, Optional, Set, Union
+from typing import Union
 
 from rdflib import Literal, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
@@ -51,7 +51,7 @@ class ChunkRDFGraphAggregator:
         )
         self.include_provenance = include_provenance
 
-    def aggregate_graphs(self, chunks: List[Chunk], doc_namespace: str) -> RDFGraph:
+    def aggregate_graphs(self, chunks: list[Chunk], doc_namespace: str) -> RDFGraph:
         """Aggregate multiple chunk graphs with entity and predicate disambiguation.
 
         This method combines multiple chunk graphs into a single graph while
@@ -90,13 +90,17 @@ class ChunkRDFGraphAggregator:
         )
 
         # Process triples from all chunks
+        # Type assertion: chunk_namespaces is always a set
+        chunk_namespaces = namespace_info["chunk_namespaces"]
+        assert isinstance(chunk_namespaces, set), "chunk_namespaces should be a set"
+
         self._process_chunk_triples(
             chunks,
             aggregated_graph,
             entity_mapping,
             predicate_mapping,
             doc_namespace,
-            namespace_info["chunk_namespaces"],
+            chunk_namespaces,
         )
 
         logger.info(
@@ -112,8 +116,8 @@ class ChunkRDFGraphAggregator:
         )
 
     def _collect_namespace_info(
-        self, chunks: List[Chunk], doc_namespace: str, aggregated_graph: RDFGraph
-    ) -> Dict[str, Union[Dict[str, str], Set[str]]]:
+        self, chunks: list[Chunk], doc_namespace: str, aggregated_graph: RDFGraph
+    ) -> dict[str, Union[dict[str, str], set[str]]]:
         """Collect and bind all namespaces from chunks."""
         all_namespaces = {}
         chunk_namespaces = set()
@@ -154,8 +158,8 @@ class ChunkRDFGraphAggregator:
         }
 
     def _create_mappings(
-        self, chunks: List[Chunk], doc_namespace: str, namespace_info: Dict
-    ) -> tuple[Dict[URIRef, URIRef], Dict[URIRef, URIRef], Dict]:
+        self, chunks: list[Chunk], doc_namespace: str, namespace_info: dict
+    ) -> tuple[dict[URIRef, URIRef], dict[URIRef, URIRef], dict]:
         """Create entity and predicate mappings with disambiguation."""
 
         # Collect all entities and predicates with metadata
@@ -220,12 +224,12 @@ class ChunkRDFGraphAggregator:
 
     def _create_entity_mapping(
         self,
-        entity_groups: List[List[URIRef]],
-        all_entities: Dict[URIRef, EntityMetadata],
+        entity_groups: list[list[URIRef]],
+        all_entities: dict[URIRef, EntityMetadata],
         doc_namespace: str,
-        preferred_namespaces: Set[str],
-        chunk_namespaces: Set[str],
-    ) -> Dict[URIRef, URIRef]:
+        preferred_namespaces: set[str],
+        chunk_namespaces: set[str],
+    ) -> dict[URIRef, URIRef]:
         """Create mapping from original to canonical entity URIs."""
         entity_mapping = {}
         canonical_entities = set()
@@ -263,11 +267,11 @@ class ChunkRDFGraphAggregator:
 
     def _create_predicate_mapping(
         self,
-        predicate_groups: List[List[URIRef]],
-        all_predicates: Dict[URIRef, PredicateMetadata],
+        predicate_groups: list[list[URIRef]],
+        all_predicates: dict[URIRef, PredicateMetadata],
         doc_namespace: str,
-        chunk_namespaces: Set[str],
-    ) -> Dict[URIRef, URIRef]:
+        chunk_namespaces: set[str],
+    ) -> dict[URIRef, URIRef]:
         """Create mapping from original to canonical predicate URIs."""
         predicate_mapping = {}
         canonical_predicates = set()
@@ -303,7 +307,7 @@ class ChunkRDFGraphAggregator:
         return predicate_mapping
 
     def _ensure_unique_uri(
-        self, uri: URIRef, existing: Set[URIRef], namespace: str
+        self, uri: URIRef, existing: set[URIRef], namespace: str
     ) -> URIRef:
         """Ensure URI uniqueness by appending counter if needed."""
         base_uri = uri
@@ -324,8 +328,8 @@ class ChunkRDFGraphAggregator:
 
     def _merge_predicate_info(
         self,
-        target: Dict[URIRef, PredicateMetadata],
-        source: Dict[URIRef, PredicateMetadata],
+        target: dict[URIRef, PredicateMetadata],
+        source: dict[URIRef, PredicateMetadata],
     ) -> None:
         """Merge predicate information, preferring more complete data."""
         for pred, info in source.items():
@@ -352,12 +356,12 @@ class ChunkRDFGraphAggregator:
 
     def _process_chunk_triples(
         self,
-        chunks: List[Chunk],
+        chunks: list[Chunk],
         aggregated_graph: RDFGraph,
-        entity_mapping: Dict[URIRef, URIRef],
-        predicate_mapping: Dict[URIRef, URIRef],
+        entity_mapping: dict[URIRef, URIRef],
+        predicate_mapping: dict[URIRef, URIRef],
         doc_namespace: str,
-        chunk_namespaces: Set[str],
+        chunk_namespaces: set[str],
     ) -> None:
         """Process triples from all chunks with disambiguation."""
         for chunk in chunks:
@@ -380,16 +384,26 @@ class ChunkRDFGraphAggregator:
                     continue
 
                 # Apply mappings based on namespace
-                new_subj = self._apply_mapping(subj, entity_mapping, chunk_namespaces)
-                new_pred = self._apply_mapping(
-                    pred, predicate_mapping, chunk_namespaces
+                new_subj = (
+                    self._apply_mapping(subj, entity_mapping, chunk_namespaces)
+                    if isinstance(subj, (URIRef, Literal))
+                    else subj
+                )
+                new_pred = (
+                    self._apply_mapping(pred, predicate_mapping, chunk_namespaces)
+                    if isinstance(pred, (URIRef, Literal))
+                    else pred
                 )
 
                 # Special handling for rdf:type objects (preserve ontology classes)
                 if new_pred == RDF.type and isinstance(obj, URIRef):
                     new_obj = obj  # Keep ontology classes unchanged
                 else:
-                    new_obj = self._apply_mapping(obj, entity_mapping, chunk_namespaces)
+                    new_obj = (
+                        self._apply_mapping(obj, entity_mapping, chunk_namespaces)
+                        if isinstance(obj, (URIRef, Literal))
+                        else obj
+                    )
 
                 aggregated_graph.add((new_subj, new_pred, new_obj))
 
@@ -404,8 +418,8 @@ class ChunkRDFGraphAggregator:
     def _apply_mapping(
         self,
         uri: Union[URIRef, Literal],
-        mapping: Dict[URIRef, URIRef],
-        chunk_namespaces: Set[str],
+        mapping: dict[URIRef, URIRef],
+        chunk_namespaces: set[str],
     ) -> Union[URIRef, Literal]:
         """Apply mapping only if URI is from chunk namespace."""
         if not isinstance(uri, URIRef):
@@ -419,9 +433,9 @@ class ChunkRDFGraphAggregator:
     def _add_canonical_metadata(
         self,
         graph: RDFGraph,
-        entity_mapping: Dict[URIRef, URIRef],
-        predicate_mapping: Dict[URIRef, URIRef],
-        metadata: Dict,
+        entity_mapping: dict[URIRef, URIRef],
+        predicate_mapping: dict[URIRef, URIRef],
+        metadata: dict,
     ) -> None:
         """Add metadata for canonical entities and predicates."""
         all_entities = metadata["all_entities"]
@@ -452,7 +466,9 @@ class ChunkRDFGraphAggregator:
         doc_namespace = graph.namespace_manager.store.namespace("cd")
 
         for original, canonical in predicate_mapping.items():
-            if str(canonical).startswith(doc_namespace):
+            if doc_namespace is not None and str(canonical).startswith(
+                str(doc_namespace)
+            ):
                 canonical_pred_to_originals[canonical].append(original)
 
         for canonical, originals in canonical_pred_to_originals.items():
@@ -462,8 +478,10 @@ class ChunkRDFGraphAggregator:
         # Add metadata for individual predicates
         processed_predicates = set(predicate_mapping.keys())
         for predicate, info in all_predicates.items():
-            if predicate not in processed_predicates and str(predicate).startswith(
-                doc_namespace
+            if (
+                predicate not in processed_predicates
+                and doc_namespace is not None
+                and str(predicate).startswith(str(doc_namespace))
             ):
                 self._add_predicate_metadata(graph, predicate, info)
 
@@ -471,9 +489,9 @@ class ChunkRDFGraphAggregator:
         self,
         graph: RDFGraph,
         canonical: URIRef,
-        originals: List[URIRef],
-        all_entities: Dict[URIRef, EntityMetadata],
-        entity_types: Dict[URIRef, Set[URIRef]],
+        originals: list[URIRef],
+        all_entities: dict[URIRef, EntityMetadata],
+        entity_types: dict[URIRef, set[URIRef]],
     ) -> None:
         """Add metadata for a canonical entity."""
         # Best label from the group
@@ -494,15 +512,17 @@ class ChunkRDFGraphAggregator:
         # Link to ontology instances
         doc_namespace = graph.namespace_manager.store.namespace("cd")
         for orig in originals:
-            if not str(orig).startswith(doc_namespace):
+            if doc_namespace is not None and not str(orig).startswith(
+                str(doc_namespace)
+            ):
                 graph.add((canonical, OWL.sameAs, orig))
 
     def _add_individual_entity_metadata(
         self,
         graph: RDFGraph,
         entity: URIRef,
-        all_entities: Dict[URIRef, EntityMetadata],
-        entity_types: Dict[URIRef, Set[URIRef]],
+        all_entities: dict[URIRef, EntityMetadata],
+        entity_types: dict[URIRef, set[URIRef]],
     ) -> None:
         """Add metadata for an individual entity."""
         if entity in all_entities and all_entities[entity].label:
@@ -526,15 +546,13 @@ class ChunkRDFGraphAggregator:
         if info.is_explicit_property:
             graph.add((predicate, RDF.type, RDF.Property))
 
-    def _get_best_label(
-        self, metadata_list: List[Optional[EntityMetadata]]
-    ) -> Optional[str]:
+    def _get_best_label(self, metadata_list: list[EntityMetadata | None]) -> str | None:
         """Get the best label from a list of entity metadata."""
         labels = [m.label for m in metadata_list if m and m.label]
         return max(labels, key=len) if labels else None
 
     def _get_merged_predicate_info(
-        self, originals: List[URIRef], all_predicates: Dict[URIRef, PredicateMetadata]
+        self, originals: list[URIRef], all_predicates: dict[URIRef, PredicateMetadata]
     ) -> PredicateMetadata:
         """Merge predicate information from multiple sources."""
         merged = PredicateMetadata(local_name="", is_explicit_property=False)

@@ -8,7 +8,7 @@ import logging
 from datetime import datetime
 
 from ontocast.config import Config
-from ontocast.onto.context import AgentType
+from ontocast.onto.context import AgentType, Role
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.tool.graph_diff import DiffOperation, DiffTool, GraphDiff, TripleDiff
@@ -189,19 +189,19 @@ def demonstrate_diff_with_context():
 
     # Add conversation memory about diff processing
     agent_context.add_conversation_memory(
-        role="system",
+        role=Role.SYSTEM,
         content="Starting ontology rendering with diff support",
         metadata={"diff_enabled": True, "interaction_type": "ontology_rendering"},
     )
 
     agent_context.add_conversation_memory(
-        role="user",
+        role=Role.USER,
         content="Please create an ontology for software engineering domain with management hierarchy",
         metadata={"domain": "software_engineering", "hierarchy": "management"},
     )
 
     agent_context.add_conversation_memory(
-        role="assistant",
+        role=Role.ASSISTANT,
         content="I'll create an ontology with Person, Employee, and Manager classes with appropriate relationships",
         metadata={
             "response_type": "acknowledgment",
@@ -257,7 +257,7 @@ def demonstrate_diff_with_context():
 
     # Add diff information to conversation memory
     agent_context.add_conversation_memory(
-        role="system",
+        role=Role.SYSTEM,
         content=f"Generated diff with {diff.added_triples} additions",
         metadata={
             "diff_id": diff.diff_id,
@@ -333,7 +333,6 @@ def demonstrate_diff_merging():
     merged_diff = diff_tool.merge_diffs([diff1, diff2])
 
     print("\n2. Merged diff:")
-    print(f"   Merged ID: {merged_diff.merged_diff_id}")
     print(f"   Total additions: {merged_diff.added_triples}")
     print(f"   Total triple diffs: {len(merged_diff.triple_diffs)}")
 

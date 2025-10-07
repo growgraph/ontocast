@@ -7,7 +7,7 @@ graph versions, enabling incremental updates and efficient context passing.
 import logging
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -32,13 +32,13 @@ class TripleDiff(BaseModel):
     predicate: str = Field(description="Predicate of the triple")
     object: str = Field(description="Object of the triple")
     operation: DiffOperation = Field(description="Operation performed on this triple")
-    old_value: Optional[str] = Field(
+    old_value: str | None = Field(
         default=None, description="Old value for modifications"
     )
-    new_value: Optional[str] = Field(
+    new_value: str | None = Field(
         default=None, description="New value for modifications"
     )
-    metadata: Dict[str, Any] = Field(
+    metadata: dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata"
     )
 
@@ -55,7 +55,7 @@ class GraphDiff(BaseModel):
     )
 
     # Diff content
-    triple_diffs: List[TripleDiff] = Field(
+    triple_diffs: list[TripleDiff] = Field(
         default_factory=list, description="List of triple differences"
     )
 
@@ -66,7 +66,7 @@ class GraphDiff(BaseModel):
     unchanged_triples: int = Field(default=0, description="Number of unchanged triples")
 
     # Context information
-    context_metadata: Dict[str, Any] = Field(
+    context_metadata: dict[str, Any] = Field(
         default_factory=dict, description="Context metadata for this diff"
     )
 
@@ -88,11 +88,11 @@ Graph Diff Summary:
 - Total changes: {self.added_triples + self.removed_triples + self.modified_triples}
 """
 
-    def get_sparql_operations(self) -> List[str]:
+    def get_sparql_operations(self) -> list[str]:
         """Get SPARQL operations for applying this diff.
 
         Returns:
-            List[str]: List of SPARQL queries to apply the diff
+            list[str]: List of SPARQL queries to apply the diff
         """
         operations = []
 
@@ -130,11 +130,11 @@ Graph Diff Summary:
             and self.modified_triples == 0
         )
 
-    def get_changed_subjects(self) -> Set[str]:
+    def get_changed_subjects(self) -> set[str]:
         """Get all subjects that have changes.
 
         Returns:
-            Set[str]: Set of subject URIs that have changes
+            set[str]: Set of subject URIs that have changes
         """
         return {
             triple_diff.subject
@@ -142,11 +142,11 @@ Graph Diff Summary:
             if triple_diff.operation != DiffOperation.UNCHANGED
         }
 
-    def get_changed_predicates(self) -> Set[str]:
+    def get_changed_predicates(self) -> set[str]:
         """Get all predicates that have changes.
 
         Returns:
-            Set[str]: Set of predicate URIs that have changes
+            set[str]: Set of predicate URIs that have changes
         """
         return {
             triple_diff.predicate
@@ -168,7 +168,7 @@ class DiffTool:
         target_graph: RDFGraph,
         source_version_id: str,
         target_version_id: str,
-        context_metadata: Optional[Dict[str, Any]] = None,
+        context_metadata: dict[str, Any] | None = None,
     ) -> GraphDiff:
         """Generate a diff between two graphs.
 
@@ -302,14 +302,14 @@ class DiffTool:
         )
         return updated_graph
 
-    def _get_triples_set(self, graph: RDFGraph) -> Set[Tuple[str, str, str]]:
+    def _get_triples_set(self, graph: RDFGraph) -> set[tuple[str, str, str]]:
         """Get a set of triples from a graph.
 
         Args:
             graph: The graph to extract triples from
 
         Returns:
-            Set[Tuple[str, str, str]]: Set of (subject, predicate, object) tuples
+            set[tuple[str, str, str]]: Set of (subject, predicate, object) tuples
         """
         triples = set()
         for triple in graph:
@@ -336,7 +336,7 @@ Diff Summary:
 - Changed predicates: {len(diff.get_changed_predicates())}
 """
 
-    def merge_diffs(self, diffs: List[GraphDiff]) -> GraphDiff:
+    def merge_diffs(self, diffs: list[GraphDiff]) -> GraphDiff:
         """Merge multiple diffs into a single diff.
 
         Args:

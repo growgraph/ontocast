@@ -5,7 +5,7 @@ into structured data that can be processed by the OntoCast system.
 """
 
 from io import BytesIO
-from typing import Any, Dict, Union
+from typing import Any, Union
 
 from docling.datamodel.base_models import (
     DocumentStream,
@@ -39,14 +39,14 @@ class ConverterTool(Tool):
         super().__init__(**kwargs)
         self._converter = DocumentConverter()
 
-    def __call__(self, file_input: Union[bytes, str]) -> Dict[str, Any]:
+    def __call__(self, file_input: Union[bytes, str]) -> dict[str, Any]:
         """Convert a document to structured data.
 
         Args:
             file_input: The input file as either a BytesIO object or file path.
 
         Returns:
-            Dict[str, Any]: The converted document data.
+            dict[str, Any]: The converted document data.
         """
         if isinstance(file_input, bytes):
             ds = DocumentStream(name="doc", stream=BytesIO(file_input))

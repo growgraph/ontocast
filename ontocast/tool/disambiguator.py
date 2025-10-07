@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Mapping
 
 from rapidfuzz import fuzz
 from rdflib import RDF, RDFS, Literal, URIRef
@@ -33,7 +33,9 @@ class EntityDisambiguator:
         self.similarity_threshold = similarity_threshold
         self.semantic_threshold = semantic_threshold
 
-    def normalize_uri(self, uri: URIRef, namespaces: Dict[str, str]) -> Tuple[str, str]:
+    def normalize_uri(
+        self, uri: URIRef, namespaces: Mapping[str, str | URIRef]
+    ) -> tuple[str, str]:
         """Normalize a URI by expanding any prefixed names and extracting a proper local name.
 
         Args:
@@ -48,7 +50,9 @@ class EntityDisambiguator:
         # Expand prefixed names like ns:Thing to full URIs when we can
         for prefix, namespace in namespaces.items():
             if uri_str.startswith(f"{prefix}:"):
-                full_uri = uri_str.replace(f"{prefix}:", str(namespace))
+                # Handle both str and URIRef namespace values
+                namespace_str = str(namespace)
+                full_uri = uri_str.replace(f"{prefix}:", namespace_str)
                 uri_str = full_uri
                 break
 
@@ -61,14 +65,14 @@ class EntityDisambiguator:
 
         return uri_str, local
 
-    def extract_entity_labels(self, graph: RDFGraph) -> Dict[URIRef, EntityMetadata]:
+    def extract_entity_labels(self, graph: RDFGraph) -> dict[URIRef, EntityMetadata]:
         """Extract labels for entities from graph, including their local names.
 
         Args:
             graph: The RDF graph to process.
 
         Returns:
-            Dict[URIRef, EntityMetadata]: Dictionary mapping entity URIs to their metadata.
+            dict[URIRef, EntityMetadata]: Dictionary mapping entity URIs to their metadata.
         """
         labels = {}
         namespaces = dict(graph.namespaces())
@@ -107,9 +111,9 @@ class EntityDisambiguator:
 
     def find_similar_entities(
         self,
-        entities_with_labels: Dict[URIRef, EntityMetadata],
-        entity_types: Optional[Dict[URIRef, Set[URIRef]]] = None,
-    ) -> List[List[URIRef]]:
+        entities_with_labels: dict[URIRef, EntityMetadata],
+        entity_types: dict[URIRef, set[URIRef]] | None = None,
+    ) -> list[list[URIRef]]:
         """Group similar entities based on string similarity, local names, and types.
 
         Args:
@@ -117,7 +121,7 @@ class EntityDisambiguator:
             entity_types: Optional dictionary mapping entities to their types.
 
         Returns:
-            List[List[URIRef]]: Groups of similar entities.
+            list[list[URIRef]]: Groups of similar entities.
         """
         if entity_types is None:
             entity_types = {}
@@ -175,8 +179,8 @@ class EntityDisambiguator:
         return entity_groups
 
     def _filter_by_type_compatibility(
-        self, entities: List[URIRef], entity_types: Dict[URIRef, Set[URIRef]]
-    ) -> List[URIRef]:
+        self, entities: list[URIRef], entity_types: dict[URIRef, set[URIRef]]
+    ) -> list[URIRef]:
         """Filter entities by type compatibility."""
         if not entity_types:
             return entities
@@ -209,10 +213,10 @@ class EntityDisambiguator:
 
     def _find_fuzzy_similar_entities(
         self,
-        entities: List[URIRef],
-        entities_with_labels: Dict[URIRef, EntityMetadata],
-        entity_types: Dict[URIRef, Set[URIRef]],
-    ) -> List[List[URIRef]]:
+        entities: list[URIRef],
+        entities_with_labels: dict[URIRef, EntityMetadata],
+        entity_types: dict[URIRef, set[URIRef]],
+    ) -> list[list[URIRef]]:
         """Find fuzzy similar entities among the remaining entities."""
         entity_groups = []
         processed = set()
@@ -266,17 +270,19 @@ class EntityDisambiguator:
 
         return entity_groups
 
-    def _are_types_compatible(self, types1: Set[URIRef], types2: Set[URIRef]) -> bool:
+    def _are_types_compatible(self, types1: set[URIRef], types2: set[URIRef]) -> bool:
         """Check if two sets of types are compatible."""
         # Compatible if one has no types, or they share at least one type
-        return not types1 or not types2 or bool(types1.intersection(types2))
+        if not types1 or not types2:
+            return True
+        return bool(types1.intersection(types2))
 
     def create_canonical_iri(
         self,
-        similar_entities: List[URIRef],
+        similar_entities: list[URIRef],
         doc_namespace: str,
-        entity_labels: Dict[URIRef, EntityMetadata],
-        preferred_namespaces: Optional[Set[str]] = None,
+        entity_labels: dict[URIRef, EntityMetadata],
+        preferred_namespaces: set[str] | None = None,
     ) -> URIRef:
         """Create a canonical URI for a group of similar entities.
 
@@ -313,9 +319,9 @@ class EntityDisambiguator:
 
     def create_canonical_predicate(
         self,
-        similar_predicates: List[URIRef],
+        similar_predicates: list[URIRef],
         doc_namespace: str,
-        predicate_info: Dict[URIRef, PredicateMetadata],
+        predicate_info: dict[URIRef, PredicateMetadata],
     ) -> URIRef:
         """Create a canonical URI for a group of similar predicates.
 
@@ -359,14 +365,14 @@ class EntityDisambiguator:
 
     def extract_predicate_info(
         self, graph: RDFGraph
-    ) -> Dict[URIRef, PredicateMetadata]:
+    ) -> dict[URIRef, PredicateMetadata]:
         """Extract predicate information including labels, domains, and ranges.
 
         Args:
             graph: The RDF graph to process.
 
         Returns:
-            Dict[URIRef, PredicateMetadata]: Dictionary mapping predicate URIs to their metadata.
+            dict[URIRef, PredicateMetadata]: Dictionary mapping predicate URIs to their metadata.
         """
         predicate_info = {}
         namespaces = dict(graph.namespaces())
@@ -408,15 +414,15 @@ class EntityDisambiguator:
         return predicate_info
 
     def find_similar_predicates(
-        self, predicates_with_info: Dict[URIRef, PredicateMetadata]
-    ) -> List[List[URIRef]]:
+        self, predicates_with_info: dict[URIRef, PredicateMetadata]
+    ) -> list[list[URIRef]]:
         """Group similar predicates based on string similarity and domain/range compatibility.
 
         Args:
             predicates_with_info: Dictionary mapping predicate URIs to their metadata.
 
         Returns:
-            List[List[URIRef]]: Groups of similar predicates.
+            list[list[URIRef]]: Groups of similar predicates.
         """
         # Create lookup structures for optimization
         local_name_groups = defaultdict(list)
@@ -470,8 +476,8 @@ class EntityDisambiguator:
         return predicate_groups
 
     def _filter_by_domain_range_compatibility(
-        self, predicates: List[URIRef], predicate_info: Dict[URIRef, PredicateMetadata]
-    ) -> List[URIRef]:
+        self, predicates: list[URIRef], predicate_info: dict[URIRef, PredicateMetadata]
+    ) -> list[URIRef]:
         """Filter predicates by domain/range compatibility."""
         if len(predicates) <= 1:
             return predicates
@@ -495,23 +501,20 @@ class EntityDisambiguator:
             elif len(group) == len(all_compatible):
                 # If same size, prefer group with more specific domain/range info
                 current_specificity = sum(1 for x in signature if x is not None)
-                best_specificity = sum(
-                    1
-                    for x in signature_groups.get(
-                        tuple(
-                            predicate_info.get(
-                                all_compatible[0], PredicateMetadata(local_name="")
-                            ).domain
-                            or None,
-                            predicate_info.get(
-                                all_compatible[0], PredicateMetadata(local_name="")
-                            ).range
-                            or None,
-                        ),
-                        (None, None),
-                    )
-                    if x is not None
+
+                # Get the signature for the best group
+                best_predicate = all_compatible[0]
+                best_predicate_info = predicate_info.get(
+                    best_predicate, PredicateMetadata(local_name="")
                 )
+                best_signature = (
+                    best_predicate_info.domain or None,
+                    best_predicate_info.range or None,
+                )
+                best_group_signature = signature_groups.get(
+                    best_signature, (None, None)
+                )
+                best_specificity = sum(1 for x in best_group_signature if x is not None)
                 if current_specificity > best_specificity:
                     all_compatible = group
 
@@ -543,8 +546,8 @@ class EntityDisambiguator:
 
     def _domains_ranges_compatible(
         self,
-        sig1: Tuple[Optional[URIRef], Optional[URIRef]],
-        sig2: Tuple[Optional[URIRef], Optional[URIRef]],
+        sig1: tuple[URIRef | None, URIRef | None],
+        sig2: tuple[URIRef | None, URIRef | None],
     ) -> bool:
         """Check if two domain/range signatures are compatible."""
         domain1, range1 = sig1
@@ -556,8 +559,8 @@ class EntityDisambiguator:
         return domain_compatible and range_compatible
 
     def _find_fuzzy_similar_predicates(
-        self, predicates: List[URIRef], predicate_info: Dict[URIRef, PredicateMetadata]
-    ) -> List[List[URIRef]]:
+        self, predicates: list[URIRef], predicate_info: dict[URIRef, PredicateMetadata]
+    ) -> list[list[URIRef]]:
         """Find fuzzy similar predicates among the remaining predicates."""
         predicate_groups = []
         processed = set()

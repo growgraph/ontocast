@@ -12,9 +12,9 @@ from ontocast.agent import (
     select_ontology,
     sublimate_ontology,
 )
-from ontocast.agent.enhanced_criticise_facts import enhanced_criticise_facts
-from ontocast.agent.enhanced_criticise_ontology import enhanced_criticise_ontology
-from ontocast.agent.structured_hybrid_render_facts import structured_hybrid_render_facts
+from ontocast.agent.criticise_facts import criticise_facts
+from ontocast.agent.criticise_ontology import criticise_ontology
+from ontocast.agent.render_facts import structured_hybrid_render_facts
 from ontocast.agent.structured_hybrid_render_ontology import (
     structured_hybrid_render_ontology,
 )
@@ -58,12 +58,12 @@ def create_agent_graph(tools: ToolBox) -> CompiledStateGraph:
         count_visits_conditional_success,
     )
     criticise_ontology_tuple = wrap_with(
-        partial(enhanced_criticise_ontology, tools=tools),
+        partial(criticise_ontology, tools=tools),
         WorkflowNode.CRITICISE_ONTOLOGY,
         count_visits_conditional_success,
     )
     criticise_facts_tuple = wrap_with(
-        partial(enhanced_criticise_facts, tools=tools),
+        partial(criticise_facts, tools=tools),
         WorkflowNode.CRITICISE_FACTS,
         count_visits_conditional_success,
     )

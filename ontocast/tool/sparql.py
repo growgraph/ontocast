@@ -5,7 +5,6 @@ enabling incremental updates instead of full graph replacement.
 """
 
 import logging
-from typing import List
 
 from rdflib import BNode, Literal, URIRef
 from rdflib.plugins.sparql import prepareQuery
@@ -31,7 +30,7 @@ class SPARQLTool:
         self.operation_history = []
 
     def execute_operations(
-        self, graph: RDFGraph, operations: List[SPARQLOperationModel]
+        self, graph: RDFGraph, operations: list[SPARQLOperationModel]
     ) -> RDFGraph:
         """Execute a list of SPARQL operations on a graph.
 
@@ -147,7 +146,7 @@ class SPARQLTool:
         graph.query(query)
         # UPDATE queries typically don't return results, but we execute them
 
-    def _parse_insert_data_triples(self, query: str) -> List[tuple]:
+    def _parse_insert_data_triples(self, query: str) -> list[tuple]:
         """Parse triples from INSERT DATA query.
 
         Args:
@@ -191,7 +190,7 @@ class SPARQLTool:
 
         return triples
 
-    def _parse_delete_data_triples(self, query: str) -> List[tuple]:
+    def _parse_delete_data_triples(self, query: str) -> list[tuple]:
         """Parse triples from DELETE DATA query.
 
         Args:
@@ -249,7 +248,7 @@ class SPARQLTool:
             logger.error(f"Invalid SPARQL operation: {str(e)}")
             return False
 
-    def get_operation_history(self) -> List[SPARQLOperationModel]:
+    def get_operation_history(self) -> list[SPARQLOperationModel]:
         """Get the history of executed operations.
 
         Returns:

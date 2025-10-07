@@ -6,7 +6,6 @@ abstract interfaces and concrete implementations for different triple store back
 
 import abc
 import os
-from typing import Optional
 
 from pydantic import Field
 from rdflib import Graph
@@ -87,8 +86,8 @@ class TripleStoreManagerWithAuth(TripleStoreManager):
         auth: Authentication tuple (username, password) for the triple store.
     """
 
-    uri: Optional[str] = Field(default=None, description="Triple store connection URI")
-    auth: Optional[tuple] = Field(
+    uri: str | None = Field(default=None, description="Triple store connection URI")
+    auth: tuple | None = Field(
         default=None, description="Triple store authentication tuple (user, password)"
     )
     clean: bool = Field(

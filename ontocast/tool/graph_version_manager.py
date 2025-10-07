@@ -7,7 +7,7 @@ enabling incremental updates and change tracking.
 import logging
 from collections import defaultdict
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -23,11 +23,11 @@ class GraphVersion(BaseModel):
     id: str = Field(description="Unique identifier for this graph version")
     graph: RDFGraph = Field(description="The RDF graph for this version")
     timestamp: datetime = Field(description="When this version was created")
-    operations: List[SPARQLOperationModel] = Field(
+    operations: list[SPARQLOperationModel] = Field(
         default_factory=list,
         description="List of SPARQL operations that created this version",
     )
-    metadata: Dict[str, Any] = Field(
+    metadata: dict[str, Any] = Field(
         default_factory=dict, description="Optional metadata for this version"
     )
     parent_version_id: str | None = Field(
@@ -38,7 +38,7 @@ class GraphVersion(BaseModel):
         """Get the number of triples in this version."""
         return len(self.graph)
 
-    def get_namespaces(self) -> Dict[str, str]:
+    def get_namespaces(self) -> dict[str, str]:
         """Get the namespaces bound in this version."""
         return dict(self.graph.namespaces())
 
@@ -46,20 +46,20 @@ class GraphVersion(BaseModel):
 class GraphDiff(BaseModel):
     """Represents differences between two graph versions."""
 
-    added_triples: List[tuple] = Field(
+    added_triples: list[tuple] = Field(
         default_factory=list, description="List of triples that were added"
     )
-    removed_triples: List[tuple] = Field(
+    removed_triples: list[tuple] = Field(
         default_factory=list, description="List of triples that were removed"
     )
-    modified_triples: List[Tuple[tuple, tuple]] = Field(
+    modified_triples: list[tuple[tuple, tuple]] = Field(
         default_factory=list,
         description="List of (old, new) triple pairs that were modified",
     )
-    added_namespaces: Dict[str, str] = Field(
+    added_namespaces: dict[str, str] = Field(
         default_factory=dict, description="Namespaces that were added"
     )
-    removed_namespaces: Dict[str, str] = Field(
+    removed_namespaces: dict[str, str] = Field(
         default_factory=dict, description="Namespaces that were removed"
     )
 
@@ -79,16 +79,16 @@ class GraphVersionManager:
 
     def __init__(self):
         """Initialize the graph version manager."""
-        self.ontology_versions: Dict[str, List[GraphVersion]] = defaultdict(list)
-        self.facts_versions: Dict[str, List[GraphVersion]] = defaultdict(list)
-        self.version_metadata: Dict[str, Dict[str, Any]] = {}
+        self.ontology_versions: dict[str, list[GraphVersion]] = defaultdict(list)
+        self.facts_versions: dict[str, list[GraphVersion]] = defaultdict(list)
+        self.version_metadata: dict[str, dict[str, Any]] = {}
 
     def create_ontology_version(
         self,
         ontology_id: str,
         graph: RDFGraph,
-        operations: List[SPARQLOperationModel] = None,
-        metadata: Dict[str, Any] = None,
+        operations: list[SPARQLOperationModel] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> GraphVersion:
         """Create a new version of an ontology.
 
@@ -127,8 +127,8 @@ class GraphVersionManager:
         self,
         chunk_id: str,
         graph: RDFGraph,
-        operations: List[SPARQLOperationModel] = None,
-        metadata: Dict[str, Any] = None,
+        operations: list[SPARQLOperationModel] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> GraphVersion:
         """Create a new version of facts for a chunk.
 
@@ -326,19 +326,19 @@ class GraphVersionManager:
         """
         return len(self.facts_versions.get(chunk_id, []))
 
-    def get_all_ontology_ids(self) -> List[str]:
+    def get_all_ontology_ids(self) -> list[str]:
         """Get all ontology identifiers.
 
         Returns:
-            List[str]: All ontology identifiers.
+            list[str]: All ontology identifiers.
         """
         return list(self.ontology_versions.keys())
 
-    def get_all_chunk_ids(self) -> List[str]:
+    def get_all_chunk_ids(self) -> list[str]:
         """Get all chunk identifiers.
 
         Returns:
-            List[str]: All chunk identifiers.
+            list[str]: All chunk identifiers.
         """
         return list(self.facts_versions.keys())
 
@@ -378,11 +378,11 @@ class GraphVersionManager:
                 del self.facts_versions[chunk_id]
                 logger.info(f"Deleted all versions of facts for chunk {chunk_id}")
 
-    def get_version_statistics(self) -> Dict[str, Any]:
+    def get_version_statistics(self) -> dict[str, Any]:
         """Get statistics about all versions.
 
         Returns:
-            Dict[str, Any]: Version statistics.
+            dict[str, Any]: Version statistics.
         """
         stats = {
             "total_ontologies": len(self.ontology_versions),

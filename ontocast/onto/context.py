@@ -7,7 +7,7 @@ enabling memory and incremental processing.
 import logging
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -27,6 +27,14 @@ class AgentType(StrEnum):
     CHUNKER = "chunker"
 
 
+class Role(StrEnum):
+    """Enumeration of conversation roles for type safety."""
+
+    SYSTEM = "system"
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
 class AgentContext(BaseModel):
     """Context information passed between agents.
 
@@ -39,26 +47,26 @@ class AgentContext(BaseModel):
     agent_type: AgentType = Field(description="Type of agent for type safety")
 
     # Previous work context
-    previous_ontology_version: Optional[GraphVersion] = Field(
+    previous_ontology_version: GraphVersion | None = Field(
         default=None, description="Previous ontology version if available"
     )
-    previous_facts_version: Optional[GraphVersion] = Field(
+    previous_facts_version: GraphVersion | None = Field(
         default=None, description="Previous facts version if available"
     )
 
     # Previous operations (append-only for performance)
-    previous_ontology_operations: List[SPARQLOperationModel] = Field(
+    previous_ontology_operations: list[SPARQLOperationModel] = Field(
         default_factory=list, description="Previous ontology SPARQL operations"
     )
-    previous_facts_operations: List[SPARQLOperationModel] = Field(
+    previous_facts_operations: list[SPARQLOperationModel] = Field(
         default_factory=list, description="Previous facts SPARQL operations"
     )
 
     # Previous critiques (append-only for consistency)
-    previous_ontology_critique: Optional[Dict[str, Any]] = Field(
+    previous_ontology_critique: dict[str, Any] | None = Field(
         default=None, description="Previous ontology critique if available"
     )
-    previous_facts_critique: Optional[Dict[str, Any]] = Field(
+    previous_facts_critique: dict[str, Any] | None = Field(
         default=None, description="Previous facts critique if available"
     )
 
@@ -66,17 +74,17 @@ class AgentContext(BaseModel):
     context_timestamp: datetime = Field(
         default_factory=datetime.now, description="When this context was created"
     )
-    context_metadata: Dict[str, Any] = Field(
+    context_metadata: dict[str, Any] = Field(
         default_factory=dict, description="Additional context metadata"
     )
 
     # Conversation memory for LLM calls
-    conversation_memory: List[Dict[str, Any]] = Field(
+    conversation_memory: list[dict[str, Any]] = Field(
         default_factory=list, description="Conversation history for LLM context"
     )
 
     # Dynamic context construction
-    dynamic_context: Dict[str, Any] = Field(
+    dynamic_context: dict[str, Any] = Field(
         default_factory=dict,
         description="Dynamically constructed context for current interaction",
     )
@@ -132,23 +140,23 @@ CONTEXT METADATA:
 """
 
     def add_conversation_memory(
-        self, role: str, content: str, metadata: Optional[Dict[str, Any]] = None
+        self, role: Role, content: str, metadata: dict[str, Any] | None = None
     ) -> None:
         """Add a conversation entry to memory (append-only strategy).
 
         Args:
-            role: Role of the speaker (user, assistant, system)
+            role: Role of the speaker (Role.SYSTEM, Role.USER, Role.ASSISTANT)
             content: Content of the message
             metadata: Optional metadata for the conversation entry
         """
         entry = {
-            "role": role,
+            "role": role.value,
             "content": content,
             "timestamp": datetime.now().isoformat(),
             "metadata": metadata or {},
         }
         self.conversation_memory.append(entry)
-        logger.debug(f"Added conversation memory for {self.agent_name}: {role}")
+        logger.debug(f"Added conversation memory for {self.agent_name}: {role.value}")
 
     def get_conversation_context(self, max_entries: int = 10) -> str:
         """Get conversation context for LLM calls.
@@ -174,7 +182,7 @@ CONTEXT METADATA:
 
         return context
 
-    def build_dynamic_context(self, interaction_type: str, **kwargs) -> Dict[str, Any]:
+    def build_dynamic_context(self, interaction_type: str, **kwargs) -> dict[str, Any]:
         """Build dynamic context for current interaction.
 
         Args:
@@ -182,7 +190,7 @@ CONTEXT METADATA:
             **kwargs: Additional context parameters
 
         Returns:
-            Dict[str, Any]: Dynamic context for the interaction
+            dict[str, Any]: Dynamic context for the interaction
         """
         dynamic_context = {
             "interaction_type": interaction_type,
@@ -225,20 +233,20 @@ class ContextManager:
 
     def __init__(self):
         """Initialize the context manager."""
-        self.context_history: List[AgentContext] = []
-        self.current_context: Optional[AgentContext] = None
+        self.context_history: list[AgentContext] = []
+        self.current_context: AgentContext | None = None
 
     def create_context(
         self,
         agent_name: str,
         agent_type: AgentType,
-        previous_ontology_version: Optional[GraphVersion] = None,
-        previous_facts_version: Optional[GraphVersion] = None,
-        previous_ontology_operations: Optional[List[SPARQLOperationModel]] = None,
-        previous_facts_operations: Optional[List[SPARQLOperationModel]] = None,
-        previous_ontology_critique: Optional[Dict[str, Any]] = None,
-        previous_facts_critique: Optional[Dict[str, Any]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        previous_ontology_version: GraphVersion | None = None,
+        previous_facts_version: GraphVersion | None = None,
+        previous_ontology_operations: list[SPARQLOperationModel] | None = None,
+        previous_facts_operations: list[SPARQLOperationModel] | None = None,
+        previous_ontology_critique: dict[str, Any] | None = None,
+        previous_facts_critique: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> AgentContext:
         """Create a new context for an agent.
 
@@ -274,41 +282,41 @@ class ContextManager:
         logger.info(f"Created context for {agent_name} ({agent_type})")
         return context
 
-    def get_current_context(self) -> Optional[AgentContext]:
+    def get_current_context(self) -> AgentContext | None:
         """Get the current context.
 
         Returns:
-            Optional[AgentContext]: The current context, or None if not set.
+            AgentContext | None: The current context, or None if not set.
         """
         return self.current_context
 
-    def get_context_history(self) -> List[AgentContext]:
+    def get_context_history(self) -> list[AgentContext]:
         """Get the full context history.
 
         Returns:
-            List[AgentContext]: The complete context history.
+            list[AgentContext]: The complete context history.
         """
         return self.context_history
 
-    def get_context_by_agent(self, agent_name: str) -> List[AgentContext]:
+    def get_context_by_agent(self, agent_name: str) -> list[AgentContext]:
         """Get context history for a specific agent.
 
         Args:
             agent_name: Name of the agent to get context for.
 
         Returns:
-            List[AgentContext]: Context history for the specified agent.
+            list[AgentContext]: Context history for the specified agent.
         """
         return [ctx for ctx in self.context_history if ctx.agent_name == agent_name]
 
-    def get_latest_context_by_agent(self, agent_name: str) -> Optional[AgentContext]:
+    def get_latest_context_by_agent(self, agent_name: str) -> AgentContext | None:
         """Get the latest context for a specific agent.
 
         Args:
             agent_name: Name of the agent to get latest context for.
 
         Returns:
-            Optional[AgentContext]: The latest context for the specified agent, or None.
+            AgentContext | None: The latest context for the specified agent, or None.
         """
         agent_contexts = self.get_context_by_agent(agent_name)
         return agent_contexts[-1] if agent_contexts else None
@@ -316,13 +324,13 @@ class ContextManager:
     def update_context(
         self,
         agent_name: str,
-        ontology_version: Optional[GraphVersion] = None,
-        facts_version: Optional[GraphVersion] = None,
-        ontology_operations: Optional[List[SPARQLOperationModel]] = None,
-        facts_operations: Optional[List[SPARQLOperationModel]] = None,
-        ontology_critique: Optional[Dict[str, Any]] = None,
-        facts_critique: Optional[Dict[str, Any]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        ontology_version: GraphVersion | None = None,
+        facts_version: GraphVersion | None = None,
+        ontology_operations: list[SPARQLOperationModel] | None = None,
+        facts_operations: list[SPARQLOperationModel] | None = None,
+        ontology_critique: dict[str, Any] | None = None,
+        facts_critique: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> AgentContext:
         """Update the current context with new information.
 

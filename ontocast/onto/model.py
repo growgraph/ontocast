@@ -1,5 +1,4 @@
 import pathlib
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -81,13 +80,13 @@ class SemanticTriplesFactsReport(BaseModel):
         description="Semantic triples (facts) representing the document "
         "in turtle format: use prefixes for namespaces, do NOT add comments",
     )
-    ontology_relevance_score: Optional[float] = Field(
+    ontology_relevance_score: float | None = Field(
         description=(
             "Score between 0 and 100 of how well "
             "the ontology represents the domain  of the document."
         )
     )
-    triples_generation_score: Optional[float] = Field(
+    triples_generation_score: float | None = Field(
         description=(
             "Score 0-100 for how well the semantic triples "
             "represent the document. 0 is the worst, 100 is the best."

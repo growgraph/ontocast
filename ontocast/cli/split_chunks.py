@@ -63,7 +63,7 @@ def json_to_md(data: dict | list, title: str = "JSON Data", depth: int = 1) -> s
 
             if isinstance(value, dict):
                 if value:  # Skip empty dicts
-                    md.append(json_to_md(value, title=None, depth=depth + 1))
+                    md.append(json_to_md(value, title=f"doc: {key}", depth=depth + 1))
             elif isinstance(value, list):
                 md.extend(_handle_list(value, header_level, depth))
 
@@ -91,7 +91,7 @@ def _handle_list(items: list, header_level: int, depth: int) -> list[str]:
         for i, item in enumerate(items):
             if isinstance(item, dict) and len(items) > 1:
                 md.append(f"{'#' * (header_level + 1)} Item {i + 1}\n\n")
-            md.append(json_to_md(item, title=None, depth=depth + 1))
+            md.append(json_to_md(item, title=f"# doc {i}", depth=depth + 1))
 
     return md
 

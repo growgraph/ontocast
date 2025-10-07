@@ -3,7 +3,8 @@ from rdflib import Namespace
 DEFAULT_DOMAIN = "https://example.com"
 ONTOLOGY_NULL_ID = "__null_id"
 ONTOLOGY_NULL_IRI = f"{DEFAULT_DOMAIN}/{ONTOLOGY_NULL_ID}"
-DEFAULT_CHUNK_IRI = "http://ex.com/ch#"
+DEFAULT_CHUNK_IRI = f"{DEFAULT_DOMAIN}/ch#"
+CHUNK_NULL_IRI = f"{DEFAULT_CHUNK_IRI}{ONTOLOGY_NULL_ID}"
 COMMON_PREFIXES = {
     "xsd": "<http://www.w3.org/2001/XMLSchema#>",
     "rdf": "<http://www.w3.org/1999/02/22-rdf-syntax-ns#>",

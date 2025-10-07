@@ -126,8 +126,6 @@ def create_app(
                     "capabilities": ["text-to-triples", "ontology-extraction"],
                     "input_types": ["text", "json", "pdf", "markdown"],
                     "output_types": ["turtle", "json"],
-                    "llm_provider": tools.llm.provider,
-                    "model_name": tools.llm.model,
                 }
             ),
         )

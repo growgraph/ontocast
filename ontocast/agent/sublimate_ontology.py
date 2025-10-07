@@ -88,10 +88,11 @@ def sublimate_ontology(state: AgentState, tools: ToolBox):
         ns_prefix_current_ontology = [
             p
             for p, ns in state.current_ontology.graph.namespaces()
-            if str(ns) == state.current_ontology.iri
+            if state.current_ontology.iri is not None
+            and str(ns) == state.current_ontology.iri
         ]
 
-        if ns_prefix_current_ontology:
+        if ns_prefix_current_ontology and state.current_ontology.iri is not None:
             graph_onto_addendum.bind(
                 ns_prefix_current_ontology[0], Namespace(state.current_ontology.iri)
             )
