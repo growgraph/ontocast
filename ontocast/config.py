@@ -18,11 +18,11 @@ class LLMProvider(StrEnum):
     OLLAMA = "ollama"
 
 
-class ModelName(StrEnum):
+class LLMModelNameAbstract(StrEnum):
     """Abstract base class for all model names."""
 
 
-class OpenAIModel(ModelName):
+class OpenAIModel(LLMModelNameAbstract):
     """OpenAI model names."""
 
     GPT4_O = "gpt-4o"
@@ -34,7 +34,7 @@ class OpenAIModel(ModelName):
     GPT5_NANO = "gpt-5-nano"
 
 
-class OllamaModel(ModelName):
+class OllamaModel(LLMModelNameAbstract):
     """Ollama model names."""
 
     QWEN2_5 = "qwen2.5"
@@ -45,7 +45,7 @@ class OllamaModel(ModelName):
     GRANITE3_3_8B = "granite3.3:8b"
 
 
-ModelNameType = OpenAIModel | OllamaModel
+LLMModelName = OpenAIModel | OllamaModel
 
 
 class LLMConfig(BaseSettings):
@@ -54,7 +54,7 @@ class LLMConfig(BaseSettings):
     provider: LLMProvider = Field(
         default=LLMProvider.OPENAI, description="LLM provider"
     )
-    model_name: ModelNameType = Field(
+    model_name: LLMModelName = Field(
         default=OpenAIModel.GPT4_O_MINI, description="LLM model name"
     )
     temperature: float = Field(default=0.0, description="LLM temperature setting")
@@ -70,7 +70,7 @@ class LLMConfig(BaseSettings):
 
     @field_validator("model_name")
     @classmethod
-    def validate_model_name(cls, v: ModelNameType, info) -> ModelNameType:
+    def validate_model_name(cls, v: LLMModelName, info) -> LLMModelName:
         """Validate that model_name is compatible with the provider."""
         if "provider" not in info.data:
             return v
