@@ -10,7 +10,6 @@ import logging
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import PromptTemplate
 
-from ontocast.onto.enum import FailureStages
 from ontocast.onto.extras import NULL_ONTOLOGY
 from ontocast.onto.model import OntologySelectorReport
 from ontocast.onto.state import AgentState
@@ -43,14 +42,6 @@ def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     if len(om_tool.ontologies) > 0:
         ontologies_desc = "\n\n".join([o.describe() for o in om_tool.ontologies])
         logger.info(f"Retrieved descriptions for {len(om_tool.ontologies)} ontologies")
-
-        if state.current_chunk is None:
-            if state.chunks:
-                state.current_chunk = state.chunks.pop(0)
-            else:
-                state.set_failure(
-                    FailureStages.NO_CHUNKS_TO_PROCESS, "No chunks to process"
-                )
 
         excerpt = state.current_chunk.text[:1000] + " ..."
 
