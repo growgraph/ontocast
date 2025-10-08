@@ -135,19 +135,12 @@ def render_onto_first_visit(state: AgentState, tools: ToolBox) -> AgentState:
         ontology_ttl = ""
     else:
         ontology_iri = state.current_ontology.iri
-        ontology_str = state.current_ontology.graph.serialize(format="turtle")
         ontology_desc = state.current_ontology.describe()
-        # ontology_instruction = intro_instruction_first_visit_seed.format(
-        #     ontology_iri=ontology_iri,
-        #     ontology_desc=ontology_desc,
-        #     ontology_str=ontology_str,
-        #
+        intro_instruction = intro_instruction_first_visit_seed.format(
+            ontology_iri=ontology_iri,
+            ontology_desc=ontology_desc)
         ontology_ttl = state.current_ontology.graph.serialize(format="turtle")
-        intro_instruction = intro_instruction_first_visit_seed
         output_instruction = output_instruction_sparql
-        specific_ontology_instruction = general_ontology_instruction.format(
-            ontology_namespace=state.current_ontology.namespace
-        )
 
     prompt = PromptTemplate(
         template=template_prompt,

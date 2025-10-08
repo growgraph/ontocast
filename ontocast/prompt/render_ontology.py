@@ -1,10 +1,21 @@
 template_prompt = """
 {preamble}
+
+
 {intro_instruction}
+
+
 {ontology_instruction}
-{output_instruction}
+
+
 {ontology_ttl}
+
+
 {text}
+
+
+### OUTPUT instructions
+{output_instruction}
 """
 
 system_preamble = """
@@ -51,15 +62,13 @@ general_ontology_instruction = """
 
 # no_seed_ontology_first_visit
 output_instruction_ttl = """
-### output instructions
 1. ontology must be provided in turtle format as a single string
 2. define all prefixes for all namespaces used in the ontology, etc rdf, rdfs, owl, schema, etc.
 """
 
 
 output_instruction_sparql = """
-### output instructions
-1. generate SPARQL operations hat modify the existing ontology, not replace it entirely
+1. generate SPARQL operations that modify the existing ontology, not replace it entirely
 Generate operations in the following structured format:
 
 ## ADD Section
