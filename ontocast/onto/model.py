@@ -123,7 +123,7 @@ class OntologyUpdateCritiqueReport(BaseModel):
     )
 
 
-class KGCritiqueReport(BaseModel):
+class FactsCritiqueReport(BaseModel):
     """Report from knowledge graph critique process.
 
     Attributes:

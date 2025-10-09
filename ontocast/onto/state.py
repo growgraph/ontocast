@@ -101,6 +101,11 @@ class AgentState(BasePydanticModel):
         description="A list of graph update that improve the current ontology",
     )
 
+    facts_updates: list[GraphUpdate] = Field(
+        default_factory=list,
+        description="A list of graph update that improve the current graph of facts",
+    )
+
     ontology_addendum: Ontology = Field(
         default_factory=lambda: Ontology(
             ontology_id=ONTOLOGY_NULL_ID,

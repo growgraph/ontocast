@@ -11,7 +11,7 @@ from langchain.prompts import PromptTemplate
 
 from ontocast.onto.context import AgentType, Role
 from ontocast.onto.enum import FailureStage, Status
-from ontocast.onto.model import KGCritiqueReport
+from ontocast.onto.model import FactsCritiqueReport
 from ontocast.onto.state import AgentState
 from ontocast.prompt.enhanced_criticise_facts import (
     prompt_enhanced,
@@ -42,7 +42,7 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
 
     llm_tool = tools.llm
     version_manager = tools.version_manager
-    parser = PydanticOutputParser(pydantic_object=KGCritiqueReport)
+    parser = PydanticOutputParser(pydantic_object=FactsCritiqueReport)
 
     # Get context for this agent with conversation memory
     agent_context = state.get_context_for_agent(AgentType.CRITIC_FACTS)
@@ -89,7 +89,7 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
             )
         )
 
-        critique: KGCritiqueReport = parser.parse(response.content)
+        critique: FactsCritiqueReport = parser.parse(response.content)
         logger.debug(
             f"Parsed critique report - success: {critique.facts_graph_derivation_success}, "
             f"score: {critique.facts_graph_derivation_score}"

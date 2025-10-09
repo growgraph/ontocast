@@ -12,8 +12,9 @@ from langchain_core.prompts import PromptTemplate
 
 from ontocast.onto.constants import DEFAULT_CHUNK_IRI
 from ontocast.onto.context import AgentType
-from ontocast.onto.enum import FailureStage
+from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import SemanticTriplesFactsReport
+from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.state import AgentState
 from ontocast.prompt.render_facts import (
     critique_instruction_template,
@@ -185,7 +186,7 @@ def render_facts_subsequent_visit(state: AgentState, tools: ToolBox) -> AgentSta
     logger.info("Rendering updates for facts")
     llm_tool = tools.llm
 
-    parser = PydanticOutputParser(pydantic_object=SemanticTriplesFactsReport)
+    parser = PydanticOutputParser(pydantic_object=GraphUpdate)
 
     preamble_str = preamble_subsequent_visit
 
@@ -223,15 +224,14 @@ def render_facts_subsequent_visit(state: AgentState, tools: ToolBox) -> AgentSta
             )
         )
 
-        proj = parser.parse(response.content)
-        proj.semantic_graph.sanitize_prefixes_namespaces()
-        if state.current_chunk.graph is not None:
-            state.current_chunk.graph += proj.semantic_graph
+        graph_update = parser.parse(response.content)
 
+        state.ontology_updates.append(graph_update)
+        state.set_node_status(WorkflowNode.TEXT_TO_FACTS, Status.SUCCESS)
         state.clear_failure()
         return state
 
     except Exception as e:
         logger.error(f"Failed to generate triples: {str(e)}")
-        state.set_failure(FailureStage.GENERATE_TTL_FOR_FACTS, str(e))
+        state.set_failure(FailureStage.GENERATE_SPARQL_UPDATE_FOR_FACTS, str(e))
         return state
