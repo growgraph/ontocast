@@ -202,9 +202,20 @@ def _generate_facts_sparql_updates(
     try:
         llm_tool = tools.llm
 
+        agent_context = state.get_context_for_agent(
+            agent_type=AgentType.RENDERER_FACTS,
+        )
+
+        # Build previous context from memory
+        previous_context = agent_context.get_conversation_context()
+        if previous_context:
+            previous_context_str = f"Previous context: {previous_context}"
+        else:
+            previous_context_str = "No previous context available."
+
         # Build prompt for SPARQL updates
         prompt = _build_facts_sparql_prompt(
-            state.document, state.failure_previous_context
+            state.current_chunk.text, previous_context_str
         )
 
         # Parse response with Pydantic

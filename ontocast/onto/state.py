@@ -86,6 +86,11 @@ class AgentState(BasePydanticModel):
         "from the current document",
         default_factory=RDFGraph,
     )
+    user_instruction: str = Field(
+        description="Specific user instruction for ontology/facts extraction, e.g. `Focus on extracting places`",
+        default="",
+    )
+
     ontology_addendum: Ontology = Field(
         default_factory=lambda: Ontology(
             ontology_id=ONTOLOGY_NULL_ID,
@@ -102,9 +107,8 @@ class AgentState(BasePydanticModel):
     failure_reason: str | None = None
     success_score: float = 0.0
     status: Status = Status.SUCCESS
-    statuses: defaultdict[WorkflowNode, Status] = Field(
-        default_factory=lambda: defaultdict(Status),
-        description="Status of each node",
+    statuses: dict[WorkflowNode, Status] = Field(
+        default_factory=dict, description="Status of each node"
     )
     node_visits: defaultdict[WorkflowNode, int] = Field(
         default_factory=lambda: defaultdict(int),
@@ -131,6 +135,14 @@ class AgentState(BasePydanticModel):
         """Initialize the agent state with given keyword arguments."""
         super().__init__(**kwargs)
         self.current_domain = os.getenv("CURRENT_DOMAIN", DEFAULT_DOMAIN)
+
+    def get_node_status(self, node: WorkflowNode) -> Status:
+        """Get the status of a workflow node, returning NOT_VISITED if not set."""
+        return self.statuses.get(node, Status.NOT_VISITED)
+
+    def set_node_status(self, node: WorkflowNode, status: Status) -> None:
+        """Set the status of a workflow node."""
+        self.statuses[node] = status
 
     def set_text(self, text):
         """Set the input text and generate document hash.

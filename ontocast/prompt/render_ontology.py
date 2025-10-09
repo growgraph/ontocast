@@ -1,25 +1,22 @@
 template_prompt = """
 {preamble}
 
-
 {intro_instruction}
-
 
 {ontology_instruction}
 
+{user_instruction}
 
 {ontology_ttl}
 
-
 {text}
-
 
 ### OUTPUT instructions
 {output_instruction}
 """
 
 system_preamble = """
-# INSTRUCTION 
+# INSTRUCTION
 You are an expert in SPARQL and ontology engineering.
 
 """
