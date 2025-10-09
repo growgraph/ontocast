@@ -10,7 +10,7 @@ from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import PromptTemplate
 
 from ontocast.onto.context import AgentType, Role
-from ontocast.onto.enum import FailureStages, Status
+from ontocast.onto.enum import FailureStage, Status
 from ontocast.onto.model import KGCritiqueReport
 from ontocast.onto.state import AgentState
 from ontocast.prompt.enhanced_criticise_facts import (
@@ -124,7 +124,7 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
             logger.info("Facts critique passed")
         else:
             state.status = Status.FAILED
-            state.failure_stage = FailureStages.FACTS_CRITIQUE
+            state.failure_stage = FailureStage.FACTS_CRITIQUE
             state.failure_reason = f"Facts critique failed: {critique.facts_graph_derivation_critique_comment}"
             logger.warning(
                 f"Facts critique failed: {critique.facts_graph_derivation_critique_comment}"
@@ -134,5 +134,5 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
 
     except Exception as e:
         logger.error(f"Failed to critique facts: {str(e)}")
-        state.set_failure(FailureStages.FACTS_CRITIQUE, str(e))
+        state.set_failure(FailureStage.FACTS_CRITIQUE, str(e))
         return state

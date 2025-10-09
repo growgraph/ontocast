@@ -10,7 +10,7 @@ import logging
 from rdflib import Namespace
 
 from ontocast.onto.constants import DEFAULT_CHUNK_IRI
-from ontocast.onto.enum import FailureStages
+from ontocast.onto.enum import FailureStage
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.tool.validate import validate_and_connect_chunk
@@ -122,7 +122,7 @@ def sublimate_ontology(state: AgentState, tools: ToolBox):
     except Exception as e:
         logger.error(f"Error in sublimate_ontology: {str(e)}")
         state.set_failure(
-            FailureStages.SUBLIMATE_ONTOLOGY,
+            FailureStage.SUBLIMATE_ONTOLOGY,
             str(e),
         )
 

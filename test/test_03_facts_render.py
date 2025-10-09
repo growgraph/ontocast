@@ -1,6 +1,6 @@
 import pytest
 
-from ontocast.agent import criticise_facts, render_facts, sublimate_ontology
+from ontocast.agent import criticise_facts, render_facts_first_visit, sublimate_ontology
 from ontocast.onto.enum import Status
 from ontocast.onto.state import AgentState
 
@@ -9,7 +9,7 @@ def test_render_facts(
     state_ontology_criticized: AgentState, tools, state_rendered_facts_filename
 ):
     state = state_ontology_criticized
-    state = render_facts(state=state, tools=tools)
+    state = render_facts_first_visit(state=state, tools=tools)
 
     assert len(state.current_chunk.graph) > 0
     assert state.status == Status.SUCCESS
@@ -50,6 +50,6 @@ def test_criticise_facts(
 
 def test_render_facts_after_fail(state_facts_failed: AgentState, tools):
     state = state_facts_failed
-    state = render_facts(state=state, tools=tools)
+    state = render_facts_first_visit(state=state, tools=tools)
 
     assert len(state.current_chunk.graph) > 0

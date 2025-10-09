@@ -9,7 +9,7 @@ import logging
 from langchain.output_parsers import PydanticOutputParser
 
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI
-from ontocast.onto.enum import FailureStages, Status, WorkflowNode
+from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import OntologyUpdateCritiqueReport
 from ontocast.onto.state import AgentState
 from ontocast.prompt.criticise_ontology import (
@@ -101,10 +101,12 @@ def criticise_ontology_first_visit(state: AgentState, tools: ToolBox) -> AgentSt
 
         if critique.is_satisfactory:
             state.status = Status.SUCCESS
+            state.set_node_status(WorkflowNode.CRITICISE_ONTOLOGY, Status.SUCCESS)
             logger.info("Ontology critique passed")
         else:
             state.status = Status.FAILED
-            state.failure_stage = FailureStages.ONTOLOGY_CRITIQUE
+            state.failure_stage = FailureStage.ONTOLOGY_CRITIQUE
+            state.set_node_status(WorkflowNode.CRITICISE_ONTOLOGY, Status.FAILED)
             state.failure_reason = f"Ontology critique failed: {critique.issues}"
             logger.warning(f"Ontology critique failed: {critique.issues}")
 
@@ -112,7 +114,8 @@ def criticise_ontology_first_visit(state: AgentState, tools: ToolBox) -> AgentSt
 
     except Exception as e:
         logger.error(f"Failed to critique ontology: {str(e)}")
-        state.set_failure(FailureStages.ONTOLOGY_CRITIQUE, str(e))
+        state.set_failure(FailureStage.ONTOLOGY_CRITIQUE, str(e))
+        state.set_node_status(WorkflowNode.CRITICISE_ONTOLOGY, Status.FAILED)
         return state
 
 
@@ -150,18 +153,24 @@ def criticise_ontology_with_updates(state: AgentState, tools: ToolBox) -> AgentS
             f"score: {critique.score}"
         )
 
-        if critique.is_satisfactory:
+        if critique.update_successful:
             state.status = Status.SUCCESS
+            state.set_node_status(WorkflowNode.CRITICISE_ONTOLOGY, Status.SUCCESS)
+
             logger.info("Ontology critique passed")
         else:
             state.status = Status.FAILED
-            state.failure_stage = FailureStages.ONTOLOGY_CRITIQUE
-            state.failure_reason = f"Ontology critique failed: {critique.issues}"
+            state.failure_stage = FailureStage.ONTOLOGY_CRITIQUE
+            state.set_node_status(WorkflowNode.CRITICISE_ONTOLOGY, Status.FAILED)
+            state.failure_reason = (
+                f"Ontology critique failed: {critique.improvement_instructions}"
+            )
             logger.warning(f"Ontology critique failed: {critique.issues}")
 
         return state
 
     except Exception as e:
         logger.error(f"Failed to critique ontology: {str(e)}")
-        state.set_failure(FailureStages.ONTOLOGY_CRITIQUE, str(e))
+        state.set_failure(FailureStage.ONTOLOGY_CRITIQUE, str(e))
+        state.set_node_status(WorkflowNode.CRITICISE_ONTOLOGY, Status.FAILED)
         return state

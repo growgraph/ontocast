@@ -83,7 +83,7 @@ class SemanticTriplesFactsReport(BaseModel):
     ontology_relevance_score: float | None = Field(
         description=(
             "Score between 0 and 100 of how well "
-            "the ontology represents the domain  of the document."
+            "the ontology represents the domain of the document."
         )
     )
     triples_generation_score: float | None = Field(
@@ -118,8 +118,8 @@ class OntologyUpdateCritiqueReport(BaseModel):
     )
     improvement_instructions: list[str] = Field(
         default_factory=list,
-        description="Itemized concrete actionable instructions specifying "
-        "what should be done to improve the (possibly updated) ontology ",
+        description="Itemized concrete and actionable instructions "
+        "for improvements of extraction of the (possibly updated) ontology",
     )
 
 

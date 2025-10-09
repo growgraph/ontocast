@@ -12,8 +12,8 @@ from .chunk_text import chunk_text
 from .convert_document import convert_document
 from .criticise_facts import criticise_facts
 from .criticise_ontology import criticise_ontology
-from .render_facts import render_facts
-from .render_ontology_triples import render_ontology_first_visit_no_seed_ontology
+from .render_facts import render_facts_first_visit
+from .render_ontology import render_ontology_first_visit_no_seed_ontology
 from .select_ontology import select_ontology
 from .sublimate_ontology import sublimate_ontology
 
@@ -27,5 +27,5 @@ __all__ = [
     "select_ontology",
     "sublimate_ontology",
     "render_ontology_first_visit_no_seed_ontology",
-    "render_facts",
+    "render_facts_first_visit",
 ]

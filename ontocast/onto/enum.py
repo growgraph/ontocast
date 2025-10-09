@@ -18,7 +18,7 @@ class OntologyDecision(StrEnum):
     IMPROVE_CREATE_ONTOLOGY = "improve/create ontology"
 
 
-class FailureStages(StrEnum):
+class FailureStage(StrEnum):
     """Enumeration of possible failure stages in the workflow."""
 
     NO_CHUNKS_TO_PROCESS = "No chunks to process"

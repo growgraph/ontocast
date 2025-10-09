@@ -13,11 +13,12 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.onto.constants import ONTOLOGY_NULL_ID
-from ontocast.onto.enum import FailureStages, Status, WorkflowNode
+from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.state import AgentState
 from ontocast.prompt.render_ontology import (
+    critique_instruction_template,
     general_ontology_instruction,
     intro_instruction_first_visit_no_seed,
     intro_instruction_first_visit_seed,
@@ -78,10 +79,11 @@ def render_ontology_first_visit_no_seed_ontology(
     """
 
     parser = PydanticOutputParser(pydantic_object=Ontology)
-    logger.info("Creating fresh ontology")
+    logger.info("Rendering fresh ontology")
     intro_instruction = intro_instruction_first_visit_no_seed
     output_instruction = output_instruction_ttl
     ontology_ttl = ""
+    critique_instruction_str = ""
 
     prompt = PromptTemplate(
         template=template_prompt,
@@ -91,6 +93,7 @@ def render_ontology_first_visit_no_seed_ontology(
             "ontology_instruction",
             "output_instruction",
             "user_instruction",
+            "critique_instruction",
             "ontology_ttl",
             "text",
             "format_instructions",
@@ -105,7 +108,8 @@ def render_ontology_first_visit_no_seed_ontology(
                 ontology_instruction=general_ontology_instruction,
                 output_instruction=output_instruction,
                 ontology_ttl=ontology_ttl,
-                user_instruction=state.user_instruction,
+                user_instruction=state.ontology_user_instruction,
+                critique_instruction=critique_instruction_str,
                 text=state.current_chunk.text,
                 format_instructions=parser.get_format_instructions(),
             )
@@ -124,7 +128,7 @@ def render_ontology_first_visit_no_seed_ontology(
     except Exception as e:
         logger.error(f"Failed to generate triples: {str(e)}")
         state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.FAILED)
-        state.set_failure(FailureStages.GENERATE_TTL_FOR_ONTOLOGY, str(e))
+        state.set_failure(FailureStage.GENERATE_TTL_FOR_ONTOLOGY, str(e))
         return state
 
 
@@ -153,6 +157,7 @@ def render_ontology_first_visit_with_seed_ontology(
     )
     ontology_ttl = state.current_ontology.graph.serialize(format="turtle")
     output_instruction = output_instruction_sparql
+    critique_instruction_str = ""
 
     prompt = PromptTemplate(
         template=template_prompt,
@@ -162,6 +167,7 @@ def render_ontology_first_visit_with_seed_ontology(
             "ontology_instruction",
             "output_instruction",
             "user_instruction",
+            "critique_instruction",
             "ontology_ttl",
             "text",
             "format_instructions",
@@ -175,8 +181,9 @@ def render_ontology_first_visit_with_seed_ontology(
                 intro_instruction=intro_instruction,
                 ontology_instruction=general_ontology_instruction,
                 output_instruction=output_instruction,
+                critique_instruction=critique_instruction_str,
                 ontology_ttl=ontology_ttl,
-                user_instruction=state.user_instruction,
+                user_instruction=state.ontology_user_instruction,
                 text=state.current_chunk.text,
                 format_instructions=parser.get_format_instructions(),
             )
@@ -194,16 +201,14 @@ def render_ontology_first_visit_with_seed_ontology(
     except Exception as e:
         logger.error(f"Failed to generate ontology update: {str(e)}")
         state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.FAILED)
-        state.set_failure(FailureStages.GENERATE_SPARQL_UPDATE_FOR_ONTOLOGY, str(e))
+        state.set_failure(FailureStage.GENERATE_SPARQL_UPDATE_FOR_ONTOLOGY, str(e))
         return state
 
 
 def render_ontology_subsequent_visit(state: AgentState, tools: ToolBox) -> AgentState:
     """Render ontology triples into a human-readable format.
 
-    This function takes the triples from the current ontology and renders them
-    into a more accessible format, making the ontological knowledge easier to
-    understand.
+    This function generates ontology based on a given text and previous interactions / critical input.
 
     Args:
         state: The current agent state containing the ontology to render.
@@ -212,6 +217,7 @@ def render_ontology_subsequent_visit(state: AgentState, tools: ToolBox) -> Agent
     Returns:
         AgentState: Updated state with rendered triples.
     """
+
     parser = PydanticOutputParser(pydantic_object=GraphUpdate)
     ontology_iri = state.current_ontology.iri
     ontology_desc = state.current_ontology.describe()
@@ -220,6 +226,12 @@ def render_ontology_subsequent_visit(state: AgentState, tools: ToolBox) -> Agent
     )
     ontology_ttl = state.current_ontology.graph.serialize(format="turtle")
     output_instruction = output_instruction_sparql
+    if state.improvements_suggestions:
+        critique_instruction_str = critique_instruction_template.format(
+            "\n- ".join(state.improvements_suggestions)
+        )
+    else:
+        critique_instruction_str = ""
 
     prompt = PromptTemplate(
         template=template_prompt,
@@ -229,6 +241,7 @@ def render_ontology_subsequent_visit(state: AgentState, tools: ToolBox) -> Agent
             "ontology_instruction",
             "output_instruction",
             "user_instruction",
+            "critique_instruction",
             "ontology_ttl",
             "text",
             "format_instructions",
@@ -242,9 +255,10 @@ def render_ontology_subsequent_visit(state: AgentState, tools: ToolBox) -> Agent
                 intro_instruction=intro_instruction,
                 ontology_instruction=general_ontology_instruction,
                 output_instruction=output_instruction,
+                critique_instruction=critique_instruction_str,
                 ontology_ttl=ontology_ttl,
-                user_instruction=state.user_instruction,
-                text=state.current_chunk.text,
+                user_instruction=state.ontology_user_instruction,
+                text="",
                 format_instructions=parser.get_format_instructions(),
             )
         )
@@ -262,5 +276,5 @@ def render_ontology_subsequent_visit(state: AgentState, tools: ToolBox) -> Agent
     except Exception as e:
         logger.error(f"Failed to generate ontology update: {str(e)}")
         state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.FAILED)
-        state.set_failure(FailureStages.GENERATE_SPARQL_UPDATE_FOR_ONTOLOGY, str(e))
+        state.set_failure(FailureStage.GENERATE_SPARQL_UPDATE_FOR_ONTOLOGY, str(e))
         return state

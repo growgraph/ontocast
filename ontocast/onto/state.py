@@ -12,7 +12,7 @@ from ontocast.onto.constants import (
     ONTOLOGY_NULL_IRI,
 )
 from ontocast.onto.context import AgentContext, AgentType, ContextManager
-from ontocast.onto.enum import Status, WorkflowNode
+from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import BasePydanticModel
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
@@ -87,11 +87,15 @@ class AgentState(BasePydanticModel):
         "from the current document",
         default_factory=RDFGraph,
     )
-    user_instruction: str = Field(
-        description="Specific user instruction for ontology/facts extraction, e.g. `Focus on extracting places`",
+    ontology_user_instruction: str = Field(
+        description="Specific user instructions for ontology extraction, e.g. `Focus on extracting places`",
         default="",
     )
 
+    facts_user_instruction: str = Field(
+        description="Specific user instructions for facts extraction, e.g. `Focus on extracting places`",
+        default="",
+    )
     ontology_updates: list[GraphUpdate] = Field(
         default_factory=list,
         description="A list of graph update that improve the current ontology",
@@ -109,8 +113,14 @@ class AgentState(BasePydanticModel):
         "as well as the description, name, short name, version, "
         "and IRI of the ontology",
     )
-    failure_stage: str | None = None
+    failure_stage: FailureStage | None = None
     failure_reason: str | None = None
+
+    improvements_suggestions: list[str] = Field(
+        description="Itemized concrete and actionable instructions for improvements of extraction of facts/ontology",
+        default_factory=list,
+    )
+
     success_score: float = 0.0
     status: Status = Status.SUCCESS
     statuses: dict[WorkflowNode, Status] = Field(

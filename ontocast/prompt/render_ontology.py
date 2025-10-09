@@ -7,11 +7,12 @@ template_prompt = """
 
 {user_instruction}
 
+{critique_instruction}
+
 {ontology_ttl}
 
 {text}
 
-### OUTPUT instructions
 {output_instruction}
 
 {format_instructions}
@@ -19,7 +20,7 @@ template_prompt = """
 
 system_preamble = """
 # INSTRUCTION
-You are an expert in SPARQL and ontology engineering.
+You are an expert in semantic technologies, SPARQL and ontology engineering.
 
 """
 
@@ -32,8 +33,6 @@ intro_instruction_first_visit_no_seed = """
 
 """
 
-
-# no_seed_ontology_first_visit
 instruction_first_visit_no_seed = """
 """
 
@@ -46,7 +45,6 @@ Update/modify the domain ontology {ontology_iri} provided below with abstract en
 Feel free to modify the description of the ontology to make it more accurate and complete, but to change neither the ontology IRI nor name.
 """
 
-# univeral
 general_ontology_instruction = """
 ### GENERAL
 0. use prefix `co:` for entities/properties placed in the current domain ontology.
@@ -59,13 +57,21 @@ general_ontology_instruction = """
 8. update/assign the version of the ontology using semantic versioning convention.
 """
 
-# no_seed_ontology_first_visit
 output_instruction_ttl = """
+### OUTPUT INSTRUCTION
+
 1. ontology must be provided in turtle format as a single string
 2. define all prefixes for all namespaces used in the ontology, etc rdf, rdfs, owl, schema, etc.
 """
 
 
 output_instruction_sparql = """
+### OUTPUT instructions
+
 1. generate SPARQL operations that modify the existing ontology, not replace it entirely
+"""
+
+critique_instruction_template = """
+### CRITIQUE INSTRUCTION
+Previous
 """

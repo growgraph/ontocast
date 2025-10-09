@@ -5,7 +5,7 @@ from ontocast.agent import (
     criticise_ontology,
     render_ontology_first_visit_no_seed_ontology,
 )
-from ontocast.onto.enum import FailureStages, Status
+from ontocast.onto.enum import FailureStage, Status
 from ontocast.onto.state import AgentState
 
 
@@ -46,7 +46,7 @@ def test_state_onto_criticized(
 ):
     state = criticise_ontology(state_ontology_rendered, tools=tools)
     assert state.status == Status.FAILED
-    assert state.failure_stage == FailureStages.ONTOLOGY_CRITIQUE
+    assert state.failure_stage == FailureStage.ONTOLOGY_CRITIQUE
     assert len(state.ontology_addendum.graph) > 0
     assert len(state.current_ontology.graph) > 0
     state.clear_failure()
