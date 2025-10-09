@@ -15,6 +15,8 @@ from ontocast.onto.state import AgentState
 from ontocast.prompt.criticise_ontology import (
     document_template,
     intro_first_no_seed_instruction,
+    intro_first_with_seed_instruction,
+    intro_subsequent_instruction,
     ontology_template,
     ontology_update_template,
     system_preamble,
@@ -64,17 +66,15 @@ def criticise_ontology_first_visit(state: AgentState, tools: ToolBox) -> AgentSt
     parser = PydanticOutputParser(pydantic_object=OntologyUpdateCritiqueReport)
     llm_tool: LLMTool = tools.llm
 
-    # ontology_updated_str = state.render_uptodate_ontology().graph.serialize(
-    #     format="turtle"
-    # )
-
     ontology_ttl = state.current_ontology.graph.serialize(format="turtle")
     if state.ontology_updates:
         ontology_update_str = ontology_update_template.format(
             ontology_update=state.generate_ontology_updates_markdown()
         )
+        intro_instruction = intro_first_with_seed_instruction
     else:
         ontology_update_str = ""
+        intro_instruction = intro_first_no_seed_instruction
 
     ontology_chapter = ontology_template.format(
         ontology_ttl=ontology_ttl, ontology_updates=ontology_update_str
@@ -85,7 +85,7 @@ def criticise_ontology_first_visit(state: AgentState, tools: ToolBox) -> AgentSt
         response = llm_tool(
             template_prompt.format(
                 preamble=system_preamble,
-                intro_instruction=intro_first_no_seed_instruction,
+                intro_instruction=intro_instruction,
                 ontology_criteria=state.current_chunk.text,
                 document_chapter=document_chapter,
                 ontology_chapter=ontology_chapter,
@@ -124,18 +124,22 @@ def criticise_ontology_with_updates(state: AgentState, tools: ToolBox) -> AgentS
     #     format="turtle"
     # )
 
-    ontology_ttl = state.current_ontology.graph.serialize(format="turtle")
-    ontology_chapter = ontology_template.format(ontology_ttl=ontology_ttl)
+    if state.ontology_updates:
+        ontology_update_str = ontology_update_template.format(
+            ontology_update=state.generate_ontology_updates_markdown()
+        )
+    else:
+        ontology_update_str = ""
 
-    document_chapter = document_template.format(document=state.current_chunk.text)
+    document_chapter = ""
     try:
         response = llm_tool(
             template_prompt.format(
                 preamble=system_preamble,
-                intro_instruction=intro_first_no_seed_instruction,
+                intro_instruction=intro_subsequent_instruction,
                 ontology_criteria=state.current_chunk.text,
                 document_chapter=document_chapter,
-                ontology_chapter=ontology_chapter,
+                ontology_chapter=ontology_update_str,
                 format_instructions=parser.get_format_instructions(),
             )
         )
