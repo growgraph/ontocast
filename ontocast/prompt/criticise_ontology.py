@@ -1,37 +1,74 @@
-prompt_fresh = """You are a helpful assistant that criticises a newly proposed ontology.
-You need to decide whether the updated ontology is sufficiently complete and comprehensive, also providing a score between 0 and 100.
-The ontology is considered complete and comprehensive if it captures the most important abstract classes and properties that are present explicitly or implicitly in the document.
-If is not not complete and comprehensive, provide a very concrete itemized explanation of why can be improved.
-As we are working on an ontology, ONLY abstract classes and properties are considered, concrete entities are not important.
+template_prompt = """
+{preamble}
 
-{ontology_original_str}
+{intro_instruction}
 
-Here is the document from which the ontology was derived:
-{document}
+{ontology_criteria}
 
-Here is the proposed ontology:
-```ttl
-{ontology_update}
-```
+{user_instruction}
 
-{format_instructions}
+{ontology_chapter}
+
+{document_chapter}
 """
 
-prompt_update = """You are a helpful assistant that criticises an ontology update.
-You need to decide whether the updated ontology is sufficiently complete and comprehensive, also providing a score between 0 and 100.
-The ontology is considered complete and comprehensive if it captures the most important abstract classes and properties that are present explicitly or implicitly in the document.
-If is not not complete and comprehensive, provide a very concrete itemized explanation of why can be improved.
-As we are working on an ontology, ONLY abstract classes and properties are considered, concrete entities are not important.
+system_preamble = """
+# INSTRUCTION
 
-{ontology_original_str}
+You are an expert in SPARQL and ontology engineering. You task is to provide critique of an ontology with respect to provided text.
+"""
 
-Here is the document from which the ontology update was derived:
-{document}
+ontology_criteria = """
+EVALUATION CRITERIA:
+1. Appropriateness: Are changes appropriate for the document and ontology?
+2. Completeness: Do changes capture all necessary updates?
+3. Consistency: Are changes consistent with existing ontology structure?
+4. Abstraction: Only abstract classes and properties belong in the ontology, not concrete instances
+5. Domain Coverage: Include implicit domain-specific abstractions and relationships not explicitly mentioned
+6. Structure: Check hierarchies, property definitions, redundancy, and appropriate granularity
 
-Here is the ontology update:
+CONTEXT-AWARE EVALUATION:
+- Review previous critiques before evaluating
+- Build upon previous feedback incrementally
+- Acknowledge improvements already made
+- Focus on remaining gaps or new issues
+
+OUTPUT:
+Provide itemized, actionable critique specifying what should be done to improve the ontology.
+"""
+
+intro_first_no_seed_instruction = """
+You are provided a text and an ontology (below).
+"""
+
+intro_first_with_seed_instruction = """
+You are provided a text (below), an ontology and its update (suggested edits to the ontology).
+Provide the critique of the ontology taking into account the update.
+"""
+
+intro_subsequent_instruction = """
+You were provided the text previously in the conversation as well as the ontology with its updates.
+Below you are provided a current update addressing your previous critiques.
+Refine your critique of the ontology taking into account all the preceding updates.
+"""
+
+ontology_template = """
+### Ontology
 ```ttl
+{ontology_ttl}
+```
 {ontology_update}
+"""
+
+ontology_update_template = """
+### Ontology Update
+{ontology_update}
+"""
+
+document_template = """
+### The Document of Interest
+```ttl
+{document}
 ```
 
-{format_instructions}
 """

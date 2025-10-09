@@ -98,32 +98,28 @@ class OntologyUpdateCritiqueReport(BaseModel):
     """Report from ontology update critique process.
 
     Attributes:
-        ontology_update_success: True if the ontology update was performed
+        update_successful: True if the ontology update was performed
             successfully, False otherwise.
-        ontology_update_score: Score 0-100 for how well the update improves
+        ontology_score: Score 0-100 for how well the update improves
             the original domain ontology of the document.
-        ontology_update_critique: A concrete explanation of why the
+        improvement_instructions: A concrete explanation of why the
             ontology update is not satisfactory.
     """
 
-    ontology_update_success: bool = Field(
+    update_successful: bool = Field(
         description="True if the ontology update "
-        "was performed successfully, False otherwise."
+        "produced an appropriate complete, consistent and relevant ontology "
+        "reflecting the domain of the provided doc, False otherwise."
     )
-    ontology_update_score: float = Field(
-        description="Score 0-100 for how well the update improves "
-        "the original domain ontology of the document. "
+    ontology_score: float = Field(
+        description="Score 0-100 for how well the updated domain ontology "
+        " serves as the ontology for the document. "
         "0 is the worst, 100 is the best."
     )
-    ontology_update_critique: str | None = Field(
-        None,
-        description="A concrete explanation of why "
-        "the ontology update is not satisfactory. "
-        "The explanation should be very specific and detailed.",
-    )
-
-    ontology_update_failed: str | None = Field(
-        None, description="A null ontology update was returned."
+    improvement_instructions: list[str] = Field(
+        default_factory=list,
+        description="Itemized concrete actionable instructions specifying "
+        "what should be done to improve the (possibly updated) ontology ",
     )
 
 

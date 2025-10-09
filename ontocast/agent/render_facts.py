@@ -124,6 +124,9 @@ def hybrid_render_facts(state: AgentState, tools: ToolBox) -> AgentState:
     """
     logger.info("Structured hybrid facts rendering with Turtle/SPARQL decision")
 
+    # apply ontology updates in case they exist
+    state.update_ontology()
+
     # Get context for this agent
     agent_context = state.get_context_for_agent(
         agent_type=AgentType.RENDERER_FACTS,

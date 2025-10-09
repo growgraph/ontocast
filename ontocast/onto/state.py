@@ -16,6 +16,7 @@ from ontocast.onto.enum import Status, WorkflowNode
 from ontocast.onto.model import BasePydanticModel
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.sparql_models import AddPrefixOp, GraphUpdate
 from ontocast.util import iri2namespace, render_text_hash
 
 
@@ -91,6 +92,11 @@ class AgentState(BasePydanticModel):
         default="",
     )
 
+    ontology_updates: list[GraphUpdate] = Field(
+        default_factory=list,
+        description="A list of graph update that improve the current ontology",
+    )
+
     ontology_addendum: Ontology = Field(
         default_factory=lambda: Ontology(
             ontology_id=ONTOLOGY_NULL_ID,
@@ -143,6 +149,97 @@ class AgentState(BasePydanticModel):
     def set_node_status(self, node: WorkflowNode, status: Status) -> None:
         """Set the status of a workflow node."""
         self.statuses[node] = status
+
+    def render_uptodate_ontology(self) -> Ontology:
+        """Create a copy of the current ontology with all GraphUpdate objects applied.
+
+        This method:
+        1. Creates a copy of the current ontology
+        2. Generates SPARQL queries from all GraphUpdate objects
+        3. Executes the queries on the copied ontology graph
+        4. Syncs properties to ensure object fields are updated
+        5. Returns the updated ontology copy
+
+        Returns:
+            Ontology: A copy of the current ontology with all updates applied
+        """
+        if not self.ontology_updates:
+            return self.current_ontology
+
+        # Create a copy of the current ontology
+        from copy import deepcopy
+
+        updated_ontology = deepcopy(self.current_ontology)
+
+        all_prefixes = {}
+        for graph_update in self.ontology_updates:
+            for op in graph_update.operations:
+                if isinstance(op, AddPrefixOp):
+                    all_prefixes[op.prefix] = op.namespace_uri
+
+        # Bind prefixes to the copied ontology graph
+        for prefix, uri in all_prefixes.items():
+            updated_ontology.graph.bind(prefix, uri)
+
+        # Apply each GraphUpdate to the copied ontology
+        for graph_update in self.ontology_updates:
+            # Generate SPARQL queries from the GraphUpdate
+            queries = graph_update.generate_sparql_queries()
+
+            # Execute each query on the copied ontology graph
+            for query in queries:
+                updated_ontology.graph.update(query)
+
+        # Sync properties to update object fields after graph changes
+        updated_ontology.sync_properties_to_graph()
+
+        return updated_ontology
+
+    def update_ontology(self) -> None:
+        """Update the current ontology with all GraphUpdate objects and clear the updates list.
+
+        This method:
+        1. Uses render_uptodate_ontology() to get an updated copy
+        2. Replaces the current ontology with the updated copy
+        3. Clears the ontology_updates list
+        """
+        if not self.ontology_updates:
+            return
+
+        # Get the updated ontology copy
+        updated_ontology = self.render_uptodate_ontology()
+
+        # Replace the current ontology with the updated copy
+        self.current_ontology = updated_ontology
+
+        # Clear the updates list
+        self.ontology_updates = []
+
+    def generate_ontology_updates_markdown(self) -> str:
+        """Generate a markdown string representing the chain of ontology updates.
+
+        Returns:
+            Markdown-formatted string showing all pending ontology updates.
+            Returns empty string if no updates are pending.
+        """
+        if not self.ontology_updates:
+            return ""
+
+        markdown_parts = []
+        for i, graph_update in enumerate(self.ontology_updates, 1):
+            diff_summary = graph_update.generate_diff_summary()
+            if diff_summary:
+                markdown_parts.append(f"## Update {i}")
+                markdown_parts.append(diff_summary)
+
+            markdown_parts.append("")
+
+            # Add separator between updates (except for the last one)
+            if i < len(self.ontology_updates):
+                markdown_parts.append("---")
+                markdown_parts.append("")
+
+        return "\n".join(markdown_parts)
 
     def set_text(self, text):
         """Set the input text and generate document hash.

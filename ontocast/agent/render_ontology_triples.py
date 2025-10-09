@@ -46,18 +46,6 @@ def render_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     """
     logger.info("Structured hybrid ontology rendering with Turtle/SPARQL decision")
 
-    # Get context for this agent
-    # agent_context = state.get_context_for_agent(
-    #     agent_type=AgentType.RENDERER_ONTOLOGY,
-    # )
-
-    # # Build previous context from memory
-    # previous_context = agent_context.get_conversation_context()
-    # if previous_context:
-    #     previous_context_str = f"Previous context: {previous_context}"
-    # else:
-    #     previous_context_str = "No previous context available."
-
     is_first_visit = (
         state.get_node_status(WorkflowNode.TEXT_TO_ONTOLOGY) == Status.NOT_VISITED
     )
@@ -123,11 +111,11 @@ def render_ontology_first_visit_no_seed_ontology(
             )
         )
 
-        state.ontology_addendum = parser.parse(response.content)
-        state.ontology_addendum.graph.sanitize_prefixes_namespaces()
+        state.current_ontology = parser.parse(response.content)
+        state.current_ontology.graph.sanitize_prefixes_namespaces()
 
         logger.info(
-            f"Ontology addendum has {len(state.ontology_addendum.graph)} triples."
+            f"New ontology created with {len(state.current_ontology.graph)} triples."
         )
         state.clear_failure()
         state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.SUCCESS)
@@ -195,6 +183,7 @@ def render_ontology_first_visit_with_seed_ontology(
         )
 
         graph_update: GraphUpdate = parser.parse(response.content)
+        state.ontology_updates.append(graph_update)
         # state.ontology_addendum.graph.sanitize_prefixes_namespaces()
 
         logger.info(f"Ontology update has {len(graph_update.operations)} operations.")
@@ -205,7 +194,7 @@ def render_ontology_first_visit_with_seed_ontology(
     except Exception as e:
         logger.error(f"Failed to generate ontology update: {str(e)}")
         state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.FAILED)
-        state.set_failure(FailureStages.GENERATE_TTL_FOR_ONTOLOGY, str(e))
+        state.set_failure(FailureStages.GENERATE_SPARQL_UPDATE_FOR_ONTOLOGY, str(e))
         return state
 
 
@@ -261,9 +250,11 @@ def render_ontology_subsequent_visit(state: AgentState, tools: ToolBox) -> Agent
         )
 
         graph_update: GraphUpdate = parser.parse(response.content)
+
         # state.ontology_addendum.graph.sanitize_prefixes_namespaces()
 
         logger.info(f"Ontology update has {len(graph_update.operations)} operations.")
+        state.ontology_updates.append(graph_update)
         state.clear_failure()
         state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.SUCCESS)
         return state
@@ -271,5 +262,5 @@ def render_ontology_subsequent_visit(state: AgentState, tools: ToolBox) -> Agent
     except Exception as e:
         logger.error(f"Failed to generate ontology update: {str(e)}")
         state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.FAILED)
-        state.set_failure(FailureStages.GENERATE_TTL_FOR_ONTOLOGY, str(e))
+        state.set_failure(FailureStages.GENERATE_SPARQL_UPDATE_FOR_ONTOLOGY, str(e))
         return state

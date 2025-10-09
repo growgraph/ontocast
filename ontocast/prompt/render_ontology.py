@@ -13,6 +13,8 @@ template_prompt = """
 
 ### OUTPUT instructions
 {output_instruction}
+
+{format_instructions}
 """
 
 system_preamble = """
@@ -66,20 +68,4 @@ output_instruction_ttl = """
 
 output_instruction_sparql = """
 1. generate SPARQL operations that modify the existing ontology, not replace it entirely
-Generate operations in the following structured format:
-
-## ADD Section
-- INSERT new ontology classes, properties, and relationships
-- Add new domain-specific concepts
-- Extend existing hierarchies
-
-## UPDATE Section
-- MODIFY existing ontology elements
-- Update descriptions, labels, or relationships
-- Refine existing concepts
-
-## REMOVE Section
-- DELETE obsolete ontology elements
-- Remove outdated concepts or relationships
-- Clean up redundant elements
 """

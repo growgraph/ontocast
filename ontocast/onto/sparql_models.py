@@ -455,9 +455,69 @@ class GraphUpdate(BaseModel):
                             queries.append(op.query)
                     else:
                         queries.append(op.query)
-            # AddPrefixOp operations are handled by the prefix_block above
-
         return queries
+
+    def generate_diff_summary(self) -> str:
+        """Generate a human-readable diff summary of all operations for LLM consumption.
+
+        Returns:
+            String representation of all operations showing what will be added, removed, and modified.
+            Returns empty string if no operations to perform.
+        """
+        if not self.operations:
+            return ""
+
+        diff_parts = []
+        operation_count = 0
+
+        for i, op in enumerate(self.operations, 1):
+            if isinstance(op, AddPrefixOp):
+                diff_parts.append(
+                    f"{i}. ADD PREFIX: {op.prefix} → <{op.namespace_uri}>"
+                )
+                operation_count += 1
+
+            elif isinstance(op, InsertOp):
+                if op.triples:
+                    diff_parts.append(f"{i}. INSERT {len(op.triples)} triple(s):")
+                    for triple in op.triples:
+                        subject_term, predicate_term, object_term = (
+                            triple.to_rdf_terms()
+                        )
+                        diff_parts.append(
+                            f"   + {self._serialize_rdf_term(subject_term)} {self._serialize_rdf_term(predicate_term)} {self._serialize_rdf_term(object_term)}"
+                        )
+                    operation_count += 1
+
+            elif isinstance(op, DeleteOp):
+                if op.triples:
+                    diff_parts.append(f"{i}. DELETE {len(op.triples)} triple(s):")
+                    for triple in op.triples:
+                        subject_term, predicate_term, object_term = (
+                            triple.to_rdf_terms()
+                        )
+                        diff_parts.append(
+                            f"   - {self._serialize_rdf_term(subject_term)} {self._serialize_rdf_term(predicate_term)} {self._serialize_rdf_term(object_term)}"
+                        )
+                    operation_count += 1
+
+            elif isinstance(op, GenericSparqlQuery):
+                if op.query.strip():
+                    # Truncate long queries for readability
+                    query_preview = op.query.strip()
+                    if len(query_preview) > 100:
+                        query_preview = query_preview[:97] + "..."
+                    diff_parts.append(f"{i}. CUSTOM SPARQL QUERY:")
+                    diff_parts.append(f"   {query_preview}")
+                    operation_count += 1
+
+        if operation_count == 0:
+            return ""
+
+        summary = f"Ontology Update Summary ({operation_count} operation(s)):\n\n"
+        summary += "\n".join(diff_parts)
+
+        return summary
 
     def _generate_insert_query(self, triples: list[Triple], prefix_block: str) -> str:
         """Generate a SPARQL INSERT query for the given triples."""
