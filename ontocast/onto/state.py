@@ -96,14 +96,25 @@ class AgentState(BasePydanticModel):
         description="Specific user instructions for facts extraction, e.g. `Focus on extracting places`",
         default="",
     )
+
     ontology_updates: list[GraphUpdate] = Field(
+        default_factory=list,
+        description="A list of graph update that improve the current ontology",
+    )
+
+    ontology_updates_applied: list[GraphUpdate] = Field(
         default_factory=list,
         description="A list of graph update that improve the current ontology",
     )
 
     facts_updates: list[GraphUpdate] = Field(
         default_factory=list,
-        description="A list of graph update that improve the current graph of facts",
+        description="A list of graph update that improve the current graph of facts (pending)",
+    )
+
+    facts_updates_applied: list[GraphUpdate] = Field(
+        default_factory=list,
+        description="A list of graph update that improve the current graph of facts (applied)",
     )
 
     ontology_addendum: Ontology = Field(
@@ -165,6 +176,54 @@ class AgentState(BasePydanticModel):
         """Set the status of a workflow node."""
         self.statuses[node] = status
 
+    @classmethod
+    def render_updated_graph(
+        cls, graph: RDFGraph, updates: list[GraphUpdate]
+    ) -> RDFGraph:
+        """Create a copy of the given graph with all GraphUpdate objects applied.
+
+        This method:
+        1. Creates a copy of the input graph
+        2. Generates SPARQL queries from all GraphUpdate objects
+        3. Executes the queries on the copied graph
+        4. Returns the updated graph copy
+
+        Args:
+            graph: The RDFGraph to update
+            updates: List of GraphUpdate objects to apply
+
+        Returns:
+            RDFGraph: A copy of the input graph with all updates applied
+        """
+        if not updates:
+            return graph
+
+        # Create a copy of the input graph
+        from copy import deepcopy
+
+        updated_graph = deepcopy(graph)
+
+        all_prefixes = {}
+        for graph_update in updates:
+            for op in graph_update.operations:
+                if isinstance(op, AddPrefixOp):
+                    all_prefixes[op.prefix] = op.namespace_uri
+
+        # Bind prefixes to the copied graph
+        for prefix, uri in all_prefixes.items():
+            updated_graph.bind(prefix, uri)
+
+        # Apply each GraphUpdate to the copied graph
+        for graph_update in updates:
+            # Generate SPARQL queries from the GraphUpdate
+            queries = graph_update.generate_sparql_queries()
+
+            # Execute each query on the copied graph
+            for query in queries:
+                updated_graph.update(query)
+
+        return updated_graph
+
     def render_uptodate_ontology(self) -> Ontology:
         """Create a copy of the current ontology with all GraphUpdate objects applied.
 
@@ -186,28 +245,13 @@ class AgentState(BasePydanticModel):
 
         updated_ontology = deepcopy(self.current_ontology)
 
-        all_prefixes = {}
-        for graph_update in self.ontology_updates:
-            for op in graph_update.operations:
-                if isinstance(op, AddPrefixOp):
-                    all_prefixes[op.prefix] = op.namespace_uri
-
-        # Bind prefixes to the copied ontology graph
-        for prefix, uri in all_prefixes.items():
-            updated_ontology.graph.bind(prefix, uri)
-
-        # Apply each GraphUpdate to the copied ontology
-        for graph_update in self.ontology_updates:
-            # Generate SPARQL queries from the GraphUpdate
-            queries = graph_update.generate_sparql_queries()
-
-            # Execute each query on the copied ontology graph
-            for query in queries:
-                updated_ontology.graph.update(query)
+        # Use the generalized function to update the graph
+        updated_ontology.graph = self.render_updated_graph(
+            self.current_ontology.graph, self.ontology_updates
+        )
 
         # Sync properties to update object fields after graph changes
         updated_ontology.sync_properties_to_graph()
-
         return updated_ontology
 
     def update_ontology(self) -> None:
@@ -228,7 +272,47 @@ class AgentState(BasePydanticModel):
         self.current_ontology = updated_ontology
 
         # Clear the updates list
+        self.ontology_updates_applied += self.ontology_updates
         self.ontology_updates = []
+
+    def render_uptodate_facts(self) -> RDFGraph:
+        """Create a copy of the current chunk's graph with all facts GraphUpdate objects applied.
+
+        This method:
+        1. Creates a copy of the current chunk's graph
+        2. Generates SPARQL queries from all facts GraphUpdate objects
+        3. Executes the queries on the copied graph
+        4. Returns the updated graph copy
+
+        Returns:
+            RDFGraph: A copy of the current chunk's graph with all facts updates applied
+        """
+        if not self.facts_updates:
+            return self.current_chunk.graph
+
+        # Use the generalized function to update the graph
+        return self.render_updated_graph(self.current_chunk.graph, self.facts_updates)
+
+    def update_facts(self) -> None:
+        """Update the current chunk's graph with all facts GraphUpdate objects and clear the updates list.
+
+        This method:
+        1. Uses render_uptodate_facts() to get an updated copy
+        2. Replaces the current chunk's graph with the updated copy
+        3. Clears the facts_updates list
+        """
+        if not self.facts_updates:
+            return
+
+        # Get the updated graph copy
+        updated_graph = self.render_uptodate_facts()
+
+        # Replace the current chunk's graph with the updated copy
+        self.current_chunk.graph = updated_graph
+
+        # Clear the updates list
+        self.facts_updates_applied += self.facts_updates
+        self.facts_updates = []
 
     def generate_ontology_updates_markdown(self) -> str:
         """Generate a markdown string representing the chain of ontology updates.

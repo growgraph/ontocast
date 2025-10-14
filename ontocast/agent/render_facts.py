@@ -11,7 +11,6 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.onto.constants import DEFAULT_CHUNK_IRI
-from ontocast.onto.context import AgentType
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import SemanticTriplesFactsReport
 from ontocast.onto.sparql_models import GraphUpdate
@@ -43,8 +42,6 @@ def hybrid_render_facts(state: AgentState, tools: ToolBox) -> AgentState:
     Returns:
         AgentState: Updated state with rendered facts
     """
-    # apply ontology updates in case they exist
-    state.update_ontology()
 
     is_first_visit = len(state.current_chunk.graph) == 0
 
@@ -52,55 +49,8 @@ def hybrid_render_facts(state: AgentState, tools: ToolBox) -> AgentState:
         logger.info("Generating fresh facts as Turtle")
         return render_facts_first_visit(state, tools)
     else:
-        pass
-        # logger.info("Generating facts updates as SPARQL operations")
-        #
-        # # Build previous context from memory
-        # previous_context = agent_context.get_conversation_context()
-        # if previous_context:
-        #     previous_context_str = f"Previous context: {previous_context}"
-        # else:
-        #     previous_context_str = "No previous context available."
-        #
-        # # Generate SPARQL operations for updates
-        # sparql_operations = _generate_facts_sparql_updates(
-        #     state, tools, previous_context_str
-        # )
-        #
-        # # Update state with SPARQL operations
-        # if sparql_operations:
-        #     # Store operations in context for later execution
-        #     agent_context.add_conversation_memory(
-        #         role=Role.SYSTEM,
-        #         content=f"Generated {len(sparql_operations.operations)} SPARQL operations for facts updates",
-        #         metadata={
-        #             "type": "facts_sparql_operations",
-        #             "operations": [
-        #                 op.model_dump_json() for op in sparql_operations.operations
-        #             ],
-        #             "namespaces": sparql_operations.namespaces,
-        #         },
-        #     )
-        #     state.status = Status.SUCCESS
-        #     logger.info(
-        #         f"Generated {len(sparql_operations.operations)} SPARQL operations"
-        #     )
-        # else:
-        #     state.status = Status.FAILED
-        #     state.failure_stage = FailureStage.GENERATE_SPARQL_UPDATE_FOR_FACTS
-        #     logger.error("Failed to generate SPARQL operations")
-
-    # Update context for this agent
-    state.update_context_for_agent(
-        agent_type=AgentType.RENDERER_FACTS,
-        facts_version=None,  # Will be created after execution
-        metadata={
-            "is_fresh_facts": is_first_visit,
-            # "previous_context": previous_context_str,
-        },
-    )
-
-    return state
+        logger.info("Generating facts update")
+        return render_facts_subsequent_visit(state, tools)
 
 
 def render_facts_first_visit(state: AgentState, tools: ToolBox) -> AgentState:
@@ -197,9 +147,13 @@ def render_facts_subsequent_visit(state: AgentState, tools: ToolBox) -> AgentSta
 
     ontology_instruction = ""
     text_instruction = ""
-    critique_instruction = critique_instruction_template.format(
-        "\n- ".join(state.improvements_suggestions)
-    )
+
+    if state.improvements_suggestions:
+        critique_instruction_str = critique_instruction_template.format(
+            "\n- ".join(state.improvements_suggestions)
+        )
+    else:
+        critique_instruction_str = ""
 
     prompt = PromptTemplate(
         template=template_prompt,
@@ -219,14 +173,14 @@ def render_facts_subsequent_visit(state: AgentState, tools: ToolBox) -> AgentSta
                 facts_instruction=facts_instruction_str,
                 ontology_instruction=ontology_instruction,
                 text_instruction=text_instruction,
-                critique_instruction=critique_instruction,
+                critique_instruction=critique_instruction_str,
                 format_instructions=parser.get_format_instructions(),
             )
         )
 
         graph_update = parser.parse(response.content)
 
-        state.ontology_updates.append(graph_update)
+        state.facts_updates.append(graph_update)
         state.set_node_status(WorkflowNode.TEXT_TO_FACTS, Status.SUCCESS)
         state.clear_failure()
         return state

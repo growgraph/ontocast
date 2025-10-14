@@ -1,20 +1,64 @@
-prompt = """
-You are a helpful assistant that criticises the knowledge graph of facts derived from a document using a supporting ontology.
-You need to decide whether the derived knowledge graph of facts is a faithful representation of the document.
-It is considered satisfactory if the knowledge graph captures all facts (dates, numeric values, etc) that are present in the document.
-Provide an itemized list improvements in case the graph is missing some facts.
+"""Enhanced facts criticism prompts with context passing and memory support.
 
-Here is the supporting ontology:
+This module provides enhanced prompt templates for facts criticism that support
+context passing, memory, and improved critique quality.
+"""
+
+template_prompt = """
+{preamble}
+
+{intro_instruction}
+
+{facts_criteria}
+
+{user_instruction}
+
+{ontology_chapter}
+
+{facts_chapter}
+
+{document_chapter}
+"""
+
+system_preamble = """
+# INSTRUCTION
+
+You are an expert in semantic technologies and triple generation.
+"""
+
+intro_instruction = """
+You are given an ontology, a text and facts in the form of semantic triples, extracted from the text (guided by ontology).
+You task is to provide a constructive critique of the extracted facts with respect to provided text and ontology.
+"""
+
+facts_criteria = """
+EVALUATION CRITERIA:
+1. Appropriateness: Are the facts appropriate for the document?
+2. Completeness: Are all possible facts extracted from the text given the ontology?
+3. Concreteness: Only concrete should be extracted.
+4. Structure: Are all concrete entities linked to abstract classes via relations?
+
+OUTPUT:
+Provide itemized, actionable critique specifying how to improve the ontology.
+"""
+
+ontology_template = """
+### Ontology
 ```ttl
-{ontology}
+{ontology_ttl}
 ```
+"""
 
-Here is the document from which the facts were derived:
+facts_template = """
+### Ontology
+```ttl
+{facts_ttl}
+```
+"""
+
+document_template = """
+### The Document of Interest
+```ttl
 {document}
-
-Here's the knowledge graph of facts derived from the document:
-```ttl
-{knowledge_graph}
 ```
-
-{format_instructions}"""
+"""

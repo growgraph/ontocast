@@ -45,25 +45,17 @@ def render_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     Returns:
         AgentState: Updated state with rendered ontology
     """
-    logger.info("Structured hybrid ontology rendering with Turtle/SPARQL decision")
+    logger.info("Structured ontology rendering with Turtle/SPARQL output")
 
-    is_first_visit = (
-        state.get_node_status(WorkflowNode.TEXT_TO_ONTOLOGY) == Status.NOT_VISITED
-    )
     has_no_seed_ontology = state.ontology_id == ONTOLOGY_NULL_ID
 
-    if is_first_visit:
-        if has_no_seed_ontology:
-            return render_ontology_first_visit_no_seed_ontology(state, tools)
-        else:
-            return render_ontology_first_visit_with_seed_ontology(state, tools)
+    if has_no_seed_ontology:
+        return render_ontology_no_seed_ontology(state, tools)
     else:
-        return render_ontology_subsequent_visit(state, tools)
+        return render_ontology_with_seed_ontology(state, tools)
 
 
-def render_ontology_first_visit_no_seed_ontology(
-    state: AgentState, tools: ToolBox
-) -> AgentState:
+def render_ontology_no_seed_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     """Render ontology triples into a human-readable format.
 
     This function takes the triples from the current ontology and renders them
@@ -132,83 +124,12 @@ def render_ontology_first_visit_no_seed_ontology(
         return state
 
 
-def render_ontology_first_visit_with_seed_ontology(
-    state: AgentState, tools: ToolBox
-) -> AgentState:
+def render_ontology_with_seed_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     """Render ontology triples into a human-readable format.
 
     This function takes the triples from the current ontology and renders them
     into a more accessible format, making the ontological knowledge easier to
     understand.
-
-    Args:
-        state: The current agent state containing the ontology to render.
-        tools: The toolbox instance providing utility functions.
-
-    Returns:
-        AgentState: Updated state with rendered triples.
-    """
-
-    parser = PydanticOutputParser(pydantic_object=GraphUpdate)
-    ontology_iri = state.current_ontology.iri
-    ontology_desc = state.current_ontology.describe()
-    intro_instruction = intro_instruction_first_visit_seed.format(
-        ontology_iri=ontology_iri, ontology_desc=ontology_desc
-    )
-    ontology_ttl = state.current_ontology.graph.serialize(format="turtle")
-    output_instruction = output_instruction_sparql
-    critique_instruction_str = ""
-
-    prompt = PromptTemplate(
-        template=template_prompt,
-        input_variables=[
-            "system_preamble",
-            "intro_instruction",
-            "ontology_instruction",
-            "output_instruction",
-            "user_instruction",
-            "critique_instruction",
-            "ontology_ttl",
-            "text",
-            "format_instructions",
-        ],
-    )
-
-    try:
-        response = tools.llm(
-            prompt.format_prompt(
-                system_preamble=system_preamble,
-                intro_instruction=intro_instruction,
-                ontology_instruction=general_ontology_instruction,
-                output_instruction=output_instruction,
-                critique_instruction=critique_instruction_str,
-                ontology_ttl=ontology_ttl,
-                user_instruction=state.ontology_user_instruction,
-                text=state.current_chunk.text,
-                format_instructions=parser.get_format_instructions(),
-            )
-        )
-
-        graph_update: GraphUpdate = parser.parse(response.content)
-        state.ontology_updates.append(graph_update)
-        # state.ontology_addendum.graph.sanitize_prefixes_namespaces()
-
-        logger.info(f"Ontology update has {len(graph_update.operations)} operations.")
-        state.clear_failure()
-        state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.SUCCESS)
-        return state
-
-    except Exception as e:
-        logger.error(f"Failed to generate ontology update: {str(e)}")
-        state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.FAILED)
-        state.set_failure(FailureStage.GENERATE_SPARQL_UPDATE_FOR_ONTOLOGY, str(e))
-        return state
-
-
-def render_ontology_subsequent_visit(state: AgentState, tools: ToolBox) -> AgentState:
-    """Render ontology triples into a human-readable format.
-
-    This function generates ontology based on a given text and previous interactions / critical input.
 
     Args:
         state: The current agent state containing the ontology to render.
@@ -258,17 +179,16 @@ def render_ontology_subsequent_visit(state: AgentState, tools: ToolBox) -> Agent
                 critique_instruction=critique_instruction_str,
                 ontology_ttl=ontology_ttl,
                 user_instruction=state.ontology_user_instruction,
-                text="",
+                text=state.current_chunk.text,
                 format_instructions=parser.get_format_instructions(),
             )
         )
 
         graph_update: GraphUpdate = parser.parse(response.content)
-
-        # state.ontology_addendum.graph.sanitize_prefixes_namespaces()
+        state.ontology_updates.append(graph_update)
+        state.update_ontology()
 
         logger.info(f"Ontology update has {len(graph_update.operations)} operations.")
-        state.ontology_updates.append(graph_update)
         state.clear_failure()
         state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.SUCCESS)
         return state

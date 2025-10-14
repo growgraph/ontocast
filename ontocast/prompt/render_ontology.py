@@ -26,9 +26,9 @@ You are an expert in semantic technologies, SPARQL and ontology engineering.
 
 # no_seed_first_visit
 intro_instruction_first_visit_no_seed = """
-0. Develop a new domain ontology based on the provided document. When deciding on the name and scope, remember that the document you are given is an example, so the ontology name, ontology identifier and scope should be at least one level of abstraction above the scope of the document.
-1. propose a domain specific and succinct specifier if for the new ontology, which should be an abbreviation, consistent with the Ontology property `ontology_id`, for example it could be `abc` for a hypothetical A... B... of C... Ontology.
-2. derive from a proposed `ontology_id` an IRI (URI) using domain {current_domain}, for example `{current_domain}/abc`
+1. Develop a new domain ontology based on the provided document. When deciding on the name and scope, remember that the document you are given is an example, so the ontology name, ontology identifier and scope should be at least one level of abstraction above the scope of the document.
+2. propose a domain specific and succinct specifier if for the new ontology, which should be an abbreviation, consistent with the Ontology property `ontology_id`, for example it could be `abc` for a hypothetical A... B... of C... Ontology.
+3. derive from a proposed `ontology_id` an IRI (URI) using domain {current_domain}, for example `{current_domain}/abc`
 
 
 """
@@ -47,8 +47,8 @@ Feel free to modify the description of the ontology to make it more accurate and
 
 general_ontology_instruction = """
 ### GENERAL
-0. use prefix `co:` for entities/properties placed in the current domain ontology.
-1. all abstract entities/classes/types or properties added to ontology must be linked to entities from basic ontologies (RDFS, OWL, schema etc), e.g. rdfs:Class, rdfs:subClassOf, rdf:Property, rdfs:domain, owl:Restriction, schema:Person, schema:Organization, etc or connected to newly introduced entities in the current ontology
+1. use prefix `co:` for entities/properties placed in the current domain ontology.
+2. all abstract entities/classes/types or properties added to ontology must be linked to entities from basic ontologies (RDFS, OWL, schema etc), e.g. rdfs:Class, rdfs:subClassOf, rdf:Property, rdfs:domain, owl:Restriction, schema:Person, schema:Organization, etc or connected to newly introduced entities in the current ontology
 3. do not introduce entities known to you from other domain ontologies, rather connect new entities to known ontologies
 4. do not add facts, or concrete entities from the document
 5. make sure newly introduced entities are well linked / described by their properties

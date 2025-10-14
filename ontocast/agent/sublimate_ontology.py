@@ -83,6 +83,7 @@ def sublimate_ontology(state: AgentState, tools: ToolBox):
     if state.current_ontology is None:
         return state
     try:
+        state.update_facts()
         graph_onto_addendum, graph_facts = _sublimate_ontology(state=state)
 
         ns_prefix_current_ontology = [

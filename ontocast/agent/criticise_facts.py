@@ -7,14 +7,19 @@ with memory of previous critiques and SPARQL operation support.
 import logging
 
 from langchain.output_parsers import PydanticOutputParser
-from langchain.prompts import PromptTemplate
 
-from ontocast.onto.context import AgentType, Role
+from ontocast.onto.context import AgentType
 from ontocast.onto.enum import FailureStage, Status
 from ontocast.onto.model import FactsCritiqueReport
 from ontocast.onto.state import AgentState
-from ontocast.prompt.enhanced_criticise_facts import (
-    prompt_enhanced,
+from ontocast.prompt.criticise_facts import (
+    document_template,
+    facts_criteria,
+    facts_template,
+    intro_instruction,
+    ontology_template,
+    system_preamble,
+    template_prompt,
 )
 from ontocast.toolbox import ToolBox
 
@@ -44,50 +49,30 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
     version_manager = tools.version_manager
     parser = PydanticOutputParser(pydantic_object=FactsCritiqueReport)
 
-    # Get context for this agent with conversation memory
-    agent_context = state.get_context_for_agent(AgentType.CRITIC_FACTS)
+    ontology_ttl = state.current_ontology.graph.serialize(format="turtle")
 
-    # Add current interaction to conversation memory
-    agent_context.add_conversation_memory(
-        role=Role.SYSTEM,
-        content=f"Starting facts critique for chunk: {state.current_chunk.text[:100]}...",
-        metadata={
-            "interaction_type": "facts_critique",
-            "chunk_id": getattr(state.current_chunk, "chunk_id", "unknown"),
-        },
+    ontology_chapter = ontology_template.format(
+        ontology_ttl=ontology_ttl,
     )
 
-    # Build dynamic context for this interaction
-    agent_context.build_dynamic_context(
-        interaction_type="facts_critique",
-        chunk_text=state.current_chunk.text[:200],
-        ontology_iri=state.current_ontology.iri,
+    facts_ttl = state.current_chunk.graph.serialize(format="turtle")
+
+    facts_chapter = facts_template.format(
+        facts_ttl=facts_ttl,
     )
-
-    previous_critique_context = agent_context.get_llm_context()
-
-    prompt = PromptTemplate(
-        template=prompt_enhanced,
-        input_variables=[
-            "ontology",
-            "document",
-            "knowledge_graph",
-            "format_instructions",
-        ],
+    document_chapter = document_template.format(document=state.current_chunk.text)
+    prompt = template_prompt.format(
+        preamble=system_preamble,
+        intro_instruction=intro_instruction,
+        facts_criteria=facts_criteria,
+        document_chapter=document_chapter,
+        ontology_chapter=ontology_chapter,
+        facts_chapter=facts_chapter,
+        format_instructions=parser.get_format_instructions(),
     )
 
     try:
-        response = llm_tool(
-            prompt.format_prompt(
-                previous_context=previous_critique_context,
-                ontology=state.current_ontology.graph.serialize(format="turtle"),
-                document=state.current_chunk.text,
-                knowledge_graph=state.current_chunk.graph.serialize(format="turtle")
-                if state.current_chunk.graph
-                else "",
-                format_instructions=parser.get_format_instructions(),
-            )
-        )
+        response = llm_tool(prompt)
 
         critique: FactsCritiqueReport = parser.parse(response.content)
         logger.debug(

@@ -4,6 +4,7 @@ from rdflib import Literal, URIRef
 from ontocast.agent import check_chunks_empty, chunk_text, select_ontology
 from ontocast.onto.constants import ONTOLOGY_NULL_ID
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.sparql_models import AddPrefixOp, GraphUpdate, InsertOp, Triple
 from ontocast.onto.state import AgentState
 
 
@@ -62,3 +63,160 @@ def test_select_ontology_null(
     assert state.current_ontology.ontology_id == ONTOLOGY_NULL_ID
 
     state.serialize(state_onto_null_filename)
+
+
+def test_render_updated_graph():
+    """Test the generalized render_updated_graph function."""
+    state = AgentState()
+
+    # Create a simple graph with one triple
+    original_graph = state.current_chunk.graph
+    original_graph.add(
+        (
+            URIRef("http://example.com/subject"),
+            URIRef("http://example.com/predicate"),
+            Literal("original_value"),
+        )
+    )
+
+    # Create a GraphUpdate that adds a new triple
+    graph_update = GraphUpdate(
+        operations=[
+            AddPrefixOp(prefix="ex", namespace_uri="http://example.com/"),
+            InsertOp(
+                triples=[
+                    Triple(
+                        subject="ex:subject",
+                        predicate="ex:predicate",
+                        object='"updated_value"',
+                    )
+                ]
+            ),
+        ]
+    )
+
+    # Apply the update
+    updated_graph = state.render_updated_graph(original_graph, [graph_update])
+
+    # Check that the original graph is unchanged
+    assert len(original_graph) == 1
+    assert (
+        URIRef("http://example.com/subject"),
+        URIRef("http://example.com/predicate"),
+        Literal("original_value"),
+    ) in original_graph
+
+    # Check that the updated graph has both triples
+    assert len(updated_graph) == 2
+    assert (
+        URIRef("http://example.com/subject"),
+        URIRef("http://example.com/predicate"),
+        Literal("original_value"),
+    ) in updated_graph
+    assert (
+        URIRef("http://example.com/subject"),
+        URIRef("http://example.com/predicate"),
+        Literal("updated_value"),
+    ) in updated_graph
+
+
+def test_render_uptodate_facts():
+    """Test the render_uptodate_facts function."""
+    state = AgentState()
+
+    # Add a triple to the current chunk's graph
+    state.current_chunk.graph.add(
+        (
+            URIRef("http://example.com/subject"),
+            URIRef("http://example.com/predicate"),
+            Literal("original_value"),
+        )
+    )
+
+    # Create a facts update
+    state.facts_updates = [
+        GraphUpdate(
+            operations=[
+                AddPrefixOp(prefix="ex", namespace_uri="http://example.com/"),
+                InsertOp(
+                    triples=[
+                        Triple(
+                            subject="ex:subject",
+                            predicate="ex:predicate",
+                            object='"facts_value"',
+                        )
+                    ]
+                ),
+            ]
+        )
+    ]
+
+    # Get the updated facts graph
+    updated_facts = state.render_uptodate_facts()
+
+    # Check that the original chunk graph is unchanged
+    assert len(state.current_chunk.graph) == 1
+
+    # Check that the updated facts graph has both triples
+    assert len(updated_facts) == 2
+    assert (
+        URIRef("http://example.com/subject"),
+        URIRef("http://example.com/predicate"),
+        Literal("original_value"),
+    ) in updated_facts
+    assert (
+        URIRef("http://example.com/subject"),
+        URIRef("http://example.com/predicate"),
+        Literal("facts_value"),
+    ) in updated_facts
+
+
+def test_update_facts():
+    """Test the update_facts function."""
+    state = AgentState()
+
+    # Add a triple to the current chunk's graph
+    state.current_chunk.graph.add(
+        (
+            URIRef("http://example.com/subject"),
+            URIRef("http://example.com/predicate"),
+            Literal("original_value"),
+        )
+    )
+
+    # Create a facts update
+    state.facts_updates = [
+        GraphUpdate(
+            operations=[
+                AddPrefixOp(prefix="ex", namespace_uri="http://example.com/"),
+                InsertOp(
+                    triples=[
+                        Triple(
+                            subject="ex:subject",
+                            predicate="ex:predicate",
+                            object='"facts_value"',
+                        )
+                    ]
+                ),
+            ]
+        )
+    ]
+
+    # Apply the update
+    state.update_facts()
+
+    # Check that the chunk graph is updated
+    assert len(state.current_chunk.graph) == 2
+    assert (
+        URIRef("http://example.com/subject"),
+        URIRef("http://example.com/predicate"),
+        Literal("original_value"),
+    ) in state.current_chunk.graph
+    assert (
+        URIRef("http://example.com/subject"),
+        URIRef("http://example.com/predicate"),
+        Literal("facts_value"),
+    ) in state.current_chunk.graph
+
+    # Check that facts_updates is cleared
+    assert len(state.facts_updates) == 0
