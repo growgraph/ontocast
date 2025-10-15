@@ -14,12 +14,7 @@ template_prompt = """
 {format_instructions}
 """
 
-preamble_first_visit = f"""
-{system_preamble_semantic}
-Generate semantic triples representing facts (not abstract entities) based on provided domain ontology.
-"""
-
-preamble_subsequent_visit = f"""
+preamble = f"""
 {system_preamble_semantic}
 Generate semantic triples representing facts (not abstract entities) based on provided domain ontology.
 """

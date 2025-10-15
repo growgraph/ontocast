@@ -21,8 +21,7 @@ from ontocast.prompt.common import (
 from ontocast.prompt.render_facts import (
     facts_instruction_template,
     ontology_instruction_template,
-    preamble_first_visit,
-    preamble_subsequent_visit,
+    preamble,
     template_prompt,
     text_instruction_template,
 )
@@ -134,7 +133,7 @@ def render_facts_fresh(state: AgentState, tools: ToolBox) -> AgentState:
     parser = PydanticOutputParser(pydantic_object=SemanticTriplesFactsReport)
 
     prompt_data = _prepare_prompt_data(state)
-    prompt_data["preamble"] = preamble_first_visit
+    prompt_data["preamble"] = preamble
     prompt_data["critique_instruction"] = ""
 
     prompt = _create_prompt_template()
@@ -172,7 +171,7 @@ def render_facts_update(state: AgentState, tools: ToolBox) -> AgentState:
     parser = PydanticOutputParser(pydantic_object=GraphUpdate)
 
     prompt_data = _prepare_prompt_data(state)
-    prompt_data["preamble"] = preamble_subsequent_visit
+    prompt_data["preamble"] = preamble
 
     if state.improvements_suggestions:
         prompt_data["critique_instruction"] = critique_instruction_template.format(
