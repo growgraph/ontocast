@@ -64,7 +64,7 @@ text_instruction_template = """
 
 critique_instruction_template = """
 ## Critique/Points to address
-The attempt to generate facts/triples raised the following suggestions for improvement:
+Current triples triples representing facts raised the following suggestions for improvement:
 
 {suggestions_instruction}
 

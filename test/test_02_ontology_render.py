@@ -3,7 +3,7 @@ from packaging.version import Version
 
 from ontocast.agent import (
     criticise_ontology,
-    render_ontology_no_seed_ontology,
+    render_ontology_fresh,
 )
 from ontocast.onto.enum import FailureStage, Status
 from ontocast.onto.state import AgentState
@@ -13,9 +13,7 @@ def test_agent_text_to_ontology_fresh(
     agent_state_select_ontology_null: AgentState, apple_report: dict, tools
 ):
     """here no relevant ontology is present, we are trying to create a new one"""
-    state = render_ontology_no_seed_ontology(
-        state=agent_state_select_ontology_null, tools=tools
-    )
+    state = render_ontology_fresh(state=agent_state_select_ontology_null, tools=tools)
 
     assert state.ontology_addendum.iri is not None
     assert state.ontology_addendum.title is not None
@@ -33,7 +31,7 @@ def test_agent_render_ontology(
     state = state_ontology_selected
     state.status = Status.FAILED
 
-    state = render_ontology_no_seed_ontology(state=state, tools=tools)
+    state = render_ontology_fresh(state=state, tools=tools)
     assert state.ontology_addendum.iri is not None
     assert state.ontology_addendum.iri.startswith(state.current_domain)
     assert len(state.ontology_addendum.graph) > 0

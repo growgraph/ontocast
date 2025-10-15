@@ -12,8 +12,8 @@ from .chunk_text import chunk_text
 from .convert_document import convert_document
 from .criticise_facts import criticise_facts
 from .criticise_ontology import criticise_ontology
-from .render_facts import render_facts_first_visit
-from .render_ontology import render_ontology_no_seed_ontology
+from .render_facts import render_facts_fresh
+from .render_ontology import render_ontology_fresh
 from .select_ontology import select_ontology
 from .sublimate_ontology import sublimate_ontology
 
@@ -26,6 +26,6 @@ __all__ = [
     "aggregate_serialize",
     "select_ontology",
     "sublimate_ontology",
-    "render_ontology_no_seed_ontology",
-    "render_facts_first_visit",
+    "render_ontology_fresh",
+    "render_facts_fresh",
 ]

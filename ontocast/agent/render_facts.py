@@ -47,13 +47,13 @@ def hybrid_render_facts(state: AgentState, tools: ToolBox) -> AgentState:
 
     if is_first_visit:
         logger.info("Generating fresh facts as Turtle")
-        return render_facts_first_visit(state, tools)
+        return render_facts_fresh(state, tools)
     else:
         logger.info("Generating facts update")
-        return render_facts_subsequent_visit(state, tools)
+        return render_facts_update(state, tools)
 
 
-def render_facts_first_visit(state: AgentState, tools: ToolBox) -> AgentState:
+def render_facts_fresh(state: AgentState, tools: ToolBox) -> AgentState:
     """Render facts from the current chunk into a human-readable format.
 
     This function takes the facts in the current chunk and renders them into a
@@ -120,7 +120,7 @@ def render_facts_first_visit(state: AgentState, tools: ToolBox) -> AgentState:
         return state
 
 
-def render_facts_subsequent_visit(state: AgentState, tools: ToolBox) -> AgentState:
+def render_facts_update(state: AgentState, tools: ToolBox) -> AgentState:
     """Render facts from the current chunk into a human-readable format.
 
     This function takes the facts in the current chunk and renders them into a
@@ -145,8 +145,11 @@ def render_facts_subsequent_visit(state: AgentState, tools: ToolBox) -> AgentSta
         current_doc_namespace=DEFAULT_CHUNK_IRI,
     )
 
-    ontology_instruction = ""
-    text_instruction = ""
+    ontology_instruction = ontology_instruction_template.format(
+        ontology_str=state.current_ontology.graph.serialize(format="turtle")
+    )
+
+    text_instruction = text_instruction_template.format(text=state.current_chunk.text)
 
     if state.improvements_suggestions:
         critique_instruction_str = critique_instruction_template.format(

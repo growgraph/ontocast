@@ -7,6 +7,7 @@ with memory of previous critiques and SPARQL operation support.
 import logging
 
 from langchain.output_parsers import PydanticOutputParser
+from langchain_core.prompts import PromptTemplate
 
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
@@ -59,9 +60,22 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     )
 
     document_chapter = document_template.format(document=state.current_chunk.text)
+
+    prompt = PromptTemplate(
+        template=template_prompt,
+        input_variables=[
+            "preamble",
+            "facts_instruction",
+            "ontology_instruction",
+            "text_instruction",
+            "critique_instruction",
+            "format_instructions",
+        ],
+    )
+
     try:
         response = llm_tool(
-            template_prompt.format(
+            prompt.format_prompt(
                 preamble=system_preamble,
                 intro_instruction=intro_instruction,
                 ontology_criteria=state.current_chunk.text,

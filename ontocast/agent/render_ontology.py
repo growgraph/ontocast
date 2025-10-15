@@ -50,12 +50,12 @@ def render_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     has_no_seed_ontology = state.ontology_id == ONTOLOGY_NULL_ID
 
     if has_no_seed_ontology:
-        return render_ontology_no_seed_ontology(state, tools)
+        return render_ontology_fresh(state, tools)
     else:
-        return render_ontology_with_seed_ontology(state, tools)
+        return render_ontology_update(state, tools)
 
 
-def render_ontology_no_seed_ontology(state: AgentState, tools: ToolBox) -> AgentState:
+def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
     """Render ontology triples into a human-readable format.
 
     This function takes the triples from the current ontology and renders them
@@ -124,7 +124,7 @@ def render_ontology_no_seed_ontology(state: AgentState, tools: ToolBox) -> Agent
         return state
 
 
-def render_ontology_with_seed_ontology(state: AgentState, tools: ToolBox) -> AgentState:
+def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
     """Render ontology triples into a human-readable format.
 
     This function takes the triples from the current ontology and renders them
