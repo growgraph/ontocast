@@ -17,14 +17,13 @@ from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.state import AgentState
+from ontocast.prompt.common import output_instruction_sparql, output_instruction_ttl
+from ontocast.prompt.common import system_preamble_ontology as system_preamble
 from ontocast.prompt.render_ontology import (
     critique_instruction_template,
     general_ontology_instruction,
-    intro_instruction_first_visit_no_seed,
-    intro_instruction_first_visit_seed,
-    output_instruction_sparql,
-    output_instruction_ttl,
-    system_preamble,
+    intro_instruction_fresh,
+    intro_instruction_update,
     template_prompt,
 )
 from ontocast.toolbox import ToolBox
@@ -72,7 +71,7 @@ def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
 
     parser = PydanticOutputParser(pydantic_object=Ontology)
     logger.info("Rendering fresh ontology")
-    intro_instruction = intro_instruction_first_visit_no_seed
+    intro_instruction = intro_instruction_fresh
     output_instruction = output_instruction_ttl
     ontology_ttl = ""
     critique_instruction_str = ""
@@ -142,7 +141,7 @@ def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
     parser = PydanticOutputParser(pydantic_object=GraphUpdate)
     ontology_iri = state.current_ontology.iri
     ontology_desc = state.current_ontology.describe()
-    intro_instruction = intro_instruction_first_visit_seed.format(
+    intro_instruction = intro_instruction_update.format(
         ontology_iri=ontology_iri, ontology_desc=ontology_desc
     )
     ontology_ttl = state.current_ontology.graph.serialize(format="turtle")

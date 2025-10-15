@@ -12,12 +12,6 @@ template_prompt = """
 {document_chapter}
 """
 
-system_preamble = """
-# INSTRUCTION
-
-You are an expert in semantic technologies and ontology engineering.
-"""
-
 intro_instruction = """
 You are given a text and an ontology.
 You task is to provide a constructive critique of the ontology with respect to provided text.
@@ -34,20 +28,4 @@ EVALUATION CRITERIA:
 
 OUTPUT:
 Provide itemized, actionable critique specifying how to improve the ontology.
-"""
-
-
-ontology_template = """
-### Ontology
-```ttl
-{ontology_ttl}
-```
-"""
-
-
-document_template = """
-### The Document of Interest
-```ttl
-{document}
-```
 """

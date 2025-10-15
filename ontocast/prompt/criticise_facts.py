@@ -4,6 +4,8 @@ This module provides enhanced prompt templates for facts criticism that support
 context passing, memory, and improved critique quality.
 """
 
+from .common import system_preamble_semantic
+
 template_prompt = """
 {preamble}
 
@@ -20,11 +22,7 @@ template_prompt = """
 {document_chapter}
 """
 
-system_preamble = """
-# INSTRUCTION
-
-You are an expert in semantic technologies and triple generation.
-"""
+system_preamble = system_preamble_semantic
 
 intro_instruction = """
 You are given an ontology, a text and facts in the form of semantic triples, extracted from the text (guided by ontology).
@@ -42,23 +40,9 @@ OUTPUT:
 Provide itemized, actionable critique specifying how to improve the ontology.
 """
 
-ontology_template = """
-### Ontology
-```ttl
-{ontology_ttl}
-```
-"""
-
 facts_template = """
-### Ontology
+### Facts
 ```ttl
 {facts_ttl}
-```
-"""
-
-document_template = """
-### The Document of Interest
-```ttl
-{document}
 ```
 """

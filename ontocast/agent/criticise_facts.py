@@ -12,12 +12,11 @@ from ontocast.onto.context import AgentType
 from ontocast.onto.enum import FailureStage, Status
 from ontocast.onto.model import FactsCritiqueReport
 from ontocast.onto.state import AgentState
+from ontocast.prompt.common import document_template, ontology_template
 from ontocast.prompt.criticise_facts import (
-    document_template,
     facts_criteria,
     facts_template,
     intro_instruction,
-    ontology_template,
     system_preamble,
     template_prompt,
 )

@@ -11,4 +11,5 @@ Available prompts:
 - select_ontology: Choose appropriate ontologies for text
 - criticise_ontology: Evaluate and critique ontology quality
 - criticise_facts: Validate and critique extracted facts
+- common: Shared prompt templates and components
 """

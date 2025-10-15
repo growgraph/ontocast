@@ -1,3 +1,5 @@
+from .common import system_preamble_semantic
+
 template_prompt = """
 {preamble}
 
@@ -12,17 +14,13 @@ template_prompt = """
 {format_instructions}
 """
 
-preamble_first_visit = """
-# GENERAL INSTRUCTION
-
-You are an expert in semantic technologies, SPARQL and triple extraction.
+preamble_first_visit = f"""
+{system_preamble_semantic}
 Generate semantic triples representing facts (not abstract entities) based on provided domain ontology.
 """
 
-preamble_subsequent_visit = """
-# GENERAL INSTRUCTION
-
-You are an expert in semantic technologies, SPARQL and triple extraction.
+preamble_subsequent_visit = f"""
+{system_preamble_semantic}
 Generate semantic triples representing facts (not abstract entities) based on provided domain ontology.
 """
 
@@ -60,13 +58,4 @@ text_instruction_template = """
 ```
 {text}
 ```
-"""
-
-critique_instruction_template = """
-## Critique/Points to address
-Current triples triples representing facts raised the following suggestions for improvement:
-
-{suggestions_instruction}
-
-Address all the suggestions and generate fact triples again."
 """

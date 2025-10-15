@@ -13,11 +13,10 @@ from ontocast.onto.constants import ONTOLOGY_NULL_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import OntologyUpdateCritiqueReport
 from ontocast.onto.state import AgentState
+from ontocast.prompt.common import document_template, ontology_template
+from ontocast.prompt.common import system_preamble_ontology as system_preamble
 from ontocast.prompt.criticise_ontology import (
-    document_template,
     intro_instruction,
-    ontology_template,
-    system_preamble,
     template_prompt,
 )
 from ontocast.tool import LLMTool
