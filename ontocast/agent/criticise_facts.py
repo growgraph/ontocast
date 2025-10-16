@@ -7,17 +7,22 @@ with memory of previous critiques and SPARQL operation support.
 import logging
 
 from langchain.output_parsers import PydanticOutputParser
+from langchain_core.prompts import PromptTemplate
 
 from ontocast.onto.context import AgentType
 from ontocast.onto.enum import FailureStage, Status
 from ontocast.onto.model import FactsCritiqueReport
 from ontocast.onto.state import AgentState
-from ontocast.prompt.common import document_template, ontology_template
-from ontocast.prompt.criticise_facts import (
-    facts_criteria,
+from ontocast.prompt.common import (
     facts_template,
-    intro_instruction,
-    system_preamble,
+    ontology_template,
+    output_instruction_crit_facts,
+    text_template,
+    user_template,
+)
+from ontocast.prompt.criticise_facts import (
+    evaluation_instruction,
+    preamble,
     template_prompt,
 )
 from ontocast.toolbox import ToolBox
@@ -42,7 +47,7 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
         logger.warning("No current chunk to analyze")
         return state
 
-    logger.info("Enhanced criticize facts with memory")
+    logger.info("Criticize facts with memory")
 
     llm_tool = tools.llm
     version_manager = tools.version_manager
@@ -59,19 +64,42 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
     facts_chapter = facts_template.format(
         facts_ttl=facts_ttl,
     )
-    document_chapter = document_template.format(document=state.current_chunk.text)
-    prompt = template_prompt.format(
-        preamble=system_preamble,
-        intro_instruction=intro_instruction,
-        facts_criteria=facts_criteria,
-        document_chapter=document_chapter,
-        ontology_chapter=ontology_chapter,
-        facts_chapter=facts_chapter,
-        format_instructions=parser.get_format_instructions(),
+
+    text_chapter = text_template.format(text=state.current_chunk.text)
+
+    user_instruction = (
+        user_template.format(user_instruction=state.facts_user_instruction)
+        if state.facts_user_instruction
+        else ""
     )
 
+    prompt = PromptTemplate(
+        template=template_prompt,
+        input_variables=[
+            "preamble",
+            "evaluation_instruction",
+            "user_instruction",
+            "ontology_chapter",
+            "facts_chapter",
+            "text_chapter",
+            "output_instruction",
+            "format_instructions",
+        ],
+    )
+
+    prompt_data = {
+        "preamble": preamble,
+        "evaluation_instruction": evaluation_instruction,
+        "user_instruction": user_instruction,
+        "ontology_chapter": ontology_chapter,
+        "facts_chapter": facts_chapter,
+        "text_chapter": text_chapter,
+        "format_instructions": parser.get_format_instructions(),
+        "output_instruction": output_instruction_crit_facts,
+    }
+
     try:
-        response = llm_tool(prompt)
+        response = llm_tool(prompt.format_prompt(**prompt_data))
 
         critique: FactsCritiqueReport = parser.parse(response.content)
         logger.debug(

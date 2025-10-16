@@ -9,9 +9,7 @@ from .common import system_preamble_semantic
 template_prompt = """
 {preamble}
 
-{intro_instruction}
-
-{facts_criteria}
+{evaluation_instruction}
 
 {user_instruction}
 
@@ -19,30 +17,26 @@ template_prompt = """
 
 {facts_chapter}
 
-{document_chapter}
+{text_chapter}
+
+{output_instruction}
+
+{format_instructions}
 """
 
-system_preamble = system_preamble_semantic
-
-intro_instruction = """
+preamble = f"""
+{system_preamble_semantic}
 You are given an ontology, a text and facts in the form of semantic triples, extracted from the text (guided by ontology).
 You task is to provide a constructive critique of the extracted facts with respect to provided text and ontology.
 """
 
-facts_criteria = """
-EVALUATION CRITERIA:
+
+evaluation_instruction = """\n\n
+# EVALUATION GUIDELINES
+
 1. Appropriateness: Are the facts appropriate for the document?
 2. Completeness: Are all possible facts extracted from the text given the ontology?
 3. Concreteness: Only concrete should be extracted.
 4. Structure: Are all concrete entities linked to abstract classes via relations?
-
-OUTPUT:
-Provide itemized, actionable critique specifying how to improve the ontology.
-"""
-
-facts_template = """
-### Facts
-```ttl
-{facts_ttl}
-```
+5. Ontology Reuse: All entities and relations existing in the ontology must be referenced and linked to their canonical identifiers, rather than instantiated anew.
 """

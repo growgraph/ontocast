@@ -9,7 +9,7 @@ template_prompt = """
 
 {ontology_chapter}
 
-{document_chapter}
+{text_chapter}
 """
 
 intro_instruction = """

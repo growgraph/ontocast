@@ -13,7 +13,7 @@ from ontocast.onto.constants import ONTOLOGY_NULL_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import OntologyUpdateCritiqueReport
 from ontocast.onto.state import AgentState
-from ontocast.prompt.common import document_template, ontology_template
+from ontocast.prompt.common import ontology_template, text_template
 from ontocast.prompt.common import system_preamble_ontology as system_preamble
 from ontocast.prompt.criticise_ontology import (
     intro_instruction,
@@ -58,7 +58,7 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
         ontology_ttl=ontology_ttl,
     )
 
-    document_chapter = document_template.format(document=state.current_chunk.text)
+    text_chapter = text_template.format(document=state.current_chunk.text)
 
     prompt = PromptTemplate(
         template=template_prompt,
@@ -66,7 +66,7 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
             "preamble",
             "facts_instruction",
             "ontology_instruction",
-            "text_instruction",
+            "text_chapter",
             "critique_instruction",
             "format_instructions",
         ],
@@ -78,7 +78,7 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
                 preamble=system_preamble,
                 intro_instruction=intro_instruction,
                 ontology_criteria=state.current_chunk.text,
-                document_chapter=document_chapter,
+                text_chapter=text_chapter,
                 ontology_chapter=ontology_chapter,
                 format_instructions=parser.get_format_instructions(),
             )

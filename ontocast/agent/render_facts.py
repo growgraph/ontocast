@@ -17,13 +17,15 @@ from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.state import AgentState
 from ontocast.prompt.common import (
     critique_instruction_template,
+    ontology_template,
+    output_instruction_empty,
+    text_template,
+    user_template,
 )
 from ontocast.prompt.render_facts import (
     facts_instruction_template,
-    ontology_instruction_template,
     preamble,
     template_prompt,
-    text_instruction_template,
 )
 from ontocast.toolbox import ToolBox
 
@@ -63,21 +65,29 @@ def _prepare_prompt_data(state: AgentState) -> dict[str, str]:
     Returns:
         Dictionary containing formatted prompt components
     """
-    ontology_instruction = ontology_instruction_template.format(
-        ontology_str=state.current_ontology.graph.serialize(format="turtle")
+    ontology_chapter = ontology_template.format(
+        ontology_ttl=state.current_ontology.graph.serialize(format="turtle")
     )
 
     facts_instruction_str = facts_instruction_template.format(
         ontology_namespace=state.current_ontology.namespace,
+        ontology_prefix=state.current_ontology.prefix,
         current_doc_namespace=DEFAULT_CHUNK_IRI,
     )
 
-    text_instruction = text_instruction_template.format(text=state.current_chunk.text)
+    text_chapter = text_template.format(text=state.current_chunk.text)
+
+    user_instruction = (
+        user_template.format(user_instruction=state.facts_user_instruction)
+        if state.facts_user_instruction
+        else ""
+    )
 
     return {
-        "ontology_instruction": ontology_instruction,
+        "ontology_chapter": ontology_chapter,
+        "user_instruction": user_instruction,
         "facts_instruction": facts_instruction_str,
-        "text_instruction": text_instruction,
+        "text_chapter": text_chapter,
     }
 
 
@@ -92,9 +102,11 @@ def _create_prompt_template() -> PromptTemplate:
         input_variables=[
             "preamble",
             "facts_instruction",
-            "ontology_instruction",
-            "text_instruction",
+            "user_instruction",
+            "ontology_chapter",
+            "text_chapter",
             "critique_instruction",
+            "output_instruction",
             "format_instructions",
         ],
     )
@@ -133,8 +145,12 @@ def render_facts_fresh(state: AgentState, tools: ToolBox) -> AgentState:
     parser = PydanticOutputParser(pydantic_object=SemanticTriplesFactsReport)
 
     prompt_data = _prepare_prompt_data(state)
-    prompt_data["preamble"] = preamble
-    prompt_data["critique_instruction"] = ""
+    prompt_data_fresh = {
+        "preamble": preamble,
+        "critique_instruction": "",
+        "output_instruction": output_instruction_empty,
+    }
+    prompt_data.update(prompt_data_fresh)
 
     prompt = _create_prompt_template()
 
