@@ -24,7 +24,6 @@ from ontocast.prompt.common import (
 from ontocast.prompt.render_facts import (
     facts_instruction_template,
     preamble,
-    suggestion_concrete_template,
     template_prompt,
 )
 from ontocast.toolbox import ToolBox
@@ -109,7 +108,7 @@ def _create_prompt_template() -> PromptTemplate:
             "user_instruction",
             "ontology_chapter",
             "text_chapter",
-            "critique_instruction",
+            "improvement_instruction",
             "output_instruction",
             "format_instructions",
         ],
@@ -151,7 +150,7 @@ def render_facts_fresh(state: AgentState, tools: ToolBox) -> AgentState:
     prompt_data = _prepare_prompt_data(state)
     prompt_data_fresh = {
         "preamble": preamble,
-        "critique_instruction": "",
+        "improvement_instruction": "",
         "output_instruction": output_instruction_empty,
     }
     prompt_data.update(prompt_data_fresh)
@@ -193,21 +192,8 @@ def render_facts_update(state: AgentState, tools: ToolBox) -> AgentState:
     prompt_data = _prepare_prompt_data(state)
     prompt_data["preamble"] = preamble
 
-    # suggestions_block =
-
-    if state.improvements_suggestions:
-        prompt_data["critique_instruction"] = suggestion_concrete_template.format(
-            suggestion_str="\n- ".join(state.improvements_suggestions)
-        )
-    else:
-        prompt_data["critique_instruction"] = ""
-
-    if state.improvements_suggestions:
-        prompt_data["critique_instruction"] = suggestion_concrete_template.format(
-            suggestion_str="\n- ".join(state.improvements_suggestions)
-        )
-    else:
-        prompt_data["critique_instruction"] = ""
+    suggestion_prompt = state.suggestions.to_prompt_templates()
+    prompt_data["improvement_instruction"] = suggestion_prompt
 
     prompt = _create_prompt_template()
 

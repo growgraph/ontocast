@@ -20,8 +20,8 @@ from ontocast.onto.state import AgentState
 from ontocast.prompt.common import output_instruction_sparql, output_instruction_ttl
 from ontocast.prompt.common import system_preamble_ontology as system_preamble
 from ontocast.prompt.render_ontology import (
-    critique_instruction_template,
     general_ontology_instruction,
+    improvement_instruction_template,
     intro_instruction_fresh,
     intro_instruction_update,
     template_prompt,
@@ -74,7 +74,7 @@ def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
     intro_instruction = intro_instruction_fresh
     output_instruction = output_instruction_ttl
     ontology_ttl = ""
-    critique_instruction_str = ""
+    improvement_instruction_str = ""
 
     prompt = PromptTemplate(
         template=template_prompt,
@@ -84,7 +84,7 @@ def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
             "ontology_instruction",
             "output_instruction",
             "user_instruction",
-            "critique_instruction",
+            "improvement_instruction",
             "ontology_ttl",
             "text",
             "format_instructions",
@@ -100,7 +100,7 @@ def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
                 output_instruction=output_instruction,
                 ontology_ttl=ontology_ttl,
                 user_instruction=state.ontology_user_instruction,
-                critique_instruction=critique_instruction_str,
+                improvement_instruction=improvement_instruction_str,
                 text=state.current_chunk.text,
                 format_instructions=parser.get_format_instructions(),
             )
@@ -147,11 +147,11 @@ def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
     ontology_ttl = state.current_ontology.graph.serialize(format="turtle")
     output_instruction = output_instruction_sparql
     if state.improvements_suggestions:
-        critique_instruction_str = critique_instruction_template.format(
+        improvement_instruction_str = improvement_instruction_template.format(
             "\n- ".join(state.improvements_suggestions)
         )
     else:
-        critique_instruction_str = ""
+        improvement_instruction_str = ""
 
     prompt = PromptTemplate(
         template=template_prompt,
@@ -161,7 +161,7 @@ def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
             "ontology_instruction",
             "output_instruction",
             "user_instruction",
-            "critique_instruction",
+            "improvement_instruction",
             "ontology_ttl",
             "text",
             "format_instructions",
@@ -175,7 +175,7 @@ def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
                 intro_instruction=intro_instruction,
                 ontology_instruction=general_ontology_instruction,
                 output_instruction=output_instruction,
-                critique_instruction=critique_instruction_str,
+                improvement_instruction=improvement_instruction_str,
                 ontology_ttl=ontology_ttl,
                 user_instruction=state.ontology_user_instruction,
                 text=state.current_chunk.text,

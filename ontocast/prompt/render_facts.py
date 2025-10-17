@@ -11,7 +11,7 @@ template_prompt = """
 
 {text_chapter}
 
-{critique_instruction}
+{improvement_instruction}
 
 {output_instruction}
 
@@ -40,16 +40,4 @@ facts_instruction_template = """\n\n
     - Currencies: Include currency codes (e.g., "1000"^^xsd:decimal with schema:priceCurrency "USD")
 9. To extract data from tables, use CSV on the Web (CSVW) to describe tables
 10. No comments in Turtle: Output must contain only @prefix declarations and triples. Do not include comments (lines starting with #)
-"""
-
-suggestion_general_template = """\n\n
-## GENERAL
-
-{general_suggestion}
-"""
-
-suggestion_concrete_template = """\n\n
-## CONCRETE
-
-{suggestion_str}
 """

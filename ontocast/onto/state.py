@@ -13,7 +13,7 @@ from ontocast.onto.constants import (
 )
 from ontocast.onto.context import AgentContext, AgentType, ContextManager
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
-from ontocast.onto.model import BasePydanticModel
+from ontocast.onto.model import BasePydanticModel, Suggestions
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import AddPrefixOp, GraphUpdate
@@ -156,6 +156,10 @@ class AgentState(BasePydanticModel):
     )
     context_manager: ContextManager = Field(
         default_factory=ContextManager,
+        description="Context manager for passing information between agents",
+    )
+    suggestions: Suggestions = Field(
+        default_factory=Suggestions,
         description="Context manager for passing information between agents",
     )
 
@@ -349,7 +353,7 @@ class AgentState(BasePydanticModel):
         self.input_text = text
         self.doc_hid = render_text_hash(self.input_text)
 
-    def set_failure(self, stage: str, reason: str, success_score: float = 0.0):
+    def set_failure(self, stage: FailureStage, reason: str, success_score: float = 0.0):
         """Set failure state with stage and reason.
 
         Args:

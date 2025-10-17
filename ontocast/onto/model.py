@@ -3,6 +3,10 @@ import pathlib
 from pydantic import BaseModel, Field
 
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.prompt.common import (
+    suggestion_concrete_template,
+    suggestion_general_template,
+)
 
 
 class BasePydanticModel(BaseModel):
@@ -135,6 +139,32 @@ class Suggestions(BaseModel):
             actionable_fixes=actionable_fixes,
             systemic_critique_summary=critique.systemic_critique_summary,
         )
+
+    def to_prompt_templates(self) -> str:
+        """Generate prompt templates from the suggestions.
+
+        Returns:
+            Combined string with general and concrete templates.
+            Returns empty string if both fields are empty.
+        """
+
+        # Generate general template if systemic_critique_summary is not empty
+        general_template = ""
+        if self.systemic_critique_summary.strip():
+            general_template = suggestion_general_template.format(
+                general_suggestion=self.systemic_critique_summary
+            )
+
+        # Generate concrete template if actionable_fixes is not empty
+        concrete_template = ""
+        if self.actionable_fixes:
+            suggestion_str = "\n- ".join(self.actionable_fixes)
+            concrete_template = suggestion_concrete_template.format(
+                suggestion_str=suggestion_str
+            )
+
+        # Combine both templates
+        return general_template + concrete_template
 
 
 class OntologyCritiqueReport(BaseModel):

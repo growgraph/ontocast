@@ -10,7 +10,7 @@ from langchain.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
-from ontocast.onto.model import FactsCritiqueReport
+from ontocast.onto.model import FactsCritiqueReport, Suggestions
 from ontocast.onto.state import AgentState
 from ontocast.prompt.common import (
     facts_template,
@@ -115,7 +115,7 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
             state.status = Status.FAILED
             state.set_node_status(WorkflowNode.CRITICISE_FACTS, Status.FAILED)
             state.failure_stage = FailureStage.FACTS_CRITIQUE
-            state.improvements_suggestions = critique.concrete_improvement_suggestions
+            state.suggestions = Suggestions.from_critique_report(critique)
             state.failure_reason = f"Facts improvement suggestion: {critique.concrete_improvement_suggestions}"
 
         return state

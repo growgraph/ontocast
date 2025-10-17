@@ -67,7 +67,7 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
             "facts_instruction",
             "ontology_instruction",
             "text_chapter",
-            "critique_instruction",
+            "improvement_instruction",
             "format_instructions",
         ],
     )

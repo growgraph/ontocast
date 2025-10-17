@@ -88,3 +88,15 @@ user_template = """\n\n
 
 {user_instruction}
 """
+
+suggestion_general_template = """\n\n
+## GENERAL
+
+{general_suggestion}
+"""
+
+suggestion_concrete_template = """\n\n
+## CONCRETE
+
+{suggestion_str}
+"""

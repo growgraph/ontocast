@@ -7,7 +7,7 @@ template_prompt = """
 
 {user_instruction}
 
-{critique_instruction}
+{improvement_instruction}
 
 {ontology_ttl}
 
@@ -47,7 +47,7 @@ general_ontology_instruction = """
 8. update/assign the version of the ontology using semantic versioning convention.
 """
 
-critique_instruction_template = """
+improvement_instruction_template = """
 ### CRITIQUE INSTRUCTION
 Previous
 """
