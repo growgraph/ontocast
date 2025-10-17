@@ -268,10 +268,17 @@ def create_app(
 )
 @click.option("--input-path", type=click.Path(path_type=pathlib.Path), default=None)
 @click.option("--head-chunks", type=int, default=None)
+@click.option(
+    "--cache-dir",
+    type=click.Path(path_type=pathlib.Path),
+    default=None,
+    help="Directory for caching LLM responses",
+)
 def run(
     env_path: pathlib.Path,
     input_path: pathlib.Path | None,
     head_chunks: int | None,
+    cache_dir: pathlib.Path | None,
 ):
     """
     Main entry point for the OntoCast server/CLI.
@@ -318,7 +325,7 @@ def run(
         ).expanduser()
 
     # Create ToolBox with config directly
-    tools: ToolBox = ToolBox(config)
+    tools: ToolBox = ToolBox(config, cache_dir=cache_dir)
     init_toolbox(tools)
 
     workflow: CompiledStateGraph = create_agent_graph(tools)

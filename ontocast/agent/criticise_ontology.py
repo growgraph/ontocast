@@ -11,7 +11,7 @@ from langchain_core.prompts import PromptTemplate
 
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
-from ontocast.onto.model import OntologyUpdateCritiqueReport
+from ontocast.onto.model import OntologyCritiqueReport
 from ontocast.onto.state import AgentState
 from ontocast.prompt.common import ontology_template, text_template
 from ontocast.prompt.common import system_preamble_ontology as system_preamble
@@ -49,7 +49,7 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
             f"{state.current_ontology.ontology_id} : {state.current_ontology.iri} is not a valid ontology"
         )
 
-    parser = PydanticOutputParser(pydantic_object=OntologyUpdateCritiqueReport)
+    parser = PydanticOutputParser(pydantic_object=OntologyCritiqueReport)
     llm_tool: LLMTool = tools.llm
 
     ontology_ttl = state.current_ontology.graph.serialize(format="turtle")
@@ -84,9 +84,9 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
             )
         )
 
-        critique: OntologyUpdateCritiqueReport = parser.parse(response.content)
+        critique: OntologyCritiqueReport = parser.parse(response.content)
         logger.debug(
-            f"Parsed critique report - success: {critique.update_successful}, "
+            f"Parsed critique report - success: {critique.success}, "
             f"score: {critique.score}"
         )
 

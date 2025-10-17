@@ -9,8 +9,7 @@ import logging
 from langchain.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
-from ontocast.onto.context import AgentType
-from ontocast.onto.enum import FailureStage, Status
+from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import FactsCritiqueReport
 from ontocast.onto.state import AgentState
 from ontocast.prompt.common import (
@@ -47,10 +46,11 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
         logger.warning("No current chunk to analyze")
         return state
 
-    logger.info("Criticize facts with memory")
+    logger.info(
+        f"Criticize facts: visit {state.node_visits[WorkflowNode.CRITICISE_FACTS] + 1}/{state.max_visits}"
+    )
 
     llm_tool = tools.llm
-    version_manager = tools.version_manager
     parser = PydanticOutputParser(pydantic_object=FactsCritiqueReport)
 
     ontology_ttl = state.current_ontology.graph.serialize(format="turtle")
@@ -103,48 +103,25 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
 
         critique: FactsCritiqueReport = parser.parse(response.content)
         logger.debug(
-            f"Parsed critique report - success: {critique.facts_graph_derivation_success}, "
-            f"score: {critique.facts_graph_derivation_score}"
+            f"Parsed critique report - success: {critique.success}, "
+            f"score: {critique.score}"
         )
 
-        # Store critique in version manager and update context
-        if version_manager:
-            chunk_id = getattr(state.current_chunk, "chunk_id", "unknown")
-            latest_facts_version = version_manager.get_latest_facts_version(chunk_id)
-            if latest_facts_version:
-                latest_facts_version.metadata.update(
-                    {
-                        "last_critique": critique.facts_graph_derivation_critique_comment,
-                        "critique_score": critique.facts_graph_derivation_score,
-                        "critique_satisfactory": critique.facts_graph_derivation_success,
-                    }
-                )
-
-                # Update context with critique information
-                state.update_context_for_agent(
-                    agent_type=AgentType.CRITIC_FACTS,
-                    facts_critique={
-                        "issues": critique.facts_graph_derivation_critique_comment,
-                        "score": critique.facts_graph_derivation_score,
-                        "satisfactory": critique.facts_graph_derivation_success,
-                    },
-                    metadata={"critique_timestamp": "now", "chunk_id": chunk_id},
-                )
-
-        if critique.facts_graph_derivation_success:
+        if critique.success or critique.score > 90:
             state.status = Status.SUCCESS
+            state.set_node_status(WorkflowNode.CRITICISE_FACTS, Status.SUCCESS)
             logger.info("Facts critique passed")
         else:
             state.status = Status.FAILED
+            state.set_node_status(WorkflowNode.CRITICISE_FACTS, Status.FAILED)
             state.failure_stage = FailureStage.FACTS_CRITIQUE
-            state.failure_reason = f"Facts critique failed: {critique.facts_graph_derivation_critique_comment}"
-            logger.warning(
-                f"Facts critique failed: {critique.facts_graph_derivation_critique_comment}"
-            )
+            state.improvements_suggestions = critique.concrete_improvement_suggestions
+            state.failure_reason = f"Facts improvement suggestion: {critique.concrete_improvement_suggestions}"
 
         return state
 
     except Exception as e:
-        logger.error(f"Failed to critique facts: {str(e)}")
+        logger.error(f"Failed to criticize facts: {str(e)}")
         state.set_failure(FailureStage.FACTS_CRITIQUE, str(e))
+        state.set_node_status(WorkflowNode.CRITICISE_FACTS, Status.FAILED)
         return state

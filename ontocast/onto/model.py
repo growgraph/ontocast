@@ -94,57 +94,84 @@ class SemanticTriplesFactsReport(BaseModel):
     )
 
 
-class OntologyUpdateCritiqueReport(BaseModel):
-    """Report from ontology update critique process.
+class Suggestions(BaseModel):
+    """Report from knowledge graph critique process.
 
     Attributes:
-        update_successful: True if the ontology update was performed
-            successfully, False otherwise.
-        ontology_score: Score 0-100 for how well the update improves
-            the original domain ontology of the document.
-        improvement_instructions: A concrete explanation of why the
-            ontology update is not satisfactory.
+        systemic_critique_summary: A compilation of general improvement suggestions.
+        actionable_fixes: An itemized list of concrete suggestions for improvement.
     """
 
-    update_successful: bool = Field(
-        description="True if the ontology update "
-        "produced an appropriate complete, consistent and relevant ontology "
-        "reflecting the domain of the provided doc, False otherwise."
-    )
-    ontology_score: float = Field(
-        description="Score 0-100 for how well the updated domain ontology "
-        " serves as the ontology for the document. "
-        "0 is the worst, 100 is the best."
-    )
-    improvement_instructions: list[str] = Field(
+    actionable_fixes: list[str] = Field(
         default_factory=list,
-        description="Itemized concrete and actionable instructions "
-        "for improvements of extraction of the (possibly updated) ontology",
+        description="An itemized list of concrete suggestions for improvement.",
+    )
+
+    systemic_critique_summary: str = Field(
+        default="", description="A general improvement suggestion."
+    )
+
+    @classmethod
+    def from_critique_report(
+        cls, critique: "OntologyCritiqueReport | FactsCritiqueReport"
+    ) -> "Suggestions":
+        """Create Suggestions from any critique report.
+
+        Args:
+            critique: Either an OntologyCritiqueReport or FactsCritiqueReport to convert.
+
+        Returns:
+            Suggestions object with actionable fixes and systemic critique summary.
+        """
+        # Extract actionable fixes based on the type of critique report
+        if isinstance(critique, OntologyCritiqueReport):
+            actionable_fixes = critique.actionable_ontology_fixes
+        elif isinstance(critique, FactsCritiqueReport):
+            actionable_fixes = critique.actionable_triple_fixes
+        else:
+            raise ValueError(f"Unsupported critique report type: {type(critique)}")
+
+        return cls(
+            actionable_fixes=actionable_fixes,
+            systemic_critique_summary=critique.systemic_critique_summary,
+        )
+
+
+class OntologyCritiqueReport(BaseModel):
+    """Report from ontology update critique process."""
+
+    success: bool = Field(
+        description="True if the presented ontology is appropriate, complete, consistent and represents well the domain of the provided text, False otherwise."
+    )
+    score: float = Field(
+        description="Score 0-100 for how well the presented ontology serves as the ontology for the document. 0 is the worst, 100 is the best."
+    )
+
+    actionable_ontology_fixes: list[str] = Field(
+        default_factory=list,
+        description="An itemized list of concrete, actionable suggestions for specific improvements to the ontology. Each suggestion must cite the specific text context that necessitates the change, addressing issues like Completeness or Abstraction.",
+    )
+
+    systemic_critique_summary: str = Field(
+        default="",
+        description="A high-level summary of systemic deficiencies in the ontology (e.g., poor hierarchy structure, redundant concepts, lack of appropriate granularity, or general failures in Domain Coverage). This addresses strategic issues beyond individual term fixes.",
     )
 
 
 class FactsCritiqueReport(BaseModel):
-    """Report from knowledge graph critique process.
-
-    Attributes:
-        facts_graph_derivation_success: True if the facts graph derivation
-            was performed successfully, False otherwise.
-        facts_graph_derivation_score: Score 0-100 for how well the triples
-            of facts represent the original document.
-        facts_graph_derivation_critique_comment: A concrete explanation of
-            why the semantic graph of facts derivation is not satisfactory.
-    """
-
-    facts_graph_derivation_success: bool = Field(
+    success: bool = Field(
         description="True if the facts triples fully represent the document, False otherwise. "
     )
-    facts_graph_derivation_score: float = Field(
+    score: float = Field(
         description="Score 0-100 for how well the triples of facts "
         "represent the original document. 0 is the worst, 100 is the best."
     )
-    facts_graph_derivation_critique_comment: str | None = Field(
-        None,
-        description="A concrete explanation of why the semantic graph "
-        "of facts derivation is not satisfactory. "
-        "The explanation should be very specific and detailed.",
+    actionable_triple_fixes: list[str] = Field(
+        default_factory=list,
+        description="An itemized list of specific, actionable suggestions detailing how to correct or improve the facts graph. Each entry must follow the output instructions: providing the text justification, and the INCORRECT/CORRECT triples (ADD/REMOVE/MODIFY) where applicable.",
+    )
+
+    systemic_critique_summary: str = Field(
+        default="",
+        description="A high-level summary of systemic or pattern-based issues (e.g., consistent failure to extract date literals, structural over-reliance on cd: individuals, or a common misinterpretation of a specific ontology property). This is for identifying strategic improvements to the fact-extraction process, not individual triple fixes.",
     )

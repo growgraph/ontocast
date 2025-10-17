@@ -16,7 +16,6 @@ from ontocast.onto.model import SemanticTriplesFactsReport
 from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.state import AgentState
 from ontocast.prompt.common import (
-    critique_instruction_template,
     ontology_template,
     output_instruction_empty,
     text_template,
@@ -25,6 +24,7 @@ from ontocast.prompt.common import (
 from ontocast.prompt.render_facts import (
     facts_instruction_template,
     preamble,
+    suggestion_concrete_template,
     template_prompt,
 )
 from ontocast.toolbox import ToolBox
@@ -47,6 +47,10 @@ def render_facts(state: AgentState, tools: ToolBox) -> AgentState:
     """
 
     is_first_visit = len(state.current_chunk.graph) == 0
+
+    logger.info(
+        f"Render facts: visit {state.node_visits[WorkflowNode.CRITICISE_FACTS] + 1}/{state.max_visits}"
+    )
 
     if is_first_visit:
         logger.info("Generating fresh facts as Turtle")
@@ -189,9 +193,18 @@ def render_facts_update(state: AgentState, tools: ToolBox) -> AgentState:
     prompt_data = _prepare_prompt_data(state)
     prompt_data["preamble"] = preamble
 
+    # suggestions_block =
+
     if state.improvements_suggestions:
-        prompt_data["critique_instruction"] = critique_instruction_template.format(
-            "\n- ".join(state.improvements_suggestions)
+        prompt_data["critique_instruction"] = suggestion_concrete_template.format(
+            suggestion_str="\n- ".join(state.improvements_suggestions)
+        )
+    else:
+        prompt_data["critique_instruction"] = ""
+
+    if state.improvements_suggestions:
+        prompt_data["critique_instruction"] = suggestion_concrete_template.format(
+            suggestion_str="\n- ".join(state.improvements_suggestions)
         )
     else:
         prompt_data["critique_instruction"] = ""

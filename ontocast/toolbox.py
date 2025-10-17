@@ -1,3 +1,5 @@
+import pathlib
+
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
@@ -58,7 +60,7 @@ class ToolBox:
         config: Configuration object containing all necessary settings.
     """
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, cache_dir: pathlib.Path | None = None):
         # Get tool configuration
         tool_config = config.get_tool_config()
 
@@ -68,7 +70,9 @@ class ToolBox:
 
         # LLM configuration - pass the entire LLM config to the tool
         self.llm_provider = tool_config.llm_config.provider
-        self.llm: LLMTool = LLMTool.create(config=tool_config.llm_config)
+        self.llm: LLMTool = LLMTool.create(
+            config=tool_config.llm_config, cache_dir=cache_dir
+        )
 
         # Filesystem manager for initial ontology loading (if ontology_directory provided)
         self.filesystem_manager: FilesystemTripleStoreManager | None = None

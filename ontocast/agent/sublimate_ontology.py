@@ -7,29 +7,17 @@ and expressiveness of the ontological knowledge.
 
 import logging
 
-from rdflib import Namespace
-
 from ontocast.onto.constants import DEFAULT_CHUNK_IRI
 from ontocast.onto.enum import FailureStage
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
-from ontocast.tool.validate import validate_and_connect_chunk
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
 
 
 def _sublimate_ontology(state: AgentState):
-    logger.debug("Starting ontology sublimation")
-    logger.info(f"Current chunk namespace: {state.current_chunk.namespace}")
-
-    # Create new graphs
     graph_onto_addendum = RDFGraph()
-    graph_facts_pure = RDFGraph()
-
-    # Only bind document namespace to facts graph
-    cd_ns = Namespace(state.current_chunk.namespace)
-    graph_facts_pure.bind("cd", cd_ns)
 
     query_ontology = f"""
     PREFIX cd: <{DEFAULT_CHUNK_IRI}>
@@ -52,6 +40,10 @@ def _sublimate_ontology(state: AgentState):
     for s, p, o in results:
         graph_onto_addendum.add((s, p, o))
 
+    graph_onto_addendum.bind(
+        state.current_ontology.prefix, state.current_ontology.namespace
+    )
+
     query_facts = f"""
         PREFIX cd: <{DEFAULT_CHUNK_IRI}>
 
@@ -69,8 +61,14 @@ def _sublimate_ontology(state: AgentState):
     results = state.current_chunk.graph.query(query_facts)
 
     # Add filtered triples to the new graph
+    graph_facts_pure = RDFGraph()
     for s, p, o in results:
         graph_facts_pure.add((s, p, o))
+
+    graph_facts_pure.bind("cd", DEFAULT_CHUNK_IRI)
+    graph_facts_pure.bind(
+        state.current_ontology.prefix, state.current_ontology.namespace
+    )
 
     logger.info(
         f"Found triples: facts {len(graph_facts_pure)}; ontology {len(graph_onto_addendum)}"
@@ -79,6 +77,8 @@ def _sublimate_ontology(state: AgentState):
 
 
 def sublimate_ontology(state: AgentState, tools: ToolBox):
+    logger.debug("Starting ontology sublimation")
+
     om_tool = tools.ontology_manager
     if state.current_ontology is None:
         return state
@@ -86,26 +86,11 @@ def sublimate_ontology(state: AgentState, tools: ToolBox):
         state.update_facts()
         graph_onto_addendum, graph_facts = _sublimate_ontology(state=state)
 
-        ns_prefix_current_ontology = [
-            p
-            for p, ns in state.current_ontology.graph.namespaces()
-            if state.current_ontology.iri is not None
-            and str(ns) == state.current_ontology.iri
-        ]
-
-        if ns_prefix_current_ontology and state.current_ontology.iri is not None:
-            graph_onto_addendum.bind(
-                ns_prefix_current_ontology[0], Namespace(state.current_ontology.iri)
-            )
-            graph_facts.bind(
-                ns_prefix_current_ontology[0], Namespace(state.current_ontology.iri)
-            )
-
         om_tool.update_ontology(state.current_ontology.ontology_id, graph_onto_addendum)
 
         # Ensure graph_facts is an RDFGraph instance
         if not isinstance(graph_facts, RDFGraph):
-            logger.warning("received an redflib.Graph rather than RDFGraph")
+            logger.warning("received an rdflib.Graph rather than RDFGraph")
             new_graph = RDFGraph()
             for triple in graph_facts:
                 new_graph.add(triple)
@@ -114,10 +99,6 @@ def sublimate_ontology(state: AgentState, tools: ToolBox):
             graph_facts = new_graph
 
         state.current_chunk.graph = graph_facts
-        state.current_chunk = validate_and_connect_chunk(
-            state.current_chunk,
-            auto_connect=True,
-        )
 
         state.clear_failure()
     except Exception as e:
