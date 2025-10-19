@@ -56,21 +56,7 @@ output_instruction_ttl = """\n\n
 output_instruction_sparql = """\n\n
 # OUTPUT INSTRUCTION
 
-Generate SPARQL operations that modify the existing ontology, not replace it entirely
-"""
-
-output_instruction_crit_facts = """\n\n
-# OUTPUT INSTRUCTION
-
-Provide itemized, actionable suggestions specifying how to improve the graph of extracted facts (markdown list). Each suggestion must be highly specific, following these rules:
-
-1.  Completeness/Appropriateness Suggestions: For every suggested addition or removal of a fact, cite the exact sentence or phrase from the TEXT that justifies the change.
-2.  Structural/Reuse Suggestions: For every structural or ontology reuse error, provide the incorrect triple(s) from the SEMANTIC GRAPH and the corresponding corrected triple(s), using the appropriate ontology prefix.
-3.  Actionable Format: Start each suggestion with a clear verb (e.g., ADD, REMOVE, MODIFY).
-
-Example of a concrete suggestion:
-* ADD the triple `<:report1 a ex:Report .>` to address the missing type for the main entity. This fact is derived from the text: "The report details the project."
-* MODIFY the incorrect property usage. INCORRECT: `ex:Person1 :has_age "45" .` CORRECT: `ex:Person1 ex:age "45"^^xsd:integer .` (The canonical property is `ex:age`).
+Generate SPARQL operations that modify the existing ontology, not replace it entirely.
 """
 
 user_template = """\n\n

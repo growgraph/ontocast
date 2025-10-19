@@ -19,6 +19,7 @@ from ontocast.onto.state import AgentState
 from ontocast.prompt.common import (
     ontology_template,
     output_instruction_empty,
+    output_instruction_sparql,
     text_template,
     user_template,
 )
@@ -191,12 +192,14 @@ def render_facts_update(state: AgentState, tools: ToolBox) -> AgentState:
     parser = PydanticOutputParser(pydantic_object=GraphUpdate)
 
     prompt_data = _prepare_prompt_data(state)
-    prompt_data["preamble"] = preamble
-
-    prompt_data["improvement_instruction"] = render_suggestions_prompt(
-        state.suggestions, WorkflowNode.TEXT_TO_FACTS
-    )
-
+    prompt_data_update = {
+        "preamble": preamble,
+        "improvement_instruction": render_suggestions_prompt(
+            state.suggestions, WorkflowNode.TEXT_TO_FACTS
+        ),
+        "output_instruction": output_instruction_sparql,
+    }
+    prompt_data.update(prompt_data_update)
     prompt = _create_prompt_template()
 
     try:

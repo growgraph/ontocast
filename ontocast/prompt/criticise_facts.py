@@ -19,8 +19,6 @@ template_prompt = """
 
 {text_chapter}
 
-{output_instruction}
-
 {format_instructions}
 """
 

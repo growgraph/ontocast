@@ -15,7 +15,6 @@ from ontocast.onto.state import AgentState
 from ontocast.prompt.common import (
     facts_template,
     ontology_template,
-    output_instruction_crit_facts,
     text_template,
     user_template,
 )
@@ -82,7 +81,6 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
             "ontology_chapter",
             "facts_chapter",
             "text_chapter",
-            "output_instruction",
             "format_instructions",
         ],
     )
@@ -95,7 +93,6 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
         "facts_chapter": facts_chapter,
         "text_chapter": text_chapter,
         "format_instructions": parser.get_format_instructions(),
-        "output_instruction": output_instruction_crit_facts,
     }
 
     try:
@@ -116,7 +113,7 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
             state.set_node_status(WorkflowNode.CRITICISE_FACTS, Status.FAILED)
             state.failure_stage = FailureStage.FACTS_CRITIQUE
             state.suggestions = Suggestions.from_critique_report(critique)
-            state.failure_reason = f"Facts improvement suggestion: {critique.concrete_improvement_suggestions}"
+            state.failure_reason = "Facts Critic suggests improvements"
 
         return state
 

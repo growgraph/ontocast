@@ -28,12 +28,9 @@ def render_suggestions_prompt(suggestions: Suggestions, stage: WorkflowNode) -> 
         )
 
     # Generate concrete template if actionable_fixes is not empty
-    concrete_template = ""
-    if suggestions.actionable_fixes:
-        suggestion_str = "\n- ".join(suggestions.actionable_fixes)
-        concrete_template = suggestion_concrete_template.format(
-            suggestion_str=suggestion_str
-        )
+    concrete_template = suggestion_concrete_template.format(
+        suggestion_str=suggestions.to_markdown()
+    )
 
     if stage == WorkflowNode.TEXT_TO_FACTS:
         template = facts_template
