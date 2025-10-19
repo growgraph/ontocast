@@ -10,6 +10,7 @@ import logging
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
+from ontocast.agent.common import render_suggestions_prompt
 from ontocast.onto.constants import DEFAULT_CHUNK_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import SemanticTriplesFactsReport
@@ -192,8 +193,9 @@ def render_facts_update(state: AgentState, tools: ToolBox) -> AgentState:
     prompt_data = _prepare_prompt_data(state)
     prompt_data["preamble"] = preamble
 
-    suggestion_prompt = state.suggestions.to_prompt_templates()
-    prompt_data["improvement_instruction"] = suggestion_prompt
+    prompt_data["improvement_instruction"] = render_suggestions_prompt(
+        state.suggestions, WorkflowNode.TEXT_TO_FACTS
+    )
 
     prompt = _create_prompt_template()
 

@@ -12,6 +12,7 @@ import logging
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
+from ontocast.agent.common import render_suggestions_prompt
 from ontocast.onto.constants import ONTOLOGY_NULL_ID
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.ontology import Ontology
@@ -21,7 +22,6 @@ from ontocast.prompt.common import output_instruction_sparql, output_instruction
 from ontocast.prompt.common import system_preamble_ontology as system_preamble
 from ontocast.prompt.render_ontology import (
     general_ontology_instruction,
-    improvement_instruction_template,
     intro_instruction_fresh,
     intro_instruction_update,
     template_prompt,
@@ -146,12 +146,9 @@ def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
     )
     ontology_ttl = state.current_ontology.graph.serialize(format="turtle")
     output_instruction = output_instruction_sparql
-    if state.improvements_suggestions:
-        improvement_instruction_str = improvement_instruction_template.format(
-            "\n- ".join(state.improvements_suggestions)
-        )
-    else:
-        improvement_instruction_str = ""
+    improvement_instruction_str = render_suggestions_prompt(
+        state.suggestions, WorkflowNode.TEXT_TO_ONTOLOGY
+    )
 
     prompt = PromptTemplate(
         template=template_prompt,

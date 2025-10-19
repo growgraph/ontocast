@@ -41,16 +41,6 @@ facts_template = """\n\n
 """
 
 
-improvement_instruction_template = """\n\n
-# IMPROVEMENT INSTRUCTION
-
-Previous triples representing facts raised the following suggestions for improvement:
-
-{suggestions_instruction}
-
-Address all the suggestions and generate ADD, REMOVE
-"""
-
 output_instruction_empty = """\n\n
 # OUTPUT INSTRUCTION
 

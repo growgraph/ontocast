@@ -3,10 +3,6 @@ import pathlib
 from pydantic import BaseModel, Field
 
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.prompt.common import (
-    suggestion_concrete_template,
-    suggestion_general_template,
-)
 
 
 class BasePydanticModel(BaseModel):
@@ -140,32 +136,6 @@ class Suggestions(BaseModel):
             systemic_critique_summary=critique.systemic_critique_summary,
         )
 
-    def to_prompt_templates(self) -> str:
-        """Generate prompt templates from the suggestions.
-
-        Returns:
-            Combined string with general and concrete templates.
-            Returns empty string if both fields are empty.
-        """
-
-        # Generate general template if systemic_critique_summary is not empty
-        general_template = ""
-        if self.systemic_critique_summary.strip():
-            general_template = suggestion_general_template.format(
-                general_suggestion=self.systemic_critique_summary
-            )
-
-        # Generate concrete template if actionable_fixes is not empty
-        concrete_template = ""
-        if self.actionable_fixes:
-            suggestion_str = "\n- ".join(self.actionable_fixes)
-            concrete_template = suggestion_concrete_template.format(
-                suggestion_str=suggestion_str
-            )
-
-        # Combine both templates
-        return general_template + concrete_template
-
 
 class OntologyCritiqueReport(BaseModel):
     """Report from ontology update critique process."""
@@ -190,18 +160,37 @@ class OntologyCritiqueReport(BaseModel):
 
 class FactsCritiqueReport(BaseModel):
     success: bool = Field(
-        description="True if the facts triples fully represent the document, False otherwise. "
+        description="True if the facts triples fully represent the document, False otherwise."
     )
+
     score: float = Field(
-        description="Score 0-100 for how well the triples of facts "
-        "represent the original document. 0 is the worst, 100 is the best."
+        description=(
+            "Score 0-100 for how well the triples of facts represent the original document. "
+            "0 is the worst, 100 is the best."
+        )
     )
+
     actionable_triple_fixes: list[str] = Field(
         default_factory=list,
-        description="An itemized list of specific, actionable suggestions detailing how to correct or improve the facts graph. Each entry must follow the output instructions: providing the text justification, and the INCORRECT/CORRECT triples (ADD/REMOVE/MODIFY) where applicable.",
+        description=(
+            "An itemized list of specific, actionable suggestions for correcting the facts graph.\n"
+            "Each entry MUST include:\n"
+            "(1) the exact text fragment from the source that justifies the change,\n"
+            "(2) the specific action required (ADD/REMOVE/MODIFY),\n"
+            "(3) for REMOVE or MODIFY: show the current INCORRECT triple(s),\n"
+            "(4) for ADD or MODIFY: show the proposed CORRECT triple(s).\n\n"
+        ),
     )
 
     systemic_critique_summary: str = Field(
         default="",
-        description="A high-level summary of systemic or pattern-based issues (e.g., consistent failure to extract date literals, structural over-reliance on cd: individuals, or a common misinterpretation of a specific ontology property). This is for identifying strategic improvements to the fact-extraction process, not individual triple fixes.",
+        description=(
+            "A high-level, non-itemized summary of systemic or pattern-based issues identified across the facts graph.\n"
+            "Focus on strategic problems rather than individual triple fixes, such as:\n"
+            "- Consistent failure to extract certain data types (e.g., dates, currencies)\n"
+            "- Structural patterns like creating entities instead of reusing existing ontology entities\n"
+            "- Repeated misinterpretation of specific ontology properties or classes\n"
+            "- Missing coverage of entire categories of information\n\n"
+            "This guides strategic improvements to the fact-extraction process."
+        ),
     )

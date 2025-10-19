@@ -47,7 +47,11 @@ general_ontology_instruction = """
 8. update/assign the version of the ontology using semantic versioning convention.
 """
 
-improvement_instruction_template = """
-### CRITIQUE INSTRUCTION
-Previous
+
+improvement_instruction_template = """\n\n
+# IMPROVEMENT INSTRUCTION
+
+The current iteration of the ontology was not deemed accurate by Critic, who left the following suggestions for improvement:
+
+{suggestions_instruction}
 """
