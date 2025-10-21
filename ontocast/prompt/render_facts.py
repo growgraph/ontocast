@@ -11,6 +11,8 @@ template_prompt = """
 
 {text_chapter}
 
+{fact_chapter}
+
 {improvement_instruction}
 
 {output_instruction}

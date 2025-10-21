@@ -34,6 +34,7 @@ text_template = """\n\n
 
 facts_template = """\n\n
 # SEMANTIC GRAPH OF FACTS
+The following facts were extracted
 
 ```ttl
 {facts_ttl}

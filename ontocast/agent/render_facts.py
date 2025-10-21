@@ -17,6 +17,7 @@ from ontocast.onto.model import SemanticTriplesFactsReport
 from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.state import AgentState
 from ontocast.prompt.common import (
+    facts_template,
     ontology_template,
     output_instruction_empty,
     output_instruction_sparql,
@@ -82,6 +83,8 @@ def _prepare_prompt_data(state: AgentState) -> dict[str, str]:
 
     text_chapter = text_template.format(text=state.current_chunk.text)
 
+    fact_chapter = ""
+
     user_instruction = (
         user_template.format(user_instruction=state.facts_user_instruction)
         if state.facts_user_instruction
@@ -93,6 +96,7 @@ def _prepare_prompt_data(state: AgentState) -> dict[str, str]:
         "user_instruction": user_instruction,
         "facts_instruction": facts_instruction_str,
         "text_chapter": text_chapter,
+        "fact_chapter": fact_chapter,
     }
 
 
@@ -198,6 +202,9 @@ def render_facts_update(state: AgentState, tools: ToolBox) -> AgentState:
             state.suggestions, WorkflowNode.TEXT_TO_FACTS
         ),
         "output_instruction": output_instruction_sparql,
+        "fact_chapter": facts_template.format(
+            facts_ttl=state.current_chunk.graph.serialize(format="turtle")
+        ),
     }
     prompt_data.update(prompt_data_update)
     prompt = _create_prompt_template()

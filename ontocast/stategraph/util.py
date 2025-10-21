@@ -25,7 +25,9 @@ def count_visits_conditional_success(state: AgentState, current_node) -> AgentSt
         state.clear_failure()
     elif state.node_visits[current_node] >= state.max_visits:
         logger.error(f"For {current_node}: maximum visits exceeded")
-        state.set_failure(current_node, reason="Maximum visits exceeded")
+        # Don't set failure stage since we're continuing with SUCCESS status
+        # Just log the reason and continue
+        state.failure_reason = f"Maximum visits exceeded for {current_node}"
         state.status = Status.SUCCESS
     return state
 

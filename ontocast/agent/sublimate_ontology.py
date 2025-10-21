@@ -18,6 +18,12 @@ logger = logging.getLogger(__name__)
 
 def _sublimate_ontology(state: AgentState):
     graph_onto_addendum = RDFGraph()
+    graph_facts_pure = RDFGraph()
+
+    # Copy all prefixes from the original graph to both new graphs
+    for prefix, namespace in state.current_chunk.graph.namespaces():
+        graph_onto_addendum.bind(prefix, namespace)
+        graph_facts_pure.bind(prefix, namespace)
 
     query_ontology = f"""
     PREFIX cd: <{DEFAULT_CHUNK_IRI}>
@@ -40,10 +46,6 @@ def _sublimate_ontology(state: AgentState):
     for s, p, o in results:
         graph_onto_addendum.add((s, p, o))
 
-    graph_onto_addendum.bind(
-        state.current_ontology.prefix, state.current_ontology.namespace
-    )
-
     query_facts = f"""
         PREFIX cd: <{DEFAULT_CHUNK_IRI}>
 
@@ -61,14 +63,8 @@ def _sublimate_ontology(state: AgentState):
     results = state.current_chunk.graph.query(query_facts)
 
     # Add filtered triples to the new graph
-    graph_facts_pure = RDFGraph()
     for s, p, o in results:
         graph_facts_pure.add((s, p, o))
-
-    graph_facts_pure.bind("cd", DEFAULT_CHUNK_IRI)
-    graph_facts_pure.bind(
-        state.current_ontology.prefix, state.current_ontology.namespace
-    )
 
     logger.info(
         f"Found triples: facts {len(graph_facts_pure)}; ontology {len(graph_onto_addendum)}"
