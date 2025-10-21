@@ -40,11 +40,19 @@ evaluation_instruction = """\n\n
 
 4. Structure: Are all concrete entities linked to abstract classes via relations?
 
-5. Ontology Reuse: All entities and relations existing in the ontology must be referenced and linked to their canonical identifiers, rather than instantiated anew.
+5. Ontology Validity: Verify that every non-cd: entity exists in either the provided domain ontology or standard ontologies (RDFS, OWL, schema.org, etc.).
+   - Every class, property, and individual using ontology prefixes (fca:, onto:, schema:, etc.) must be defined in its respective ontology
+   - Invented entities using ontology prefixes are errors
+   - Fix: REMOVE invented entities or REPLACE with semantically similar existing entities from available ontologies
 
-6. Ontology Validity: Verify that every non-cd: entity actually exists in the provided ontology (ies).
-   - Check that each class, property, and individual using ontology prefixes  is defined in the ontology
-   - If an entity uses an ontology prefix but does NOT exist in that ontology, this is an error
-   - Common mistake: Creating "phantom" ontology entities that look canonical but are invented
-   - Fix by either: (a) finding the correct existing entity in the ontology, (b) using cd: namespace if it's a new fact, or (c) using a more general existing class
+# VERIFICATION CHECKLIST
+
+Before finalizing your critique:
+
+1. For every triple using a non-cd: prefix, confirm the entity exists in the corresponding ontology
+
+2. When you find invented entities:
+   - Flag as error
+   - Search available ontologies for semantically similar entities
+   - Suggest REPLACE if found, or REMOVE if no suitable replacement exists
 """
