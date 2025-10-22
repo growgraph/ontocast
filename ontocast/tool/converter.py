@@ -9,9 +9,7 @@ import pathlib
 from io import BytesIO
 from typing import Any, Union
 
-from docling.datamodel.base_models import (
-    DocumentStream,
-)
+from pydantic import Field
 
 from .onto import Tool
 
@@ -28,7 +26,10 @@ class ConverterTool(Tool):
         supported_extensions: Set of supported file extensions.
     """
 
-    supported_extensions: set[str] = {".pdf", ".ppt", ".pptx"}
+    supported_extensions: set[str] = Field(
+        default={".pdf", ".ppt", ".pptx"},
+        description="Set of supported file extensions",
+    )
 
     def __init__(
         self,
@@ -39,11 +40,11 @@ class ConverterTool(Tool):
         Args:
             **kwargs: Additional keyword arguments passed to the parent class.
         """
+        super().__init__(**kwargs)
         try:
-            from docling.document_converter import DocumentConverter
+            from docling.document_converter import DocumentConverter  # type: ignore
 
-            super().__init__(**kwargs)
-            self._converter: DocumentConverter | None = DocumentConverter()
+            self._converter: None | DocumentConverter = DocumentConverter()
         except ImportError as e:
             logger.error(f"Could not import DocumentConverter: {e}")
 
@@ -57,8 +58,15 @@ class ConverterTool(Tool):
             dict[str, Any]: The converted document data.
         """
         if isinstance(file_input, bytes):
-            ds = DocumentStream(name="doc", stream=BytesIO(file_input))
             if self._converter is None:
+                raise ImportError("DocumentConverter not available")
+            try:
+                from docling.datamodel.base_models import (  # type: ignore
+                    DocumentStream,
+                )
+
+                ds = DocumentStream(name="doc", stream=BytesIO(file_input))
+            except ImportError:
                 raise ImportError(f"Could not import DocumentConverter: {file_input}")
             result = self._converter.convert(ds)
             doc = result.document.export_to_markdown()

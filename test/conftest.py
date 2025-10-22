@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from suthing import FileHandle
 
+from ontocast.config import Config, LLMConfig, LLMProvider, PathConfig, ToolConfig
 from ontocast.onto.constants import DEFAULT_DOMAIN
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
@@ -79,12 +80,13 @@ def working_directory():
 
 @pytest.fixture
 def llm_tool(provider, model_name, temperature, llm_base_url):
-    llm_tool = LLMTool.create(
-        provider=provider,
-        model=model_name,
+    config = LLMConfig(
+        provider=LLMProvider(provider),
+        model_name=model_name,
         temperature=temperature,
         base_url=llm_base_url,
     )
+    llm_tool = LLMTool.create(config=config)
     return llm_tool
 
 
@@ -104,14 +106,30 @@ def om_tool_fname():
 def tools(
     ontology_path, working_directory, model_name, temperature, provider, llm_base_url
 ) -> ToolBox:
-    tools: ToolBox = ToolBox(
-        llm_base_url=llm_base_url,
-        llm_provider=provider,
-        working_directory=working_directory,
-        ontology_directory=ontology_path,
+    # Create LLM config
+    llm_config = LLMConfig(
+        provider=LLMProvider(provider),
         model_name=model_name,
         temperature=temperature,
+        base_url=llm_base_url,
     )
+
+    # Create path config
+    path_config = PathConfig(
+        working_directory=working_directory,
+        ontology_directory=ontology_path,
+    )
+
+    # Create tool config
+    tool_config = ToolConfig(
+        llm_config=llm_config,
+        path_config=path_config,
+    )
+
+    # Create main config
+    config = Config(tool_config=tool_config)
+
+    tools: ToolBox = ToolBox(config=config)
     init_toolbox(tools)
     return tools
 

@@ -120,7 +120,7 @@ def main():
                 viz.draw(fname + ".png", format="png", prog="dot", args="-Gdpi=300")
 
     try:
-        import pygraphviz as pgv
+        import pygraphviz as pgv  # type: ignore
 
         tweak_draw("docs/assets/graph", extensions=("svg", "pnt"))
     except ImportError as e:

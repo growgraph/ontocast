@@ -139,10 +139,12 @@ class LLMTool(Tool):
                     f"Setting temperature to {self.config.temperature} for gpt-5 class model {self.config.model_name}"
                 )
             self._llm = ChatOpenAI(
-                model=self.config.model_name,
+                model_name=self.config.model_name,
                 temperature=self.config.temperature,
-                base_url=self.config.base_url,
-                api_key=SecretStr(self.config.api_key) if self.config.api_key else None,
+                openai_api_base=self.config.base_url,
+                openai_api_key=SecretStr(self.config.api_key)
+                if self.config.api_key
+                else None,
             )
         elif self.config.provider == "ollama":
             self._llm = ChatOllama(

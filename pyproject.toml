@@ -82,9 +82,5 @@ select = ["E", "F", "I001", "W"]
 [tool.ruff.lint.per-file-ignores]
 "ontocast/prompt/*.py" = ["E501"]
 
-[tool.ty.rules]
-missing-argument = "ignore"
-unknown-argument = "ignore"
-
 [tool.uv]
 default-groups = ["docs"]
