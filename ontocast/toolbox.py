@@ -141,7 +141,9 @@ class ToolBox:
         if self.filesystem_manager is not None:
             self.filesystem_manager.serialize_graph(state.current_ontology.graph)
         if self.triple_store_manager is not None:
-            self.triple_store_manager.serialize_graph(state.current_ontology.graph)
+            self.triple_store_manager.serialize_graph(
+                state.current_ontology.graph, graph_uri=state.current_ontology.iri
+            )
 
         if state.aggregated_facts and len(state.aggregated_facts) > 0:
             if self.filesystem_manager is not None:
@@ -174,7 +176,9 @@ def init_toolbox(toolbox: ToolBox):
         if toolbox.triple_store_manager is not None:
             # Store these ontologies in the main triple store manager
             for ontology in initial_ontologies:
-                toolbox.triple_store_manager.serialize_graph(ontology.graph)
+                toolbox.triple_store_manager.serialize_graph(
+                    graph=ontology.graph, graph_uri=ontology.iri
+                )
 
     # Now fetch ontologies from the main triple store manager
     tm = (

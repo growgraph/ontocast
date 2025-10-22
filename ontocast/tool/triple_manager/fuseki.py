@@ -186,7 +186,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             logger.error(
                 f"Failed to create dataset {dataset_name}. Status code: {response.status_code}"
             )
-            logger.error(f"Response: {response.text}")
+            logger.error(f"Response: {response.text.strip()}")
 
     def _get_dataset_url(self):
         """Get the full URL for the dataset.

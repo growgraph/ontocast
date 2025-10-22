@@ -208,9 +208,13 @@ class AgentState(BasePydanticModel):
             return graph
 
         # Create a copy of the input graph
-        from copy import deepcopy
-
-        updated_graph = deepcopy(graph)
+        # Use RDFGraph's copy method to preserve type
+        updated_graph = RDFGraph()
+        for triple in graph:
+            updated_graph.add(triple)
+        # Copy namespace bindings
+        for prefix, namespace in graph.namespaces():
+            updated_graph.bind(prefix, namespace)
 
         all_prefixes = {}
         for graph_update in updates:

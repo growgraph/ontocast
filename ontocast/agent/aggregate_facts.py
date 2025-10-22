@@ -20,12 +20,12 @@ def aggregate_serialize(state: AgentState, tools: ToolBox) -> AgentState:
         c.sanitize()
 
     state.aggregated_facts = tools.aggregator.aggregate_graphs(
-        state.chunks_processed, state.doc_namespace
+        chunks=state.chunks_processed, doc_namespace=state.doc_namespace
     )
     logger.info(
-        f"chunks proc: {len(state.chunks_processed)}\n"
-        f"facts graph: {len(state.aggregated_facts)} triples\n"
-        f"onto graph {len(state.current_ontology.graph)} triples"
+        f"chunks proc: {len(state.chunks_processed)}; "
+        f"ontology {len(state.current_ontology.graph)} triples; "
+        f"facts graph: {len(state.aggregated_facts)} triples"
     )
     tools.serialize(state)
     return state
