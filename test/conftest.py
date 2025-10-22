@@ -16,7 +16,7 @@ from ontocast.tool import (
 )
 from ontocast.tool.triple_manager import Neo4jTripleStoreManager
 from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
-from ontocast.toolbox import ToolBox, init_toolbox
+from ontocast.toolbox import ToolBox
 
 
 @pytest.fixture
@@ -130,7 +130,7 @@ def tools(
     config = Config(tool_config=tool_config)
 
     tools: ToolBox = ToolBox(config=config)
-    init_toolbox(tools)
+    tools.initialize()
     return tools
 
 

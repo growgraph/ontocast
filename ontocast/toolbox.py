@@ -157,38 +157,34 @@ class ToolBox:
                     graph_uri=state.doc_namespace,
                 )
 
+    def initialize(self) -> None:
+        """Initialize the toolbox with ontologies and their properties.
 
-def init_toolbox(toolbox: ToolBox):
-    """Initialize the toolbox with ontologies and their properties.
+        This method fetches ontologies from the triple store and updates
+        their properties using the LLM tool. If a filesystem manager is available
+        for initial loading, it will be used to load ontologies from files first.
+        """
 
-    This function fetches ontologies from the triple store and updates
-    their properties using the LLM tool. If a filesystem manager is available
-    for initial loading, it will be used to load ontologies from files first.
+        # If we have a filesystem manager, use it to load initial ontologies
+        if self.filesystem_manager is not None:
+            initial_ontologies = self.filesystem_manager.fetch_ontologies()
 
-    Args:
-        toolbox: The ToolBox instance to initialize.
-    """
+            if self.triple_store_manager is not None:
+                # Store these ontologies in the main triple store manager
+                for ontology in initial_ontologies:
+                    self.triple_store_manager.serialize_graph(
+                        graph=ontology.graph, graph_uri=ontology.iri
+                    )
 
-    # If we have a filesystem manager, use it to load initial ontologies
-    if toolbox.filesystem_manager is not None:
-        initial_ontologies = toolbox.filesystem_manager.fetch_ontologies()
-
-        if toolbox.triple_store_manager is not None:
-            # Store these ontologies in the main triple store manager
-            for ontology in initial_ontologies:
-                toolbox.triple_store_manager.serialize_graph(
-                    graph=ontology.graph, graph_uri=ontology.iri
-                )
-
-    # Now fetch ontologies from the main triple store manager
-    tm = (
-        toolbox.triple_store_manager
-        if toolbox.triple_store_manager is not None
-        else toolbox.filesystem_manager
-    )
-    if tm is not None:
-        toolbox.ontology_manager.ontologies = tm.fetch_ontologies()
-        update_ontology_manager(om=toolbox.ontology_manager, llm_tool=toolbox.llm)
+        # Now fetch ontologies from the main triple store manager
+        tm = (
+            self.triple_store_manager
+            if self.triple_store_manager is not None
+            else self.filesystem_manager
+        )
+        if tm is not None:
+            self.ontology_manager.ontologies = tm.fetch_ontologies()
+            update_ontology_manager(om=self.ontology_manager, llm_tool=self.llm)
 
 
 def render_ontology_summary(graph: RDFGraph, llm_tool) -> OntologyProperties:

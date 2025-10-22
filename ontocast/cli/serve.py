@@ -35,7 +35,7 @@ from ontocast.cli.util import crawl_directories
 from ontocast.config import Config, ServerConfig
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import create_agent_graph
-from ontocast.toolbox import ToolBox, init_toolbox
+from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
 
@@ -348,7 +348,7 @@ def run(
 
     # Create ToolBox with config directly
     tools: ToolBox = ToolBox(config, cache_dir=cache_dir)
-    init_toolbox(tools)
+    tools.initialize()
 
     workflow: CompiledStateGraph = create_agent_graph(tools)
 
