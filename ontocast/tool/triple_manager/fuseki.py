@@ -12,7 +12,7 @@ from pydantic import Field
 from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF
 
-from ontocast.onto.constants import DEFAULT_DATASET
+from ontocast.onto.constants import DEFAULT_DATASET, DEFAULT_ONTOLOGIES_DATASET
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.util import derive_ontology_id
@@ -40,8 +40,20 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
     """
 
     dataset: str | None = Field(default=None, description="Fuseki dataset name")
+    ontologies_dataset: str = Field(
+        default=DEFAULT_ONTOLOGIES_DATASET,
+        description="Fuseki dataset name for ontologies",
+    )
 
-    def __init__(self, uri=None, auth=None, dataset=None, clean=False, **kwargs):
+    def __init__(
+        self,
+        uri=None,
+        auth=None,
+        dataset=None,
+        ontologies_dataset=None,
+        clean=False,
+        **kwargs,
+    ):
         """Initialize the Fuseki triple store manager.
 
         This method sets up the connection to Fuseki, creates the dataset
@@ -71,8 +83,11 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             self.dataset = DEFAULT_DATASET
         else:
             self.dataset = dataset
+        self.ontologies_dataset = ontologies_dataset or DEFAULT_ONTOLOGIES_DATASET
         self.clean = clean
         self.init_dataset(self.dataset)
+        if self.ontologies_dataset != self.dataset:
+            self.init_dataset(self.ontologies_dataset)
 
         # Clean dataset if requested
         if self.clean:
@@ -196,10 +211,18 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         """
         return f"{self.uri}/{self.dataset}"
 
+    def _get_ontologies_dataset_url(self):
+        """Get the full URL for the ontologies dataset.
+
+        Returns:
+            str: The complete URL for the ontologies dataset endpoint.
+        """
+        return f"{self.uri}/{self.ontologies_dataset}"
+
     def fetch_ontologies(self) -> list[Ontology]:
         """Fetch all ontologies from their corresponding named graphs.
 
-        This method discovers all ontologies in the Fuseki dataset and
+        This method discovers all ontologies in the Fuseki ontologies dataset and
         fetches each one from its corresponding named graph. It uses
         a two-step process:
 
@@ -210,14 +233,14 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         and verifies that each ontology is properly typed as owl:Ontology.
 
         Returns:
-            list[Ontology]: List of all ontologies found in the dataset.
+            list[Ontology]: List of all ontologies found in the ontologies dataset.
 
         Example:
             >>> ontologies = manager.fetch_ontologies()
             >>> for onto in ontologies:
             ...     print(f"Found ontology: {onto.iri}")
         """
-        sparql_url = f"{self._get_dataset_url()}/sparql"
+        sparql_url = f"{self._get_ontologies_dataset_url()}/sparql"
 
         # Step 1: List all ontology URIs from all graphs
         list_query = """
@@ -249,7 +272,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         for onto_iri in ontology_iris:
             # Fetch the ontology from its corresponding named graph
             graph = RDFGraph()
-            export_url = f"{self._get_dataset_url()}/get?graph={onto_iri}"
+            export_url = f"{self._get_ontologies_dataset_url()}/get?graph={onto_iri}"
             export_resp = requests.get(
                 export_url, auth=self.auth, headers={"Accept": "text/turtle"}
             )
@@ -278,6 +301,78 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         logger.info(f"Successfully loaded {len(ontologies)} ontologies from Fuseki")
         return ontologies
 
+    def _serialize_graph_to_dataset(
+        self,
+        graph: Graph,
+        graph_uri: str | None,
+        dataset_url: str,
+        default_graph_uri: str,
+        log_prefix: str,
+    ) -> bool | None:
+        """Store an RDF graph as a named graph in a specific Fuseki dataset.
+
+        This is a private helper method that handles the common logic for storing
+        graphs in Fuseki datasets.
+
+        Args:
+            graph: The RDF graph to store.
+            graph_uri: URI to use as the named graph name (optional).
+            dataset_url: The URL of the dataset to store the graph in.
+            default_graph_uri: Default graph URI to use if none provided.
+            log_prefix: Prefix for log messages to distinguish between datasets.
+
+        Returns:
+            bool: True if the graph was successfully stored, False otherwise.
+        """
+        turtle_data = graph.serialize(format="turtle")
+        if graph_uri is None:
+            graph_uri = default_graph_uri
+
+        url = f"{dataset_url}/data?graph={graph_uri}"
+        headers = {"Content-Type": "text/turtle;charset=utf-8"}
+        response = requests.put(url, headers=headers, data=turtle_data, auth=self.auth)
+        if response.status_code in (200, 201, 204):
+            logger.info(
+                f"{log_prefix} graph {graph_uri} uploaded to Fuseki as named graph."
+            )
+            return True
+        else:
+            logger.error(
+                f"Failed to upload {log_prefix.lower()} graph {graph_uri}. Status code: {response.status_code}"
+            )
+            logger.error(f"Response: {response.text}")
+            return False
+
+    def serialize_ontology_graph(
+        self, graph: Graph, graph_uri: str | None = None
+    ) -> bool | None:
+        """Store an RDF graph as a named graph in the ontologies dataset.
+
+        This method stores the given RDF graph as a named graph in the Fuseki
+        ontologies dataset. The graph name is taken from the graph_uri parameter
+        or defaults to "urn:ontology:default".
+
+        Args:
+            graph: The RDF graph to store.
+            graph_uri: URI to use as the named graph name (optional).
+
+        Returns:
+            bool: True if the graph was successfully stored, False otherwise.
+
+        Example:
+            >>> graph = RDFGraph()
+            >>> success = manager.serialize_ontology_graph(graph)
+
+            >>> success = manager.serialize_ontology_graph(graph, graph_uri="http://example.org/ontology1")
+        """
+        return self._serialize_graph_to_dataset(
+            graph=graph,
+            graph_uri=graph_uri,
+            dataset_url=self._get_ontologies_dataset_url(),
+            default_graph_uri="urn:ontology:default",
+            log_prefix="Ontology",
+        )
+
     def serialize_graph(
         self, graph: Graph, graph_uri: str | None = None
     ) -> bool | None:
@@ -285,7 +380,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
         This method stores the given RDF graph as a named graph in Fuseki.
         The graph name is taken from the graph_uri parameter or defaults to
-        "urn:chunk:default".
+        "urn:data:default".
 
         Args:
             graph: The RDF graph to store.
@@ -300,19 +395,10 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
             >>> success = manager.serialize_graph(graph, graph_uri="http://example.org/chunk1")
         """
-        turtle_data = graph.serialize(format="turtle")
-        if graph_uri is None:
-            graph_uri = "urn:default"
-
-        url = f"{self._get_dataset_url()}/data?graph={graph_uri}"
-        headers = {"Content-Type": "text/turtle;charset=utf-8"}
-        response = requests.put(url, headers=headers, data=turtle_data, auth=self.auth)
-        if response.status_code in (200, 201, 204):
-            logger.info(f"Graph {graph_uri} uploaded to Fuseki as named graph.")
-            return True
-        else:
-            logger.error(
-                f"Failed to upload graph {graph_uri}. Status code: {response.status_code}"
-            )
-            logger.error(f"Response: {response.text}")
-            return False
+        return self._serialize_graph_to_dataset(
+            graph=graph,
+            graph_uri=graph_uri,
+            dataset_url=self._get_dataset_url(),
+            default_graph_uri="urn:data:default",
+            log_prefix="Graph",
+        )

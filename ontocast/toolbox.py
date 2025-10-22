@@ -99,6 +99,7 @@ class ToolBox:
                 uri=tool_config.fuseki.uri,
                 auth=tool_config.fuseki.auth,
                 dataset=tool_config.fuseki.dataset,
+                ontologies_dataset=tool_config.fuseki.ontologies_dataset,
                 clean=clean,
             )
         elif tool_config.neo4j.uri and tool_config.neo4j.auth:
@@ -141,9 +142,16 @@ class ToolBox:
         if self.filesystem_manager is not None:
             self.filesystem_manager.serialize_graph(state.current_ontology.graph)
         if self.triple_store_manager is not None:
+            # Store ontology in main dataset for reasoning
             self.triple_store_manager.serialize_graph(
                 state.current_ontology.graph, graph_uri=state.current_ontology.iri
             )
+            # Store ontology in ontologies dataset for management (if available)
+            if hasattr(self.triple_store_manager, "serialize_ontology_graph"):
+                # Type ignore because we're checking for the method dynamically
+                self.triple_store_manager.serialize_ontology_graph(  # type: ignore
+                    state.current_ontology.graph, graph_uri=state.current_ontology.iri
+                )
 
         if state.aggregated_facts and len(state.aggregated_facts) > 0:
             if self.filesystem_manager is not None:
@@ -160,21 +168,13 @@ class ToolBox:
     def initialize(self) -> None:
         """Initialize the toolbox with ontologies and their properties.
 
-        This method fetches ontologies from the triple store and updates
-        their properties using the LLM tool. If a filesystem manager is available
-        for initial loading, it will be used to load ontologies from files first.
+        This method synchronizes ontologies between filesystem and triple store,
+        then fetches ontologies from the triple store and updates their properties
+        using the LLM tool.
         """
 
-        # If we have a filesystem manager, use it to load initial ontologies
-        if self.filesystem_manager is not None:
-            initial_ontologies = self.filesystem_manager.fetch_ontologies()
-
-            if self.triple_store_manager is not None:
-                # Store these ontologies in the main triple store manager
-                for ontology in initial_ontologies:
-                    self.triple_store_manager.serialize_graph(
-                        graph=ontology.graph, graph_uri=ontology.iri
-                    )
+        # Synchronize ontologies between filesystem and triple store
+        self._synchronize_ontologies()
 
         # Now fetch ontologies from the main triple store manager
         tm = (
@@ -185,6 +185,55 @@ class ToolBox:
         if tm is not None:
             self.ontology_manager.ontologies = tm.fetch_ontologies()
             update_ontology_manager(om=self.ontology_manager, llm_tool=self.llm)
+
+    def _synchronize_ontologies(self) -> None:
+        """Synchronize ontologies between filesystem and triple store.
+
+        This method checks both filesystem_manager and triple_store_manager for
+        ontologies and populates triple_store_manager with any ontologies from
+        filesystem_manager that are not present in triple_store_manager.
+        """
+        if self.triple_store_manager is None:
+            logger.debug("No triple store manager available for synchronization")
+            return
+
+        # Get ontologies from filesystem if available
+        filesystem_ontologies = []
+        if self.filesystem_manager is not None:
+            filesystem_ontologies = self.filesystem_manager.fetch_ontologies()
+            logger.debug(f"Found {len(filesystem_ontologies)} ontologies in filesystem")
+
+        # Get ontologies from triple store
+        triple_store_ontologies = self.triple_store_manager.fetch_ontologies()
+        logger.debug(f"Found {len(triple_store_ontologies)} ontologies in triple store")
+
+        # Create a set of existing ontology IRIs in triple store for quick lookup
+        existing_iris = {onto.iri for onto in triple_store_ontologies}
+
+        # Find ontologies in filesystem that are not in triple store
+        new_ontologies = []
+        for fs_ontology in filesystem_ontologies:
+            if fs_ontology.iri not in existing_iris:
+                new_ontologies.append(fs_ontology)
+                logger.debug(f"Found new ontology in filesystem: {fs_ontology.iri}")
+
+        # Store new ontologies in triple store
+        if new_ontologies:
+            logger.info(f"Syncing {len(new_ontologies)} new ontologies to triple store")
+            for ontology in new_ontologies:
+                # Store ontology in main dataset for reasoning
+                self.triple_store_manager.serialize_graph(
+                    graph=ontology.graph, graph_uri=ontology.iri
+                )
+                # Store ontology in ontologies dataset for management (if available)
+                if hasattr(self.triple_store_manager, "serialize_ontology_graph"):
+                    # Type ignore because we're checking for the method dynamically
+                    self.triple_store_manager.serialize_ontology_graph(  # type: ignore
+                        graph=ontology.graph, graph_uri=ontology.iri
+                    )
+                logger.debug(f"Synced ontology to triple store: {ontology.iri}")
+        else:
+            logger.debug("No new ontologies to sync from filesystem to triple store")
 
 
 def render_ontology_summary(graph: RDFGraph, llm_tool) -> OntologyProperties:

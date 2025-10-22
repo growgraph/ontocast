@@ -11,7 +11,7 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from ontocast.onto.constants import DEFAULT_DATASET
+from ontocast.onto.constants import DEFAULT_DATASET, DEFAULT_ONTOLOGIES_DATASET
 
 
 class LLMProvider(StrEnum):
@@ -155,6 +155,10 @@ class FusekiConfig(BaseSettings):
     uri: str | None = Field(default=None, description="Fuseki URI")
     auth: str | None = Field(default=None, description="Fuseki authentication")
     dataset: str = Field(default=DEFAULT_DATASET, description="Fuseki dataset name")
+    ontologies_dataset: str = Field(
+        default=DEFAULT_ONTOLOGIES_DATASET,
+        description="Fuseki dataset name for ontologies",
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="FUSEKI_",

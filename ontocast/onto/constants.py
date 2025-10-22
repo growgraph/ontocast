@@ -6,6 +6,7 @@ ONTOLOGY_NULL_IRI = f"{DEFAULT_DOMAIN}/{ONTOLOGY_NULL_ID}"
 DEFAULT_CHUNK_IRI = f"{DEFAULT_DOMAIN}/ch#"
 CHUNK_NULL_IRI = f"{DEFAULT_CHUNK_IRI}{ONTOLOGY_NULL_ID}"
 DEFAULT_DATASET = "dataset0"
+DEFAULT_ONTOLOGIES_DATASET = "ontologies"
 COMMON_PREFIXES = {
     "xsd": "<http://www.w3.org/2001/XMLSchema#>",
     "rdf": "<http://www.w3.org/1999/02/22-rdf-syntax-ns#>",
