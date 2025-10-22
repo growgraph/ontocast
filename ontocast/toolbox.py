@@ -139,22 +139,20 @@ class ToolBox:
 
     def serialize(self, state: AgentState) -> None:
         if self.filesystem_manager is not None:
-            self.filesystem_manager.serialize_ontology(state.current_ontology)
+            self.filesystem_manager.serialize_graph(state.current_ontology.graph)
         if self.triple_store_manager is not None:
-            self.triple_store_manager.serialize_ontology(state.current_ontology)
+            self.triple_store_manager.serialize_graph(state.current_ontology.graph)
 
         if state.aggregated_facts and len(state.aggregated_facts) > 0:
             if self.filesystem_manager is not None:
-                self.filesystem_manager.serialize_facts(
+                self.filesystem_manager.serialize_graph(
                     state.aggregated_facts,
-                    spec=state.doc_namespace,
-                    chunk_uri=getattr(state, "chunk_uri", None),
+                    graph_uri=state.doc_namespace,
                 )
             if self.triple_store_manager is not None:
-                self.triple_store_manager.serialize_facts(
+                self.triple_store_manager.serialize_graph(
                     state.aggregated_facts,
-                    spec=state.doc_namespace,
-                    chunk_uri=getattr(state, "chunk_uri", None),
+                    graph_uri=state.doc_namespace,
                 )
 
 
@@ -176,7 +174,7 @@ def init_toolbox(toolbox: ToolBox):
         if toolbox.triple_store_manager is not None:
             # Store these ontologies in the main triple store manager
             for ontology in initial_ontologies:
-                toolbox.triple_store_manager.serialize_ontology(ontology)
+                toolbox.triple_store_manager.serialize_graph(ontology.graph)
 
     # Now fetch ontologies from the main triple store manager
     tm = (

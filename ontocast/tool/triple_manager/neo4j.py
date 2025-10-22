@@ -390,61 +390,37 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
         ontology_id = derive_ontology_id(iri)
         return Ontology(graph=graph, iri=iri, ontology_id=ontology_id)
 
-    def serialize_ontology(self, o: Ontology, **kwargs):
-        """Serialize an ontology to Neo4j with both n10s and raw triple storage.
+    def serialize_graph(
+        self, graph: Graph, graph_uri: str | None = None
+    ) -> bool | None:
+        """Serialize an RDF graph to Neo4j with both n10s and raw triple storage.
 
-        This method stores the given ontology in Neo4j using the n10s plugin
-        for RDF import. The ontology is stored as RDF triples that can be
-        faithfully reconstructed later.
-
-        Args:
-            o: The ontology to store.
-            **kwargs: Additional keyword arguments (not used).
-
-        Returns:
-            Any: The result summary from n10s import operation.
-        """
-        turtle_data = o.graph.serialize(format="turtle")
-
-        # Type assertion: we know _driver is not None after initialization
-        assert self._driver is not None
-        with self._driver.session() as session:
-            # Store via n10s for graph queries
-            result = session.run(
-                "CALL n10s.rdf.import.inline($ttl, 'Turtle')", ttl=turtle_data
-            )
-            summary = result.single()
-
-        return summary
-
-    def serialize_facts(self, g: Graph, **kwargs):
-        """Serialize facts (RDF graph) to Neo4j.
-
-        This method stores the given RDF graph containing facts in Neo4j
-        using the n10s plugin for RDF import.
+        This method stores the given RDF graph in Neo4j using the n10s plugin
+        for RDF import. The data is stored as RDF triples that can be faithfully
+        reconstructed later.
 
         Args:
-            g: The RDF graph containing facts to store.
-            **kwargs: Additional keyword arguments (not used).
+            graph: The RDF graph to store.
+            graph_uri: Optional URI (not used by Neo4j implementation).
 
         Returns:
             Any: The result summary from n10s import operation.
         """
         # Convert to RDFGraph if needed
-        if not isinstance(g, RDFGraph):
+        if not isinstance(graph, RDFGraph):
             rdf_graph = RDFGraph()
-            for triple in g:
+            for triple in graph:
                 rdf_graph.add(triple)
-            for prefix, namespace in g.namespaces():
+            for prefix, namespace in graph.namespaces():
                 rdf_graph.bind(prefix, namespace)
-            g = rdf_graph
+            graph = rdf_graph
 
-        turtle_data = g.serialize(format="turtle")
+        turtle_data = graph.serialize(format="turtle")
 
         # Type assertion: we know _driver is not None after initialization
         assert self._driver is not None
         with self._driver.session() as session:
-            # Store via n10s
+            # Store via n10s for graph queries
             result = session.run(
                 "CALL n10s.rdf.import.inline($ttl, 'Turtle')", ttl=turtle_data
             )

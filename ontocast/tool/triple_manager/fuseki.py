@@ -278,58 +278,41 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         logger.info(f"Successfully loaded {len(ontologies)} ontologies from Fuseki")
         return ontologies
 
-    def serialize_ontology(self, o: Ontology, **kwargs) -> None:
-        """Store an ontology as a named graph in Fuseki.
+    def serialize_graph(
+        self, graph: Graph, graph_uri: str | None = None
+    ) -> bool | None:
+        """Store an RDF graph as a named graph in Fuseki.
 
-        This method stores the given ontology as a named graph in Fuseki,
-        using the ontology's IRI as the graph name. This ensures that
-        each ontology is stored separately and can be retrieved individually.
+        This method stores the given RDF graph as a named graph in Fuseki.
+        The graph name is taken from the graph_uri parameter or defaults to
+        "urn:chunk:default".
 
         Args:
-            o: The ontology to store.
-            **kwargs: Additional keyword arguments (not used).
+            graph: The RDF graph to store.
+            graph_uri: URI to use as the named graph name (optional).
+
+        Returns:
+            bool: True if the graph was successfully stored, False otherwise.
 
         Example:
-            >>> ontology = Ontology(iri="http://example.org/onto", graph=graph)
-            >>> manager.serialize_ontology(ontology)
+            >>> graph = RDFGraph()
+            >>> success = manager.serialize_graph(graph)
+
+            >>> success = manager.serialize_graph(graph, graph_uri="http://example.org/chunk1")
         """
-        turtle_data = o.graph.serialize(format="turtle")
-        graph_uri = o.iri or f"urn:ontology:{o.ontology_id}"
+        turtle_data = graph.serialize(format="turtle")
+        if graph_uri is None:
+            graph_uri = "urn:default"
+
         url = f"{self._get_dataset_url()}/data?graph={graph_uri}"
         headers = {"Content-Type": "text/turtle;charset=utf-8"}
         response = requests.put(url, headers=headers, data=turtle_data, auth=self.auth)
         if response.status_code in (200, 201, 204):
-            logger.info(f"Ontology {graph_uri} uploaded to Fuseki as named graph.")
+            logger.info(f"Graph {graph_uri} uploaded to Fuseki as named graph.")
+            return True
         else:
             logger.error(
-                f"Failed to upload ontology {graph_uri}. Status code: {response.status_code}"
+                f"Failed to upload graph {graph_uri}. Status code: {response.status_code}"
             )
             logger.error(f"Response: {response.text}")
-
-    def serialize_facts(self, g: Graph, **kwargs) -> None:
-        """Store facts (RDF graph) as a named graph in Fuseki.
-
-        This method stores the given RDF graph containing facts as a named
-        graph in Fuseki. The graph name is taken from the chunk_uri parameter
-        or defaults to "urn:chunk:default".
-
-        Args:
-            g: The RDF graph containing facts to store.
-            **kwargs: Additional keyword arguments.
-                chunk_uri: URI to use as the named graph name (optional).
-
-        Example:
-            >>> facts = RDFGraph()
-            >>> manager.serialize_facts(facts, chunk_uri="http://example.org/chunk1")
-        """
-        turtle_data = g.serialize(format="turtle")
-        # Use chunk URI from kwargs or generate a default one
-        chunk_uri = kwargs.get("chunk_uri", "urn:chunk:default")
-        url = f"{self._get_dataset_url()}/data?graph={chunk_uri}"
-        headers = {"Content-Type": "text/turtle;charset=utf-8"}
-        response = requests.put(url, headers=headers, data=turtle_data, auth=self.auth)
-        if response.status_code in (200, 201, 204):
-            logger.info(f"Facts uploaded to Fuseki as named graph: {chunk_uri}")
-        else:
-            logger.error(f"Failed to upload facts. Status code: {response.status_code}")
-            logger.error(f"Response: {response.text}")
+            return False

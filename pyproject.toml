@@ -14,6 +14,7 @@ dev = [
 ]
 doc-processing = [
   "docling>=2.57.0",
+  "easyocr>=1.7.2",
   "sentence-transformers>=5.1.1"
 ]
 docs = [

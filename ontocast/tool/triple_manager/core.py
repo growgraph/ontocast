@@ -46,30 +46,21 @@ class TripleStoreManager(Tool):
         return []
 
     @abc.abstractmethod
-    def serialize_ontology(self, o: Ontology, **kwargs):
-        """Store an ontology in the triple store.
+    def serialize_graph(
+        self, graph: Graph, graph_uri: str | None = None
+    ) -> bool | None:
+        """Store an RDF graph in the triple store.
 
-        This method should store the given ontology and its associated RDF graph
-        in the triple store. The implementation may choose how to organize
-        the storage (e.g., as named graphs, in specific collections, etc.).
-
-        Args:
-            o: The ontology to store.
-            **kwargs: Additional keyword arguments for serialization.
-        """
-        pass
-
-    @abc.abstractmethod
-    def serialize_facts(self, g: Graph, **kwargs):
-        """Store a graph with facts in the triple store.
-
-        This method should store the given RDF graph containing facts
-        in the triple store. The implementation may choose how to organize
-        the storage (e.g., as named graphs, in specific collections, etc.).
+        This method should store the given RDF graph in the triple store.
+        The implementation may choose how to organize the storage (e.g., as named graphs,
+        in specific collections, etc.).
 
         Args:
-            g: The RDF graph containing facts to store.
-            **kwargs: Additional keyword arguments for serialization.
+            graph: The RDF graph to store.
+            graph_uri: Optional URI to use as the named graph name (used by Fuseki).
+
+        Returns:
+            bool | None: Implementation-specific return value (bool for Fuseki, summary for Neo4j, None for Filesystem).
         """
         pass
 

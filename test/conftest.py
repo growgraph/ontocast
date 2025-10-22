@@ -287,7 +287,7 @@ def fuseki_triple_store_manager():
 def triple_store_roundtrip(manager, test_ontology):
     ontology = Ontology(graph=test_ontology)
     # Store ontology
-    manager.serialize_ontology(ontology)
+    manager.serialize_graph(ontology.graph)
     # Fetch ontologies
     ontologies = manager.fetch_ontologies()
     # There should be at least one ontology with the correct ontology_id
@@ -331,8 +331,8 @@ def triple_store_serialize_facts(manager):
     expected_triple_count = len(facts)
     assert expected_triple_count == 15, "Test facts should contain triples"
     # Serialize facts to triple store
-    result = manager.serialize_facts(facts)
-    assert result is not None, "serialize_facts should return a result"
+    result = manager.serialize_graph(facts)
+    assert result is not None, "serialize_graph should return a result"
 
 
 def triple_store_serialize_empty_facts(manager):
@@ -340,7 +340,7 @@ def triple_store_serialize_empty_facts(manager):
     # Create empty facts
     empty_facts = RDFGraph()
     # Serialize empty facts - should not raise an error
-    result = manager.serialize_facts(empty_facts)
+    result = manager.serialize_graph(empty_facts)
     assert result is not None, (
-        "serialize_facts should return a result even for empty graph"
+        "serialize_graph should return a result even for empty graph"
     )
