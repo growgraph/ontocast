@@ -6,15 +6,50 @@ including connectivity validation and graph structure verification.
 
 import logging
 from collections import defaultdict, deque
-from typing import Any
+from typing import TypedDict, cast
 
-from rdflib import RDF, RDFS, Literal, URIRef
+from rdflib import RDF, RDFS, Graph, Literal, URIRef
 
 from ontocast.onto.chunk import Chunk
 from ontocast.onto.constants import PROV, SCHEMA
 from ontocast.onto.rdfgraph import RDFGraph
 
 logger = logging.getLogger(__name__)
+
+
+class PredicateStats(TypedDict):
+    """Type definition for predicate statistics."""
+
+    total: int
+    with_labels: int
+    with_domains: int
+    with_ranges: int
+
+
+class PredicateValidationResult(TypedDict):
+    """Type definition for predicate validation results."""
+
+    has_required_properties: bool
+    domain_range_consistent: bool
+    missing_labels: list[str]
+    domain_range_violations: list[str]
+    predicate_stats: PredicateStats
+
+
+class ConnectivityResult(TypedDict):
+    """Type definition for connectivity validation results."""
+
+    is_fully_connected: bool
+    num_components: int
+    total_entities: int
+    components: list[set[URIRef]]
+    isolated_entities: list[URIRef]
+    largest_component_size: int
+    has_required_properties: bool
+    domain_range_consistent: bool
+    missing_labels: list[str]
+    domain_range_violations: list[str]
+    predicate_stats: PredicateStats
 
 
 def validate_and_connect_chunk(
@@ -38,9 +73,11 @@ def validate_and_connect_chunk(
     if not isinstance(chunk.graph, RDFGraph):
         logger.warning("received an redflib.Graph rather than RDFGraph")
         new_graph = RDFGraph()
-        for triple in chunk.graph:
+        # Cast to Graph to satisfy type checker
+        graph = cast(Graph, chunk.graph)
+        for triple in graph:
             new_graph.add(triple)
-        for prefix, namespace in chunk.graph.namespaces():
+        for prefix, namespace in graph.namespaces():
             new_graph.bind(prefix, namespace)
         chunk.graph = new_graph
 
@@ -156,13 +193,13 @@ class RDFGraphConnectivityValidator:
 
         return components
 
-    def validate_predicates(self) -> dict[str, Any]:
+    def validate_predicates(self) -> PredicateValidationResult:
         """Validate predicate consistency and required properties.
 
         Returns:
-            dict[str, Any]: Dictionary containing validation results and statistics.
+            PredicateValidationResult: Dictionary containing validation results and statistics.
         """
-        result = {
+        result: PredicateValidationResult = {
             "has_required_properties": True,
             "domain_range_consistent": True,
             "missing_labels": [],
@@ -249,23 +286,33 @@ class RDFGraphConnectivityValidator:
 
         return result
 
-    def validate_connectivity(self) -> dict[str, Any]:
+    def validate_connectivity(self) -> ConnectivityResult:
         """Validate graph connectivity and return detailed results.
 
         Returns:
-            dict[str, Any]: Dictionary containing connectivity information and
+            ConnectivityResult: Dictionary containing connectivity information and
                 validation results.
         """
         components = self.find_connected_components()
         entities = self.get_all_entities()
 
-        result = {
+        result: ConnectivityResult = {
             "is_fully_connected": len(components) <= 1,
             "num_components": len(components),
             "total_entities": len(entities),
             "components": components,
             "isolated_entities": [],
             "largest_component_size": 0,
+            "has_required_properties": True,
+            "domain_range_consistent": True,
+            "missing_labels": [],
+            "domain_range_violations": [],
+            "predicate_stats": {
+                "total": 0,
+                "with_labels": 0,
+                "with_domains": 0,
+                "with_ranges": 0,
+            },
         }
 
         if components:
@@ -278,7 +325,17 @@ class RDFGraphConnectivityValidator:
 
         # Add predicate validation results
         predicate_validation = self.validate_predicates()
-        result.update(predicate_validation)
+        result["has_required_properties"] = predicate_validation[
+            "has_required_properties"
+        ]
+        result["domain_range_consistent"] = predicate_validation[
+            "domain_range_consistent"
+        ]
+        result["missing_labels"] = predicate_validation["missing_labels"]
+        result["domain_range_violations"] = predicate_validation[
+            "domain_range_violations"
+        ]
+        result["predicate_stats"] = predicate_validation["predicate_stats"]
 
         return result
 

@@ -16,35 +16,35 @@ config:
 ---
 graph TD;
 	__start__([<p>__start__</p>]):::first
-	Convert_to_Markdown(Convert to Markdown)
-	Chunk_Text(Chunk Text)
-	Select_Ontology(Select Ontology)
-	Text_to_Ontology(Text to Ontology)
-	Text_to_Facts(Text to Facts)
-	Sublimate_Ontology(Sublimate Ontology)
-	Criticise_Ontology(Criticise Ontology)
-	Criticise_Facts(Criticise Facts)
-	Chunks_Empty_(Chunks Empty?)
-	Aggregate_Facts(Aggregate Facts)
+	Convert\20to\20Markdown(Convert to Markdown)
+	Chunk\20Text(Chunk Text)
+	Select\20Ontology(Select Ontology)
+	Text\20to\20Ontology(Text to Ontology)
+	Text\20to\20Facts(Text to Facts)
+	Sublimate\20Ontology(Sublimate Ontology)
+	Criticise\20Ontology(Criticise Ontology)
+	Criticise\20Facts(Criticise Facts)
+	Chunks\20Empty\3f(Chunks Empty?)
+	Aggregate\20Facts(Aggregate Facts)
 	__end__([<p>__end__</p>]):::last
-	Chunk_Text --> Chunks_Empty_;
-	Chunks_Empty_ -. &nbsp;success&nbsp; .-> Aggregate_Facts;
-	Chunks_Empty_ -. &nbsp;failed&nbsp; .-> Select_Ontology;
-	Convert_to_Markdown --> Chunk_Text;
-	Criticise_Facts -. &nbsp;success&nbsp; .-> Chunks_Empty_;
-	Criticise_Facts -. &nbsp;failed&nbsp; .-> Text_to_Facts;
-	Criticise_Ontology -. &nbsp;success&nbsp; .-> Text_to_Facts;
-	Criticise_Ontology -. &nbsp;failed&nbsp; .-> Text_to_Ontology;
-	Select_Ontology -. &nbsp;ontology found; skip to facts&nbsp; .-> Text_to_Facts;
-	Select_Ontology -. &nbsp;improve/create ontology&nbsp; .-> Text_to_Ontology;
-	Select_Ontology -. &nbsp;ontology not found; ffwd to END&nbsp; .-> __end__;
-	Sublimate_Ontology --> Criticise_Facts;
-	Text_to_Facts -. &nbsp;success&nbsp; .-> Sublimate_Ontology;
-	Text_to_Ontology -. &nbsp;success&nbsp; .-> Criticise_Ontology;
-	__start__ --> Convert_to_Markdown;
-	Aggregate_Facts --> __end__;
-	Text_to_Facts -. &nbsp;failed&nbsp; .-> Text_to_Facts;
-	Text_to_Ontology -. &nbsp;failed&nbsp; .-> Text_to_Ontology;
+	Chunk\20Text --> Chunks\20Empty\3f;
+	Chunks\20Empty\3f -. &nbsp;success&nbsp; .-> Aggregate\20Facts;
+	Chunks\20Empty\3f -. &nbsp;failed&nbsp; .-> Select\20Ontology;
+	Convert\20to\20Markdown --> Chunk\20Text;
+	Criticise\20Facts -. &nbsp;success&nbsp; .-> Chunks\20Empty\3f;
+	Criticise\20Facts -. &nbsp;failed&nbsp; .-> Text\20to\20Facts;
+	Criticise\20Ontology -. &nbsp;success&nbsp; .-> Text\20to\20Facts;
+	Criticise\20Ontology -. &nbsp;failed&nbsp; .-> Text\20to\20Ontology;
+	Select\20Ontology -. &nbsp;ontology found; skip to facts&nbsp; .-> Text\20to\20Facts;
+	Select\20Ontology -. &nbsp;improve/create ontology&nbsp; .-> Text\20to\20Ontology;
+	Select\20Ontology -. &nbsp;ontology not found; ffwd to END&nbsp; .-> __end__;
+	Sublimate\20Ontology --> Criticise\20Facts;
+	Text\20to\20Facts -. &nbsp;success&nbsp; .-> Sublimate\20Ontology;
+	Text\20to\20Ontology -. &nbsp;success&nbsp; .-> Criticise\20Ontology;
+	__start__ --> Convert\20to\20Markdown;
+	Aggregate\20Facts --> __end__;
+	Text\20to\20Facts -. &nbsp;failed&nbsp; .-> Text\20to\20Facts;
+	Text\20to\20Ontology -. &nbsp;failed&nbsp; .-> Text\20to\20Ontology;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc

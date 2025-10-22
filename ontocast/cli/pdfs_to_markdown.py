@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 def process(output_path, f: pathlib.Path):
     fn_json = (output_path / f.name).with_suffix(".json")
     jdata = pdf2markdown(f)
-    with open(fn_json, "w", encoding="utf-8") as f:
-        json.dump(jdata, f, ensure_ascii=False, indent=4)
+    with open(fn_json, "w", encoding="utf-8") as fpnt:
+        json.dump(jdata, fpnt, ensure_ascii=False, indent=4)
 
 
 @click.command()
