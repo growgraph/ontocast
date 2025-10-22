@@ -6,7 +6,9 @@ from ontocast.onto.state import AgentState
 from ontocast.util import logger
 
 
-def count_visits_conditional_success(state: AgentState, current_node) -> AgentState:
+def count_visits_conditional_success(
+    state: AgentState, current_node: WorkflowNode
+) -> AgentState:
     """Track node visits and handle success/failure conditions.
 
     This function increments the visit counter for a node and manages the state

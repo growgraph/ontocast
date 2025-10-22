@@ -6,6 +6,7 @@
 !test/**
 !test/**/*py 
 !docs/**
+!.github/**
 !.env.example
 !pyproject.toml
 !mkdocs.yaml

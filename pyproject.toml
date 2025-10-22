@@ -47,7 +47,6 @@ dependencies = [
   "rdflib>=7.1.4",
   "rich>=14.0.0",
   "robyn>=0.66.2",
-  "sentence-transformers>=4.1.0",
   "simsimd>=6.2.1",
   "suthing>=0.4.1"
 ]

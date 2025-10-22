@@ -2,13 +2,13 @@ import logging
 import re
 from typing import Literal
 
-import torch
 from pydantic import Field
 
 from ontocast.config import ChunkConfig
 from ontocast.tool.onto import Tool
 
 try:
+    import torch  # type: ignore
     from langchain_huggingface import HuggingFaceEmbeddings
 
     from ontocast.tool.chunk.util import SemanticChunker
@@ -16,6 +16,7 @@ try:
     SEMANTIC_CHUNKING_AVAILABLE = True
 except ImportError:
     HuggingFaceEmbeddings = None  # type: ignore
+    torch = None  # type: ignore
     SemanticChunker = None  # type: ignore
     SEMANTIC_CHUNKING_AVAILABLE = False
 
@@ -72,7 +73,9 @@ class ChunkerTool(Tool):
                 self._model = HuggingFaceEmbeddings(
                     model_name=self.model,
                     model_kwargs={
-                        "device": "cuda" if torch.cuda.is_available() else "cpu"
+                        "device": "cuda"
+                        if torch is not None and torch.cuda.is_available()
+                        else "cpu"
                     },
                     encode_kwargs={"normalize_embeddings": False},
                 )
@@ -80,11 +83,11 @@ class ChunkerTool(Tool):
     def _naive_chunk(self, doc: str) -> list[str]:
         """Naive chunking fallback when semantic chunking is not available.
 
-        Args:
-            doc: The document text to chunk.
-
-        Returns:
-            List of text chunks.
+                Args:
+                    doc: The document text to chunk.
+        git
+                Returns:
+                    List of text chunks.
         """
         # Split by paragraphs first (double newlines)
         paragraphs = re.split(r"\n\s*\n", doc.strip())

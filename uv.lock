@@ -2332,7 +2332,6 @@ dependencies = [
     { name = "rdflib" },
     { name = "rich" },
     { name = "robyn" },
-    { name = "sentence-transformers" },
     { name = "simsimd" },
     { name = "suthing" },
 ]
@@ -2382,7 +2381,6 @@ requires-dist = [
     { name = "rdflib", specifier = ">=7.1.4" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "robyn", specifier = ">=0.66.2" },
-    { name = "sentence-transformers", specifier = ">=4.1.0" },
     { name = "simsimd", specifier = ">=6.2.1" },
     { name = "suthing", specifier = ">=0.4.1" },
 ]
