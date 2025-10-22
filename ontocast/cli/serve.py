@@ -140,6 +140,11 @@ def create_app(
             logger.debug(f"Request headers: {request.headers}")
             logger.debug(f"Request body: {request.body}")
 
+            # Extract dataset from query parameters
+            dataset = request.query_params.get("dataset")
+            if dataset:
+                logger.debug(f"Using dataset: {dataset}")
+
             if content_type and content_type.startswith("application/json"):
                 data = request.body
                 # Convert string to bytes if needed
@@ -181,11 +186,16 @@ def create_app(
                     ),
                 )
 
+            # Update dataset if provided (efficient - no model reloading)
+            if dataset:
+                tools.update_dataset(dataset)
+
             initial_state = AgentState(
                 files=files,
                 max_visits=server_config.max_visits,
                 max_chunks=head_chunks,
                 skip_ontology_development=server_config.skip_ontology_development,
+                dataset=dataset,
             )
 
             async for chunk in workflow.astream(
@@ -263,7 +273,8 @@ def create_app(
     help=(
         "Path to .env file. If NEO4J_URI and NEO4J_AUTH are set, "
         "neo4j will be used as triple store. If FUSEKI_URI and FUSEKI_AUTH are set, "
-        "Fuseki will be used as triple store (preferred over Neo4j)."
+        "Fuseki will be used as triple store (preferred over Neo4j). "
+        "Use --fuseki-dataset to specify the Fuseki dataset name."
     ),
 )
 @click.option("--input-path", type=click.Path(path_type=pathlib.Path), default=None)
@@ -274,11 +285,18 @@ def create_app(
     default=None,
     help="Directory for caching LLM responses",
 )
+@click.option(
+    "--fuseki-dataset",
+    type=str,
+    default=None,
+    help="Fuseki dataset name (overrides FUSEKI_DATASET from .env)",
+)
 def run(
     env_path: pathlib.Path,
     input_path: pathlib.Path | None,
     head_chunks: int | None,
     cache_dir: pathlib.Path | None,
+    fuseki_dataset: str | None,
 ):
     """
     Main entry point for the OntoCast server/CLI.
@@ -324,6 +342,10 @@ def run(
             config.tool_config.path_config.ontology_directory
         ).expanduser()
 
+    # Override dataset if provided via CLI
+    if fuseki_dataset is not None:
+        config.tool_config.fuseki.dataset = fuseki_dataset
+
     # Create ToolBox with config directly
     tools: ToolBox = ToolBox(config, cache_dir=cache_dir)
     init_toolbox(tools)
@@ -353,6 +375,7 @@ def run(
                         max_visits=config.server.max_visits,
                         max_chunks=head_chunks,
                         skip_ontology_development=config.server.skip_ontology_development,
+                        dataset=fuseki_dataset,
                     )
                     async for _ in workflow.astream(
                         state,

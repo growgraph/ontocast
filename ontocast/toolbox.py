@@ -1,3 +1,4 @@
+import logging
 import pathlib
 
 from langchain_core.output_parsers import PydanticOutputParser
@@ -21,6 +22,8 @@ from ontocast.tool.llm import LLMTool
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.sparql import SPARQLTool
 from ontocast.tool.triple_manager.core import TripleStoreManagerWithAuth
+
+logger = logging.getLogger(__name__)
 
 
 def update_ontology_properties(o: Ontology, llm_tool: LLMTool):
@@ -61,6 +64,9 @@ class ToolBox:
     """
 
     def __init__(self, config: Config, cache_dir: pathlib.Path | None = None):
+        # Store the config for later use
+        self.config = config
+
         # Get tool configuration
         tool_config = config.get_tool_config()
 
@@ -92,7 +98,7 @@ class ToolBox:
             self.triple_store_manager = FusekiTripleStoreManager(
                 uri=tool_config.fuseki.uri,
                 auth=tool_config.fuseki.auth,
-                dataset="dataset0",  # Default dataset name
+                dataset=tool_config.fuseki.dataset,
                 clean=clean,
             )
         elif tool_config.neo4j.uri and tool_config.neo4j.auth:
@@ -111,6 +117,25 @@ class ToolBox:
         )
         self.version_manager: GraphVersionManager = GraphVersionManager()
         self.diff_tool: DiffTool = DiffTool()
+
+    def update_dataset(self, dataset: str) -> None:
+        """Update the dataset for the Fuseki triple store manager.
+
+        This method allows changing the dataset without recreating the entire
+        ToolBox, which is efficient for API requests that specify different datasets.
+
+        Args:
+            dataset: The new dataset name to use.
+        """
+        if self.triple_store_manager is not None:
+            from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
+
+            if isinstance(self.triple_store_manager, FusekiTripleStoreManager):
+                self.triple_store_manager.update_dataset(dataset)
+            else:
+                logger.warning(
+                    "Cannot update dataset: triple store manager is not Fuseki"
+                )
 
     def serialize(self, state: AgentState) -> None:
         if self.filesystem_manager is not None:

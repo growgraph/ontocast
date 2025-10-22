@@ -97,6 +97,11 @@ class AgentState(BasePydanticModel):
         default="",
     )
 
+    dataset: str | None = Field(
+        description="Fuseki dataset name for this request (optional)",
+        default=None,
+    )
+
     ontology_updates: list[GraphUpdate] = Field(
         default_factory=list,
         description="A list of graph update that improve the current ontology",

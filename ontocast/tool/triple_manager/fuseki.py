@@ -12,6 +12,7 @@ from pydantic import Field
 from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF
 
+from ontocast.onto.constants import DEFAULT_DATASET
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.util import derive_ontology_id
@@ -66,15 +67,32 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         super().__init__(
             uri=uri, auth=auth, env_uri="FUSEKI_URI", env_auth="FUSEKI_AUTH", **kwargs
         )
-        self.dataset = "test" if dataset is None else dataset
+        if dataset is None:
+            self.dataset = DEFAULT_DATASET
+        else:
+            self.dataset = dataset
         self.clean = clean
         self.init_dataset(self.dataset)
-        if self.dataset is None:
-            raise ValueError("Dataset must be specified in FUSEKI_URI or as argument")
 
         # Clean dataset if requested
         if self.clean:
             self._clean_dataset()
+
+    def update_dataset(self, new_dataset: str) -> None:
+        """Update the dataset name for this manager.
+
+        This method allows changing the dataset without recreating the entire
+        manager, which is useful for API requests that specify different datasets.
+
+        Args:
+            new_dataset: The new dataset name to use.
+        """
+        if not new_dataset:
+            raise ValueError("Dataset name cannot be empty")
+
+        self.dataset = new_dataset
+        self.init_dataset(self.dataset)
+        logger.info(f"Updated Fuseki dataset to: {self.dataset}")
 
     def _clean_dataset(self):
         """Delete all data from the dataset.
@@ -260,7 +278,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         logger.info(f"Successfully loaded {len(ontologies)} ontologies from Fuseki")
         return ontologies
 
-    def serialize_ontology(self, o: Ontology, **kwargs):
+    def serialize_ontology(self, o: Ontology, **kwargs) -> None:
         """Store an ontology as a named graph in Fuseki.
 
         This method stores the given ontology as a named graph in Fuseki,
@@ -271,12 +289,9 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             o: The ontology to store.
             **kwargs: Additional keyword arguments (not used).
 
-        Returns:
-            bool: True if the ontology was successfully stored, False otherwise.
-
         Example:
             >>> ontology = Ontology(iri="http://example.org/onto", graph=graph)
-            >>> success = manager.serialize_ontology(ontology)
+            >>> manager.serialize_ontology(ontology)
         """
         turtle_data = o.graph.serialize(format="turtle")
         graph_uri = o.iri or f"urn:ontology:{o.ontology_id}"
@@ -285,15 +300,13 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         response = requests.put(url, headers=headers, data=turtle_data, auth=self.auth)
         if response.status_code in (200, 201, 204):
             logger.info(f"Ontology {graph_uri} uploaded to Fuseki as named graph.")
-            return True
         else:
             logger.error(
                 f"Failed to upload ontology {graph_uri}. Status code: {response.status_code}"
             )
             logger.error(f"Response: {response.text}")
-            return False
 
-    def serialize_facts(self, g: Graph, **kwargs):
+    def serialize_facts(self, g: Graph, **kwargs) -> None:
         """Store facts (RDF graph) as a named graph in Fuseki.
 
         This method stores the given RDF graph containing facts as a named
@@ -305,12 +318,9 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             **kwargs: Additional keyword arguments.
                 chunk_uri: URI to use as the named graph name (optional).
 
-        Returns:
-            bool: True if the facts were successfully stored, False otherwise.
-
         Example:
             >>> facts = RDFGraph()
-            >>> success = manager.serialize_facts(facts, chunk_uri="http://example.org/chunk1")
+            >>> manager.serialize_facts(facts, chunk_uri="http://example.org/chunk1")
         """
         turtle_data = g.serialize(format="turtle")
         # Use chunk URI from kwargs or generate a default one
@@ -320,8 +330,6 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         response = requests.put(url, headers=headers, data=turtle_data, auth=self.auth)
         if response.status_code in (200, 201, 204):
             logger.info(f"Facts uploaded to Fuseki as named graph: {chunk_uri}")
-            return True
         else:
             logger.error(f"Failed to upload facts. Status code: {response.status_code}")
             logger.error(f"Response: {response.text}")
-            return False

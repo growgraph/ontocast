@@ -54,7 +54,8 @@ def check_chunks_empty(state: AgentState) -> AgentState:
         f"Setting up current chunk"
     )
 
-    if state.current_chunk.iri != CHUNK_NULL_IRI:
+    if CHUNK_NULL_IRI not in state.current_chunk.iri:
+        state.current_chunk.processed = True
         state.current_chunk.graph.remap_namespaces(
             old_namespace=DEFAULT_CHUNK_IRI, new_namespace=state.current_chunk.namespace
         )
