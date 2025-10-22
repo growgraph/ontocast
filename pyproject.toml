@@ -12,6 +12,9 @@ dev = [
   "ruff>=0.11.2",
   "ty>=0.0.1a21"
 ]
+docling = [
+  "docling>=2.57.0"
+]
 docs = [
   "mkdocs-gen-files>=0.5.0",
   "mkdocs-glightbox>=0.4.0",
@@ -29,7 +32,6 @@ plot = [
 dependencies = [
   "asyncio>=3.4.3",
   "click>=8.1.8",
-  "docling>=2.32.0",
   "langchain-core>=0.3.60",
   "langchain-experimental>=0.3.4",
   "langchain-huggingface>=0.2.0",

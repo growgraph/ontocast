@@ -1,7 +1,7 @@
 import logging.config
 import pathlib
 
-from docling.document_converter import DocumentConverter
+from ontocast.tool.converter import ConverterTool
 
 logger = logging.getLogger(__name__)
 
@@ -25,12 +25,11 @@ def crawl_directories(
     return file_paths
 
 
-def pdf2markdown(file_path: pathlib.Path, converter: DocumentConverter | None = None):
+def pdf2markdown(file_path: pathlib.Path, converter: ConverterTool | None = None):
     if file_path.suffix == ".pdf":
         if converter is None:
-            converter = DocumentConverter()
-        result = converter.convert(file_path)
-        doc = result.document.export_to_markdown()
-        return {"text": doc}
+            converter = ConverterTool()
+        result = converter(file_path)
+        return result
     else:
         raise ValueError(f"Unsupported extension {str(file_path.suffix)}")
