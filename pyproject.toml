@@ -12,8 +12,9 @@ dev = [
   "ruff>=0.11.2",
   "ty>=0.0.1a21"
 ]
-docling = [
-  "docling>=2.57.0"
+doc-processing = [
+  "docling>=2.57.0",
+  "sentence-transformers>=5.1.1"
 ]
 docs = [
   "mkdocs-gen-files>=0.5.0",

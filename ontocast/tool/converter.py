@@ -41,10 +41,11 @@ class ConverterTool(Tool):
             **kwargs: Additional keyword arguments passed to the parent class.
         """
         super().__init__(**kwargs)
+        self._converter = None
         try:
             from docling.document_converter import DocumentConverter  # type: ignore
 
-            self._converter: None | DocumentConverter = DocumentConverter()
+            self._converter = DocumentConverter()
         except ImportError as e:
             logger.error(f"Could not import DocumentConverter: {e}")
 
