@@ -16,4 +16,5 @@ jobs:
         version: "0.9.5"
     - name: Install dependencies (including dev)
       run: uv sync --group dev
-    - uses: pre-commit/action@v3.0.1
+    - name: Run pre-commit
+      run: uv run pre-commit run --all-files
