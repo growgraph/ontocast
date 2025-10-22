@@ -17,6 +17,31 @@ from ontocast.onto.sparql_models import SPARQLOperationModel
 logger = logging.getLogger(__name__)
 
 
+class VersionDetails(BaseModel):
+    """Pydantic model for version details in statistics."""
+
+    version_count: int = Field(description="Number of versions")
+    latest_size: int = Field(description="Size of the latest version")
+    latest_timestamp: str | None = Field(description="Timestamp of the latest version")
+
+
+class VersionStatistics(BaseModel):
+    """Pydantic model for version statistics."""
+
+    total_ontologies: int = Field(description="Total number of ontologies")
+    total_chunks: int = Field(description="Total number of chunks")
+    total_ontology_versions: int = Field(
+        description="Total number of ontology versions"
+    )
+    total_facts_versions: int = Field(description="Total number of facts versions")
+    ontology_details: dict[str, VersionDetails] = Field(
+        description="Details for each ontology"
+    )
+    chunk_details: dict[str, VersionDetails] = Field(
+        description="Details for each chunk"
+    )
+
+
 class GraphVersion(BaseModel):
     """Represents a version of a graph."""
 
@@ -286,8 +311,8 @@ class GraphVersionManager:
         modified_triples = []
 
         # Get namespace differences
-        from_namespaces = dict(from_graph.namespaces())
-        to_namespaces = dict(to_graph.namespaces())
+        from_namespaces = {k: str(v) for k, v in from_graph.namespaces()}
+        to_namespaces = {k: str(v) for k, v in to_graph.namespaces()}
 
         added_namespaces = {
             k: v for k, v in to_namespaces.items() if k not in from_namespaces
@@ -378,41 +403,41 @@ class GraphVersionManager:
                 del self.facts_versions[chunk_id]
                 logger.info(f"Deleted all versions of facts for chunk {chunk_id}")
 
-    def get_version_statistics(self) -> dict[str, Any]:
+    def get_version_statistics(self) -> VersionStatistics:
         """Get statistics about all versions.
 
         Returns:
-            dict[str, Any]: Version statistics.
+            VersionStatistics: Version statistics.
         """
-        stats = {
-            "total_ontologies": len(self.ontology_versions),
-            "total_chunks": len(self.facts_versions),
-            "total_ontology_versions": sum(
+        ontology_details = {}
+        for ontology_id, versions in self.ontology_versions.items():
+            ontology_details[ontology_id] = VersionDetails(
+                version_count=len(versions),
+                latest_size=versions[-1].get_size() if versions else 0,
+                latest_timestamp=versions[-1].timestamp.isoformat()
+                if versions
+                else None,
+            )
+
+        chunk_details = {}
+        for chunk_id, versions in self.facts_versions.items():
+            chunk_details[chunk_id] = VersionDetails(
+                version_count=len(versions),
+                latest_size=versions[-1].get_size() if versions else 0,
+                latest_timestamp=versions[-1].timestamp.isoformat()
+                if versions
+                else None,
+            )
+
+        return VersionStatistics(
+            total_ontologies=len(self.ontology_versions),
+            total_chunks=len(self.facts_versions),
+            total_ontology_versions=sum(
                 len(versions) for versions in self.ontology_versions.values()
             ),
-            "total_facts_versions": sum(
+            total_facts_versions=sum(
                 len(versions) for versions in self.facts_versions.values()
             ),
-            "ontology_details": {},
-            "chunk_details": {},
-        }
-
-        for ontology_id, versions in self.ontology_versions.items():
-            stats["ontology_details"][ontology_id] = {
-                "version_count": len(versions),
-                "latest_size": versions[-1].get_size() if versions else 0,
-                "latest_timestamp": versions[-1].timestamp.isoformat()
-                if versions
-                else None,
-            }
-
-        for chunk_id, versions in self.facts_versions.items():
-            stats["chunk_details"][chunk_id] = {
-                "version_count": len(versions),
-                "latest_size": versions[-1].get_size() if versions else 0,
-                "latest_timestamp": versions[-1].timestamp.isoformat()
-                if versions
-                else None,
-            }
-
-        return stats
+            ontology_details=ontology_details,
+            chunk_details=chunk_details,
+        )

@@ -6,8 +6,9 @@ including connectivity validation and graph structure verification.
 
 import logging
 from collections import defaultdict, deque
-from typing import TypedDict, cast
+from typing import cast
 
+from pydantic import BaseModel, ConfigDict, Field
 from rdflib import RDF, RDFS, Graph, Literal, URIRef
 
 from ontocast.onto.chunk import Chunk
@@ -17,39 +18,45 @@ from ontocast.onto.rdfgraph import RDFGraph
 logger = logging.getLogger(__name__)
 
 
-class PredicateStats(TypedDict):
+class PredicateStats(BaseModel):
     """Type definition for predicate statistics."""
 
-    total: int
-    with_labels: int
-    with_domains: int
-    with_ranges: int
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    total: int = 0
+    with_labels: int = 0
+    with_domains: int = 0
+    with_ranges: int = 0
 
 
-class PredicateValidationResult(TypedDict):
+class PredicateValidationResult(BaseModel):
     """Type definition for predicate validation results."""
 
-    has_required_properties: bool
-    domain_range_consistent: bool
-    missing_labels: list[str]
-    domain_range_violations: list[str]
-    predicate_stats: PredicateStats
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    has_required_properties: bool = True
+    domain_range_consistent: bool = True
+    missing_labels: list[str] = Field(default_factory=list)
+    domain_range_violations: list[str] = Field(default_factory=list)
+    predicate_stats: PredicateStats = Field(default_factory=PredicateStats)
 
 
-class ConnectivityResult(TypedDict):
+class ConnectivityResult(BaseModel):
     """Type definition for connectivity validation results."""
 
-    is_fully_connected: bool
-    num_components: int
-    total_entities: int
-    components: list[set[URIRef]]
-    isolated_entities: list[URIRef]
-    largest_component_size: int
-    has_required_properties: bool
-    domain_range_consistent: bool
-    missing_labels: list[str]
-    domain_range_violations: list[str]
-    predicate_stats: PredicateStats
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    is_fully_connected: bool = False
+    num_components: int = 0
+    total_entities: int = 0
+    components: list[set[URIRef]] = Field(default_factory=list)
+    isolated_entities: list[URIRef] = Field(default_factory=list)
+    largest_component_size: int = 0
+    has_required_properties: bool = True
+    domain_range_consistent: bool = True
+    missing_labels: list[str] = Field(default_factory=list)
+    domain_range_violations: list[str] = Field(default_factory=list)
+    predicate_stats: PredicateStats = Field(default_factory=PredicateStats)
 
 
 def validate_and_connect_chunk(
@@ -86,15 +93,13 @@ def validate_and_connect_chunk(
     result = validator.validate_connectivity()
 
     logger.debug(f"\n=== Connectivity Analysis for Chunk {chunk.iri} ===")
-    logger.debug(f"Fully connected: {result['is_fully_connected']}")
-    logger.debug(f"Number of components: {result['num_components']}")
-    logger.debug(f"Total entities: {result['total_entities']}")
-    logger.debug(f"Largest component size: {result['largest_component_size']}")
+    logger.debug(f"Fully connected: {result.is_fully_connected}")
+    logger.debug(f"Number of components: {result.num_components}")
+    logger.debug(f"Total entities: {result.total_entities}")
+    logger.debug(f"Largest component size: {result.largest_component_size}")
 
-    if result["isolated_entities"]:
-        logger.debug(
-            f"Isolated entities: {[str(e) for e in result['isolated_entities']]}"
-        )
+    if result.isolated_entities:
+        logger.debug(f"Isolated entities: {[str(e) for e in result.isolated_entities]}")
 
     # Create a new RDFGraph instance instead of using deepcopy
     final_graph = RDFGraph()
@@ -104,7 +109,7 @@ def validate_and_connect_chunk(
     for prefix, namespace in chunk.graph.namespaces():
         final_graph.bind(prefix, namespace)
 
-    if not result["is_fully_connected"] and auto_connect:
+    if not result.is_fully_connected and auto_connect:
         final_graph = validator.make_graph_connected(chunk.iri)
 
     chunk.graph = final_graph
@@ -197,20 +202,9 @@ class RDFGraphConnectivityValidator:
         """Validate predicate consistency and required properties.
 
         Returns:
-            PredicateValidationResult: Dictionary containing validation results and statistics.
+            PredicateValidationResult: Pydantic model containing validation results and statistics.
         """
-        result: PredicateValidationResult = {
-            "has_required_properties": True,
-            "domain_range_consistent": True,
-            "missing_labels": [],
-            "domain_range_violations": [],
-            "predicate_stats": {
-                "total": 0,
-                "with_labels": 0,
-                "with_domains": 0,
-                "with_ranges": 0,
-            },
-        }
+        result = PredicateValidationResult()
 
         # Track all predicates
         predicates = set()
@@ -218,7 +212,7 @@ class RDFGraphConnectivityValidator:
             if isinstance(pred, URIRef):
                 predicates.add(pred)
 
-        result["predicate_stats"]["total"] = len(predicates)
+        result.predicate_stats.total = len(predicates)
 
         # Check each predicate
         for pred in predicates:
@@ -233,20 +227,20 @@ class RDFGraphConnectivityValidator:
                 if s == pred:
                     if p == RDFS.label:
                         has_label = True
-                        result["predicate_stats"]["with_labels"] += 1
+                        result.predicate_stats.with_labels += 1
                     elif p == RDFS.domain:
                         has_domain = True
                         domain = o
-                        result["predicate_stats"]["with_domains"] += 1
+                        result.predicate_stats.with_domains += 1
                     elif p == RDFS.range:
                         has_range = True
                         range_ = o
-                        result["predicate_stats"]["with_ranges"] += 1
+                        result.predicate_stats.with_ranges += 1
 
             # Check required properties
             if not has_label:
-                result["has_required_properties"] = False
-                result["missing_labels"].append(str(pred))
+                result.has_required_properties = False
+                result.missing_labels.append(str(pred))
 
             # Check domain/range consistency in usage
             if has_domain or has_range:
@@ -261,8 +255,8 @@ class RDFGraphConnectivityValidator:
                                     break
 
                             if subject_type and domain and subject_type != domain:
-                                result["domain_range_consistent"] = False
-                                result["domain_range_violations"].append(
+                                result.domain_range_consistent = False
+                                result.domain_range_violations.append(
                                     f"Subject {s} of type {subject_type} "
                                     f"used with predicate {pred} "
                                     f"that requires domain {domain}"
@@ -277,8 +271,8 @@ class RDFGraphConnectivityValidator:
                                     break
 
                             if object_type and range_ and object_type != range_:
-                                result["domain_range_consistent"] = False
-                                result["domain_range_violations"].append(
+                                result.domain_range_consistent = False
+                                result.domain_range_violations.append(
                                     f"Object {o} of type {object_type} "
                                     f"used with predicate {pred} "
                                     f"that requires range {range_}"
@@ -290,52 +284,34 @@ class RDFGraphConnectivityValidator:
         """Validate graph connectivity and return detailed results.
 
         Returns:
-            ConnectivityResult: Dictionary containing connectivity information and
+            ConnectivityResult: Pydantic model containing connectivity information and
                 validation results.
         """
         components = self.find_connected_components()
         entities = self.get_all_entities()
 
-        result: ConnectivityResult = {
-            "is_fully_connected": len(components) <= 1,
-            "num_components": len(components),
-            "total_entities": len(entities),
-            "components": components,
-            "isolated_entities": [],
-            "largest_component_size": 0,
-            "has_required_properties": True,
-            "domain_range_consistent": True,
-            "missing_labels": [],
-            "domain_range_violations": [],
-            "predicate_stats": {
-                "total": 0,
-                "with_labels": 0,
-                "with_domains": 0,
-                "with_ranges": 0,
-            },
-        }
+        result = ConnectivityResult(
+            is_fully_connected=len(components) <= 1,
+            num_components=len(components),
+            total_entities=len(entities),
+            components=components,
+        )
 
         if components:
-            result["largest_component_size"] = max(len(comp) for comp in components)
+            result.largest_component_size = max(len(comp) for comp in components)
 
             # Find isolated entities (components of size 1)
-            result["isolated_entities"] = [
+            result.isolated_entities = [
                 list(comp)[0] for comp in components if len(comp) == 1
             ]
 
         # Add predicate validation results
         predicate_validation = self.validate_predicates()
-        result["has_required_properties"] = predicate_validation[
-            "has_required_properties"
-        ]
-        result["domain_range_consistent"] = predicate_validation[
-            "domain_range_consistent"
-        ]
-        result["missing_labels"] = predicate_validation["missing_labels"]
-        result["domain_range_violations"] = predicate_validation[
-            "domain_range_violations"
-        ]
-        result["predicate_stats"] = predicate_validation["predicate_stats"]
+        result.has_required_properties = predicate_validation.has_required_properties
+        result.domain_range_consistent = predicate_validation.domain_range_consistent
+        result.missing_labels = predicate_validation.missing_labels
+        result.domain_range_violations = predicate_validation.domain_range_violations
+        result.predicate_stats = predicate_validation.predicate_stats
 
         return result
 

@@ -1,7 +1,6 @@
+import logging
 import re
 from pathlib import Path
-
-import pygraphviz as pgv
 
 from ontocast.config import (
     Config,
@@ -13,6 +12,8 @@ from ontocast.config import (
 )
 from ontocast.stategraph import create_agent_graph
 from ontocast.toolbox import ToolBox
+
+logger = logging.getLogger(__name__)
 
 
 def update_mermaid_graph_in_markdown(file_path: str, new_graph: str):
@@ -82,7 +83,7 @@ def main():
         "nodes": {"__end__": "END", "__start__": "START"},
     }
 
-    def tweak_draw(fname, ext):
+    def tweak_draw(fname, extensions: tuple[str, ...]):
         fontname = "'Architects Daughter'"
 
         subtle_green = "#a9cca9"
@@ -112,33 +113,32 @@ def main():
             viz.get_node(first.id).attr.update(fillcolor=subtle_orange)
         if last := graph.last_node():
             viz.get_node(last.id).attr.update(fillcolor=subtle_orange)
-        if ext == "svg":
-            viz.draw(fname + ".svg", format="svg:cairo", prog="dot")
-        else:
-            viz.draw(fname + ".png", format="png", prog="dot", args="-Gdpi=300")
+        for ext in extensions:
+            if ext == "svg":
+                viz.draw(fname + ".svg", format="svg:cairo", prog="dot")
+            elif ext == "png":
+                viz.draw(fname + ".png", format="png", prog="dot", args="-Gdpi=300")
 
-    tweak_draw("docs/assets/graph", "svg")
-    tweak_draw("docs/assets/graph", "png")
+    try:
+        import pygraphviz as pgv
 
-    # Clean up temporary directory
-    import shutil
+        tweak_draw("docs/assets/graph", extensions=("svg", "pnt"))
+    except ImportError as e:
+        logger.info(f"Could not import graphviz: {e}")
 
-    if (
-        config.tool_config.path_config.working_directory is not None
-        and config.tool_config.path_config.working_directory.exists()
-    ):
-        shutil.rmtree(config.tool_config.path_config.working_directory)
+    try:
+        from langchain_core.runnables.graph import MermaidDrawMethod
 
-    # from langchain_core.runnables.graph import MermaidDrawMethod
+        png_data = graph.draw_mermaid_png(
+            draw_method=MermaidDrawMethod.API,
+            frontmatter_config=frontmatter_config,
+            padding=20,
+        )
 
-    # png_data = graph.draw_mermaid_png(
-    #     draw_method=MermaidDrawMethod.API,
-    #     frontmatter_config=frontmatter_config,
-    #     padding=20,
-    # )
-
-    # with open(output_path, "wb") as f:
-    #     f.write(png_data)
+        with open("docs/assets/graph.mmd", "wb") as f:
+            f.write(png_data)
+    except ImportError as e:
+        logger.info(f"Could not import MermaidDrawMethod: {e}")
 
 
 if __name__ == "__main__":

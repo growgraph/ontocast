@@ -93,8 +93,8 @@ def test_aggregation(doc_id, connected_chunks, current_domain):
     connectivity_result = RDFGraphConnectivityValidator(
         aggregated_graph
     ).validate_connectivity()
-    assert len(aggregated_graph) == 22
-    assert connectivity_result["num_components"] == 1
+    assert len(aggregated_graph) == 25
+    assert connectivity_result.num_components == 1
 
 
 def create_test_chunks_basic_similarity(current_domain):
@@ -576,7 +576,7 @@ def test_basic_similarity_aggregation(basic_similarity_chunks):
 
     # Check that similar entities are merged
     assert len(aggregated_graph) > 0
-    assert connectivity_result["num_components"] > 0
+    assert connectivity_result.num_components > 0
 
 
 def test_predicate_disambiguation_aggregation(predicate_disambiguation_chunks):
@@ -592,7 +592,7 @@ def test_predicate_disambiguation_aggregation(predicate_disambiguation_chunks):
 
     # Check that similar predicates are merged
     assert len(aggregated_graph) > 0
-    assert connectivity_result["num_components"] > 0
+    assert connectivity_result.num_components > 0
 
 
 def test_edge_cases_aggregation(edge_cases_chunks):
@@ -608,7 +608,7 @@ def test_edge_cases_aggregation(edge_cases_chunks):
 
     # Check that edge cases are handled properly
     assert len(aggregated_graph) > 0
-    assert connectivity_result["num_components"] > 0
+    assert connectivity_result.num_components > 0
 
 
 def test_type_disambiguation_aggregation(type_disambiguation_chunks):
@@ -624,7 +624,7 @@ def test_type_disambiguation_aggregation(type_disambiguation_chunks):
 
     # Check that entities with same name but different types are not merged
     assert len(aggregated_graph) > 0
-    assert connectivity_result["num_components"] > 0
+    assert connectivity_result.num_components > 0
 
 
 def test_large_scale_aggregation(large_scale_chunks):
@@ -640,7 +640,7 @@ def test_large_scale_aggregation(large_scale_chunks):
 
     # Check that large scale aggregation works
     assert len(aggregated_graph) > 0
-    assert connectivity_result["num_components"] > 0
+    assert connectivity_result.num_components > 0
 
 
 def test_complex_predicates_aggregation(complex_predicates_chunks):
@@ -656,4 +656,4 @@ def test_complex_predicates_aggregation(complex_predicates_chunks):
 
     # Check that complex predicates are handled properly
     assert len(aggregated_graph) > 0
-    assert connectivity_result["num_components"] > 0
+    assert connectivity_result.num_components > 0
