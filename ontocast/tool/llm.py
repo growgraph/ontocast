@@ -6,21 +6,30 @@ structured data extraction capabilities with optional caching support.
 
 Cache Usage:
     The LLM tool supports caching of responses to avoid redundant API calls.
-    To enable caching, pass a cache_dir parameter when creating the tool:
+    Caching is enabled by default with a platform-appropriate cache directory.
+    You can specify a custom cache directory if needed:
 
     ```python
     from pathlib import Path
     from ontocast.tool.llm import LLMTool
     from ontocast.config import LLMConfig
 
-    # Create LLM tool with cache
-    cache_dir = Path("/tmp/llm_cache")
+    # Create LLM tool with default cache directory
+    llm_tool = await LLMTool.acreate(config=LLMConfig(...))
+    
+    # Or specify a custom cache directory
+    custom_cache_dir = Path("/custom/cache/path")
     llm_tool = await LLMTool.acreate(
         config=LLMConfig(...),
-        cache_dir=cache_dir
+        cache_dir=custom_cache_dir
     )
     ```
 
+    Default cache locations:
+    - Tests: .test_cache/llm/ in the current working directory
+    - Windows: %USERPROFILE%\\AppData\\Local\\ontocast\\llm\
+    - Unix/Linux: ~/.cache/ontocast/llm/ (or $XDG_CACHE_HOME/ontocast/llm/)
+    
     Cache files are stored as JSON files with filenames based on SHA256 hashes
     of the prompt and LLM configuration. This ensures that identical prompts
     with the same configuration will return cached responses.
@@ -30,6 +39,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Type, TypeVar
 
@@ -47,6 +57,31 @@ from .onto import Tool
 T = TypeVar("T", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
+
+
+def _get_default_cache_dir() -> Path:
+    """Get the default cache directory based on the environment.
+
+    Returns:
+        Path: The appropriate cache directory path.
+    """
+    # Check if we're in a test environment
+    if "pytest" in os.environ.get("_", ""):
+        # In tests, use a test-specific cache directory
+        return Path.cwd() / ".test_cache" / "llm"
+
+    # Check for common cache environment variables
+    cache_home = os.environ.get("XDG_CACHE_HOME")
+    if cache_home:
+        return Path(cache_home) / "ontocast" / "llm"
+
+    # Use platform-appropriate cache directory
+    if os.name == "nt":  # Windows
+        cache_dir = Path.home() / "AppData" / "Local" / "ontocast" / "llm"
+    else:  # Unix-like systems
+        cache_dir = Path.home() / ".cache" / "ontocast" / "llm"
+
+    return cache_dir
 
 
 class LLMTool(Tool):
@@ -83,8 +118,13 @@ class LLMTool(Tool):
 
         Args:
             cache_dir: Optional directory path for caching LLM responses.
+                      If None, uses a platform-appropriate default location.
             **kwargs: Additional keyword arguments passed to the parent class.
         """
+        # Use default cache directory if none provided
+        if cache_dir is None:
+            cache_dir = _get_default_cache_dir()
+
         super().__init__(cache_dir=cache_dir, **kwargs)
         self._llm = None
 
@@ -95,11 +135,15 @@ class LLMTool(Tool):
         Args:
             config: LLMConfig object containing LLM settings.
             cache_dir: Optional directory path for caching LLM responses.
+                      If None, uses a platform-appropriate default location.
             **kwargs: Additional keyword arguments for initialization.
 
         Returns:
             LLMTool: A new instance of the LLM tool.
         """
+        # Use default cache directory if none provided
+        if cache_dir is None:
+            cache_dir = _get_default_cache_dir()
         return asyncio.run(cls.acreate(config=config, cache_dir=cache_dir, **kwargs))
 
     @classmethod
@@ -111,11 +155,15 @@ class LLMTool(Tool):
         Args:
             config: LLMConfig object containing LLM settings.
             cache_dir: Optional directory path for caching LLM responses.
+                      If None, uses a platform-appropriate default location.
             **kwargs: Additional keyword arguments for initialization.
 
         Returns:
             LLMTool: A new instance of the LLM tool.
         """
+        # Use default cache directory if none provided
+        if cache_dir is None:
+            cache_dir = _get_default_cache_dir()
         # Create and initialize the instance with the config
         self = cls(config=config, cache_dir=cache_dir, **kwargs)
         await self.setup()

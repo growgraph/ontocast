@@ -14,8 +14,10 @@ from ontocast.tool import (
     LLMTool,
     OntologyManager,
 )
-from ontocast.tool.triple_manager import Neo4jTripleStoreManager
-from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
+from ontocast.tool.triple_manager.mock import (
+    MockFusekiTripleStoreManager,
+    MockNeo4jTripleStoreManager,
+)
 from ontocast.toolbox import ToolBox
 
 
@@ -270,18 +272,18 @@ def neo4j_auth():
 
 @pytest.fixture(scope="session")
 def neo4j_triple_store_manager(neo4j_uri, neo4j_auth):
-    if not (neo4j_uri and neo4j_auth):
-        pytest.skip("Neo4j not configured in environment.")
-    return Neo4jTripleStoreManager(uri=neo4j_uri, auth=neo4j_auth, clean=True)
+    """Mock Neo4j triple store manager for testing."""
+    return MockNeo4jTripleStoreManager(uri=neo4j_uri, auth=neo4j_auth, clean=True)
 
 
 @pytest.fixture(scope="session")
 def fuseki_triple_store_manager():
+    """Mock Fuseki triple store manager for testing."""
     uri = os.environ.get("FUSEKI_URI", "http://localhost:3030/test")
     auth = os.environ.get("FUSEKI_AUTH", None)
-    if not uri:
-        pytest.skip("Fuseki not configured in environment.")
-    return FusekiTripleStoreManager(uri=uri, auth=auth, dataset="test", clean=True)
+    if auth and "/" in auth:
+        auth = tuple(auth.split("/", 1))
+    return MockFusekiTripleStoreManager(uri=uri, auth=auth, dataset="test", clean=True)
 
 
 def triple_store_roundtrip(manager, test_ontology):

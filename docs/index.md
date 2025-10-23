@@ -25,6 +25,7 @@ OntoCast is a framework for extracting semantic triples (creating a Knowledge Gr
 - **MCP Compatibility**: Implements Model Control Protocol endpoints
 - **RDF Output**: Produces standardized RDF/Turtle
 - **Triple Store Integration**: Supports Neo4j (n10s) and Apache Fuseki
+- **Automatic LLM Caching**: Built-in response caching for improved performance and cost reduction
 
 ---
 
@@ -51,6 +52,16 @@ pip install ontocast
 ---
 
 ## Configuration
+
+## Documentation
+
+- [Quick Start Guide](getting_started/quickstart.md) - Get started quickly
+- [Configuration System](user_guide/configuration.md) - Detailed configuration guide
+- [LLM Caching](user_guide/llm_caching.md) - Automatic response caching
+- [Triple Store Setup](user_guide/triple_stores.md) - Triple store configuration
+- [User Guide](user_guide/concepts.md) - Core concepts and workflow
+- [API Reference](reference/onto.md) - Detailed API documentation
+
 
 ### Environment Variables
 

@@ -1,10 +1,7 @@
 import hashlib
-import logging
 
 from rdflib import Graph
 from rdflib.namespace import NamespaceManager
-
-logger = logging.getLogger(__name__)
 
 
 def iri2namespace(iri: str, ontology: bool = False) -> str:

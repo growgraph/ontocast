@@ -1,9 +1,11 @@
+import logging
 from functools import wraps
 from typing import Callable
 
 from ontocast.onto.enum import Status, WorkflowNode
 from ontocast.onto.state import AgentState
-from ontocast.util import logger
+
+logger = logging.getLogger(__name__)
 
 
 def count_visits_conditional_success(

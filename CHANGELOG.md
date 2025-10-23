@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Automatic LLM response caching for improved performance and cost reduction
+- Platform-aware default cache directory selection (avoids /tmp)
+- Transparent caching with no configuration required
+- Custom cache directory support via `LLM_CACHE_DIR` environment variable
+
 - CLI parameter `--skip-ontology-critique` to skip ontology critique step
 - Environment variable `LLM_API_KEY` for LLM authentication (replaces `OPENAI_API_KEY`)
 - Environment variable `MAX_VISITS` for controlling workflow behavior
@@ -47,6 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.5] - 2025-01-XX
 
 ### Added
+- Automatic LLM response caching for improved performance and cost reduction
+- Platform-aware default cache directory selection (avoids /tmp)
+- Transparent caching with no configuration required
+- Custom cache directory support via `LLM_CACHE_DIR` environment variable
+
 - Version bump to 0.1.5
 - Various stability improvements
 
@@ -92,6 +102,14 @@ tools = ToolBox(config)
 ```
 
 ### CLI Parameters
+
+### LLM Caching
+```python
+# Caching is now automatic - no configuration needed
+# Custom cache directory (optional)
+export LLM_CACHE_DIR=/path/to/custom/cache
+```
+
 ```bash
 # Skip ontology critique step
 ontocast serve --skip-ontology-critique

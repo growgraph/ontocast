@@ -31,6 +31,11 @@ from .filesystem_manager import (
 from .fuseki import (
     FusekiTripleStoreManager,
 )
+from .mock import (
+    MockFusekiTripleStoreManager,
+    MockNeo4jTripleStoreManager,
+    MockTripleStoreManager,
+)
 from .neo4j import (
     Neo4jTripleStoreManager,
 )
@@ -40,4 +45,7 @@ __all__ = [
     "Neo4jTripleStoreManager",
     "FusekiTripleStoreManager",
     "FilesystemTripleStoreManager",
+    "MockTripleStoreManager",
+    "MockFusekiTripleStoreManager",
+    "MockNeo4jTripleStoreManager",
 ]

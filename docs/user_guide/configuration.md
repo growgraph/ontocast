@@ -41,6 +41,10 @@ Config
 
 ### LLM Configuration
 
+# LLM Caching
+LLM_CACHE_DIR=/path/to/cache              # Custom cache directory (optional)
+
+
 ```bash
 # LLM Provider and Model
 LLM_PROVIDER=openai                    # or "ollama"
@@ -91,6 +95,53 @@ CURRENT_DOMAIN=https://example.com     # Domain for URI generation
 ```
 
 ---
+
+
+## LLM Caching
+
+OntoCast includes automatic LLM response caching to improve performance and reduce API costs. Caching is enabled by default and requires no configuration.
+
+### Default Cache Locations
+
+- **Tests**: `.test_cache/llm/` in the current working directory
+- **Windows**: `%USERPROFILE%\AppData\Local\ontocast\llm\`
+- **Unix/Linux**: `~/.cache/ontocast/llm/` (or `$XDG_CACHE_HOME/ontocast/llm/`)
+
+### Environment Variables
+
+```bash
+# Optional: Custom cache directory
+LLM_CACHE_DIR=/path/to/custom/cache
+```
+
+### Benefits
+
+- **Faster Execution**: Repeated queries return cached responses instantly
+- **Cost Reduction**: Identical requests don't hit the LLM API
+- **Offline Capability**: Tests can run without API access if responses are cached
+- **Transparent**: No configuration required - works automatically
+
+### Custom Cache Directory
+
+```python
+from pathlib import Path
+from ontocast.tool.llm import LLMTool
+from ontocast.config import LLMConfig
+
+# Create LLM configuration
+llm_config = LLMConfig(
+    provider="openai",
+    model_name="gpt-4o-mini",
+    api_key="your-api-key"
+)
+
+# Custom cache directory
+llm_tool = LLMTool.create(
+    config=llm_config,
+    cache_dir=Path("/custom/cache/path")
+)
+```
+
 
 ## Usage Examples
 

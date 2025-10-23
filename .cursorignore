@@ -5,8 +5,12 @@
 !test/
 !test/**
 !test/**/*py 
+!docs/*
 !docs/**
+!docs/**/*.md
+!docs/**/*.py
 !.github/**
 !.env.example
 !pyproject.toml
 !mkdocs.yaml
+!*.md

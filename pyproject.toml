@@ -71,6 +71,23 @@ packages = ["data", "ontocast"]
 venv = ".venv"
 venvPath = "."
 
+[tool.pytest.ini_options]
+addopts = [
+  "--disable-warnings",
+  "--strict-markers",
+  "--tb=short",
+  "-v"
+]
+markers = [
+  "integration: marks tests as integration tests",
+  "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+  "unit: marks tests as unit tests"
+]
+python_classes = ["Test*"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+testpaths = ["test"]
+
 [tool.ruff]
 line-length = 88
 
