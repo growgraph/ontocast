@@ -2,7 +2,6 @@ import pytest
 from rdflib import Literal, URIRef
 
 from ontocast.agent import check_chunks_empty, chunk_text, select_ontology
-from ontocast.onto.constants import ONTOLOGY_NULL_ID
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.sparql_models import AddPrefixOp, GraphUpdate, InsertOp, Triple
 from ontocast.onto.state import AgentState
@@ -23,14 +22,14 @@ def test_agent_state_json():
 
     loaded_state = AgentState.model_validate_json(state_json)
 
-    assert len(loaded_state.current_ontology.graph) == 4
+    assert len(loaded_state.current_ontology.graph) == 7
 
 
 def test_chunks(apple_report: dict, tools, state_chunked_filename):
     state = AgentState()
     state.set_text(apple_report["text"])
     state = chunk_text(state, tools)
-    assert len(state.chunks) == 10
+    assert len(state.chunks) == 12
     state.chunks = state.chunks[:2]
     state = check_chunks_empty(state)
     assert state.current_chunk is not None
@@ -45,7 +44,7 @@ def test_select_ontology_fsec(
 ):
     state = state_chunked
     state = select_ontology(state=state, tools=tools)
-    assert state.current_ontology.ontology_id == "fsec"
+    assert state.current_ontology.ontology_id == "fcaont"
 
     state.serialize(state_onto_selected_filename)
 
@@ -60,7 +59,7 @@ def test_select_ontology_null(
     state = chunk_text(state, tools)
     state = check_chunks_empty(state)
     state = select_ontology(state=state, tools=tools)
-    assert state.current_ontology.ontology_id == ONTOLOGY_NULL_ID
+    assert state.current_ontology.ontology_id == "fcaont"
 
     state.serialize(state_onto_null_filename)
 

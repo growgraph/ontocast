@@ -70,7 +70,7 @@ LLM_MODEL_NAME=gpt-4o-mini # ollama model
 LLM_TEMPERATURE=0.0
 
 # openai
-OPENAI_API_KEY=your_openai_api_key_here
+LLM_API_KEY=your_openai_api_key_here
 
 # ollama
 LLM_BASE_URL=

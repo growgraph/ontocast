@@ -16,6 +16,19 @@ from ontocast.tool.graph_version_manager import GraphVersion
 
 logger = logging.getLogger(__name__)
 
+summary_template = """
+ONTOLOGY CONTEXT:
+{ontology_context}
+
+FACTS CONTEXT:
+{facts_context}
+
+CONTEXT METADATA:
+- Agent type: `{agent_type}`
+- Timestamp: {context_timestamp}
+- Additional metadata: {context_metadata}
+"""
+
 
 class AgentType(StrEnum):
     """Enumeration of agent types for type safety."""
@@ -127,18 +140,15 @@ class AgentContext(BaseModel):
         ontology_context = self.get_ontology_context_summary()
         facts_context = self.get_facts_context_summary()
 
-        return f"""
-ONTOLOGY CONTEXT:
-{ontology_context}
+        summary = summary_template.format(
+            facts_context=facts_context,
+            ontology_context=ontology_context,
+            agent_type=self.agent_type.value,
+            context_timestamp=self.context_timestamp.isoformat(),
+            context_metadata=self.context_metadata,
+        )
 
-FACTS CONTEXT:
-{facts_context}
-
-CONTEXT METADATA:
-- Agent type: `{self.agent_type}`
-- Timestamp: {self.context_timestamp.isoformat()}
-- Additional metadata: {self.context_metadata}
-"""
+        return summary
 
     def add_conversation_memory(
         self, role: Role, content: str, metadata: dict[str, Any] | None = None
@@ -213,27 +223,31 @@ CONTEXT METADATA:
         Returns:
             str: Complete context for LLM calls
         """
-        return f"""
-{self.get_full_context_summary()}
 
-{self.get_conversation_context()}
-
-DYNAMIC CONTEXT:
-{self.dynamic_context}
-"""
+        return (
+            f"{self.get_full_context_summary()}\n\n"
+            f"{self.get_conversation_context()}\n\n"
+            f"DYNAMIC CONTEXT:\n{self.dynamic_context}"
+        )
 
 
-class ContextManager:
+class ContextManager(BaseModel):
     """Manages context passing between agents.
 
     This class handles the creation, storage, and retrieval of context
     information for agent-based workflows.
     """
 
-    def __init__(self):
+    context_history: list[AgentContext] = Field(
+        default_factory=list, description="History of agent contexts"
+    )
+    current_context: AgentContext | None = Field(
+        default=None, description="Current active context"
+    )
+
+    def __init__(self, **kwargs):
         """Initialize the context manager."""
-        self.context_history: list[AgentContext] = []
-        self.current_context: AgentContext | None = None
+        super().__init__(**kwargs)
 
     def create_context(
         self,

@@ -16,7 +16,7 @@
         "ontology_id": "_void_ontology_name",
         "title": "null title",
         "description": "null description",
-        "version": null,
+        "version": "1.0.0",
         "iri": "https://example.com/_void_ontology_name",
         "graph": "@prefix dcterms: <http://purl.org/dc/terms/> .\n@prefix owl: <http://www.w3.org/2002/07/owl#> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\n<https://example.com/_void_ontology_name> a owl:Ontology ;\n    rdfs:label \"null title\" ;\n    dcterms:description \"null description\" ;\n    dcterms:title \"_void_ontology_name\" ;\n    rdfs:comment \"null description\" .\n\n",
         "current_domain": "https://example.com"

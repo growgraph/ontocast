@@ -212,7 +212,7 @@ except ValueError as e:
 
 ```bash
 # Old (deprecated)
-OPENAI_API_KEY=your-key
+LLM_API_KEY=your-key
 
 # New (current)
 LLM_API_KEY=your-key
@@ -224,7 +224,7 @@ LLM_API_KEY=your-key
 # Old way (deprecated)
 from ontocast.config import config
 
-llm_provider = config.llm_config.provider
+llm_provider = config.tool_config.llm_config.provider
 
 # New way (current)
 from ontocast.config import Config
