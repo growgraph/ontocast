@@ -1,7 +1,6 @@
-"""Enhanced ontology criticism agent with memory and SPARQL operations.
+"""Enhanced ontology criticism agent with SPARQL operations.
 
-This module provides enhanced functionality for analyzing and validating ontologies
-with memory of previous critiques and SPARQL operation support.
+This module provides enhanced functionality for analyzing and validating ontologies of previous critiques and SPARQL operation support.
 """
 
 import logging
@@ -11,12 +10,13 @@ from langchain_core.prompts import PromptTemplate
 
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
-from ontocast.onto.model import OntologyCritiqueReport
+from ontocast.onto.model import OntologyCritiqueReport, Suggestions
 from ontocast.onto.state import AgentState
 from ontocast.prompt.common import ontology_template, text_template
 from ontocast.prompt.common import system_preamble_ontology as system_preamble
 from ontocast.prompt.criticise_ontology import (
     intro_instruction,
+    ontology_criteria,
     template_prompt,
 )
 from ontocast.tool import LLMTool
@@ -26,10 +26,10 @@ logger = logging.getLogger(__name__)
 
 
 def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
-    """Enhanced ontology criticism with memory and SPARQL operations.
+    """Enhanced ontology criticism with SPARQL operations.
 
     This function performs a critical analysis of the ontology in the current
-    state, with memory of previous critiques and SPARQL operation support.
+    state, with SPARQL operation support.
 
     Args:
         state: The current agent state containing the ontology to analyze.
@@ -38,7 +38,7 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     Returns:
         AgentState: Updated state with analysis results.
     """
-    logger.info("Enhanced ontology criticism with memory")
+    logger.info("Ontology Critic")
 
     if state.current_chunk is None:
         state.status = Status.FAILED
@@ -58,7 +58,9 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
         ontology_ttl=ontology_ttl,
     )
 
-    text_chapter = text_template.format(document=state.current_chunk.text)
+    text_chapter = text_template.format(text=state.current_chunk.text)
+
+    user_instruction = state.ontology_user_instruction
 
     prompt = PromptTemplate(
         template=template_prompt,
@@ -66,6 +68,7 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
             "preamble",
             "facts_instruction",
             "ontology_instruction",
+            "user_instruction",
             "text_chapter",
             "improvement_instruction",
             "format_instructions",
@@ -77,8 +80,9 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
             prompt.format_prompt(
                 preamble=system_preamble,
                 intro_instruction=intro_instruction,
-                ontology_criteria=state.current_chunk.text,
+                ontology_criteria=ontology_criteria,
                 text_chapter=text_chapter,
+                user_instruction=user_instruction,
                 ontology_chapter=ontology_chapter,
                 format_instructions=parser.get_format_instructions(),
             )
@@ -90,7 +94,7 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
             f"score: {critique.score}"
         )
 
-        if critique.is_satisfactory:
+        if critique.success or critique.score > 90:
             state.status = Status.SUCCESS
             state.set_node_status(WorkflowNode.CRITICISE_ONTOLOGY, Status.SUCCESS)
             logger.info("Ontology critique passed")
@@ -98,9 +102,11 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
             state.status = Status.FAILED
             state.failure_stage = FailureStage.ONTOLOGY_CRITIQUE
             state.set_node_status(WorkflowNode.CRITICISE_ONTOLOGY, Status.FAILED)
-            state.failure_reason = f"Ontology critique failed: {critique.issues}"
-            logger.warning(f"Ontology critique failed: {critique.issues}")
-
+            state.suggestions = Suggestions.from_critique_report(critique)
+            state.failure_reason = "Ontology Critic suggests improvements"
+            logger.info(
+                f"Ontology critique failed: {critique.systemic_critique_summary}"
+            )
         return state
 
     except Exception as e:

@@ -113,6 +113,10 @@ class TripleFix(BaseModel):
         )
     )
 
+    severity: Literal["critical", "important", "minor"] = Field(
+        description="critical: breaks semantic graph | important: significant gap | minor: polish"
+    )
+
     target: str | None = Field(
         default=None,
         description=(
@@ -192,7 +196,8 @@ class OntologyCritiqueReport(BaseModel):
 
     actionable_ontology_fixes: list[TripleFix] = Field(
         default_factory=list,
-        description="An itemized list of concrete, actionable suggestions for specific improvements to the ontology. Each suggestion must cite the specific text context that necessitates the change, addressing issues like Completeness or Abstraction.",
+        description="List of specific fixes to correct the facts graph. "
+        "For each fix, provide the text evidence, the action type, and the relevant triples.",
     )
 
     systemic_critique_summary: str = Field(

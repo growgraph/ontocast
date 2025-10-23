@@ -1,7 +1,7 @@
 """Enhanced fact criticism agent with memory and SPARQL operations.
 
 This module provides enhanced functionality for analyzing and validating facts
-with memory of previous critiques and SPARQL operation support.
+with SPARQL operation support.
 """
 
 import logging
@@ -29,10 +29,10 @@ logger = logging.getLogger(__name__)
 
 
 def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
-    """Enhanced criticize facts with memory and SPARQL operations.
+    """Enhanced criticize facts with SPARQL operations.
 
     This function performs a critical analysis of the facts in the current chunk,
-    with memory of previous critiques and SPARQL operation support.
+    with SPARQL operation support.
 
     Args:
         state: The current agent state containing the chunk to analyze.

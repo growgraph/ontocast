@@ -26,7 +26,7 @@ def count_visits_conditional_success(
         logger.info(f"For {current_node}: status is SUCCESS, proceeding to next node")
         state.clear_failure()
     elif state.node_visits[current_node] >= state.max_visits:
-        logger.error(f"For {current_node}: maximum visits exceeded")
+        logger.info(f"For {current_node}: maximum visits exceeded")
         # Don't set failure stage since we're continuing with SUCCESS status
         # Just log the reason and continue
         state.failure_reason = f"Maximum visits exceeded for {current_node}"

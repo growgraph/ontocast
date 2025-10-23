@@ -24,6 +24,8 @@ from ontocast.prompt.render_ontology import (
     general_ontology_instruction,
     intro_instruction_fresh,
     intro_instruction_update,
+    prefix_instruction_fresh,
+    prefix_instruction_update,
     template_prompt,
 )
 from ontocast.toolbox import ToolBox
@@ -75,11 +77,14 @@ def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
     output_instruction = output_instruction_ttl
     ontology_ttl = ""
     improvement_instruction_str = ""
+    general_ontology_instruction_str = general_ontology_instruction.format(
+        prefix_instruction=prefix_instruction_fresh
+    )
 
     prompt = PromptTemplate(
         template=template_prompt,
         input_variables=[
-            "system_preamble",
+            "preamble",
             "intro_instruction",
             "ontology_instruction",
             "output_instruction",
@@ -94,9 +99,9 @@ def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
     try:
         response = tools.llm(
             prompt.format_prompt(
-                system_preamble=system_preamble,
+                preamble=system_preamble,
                 intro_instruction=intro_instruction,
-                ontology_instruction=general_ontology_instruction,
+                ontology_instruction=general_ontology_instruction_str,
                 output_instruction=output_instruction,
                 ontology_ttl=ontology_ttl,
                 user_instruction=state.ontology_user_instruction,
@@ -150,10 +155,16 @@ def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
         state.suggestions, WorkflowNode.TEXT_TO_ONTOLOGY
     )
 
+    general_ontology_instruction_str = general_ontology_instruction.format(
+        prefix_instruction=prefix_instruction_update.format(
+            ontology_prefix=state.current_ontology.prefix
+        )
+    )
+
     prompt = PromptTemplate(
         template=template_prompt,
         input_variables=[
-            "system_preamble",
+            "preamble",
             "intro_instruction",
             "ontology_instruction",
             "output_instruction",
@@ -168,9 +179,9 @@ def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
     try:
         response = tools.llm(
             prompt.format_prompt(
-                system_preamble=system_preamble,
+                preamble=system_preamble,
                 intro_instruction=intro_instruction,
-                ontology_instruction=general_ontology_instruction,
+                ontology_instruction=general_ontology_instruction_str,
                 output_instruction=output_instruction,
                 improvement_instruction=improvement_instruction_str,
                 ontology_ttl=ontology_ttl,

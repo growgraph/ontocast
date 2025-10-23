@@ -1,7 +1,7 @@
-"""Enhanced facts criticism prompts with context passing and memory support.
+"""Enhanced facts criticism prompts.
 
 This module provides enhanced prompt templates for facts criticism that support
-context passing, memory, and improved critique quality.
+with improved critique quality.
 """
 
 from .common import system_preamble_semantic

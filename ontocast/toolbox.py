@@ -173,29 +173,33 @@ class ToolBox:
         using the LLM tool.
         """
 
-        # Synchronize ontologies between filesystem and triple store
-        self._synchronize_ontologies()
+        # Synchronize ontologies and get the final set
+        ontologies = self._synchronize_ontologies()
 
-        # Now fetch ontologies from the main triple store manager
-        tm = (
-            self.triple_store_manager
-            if self.triple_store_manager is not None
-            else self.filesystem_manager
-        )
-        if tm is not None:
-            self.ontology_manager.ontologies = tm.fetch_ontologies()
+        # Use the synchronized ontologies
+        if ontologies is not None:
+            self.ontology_manager.ontologies = ontologies
+            update_ontology_manager(om=self.ontology_manager, llm_tool=self.llm)
+        elif self.filesystem_manager is not None:
+            # Fallback to filesystem if no triple store manager
+            self.ontology_manager.ontologies = (
+                self.filesystem_manager.fetch_ontologies()
+            )
             update_ontology_manager(om=self.ontology_manager, llm_tool=self.llm)
 
-    def _synchronize_ontologies(self) -> None:
+    def _synchronize_ontologies(self) -> list | None:
         """Synchronize ontologies between filesystem and triple store.
 
         This method checks both filesystem_manager and triple_store_manager for
         ontologies and populates triple_store_manager with any ontologies from
         filesystem_manager that are not present in triple_store_manager.
+
+        Returns:
+            list | None: The final set of ontologies after synchronization, or None if no triple store manager.
         """
         if self.triple_store_manager is None:
             logger.debug("No triple store manager available for synchronization")
-            return
+            return None
 
         # Get ontologies from filesystem if available
         filesystem_ontologies = []
@@ -234,6 +238,9 @@ class ToolBox:
                 logger.debug(f"Synced ontology to triple store: {ontology.iri}")
         else:
             logger.debug("No new ontologies to sync from filesystem to triple store")
+
+        # Return the final set of ontologies (triple store + newly synced)
+        return triple_store_ontologies
 
 
 def render_ontology_summary(graph: RDFGraph, llm_tool) -> OntologyProperties:

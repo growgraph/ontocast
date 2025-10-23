@@ -196,7 +196,11 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         )
 
         if response.status_code == 200 or response.status_code == 201:
-            logger.info(f"Dataset '{dataset_name}' created successfully.")
+            logger.info(f"Fuseki dataset '{dataset_name}' created successfully.")
+        elif response.status_code == 409:
+            logger.info(
+                f"Fuseki status code: {response.status_code}; {response.text.strip()}"
+            )
         else:
             logger.error(
                 f"Failed to create dataset {dataset_name}. Status code: {response.status_code}"

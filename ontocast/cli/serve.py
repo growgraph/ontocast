@@ -156,10 +156,34 @@ def create_app(
                     f"Parsed JSON data: {data}, bytes length: {len(bytes_data)}"
                 )
                 files = {"input.json": bytes_data}
+                # For JSON requests, user instructions will be extracted by
+                # convert_document.py
+                ontology_user_instruction = ""
+                facts_user_instruction = ""
             elif content_type and content_type.startswith("multipart/form-data"):
                 files = request.files
                 logger.debug(f"Files: {files.keys()}")
                 logger.debug(f"Files-types: {[(k, type(v)) for k, v in files.items()]}")
+
+                # Extract user instructions from form data
+                ontology_user_instruction = ""
+                facts_user_instruction = ""
+
+                # Check if form data contains user instructions
+                if hasattr(request, "form_data") and request.form_data:
+                    ontology_user_instruction = request.form_data.get(
+                        "ontology_user_instruction", ""
+                    )
+                    facts_user_instruction = request.form_data.get(
+                        "facts_user_instruction", ""
+                    )
+                    logger.debug(
+                        f"Form data - ontology_user_instruction: "
+                        f"{ontology_user_instruction}"
+                    )
+                    logger.debug(
+                        f"Form data - facts_user_instruction: {facts_user_instruction}"
+                    )
                 if not files:
                     return Response(
                         status_code=400,
@@ -190,12 +214,24 @@ def create_app(
             if dataset:
                 tools.update_dataset(dataset)
 
+            # Set default values for user instructions (will be overridden by
+            # convert_document.py for JSON files)
+            ontology_user_instruction = (
+                ontology_user_instruction
+                if "ontology_user_instruction" in locals()
+                else ""
+            )
+            facts_user_instruction = (
+                facts_user_instruction if "facts_user_instruction" in locals() else ""
+            )
             initial_state = AgentState(
                 files=files,
                 max_visits=server_config.max_visits,
                 max_chunks=head_chunks,
                 skip_ontology_development=server_config.skip_ontology_development,
                 dataset=dataset,
+                ontology_user_instruction=ontology_user_instruction,
+                facts_user_instruction=facts_user_instruction,
             )
 
             async for chunk in workflow.astream(
