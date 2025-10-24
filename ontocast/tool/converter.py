@@ -11,7 +11,7 @@ from typing import Any, Union
 
 from pydantic import Field
 
-from .cache import Cacher
+from .cache import Cacher, ToolCacher
 from .onto import Tool
 
 logger = logging.getLogger(__name__)
@@ -37,21 +37,25 @@ class ConverterTool(Tool):
 
     def __init__(
         self,
-        cache_dir: Union[str, pathlib.Path, None] = None,
+        cache: Cacher | None = None,
         **kwargs,
     ):
         """Initialize the converter tool.
 
         Args:
-            cache_dir: Optional directory path for caching conversion results.
-                      If None, uses a platform-appropriate default location.
+            cache: Optional shared Cacher instance. If None, creates a new one.
             **kwargs: Additional keyword arguments passed to the parent class.
         """
         super().__init__(**kwargs)
         self._converter = None
 
-        # Initialize cache
-        self.cache = Cacher(subdirectory="converter", cache_dir=cache_dir)
+        # Initialize cache - use shared cacher or create new one
+        if cache is not None:
+            self.cache = ToolCacher(cache, "converter")
+        else:
+            # Fallback for backward compatibility
+            shared_cache = Cacher()
+            self.cache = ToolCacher(shared_cache, "converter")
 
         try:
             from docling.document_converter import DocumentConverter  # type: ignore

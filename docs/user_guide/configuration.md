@@ -42,7 +42,7 @@ Config
 ### LLM Configuration
 
 # LLM Caching
-LLM_CACHE_DIR=/path/to/cache              # Custom cache directory (optional)
+ONTOCAST_CACHE_DIR=/path/to/cache         # Custom cache directory (optional)
 
 
 ```bash
@@ -70,8 +70,8 @@ SKIP_ONTOLOGY_DEVELOPMENT=false        # Skip ontology critique step
 
 ```bash
 # Path Settings
-WORKING_DIRECTORY=/path/to/working     # Working directory (required)
-ONTOLOGY_DIRECTORY=/path/to/ontologies # Ontology files directory (optional)
+ONTOCAST_WORKING_DIRECTORY=/path/to/working     # Working directory (required)
+ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontologies # Ontology files directory (optional)
 ```
 
 ### Triple Store Configuration
@@ -111,7 +111,7 @@ OntoCast includes automatic LLM response caching to improve performance and redu
 
 ```bash
 # Optional: Custom cache directory
-LLM_CACHE_DIR=/path/to/custom/cache
+ONTOCAST_CACHE_DIR=/path/to/custom/cache
 ```
 
 ### Benefits
@@ -135,10 +135,9 @@ llm_config = LLMConfig(
     api_key="your-api-key"
 )
 
-# Custom cache directory
+# Cache directory is managed automatically by Cacher
 llm_tool = LLMTool.create(
-    config=llm_config,
-    cache_dir=Path("/custom/cache/path")
+    config=llm_config
 )
 ```
 
@@ -252,7 +251,7 @@ except ValueError as e:
 
 - **Missing API Key**: `LLM_API_KEY` environment variable is required for OpenAI
 - **Invalid Provider**: LLM provider must be "openai" or "ollama"
-- **Missing Working Directory**: `WORKING_DIRECTORY` must be set
+- **Missing Working Directory**: `ONTOCAST_WORKING_DIRECTORY` must be set
 - **Invalid Paths**: Paths must exist and be accessible
 
 ---
@@ -324,8 +323,9 @@ RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
 
 # Path Configuration
-WORKING_DIRECTORY=/path/to/working
-ONTOLOGY_DIRECTORY=/path/to/ontologies
+ONTOCAST_WORKING_DIRECTORY=/path/to/working
+ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontologies
+ONTOCAST_CACHE_DIR=/path/to/cache
 
 # Triple Store Configuration (Optional)
 FUSEKI_URI=http://localhost:3032/test

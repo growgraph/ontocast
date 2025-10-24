@@ -6,22 +6,21 @@ structured data extraction capabilities with optional caching support.
 
 Cache Usage:
     The LLM tool supports caching of responses to avoid redundant API calls.
-    Caching is enabled by default with a platform-appropriate cache directory.
-    You can specify a custom cache directory if needed:
+    Caching uses a shared Cacher instance that manages cache directories for all tools.
+    The cache directory is managed by the shared Cacher class and follows these rules:
 
     ```python
-    from pathlib import Path
     from ontocast.tool.llm import LLMTool
     from ontocast.config import LLMConfig
+    from ontocast.tool.cache import Cacher
 
-    # Create LLM tool with default cache directory
-    llm_tool = await LLMTool.acreate(config=LLMConfig(...))
+    # Create shared cache instance
+    shared_cache = Cacher()
 
-    # Or specify a custom cache directory
-    custom_cache_dir = Path("/custom/cache/path")
+    # Create LLM tool with shared cache
     llm_tool = await LLMTool.acreate(
         config=LLMConfig(...),
-        cache_dir=custom_cache_dir
+        cache=shared_cache
     )
     ```
 
@@ -33,13 +32,15 @@ Cache Usage:
     Cache files are stored as JSON files with filenames based on SHA256 hashes
     of the prompt and LLM configuration. This ensures that identical prompts
     with the same configuration will return cached responses.
+
+    The shared Cacher automatically manages subdirectories for different tools,
+    ensuring organized cache storage while maintaining a single cache instance.
 """
 
 import asyncio
 import logging
 from functools import wraps
-from pathlib import Path
-from typing import Any, Callable, Optional, Type, TypeVar
+from typing import Any, Callable, Type, TypeVar
 
 from langchain.output_parsers import PydanticOutputParser
 from langchain_core.language_models import BaseChatModel
@@ -50,7 +51,7 @@ from pydantic import BaseModel, Field, SecretStr
 
 from ontocast.config import LLMConfig, LLMProvider
 
-from .cache import Cacher
+from .cache import Cacher, ToolCacher
 from .onto import Tool
 
 T = TypeVar("T", bound=BaseModel)
@@ -58,41 +59,11 @@ T = TypeVar("T", bound=BaseModel)
 logger = logging.getLogger(__name__)
 
 
-class LLMBudgetTracker(BaseModel):
-    """Lightweight tracker for LLM usage statistics."""
-
-    chars_sent: int = Field(default=0, description="Total characters sent to LLM")
-    chars_received: int = Field(
-        default=0, description="Total characters received from LLM"
-    )
-    calls_count: int = Field(default=0, description="Total number of LLM API calls")
-
-    def add_usage(self, chars_sent: int, chars_received: int) -> None:
-        """Add usage statistics."""
-        self.chars_sent += chars_sent
-        self.chars_received += chars_received
-        self.calls_count += 1
-
-    def get_summary(self) -> str:
-        """Get a summary of LLM usage."""
-        return (
-            f"LLM Budget: {self.calls_count} calls, "
-            f"{self.chars_sent:,} chars sent, "
-            f"{self.chars_received:,} chars received"
-        )
-
-
-# Global budget tracker instance
-_budget_tracker: Optional[LLMBudgetTracker] = None
-
-
 def track_llm_usage(func: Callable) -> Callable:
     """Decorator to track LLM usage automatically."""
 
     @wraps(func)
     def wrapper(self, *args, **kwargs):
-        global _budget_tracker
-
         # Get prompt for character counting
         prompt = args[0] if args else ""
         prompt_str = (
@@ -104,22 +75,20 @@ def track_llm_usage(func: Callable) -> Callable:
         # Call the original function
         result = func(self, *args, **kwargs)
 
-        # Track usage if budget tracker is available
-        if _budget_tracker is not None:
+        # Track usage if budget tracker is available in the tool
+        if hasattr(self, "budget_tracker") and self.budget_tracker is not None:
             chars_sent = len(prompt_str)
             chars_received = (
                 len(result.content)
                 if hasattr(result, "content") and result.content
                 else 0
             )
-            _budget_tracker.add_usage(chars_sent, chars_received)
+            self.budget_tracker.add_usage(chars_sent, chars_received)
 
         return result
 
     @wraps(func)
     async def async_wrapper(self, *args, **kwargs):
-        global _budget_tracker
-
         # Get prompt for character counting
         prompt = args[0] if args else ""
         prompt_str = (
@@ -131,30 +100,19 @@ def track_llm_usage(func: Callable) -> Callable:
         # Call the original function
         result = await func(self, *args, **kwargs)
 
-        # Track usage if budget tracker is available
-        if _budget_tracker is not None:
+        # Track usage if budget tracker is available in the tool
+        if hasattr(self, "budget_tracker") and self.budget_tracker is not None:
             chars_sent = len(prompt_str)
             chars_received = (
                 len(result.content)
                 if hasattr(result, "content") and result.content
                 else len(str(result))
             )
-            _budget_tracker.add_usage(chars_sent, chars_received)
+            self.budget_tracker.add_usage(chars_sent, chars_received)
 
         return result
 
     return async_wrapper if asyncio.iscoroutinefunction(func) else wrapper
-
-
-def set_budget_tracker(tracker: Optional[LLMBudgetTracker] = None) -> None:
-    """Set the global budget tracker."""
-    global _budget_tracker
-    _budget_tracker = tracker
-
-
-def get_budget_tracker() -> Optional[LLMBudgetTracker]:
-    """Get the current budget tracker."""
-    return _budget_tracker
 
 
 class LLMTool(Tool):
@@ -171,57 +129,79 @@ class LLMTool(Tool):
 
     config: LLMConfig = Field(default_factory=LLMConfig)
     cache: Any = Field(default=None, exclude=True)
+    budget_tracker: Any = Field(default=None, exclude=True)
 
     def __init__(
         self,
-        cache_dir: Path | str | None = None,
+        cache: Cacher | None = None,
+        budget_tracker: Any = None,
         **kwargs,
     ):
         """Initialize the LLM tool.
 
         Args:
-            cache_dir: Optional directory path for caching LLM responses.
-                      If None, uses a platform-appropriate default location.
+            cache: Optional shared Cacher instance. If None, creates a new one.
+            budget_tracker: Optional budget tracker instance for usage statistics.
             **kwargs: Additional keyword arguments passed to the parent class.
         """
         super().__init__(**kwargs)
         self._llm = None
+        self.budget_tracker = budget_tracker
 
-        # Initialize cache
-        self.cache = Cacher(subdirectory="llm", cache_dir=cache_dir)
+        # Initialize cache - use shared cacher or create new one
+        if cache is not None:
+            self.cache = ToolCacher(cache, "llm")
+        else:
+            # Fallback for backward compatibility
+            shared_cache = Cacher()
+            self.cache = ToolCacher(shared_cache, "llm")
 
     @classmethod
-    def create(cls, config: LLMConfig, cache_dir: Path | str | None = None, **kwargs):
+    def create(
+        cls,
+        config: LLMConfig,
+        cache: Cacher | None = None,
+        budget_tracker: Any = None,
+        **kwargs,
+    ):
         """Create a new LLM tool instance synchronously.
 
         Args:
             config: LLMConfig object containing LLM settings.
-            cache_dir: Optional directory path for caching LLM responses.
-                      If None, uses a platform-appropriate default location.
+            cache: Optional shared Cacher instance.
+            budget_tracker: Optional budget tracker instance for usage statistics.
             **kwargs: Additional keyword arguments for initialization.
 
         Returns:
             LLMTool: A new instance of the LLM tool.
         """
-        return asyncio.run(cls.acreate(config=config, cache_dir=cache_dir, **kwargs))
+        return asyncio.run(
+            cls.acreate(
+                config=config, cache=cache, budget_tracker=budget_tracker, **kwargs
+            )
+        )
 
     @classmethod
     async def acreate(
-        cls, config: LLMConfig, cache_dir: Path | str | None = None, **kwargs
+        cls,
+        config: LLMConfig,
+        cache: Cacher | None = None,
+        budget_tracker: Any = None,
+        **kwargs,
     ):
         """Create a new LLM tool instance asynchronously.
 
         Args:
             config: LLMConfig object containing LLM settings.
-            cache_dir: Optional directory path for caching LLM responses.
-                      If None, uses a platform-appropriate default location.
+            cache: Optional shared Cacher instance.
+            budget_tracker: Optional budget tracker instance for usage statistics.
             **kwargs: Additional keyword arguments for initialization.
 
         Returns:
             LLMTool: A new instance of the LLM tool.
         """
         # Create and initialize the instance with the config
-        self = cls(config=config, cache_dir=cache_dir, **kwargs)
+        self = cls(config=config, cache=cache, budget_tracker=budget_tracker, **kwargs)
         await self.setup()
         return self
 

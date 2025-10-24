@@ -1,5 +1,4 @@
 import logging
-import pathlib
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
@@ -16,6 +15,7 @@ from ontocast.tool import (
     Neo4jTripleStoreManager,
 )
 from ontocast.tool.aggregate import ChunkRDFGraphAggregator
+from ontocast.tool.cache import Cacher
 from ontocast.tool.graph_diff import DiffTool
 from ontocast.tool.graph_version_manager import GraphVersionManager
 from ontocast.tool.llm import LLMTool
@@ -63,7 +63,7 @@ class ToolBox:
         config: Configuration object containing all necessary settings.
     """
 
-    def __init__(self, config: Config, cache_dir: pathlib.Path | None = None):
+    def __init__(self, config: Config):
         # Store the config for later use
         self.config = config
 
@@ -74,10 +74,13 @@ class ToolBox:
         working_directory = tool_config.path_config.working_directory
         ontology_directory = tool_config.path_config.ontology_directory
 
+        # Create shared cache instance with config
+        self.shared_cache = Cacher(config=config)
+
         # LLM configuration - pass the entire LLM config to the tool
         self.llm_provider = tool_config.llm_config.provider
         self.llm: LLMTool = LLMTool.create(
-            config=tool_config.llm_config, cache_dir=cache_dir
+            config=tool_config.llm_config, cache=self.shared_cache
         )
 
         # Filesystem manager for initial ontology loading (if ontology_directory provided)
@@ -108,8 +111,10 @@ class ToolBox:
             )
 
         self.ontology_manager: OntologyManager = OntologyManager()
-        self.converter: ConverterTool = ConverterTool()
-        self.chunker: ChunkerTool = ChunkerTool(chunk_config=tool_config.chunk_config)
+        self.converter: ConverterTool = ConverterTool(cache=self.shared_cache)
+        self.chunker: ChunkerTool = ChunkerTool(
+            chunk_config=tool_config.chunk_config, cache=self.shared_cache
+        )
         self.aggregator: ChunkRDFGraphAggregator = ChunkRDFGraphAggregator()
 
         # SPARQL, version management, and diff tools
@@ -118,6 +123,22 @@ class ToolBox:
         )
         self.version_manager: GraphVersionManager = GraphVersionManager()
         self.diff_tool: DiffTool = DiffTool()
+
+    def get_llm_tool_with_budget_tracker(self, budget_tracker):
+        """Get an LLM tool instance with a specific budget tracker.
+
+        Args:
+            budget_tracker: The budget tracker instance to use.
+
+        Returns:
+            LLMTool: LLM tool with the specified budget tracker.
+        """
+        # Create a new LLM tool with the budget tracker
+        return LLMTool.create(
+            config=self.config.tool_config.llm_config,
+            cache=self.shared_cache,
+            budget_tracker=budget_tracker,
+        )
 
     def update_dataset(self, dataset: str) -> None:
         """Update the dataset for the Fuseki triple store manager.

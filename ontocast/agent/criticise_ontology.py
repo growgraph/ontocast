@@ -51,7 +51,7 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
         )
 
     parser = PydanticOutputParser(pydantic_object=OntologyCritiqueReport)
-    llm_tool: LLMTool = tools.llm
+    llm_tool: LLMTool = tools.get_llm_tool_with_budget_tracker(state.llm_budget_tracker)
 
     ontology_ttl = state.current_ontology.graph.serialize(format="turtle")
 

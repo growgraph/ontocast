@@ -73,8 +73,9 @@ RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
 
 # Path Configuration
-WORKING_DIRECTORY=/path/to/working
-ONTOLOGY_DIRECTORY=/path/to/ontologies
+ONTOCAST_WORKING_DIRECTORY=/path/to/working
+ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontologies
+ONTOCAST_CACHE_DIR=/path/to/cache
 
 # Optional: Triple Store Configuration
 FUSEKI_URI=http://localhost:3032/test
@@ -127,10 +128,9 @@ If you need to specify a custom cache directory:
 from pathlib import Path
 from ontocast.tool.llm import LLMTool
 
-# Custom cache directory
+# Cache directory is managed automatically by Cacher
 llm_tool = LLMTool.create(
-    config=llm_config,
-    cache_dir=Path("/custom/cache/path")
+    config=llm_config
 )
 ```
 
@@ -147,8 +147,8 @@ OntoCast uses a hierarchical configuration system built on Pydantic BaseSettings
 | `LLM_PROVIDER` | LLM provider (openai, ollama) | openai | No |
 | `LLM_MODEL_NAME` | Model name | gpt-4o-mini | No |
 | `LLM_TEMPERATURE` | Temperature setting | 0.1 | No |
-| `WORKING_DIRECTORY` | Working directory path | - | Yes |
-| `ONTOLOGY_DIRECTORY` | Ontology files directory | - | No |
+| `ONTOCAST_WORKING_DIRECTORY` | Working directory path | - | Yes |
+| `ONTOCAST_ONTOLOGY_DIRECTORY` | Ontology files directory | - | No |
 | `PORT` | Server port | 8999 | No |
 | `MAX_VISITS` | Maximum visits per node | 3 | No |
 | `SKIP_ONTOLOGY_DEVELOPMENT` | Skip ontology critique | false | No |

@@ -5,6 +5,7 @@
 !test/
 !test/**
 !test/**/*py 
+!docs/
 !docs/*
 !docs/**
 !docs/**/*.md

@@ -187,8 +187,12 @@ class PathConfig(BaseSettings):
     ontology_directory: Path | None = Field(
         default=None, description="Directory containing ontology files"
     )
+    cache_dir: Path | None = Field(
+        default=None, description="Cache directory for LLM responses and tool outputs"
+    )
 
     model_config = SettingsConfigDict(
+        env_prefix="ONTOCAST_",
         case_sensitive=False,
     )
 

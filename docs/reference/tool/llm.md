@@ -22,15 +22,14 @@ from ontocast.tool.llm import LLMTool
 
 # Specify custom cache directory
 llm_tool = LLMTool.create(
-    config=llm_config,
-    cache_dir=Path("/custom/cache/path")
+    config=llm_config
 )
 ```
 
 ### Environment Variable
 
 ```bash
-export LLM_CACHE_DIR=/path/to/custom/cache
+export ONTOCAST_CACHE_DIR=/path/to/custom/cache
 ```
 
 ### Benefits

@@ -20,6 +20,30 @@ from ontocast.onto.sparql_models import AddPrefixOp, GraphUpdate
 from ontocast.util import iri2namespace, render_text_hash
 
 
+class LLMBudgetTracker(BasePydanticModel):
+    """Lightweight tracker for LLM usage statistics."""
+
+    chars_sent: int = Field(default=0, description="Total characters sent to LLM")
+    chars_received: int = Field(
+        default=0, description="Total characters received from LLM"
+    )
+    calls_count: int = Field(default=0, description="Total number of LLM API calls")
+
+    def add_usage(self, chars_sent: int, chars_received: int) -> None:
+        """Add usage statistics."""
+        self.chars_sent += chars_sent
+        self.chars_received += chars_received
+        self.calls_count += 1
+
+    def get_summary(self) -> str:
+        """Get a summary of LLM usage."""
+        return (
+            f"LLM Budget: {self.calls_count} calls, "
+            f"{self.chars_sent:,} chars sent, "
+            f"{self.chars_received:,} chars received"
+        )
+
+
 class AgentState(BasePydanticModel):
     """State for the ontology-based knowledge graph agent.
 
@@ -169,6 +193,10 @@ class AgentState(BasePydanticModel):
     )
 
     # LLM Budget Tracking
+    llm_budget_tracker: LLMBudgetTracker = Field(
+        default_factory=LLMBudgetTracker,
+        description="LLM usage statistics tracker",
+    )
 
     def model_post_init(self, __context):
         """Post-initialization hook for the model."""

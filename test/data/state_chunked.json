@@ -63,5 +63,10 @@
     "suggestions": {
         "actionable_fixes": [],
         "systemic_critique_summary": ""
+    },
+    "llm_budget_tracker": {
+        "chars_sent": 0,
+        "chars_received": 0,
+        "calls_count": 0
     }
 }

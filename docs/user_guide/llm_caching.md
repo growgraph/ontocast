@@ -15,24 +15,46 @@ The LLM caching system automatically caches responses from language model provid
 
 ---
 
+## Shared Caching Architecture
+
+OntoCast uses a **shared caching architecture** where:
+
+- **Single Cacher Instance**: One `Cacher` object manages all caching for all tools
+- **Tool-Specific Subdirectories**: Each tool gets its own subdirectory within the shared cache
+- **Dependency Injection**: Tools receive the shared Cacher instance through their constructors
+- **Organized Storage**: Cache files are organized by tool type (llm/, converter/, chunker/)
+
+### Benefits
+
+1. **Memory Efficiency**: Single cache instance instead of multiple
+2. **Consistent Configuration**: All tools use the same cache directory settings
+3. **Centralized Management**: Easy to clear, monitor, and manage all caches
+4. **Better Organization**: Clear separation of cache files by tool type
+
+---
+
 ## How It Works
 
-### Automatic Caching
+### Shared Caching
 
-Caching is enabled by default for all LLM operations:
+OntoCast uses a shared caching system where all tools share a single Cacher instance:
 
 ```python
 from ontocast.tool.llm import LLMTool
 from ontocast.config import LLMConfig
+from ontocast.tool.cache import Cacher
 
-# Create LLM tool (caching is automatic)
+# Create shared cache instance
+shared_cache = Cacher()
+
+# Create LLM tool with shared cache
 llm_config = LLMConfig(
     provider="openai",
     model_name="gpt-4o-mini",
     api_key="your-api-key"
 )
 
-llm_tool = LLMTool.create(config=llm_config)
+llm_tool = LLMTool.create(config=llm_config, cache=shared_cache)
 
 # First call - hits API and caches response
 response1 = llm_tool("What is the capital of France?")
@@ -63,27 +85,24 @@ The system automatically selects appropriate cache directories:
 - **Windows**: `%USERPROFILE%\AppData\Local\ontocast\llm\`
 - **Unix/Linux**: `~/.cache/ontocast/llm/` (or `$XDG_CACHE_HOME/ontocast/llm/`)
 
-### Custom Cache Directory
+### Environment Variables
 
-You can specify a custom cache directory:
-
-```python
-from pathlib import Path
-from ontocast.tool.llm import LLMTool
-
-# Custom cache directory
-llm_tool = LLMTool.create(
-    config=llm_config,
-    cache_dir=Path("/custom/cache/path")
-)
-```
-
-### Environment Variable
-
-Set the cache directory via environment variable:
+Set the cache directory via environment variables:
 
 ```bash
-export LLM_CACHE_DIR=/path/to/custom/cache
+# OntoCast cache directory (recommended)
+export ONTOCAST_CACHE_DIR=/path/to/custom/cache
+
+# Or use XDG cache home (affects all XDG-compliant applications)
+export XDG_CACHE_HOME=/path/to/custom/cache
+```
+
+### CLI Parameter
+
+Specify cache directory via command line:
+
+```bash
+ontocast serve --env-path .env --working-directory ./work --cache-dir /custom/cache/path
 ```
 
 ---
@@ -186,15 +205,14 @@ Each test run uses a separate cache directory (`.test_cache/llm/`) to avoid inte
 ### Debug Cache
 
 ```python
-from pathlib import Path
 from ontocast.tool.llm import LLMTool
 
 # Check cache directory
 llm_tool = LLMTool.create(config=llm_config)
-print(f"Cache directory: {llm_tool.cache_dir}")
+print(f"Cache directory: {llm_tool.cache.tool_cache_dir}")
 
 # List cached files
-cache_files = list(llm_tool.cache_dir.glob("**/*.json"))
+cache_files = list(llm_tool.cache.tool_cache_dir.glob("**/*.json"))
 print(f"Cached responses: {len(cache_files)}")
 ```
 
@@ -217,36 +235,28 @@ if cache_dir.exists():
 
 ### Custom Cache Implementation
 
-For advanced use cases, you can implement custom caching:
+For advanced use cases, you can implement custom caching by extending the Cacher class:
 
 ```python
 from ontocast.tool.llm import LLMTool
+from ontocast.tool.cache import Cacher
 from pathlib import Path
 
 class CustomLLMTool(LLMTool):
-    def __init__(self, config, cache_dir=None):
-        # Custom cache logic
-        if cache_dir is None:
-            cache_dir = Path("/custom/cache")
-        super().__init__(config, cache_dir)
+    def __init__(self, config, **kwargs):
+        super().__init__(config, **kwargs)
+        # Override with custom cache
+        self.cache = Cacher(subdirectory="llm", cache_dir=Path("/custom/cache"))
 ```
 
 ### Cache Statistics
 
 ```python
-def get_cache_stats(cache_dir):
-    """Get cache statistics."""
-    cache_files = list(cache_dir.glob("**/*.json"))
-    total_size = sum(f.stat().st_size for f in cache_files)
-    
-    return {
-        "total_files": len(cache_files),
-        "total_size_mb": total_size / (1024 * 1024),
-        "providers": list(set(f.parent.parent.name for f in cache_files))
-    }
+from ontocast.tool.llm import LLMTool
 
-# Usage
-stats = get_cache_stats(llm_tool.cache_dir)
+# Get cache statistics
+llm_tool = LLMTool.create(config=llm_config)
+stats = llm_tool.cache.get_cache_stats()
 print(f"Cache stats: {stats}")
 ```
 
@@ -256,18 +266,20 @@ print(f"Cache stats: {stats}")
 
 ### ToolBox Integration
 
-Caching works seamlessly with the ToolBox:
+Caching works seamlessly with the ToolBox through a shared Cacher instance:
 
 ```python
 from ontocast.toolbox import ToolBox
 from ontocast.config import Config
 
-# ToolBox automatically uses caching
+# ToolBox automatically creates and uses a shared Cacher
 config = Config()
 tools = ToolBox(config)
 
-# All LLM operations are cached
+# All tools (LLM, Converter, Chunker) share the same cache instance
 result = tools.llm("Process this document")
+converted = tools.converter(document_file)
+chunks = tools.chunker(text)
 ```
 
 ### Server Integration
@@ -360,18 +372,42 @@ chunker.cache.clear()  # Clear chunker cache
 
 ### Custom Cache Directories
 
-You can specify custom cache directories for each tool:
+You can specify custom cache directories in several ways:
+
+#### 1. Environment Variables
+
+```bash
+# OntoCast cache directory (recommended)
+export ONTOCAST_CACHE_DIR=/custom/cache/path
+
+# Or use XDG cache home (affects all XDG-compliant applications)
+export XDG_CACHE_HOME=/custom/cache/path
+```
+
+#### 2. CLI Parameter
+
+```bash
+ontocast serve --env-path .env --working-directory ./work --cache-dir /custom/cache/path
+```
+
+#### 3. Programmatic Configuration
 
 ```python
+from ontocast.toolbox import ToolBox
+from ontocast.config import Config
 from pathlib import Path
-from ontocast.tool.converter import ConverterTool
-from ontocast.tool.chunk.chunker import ChunkerTool
 
-# Custom cache directory
-cache_dir = Path("/custom/cache/path")
+# Create config and set cache directory
+config = Config()
+config.tool_config.path_config.cache_dir = Path("/custom/cache/path")
 
-converter = ConverterTool(cache_dir=cache_dir)
-chunker = ChunkerTool(cache_dir=cache_dir)
+# Create ToolBox with config (cache directory is automatically used)
+tools = ToolBox(config)
+
+# All tools will use the same custom cache directory
+result = tools.llm("Process this document")
+converted = tools.converter(document_file)
+chunks = tools.chunker(text)
 ```
 
 ### Cache Key Generation

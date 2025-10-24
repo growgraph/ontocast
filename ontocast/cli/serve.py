@@ -35,7 +35,6 @@ from ontocast.cli.util import crawl_directories
 from ontocast.config import Config, ServerConfig
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import create_agent_graph
-from ontocast.tool.llm import LLMBudgetTracker, set_budget_tracker
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -216,7 +215,6 @@ def create_app(
                 tools.update_dataset(dataset)
 
             # Initialize budget tracker for this workflow
-            set_budget_tracker(LLMBudgetTracker())
 
             # Set default values for user instructions (will be overridden by
             # convert_document.py for JSON files)
@@ -323,7 +321,7 @@ def create_app(
     "--cache-dir",
     type=click.Path(path_type=pathlib.Path),
     default=None,
-    help="Directory for caching LLM responses",
+    help="Directory for caching LLM responses and other tool outputs",
 )
 @click.option(
     "--fuseki-dataset",
@@ -386,8 +384,12 @@ def run(
     if fuseki_dataset is not None:
         config.tool_config.fuseki.dataset = fuseki_dataset
 
-    # Create ToolBox with config directly
-    tools: ToolBox = ToolBox(config, cache_dir=cache_dir)
+    # Override cache directory if provided via CLI
+    if cache_dir is not None:
+        config.tool_config.path_config.cache_dir = cache_dir
+
+    # Create ToolBox with config
+    tools: ToolBox = ToolBox(config)
     tools.initialize()
 
     workflow: CompiledStateGraph = create_agent_graph(tools)
@@ -411,7 +413,6 @@ def run(
             for file_path in files:
                 try:
                     # Initialize budget tracker for each file
-                    set_budget_tracker(LLMBudgetTracker())
 
                     state = AgentState(
                         files={file_path.as_posix(): file_path.read_bytes()},

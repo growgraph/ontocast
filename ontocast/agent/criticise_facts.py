@@ -50,7 +50,7 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
         f"Criticize facts for {progress_info}: visit {state.node_visits[WorkflowNode.CRITICISE_FACTS] + 1}/{state.max_visits}"
     )
 
-    llm_tool = tools.llm
+    llm_tool = tools.get_llm_tool_with_budget_tracker(state.llm_budget_tracker)
     parser = PydanticOutputParser(pydantic_object=FactsCritiqueReport)
 
     ontology_ttl = state.current_ontology.graph.serialize(format="turtle")

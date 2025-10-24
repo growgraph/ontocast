@@ -8,12 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Automatic LLM response caching for improved performance and cost reduction
-- Platform-aware default cache directory selection (avoids /tmp)
-- Transparent caching with no configuration required
-- Custom cache directory support via `LLM_CACHE_DIR` environment variable
+- LLM budget tracking system integrated into AgentState
+- Clean dependency injection for LLM budget tracker
+- Shared caching architecture with single Cacher instance
+- ToolCacher wrapper for tool-specific cache access
+- Environment variable `ONTOCAST_CACHE_DIR` for cache directory configuration
 
-- CLI parameter `--skip-ontology-critique` to skip ontology critique step
+### Changed
+- **BREAKING**: Environment variables now use `ONTOCAST_` prefix:
+  - `WORKING_DIRECTORY` → `ONTOCAST_WORKING_DIRECTORY`
+  - `ONTOLOGY_DIRECTORY` → `ONTOCAST_ONTOLOGY_DIRECTORY`
+  - `LLM_CACHE_DIR` → `ONTOCAST_CACHE_DIR`
+- Refactored LLM tool to accept budget tracker via dependency injection
+- Removed global LLMBudgetTracker in favor of AgentState-contained tracker
+- Updated all agent functions to use clean injection pattern
+- Improved Python 3.12 typing with `|` union syntax instead of `Union`
+
+### Removed
+- Global budget tracker state management
+- Manual budget tracker update calls in agent functions
+- `set_budget_tracker()` and `get_budget_tracker()` functions
+
+## [0.1.7] - 2025-10
+
+### Added
+- Automatic LLM response caching for improved performance and cost reduction
+- Platform-aware default cache directory selection
+- Transparent caching with no configuration required
+
+- Environment variable `SKIP_ONTOLOGY_DEVELOPMENT` to skip ontology critique step
 - Environment variable `LLM_API_KEY` for LLM authentication (replaces `OPENAI_API_KEY`)
 - Environment variable `MAX_VISITS` for controlling workflow behavior
 - Environment variable `WORKING_DIRECTORY` for specifying working directory
@@ -55,7 +78,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Automatic LLM response caching for improved performance and cost reduction
 - Platform-aware default cache directory selection (avoids /tmp)
 - Transparent caching with no configuration required
-- Custom cache directory support via `LLM_CACHE_DIR` environment variable
 
 - Version bump to 0.1.5
 - Various stability improvements
@@ -106,8 +128,6 @@ tools = ToolBox(config)
 ### LLM Caching
 ```python
 # Caching is now automatic - no configuration needed
-# Custom cache directory (optional)
-export LLM_CACHE_DIR=/path/to/custom/cache
 ```
 
 ```bash

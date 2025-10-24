@@ -100,7 +100,8 @@ def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
     )
 
     try:
-        response = tools.llm(
+        llm_tool = tools.get_llm_tool_with_budget_tracker(state.llm_budget_tracker)
+        response = llm_tool(
             prompt.format_prompt(
                 preamble=system_preamble,
                 intro_instruction=intro_instruction,
@@ -180,7 +181,8 @@ def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
     )
 
     try:
-        response = tools.llm(
+        llm_tool = tools.get_llm_tool_with_budget_tracker(state.llm_budget_tracker)
+        response = llm_tool(
             prompt.format_prompt(
                 preamble=system_preamble,
                 intro_instruction=intro_instruction,

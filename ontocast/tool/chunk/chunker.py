@@ -5,7 +5,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from ontocast.config import ChunkConfig
-from ontocast.tool.cache import Cacher
+from ontocast.tool.cache import Cacher, ToolCacher
 from ontocast.tool.onto import Tool
 
 try:
@@ -47,22 +47,26 @@ class ChunkerTool(Tool):
     def __init__(
         self,
         chunk_config: ChunkConfig | None = None,
-        cache_dir: str | None = None,
+        cache: Cacher | None = None,
         **kwargs,
     ):
         """Initialize the ChunkerTool.
 
         Args:
             chunk_config: Chunking configuration. If None, uses default ChunkConfig.
-            cache_dir: Optional directory path for caching chunking results.
-                      If None, uses a platform-appropriate default location.
+            cache: Optional shared Cacher instance. If None, creates a new one.
             **kwargs: Additional keyword arguments passed to the parent class.
         """
         super().__init__(**kwargs)
         self._model = None
 
-        # Initialize cache
-        self.cache = Cacher(subdirectory="chunker", cache_dir=cache_dir)
+        # Initialize cache - use shared cacher or create new one
+        if cache is not None:
+            self.cache = ToolCacher(cache, "chunker")
+        else:
+            # Fallback for backward compatibility
+            shared_cache = Cacher()
+            self.cache = ToolCacher(shared_cache, "chunker")
 
         # Override config if provided
         if chunk_config is not None:

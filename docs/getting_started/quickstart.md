@@ -51,8 +51,9 @@ RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
 
 # Path Configuration
-WORKING_DIRECTORY=/path/to/working/directory
-ONTOLOGY_DIRECTORY=/path/to/ontology/files
+ONTOCAST_WORKING_DIRECTORY=/path/to/working/directory
+ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files
+ONTOCAST_CACHE_DIR=/path/to/cache/directory
 
 # Triple Store Configuration (Optional)
 # For Neo4j
@@ -121,8 +122,8 @@ OntoCast uses a hierarchical configuration system:
 | `LLM_API_KEY` | API key for LLM provider | Required |
 | `LLM_PROVIDER` | LLM provider (openai, ollama) | openai |
 | `LLM_MODEL_NAME` | Model name | gpt-4o-mini |
-| `WORKING_DIRECTORY` | Working directory path | Required |
-| `ONTOLOGY_DIRECTORY` | Ontology files directory | Optional |
+| `ONTOCAST_WORKING_DIRECTORY` | Working directory path | Required |
+| `ONTOCAST_ONTOLOGY_DIRECTORY` | Ontology files directory | Optional |
 | `MAX_VISITS` | Maximum visits per node | 3 |
 | `SKIP_ONTOLOGY_DEVELOPMENT` | Skip ontology critique | false |
 
