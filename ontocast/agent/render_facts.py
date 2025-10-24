@@ -166,7 +166,7 @@ def render_facts_fresh(state: AgentState, tools: ToolBox) -> AgentState:
         response = llm_tool(
             prompt.format_prompt(
                 format_instructions=parser.get_format_instructions(), **prompt_data
-            )
+            ),
         )
 
         proj = parser.parse(response.content)
@@ -212,7 +212,7 @@ def render_facts_update(state: AgentState, tools: ToolBox) -> AgentState:
         response = llm_tool(
             prompt.format_prompt(
                 format_instructions=parser.get_format_instructions(), **prompt_data
-            )
+            ),
         )
 
         graph_update = parser.parse(response.content)

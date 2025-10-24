@@ -8,6 +8,7 @@ disambiguation.
 import logging
 
 from ontocast.onto.state import AgentState
+from ontocast.tool.llm import get_budget_tracker
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -28,5 +29,10 @@ def aggregate_serialize(state: AgentState, tools: ToolBox) -> AgentState:
         f"ontology {len(state.current_ontology.graph)} triples; "
         f"facts graph: {len(state.aggregated_facts)} triples"
     )
+
+    # Report LLM budget usage
+    budget_tracker = get_budget_tracker()
+    if budget_tracker:
+        logger.info(budget_tracker.get_summary())
     tools.serialize(state)
     return state

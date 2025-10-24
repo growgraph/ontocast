@@ -111,7 +111,7 @@ def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
                 improvement_instruction=improvement_instruction_str,
                 text=state.current_chunk.text,
                 format_instructions=parser.get_format_instructions(),
-            )
+            ),
         )
 
         state.current_ontology = parser.parse(response.content)
@@ -191,7 +191,7 @@ def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
                 user_instruction=state.ontology_user_instruction,
                 text=state.current_chunk.text,
                 format_instructions=parser.get_format_instructions(),
-            )
+            ),
         )
 
         graph_update: GraphUpdate = parser.parse(response.content)

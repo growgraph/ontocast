@@ -168,6 +168,8 @@ class AgentState(BasePydanticModel):
         description="Context manager for passing information between agents",
     )
 
+    # LLM Budget Tracking
+
     def model_post_init(self, __context):
         """Post-initialization hook for the model."""
         pass

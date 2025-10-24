@@ -37,8 +37,9 @@ Cache Usage:
 
 import asyncio
 import logging
+from functools import wraps
 from pathlib import Path
-from typing import Any, Type, TypeVar
+from typing import Any, Callable, Optional, Type, TypeVar
 
 from langchain.output_parsers import PydanticOutputParser
 from langchain_core.language_models import BaseChatModel
@@ -55,6 +56,105 @@ from .onto import Tool
 T = TypeVar("T", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
+
+
+class LLMBudgetTracker(BaseModel):
+    """Lightweight tracker for LLM usage statistics."""
+
+    chars_sent: int = Field(default=0, description="Total characters sent to LLM")
+    chars_received: int = Field(
+        default=0, description="Total characters received from LLM"
+    )
+    calls_count: int = Field(default=0, description="Total number of LLM API calls")
+
+    def add_usage(self, chars_sent: int, chars_received: int) -> None:
+        """Add usage statistics."""
+        self.chars_sent += chars_sent
+        self.chars_received += chars_received
+        self.calls_count += 1
+
+    def get_summary(self) -> str:
+        """Get a summary of LLM usage."""
+        return (
+            f"LLM Budget: {self.calls_count} calls, "
+            f"{self.chars_sent:,} chars sent, "
+            f"{self.chars_received:,} chars received"
+        )
+
+
+# Global budget tracker instance
+_budget_tracker: Optional[LLMBudgetTracker] = None
+
+
+def track_llm_usage(func: Callable) -> Callable:
+    """Decorator to track LLM usage automatically."""
+
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        global _budget_tracker
+
+        # Get prompt for character counting
+        prompt = args[0] if args else ""
+        prompt_str = (
+            self._prompt_to_string(prompt)
+            if hasattr(self, "_prompt_to_string")
+            else str(prompt)
+        )
+
+        # Call the original function
+        result = func(self, *args, **kwargs)
+
+        # Track usage if budget tracker is available
+        if _budget_tracker is not None:
+            chars_sent = len(prompt_str)
+            chars_received = (
+                len(result.content)
+                if hasattr(result, "content") and result.content
+                else 0
+            )
+            _budget_tracker.add_usage(chars_sent, chars_received)
+
+        return result
+
+    @wraps(func)
+    async def async_wrapper(self, *args, **kwargs):
+        global _budget_tracker
+
+        # Get prompt for character counting
+        prompt = args[0] if args else ""
+        prompt_str = (
+            self._prompt_to_string(prompt)
+            if hasattr(self, "_prompt_to_string")
+            else str(prompt)
+        )
+
+        # Call the original function
+        result = await func(self, *args, **kwargs)
+
+        # Track usage if budget tracker is available
+        if _budget_tracker is not None:
+            chars_sent = len(prompt_str)
+            chars_received = (
+                len(result.content)
+                if hasattr(result, "content") and result.content
+                else len(str(result))
+            )
+            _budget_tracker.add_usage(chars_sent, chars_received)
+
+        return result
+
+    return async_wrapper if asyncio.iscoroutinefunction(func) else wrapper
+
+
+def set_budget_tracker(tracker: Optional[LLMBudgetTracker] = None) -> None:
+    """Set the global budget tracker."""
+    global _budget_tracker
+    _budget_tracker = tracker
+
+
+def get_budget_tracker() -> Optional[LLMBudgetTracker]:
+    """Get the current budget tracker."""
+    return _budget_tracker
 
 
 class LLMTool(Tool):
@@ -139,12 +239,12 @@ class LLMTool(Tool):
                     f"model {self.config.model_name}"
                 )
             self._llm = ChatOpenAI(
-                model_name=self.config.model_name,
+                model=self.config.model_name,  # type: ignore
                 temperature=self.config.temperature,
-                openai_api_base=self.config.base_url,
-                openai_api_key=(
+                base_url=self.config.base_url,  # type: ignore
+                api_key=(
                     SecretStr(self.config.api_key) if self.config.api_key else None
-                ),
+                ),  # type: ignore
             )
         elif self.config.provider == LLMProvider.OLLAMA:
             self._llm = ChatOllama(
@@ -155,6 +255,7 @@ class LLMTool(Tool):
         else:
             raise ValueError(f"Unsupported provider: {self.config.provider}")
 
+    @track_llm_usage
     def __call__(self, *args: Any, **kwds: Any) -> Any:
         """Call the language model directly.
 
@@ -190,6 +291,7 @@ class LLMTool(Tool):
         # Generate new response
         prompt_str = self._prompt_to_string(prompt)
         logger.debug(f"Cache miss, calling LLM for __call__: {prompt_str[:50]}...")
+
         response = self.llm.invoke(*args, **kwds)
 
         # Cache the response
@@ -238,6 +340,7 @@ class LLMTool(Tool):
         else:
             return str(prompt)
 
+    @track_llm_usage
     async def complete(self, prompt: str, **kwargs) -> Any:
         """Generate a completion for the given prompt.
 
@@ -266,7 +369,8 @@ class LLMTool(Tool):
 
         # Generate new response
         logger.debug(f"Cache miss, calling LLM for prompt: {prompt[:50]}...")
-        response = await self.llm.ainvoke(prompt)
+
+        response = await self.llm.ainvoke(prompt, **kwargs)
 
         # Cache the response
         response_data = {
@@ -278,6 +382,7 @@ class LLMTool(Tool):
 
         return response.content
 
+    @track_llm_usage
     async def extract(self, prompt: str, output_schema: Type[T], **kwargs) -> T:
         """Extract structured data from the prompt according to a schema.
 
@@ -318,7 +423,8 @@ class LLMTool(Tool):
 
         # Generate new response
         logger.debug(f"Cache miss, calling LLM for extraction: {prompt[:50]}...")
-        response = await self.llm.ainvoke(full_prompt)
+
+        response = await self.llm.ainvoke(full_prompt, **kwargs)
 
         # Cache the response
         response_data = {

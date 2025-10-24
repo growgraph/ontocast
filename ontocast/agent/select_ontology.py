@@ -56,7 +56,7 @@ def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
                 excerpt=excerpt,
                 ontologies_desc=ontologies_desc,
                 format_instructions=parser.get_format_instructions(),
-            )
+            ),
         )
         selector = parser.parse(response.content)
         logger.debug(

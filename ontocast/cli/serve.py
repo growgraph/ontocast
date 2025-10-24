@@ -35,6 +35,7 @@ from ontocast.cli.util import crawl_directories
 from ontocast.config import Config, ServerConfig
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import create_agent_graph
+from ontocast.tool.llm import LLMBudgetTracker, set_budget_tracker
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -213,6 +214,9 @@ def create_app(
             # Update dataset if provided (efficient - no model reloading)
             if dataset:
                 tools.update_dataset(dataset)
+
+            # Initialize budget tracker for this workflow
+            set_budget_tracker(LLMBudgetTracker())
 
             # Set default values for user instructions (will be overridden by
             # convert_document.py for JSON files)
@@ -406,6 +410,9 @@ def run(
         async def process_files():
             for file_path in files:
                 try:
+                    # Initialize budget tracker for each file
+                    set_budget_tracker(LLMBudgetTracker())
+
                     state = AgentState(
                         files={file_path.as_posix(): file_path.read_bytes()},
                         max_visits=config.server.max_visits,
