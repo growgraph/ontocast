@@ -24,11 +24,19 @@ curl -X POST http://url:port/process -F "file=@sample.json"
 To start an OntoCast server:
 
 ```bash
+# Backend automatically detected from .env configuration
 ontocast serve --env-path .env
+
+# Process specific file
+ontocast serve --env-path .env --input-path ./document.pdf
+
+# Process with chunk limit (for testing)
+ontocast serve --env-path .env --head-chunks 5
 ```
 
-- Configuration is provided via `.env` file
-- LLM settings are configured in the `.env` file
+- Backend selection is **fully automatic** based on available configuration
+- No explicit backend flags needed - just provide the required credentials/paths in .env
+- All paths and directories are configured via .env file
 
 ### Configuration
 
@@ -50,7 +58,12 @@ MAX_VISITS=3
 RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
 
-# Path Configuration
+# Backend Configuration (auto-detected)
+FUSEKI_URI=http://localhost:3032/test
+FUSEKI_AUTH=admin:password
+ONTOCAST_WORKING_DIRECTORY=/path/to/working
+
+# Path Configuration (required for filesystem backends)
 ONTOCAST_WORKING_DIRECTORY=/path/to/working/directory
 ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files
 ONTOCAST_CACHE_DIR=/path/to/cache/directory
@@ -80,7 +93,7 @@ LLM_MODEL_NAME=granite3.3
 
 ### CLI Parameters
 
-You can override configuration via CLI parameters:
+You can use these CLI parameters:
 
 ```bash
 # Use custom .env file
@@ -92,6 +105,8 @@ ontocast serve --env-path .env --input-path /path/to/document.pdf
 # Process only first 5 chunks (for testing)
 ontocast serve --env-path .env --head-chunks 5
 ```
+
+**Note:** All paths and directories are configured via the `.env` file - no CLI overrides needed.
 
 ### Receive Results
 
@@ -122,8 +137,10 @@ OntoCast uses a hierarchical configuration system:
 | `LLM_API_KEY` | API key for LLM provider | Required |
 | `LLM_PROVIDER` | LLM provider (openai, ollama) | openai |
 | `LLM_MODEL_NAME` | Model name | gpt-4o-mini |
-| `ONTOCAST_WORKING_DIRECTORY` | Working directory path | Required |
-| `ONTOCAST_ONTOLOGY_DIRECTORY` | Ontology files directory | Optional |
+| `FUSEKI_URI` + `FUSEKI_AUTH` | Use Fuseki as main triple store | Auto-detected |
+| `NEO4J_URI` + `NEO4J_AUTH` | Use Neo4j as main triple store | Auto-detected |
+| `ONTOCAST_WORKING_DIRECTORY` + `ONTOCAST_ONTOLOGY_DIRECTORY` | Use filesystem as main triple store | Auto-detected |
+| `ONTOCAST_ONTOLOGY_DIRECTORY` | Ontology files directory | Provide seed ontologies |
 | `MAX_VISITS` | Maximum visits per node | 3 |
 | `SKIP_ONTOLOGY_DEVELOPMENT` | Skip ontology critique | false |
 

@@ -66,13 +66,38 @@ CLEAN=false                            # Clean triple store on startup
 SKIP_ONTOLOGY_DEVELOPMENT=false        # Skip ontology critique step
 ```
 
+### Backend Configuration
+
+Backend selection is **automatically inferred** from available configuration - no explicit flags needed:
+
+```bash
+# Fuseki Backend (auto-detected if both provided)
+FUSEKI_URI=http://localhost:3032/test
+FUSEKI_AUTH=admin:password
+
+# Neo4j Backend (auto-detected if both provided)  
+NEO4J_URI=bolt://localhost:7689
+NEO4J_AUTH=neo4j:password
+
+# Filesystem Triple Store (auto-detected if both provided)
+ONTOCAST_WORKING_DIRECTORY=/path/to/working
+ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontologies
+
+# Filesystem Manager (auto-detected if working directory provided)
+# Can be combined with Fuseki or Neo4j for debugging
+ONTOCAST_WORKING_DIRECTORY=/path/to/working
+```
+
 ### Path Configuration
 
 ```bash
-# Path Settings
-ONTOCAST_WORKING_DIRECTORY=/path/to/working     # Working directory (required)
-ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontologies # Ontology files directory (optional)
+# Path Settings (all configured via .env file)
+ONTOCAST_WORKING_DIRECTORY=/path/to/working     # Working directory (required for filesystem backends)
+ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontologies # Ontology files directory (required for filesystem backends)
+ONTOCAST_CACHE_DIR=/path/to/cache               # Cache directory (optional)
 ```
+
+**Note:** All paths are configured via the `.env` file - no CLI overrides available.
 
 ### Triple Store Configuration
 
@@ -222,13 +247,17 @@ class ServerConfig(BaseSettings):
     skip_ontology_development: bool = False     # Skip critique
 ```
 
+
 ### PathConfig
 
 ```python
 class PathConfig(BaseSettings):
-    working_directory: Path | None = None       # Working directory
-    ontology_directory: Path | None = None        # Ontology directory
+    working_directory: Path | None = None       # Working directory (required for filesystem backends)
+    ontology_directory: Path | None = None      # Ontology directory (required for filesystem backends)
+    cache_dir: Path | None = None               # Cache directory (optional)
 ```
+
+**Note:** All paths are configured via environment variables in the `.env` file - no CLI overrides available.
 
 ---
 
@@ -251,7 +280,9 @@ except ValueError as e:
 
 - **Missing API Key**: `LLM_API_KEY` environment variable is required for OpenAI
 - **Invalid Provider**: LLM provider must be "openai" or "ollama"
-- **Missing Working Directory**: `ONTOCAST_WORKING_DIRECTORY` must be set
+- **Missing Working Directory**: `ONTOCAST_WORKING_DIRECTORY` must be set when filesystem backends are enabled
+- **Missing Ontology Directory**: `ONTOCAST_ONTOLOGY_DIRECTORY` must be set when filesystem backends are enabled
+- **No Backend Available**: At least one backend (triple store or filesystem) must be configured
 - **Invalid Paths**: Paths must exist and be accessible
 
 ---
@@ -321,6 +352,11 @@ PORT=8999
 MAX_VISITS=3
 RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
+
+# Backend Configuration (auto-detected)
+FUSEKI_URI=http://localhost:3032/test
+FUSEKI_AUTH=admin:password
+ONTOCAST_WORKING_DIRECTORY=/path/to/working
 
 # Path Configuration
 ONTOCAST_WORKING_DIRECTORY=/path/to/working

@@ -28,11 +28,6 @@ def _get_default_cache_dir() -> Path:
         # In tests, use a test-specific cache directory
         return Path.cwd() / ".test_cache"
 
-    # Check for OntoCast-specific cache directory environment variable
-    ontocast_cache_dir = os.environ.get("ONTOCAST_CACHE_DIR")
-    if ontocast_cache_dir:
-        return Path(ontocast_cache_dir)
-
     # Check for common cache environment variables
     cache_home = os.environ.get("XDG_CACHE_HOME")
     if cache_home:
@@ -80,6 +75,7 @@ class Cacher:
             cache_dir = _get_default_cache_dir()
 
         self.cache_dir = Path(cache_dir).expanduser()
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
         logger.debug(f"Shared cache directory set to: {self.cache_dir}")
 
     def _get_tool_cache_dir(self, subdirectory: str) -> Path:

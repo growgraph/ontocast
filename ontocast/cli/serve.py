@@ -17,7 +17,14 @@ through the complete pipeline: chunking, ontology selection, fact extraction,
 and aggregation.
 
 Example:
-    python -m ontocast.cli.serve --env-path .env --working-directory ./work
+    # With Fuseki backend (auto-detected from FUSEKI_URI and FUSEKI_AUTH)
+    python -m ontocast.cli.serve --env-path .env
+
+    # Process specific file
+    python -m ontocast.cli.serve --env-path .env --input-path ./document.pdf
+
+    # Process with chunk limit
+    python -m ontocast.cli.serve --env-path .env --head-chunks 5
 """
 
 import asyncio
@@ -29,7 +36,6 @@ import click
 from dotenv import load_dotenv
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
-from robyn import Headers, Request, Response, Robyn, jsonify
 
 from ontocast.cli.util import crawl_directories
 from ontocast.config import Config, ServerConfig
@@ -71,6 +77,8 @@ def create_app(
     server_config: ServerConfig,
     head_chunks: int | None = None,
 ):
+    from robyn import Headers, Request, Response, Robyn, jsonify
+
     app = Robyn(__file__)
     workflow: CompiledStateGraph = create_agent_graph(tools)
     recursion_limit = calculate_recursion_limit(
@@ -304,50 +312,34 @@ def create_app(
 
 @click.command()
 @click.option(
-    "--env-path",
+    "--env-file",
     type=click.Path(path_type=pathlib.Path),
     required=True,
     default=".env",
-    help=(
-        "Path to .env file. If NEO4J_URI and NEO4J_AUTH are set, "
-        "neo4j will be used as triple store. If FUSEKI_URI and FUSEKI_AUTH are set, "
-        "Fuseki will be used as triple store (preferred over Neo4j). "
-        "Use --fuseki-dataset to specify the Fuseki dataset name."
-    ),
+    help="Path to .env file containing backend and configuration settings",
 )
 @click.option("--input-path", type=click.Path(path_type=pathlib.Path), default=None)
 @click.option("--head-chunks", type=int, default=None)
-@click.option(
-    "--cache-dir",
-    type=click.Path(path_type=pathlib.Path),
-    default=None,
-    help="Directory for caching LLM responses and other tool outputs",
-)
-@click.option(
-    "--fuseki-dataset",
-    type=str,
-    default=None,
-    help="Fuseki dataset name (overrides FUSEKI_DATASET from .env)",
-)
 def run(
-    env_path: pathlib.Path,
+    env_file: pathlib.Path,
     input_path: pathlib.Path | None,
     head_chunks: int | None,
-    cache_dir: pathlib.Path | None,
-    fuseki_dataset: str | None,
 ):
     """
     Main entry point for the OntoCast server/CLI.
-    If FUSEKI_URI and FUSEKI_AUTH are set in the environment,
-        Fuseki will be used as the triple store backend (preferred).
-    If NEO4J_URI and NEO4J_AUTH are set in the environment,
-        Neo4j will be used as the triple store backend (if Fuseki not available).
-    Otherwise, the filesystem backend is used.
 
-    If --clean is set, the triple store (Neo4j or Fuseki) will be initialized as clean (all data deleted on startup).
+    Backend selection is automatically inferred from available configuration:
+    - Fuseki: If FUSEKI_URI and FUSEKI_AUTH are provided (preferred)
+    - Neo4j: If NEO4J_URI and NEO4J_AUTH are provided (fallback)
+    - Filesystem Triple Store: If ONTOCAST_WORKING_DIRECTORY and ONTOCAST_ONTOLOGY_DIRECTORY are provided
+    - Filesystem Manager: If ONTOCAST_WORKING_DIRECTORY is provided (can be combined with other backends)
+
+    No explicit backend configuration flags are needed - backends are automatically detected.
+
+    If --clean is set, the triple store will be initialized as clean (all data deleted on startup).
     """
 
-    _ = load_dotenv(dotenv_path=env_path.expanduser())
+    _ = load_dotenv(dotenv_path=env_file.expanduser())
     # Global configuration instance
     config = Config()
 
@@ -362,7 +354,6 @@ def run(
         except Exception as e:
             logger.error(f"could set logging level correctly {e}")
 
-    # Use CLI arguments or fall back to config values
     if config.tool_config.path_config.working_directory is not None:
         config.tool_config.path_config.working_directory = pathlib.Path(
             config.tool_config.path_config.working_directory
@@ -379,14 +370,6 @@ def run(
         config.tool_config.path_config.ontology_directory = pathlib.Path(
             config.tool_config.path_config.ontology_directory
         ).expanduser()
-
-    # Override dataset if provided via CLI
-    if fuseki_dataset is not None:
-        config.tool_config.fuseki.dataset = fuseki_dataset
-
-    # Override cache directory if provided via CLI
-    if cache_dir is not None:
-        config.tool_config.path_config.cache_dir = cache_dir
 
     # Create ToolBox with config
     tools: ToolBox = ToolBox(config)
@@ -419,7 +402,7 @@ def run(
                         max_visits=config.server.max_visits,
                         max_chunks=head_chunks,
                         skip_ontology_development=config.server.skip_ontology_development,
-                        dataset=fuseki_dataset,
+                        dataset=config.tool_config.fuseki.dataset,
                     )
                     async for _ in workflow.astream(
                         state,

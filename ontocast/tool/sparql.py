@@ -12,7 +12,7 @@ from rdflib.plugins.sparql import prepareQuery
 from ontocast.onto.enum import SPARQLOperationType
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import SPARQLOperationModel
-from ontocast.tool.triple_manager.core import TripleStoreManagerWithAuth
+from ontocast.tool.triple_manager.core import TripleStoreManager
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class SPARQLTool:
     """Tool for executing SPARQL operations on RDF graphs."""
 
-    def __init__(self, triple_store_manager: TripleStoreManagerWithAuth | None = None):
+    def __init__(self, triple_store_manager: TripleStoreManager | None = None):
         """Initialize SPARQL tool.
 
         Args:

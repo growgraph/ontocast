@@ -91,6 +91,11 @@ PORT=8999
 RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
 
+# Backend Configuration (auto-detected)
+FUSEKI_URI=http://localhost:3032/test
+FUSEKI_AUTH=admin:password
+ONTOCAST_WORKING_DIRECTORY=/path/to/working
+
 # Optional: Triple Store Configuration (Fuseki preferred over Neo4j)
 FUSEKI_URI=http://localhost:3032/test
 FUSEKI_AUTH=admin/abc123-qwe
@@ -113,13 +118,20 @@ OntoCast supports multiple triple store backends. When both Fuseki and Neo4j are
 ## Running OntoCast Server
 
 ```bash
-uv run serve \
-    --ontology-directory ONTOLOGY_DIR \
-    --working-directory WORKING_DIR \
-    --clean
+# Backend automatically detected from .env configuration
+uv run serve --env-path .env
+
+# Process specific file
+uv run serve --env-path .env --input-path ./document.pdf
+
+# Process with chunk limit (for testing)
+uv run serve --env-path .env --head-chunks 5
 ```
 
-- `--clean` (optional): If set, the triple store (Neo4j or Fuseki) will be initialized as clean (all data deleted on startup). **Warning:** Use with caution in production!
+- Backend selection is **fully automatic** based on available configuration
+- No explicit backend flags needed - just provide the required credentials/paths in .env
+- All paths and directories are configured via .env file
+- `--clean` (optional): If set, the triple store will be initialized as clean (all data deleted on startup). **Warning:** Use with caution in production!
 
 ---
 

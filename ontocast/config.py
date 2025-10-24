@@ -182,7 +182,8 @@ class PathConfig(BaseSettings):
     """Path and directory configuration."""
 
     working_directory: Path | None = Field(
-        default=None, description="Working directory for OntoCast"
+        default=None,
+        description="Working directory for OntoCast (required if filesystem_manager is enabled)",
     )
     ontology_directory: Path | None = Field(
         default=None, description="Directory containing ontology files"

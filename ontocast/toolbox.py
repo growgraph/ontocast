@@ -21,7 +21,9 @@ from ontocast.tool.graph_version_manager import GraphVersionManager
 from ontocast.tool.llm import LLMTool
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.sparql import SPARQLTool
-from ontocast.tool.triple_manager.core import TripleStoreManagerWithAuth
+from ontocast.tool.triple_manager.core import (
+    TripleStoreManager,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,21 +85,27 @@ class ToolBox:
             config=tool_config.llm_config, cache=self.shared_cache
         )
 
-        # Filesystem manager for initial ontology loading (if ontology_directory provided)
+        # Initialize managers based on backend configuration
         self.filesystem_manager: FilesystemTripleStoreManager | None = None
-        self.triple_store_manager: TripleStoreManagerWithAuth | None = None
+        self.triple_store_manager: TripleStoreManager | None = None
 
-        if ontology_directory is not None and working_directory is not None:
-            self.filesystem_manager = FilesystemTripleStoreManager(
-                working_directory=working_directory,
-                ontology_path=ontology_directory,
+        # Automatically determine which backends to use based on available configuration
+        use_fuseki = tool_config.fuseki.uri and tool_config.fuseki.auth
+        use_neo4j = tool_config.neo4j.uri and tool_config.neo4j.auth
+        use_filesystem_triple_store = (
+            working_directory is not None and ontology_directory is not None
+        )
+        use_filesystem_manager = working_directory is not None
+
+        # Validate that we have at least one backend configured
+        if not any([use_fuseki, use_neo4j, use_filesystem_triple_store]):
+            raise ValueError(
+                "No backend configured. Please provide Fuseki/Neo4j credentials or working directory and ontology directory."
             )
 
-        # Main triple store manager - prefer Fuseki over Neo4j, fallback to filesystem
-        # Get clean flag from server config
-        clean = config.server.clean
-
-        if tool_config.fuseki.uri and tool_config.fuseki.auth:
+        # Create main triple store manager (only one can be active)
+        if use_fuseki and tool_config.fuseki.uri and tool_config.fuseki.auth:
+            clean = config.server.clean
             self.triple_store_manager = FusekiTripleStoreManager(
                 uri=tool_config.fuseki.uri,
                 auth=tool_config.fuseki.auth,
@@ -105,9 +113,30 @@ class ToolBox:
                 ontologies_dataset=tool_config.fuseki.ontologies_dataset,
                 clean=clean,
             )
-        elif tool_config.neo4j.uri and tool_config.neo4j.auth:
+        elif use_neo4j and tool_config.neo4j.uri and tool_config.neo4j.auth:
+            clean = config.server.clean
             self.triple_store_manager = Neo4jTripleStoreManager(
                 uri=tool_config.neo4j.uri, auth=tool_config.neo4j.auth, clean=clean
+            )
+        elif use_filesystem_triple_store:
+            if working_directory is None or ontology_directory is None:
+                raise ValueError(
+                    "Working directory and ontology directory must be provided for filesystem triple store"
+                )
+            self.triple_store_manager = FilesystemTripleStoreManager(
+                working_directory=working_directory,
+                ontology_path=ontology_directory,
+            )
+
+        # Create filesystem manager (can be combined with other backends)
+        if use_filesystem_manager:
+            if working_directory is None or ontology_directory is None:
+                raise ValueError(
+                    "Working directory and ontology directory must be provided for filesystem manager"
+                )
+            self.filesystem_manager = FilesystemTripleStoreManager(
+                working_directory=working_directory,
+                ontology_path=ontology_directory,
             )
 
         self.ontology_manager: OntologyManager = OntologyManager()

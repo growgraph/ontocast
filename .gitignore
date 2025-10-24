@@ -178,5 +178,5 @@ cython_debug/
 
 .idea/
 
-.env.ollama
-.env.openai
+.env*
+!.env.example
