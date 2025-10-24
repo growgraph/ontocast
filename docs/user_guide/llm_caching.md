@@ -295,3 +295,99 @@ ontocast serve --working-directory /data/working
 - Use appropriate file system permissions
 - Consider network security for shared cache directories
 
+
+---
+
+## Converter and Chunker Caching
+
+In addition to LLM response caching, OntoCast also includes caching for document conversion and text chunking operations. This helps avoid redundant processing when the same documents or text are processed multiple times.
+
+### Converter Caching
+
+The `ConverterTool` automatically caches document conversion results based on the input file content. This means:
+
+- **PDF files**: If the same PDF is processed multiple times, the conversion to markdown is cached
+- **Other documents**: PowerPoint, Word documents, etc. are also cached after conversion
+- **Plain text**: Text input is not cached as it doesn't require conversion
+
+### Chunker Caching
+
+The `ChunkerTool` caches chunking results based on:
+- **Input text content**: The exact text being chunked
+- **Chunking configuration**: All chunking parameters (max_size, min_size, model, etc.)
+- **Chunking mode**: Whether semantic or naive chunking is used
+
+This ensures that identical text with identical chunking parameters will return cached results.
+
+### Cache Organization
+
+Caching is organized in subdirectories:
+
+```
+~/.cache/ontocast/
+├── llm/           # LLM response cache
+├── converter/     # Document conversion cache
+└── chunker/       # Text chunking cache
+```
+
+### Cache Benefits
+
+1. **Faster Processing**: Repeated operations return instantly from cache
+2. **Cost Reduction**: Avoids redundant LLM API calls and processing
+3. **Consistency**: Identical inputs always produce identical outputs
+4. **Offline Capability**: Cached operations work without API access
+
+### Cache Management
+
+You can access cache statistics and management through the tool instances:
+
+```python
+from ontocast.tool.converter import ConverterTool
+from ontocast.tool.chunk.chunker import ChunkerTool
+
+# Get cache statistics
+converter = ConverterTool()
+stats = converter.cache.get_cache_stats()
+print(f"Converter cache: {stats['total_files']} files, {stats['total_size_bytes']} bytes")
+
+# Clear cache if needed
+converter.cache.clear()
+
+# Chunker cache management
+chunker = ChunkerTool()
+chunker.cache.clear()  # Clear chunker cache
+```
+
+### Custom Cache Directories
+
+You can specify custom cache directories for each tool:
+
+```python
+from pathlib import Path
+from ontocast.tool.converter import ConverterTool
+from ontocast.tool.chunk.chunker import ChunkerTool
+
+# Custom cache directory
+cache_dir = Path("/custom/cache/path")
+
+converter = ConverterTool(cache_dir=cache_dir)
+chunker = ChunkerTool(cache_dir=cache_dir)
+```
+
+### Cache Key Generation
+
+Cache keys are generated based on:
+- **Content hash**: SHA256 hash of the input content
+- **Configuration**: All relevant parameters that affect the output
+- **Tool-specific parameters**: Model names, chunking modes, etc.
+
+This ensures that different configurations produce different cache entries, even for the same input content.
+
+### Best Practices
+
+1. **Let caching work automatically**: No configuration needed for basic usage
+2. **Monitor cache size**: Check cache statistics periodically
+3. **Clear cache when needed**: If you change tool configurations significantly
+4. **Use custom directories**: For testing or specific deployment scenarios
+5. **Cache persistence**: Caches persist between runs for maximum benefit
+

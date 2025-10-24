@@ -1,10 +1,11 @@
 import logging
 import re
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field
 
 from ontocast.config import ChunkConfig
+from ontocast.tool.cache import Cacher
 from ontocast.tool.onto import Tool
 
 try:
@@ -27,6 +28,7 @@ class ChunkerTool(Tool):
     """Tool for semantic chunking of documents.
 
     Falls back to naive chunking if sentence-transformers is not available.
+    Includes caching to avoid re-chunking the same text with the same parameters.
     """
 
     model: str = Field(
@@ -40,20 +42,27 @@ class ChunkerTool(Tool):
         default="semantic" if SEMANTIC_CHUNKING_AVAILABLE else "naive",
         description="Chunking mode: semantic (requires sentence-transformers) or naive (fallback)",
     )
+    cache: Any = Field(default=None, exclude=True)
 
     def __init__(
         self,
         chunk_config: ChunkConfig | None = None,
+        cache_dir: str | None = None,
         **kwargs,
     ):
         """Initialize the ChunkerTool.
 
         Args:
             chunk_config: Chunking configuration. If None, uses default ChunkConfig.
+            cache_dir: Optional directory path for caching chunking results.
+                      If None, uses a platform-appropriate default location.
             **kwargs: Additional keyword arguments passed to the parent class.
         """
         super().__init__(**kwargs)
         self._model = None
+
+        # Initialize cache
+        self.cache = Cacher(subdirectory="chunker", cache_dir=cache_dir)
 
         # Override config if provided
         if chunk_config is not None:
@@ -160,57 +169,84 @@ class ChunkerTool(Tool):
         Returns:
             List of text chunks.
         """
+        # Prepare configuration for caching
+        config_dict = {
+            "model": self.model,
+            "chunking_mode": self.chunking_mode,
+            "max_size": self.config.max_size,
+            "min_size": self.config.min_size,
+            "buffer_size": self.config.buffer_size,
+            "breakpoint_threshold_type": self.config.breakpoint_threshold_type,
+            "breakpoint_threshold_amount": self.config.breakpoint_threshold_amount,
+        }
+
+        # Check cache first
+        cached_result = self.cache.get(doc, config=config_dict)
+        if cached_result is not None:
+            logger.debug("Cache hit for document chunking")
+            return cached_result
+
+        # Perform chunking
         if self.chunking_mode == "naive":
-            return self._naive_chunk(doc)
-
-        # Semantic chunking (requires sentence-transformers)
-        if not SEMANTIC_CHUNKING_AVAILABLE:
-            logger.warning(
-                "Semantic chunking requested but not available. Falling back to naive chunking."
-            )
-            return self._naive_chunk(doc)
-
-        self._init_model()
-        documents = [doc]
-
-        if self._model is None:
-            logger.warning("Model not initialized. Falling back to naive chunking.")
-            return self._naive_chunk(doc)
-
-        if SemanticChunker is None:  # type: ignore
-            logger.warning(
-                "SemanticChunker not available. Falling back to naive chunking."
-            )
-            return self._naive_chunk(doc)
-
-        text_splitter = SemanticChunker(
-            buffer_size=self.config.buffer_size,
-            breakpoint_threshold_type=self.config.breakpoint_threshold_type,
-            breakpoint_threshold_amount=self.config.breakpoint_threshold_amount,
-            embeddings=self._model,
-            min_chunk_size=self.config.min_size,
-            sentence_split_regex=r"(?:(?:\n{2,}(?=#+))|(?:\n{2,}(?=- ))"
-            r"|(?<=[a-z][.?!])\s+(?=\b[A-Z]\w{8,}\b)|(?<!#)(?=#+))",
-        )
-
-        def recursive_chunking(docs_list: list[str], stop_flag=False):
-            lens = [len(d) for d in docs_list]
-            logger.info(f"chunk lengths: {lens}")
-            if all(len(d) < self.config.max_size for d in docs_list) or stop_flag:
-                return docs_list
+            result = self._naive_chunk(doc)
+        else:
+            # Semantic chunking (requires sentence-transformers)
+            if not SEMANTIC_CHUNKING_AVAILABLE:
+                logger.warning(
+                    "Semantic chunking requested but not available. Falling back to naive chunking."
+                )
+                result = self._naive_chunk(doc)
             else:
-                new_docs = []
-                for d in docs_list:
-                    if len(d) > self.config.max_size:
-                        cdocs_ = text_splitter.create_documents([d])
-                        cdocs = [d.page_content for d in cdocs_]
-                        if len(cdocs[-1]) < self.config.min_size:
-                            cdocs = cdocs[:-2] + [cdocs[-2] + cdocs[-1]]
-                        new_docs.extend(cdocs)
-                    else:
-                        new_docs.append(d)
-                stop_flag = len(docs_list) == len(new_docs)
-                return recursive_chunking(new_docs, stop_flag=stop_flag)
+                self._init_model()
+                documents = [doc]
 
-        docs = recursive_chunking(documents)
-        return docs
+                if self._model is None:
+                    logger.warning(
+                        "Model not initialized. Falling back to naive chunking."
+                    )
+                    result = self._naive_chunk(doc)
+                elif SemanticChunker is None:  # type: ignore
+                    logger.warning(
+                        "SemanticChunker not available. Falling back to naive chunking."
+                    )
+                    result = self._naive_chunk(doc)
+                else:
+                    text_splitter = SemanticChunker(
+                        buffer_size=self.config.buffer_size,
+                        breakpoint_threshold_type=self.config.breakpoint_threshold_type,
+                        breakpoint_threshold_amount=self.config.breakpoint_threshold_amount,
+                        embeddings=self._model,
+                        min_chunk_size=self.config.min_size,
+                        sentence_split_regex=r"(?:(?:\n{2,}(?=#+))|(?:\n{2,}(?=- ))"
+                        r"|(?<=[a-z][.?!])\s+(?=\b[A-Z]\w{8,}\b)|(?<!#)(?=#+))",
+                    )
+
+                    def recursive_chunking(docs_list: list[str], stop_flag=False):
+                        lens = [len(d) for d in docs_list]
+                        logger.info(f"chunk lengths: {lens}")
+                        if (
+                            all(len(d) < self.config.max_size for d in docs_list)
+                            or stop_flag
+                        ):
+                            return docs_list
+                        else:
+                            new_docs = []
+                            for d in docs_list:
+                                if len(d) > self.config.max_size:
+                                    cdocs_ = text_splitter.create_documents([d])
+                                    cdocs = [d.page_content for d in cdocs_]
+                                    if len(cdocs[-1]) < self.config.min_size:
+                                        cdocs = cdocs[:-2] + [cdocs[-2] + cdocs[-1]]
+                                    new_docs.extend(cdocs)
+                                else:
+                                    new_docs.append(d)
+                            stop_flag = len(docs_list) == len(new_docs)
+                            return recursive_chunking(new_docs, stop_flag=stop_flag)
+
+                    result = recursive_chunking(documents)
+
+        # Cache the result
+        self.cache.set(doc, result, config=config_dict)
+        logger.debug("Cached document chunking result")
+
+        return result

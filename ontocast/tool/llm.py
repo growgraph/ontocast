@@ -16,7 +16,7 @@ Cache Usage:
 
     # Create LLM tool with default cache directory
     llm_tool = await LLMTool.acreate(config=LLMConfig(...))
-    
+
     # Or specify a custom cache directory
     custom_cache_dir = Path("/custom/cache/path")
     llm_tool = await LLMTool.acreate(
@@ -29,17 +29,14 @@ Cache Usage:
     - Tests: .test_cache/llm/ in the current working directory
     - Windows: %USERPROFILE%\\AppData\\Local\\ontocast\\llm\
     - Unix/Linux: ~/.cache/ontocast/llm/ (or $XDG_CACHE_HOME/ontocast/llm/)
-    
+
     Cache files are stored as JSON files with filenames based on SHA256 hashes
     of the prompt and LLM configuration. This ensures that identical prompts
     with the same configuration will return cached responses.
 """
 
 import asyncio
-import hashlib
-import json
 import logging
-import os
 from pathlib import Path
 from typing import Any, Type, TypeVar
 
@@ -48,40 +45,16 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages.ai import AIMessage
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr
 
-from ontocast.config import LLMConfig
+from ontocast.config import LLMConfig, LLMProvider
 
+from .cache import Cacher
 from .onto import Tool
 
 T = TypeVar("T", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
-
-
-def _get_default_cache_dir() -> Path:
-    """Get the default cache directory based on the environment.
-
-    Returns:
-        Path: The appropriate cache directory path.
-    """
-    # Check if we're in a test environment
-    if "pytest" in os.environ.get("_", ""):
-        # In tests, use a test-specific cache directory
-        return Path.cwd() / ".test_cache" / "llm"
-
-    # Check for common cache environment variables
-    cache_home = os.environ.get("XDG_CACHE_HOME")
-    if cache_home:
-        return Path(cache_home) / "ontocast" / "llm"
-
-    # Use platform-appropriate cache directory
-    if os.name == "nt":  # Windows
-        cache_dir = Path.home() / "AppData" / "Local" / "ontocast" / "llm"
-    else:  # Unix-like systems
-        cache_dir = Path.home() / ".cache" / "ontocast" / "llm"
-
-    return cache_dir
 
 
 class LLMTool(Tool):
@@ -93,21 +66,11 @@ class LLMTool(Tool):
 
     Attributes:
         config: LLMConfig object containing all LLM settings.
-        cache_dir: Optional directory path for caching LLM responses.
+        cache: Cacher instance for caching LLM responses.
     """
 
     config: LLMConfig = Field(default_factory=LLMConfig)
-    cache_dir: Path | None = Field(
-        default=None, description="Directory for caching LLM responses"
-    )
-
-    @field_validator("cache_dir", mode="before")
-    @classmethod
-    def validate_cache_dir(cls, v):
-        """Convert cache_dir to Path and expand user if provided."""
-        if v is not None:
-            return Path(v).expanduser()
-        return v
+    cache: Any = Field(default=None, exclude=True)
 
     def __init__(
         self,
@@ -121,12 +84,11 @@ class LLMTool(Tool):
                       If None, uses a platform-appropriate default location.
             **kwargs: Additional keyword arguments passed to the parent class.
         """
-        # Use default cache directory if none provided
-        if cache_dir is None:
-            cache_dir = _get_default_cache_dir()
-
-        super().__init__(cache_dir=cache_dir, **kwargs)
+        super().__init__(**kwargs)
         self._llm = None
+
+        # Initialize cache
+        self.cache = Cacher(subdirectory="llm", cache_dir=cache_dir)
 
     @classmethod
     def create(cls, config: LLMConfig, cache_dir: Path | str | None = None, **kwargs):
@@ -141,9 +103,6 @@ class LLMTool(Tool):
         Returns:
             LLMTool: A new instance of the LLM tool.
         """
-        # Use default cache directory if none provided
-        if cache_dir is None:
-            cache_dir = _get_default_cache_dir()
         return asyncio.run(cls.acreate(config=config, cache_dir=cache_dir, **kwargs))
 
     @classmethod
@@ -161,9 +120,6 @@ class LLMTool(Tool):
         Returns:
             LLMTool: A new instance of the LLM tool.
         """
-        # Use default cache directory if none provided
-        if cache_dir is None:
-            cache_dir = _get_default_cache_dir()
         # Create and initialize the instance with the config
         self = cls(config=config, cache_dir=cache_dir, **kwargs)
         await self.setup()
@@ -175,26 +131,22 @@ class LLMTool(Tool):
         Raises:
             ValueError: If the provider is not supported.
         """
-        # Set up cache directory if provided
-        if self.cache_dir is not None:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-            logger.info(f"LLM cache directory set to: {self.cache_dir}")
-
-        if self.config.provider == "openai":
+        if self.config.provider == LLMProvider.OPENAI:
             if self.config.model_name.startswith("gpt-5"):
                 self.config.temperature = 1.0
                 logger.warning(
-                    f"Setting temperature to {self.config.temperature} for gpt-5 class model {self.config.model_name}"
+                    f"Setting temperature to {self.config.temperature} for gpt-5 class "
+                    f"model {self.config.model_name}"
                 )
             self._llm = ChatOpenAI(
                 model_name=self.config.model_name,
                 temperature=self.config.temperature,
                 openai_api_base=self.config.base_url,
-                openai_api_key=SecretStr(self.config.api_key)
-                if self.config.api_key
-                else None,
+                openai_api_key=(
+                    SecretStr(self.config.api_key) if self.config.api_key else None
+                ),
             )
-        elif self.config.provider == "ollama":
+        elif self.config.provider == LLMProvider.OLLAMA:
             self._llm = ChatOllama(
                 model=self.config.model_name,
                 base_url=self.config.base_url,
@@ -216,9 +168,16 @@ class LLMTool(Tool):
         # Extract prompt from args (first argument is typically the prompt)
         prompt = args[0] if args else ""
 
+        # Prepare configuration for caching
+        config_dict = {
+            "provider": self.config.provider,
+            "model_name": self.config.model_name,
+            "temperature": self.config.temperature,
+            "base_url": self.config.base_url,
+        }
+
         # Check cache first
-        cache_key = self._generate_cache_key(prompt, **kwds)
-        cached_response = self._read_from_cache(cache_key)
+        cached_response = self.cache.get(prompt, config=config_dict, **kwds)
 
         if cached_response is not None:
             prompt_str = self._prompt_to_string(prompt)
@@ -239,7 +198,7 @@ class LLMTool(Tool):
             "prompt": self._prompt_to_string(prompt),
             "kwargs": kwds,
         }
-        self._write_to_cache(cache_key, response_data)
+        self.cache.set(prompt, response_data, config=config_dict, **kwds)
 
         return response
 
@@ -279,92 +238,6 @@ class LLMTool(Tool):
         else:
             return str(prompt)
 
-    def _generate_cache_key(self, prompt: str, **kwargs) -> str:
-        """Generate a cache key based on prompt and LLM configuration.
-
-        Args:
-            prompt: The input prompt.
-            **kwargs: Additional parameters that affect the response.
-
-        Returns:
-            str: A hash string to use as cache key.
-        """
-        # Convert prompt to string if it's a LangChain prompt object
-        prompt_str = self._prompt_to_string(prompt)
-
-        # Create a dictionary with all relevant parameters
-        cache_data = {
-            "prompt": prompt_str,
-            "provider": self.config.provider,
-            "model_name": self.config.model_name,
-            "temperature": self.config.temperature,
-            "base_url": self.config.base_url,
-            "kwargs": kwargs,
-        }
-
-        # Convert to JSON string and hash it
-        cache_string = json.dumps(cache_data, sort_keys=True, default=str)
-        return hashlib.sha256(cache_string.encode()).hexdigest()
-
-    def _get_cache_file_path(self, cache_key: str) -> Path:
-        """Get the cache file path for a given cache key.
-
-        Args:
-            cache_key: The cache key.
-
-        Returns:
-            Path: The path to the cache file.
-
-        Raises:
-            RuntimeError: If cache_dir is None.
-        """
-        if self.cache_dir is None:
-            raise RuntimeError("Cache directory not set")
-        return self.cache_dir / f"{cache_key}.json"
-
-    def _read_from_cache(self, cache_key: str) -> dict | None:
-        """Read cached response from file.
-
-        Args:
-            cache_key: The cache key.
-
-        Returns:
-            dict | None: The cached response data or None if not found.
-        """
-        if self.cache_dir is None:
-            return None
-
-        cache_file = self._get_cache_file_path(cache_key)
-
-        if not cache_file.exists():
-            return None
-
-        try:
-            with open(cache_file, "r") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
-            logger.warning(f"Failed to read cache file {cache_file}: {e}")
-            return None
-
-    def _write_to_cache(self, cache_key: str, response_data: dict) -> None:
-        """Write response to cache file.
-
-        Args:
-            cache_key: The cache key.
-            response_data: The response data to cache.
-        """
-        if self.cache_dir is None:
-            return
-
-        cache_file = self._get_cache_file_path(cache_key)
-
-        try:
-            with open(cache_file, "w") as f:
-                json.dump(response_data, f, indent=2)
-            logger.debug(f"Cached response to {cache_file}")
-        except IOError as e:
-            logger.warning(f"Failed to write cache file {cache_file}: {e}")
-
     async def complete(self, prompt: str, **kwargs) -> Any:
         """Generate a completion for the given prompt.
 
@@ -375,9 +248,16 @@ class LLMTool(Tool):
         Returns:
             Any: The generated completion.
         """
+        # Prepare configuration for caching
+        config_dict = {
+            "provider": self.config.provider,
+            "model_name": self.config.model_name,
+            "temperature": self.config.temperature,
+            "base_url": self.config.base_url,
+        }
+
         # Check cache first
-        cache_key = self._generate_cache_key(prompt, **kwargs)
-        cached_response = self._read_from_cache(cache_key)
+        cached_response = self.cache.get(prompt, config=config_dict, **kwargs)
 
         if cached_response is not None:
             logger.debug(f"Cache hit for prompt: {prompt[:50]}...")
@@ -394,7 +274,7 @@ class LLMTool(Tool):
             "prompt": self._prompt_to_string(prompt),
             "kwargs": kwargs,
         }
-        self._write_to_cache(cache_key, response_data)
+        self.cache.set(prompt, response_data, config=config_dict, **kwargs)
 
         return response.content
 
@@ -414,11 +294,17 @@ class LLMTool(Tool):
 
         full_prompt = f"{prompt}\n\n{format_instructions}"
 
-        # Check cache first - include output_schema in cache key
-        cache_key = self._generate_cache_key(
-            full_prompt, output_schema=output_schema.__name__, **kwargs
-        )
-        cached_response = self._read_from_cache(cache_key)
+        # Prepare configuration for caching
+        config_dict = {
+            "provider": self.config.provider,
+            "model_name": self.config.model_name,
+            "temperature": self.config.temperature,
+            "base_url": self.config.base_url,
+            "output_schema": output_schema.__name__,
+        }
+
+        # Check cache first
+        cached_response = self.cache.get(full_prompt, config=config_dict, **kwargs)
 
         if cached_response is not None:
             logger.debug(f"Cache hit for extraction: {prompt[:50]}...")
@@ -441,7 +327,7 @@ class LLMTool(Tool):
             "output_schema": output_schema.__name__,
             "kwargs": kwargs,
         }
-        self._write_to_cache(cache_key, response_data)
+        self.cache.set(full_prompt, response_data, config=config_dict, **kwargs)
 
         content = response.content
         return parser.parse(content if isinstance(content, str) else str(content))
