@@ -185,6 +185,34 @@ class AgentState(BasePydanticModel):
         """Set the status of a workflow node."""
         self.statuses[node] = status
 
+    def get_chunk_progress_info(self) -> tuple[int, int]:
+        """Get current chunk number and total chunks.
+
+        Returns:
+            tuple[int, int]: (current_chunk_number, total_chunks)
+        """
+        total_chunks = len(self.chunks) + len(self.chunks_processed)
+        if total_chunks == 0:
+            return 0, 0
+        # If we have remaining chunks, current is processed + 1
+        # If no remaining chunks, current is the last processed
+        if len(self.chunks) > 0:
+            current_chunk_number = len(self.chunks_processed) + 1
+        else:
+            current_chunk_number = len(self.chunks_processed)
+        return current_chunk_number, total_chunks
+
+    def get_chunk_progress_string(self) -> str:
+        """Get a formatted string showing chunk progress.
+
+        Returns:
+            str: Formatted string like "chunk 3/10"
+        """
+        current, total = self.get_chunk_progress_info()
+        if total == 0:
+            return "no chunks"
+        return f"chunk {current}/{total}"
+
     @classmethod
     def render_updated_graph(
         cls, graph: RDFGraph, updates: list[GraphUpdate]

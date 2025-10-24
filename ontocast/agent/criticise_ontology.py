@@ -38,7 +38,8 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     Returns:
         AgentState: Updated state with analysis results.
     """
-    logger.info("Ontology Critic")
+    progress_info = state.get_chunk_progress_string()
+    logger.info(f"Ontology Critic for {progress_info}")
 
     if state.current_chunk is None:
         state.status = Status.FAILED

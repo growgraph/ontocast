@@ -33,7 +33,8 @@ def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     Returns:
         AgentState: Updated state with selected ontology.
     """
-    logger.info("Selecting ontology")
+    progress_info = state.get_chunk_progress_string()
+    logger.info(f"Selecting ontology for {progress_info}")
     llm_tool = tools.llm
     om_tool: OntologyManager = tools.ontology_manager
 

@@ -44,6 +44,8 @@ def chunk_text(state: AgentState, tools: ToolBox) -> AgentState:
                     doc_iri=state.doc_iri,
                 )
             )
+
+        logger.info(f"Created {len(state.chunks)} chunks for processing")
         state.status = Status.SUCCESS
     else:
         state.status = Status.FAILED

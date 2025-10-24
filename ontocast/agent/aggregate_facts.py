@@ -22,8 +22,9 @@ def aggregate_serialize(state: AgentState, tools: ToolBox) -> AgentState:
     state.aggregated_facts = tools.aggregator.aggregate_graphs(
         chunks=state.chunks_processed, doc_namespace=state.doc_namespace
     )
+    total_chunks = len(state.chunks_processed)
     logger.info(
-        f"chunks proc: {len(state.chunks_processed)}; "
+        f"Aggregating {total_chunks} processed chunks: "
         f"ontology {len(state.current_ontology.graph)} triples; "
         f"facts graph: {len(state.aggregated_facts)} triples"
     )

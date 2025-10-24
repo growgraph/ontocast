@@ -50,9 +50,8 @@ def render_facts(state: AgentState, tools: ToolBox) -> AgentState:
 
     is_first_visit = len(state.current_chunk.graph) == 0
 
-    logger.info(
-        f"Render facts: visit {state.node_visits[WorkflowNode.CRITICISE_FACTS] + 1}/{state.max_visits}"
-    )
+    progress_info = state.get_chunk_progress_string()
+    logger.info(f"Render facts for {progress_info}")
 
     if is_first_visit:
         logger.info("Generating fresh facts as Turtle")

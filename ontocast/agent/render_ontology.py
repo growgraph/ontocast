@@ -46,7 +46,10 @@ def render_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     Returns:
         AgentState: Updated state with rendered ontology
     """
-    logger.info("Structured ontology rendering with Turtle/SPARQL output")
+    progress_info = state.get_chunk_progress_string()
+    logger.info(
+        f"Structured ontology rendering for {progress_info} with Turtle/SPARQL output"
+    )
 
     has_no_seed_ontology = state.ontology_id == ONTOLOGY_NULL_ID
 

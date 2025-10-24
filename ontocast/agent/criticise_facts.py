@@ -45,8 +45,9 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
         logger.warning("No current chunk to analyze")
         return state
 
+    progress_info = state.get_chunk_progress_string()
     logger.info(
-        f"Criticize facts: visit {state.node_visits[WorkflowNode.CRITICISE_FACTS] + 1}/{state.max_visits}"
+        f"Criticize facts for {progress_info}: visit {state.node_visits[WorkflowNode.CRITICISE_FACTS] + 1}/{state.max_visits}"
     )
 
     llm_tool = tools.llm

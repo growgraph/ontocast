@@ -48,11 +48,8 @@ def check_chunks_empty(state: AgentState) -> AgentState:
         >>> print(updated_state.current_chunk)  # chunk1
         >>> print(updated_state.status)  # Status.FAILED
     """
-    logger.info(
-        f"Chunks (rem): {len(state.chunks)}, "
-        f"chunks proc: {len(state.chunks_processed)}. "
-        f"Setting up current chunk"
-    )
+    progress_info = state.get_chunk_progress_string()
+    logger.info(f"Processing {progress_info} - Setting up current chunk")
 
     if CHUNK_NULL_IRI not in state.current_chunk.iri:
         state.current_chunk.processed = True
@@ -66,8 +63,8 @@ def check_chunks_empty(state: AgentState) -> AgentState:
         state.node_visits = defaultdict(int)
         state.status = Status.FAILED
         logger.info(
-            "Chunk available, setting status to FAILED"
-            " and proceeding to SELECT_ONTOLOGY"
+            f"{progress_info} available, setting status to FAILED "
+            "and proceeding to SELECT_ONTOLOGY"
         )
     else:
         state.current_chunk = Chunk(
@@ -77,8 +74,8 @@ def check_chunks_empty(state: AgentState) -> AgentState:
         )
         state.status = Status.SUCCESS
         logger.info(
-            "No more chunks, setting status to SUCCESS "
-            "and proceeding to AGGREGATE_FACTS"
+            f"All chunks processed ({len(state.chunks_processed)} total), "
+            "setting status to SUCCESS and proceeding to AGGREGATE_FACTS"
         )
 
     return state
