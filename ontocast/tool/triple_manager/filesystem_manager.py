@@ -11,6 +11,7 @@ import pathlib
 from rdflib import Graph
 
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.triple_manager.core import TripleStoreManager
 
 logger = logging.getLogger(__name__)
@@ -83,9 +84,7 @@ class FilesystemTripleStoreManager(TripleStoreManager):
                     logger.error(f"Failed to load ontology {fname}: {str(e)}")
         return ontologies
 
-    def serialize_graph(
-        self, graph: Graph, graph_uri: str | None = None
-    ) -> bool | None:
+    def serialize_graph(self, graph: Graph, **kwargs) -> bool | None:
         """Store an RDF graph in the filesystem.
 
         This method stores the given RDF graph as a Turtle file in the
@@ -94,27 +93,33 @@ class FilesystemTripleStoreManager(TripleStoreManager):
 
         Args:
             graph: The RDF graph to store.
-            graph_uri: Optional URI to use for filename generation. If provided,
-                      it will be processed to create a meaningful filename.
+            fname:  str
 
         Example:
             >>> graph = RDFGraph()
             >>> manager.serialize_graph(graph)
             # Creates: working_directory/current.ttl
 
-            >>> manager.serialize_graph(graph, graph_uri="domain/subdomain")
-            # Creates: working_directory/facts_domain_subdomain.ttl
+            >>> manager.serialize_graph(graph, fname="facts_abc.ttl")
         """
         if self.working_directory is None:
             return
 
-        if graph_uri is None:
-            fname = "current.ttl"
-        else:
-            s = graph_uri.split("/")[-2:]
-            s = "_".join([x for x in s if x])
-            fname = f"facts_{s}.ttl"
-
+        fname: str = kwargs.pop("fname")
         output_path = self.working_directory / fname
         graph.serialize(format="turtle", destination=output_path)
         logger.info(f"Graph saved to {output_path}")
+
+    def serialize(self, o: Ontology | RDFGraph, graph_uri: str | None = None):
+        if isinstance(o, Ontology):
+            graph = o.graph
+            fname = f"ontology_{o.ontology_id}_{o.version}"
+        elif isinstance(o, RDFGraph):
+            graph = o
+            s = graph_uri.split("/")[-2:]
+            s = "_".join([x for x in s if x])
+            fname = f"facts_{s}.ttl"
+        else:
+            raise TypeError(f"unsupported obj of type {type(o)} received")
+
+        self.serialize_graph(fname=fname, graph=graph)

@@ -11,6 +11,7 @@ from pydantic import Field
 from rdflib import Graph
 
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool import Tool
 
 
@@ -46,9 +47,7 @@ class TripleStoreManager(Tool):
         return []
 
     @abc.abstractmethod
-    def serialize_graph(
-        self, graph: Graph, graph_uri: str | None = None
-    ) -> bool | None:
+    def serialize_graph(self, graph: Graph, **kwargs) -> bool | None:
         """Store an RDF graph in the triple store.
 
         This method should store the given RDF graph in the triple store.
@@ -57,7 +56,24 @@ class TripleStoreManager(Tool):
 
         Args:
             graph: The RDF graph to store.
-            graph_uri: Optional URI to use as the named graph name (used by Fuseki).
+            kwargs: specific arguments for
+
+        Returns:
+            bool | None: Implementation-specific return value (bool for Fuseki, summary for Neo4j, None for Filesystem).
+        """
+        pass
+
+    @abc.abstractmethod
+    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> bool | None:
+        """Store an RDF graph in the triple store.
+
+        This method should store the given RDF graph in the triple store.
+        The implementation may choose how to organize the storage (e.g., as named graphs,
+        in specific collections, etc.).
+
+        Args:
+            o: RDF graph or Ontology object
+            kwargs: specific arguments for
 
         Returns:
             bool | None: Implementation-specific return value (bool for Fuseki, summary for Neo4j, None for Filesystem).

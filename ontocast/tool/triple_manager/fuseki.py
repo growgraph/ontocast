@@ -305,7 +305,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         logger.info(f"Successfully loaded {len(ontologies)} ontologies from Fuseki")
         return ontologies
 
-    def _serialize_graph_to_dataset(
+    def serialize_graph(
         self,
         graph: Graph,
         graph_uri: str | None,
@@ -347,38 +347,8 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             logger.error(f"Response: {response.text}")
             return False
 
-    def serialize_ontology_graph(
-        self, graph: Graph, graph_uri: str | None = None
-    ) -> bool | None:
-        """Store an RDF graph as a named graph in the ontologies dataset.
-
-        This method stores the given RDF graph as a named graph in the Fuseki
-        ontologies dataset. The graph name is taken from the graph_uri parameter
-        or defaults to "urn:ontology:default".
-
-        Args:
-            graph: The RDF graph to store.
-            graph_uri: URI to use as the named graph name (optional).
-
-        Returns:
-            bool: True if the graph was successfully stored, False otherwise.
-
-        Example:
-            >>> graph = RDFGraph()
-            >>> success = manager.serialize_ontology_graph(graph)
-
-            >>> success = manager.serialize_ontology_graph(graph, graph_uri="http://example.org/ontology1")
-        """
-        return self._serialize_graph_to_dataset(
-            graph=graph,
-            graph_uri=graph_uri,
-            dataset_url=self._get_ontologies_dataset_url(),
-            default_graph_uri="urn:ontology:default",
-            log_prefix="Ontology",
-        )
-
-    def serialize_graph(
-        self, graph: Graph, graph_uri: str | None = None
+    def serialize(
+        self, o: Ontology | RDFGraph, graph_uri: str | None = None
     ) -> bool | None:
         """Store an RDF graph as a named graph in Fuseki.
 
@@ -387,7 +357,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         "urn:data:default".
 
         Args:
-            graph: The RDF graph to store.
+            o: RDF graph or Ontology object.
             graph_uri: URI to use as the named graph name (optional).
 
         Returns:
@@ -395,14 +365,26 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
         Example:
             >>> graph = RDFGraph()
-            >>> success = manager.serialize_graph(graph)
+            >>> success = manager.serialize(graph)
 
-            >>> success = manager.serialize_graph(graph, graph_uri="http://example.org/chunk1")
+            >>> success = manager.serialize(graph, graph_uri="http://example.org/chunk1")
         """
-        return self._serialize_graph_to_dataset(
+
+        if isinstance(o, Ontology):
+            graph = o.graph
+            default_graph_uri = "urn:ontology:default"
+            log_prefix = "Ontology"
+        elif isinstance(o, RDFGraph):
+            graph = o
+            default_graph_uri = "urn:data:default"
+            log_prefix = "Graph"
+        else:
+            raise TypeError(f"unsupported obj of type {type(o)} received")
+
+        return self.serialize_graph(
             graph=graph,
             graph_uri=graph_uri,
             dataset_url=self._get_dataset_url(),
-            default_graph_uri="urn:data:default",
-            log_prefix="Graph",
+            default_graph_uri=default_graph_uri,
+            log_prefix=log_prefix,
         )
