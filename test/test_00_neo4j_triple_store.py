@@ -39,16 +39,18 @@ def test_mock_neo4j_clean_operation():
     manager = MockNeo4jTripleStoreManager(clean=True)
 
     # Add some data with owl:Ontology declaration
-    from rdflib import Graph, Literal, URIRef
+    from rdflib import Literal, URIRef
     from rdflib.namespace import OWL, RDF, RDFS
 
-    graph = Graph()
+    from ontocast.onto.rdfgraph import RDFGraph
+
+    graph = RDFGraph()
     # Add ontology declaration
     graph.add((URIRef("http://example.org/test"), RDF.type, OWL.Ontology))
     graph.add((URIRef("http://example.org/Person"), RDF.type, RDFS.Class))
     graph.add((URIRef("http://example.org/Person"), RDFS.label, Literal("Person")))
 
-    result = manager.serialize_graph(graph, "http://example.org/test")
+    result = manager.serialize(graph, graph_uri="http://example.org/test")
     assert result is not None
     assert "nodes_created" in result
     assert len(manager.fetch_ontologies()) == 1
@@ -63,14 +65,16 @@ def test_mock_neo4j_return_format():
     """Test that mock Neo4j returns proper summary format."""
     manager = MockNeo4jTripleStoreManager(clean=True)
 
-    from rdflib import Graph, Literal, URIRef
+    from rdflib import Literal, URIRef
     from rdflib.namespace import RDF, RDFS
 
-    graph = Graph()
+    from ontocast.onto.rdfgraph import RDFGraph
+
+    graph = RDFGraph()
     graph.add((URIRef("http://example.org/Person"), RDF.type, RDFS.Class))
     graph.add((URIRef("http://example.org/Person"), RDFS.label, Literal("Person")))
 
-    result = manager.serialize_graph(graph)
+    result = manager.serialize(graph)
 
     assert isinstance(result, dict)
     assert "nodes_created" in result

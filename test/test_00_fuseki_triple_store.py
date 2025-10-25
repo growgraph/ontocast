@@ -44,16 +44,18 @@ def test_mock_fuseki_clean_operation():
     manager = MockFusekiTripleStoreManager(clean=True)
 
     # Add some data with owl:Ontology declaration
-    from rdflib import Graph, Literal, URIRef
+    from rdflib import Literal, URIRef
     from rdflib.namespace import OWL, RDF, RDFS
 
-    graph = Graph()
+    from ontocast.onto.rdfgraph import RDFGraph
+
+    graph = RDFGraph()
     # Add ontology declaration
     graph.add((URIRef("http://example.org/test"), RDF.type, OWL.Ontology))
     graph.add((URIRef("http://example.org/Person"), RDF.type, RDFS.Class))
     graph.add((URIRef("http://example.org/Person"), RDFS.label, Literal("Person")))
 
-    result = manager.serialize_graph(graph, "http://example.org/test")
+    result = manager.serialize(graph, graph_uri="http://example.org/test")
     assert result is True
     assert len(manager.fetch_ontologies()) == 1
 

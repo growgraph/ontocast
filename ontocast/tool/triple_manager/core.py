@@ -56,7 +56,7 @@ class TripleStoreManager(Tool):
 
         Args:
             graph: The RDF graph to store.
-            kwargs: specific arguments for
+            **kwargs: Implementation-specific arguments (e.g., fname for filesystem, graph_uri for Fuseki).
 
         Returns:
             bool | None: Implementation-specific return value (bool for Fuseki, summary for Neo4j, None for Filesystem).
@@ -72,8 +72,8 @@ class TripleStoreManager(Tool):
         in specific collections, etc.).
 
         Args:
-            o: RDF graph or Ontology object
-            kwargs: specific arguments for
+            o: RDF graph or Ontology object to store.
+            **kwargs: Implementation-specific arguments (e.g., graph_uri for Fuseki).
 
         Returns:
             bool | None: Implementation-specific return value (bool for Fuseki, summary for Neo4j, None for Filesystem).

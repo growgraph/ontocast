@@ -390,9 +390,7 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
         ontology_id = derive_ontology_id(iri)
         return Ontology(graph=graph, iri=iri, ontology_id=ontology_id)
 
-    def serialize_graph(
-        self, graph: Graph, graph_uri: str | None = None
-    ) -> bool | None:
+    def serialize_graph(self, graph: Graph, **kwargs) -> bool | None:
         """Serialize an RDF graph to Neo4j with both n10s and raw triple storage.
 
         This method stores the given RDF graph in Neo4j using the n10s plugin
@@ -401,7 +399,7 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
 
         Args:
             graph: The RDF graph to store.
-            graph_uri: Optional URI (not used by Neo4j implementation).
+            **kwargs: Additional parameters (not used by Neo4j implementation).
 
         Returns:
             Any: The result summary from n10s import operation.
@@ -427,6 +425,29 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
             summary = result.single()
 
         return summary
+
+    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> bool | None:
+        """Serialize an Ontology or RDFGraph to Neo4j with both n10s and raw triple storage.
+
+        This method stores the given Ontology or RDFGraph in Neo4j using the n10s plugin
+        for RDF import. The data is stored as RDF triples that can be faithfully
+        reconstructed later.
+
+        Args:
+            o: Ontology or RDFGraph object to store.
+            **kwargs: Additional keyword arguments (not used by Neo4j implementation).
+
+        Returns:
+            Any: The result summary from n10s import operation.
+        """
+        if isinstance(o, Ontology):
+            graph = o.graph
+        elif isinstance(o, RDFGraph):
+            graph = o
+        else:
+            raise TypeError(f"unsupported obj of type {type(o)} received")
+
+        return self.serialize_graph(graph)
 
     def close(self):
         """Close the Neo4j driver connection.

@@ -305,14 +305,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         logger.info(f"Successfully loaded {len(ontologies)} ontologies from Fuseki")
         return ontologies
 
-    def serialize_graph(
-        self,
-        graph: Graph,
-        graph_uri: str | None,
-        dataset_url: str,
-        default_graph_uri: str,
-        log_prefix: str,
-    ) -> bool | None:
+    def serialize_graph(self, graph: Graph, **kwargs) -> bool | None:
         """Store an RDF graph as a named graph in a specific Fuseki dataset.
 
         This is a private helper method that handles the common logic for storing
@@ -320,14 +313,16 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
         Args:
             graph: The RDF graph to store.
-            graph_uri: URI to use as the named graph name (optional).
-            dataset_url: The URL of the dataset to store the graph in.
-            default_graph_uri: Default graph URI to use if none provided.
-            log_prefix: Prefix for log messages to distinguish between datasets.
+            **kwargs: Additional parameters including graph_uri, dataset_url, default_graph_uri, log_prefix.
 
         Returns:
             bool: True if the graph was successfully stored, False otherwise.
         """
+        graph_uri = kwargs.get("graph_uri")
+        dataset_url = kwargs.get("dataset_url")
+        default_graph_uri = kwargs.get("default_graph_uri")
+        log_prefix = kwargs.get("log_prefix")
+
         turtle_data = graph.serialize(format="turtle")
         if graph_uri is None:
             graph_uri = default_graph_uri
@@ -342,14 +337,12 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             return True
         else:
             logger.error(
-                f"Failed to upload {log_prefix.lower()} graph {graph_uri}. Status code: {response.status_code}"
+                f"Failed to upload {log_prefix.lower() if log_prefix else 'unknown'} graph {graph_uri}. Status code: {response.status_code}"
             )
             logger.error(f"Response: {response.text}")
             return False
 
-    def serialize(
-        self, o: Ontology | RDFGraph, graph_uri: str | None = None
-    ) -> bool | None:
+    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> bool | None:
         """Store an RDF graph as a named graph in Fuseki.
 
         This method stores the given RDF graph as a named graph in Fuseki.
@@ -358,7 +351,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
         Args:
             o: RDF graph or Ontology object.
-            graph_uri: URI to use as the named graph name (optional).
+            **kwargs: Additional parameters including graph_uri.
 
         Returns:
             bool: True if the graph was successfully stored, False otherwise.
@@ -369,6 +362,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
             >>> success = manager.serialize(graph, graph_uri="http://example.org/chunk1")
         """
+        graph_uri = kwargs.get("graph_uri")
 
         if isinstance(o, Ontology):
             graph = o.graph

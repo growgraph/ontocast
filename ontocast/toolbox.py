@@ -190,30 +190,21 @@ class ToolBox:
 
     def serialize(self, state: AgentState) -> None:
         if self.filesystem_manager is not None:
-            self.filesystem_manager.serialize_graph(state.current_ontology.graph)
-        if self.triple_store_manager is not None:
-            # Store ontology in main dataset for reasoning
-            self.triple_store_manager.serialize_graph(
-                state.current_ontology.graph, graph_uri=state.current_ontology.iri
+            self.filesystem_manager.serialize(state.current_ontology)
+            self.filesystem_manager.serialize(
+                state.aggregated_facts,
+                graph_uri=state.doc_namespace,
             )
-            # Store ontology in ontologies dataset for management (if available)
-            if hasattr(self.triple_store_manager, "serialize_ontology_graph"):
-                # Type ignore because we're checking for the method dynamically
-                self.triple_store_manager.serialize_ontology_graph(  # type: ignore
-                    state.current_ontology.graph, graph_uri=state.current_ontology.iri
-                )
-
-        if state.aggregated_facts and len(state.aggregated_facts) > 0:
-            if self.filesystem_manager is not None:
-                self.filesystem_manager.serialize_graph(
-                    state.aggregated_facts,
-                    graph_uri=state.doc_namespace,
-                )
-            if self.triple_store_manager is not None:
-                self.triple_store_manager.serialize_graph(
-                    state.aggregated_facts,
-                    graph_uri=state.doc_namespace,
-                )
+        if (
+            self.triple_store_manager is not None
+            and self.triple_store_manager != self.filesystem_manager
+        ):
+            # Store ontology in main dataset for reasoning
+            self.triple_store_manager.serialize(state.current_ontology)
+            self.triple_store_manager.serialize(
+                state.aggregated_facts,
+                graph_uri=state.doc_namespace,
+            )
 
     def initialize(self) -> None:
         """Initialize the toolbox with ontologies and their properties.
@@ -224,20 +215,10 @@ class ToolBox:
         """
 
         # Synchronize ontologies and get the final set
-        ontologies = self._synchronize_ontologies()
+        self.ontology_manager.ontologies = self._synchronize_ontologies()
+        update_ontology_manager(om=self.ontology_manager, llm_tool=self.llm)
 
-        # Use the synchronized ontologies
-        if ontologies is not None:
-            self.ontology_manager.ontologies = ontologies
-            update_ontology_manager(om=self.ontology_manager, llm_tool=self.llm)
-        elif self.filesystem_manager is not None:
-            # Fallback to filesystem if no triple store manager
-            self.ontology_manager.ontologies = (
-                self.filesystem_manager.fetch_ontologies()
-            )
-            update_ontology_manager(om=self.ontology_manager, llm_tool=self.llm)
-
-    def _synchronize_ontologies(self) -> list | None:
+    def _synchronize_ontologies(self) -> list[Ontology]:
         """Synchronize ontologies between filesystem and triple store.
 
         This method checks both filesystem_manager and triple_store_manager for
@@ -245,52 +226,32 @@ class ToolBox:
         filesystem_manager that are not present in triple_store_manager.
 
         Returns:
-            list | None: The final set of ontologies after synchronization, or None if no triple store manager.
+            list: The final set of ontologies after synchronization
         """
-        if self.triple_store_manager is None:
-            logger.debug("No triple store manager available for synchronization")
-            return None
 
-        # Get ontologies from filesystem if available
-        filesystem_ontologies = []
+        ontologies = []
+
         if self.filesystem_manager is not None:
-            filesystem_ontologies = self.filesystem_manager.fetch_ontologies()
-            logger.debug(f"Found {len(filesystem_ontologies)} ontologies in filesystem")
+            ontologies += self.filesystem_manager.fetch_ontologies()
+            logger.debug(f"Found {len(ontologies)} ontologies in filesystem")
 
-        # Get ontologies from triple store
-        triple_store_ontologies = self.triple_store_manager.fetch_ontologies()
-        logger.debug(f"Found {len(triple_store_ontologies)} ontologies in triple store")
-
-        # Create a set of existing ontology IRIs in triple store for quick lookup
-        existing_iris = {onto.iri for onto in triple_store_ontologies}
+        triple_store_ontologies = []
+        if (
+            self.triple_store_manager is not None
+            and self.triple_store_manager != self.filesystem_manager
+        ):
+            triple_store_ontologies += self.triple_store_manager.fetch_ontologies()
+            logger.debug(
+                f"Found {len(triple_store_ontologies)} ontologies in triple store"
+            )
 
         # Find ontologies in filesystem that are not in triple store
-        new_ontologies = []
-        for fs_ontology in filesystem_ontologies:
-            if fs_ontology.iri not in existing_iris:
-                new_ontologies.append(fs_ontology)
-                logger.debug(f"Found new ontology in filesystem: {fs_ontology.iri}")
+        for o in triple_store_ontologies:
+            if o.iri not in [item.iri for item in ontologies]:
+                ontologies.append(o)
+                logger.debug(f"Found new ontology in filesystem: {o.iri}")
 
-        # Store new ontologies in triple store
-        if new_ontologies:
-            logger.info(f"Syncing {len(new_ontologies)} new ontologies to triple store")
-            for ontology in new_ontologies:
-                # Store ontology in main dataset for reasoning
-                self.triple_store_manager.serialize_graph(
-                    graph=ontology.graph, graph_uri=ontology.iri
-                )
-                # Store ontology in ontologies dataset for management (if available)
-                if hasattr(self.triple_store_manager, "serialize_ontology_graph"):
-                    # Type ignore because we're checking for the method dynamically
-                    self.triple_store_manager.serialize_ontology_graph(  # type: ignore
-                        graph=ontology.graph, graph_uri=ontology.iri
-                    )
-                logger.debug(f"Synced ontology to triple store: {ontology.iri}")
-        else:
-            logger.debug("No new ontologies to sync from filesystem to triple store")
-
-        # Return the final set of ontologies (triple store + newly synced)
-        return triple_store_ontologies
+        return ontologies
 
 
 def render_ontology_summary(graph: RDFGraph, llm_tool) -> OntologyProperties:

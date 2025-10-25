@@ -113,7 +113,7 @@ class FilesystemTripleStoreManager(TripleStoreManager):
     def serialize(self, o: Ontology | RDFGraph, graph_uri: str | None = None):
         if isinstance(o, Ontology):
             graph = o.graph
-            fname = f"ontology_{o.ontology_id}_{o.version}"
+            fname = f"ontology_{o.ontology_id}_{o.version}.ttl"
         elif isinstance(o, RDFGraph):
             graph = o
             s = graph_uri.split("/")[-2:]
@@ -122,4 +122,4 @@ class FilesystemTripleStoreManager(TripleStoreManager):
         else:
             raise TypeError(f"unsupported obj of type {type(o)} received")
 
-        self.serialize_graph(fname=fname, graph=graph)
+        self.serialize_graph(graph=graph, fname=fname)

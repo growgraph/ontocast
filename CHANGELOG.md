@@ -13,8 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shared caching architecture with single Cacher instance
 - ToolCacher wrapper for tool-specific cache access
 - Environment variable `ONTOCAST_CACHE_DIR` for cache directory configuration
+- New `serialize()` method in triple store managers as primary interface for storing Ontology and RDFGraph objects
 
 ### Changed
+- **BREAKING**: `serialize()` method is now the primary interface for storing data in triple stores
+- **BREAKING**: `serialize()` method now accepts `Ontology | RDFGraph` objects instead of raw `Graph` objects
+- **BREAKING**: `serialize_graph()` method signature changed to use `**kwargs` for implementation-specific parameters
+- All triple store managers now implement both `serialize()` and `serialize_graph()` methods
 - **BREAKING**: Environment variables now use `ONTOCAST_` prefix:
   - `WORKING_DIRECTORY` → `ONTOCAST_WORKING_DIRECTORY`
   - `ONTOLOGY_DIRECTORY` → `ONTOCAST_ONTOLOGY_DIRECTORY`

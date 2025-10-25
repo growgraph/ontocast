@@ -111,6 +111,27 @@ class MockTripleStoreManager(TripleStoreManager):
 
         return True
 
+    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> bool | None:
+        """Store an Ontology or RDFGraph in the mock store.
+
+        Args:
+            o: Ontology or RDFGraph object to store.
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            bool: True if the object was stored successfully.
+        """
+        if isinstance(o, Ontology):
+            graph = o.graph
+            graph_uri = o.iri
+        elif isinstance(o, RDFGraph):
+            graph = o
+            graph_uri = kwargs.get("graph_uri")
+        else:
+            raise TypeError(f"unsupported obj of type {type(o)} received")
+
+        return self.serialize_graph(graph, graph_uri)
+
     def _extract_ontology_id(self, graph: Graph) -> str | None:
         """Extract ontology ID from graph content.
 
@@ -252,6 +273,27 @@ class MockFusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
         return True
 
+    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> bool | None:
+        """Store an Ontology or RDFGraph in the mock store.
+
+        Args:
+            o: Ontology or RDFGraph object to store.
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            bool: True if the object was stored successfully.
+        """
+        if isinstance(o, Ontology):
+            graph = o.graph
+            graph_uri = o.iri
+        elif isinstance(o, RDFGraph):
+            graph = o
+            graph_uri = kwargs.get("graph_uri")
+        else:
+            raise TypeError(f"unsupported obj of type {type(o)} received")
+
+        return self.serialize_graph(graph, graph_uri)
+
     def _extract_ontology_id(self, graph: Graph) -> str | None:
         """Extract ontology ID from graph content.
 
@@ -382,6 +424,27 @@ class MockNeo4jTripleStoreManager(TripleStoreManagerWithAuth):
             "properties_set": len(graph),
             "labels_added": 1,
         }
+
+    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> Dict[str, Any] | None:
+        """Store an Ontology or RDFGraph in the mock store.
+
+        Args:
+            o: Ontology or RDFGraph object to store.
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            Dict[str, Any]: Mock summary of the operation.
+        """
+        if isinstance(o, Ontology):
+            graph = o.graph
+            graph_uri = o.iri
+        elif isinstance(o, RDFGraph):
+            graph = o
+            graph_uri = kwargs.get("graph_uri")
+        else:
+            raise TypeError(f"unsupported obj of type {type(o)} received")
+
+        return self.serialize_graph(graph, graph_uri)
 
     def _extract_ontology_id(self, graph: Graph) -> str | None:
         """Extract ontology ID from graph content.
