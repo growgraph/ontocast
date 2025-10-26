@@ -173,6 +173,11 @@ def render_facts_fresh(state: AgentState, tools: ToolBox) -> AgentState:
         proj.semantic_graph.sanitize_prefixes_namespaces()
         state.current_chunk.graph = proj.semantic_graph
 
+        # Track triples in budget tracker (fresh facts)
+        num_triples = len(proj.semantic_graph)
+        logger.info(f"Fresh facts generated with {num_triples} triple(s).")
+        state.budget_tracker.add_facts_update(num_operations=1, num_triples=num_triples)
+
         state.clear_failure()
         return state
 
@@ -223,6 +228,9 @@ def render_facts_update(state: AgentState, tools: ToolBox) -> AgentState:
             f"Facts update has {num_operations} operation(s) "
             f"with {num_triples} total triple(s)."
         )
+
+        # Track triples in budget tracker
+        state.budget_tracker.add_facts_update(num_operations, num_triples)
 
         state.set_node_status(WorkflowNode.TEXT_TO_FACTS, Status.SUCCESS)
         state.clear_failure()

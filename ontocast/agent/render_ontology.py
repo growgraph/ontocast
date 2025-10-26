@@ -105,7 +105,7 @@ def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
     )
 
     try:
-        llm_tool = tools.get_llm_tool_with_budget_tracker(state.llm_budget_tracker)
+        llm_tool = tools.get_llm_tool(state.budget_tracker)
         response = llm_tool(
             prompt.format_prompt(
                 preamble=system_preamble,
@@ -123,9 +123,14 @@ def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
         state.current_ontology = parser.parse(response.content)
         state.current_ontology.graph.sanitize_prefixes_namespaces()
 
-        logger.info(
-            f"New ontology created with {len(state.current_ontology.graph)} triples."
+        num_triples = len(state.current_ontology.graph)
+        logger.info(f"New ontology created with {num_triples} triple(s).")
+
+        # Track triples in budget tracker (fresh ontology)
+        state.budget_tracker.add_ontology_update(
+            num_operations=1, num_triples=num_triples
         )
+
         state.clear_failure()
         state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.SUCCESS)
         return state
@@ -189,7 +194,7 @@ def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
     )
 
     try:
-        llm_tool = tools.get_llm_tool_with_budget_tracker(state.llm_budget_tracker)
+        llm_tool = tools.get_llm_tool(state.budget_tracker)
         response = llm_tool(
             prompt.format_prompt(
                 preamble=system_preamble,
@@ -213,6 +218,10 @@ def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
             f"Ontology update has {num_operations} operation(s) "
             f"with {num_triples} total triple(s)."
         )
+
+        # Track triples in budget tracker
+        state.budget_tracker.add_ontology_update(num_operations, num_triples)
+
         state.clear_failure()
         state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.SUCCESS)
         return state

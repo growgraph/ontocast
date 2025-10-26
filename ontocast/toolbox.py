@@ -154,7 +154,7 @@ class ToolBox:
         self.version_manager: GraphVersionManager = GraphVersionManager()
         self.diff_tool: DiffTool = DiffTool()
 
-    def get_llm_tool_with_budget_tracker(self, budget_tracker):
+    def get_llm_tool(self, budget_tracker):
         """Get an LLM tool instance with a specific budget tracker.
 
         Args:

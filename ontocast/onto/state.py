@@ -19,8 +19,8 @@ from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.util import iri2namespace, render_text_hash
 
 
-class LLMBudgetTracker(BasePydanticModel):
-    """Lightweight tracker for LLM usage statistics."""
+class BudgetTracker(BasePydanticModel):
+    """Lightweight tracker for LLM usage statistics and generated triples."""
 
     chars_sent: int = Field(default=0, description="Total characters sent to LLM")
     chars_received: int = Field(
@@ -28,19 +28,61 @@ class LLMBudgetTracker(BasePydanticModel):
     )
     calls_count: int = Field(default=0, description="Total number of LLM API calls")
 
+    # Triple generation tracking
+    ontology_triples_generated: int = Field(
+        default=0, description="Total number of triples generated for ontology updates"
+    )
+    facts_triples_generated: int = Field(
+        default=0, description="Total number of triples generated for facts"
+    )
+    ontology_operations_count: int = Field(
+        default=0, description="Total number of ontology update operations"
+    )
+    facts_operations_count: int = Field(
+        default=0, description="Total number of facts update operations"
+    )
+
     def add_usage(self, chars_sent: int, chars_received: int) -> None:
         """Add usage statistics."""
         self.chars_sent += chars_sent
         self.chars_received += chars_received
         self.calls_count += 1
 
+    def add_ontology_update(self, num_operations: int, num_triples: int) -> None:
+        """Add ontology update statistics.
+
+        Args:
+            num_operations: Number of update operations generated
+            num_triples: Number of triples in these operations
+        """
+        self.ontology_operations_count += num_operations
+        self.ontology_triples_generated += num_triples
+
+    def add_facts_update(self, num_operations: int, num_triples: int) -> None:
+        """Add facts update statistics.
+
+        Args:
+            num_operations: Number of update operations generated
+            num_triples: Number of triples in these operations
+        """
+        self.facts_operations_count += num_operations
+        self.facts_triples_generated += num_triples
+
     def get_summary(self) -> str:
-        """Get a summary of LLM usage."""
-        return (
-            f"LLM Budget: {self.calls_count} calls, "
-            f"{self.chars_sent:,} chars sent, "
-            f"{self.chars_received:,} chars received"
-        )
+        """Get a summary of LLM usage and generated triples."""
+        parts = [
+            f"LLM: {self.calls_count} calls, "
+            f"{self.chars_sent:,} sent, "
+            f"{self.chars_received:,} received",
+        ]
+
+        if self.ontology_triples_generated > 0 or self.facts_triples_generated > 0:
+            parts.append(
+                f"Triples: {self.ontology_triples_generated} ontology, "
+                f"{self.facts_triples_generated} facts"
+            )
+
+        return " | ".join(parts)
 
 
 class AgentState(BasePydanticModel):
@@ -191,10 +233,10 @@ class AgentState(BasePydanticModel):
         description="Context manager for passing information between agents",
     )
 
-    # LLM Budget Tracking
-    llm_budget_tracker: LLMBudgetTracker = Field(
-        default_factory=LLMBudgetTracker,
-        description="LLM usage statistics tracker",
+    # Budget Tracking
+    budget_tracker: BudgetTracker = Field(
+        default_factory=BudgetTracker,
+        description="Budget statistics tracker (LLM usage and generated triples)",
     )
 
     def model_post_init(self, __context):

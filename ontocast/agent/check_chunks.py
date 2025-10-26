@@ -56,17 +56,10 @@ def check_chunks_empty(state: AgentState) -> AgentState:
         )
         state.chunks_processed.append(state.current_chunk)
 
-    progress_info = state.get_chunk_progress_string()
-    logger.info(f"Processing {progress_info} - Setting up current chunk")
-
     if state.chunks:
         state.current_chunk = state.chunks.pop(0)
         state.node_visits = defaultdict(int)
         state.status = Status.FAILED
-        logger.info(
-            f"{progress_info} available, setting status to FAILED "
-            "and proceeding to SELECT_ONTOLOGY"
-        )
     else:
         state.current_chunk = Chunk(
             text="",

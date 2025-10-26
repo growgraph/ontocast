@@ -46,7 +46,7 @@ def aggregate_serialize(state: AgentState, tools: ToolBox) -> AgentState:
         )
 
     # Report LLM budget usage
-    if state.llm_budget_tracker:
-        logger.info(state.llm_budget_tracker.get_summary())
+    if state.budget_tracker:
+        logger.info(state.budget_tracker.get_summary())
     tools.serialize(state)
     return state
