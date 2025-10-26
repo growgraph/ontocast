@@ -4,14 +4,22 @@ This module provides Pydantic models for structured SPARQL queries
 that can be used with PydanticOutputParser for LLM integration.
 """
 
+import logging
 from typing import Any, Union
 from typing import Literal as TypingLiteral
 
 from pydantic import BaseModel, Field, model_validator
 from rdflib import BNode, Literal, URIRef
 
+from ontocast.onto.constants import COMMON_PREFIXES
 from ontocast.onto.enum import SPARQLOperationType
 from ontocast.onto.rdfgraph import RDFGraph
+
+logger = logging.getLogger(__name__)
+
+# Convert COMMON_PREFIXES from Turtle format (with angle brackets) to SPARQL format (without)
+# Example: "<http://example.org/>" -> "http://example.org/"
+STANDARD_PREFIXES = {prefix: uri.strip("<>") for prefix, uri in COMMON_PREFIXES.items()}
 
 
 class SPARQLOperationModel(BaseModel):
@@ -323,60 +331,31 @@ class Triple(BaseModel):
         return (self._subject_term, self._predicate_term, self._object_term)
 
 
-class InsertOp(BaseModel):
-    """Operation to insert new triples into the RDF graph.
+class TripleOp(BaseModel):
+    """Operation to modify triples in the RDF graph.
 
-    This operation adds the specified triples to the graph without affecting
-    existing triples. Used for adding new knowledge to the ontology.
+    This operation can insert or delete triples. REQUIRES explicit prefix declarations.
     """
 
-    type: TypingLiteral["insert"] = Field(
-        default="insert",
-        description="Type of operation - always 'insert' for this operation",
+    type: TypingLiteral["insert", "delete"] = Field(
+        description="Type of operation: 'insert' to add triples, 'delete' to remove triples"
     )
     triples: list[Triple] = Field(
-        default_factory=list, description="List of RDF triples to insert into the graph"
+        default_factory=list,
+        description="List of RDF triples to insert or delete. "
+        "Example: [Triple(subject='fca:CriminalChamber', predicate='rdf:type', object='fca:ChamberType')]",
     )
-
-
-class DeleteOp(BaseModel):
-    """Operation to delete triples from the RDF graph.
-
-    This operation removes the specified triples from the graph.
-    Used for removing outdated or incorrect knowledge from the ontology.
-    """
-
-    type: TypingLiteral["delete"] = Field(
-        default="delete",
-        description="Type of operation - always 'delete' for this operation",
-    )
-    triples: list[Triple] = Field(
-        default_factory=list, description="List of RDF triples to delete from the graph"
-    )
-
-
-class AddPrefixOp(BaseModel):
-    """Operation to add a namespace prefix mapping.
-
-    This operation defines a prefix that can be used to shorten URIs
-    in SPARQL queries and RDF data. The prefix should be a short string
-    and the namespace_uri should be a valid URI ending with '#' or '/'.
-    """
-
-    type: TypingLiteral["add_prefix"] = Field(
-        default="add_prefix",
-        description="Type of operation - always 'add_prefix' for this operation",
-    )
-    prefix: str = Field(
-        description="The prefix string to use for the namespace (e.g., 'ex', 'rdf', 'owl')"
-    )
-    namespace_uri: str = Field(
-        description="The full namespace URI that the prefix maps to (e.g., 'http://example.org/')"
+    prefixes: dict[str, str] = Field(
+        default_factory=dict,
+        description="REQUIRED: ALL custom prefixes used in the triples must be declared here. "
+        "Standard prefixes from COMMON_PREFIXES in constants.py (rdf, rdfs, owl, xsd, dc, dcterms, skos, foaf, schema, prov, ex) are automatically available and do NOT need to be declared. "
+        "For example, if you use 'fca:CriminalChamber', you must include 'fca' in this dictionary. "
+        "Mapping format: {'prefix_name': 'namespace_uri'}. Example: {'fca': 'http://example.org/ontologies/fca#'}",
     )
 
 
 class GenericSparqlQuery(BaseModel):
-    """Operation for custom SPARQL queries that go beyond basic insert/delete/add_prefix operations.
+    """Operation for custom SPARQL queries that go beyond basic insert/delete operations.
 
     This operation allows for complex SPARQL queries that cannot be expressed
     using the structured operations. Use this when you need custom SPARQL syntax,
@@ -392,23 +371,22 @@ class GenericSparqlQuery(BaseModel):
     )
 
 
-Operation = InsertOp | DeleteOp | AddPrefixOp | GenericSparqlQuery
+Operation = TripleOp | GenericSparqlQuery
 
 
 class GraphUpdate(BaseModel):
     """Structured representation of RDF graph updates for LLM output.
 
-    This model provides a structured way to represent graph updates that can be
-    easily parsed by LLMs. It supports basic operations (insert, delete, add_prefix)
-    and custom SPARQL queries for complex operations that go beyond these basics.
-
-    All operations are contained in the operations list, including custom SPARQL queries
-    using the GenericSparqlQuery operation type.
+    This model represents ontology updates as a structured set of operations.
+    Each operation in the list is executed in order to modify the graph.
     """
 
     operations: list[Operation] = Field(
         default_factory=list,
-        description="List of graph update operations (insert, delete, add_prefix, sparql_query) in execution order",
+        description="List of graph update operations in execution order. "
+        "Each operation should be a TripleOp (for insert/delete) with explicit prefix declarations, "
+        "or a GenericSparqlQuery for complex custom queries. "
+        "Example: [TripleOp(type='insert', triples=[...], prefixes={'fca': 'http://example.org/fca#'})]",
     )
 
     def generate_sparql_queries(self) -> list[str]:
@@ -420,41 +398,39 @@ class GraphUpdate(BaseModel):
         """
         queries = []
 
-        # Collect all prefixes first for use in subsequent queries
-        prefixes = {}
-        for op in self.operations:
-            if isinstance(op, AddPrefixOp):
-                prefixes[op.prefix] = op.namespace_uri
-
-        # Generate PREFIX declarations block
-        if prefixes:
-            prefix_declarations = []
-            for prefix, uri in prefixes.items():
-                prefix_declarations.append(f"PREFIX {prefix}: <{uri}>")
-            prefix_block = "\n".join(prefix_declarations)
-        else:
-            prefix_block = ""
-
         # Process operations in order, generating a query for each operation
         for op in self.operations:
-            if isinstance(op, InsertOp):
+            if isinstance(op, TripleOp):
                 if op.triples:  # Only generate query if there are triples
-                    insert_query = self._generate_insert_query(op.triples, prefix_block)
-                    queries.append(insert_query)
-            elif isinstance(op, DeleteOp):
-                if op.triples:  # Only generate query if there are triples
-                    delete_query = self._generate_delete_query(op.triples, prefix_block)
-                    queries.append(delete_query)
+                    # Build prefix block for this operation
+                    # Start with standard prefixes from COMMON_PREFIXES
+                    prefixes = STANDARD_PREFIXES.copy()
+                    # Add custom prefixes declared in this operation (may override standard ones)
+                    prefixes.update(op.prefixes)
+
+                    # Generate PREFIX declarations block
+                    if prefixes:
+                        prefix_declarations = []
+                        for prefix, uri in prefixes.items():
+                            prefix_declarations.append(f"PREFIX {prefix}: <{uri}>")
+                        prefix_block = "\n".join(prefix_declarations)
+                    else:
+                        prefix_block = ""
+
+                    # Generate query based on operation type
+                    if op.type == "insert":
+                        triple_query = self._generate_insert_query(
+                            op.triples, prefix_block
+                        )
+                    else:  # delete
+                        triple_query = self._generate_delete_query(
+                            op.triples, prefix_block
+                        )
+                    queries.append(triple_query)
             elif isinstance(op, GenericSparqlQuery):
                 if op.query.strip():  # Only generate query if there's content
-                    if prefix_block:
-                        # Prepend prefixes to the query if not already present
-                        if not op.query.upper().startswith("PREFIX"):
-                            queries.append(f"{prefix_block}\n\n{op.query}")
-                        else:
-                            queries.append(op.query)
-                    else:
-                        queries.append(op.query)
+                    # For custom SPARQL queries, use them as-is
+                    queries.append(op.query)
         return queries
 
     def generate_diff_summary(self) -> str:
@@ -471,33 +447,25 @@ class GraphUpdate(BaseModel):
         operation_count = 0
 
         for i, op in enumerate(self.operations, 1):
-            if isinstance(op, AddPrefixOp):
-                diff_parts.append(
-                    f"{i}. ADD PREFIX: {op.prefix} → <{op.namespace_uri}>"
-                )
-                operation_count += 1
-
-            elif isinstance(op, InsertOp):
+            if isinstance(op, TripleOp):
                 if op.triples:
-                    diff_parts.append(f"{i}. INSERT {len(op.triples)} triple(s):")
+                    op_type = op.type.upper()
+                    diff_parts.append(f"{i}. {op_type} {len(op.triples)} triple(s):")
+
+                    # Show declared prefixes if any
+                    if op.prefixes:
+                        prefix_list = ", ".join(
+                            [f"{k}: {v}" for k, v in op.prefixes.items()]
+                        )
+                        diff_parts.append(f"   Prefixes: {prefix_list}")
+
                     for triple in op.triples:
                         subject_term, predicate_term, object_term = (
                             triple.to_rdf_terms()
                         )
+                        symbol = "+" if op.type == "insert" else "-"
                         diff_parts.append(
-                            f"   + {self._serialize_rdf_term(subject_term)} {self._serialize_rdf_term(predicate_term)} {self._serialize_rdf_term(object_term)}"
-                        )
-                    operation_count += 1
-
-            elif isinstance(op, DeleteOp):
-                if op.triples:
-                    diff_parts.append(f"{i}. DELETE {len(op.triples)} triple(s):")
-                    for triple in op.triples:
-                        subject_term, predicate_term, object_term = (
-                            triple.to_rdf_terms()
-                        )
-                        diff_parts.append(
-                            f"   - {self._serialize_rdf_term(subject_term)} {self._serialize_rdf_term(predicate_term)} {self._serialize_rdf_term(object_term)}"
+                            f"   {symbol} {self._serialize_rdf_term(subject_term)} {self._serialize_rdf_term(predicate_term)} {self._serialize_rdf_term(object_term)}"
                         )
                     operation_count += 1
 

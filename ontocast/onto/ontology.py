@@ -1,10 +1,12 @@
 import logging
 import pathlib
+import re
 from collections import defaultdict
-from typing import Union
+from datetime import datetime, timezone
+from typing import Annotated, Union
 
 from pydantic import BaseModel, ConfigDict, Field
-from rdflib import DCTERMS, OWL, RDF, RDFS, Literal, URIRef
+from rdflib import DCTERMS, OWL, RDF, RDFS, XSD, Literal, URIRef
 
 from ontocast.onto.constants import DEFAULT_DOMAIN, ONTOLOGY_NULL_ID, ONTOLOGY_NULL_IRI
 from ontocast.onto.rdfgraph import RDFGraph
@@ -12,6 +14,15 @@ from ontocast.onto.util import derive_ontology_id
 from ontocast.util import iri2namespace
 
 logger = logging.getLogger(__name__)
+
+# Semantic version pattern: MAJOR.MINOR.PATCH (e.g., 1.2.3)
+SemanticVersion = Annotated[
+    str,
+    Field(
+        pattern=r"^\d+\.\d+\.\d+$",
+        description="Semantic version in MAJOR.MINOR.PATCH format (e.g., 1.2.3)",
+    ),
+]
 
 
 class OntologyProperties(BaseModel):
@@ -35,13 +46,21 @@ class OntologyProperties(BaseModel):
         description="A concise description (3-4 sentences) of the ontology "
         "(domain, purpose, applicability, etc.)",
     )
-    version: str = Field(
+    version: SemanticVersion = Field(
         default="1.0.0",
         description="Version of the ontology (use semantic versioning)",
     )
     iri: str = Field(
         default=ONTOLOGY_NULL_IRI,
         description="Ontology IRI (Internationalized Resource Identifier)",
+    )
+    updated_at: datetime | None = Field(
+        default=None,
+        description="Timestamp when the ontology was last updated (UTC)",
+    )
+    initial_version: SemanticVersion | None = Field(
+        default=None,
+        description="The initial version of the ontology when it was first loaded in this session",
     )
 
     @property
@@ -108,6 +127,10 @@ class Ontology(OntologyProperties):
                 self.ontology_id = derive_ontology_id(self.iri)
         # Always ensure graph is up to date with properties
         self.sync_properties_to_graph()
+
+        # Set initial_version if not already set
+        if self.initial_version is None and self.version:
+            self.initial_version = self.version
 
     @property
     def prefix(self) -> str | None:
@@ -216,9 +239,53 @@ class Ontology(OntologyProperties):
         if self.description:
             add_if_missing(DCTERMS.description, self.description)
             add_if_missing(RDFS.comment, self.description)
-        # Add version
+        # Add version (update if exists)
         if self.version:
-            add_if_missing(OWL.versionInfo, self.version)
+            # Remove existing version triples to update them
+            for _, _, obj in g.triples((onto_iri, OWL.versionInfo, None)):
+                g.remove((onto_iri, OWL.versionInfo, obj))
+            # Add new version
+            g.add((onto_iri, OWL.versionInfo, Literal(self.version)))
+        # Add updated_at if set
+        if self.updated_at:
+            # Remove existing dcterms:modified triples to update them
+            for _, _, obj in g.triples((onto_iri, DCTERMS.modified, None)):
+                g.remove((onto_iri, DCTERMS.modified, obj))
+            # Add new updated_at with datetime type
+            g.add(
+                (
+                    onto_iri,
+                    DCTERMS.modified,
+                    Literal(self.updated_at.isoformat(), datatype=XSD.dateTime),
+                )
+            )
+
+    def _increment_version(self) -> None:
+        """Increment the ontology version using semantic versioning.
+
+        Increments the patch version (e.g., 1.0.0 -> 1.0.1, 2.3.4 -> 2.3.5).
+        """
+        # Parse version string (e.g., "1.2.3")
+        match = re.match(r"^(\d+)\.(\d+)\.(\d+)$", self.version)
+        if match:
+            major, minor, patch = map(int, match.groups())
+            patch += 1
+            self.version = f"{major}.{minor}.{patch}"
+        else:
+            # If version doesn't follow semantic versioning, increment as string
+            self.version = f"{self.version}+1"
+        logger.info(f"Incremented ontology version to {self.version}")
+
+    def mark_as_updated(self) -> None:
+        """Mark the ontology as updated and update version.
+
+        Sets the updated_at timestamp to now (UTC) and increments the version.
+        """
+        self.updated_at = datetime.now(timezone.utc)
+        self._increment_version()
+        logger.info(
+            f"Marked ontology {self.ontology_id} as updated at {self.updated_at}"
+        )
 
     def sync_properties_from_graph(self):
         """
@@ -268,6 +335,19 @@ class Ontology(OntologyProperties):
         if not getattr(self, "version", None):
             if OWL.versionInfo in pred_map:
                 self.version = str(pred_map[OWL.versionInfo][0])
+        # Updated at
+        if not getattr(self, "updated_at", None):
+            if DCTERMS.modified in pred_map:
+                # Get the first modified date
+                modified_str = str(pred_map[DCTERMS.modified][0])
+                # Try to parse as datetime
+                try:
+                    self.updated_at = datetime.fromisoformat(
+                        modified_str.replace("Z", "+00:00")
+                    )
+                except (ValueError, AttributeError):
+                    # If parsing fails, keep it as None
+                    pass
         # Short name: try dcterms:title if not already used for title
         if not getattr(self, "ontology_id", None):
             if DCTERMS.title in pred_map:
@@ -291,6 +371,8 @@ class Ontology(OntologyProperties):
             self.description = other.description
             self.iri = other.iri
             self.version = other.version
+            self.updated_at = other.updated_at
+            self.initial_version = other.initial_version
         else:
             self.graph += other
         return self

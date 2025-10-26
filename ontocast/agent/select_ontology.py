@@ -68,5 +68,13 @@ def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
         )
     else:
         state.current_ontology = NULL_ONTOLOGY
+
+    # Set the initial version if not already set (tracks original version when ontology was selected)
+    if state.current_ontology.initial_version is None:
+        state.current_ontology.initial_version = state.current_ontology.version
+        logger.debug(
+            f"Set initial version for ontology {state.current_ontology.ontology_id}: {state.current_ontology.initial_version}"
+        )
+
     logger.debug(f"Current ontology set to: {state.current_ontology.ontology_id}")
     return state

@@ -3,7 +3,7 @@ from rdflib import Literal, URIRef
 
 from ontocast.agent import check_chunks_empty, chunk_text, select_ontology
 from ontocast.onto.ontology import Ontology
-from ontocast.onto.sparql_models import AddPrefixOp, GraphUpdate, InsertOp, Triple
+from ontocast.onto.sparql_models import GraphUpdate, Triple, TripleOp
 from ontocast.onto.state import AgentState
 
 
@@ -81,15 +81,16 @@ def test_render_updated_graph():
     # Create a GraphUpdate that adds a new triple
     graph_update = GraphUpdate(
         operations=[
-            AddPrefixOp(prefix="ex", namespace_uri="http://example.com/"),
-            InsertOp(
+            TripleOp(
+                type="insert",
                 triples=[
                     Triple(
                         subject="ex:subject",
                         predicate="ex:predicate",
                         object='"updated_value"',
                     )
-                ]
+                ],
+                prefixes={"ex": "http://example.com/"},
             ),
         ]
     )
@@ -136,15 +137,16 @@ def test_render_uptodate_facts():
     state.facts_updates = [
         GraphUpdate(
             operations=[
-                AddPrefixOp(prefix="ex", namespace_uri="http://example.com/"),
-                InsertOp(
+                TripleOp(
+                    type="insert",
                     triples=[
                         Triple(
                             subject="ex:subject",
                             predicate="ex:predicate",
                             object='"facts_value"',
                         )
-                    ]
+                    ],
+                    prefixes={"ex": "http://example.com/"},
                 ),
             ]
         )
@@ -187,15 +189,16 @@ def test_update_facts():
     state.facts_updates = [
         GraphUpdate(
             operations=[
-                AddPrefixOp(prefix="ex", namespace_uri="http://example.com/"),
-                InsertOp(
+                TripleOp(
+                    type="insert",
                     triples=[
                         Triple(
                             subject="ex:subject",
                             predicate="ex:predicate",
                             object='"facts_value"',
                         )
-                    ]
+                    ],
+                    prefixes={"ex": "http://example.com/"},
                 ),
             ]
         )

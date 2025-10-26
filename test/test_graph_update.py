@@ -8,17 +8,15 @@ from rdflib import Literal, URIRef
 
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import (
-    AddPrefixOp,
-    DeleteOp,
     GenericSparqlQuery,
     GraphUpdate,
-    InsertOp,
     Triple,
+    TripleOp,
 )
 
 
 def test_graph_update_insert_operation():
-    """Test GraphUpdate with InsertOp operations."""
+    """Test GraphUpdate with TripleOp insert operations."""
     # Create initial RDFGraph
     graph = RDFGraph._from_turtle_str(
         """
@@ -33,16 +31,18 @@ def test_graph_update_insert_operation():
 
     initial_triple_count = len(graph)
 
-    # Create GraphUpdate with InsertOp
+    # Create GraphUpdate with TripleOp
     graph_update = GraphUpdate(
         operations=[
-            InsertOp(
+            TripleOp(
+                type="insert",
                 triples=[
                     Triple(subject="ex:John", predicate="rdf:type", object="ex:Person"),
                     Triple(
                         subject="ex:John", predicate="rdfs:label", object='"John Doe"'
                     ),
-                ]
+                ],
+                prefixes={"ex": "http://example.org/"},
             )
         ]
     )
@@ -71,7 +71,7 @@ def test_graph_update_insert_operation():
 
 
 def test_graph_update_delete_operation():
-    """Test GraphUpdate with DeleteOp operations."""
+    """Test GraphUpdate with TripleOp delete operations."""
     # Create RDFGraph with existing triples
     graph = RDFGraph._from_turtle_str(
         """
@@ -92,16 +92,18 @@ def test_graph_update_delete_operation():
 
     initial_triple_count = len(graph)
 
-    # Create GraphUpdate with DeleteOp
+    # Create GraphUpdate with TripleOp
     graph_update = GraphUpdate(
         operations=[
-            DeleteOp(
+            TripleOp(
+                type="delete",
                 triples=[
                     Triple(subject="ex:John", predicate="rdf:type", object="ex:Person"),
                     Triple(
                         subject="ex:John", predicate="rdfs:label", object='"John Doe"'
                     ),
-                ]
+                ],
+                prefixes={"ex": "http://example.org/"},
             )
         ]
     )
@@ -136,7 +138,7 @@ def test_graph_update_delete_operation():
 
 
 def test_graph_update_with_prefixes():
-    """Test GraphUpdate with AddPrefixOp operations."""
+    """Test GraphUpdate with TripleOp operations that declare custom prefixes."""
     # Create initial RDFGraph
     graph = RDFGraph._from_turtle_str(
         """
@@ -149,17 +151,21 @@ def test_graph_update_with_prefixes():
 
     initial_triple_count = len(graph)
 
-    # Create GraphUpdate with AddPrefixOp and InsertOp using the prefix
+    # Create GraphUpdate with TripleOp that declares custom prefixes
     graph_update = GraphUpdate(
         operations=[
-            AddPrefixOp(prefix="schema", namespace_uri="https://schema.org/"),
-            InsertOp(
+            TripleOp(
+                type="insert",
                 triples=[
                     Triple(subject="ex:John", predicate="rdf:type", object="ex:Person"),
                     Triple(
                         subject="ex:John", predicate="schema:name", object='"John Doe"'
                     ),
-                ]
+                ],
+                prefixes={
+                    "ex": "http://example.org/",
+                    "schema": "https://schema.org/",
+                },
             ),
         ]
     )
@@ -167,7 +173,7 @@ def test_graph_update_with_prefixes():
     # Generate SPARQL queries
     queries = graph_update.generate_sparql_queries()
 
-    # Should generate one query (AddPrefixOp doesn't generate a separate query)
+    # Should generate one query
     assert len(queries) == 1
 
     # Verify the query includes PREFIX declarations
@@ -212,10 +218,9 @@ def test_graph_update_mixed_operations_ordered():
     # Create GraphUpdate with mixed operations in specific order
     graph_update = GraphUpdate(
         operations=[
-            # First: Add prefix
-            AddPrefixOp(prefix="schema", namespace_uri="https://schema.org/"),
-            # Second: Insert new person
-            InsertOp(
+            # First: Insert new person with custom schema prefix
+            TripleOp(
+                type="insert",
                 triples=[
                     Triple(subject="ex:Jane", predicate="rdf:type", object="ex:Person"),
                     Triple(
@@ -223,25 +228,33 @@ def test_graph_update_mixed_operations_ordered():
                         predicate="schema:name",
                         object='"Jane Smith"',
                     ),
-                ]
+                ],
+                prefixes={
+                    "ex": "http://example.org/",
+                    "schema": "https://schema.org/",
+                },
             ),
-            # Third: Delete John's label
-            DeleteOp(
+            # Second: Delete John's label
+            TripleOp(
+                type="delete",
                 triples=[
                     Triple(
                         subject="ex:John", predicate="rdfs:label", object='"John Doe"'
                     )
-                ]
+                ],
+                prefixes={"ex": "http://example.org/"},
             ),
-            # Fourth: Insert new label for John
-            InsertOp(
+            # Third: Insert new label for John
+            TripleOp(
+                type="insert",
                 triples=[
                     Triple(
                         subject="ex:John",
                         predicate="rdfs:label",
                         object='"John Updated"',
                     )
-                ]
+                ],
+                prefixes={"ex": "http://example.org/"},
             ),
         ]
     )
@@ -249,7 +262,7 @@ def test_graph_update_mixed_operations_ordered():
     # Generate SPARQL queries
     queries = graph_update.generate_sparql_queries()
 
-    # Should generate 3 queries (AddPrefixOp doesn't generate a separate query)
+    # Should generate 3 queries (one for each TripleOp)
     assert len(queries) == 3
 
     # Execute queries in order
@@ -307,11 +320,11 @@ def test_graph_update_generic_sparql_query():
     initial_triple_count = len(graph)
 
     # Create GraphUpdate with GenericSparqlQuery
+    # Note: GenericSparqlQuery handles its own prefix declarations
     graph_update = GraphUpdate(
         operations=[
-            AddPrefixOp(prefix="schema", namespace_uri="https://schema.org/"),
             GenericSparqlQuery(
-                query="INSERT { ex:John schema:age 30 } WHERE { ex:John rdf:type ex:Person }"
+                query="PREFIX ex: <http://example.org/>\nPREFIX schema: <https://schema.org/>\nPREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>\nINSERT { ex:John schema:age 30 } WHERE { ex:John rdf:type ex:Person }"
             ),
         ]
     )
@@ -322,12 +335,9 @@ def test_graph_update_generic_sparql_query():
     # Should generate one query
     assert len(queries) == 1
 
-    # Verify the query includes the custom SPARQL
-    assert (
-        "INSERT { ex:John schema:age 30 } WHERE { ex:John rdf:type ex:Person }"
-        in queries[0]
-    )
-    assert "PREFIX schema: <https://schema.org/>" in queries[0]
+    # Verify the query includes the custom SPARQL with prefixes
+    assert "INSERT { ex:John schema:age 30 }" in queries[0]
+    assert "WHERE { ex:John rdf:type ex:Person }" in queries[0]
 
     # Execute the query on the graph
     graph.update(queries[0])
@@ -383,9 +393,8 @@ def test_graph_update_operations_with_empty_triples():
     # Create GraphUpdate with operations that have empty triples
     graph_update = GraphUpdate(
         operations=[
-            InsertOp(triples=[]),
-            DeleteOp(triples=[]),
-            AddPrefixOp(prefix="schema", namespace_uri="https://schema.org/"),
+            TripleOp(type="insert", triples=[]),
+            TripleOp(type="delete", triples=[]),
         ]
     )
 

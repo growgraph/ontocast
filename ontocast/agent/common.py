@@ -27,10 +27,12 @@ def render_suggestions_prompt(suggestions: Suggestions, stage: WorkflowNode) -> 
             general_suggestion=suggestions.systemic_critique_summary
         )
 
-    # Generate concrete template if actionable_fixes is not empty
-    concrete_template = suggestion_concrete_template.format(
-        suggestion_str=suggestions.to_markdown()
-    )
+    concrete_template = ""
+    if suggestions.actionable_fixes:
+        # Generate concrete template if actionable_fixes is not empty
+        concrete_template = suggestion_concrete_template.format(
+            suggestion_str=suggestions.to_markdown()
+        )
 
     if stage == WorkflowNode.TEXT_TO_FACTS:
         template = facts_template
@@ -38,8 +40,10 @@ def render_suggestions_prompt(suggestions: Suggestions, stage: WorkflowNode) -> 
         template = ontology_template
     else:
         raise ValueError(f"Stage {stage} not supported")
-
-    final_template = template.format(
-        suggestions_instruction=f"\n\n{general_template}\n\n{concrete_template}"
-    )
-    return final_template
+    if general_template or concrete_template:
+        final_prompt = template.format(
+            suggestions_instruction=f"\n\n{general_template}\n\n{concrete_template}"
+        )
+    else:
+        final_prompt = ""
+    return final_prompt

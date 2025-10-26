@@ -18,7 +18,12 @@ from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.state import AgentState
-from ontocast.prompt.common import output_instruction_sparql, output_instruction_ttl
+from ontocast.prompt.common import (
+    ontology_template,
+    output_instruction_sparql,
+    output_instruction_ttl,
+    text_template,
+)
 from ontocast.prompt.common import system_preamble_ontology as system_preamble
 from ontocast.prompt.render_ontology import (
     general_ontology_instruction,
@@ -83,6 +88,7 @@ def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
     general_ontology_instruction_str = general_ontology_instruction.format(
         prefix_instruction=prefix_instruction_fresh
     )
+    text_chapter = text_template.format(text=state.current_chunk.text)
 
     prompt = PromptTemplate(
         template=template_prompt,
@@ -110,7 +116,7 @@ def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
                 ontology_ttl=ontology_ttl,
                 user_instruction=state.ontology_user_instruction,
                 improvement_instruction=improvement_instruction_str,
-                text=state.current_chunk.text,
+                text=text_chapter,
                 format_instructions=parser.get_format_instructions(),
             ),
         )
@@ -153,7 +159,9 @@ def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
     intro_instruction = intro_instruction_update.format(
         ontology_iri=ontology_iri, ontology_desc=ontology_desc
     )
-    ontology_ttl = state.current_ontology.graph.serialize(format="turtle")
+    ontology_chapter = ontology_template.format(
+        ontology_ttl=state.current_ontology.graph.serialize(format="turtle")
+    )
     output_instruction = output_instruction_sparql
     improvement_instruction_str = render_suggestions_prompt(
         state.suggestions, WorkflowNode.TEXT_TO_ONTOLOGY
@@ -164,6 +172,7 @@ def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
             ontology_prefix=state.current_ontology.prefix
         )
     )
+    text_chapter = text_template.format(text=state.current_chunk.text)
 
     prompt = PromptTemplate(
         template=template_prompt,
@@ -189,9 +198,9 @@ def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
                 ontology_instruction=general_ontology_instruction_str,
                 output_instruction=output_instruction,
                 improvement_instruction=improvement_instruction_str,
-                ontology_ttl=ontology_ttl,
+                ontology_ttl=ontology_chapter,
                 user_instruction=state.ontology_user_instruction,
-                text=state.current_chunk.text,
+                text=text_chapter,
                 format_instructions=parser.get_format_instructions(),
             ),
         )

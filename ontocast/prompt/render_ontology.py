@@ -30,28 +30,50 @@ Update/modify the domain ontology {ontology_iri} provided below with abstract en
 
 {ontology_desc}
 
-Feel free to modify the description of the ontology to make it more accurate and complete, but to change neither the ontology IRI nor name.
+Feel free to update the description of the ontology to make it more accurate and complete, do not change neither ontology IRI nor predix nor id.
 """
 
-prefix_instruction_fresh = """
-Use prefix based on the proposed `ontology_id`
-"""
+prefix_instruction_fresh = """Use prefix based on the proposed `ontology_id`"""
 
-prefix_instruction_update = """
-Use prefix `{ontology_prefix}` for entities/properties placed in the current domain ontology.
-"""
+prefix_instruction_update = """Use prefix `{ontology_prefix}` for entities/properties placed in the current domain ontology."""
 
 
 general_ontology_instruction = """
 ### GENERAL
-1. {prefix_instruction}
-2. all abstract entities/classes/types or properties added to ontology must be linked to entities from basic ontologies (RDFS, OWL, schema etc), e.g. rdfs:Class, rdfs:subClassOf, rdf:Property, rdfs:domain, owl:Restriction, schema:Person, schema:Organization, etc or connected to newly introduced entities in the current ontology
-3. do not introduce entities known to you from other domain ontologies, rather connect new entities to known ontologies
-4. do not add facts or concrete entities from the document
-5. make sure newly introduced entities are well linked / described by their properties
-6. define units associated with measurable quantities.
-7. make sure that the semantic representation is faithful to the document, use your knowledge and common sense to make the ontology more complete and accurate.
-8. update/assign the version of the ontology using semantic versioning convention.
+
+1. **Only model abstract concepts — no instances or facts from the document** (e.g., no specific case names, dates, or people).
+
+2. **All abstract entities (classes/properties) must connect to:**
+   - **Standard vocabularies (RDFS, OWL, schema.org, SKOS) via rdfs:subClassOf, rdf:type, rdfs:subPropertyOf, etc.**
+   - **OR other entities within this ontology**
+   - **Example: `legal:CourtDecision rdfs:subClassOf schema:Event .`**
+
+3. **Every new entity must have:**
+   - **rdfs:label (required)**
+   - **rdfs:comment describing its purpose (required)**
+   - **At least one relationship to existing classes/properties**
+
+4. **Ensure ontology faithfully represents domain semantics from the document.** Use **domain knowledge to add implicit relationships** not explicitly stated but clearly implied.
+
+5. **Maintain consistency with existing conventions:**
+   - **Language: Use same language for labels/comments as existing ontology**
+   - **Naming: Follow existing PascalCase/camelCase patterns**
+   - **Structure: Respect existing hierarchy depth and property usage patterns**
+
+6. {prefix_instruction}
+
+7. **Define property characteristics when applicable:**
+   - **owl:FunctionalProperty** — property has at most one value (e.g., `foaf:homepage`, `dcterms:identifier`)
+   - **owl:InverseFunctionalProperty** — value uniquely identifies the subject (e.g., `foaf:mbox`, `schema:email`)
+   - **owl:TransitiveProperty** — if A→B and B→C, then A→C (e.g., `skos:broader`, `org:subOrganizationOf`)
+   - **owl:SymmetricProperty** — if A→B, then B→A (e.g., `foaf:knows`, `schema:relatedTo`)
+   - **owl:AsymmetricProperty** — if A→B, then NOT B→A (e.g., `org:hasSubOrganization`, `prov:wasDerivedFrom`)
+   - **owl:ReflexiveProperty** — every entity relates to itself (e.g., `owl:sameAs`)
+   - **owl:IrreflexiveProperty** — no entity relates to itself (e.g., `owl:differentFrom`)
+
+8. **For measurable properties, specify units using schema:unitCode, rdfs:comment, or explicit unit classes** (e.g., `schema:duration schema:unitCode "DAY"` or `time:numericDuration rdfs:comment "Duration measured in days"`).
+
+9. **When introducing entities from other domain ontologies, declare their namespace prefixes** (e.g., `@prefix foaf: <http://xmlns.com/foaf/0.1/> .` or `@prefix dcterms: <http://purl.org/dc/terms/> .`).
 """
 
 

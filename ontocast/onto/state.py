@@ -16,7 +16,7 @@ from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import BasePydanticModel, Suggestions
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.sparql_models import AddPrefixOp, GraphUpdate
+from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.util import iri2namespace, render_text_hash
 
 
@@ -221,15 +221,23 @@ class AgentState(BasePydanticModel):
         Returns:
             tuple[int, int]: (current_chunk_number, total_chunks)
         """
-        total_chunks = len(self.chunks) + len(self.chunks_processed)
-        if total_chunks == 0:
-            return 0, 0
-        # If we have remaining chunks, current is processed + 1
-        # If no remaining chunks, current is the last processed
-        if len(self.chunks) > 0:
-            current_chunk_number = len(self.chunks_processed) + 1
-        else:
-            current_chunk_number = len(self.chunks_processed)
+        from ontocast.onto.constants import CHUNK_NULL_IRI
+
+        # Check if there's a chunk currently being processed
+        has_current_chunk = CHUNK_NULL_IRI not in self.current_chunk.iri
+
+        # Current chunk number = chunks done + (1 if currently processing, else 0)
+        current_chunk_number = len(self.chunks_processed) + (
+            1 if has_current_chunk else 0
+        )
+
+        # Total chunks = remaining + done + (1 if currently processing, else 0)
+        total_chunks = (
+            len(self.chunks)
+            + len(self.chunks_processed)
+            + (1 if has_current_chunk else 0)
+        )
+
         return current_chunk_number, total_chunks
 
     def get_chunk_progress_string(self) -> str:
@@ -277,8 +285,9 @@ class AgentState(BasePydanticModel):
         all_prefixes = {}
         for graph_update in updates:
             for op in graph_update.operations:
-                if isinstance(op, AddPrefixOp):
-                    all_prefixes[op.prefix] = op.namespace_uri
+                # Extract prefixes from TripleOp operations
+                if isinstance(op, TripleOp) and op.prefixes:
+                    all_prefixes.update(op.prefixes)
 
         # Bind prefixes to the copied graph
         for prefix, uri in all_prefixes.items():
@@ -332,6 +341,8 @@ class AgentState(BasePydanticModel):
         1. Uses render_uptodate_ontology() to get an updated copy
         2. Replaces the current ontology with the updated copy
         3. Clears the ontology_updates list
+
+        Note: Version update is deferred to aggregate_serialize() to update only once at the end.
         """
         if not self.ontology_updates:
             return

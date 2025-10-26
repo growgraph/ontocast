@@ -58,6 +58,7 @@ output_instruction_sparql = """\n\n
 # OUTPUT INSTRUCTION
 
 Generate SPARQL operations that modify the existing ontology, not replace it entirely.
+Follow the Pydantic schema definitions exactly - they fully specify the output structure.
 """
 
 user_template = """\n\n

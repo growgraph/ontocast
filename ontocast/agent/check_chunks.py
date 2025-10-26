@@ -48,8 +48,6 @@ def check_chunks_empty(state: AgentState) -> AgentState:
         >>> print(updated_state.current_chunk)  # chunk1
         >>> print(updated_state.status)  # Status.FAILED
     """
-    progress_info = state.get_chunk_progress_string()
-    logger.info(f"Processing {progress_info} - Setting up current chunk")
 
     if CHUNK_NULL_IRI not in state.current_chunk.iri:
         state.current_chunk.processed = True
@@ -57,6 +55,9 @@ def check_chunks_empty(state: AgentState) -> AgentState:
             old_namespace=DEFAULT_CHUNK_IRI, new_namespace=state.current_chunk.namespace
         )
         state.chunks_processed.append(state.current_chunk)
+
+    progress_info = state.get_chunk_progress_string()
+    logger.info(f"Processing {progress_info} - Setting up current chunk")
 
     if state.chunks:
         state.current_chunk = state.chunks.pop(0)

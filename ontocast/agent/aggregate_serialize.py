@@ -29,6 +29,25 @@ def aggregate_serialize(state: AgentState, tools: ToolBox) -> AgentState:
         f"facts graph: {len(state.aggregated_facts)} triples"
     )
 
+    # Check if ontology version was updated by the LLM (via GraphUpdate)
+    # and increment patch version if it changed, but only if it hasn't already been updated
+    if state.current_ontology.initial_version is not None:
+        initial_version = state.current_ontology.initial_version
+        current_version = state.current_ontology.version
+
+        # If the version changed (was updated by LLM), increment the patch version
+        if initial_version != current_version:
+            logger.info(
+                f"Ontology version changed from {initial_version} to {current_version} "
+                f"(updated by LLM). Incrementing patch version..."
+            )
+            state.current_ontology.mark_as_updated()
+            # Sync the updated properties (version and updated_at) to the graph
+            state.current_ontology.sync_properties_to_graph()
+        else:
+            # No version change, so the ontology wasn't updated
+            logger.debug(f"Ontology version unchanged: {current_version}")
+
     # Report LLM budget usage
     if state.llm_budget_tracker:
         logger.info(state.llm_budget_tracker.get_summary())

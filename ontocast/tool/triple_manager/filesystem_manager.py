@@ -116,9 +116,12 @@ class FilesystemTripleStoreManager(TripleStoreManager):
             fname = f"ontology_{o.ontology_id}_{o.version}.ttl"
         elif isinstance(o, RDFGraph):
             graph = o
-            s = graph_uri.split("/")[-2:]
-            s = "_".join([x for x in s if x])
-            fname = f"facts_{s}.ttl"
+            if graph_uri:
+                s = graph_uri.split("/")[-2:]
+                s = "_".join([x for x in s if x])
+                fname = f"facts_{s}.ttl"
+            else:
+                fname = "facts_default.ttl"
         else:
             raise TypeError(f"unsupported obj of type {type(o)} received")
 
