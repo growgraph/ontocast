@@ -20,6 +20,8 @@ The OntoCast workflow consists of several stages that transform input documents 
    - **Extraction**: Extract ontological concepts from text
    - **Sublimation**: Refine and enhance the ontology
    - **Criticism**: Validate ontology structure and relationships
+   - **Versioning**: Automatic semantic version increment based on changes (MAJOR/MINOR/PATCH)
+   - **Timestamp**: Tracks last update time with `updated_at` field
 
 4. **Fact Processing**
    - **Extraction**: Extract factual information from text
@@ -43,6 +45,8 @@ The OntoCast workflow consists of several stages that transform input documents 
 - Extracts new concepts
 - Validates relationships
 - Refines structure
+- Automatically increments version based on change analysis
+- Updates timestamp when ontology is modified
 
 ### 4. Fact Extraction
 - Identifies entities
@@ -52,8 +56,9 @@ The OntoCast workflow consists of several stages that transform input documents 
 
 ### 5. Output Generation
 - Produces RDF graph
-- Generates ontology
+- Generates ontology with version and timestamp
 - Provides extracted facts
+- Reports budget usage (LLM calls, tokens, triples generated)
 
 ## Configuration Options
 
@@ -73,6 +78,7 @@ The workflow can be configured through command-line parameters:
    - Choose appropriate ontology
    - Consider domain specificity
    - Allow for ontology evolution
+   - Monitor version increments to track evolution
 
 3. **Fact Validation**
    - Validate extracted facts
@@ -83,6 +89,8 @@ The workflow can be configured through command-line parameters:
    - Monitor memory usage
    - Control processing time
    - Handle large documents
+   - Review budget summaries to track LLM usage and costs
+   - Use budget metrics to estimate processing costs for large documents
 
 ## Next Steps
 

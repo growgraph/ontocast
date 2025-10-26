@@ -225,6 +225,13 @@ See [Triple Store Setup](docs/user_guide/triple_stores.md) for detailed instruct
 
 ## Recent Changes
 
+### Ontology Management Improvements
+
+- **Automatic Versioning**: Semantic version increment based on change analysis (MAJOR/MINOR/PATCH)
+- **Timestamp Tracking**: `updated_at` field tracks when ontology was last modified
+- **Smart Version Analysis**: Analyzes ontology changes to determine appropriate version bump
+- **Budget Tracking**: LLM usage and triple generation statistics with summary reports
+
 ### Configuration System Overhaul
 
 - **Hierarchical Configuration**: New `ToolConfig` and `ServerConfig` structure

@@ -8,7 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- LLM budget tracking system integrated into AgentState
+- `updated_at` timestamp field to Ontology properties for tracking last update time
+- Automatic semantic versioning with intelligent increment analysis (MAJOR/MINOR/PATCH)
+- Version analysis based on ontology changes (classes, properties, instances)
+- `mark_as_updated()` method in Ontology class for version and timestamp management
+- `sync_properties_to_graph()` method updates version and `updated_at` in RDF graph
+- Budget tracking system integrated into AgentState with usage statistics
+- Triple generation metrics (ontology and facts tracking)
+- Budget tracker summary reports at end of processing
 - Clean dependency injection for LLM budget tracker
 - Shared caching architecture with single Cacher instance
 - ToolCacher wrapper for tool-specific cache access
@@ -24,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `WORKING_DIRECTORY` → `ONTOCAST_WORKING_DIRECTORY`
   - `ONTOLOGY_DIRECTORY` → `ONTOCAST_ONTOLOGY_DIRECTORY`
   - `LLM_CACHE_DIR` → `ONTOCAST_CACHE_DIR`
+- Ontology version increment now analyzes changes to determine appropriate version bump
+- Version updates happen once at end of processing (in `aggregate_serialize`)
 - Refactored LLM tool to accept budget tracker via dependency injection
 - Removed global LLMBudgetTracker in favor of AgentState-contained tracker
 - Updated all agent functions to use clean injection pattern
