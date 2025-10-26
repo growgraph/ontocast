@@ -4,6 +4,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.config import Config
+from ontocast.onto.constants import ONTOLOGY_NULL_IRI
 from ontocast.onto.ontology import Ontology, OntologyProperties
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
@@ -36,8 +37,8 @@ def update_ontology_properties(o: Ontology, llm_tool: LLMTool):
     property is missing or empty.
     """
     # Only update if any key property is missing or empty
-    if not (o.title and o.ontology_id and o.description and o.version):
-        props = render_ontology_summary(o.graph, llm_tool)
+    if (o.title is None) or (o.ontology_id is None) or (o.description is None):
+        props = render_ontology_summary(o, llm_tool)
         o.set_properties(**props.model_dump())
 
 
@@ -254,35 +255,138 @@ class ToolBox:
         return ontologies
 
 
-def render_ontology_summary(graph: RDFGraph, llm_tool) -> OntologyProperties:
+def render_ontology_summary(ontology: Ontology, llm_tool) -> OntologyProperties:
     """Generate a summary of ontology properties using LLM analysis.
 
     This function uses the LLM tool to analyze an RDF graph and generate
-    a structured summary of its properties.
+    a structured summary of its properties. Only unset fields are requested.
 
     Args:
-        graph: The RDF graph to analyze.
+        ontology: The ontology to analyze (for checking which fields are set).
         llm_tool: The LLM tool instance for analysis.
 
     Returns:
-        OntologyProperties: A structured summary of the ontology properties.
+        OntologyProperties: A structured summary containing only the missing properties.
     """
-    ontology_str = graph.serialize(format="turtle")
+    from pydantic import create_model
+
+    # Sample the graph intelligently (first 100 triples + ontology metadata)
+    # This provides context without overwhelming the LLM
+    sampled_graph = sample_ontology_graph(ontology.graph)
+    ontology_str = sampled_graph.serialize(format="turtle")
+
+    # Determine which fields are unset and need LLM inference
+    unset_fields = {}
+    fields_to_fetch = []
+
+    # Fields we want to potentially fetch from LLM (excluding internal fields like updated_at)
+    fields_to_check = ["title", "description", "ontology_id", "version", "iri"]
+
+    # For Ontology objects, only fetch fields that are unset
+    for field in fields_to_check:
+        value = getattr(ontology, field, None)
+        if value is None or (field == "iri" and value == ONTOLOGY_NULL_IRI):
+            fields_to_fetch.append(field)
+            # Get the field definition from the base model
+            base_field = OntologyProperties.model_fields[field]
+            unset_fields[field] = (base_field.annotation, base_field)
+
+    if not unset_fields:
+        # All fields are already set, return empty props
+        return OntologyProperties()
+
+    # Create a dynamic model with only unset fields
+    DynamicProps = create_model("DynamicOntologyProps", **unset_fields)
 
     # Define the output parser
-    parser = PydanticOutputParser(pydantic_object=OntologyProperties)
+    parser = PydanticOutputParser(pydantic_object=DynamicProps)
 
     # Create the prompt template with format instructions
+    field_list_str = "\n- ".join(fields_to_fetch)
+    format_instructions = parser.get_format_instructions()
+
+    # Build the template - use format_instructions as a separate variable to avoid brace conflicts
+    template = (
+        "Below is a sample of an ontology in Turtle format:\n\n"
+        "```ttl\n{ontology_str}\n```\n\n"
+        "Extract ONLY the following properties that are missing:\n"
+        f"- {field_list_str}\n\n"
+        "{format_instructions}"
+    )
+
     prompt = PromptTemplate(
-        template=(
-            "Below is an ontology in Turtle format:\n\n"
-            "```ttl\n{ontology_str}\n```\n\n"
-            "{format_instructions}"
-        ),
+        template=template,
         input_variables=["ontology_str"],
-        partial_variables={"format_instructions": parser.get_format_instructions()},
+        partial_variables={"format_instructions": format_instructions},
     )
 
     response = llm_tool(prompt.format_prompt(ontology_str=ontology_str))
+    dynamic_props = parser.parse(response.content)
 
-    return parser.parse(response.content)
+    # Convert dynamic props to OntologyProperties
+    result = OntologyProperties()
+    for field in unset_fields.keys():
+        value = getattr(dynamic_props, field, None)
+        if value is not None:
+            setattr(result, field, value)
+
+    return result
+
+
+def sample_ontology_graph(graph: RDFGraph, max_triples: int = 100) -> RDFGraph:
+    """Sample an ontology graph to provide a representative subset.
+
+    This function extracts key triples from the ontology, prioritizing:
+    1. Ontology metadata (ontology-level properties)
+    2. Class definitions (owl:Class, rdfs:Class)
+    3. Property definitions (owl:ObjectProperty, owl:DatatypeProperty)
+    4. Fills the rest with triples from the graph
+
+    Args:
+        graph: The full ontology graph
+        max_triples: Maximum number of triples to include in the sample
+
+    Returns:
+        RDFGraph: A sampled version of the ontology with representative triples
+    """
+    from rdflib import OWL, RDF, RDFS
+
+    sampled = RDFGraph()
+
+    # Priority 1: Get ontology entity and its properties
+    for s, p, o in graph.triples((None, RDF.type, OWL.Ontology)):
+        sampled.add((s, p, o))
+        # Get all properties of the ontology
+        for prop, obj in graph.predicate_objects(s):
+            sampled.add((s, prop, obj))
+
+    # Priority 2: Get class definitions
+    for s, p, o in graph.triples((None, RDF.type, OWL.Class)):
+        if len(sampled) >= max_triples // 2:
+            break
+        sampled.add((s, p, o))
+
+    for s, p, o in graph.triples((None, RDF.type, RDFS.Class)):
+        if len(sampled) >= max_triples // 2:
+            break
+        sampled.add((s, p, o))
+
+    # Priority 3: Get property definitions
+    for prop_type in [OWL.ObjectProperty, OWL.DatatypeProperty]:
+        for s, p, o in graph.triples((None, RDF.type, prop_type)):
+            if len(sampled) >= max_triples * 3 // 4:
+                break
+            sampled.add((s, p, o))
+
+    # Priority 4: Fill the rest with any remaining triples
+    for triple in graph:
+        if len(sampled) >= max_triples:
+            break
+        if triple not in sampled:
+            sampled.add(triple)
+
+    # Copy namespaces
+    for prefix, namespace in graph.namespaces():
+        sampled.bind(prefix, namespace)
+
+    return sampled

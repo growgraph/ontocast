@@ -7,5 +7,7 @@ def test_extract_metadata(test_ontology, llm_tool):
 
     # Validate output
     assert isinstance(summary, OntologyProperties)
+    assert summary.title is not None, "title should not be None"
+    assert summary.description is not None, "description should not be None"
     assert "test" in summary.title.lower() and "ontology" in summary.title.lower()
     assert "test" in summary.description.lower()

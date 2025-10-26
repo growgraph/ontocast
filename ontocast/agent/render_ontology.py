@@ -13,7 +13,6 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import render_suggestions_prompt
-from ontocast.onto.constants import ONTOLOGY_NULL_ID
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.sparql_models import GraphUpdate
@@ -56,7 +55,7 @@ def render_ontology(state: AgentState, tools: ToolBox) -> AgentState:
         f"Structured ontology rendering for {progress_info} with Turtle/SPARQL output"
     )
 
-    has_no_seed_ontology = state.ontology_id == ONTOLOGY_NULL_ID
+    has_no_seed_ontology = state.ontology_id is None
 
     if has_no_seed_ontology:
         return render_ontology_fresh(state, tools)

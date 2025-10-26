@@ -48,7 +48,9 @@ def temperature():
 
 @pytest.fixture
 def test_ontology():
-    return RDFGraph._from_turtle_str(
+    from ontocast.onto.ontology import Ontology
+
+    graph = RDFGraph._from_turtle_str(
         """
     @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
     @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
@@ -67,6 +69,7 @@ def test_ontology():
         rdfs:comment "Some kind of event with spacetime coordinates" ;
         rdfs:subClassOf schema:Event .    """
     )
+    return Ontology(graph=graph)
 
 
 @pytest.fixture

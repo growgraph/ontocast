@@ -82,7 +82,13 @@ def sublimate_ontology(state: AgentState, tools: ToolBox):
         state.update_facts()
         graph_onto_addendum, graph_facts = _sublimate_ontology(state=state)
 
-        om_tool.update_ontology(state.current_ontology.ontology_id, graph_onto_addendum)
+        # Ensure ontology_id is set before updating
+        if state.current_ontology.ontology_id:
+            om_tool.update_ontology(
+                state.current_ontology.ontology_id, graph_onto_addendum
+            )
+        else:
+            logger.warning("Cannot update ontology: ontology_id is None")
 
         # Ensure graph_facts is an RDFGraph instance
         if not isinstance(graph_facts, RDFGraph):

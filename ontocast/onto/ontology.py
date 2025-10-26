@@ -8,8 +8,9 @@ from typing import Annotated, Union
 from pydantic import BaseModel, ConfigDict, Field
 from rdflib import DCTERMS, OWL, RDF, RDFS, XSD, Literal, URIRef
 
-from ontocast.onto.constants import DEFAULT_DOMAIN, ONTOLOGY_NULL_ID, ONTOLOGY_NULL_IRI
+from ontocast.onto.constants import DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.util import derive_ontology_id
 from ontocast.util import iri2namespace
 
@@ -36,18 +37,18 @@ class OntologyProperties(BaseModel):
         iri: Ontology IRI (Internationalized Resource Identifier).
     """
 
-    ontology_id: str = Field(
-        default=ONTOLOGY_NULL_ID,
+    ontology_id: str | None = Field(
+        default=None,
         description="Ontology identifier, an human readable lower case abbreviation.",
     )
-    title: str = Field(default="Untitled Ontology", description="Ontology title.")
-    description: str = Field(
-        default="No description provided.",
+    title: str | None = Field(default=None, description="Ontology title.")
+    description: str | None = Field(
+        default=None,
         description="A concise description (3-4 sentences) of the ontology "
         "(domain, purpose, applicability, etc.)",
     )
-    version: SemanticVersion = Field(
-        default="1.0.0",
+    version: SemanticVersion | None = Field(
+        default=None,
         description="Version of the ontology (use semantic versioning)",
     )
     iri: str = Field(
@@ -60,7 +61,10 @@ class OntologyProperties(BaseModel):
     )
     initial_version: SemanticVersion | None = Field(
         default=None,
-        description="The initial version of the ontology when it was first loaded in this session",
+        description=(
+            "The initial version of the ontology when it was first loaded "
+            "in this session"
+        ),
     )
 
     @property
@@ -78,7 +82,8 @@ class Ontology(OntologyProperties):
 
     Attributes:
         graph: The RDF graph containing the ontology data.
-        current_domain: The domain used to construct the ontology IRI if ontology_id is set.
+        current_domain: The domain used to construct the ontology IRI
+            if ontology_id is set.
     """
 
     graph: RDFGraph = Field(
@@ -98,19 +103,14 @@ class Ontology(OntologyProperties):
         current_domain = kwargs.pop("current_domain", DEFAULT_DOMAIN)
         super().__init__(**kwargs)
         self.current_domain = current_domain
-        # --- Only apply fallback logic if graph does not contain a proper owl:Ontology subject ---
+        # Only apply fallback if graph doesn't contain an owl:Ontology
         # Try to sync from graph first
         graph_had_ontology = False
         if self.graph:
             # Try to extract from graph
             self.sync_properties_from_graph()
             # If after sync, both iri and ontology_id are set, do nothing further
-            if (
-                self.iri
-                and self.iri != ONTOLOGY_NULL_IRI
-                and self.ontology_id
-                and self.ontology_id != ONTOLOGY_NULL_ID
-            ):
+            if self.iri and self.iri != ONTOLOGY_NULL_IRI and self.ontology_id:
                 graph_had_ontology = True
         # Only apply fallback if graph did not provide a valid pair
         if not graph_had_ontology:
@@ -120,17 +120,23 @@ class Ontology(OntologyProperties):
                 expected_iri = f"{self.current_domain}/{self.ontology_id}"
                 if not self.iri.endswith(f"/{self.ontology_id}"):
                     logger.warning(
-                        f"Ontology IRI '{self.iri}' does not match expected '{expected_iri}', we correct ontology IRI"
+                        f"Ontology IRI '{self.iri}' does not match expected "
+                        f"'{expected_iri}', correcting IRI"
                     )
                     self.iri = expected_iri
             elif not self.ontology_id and self.iri and self.iri != ONTOLOGY_NULL_IRI:
                 self.ontology_id = derive_ontology_id(self.iri)
+        # Set default values for fields that are still None
+        if self.version is None:
+            self.version = "1.0.0"
+
         # Always ensure graph is up to date with properties
         self.sync_properties_to_graph()
 
         # Set initial_version if not already set
         if self.initial_version is None and self.version:
-            self.initial_version = self.version
+            # Normalize version to ensure semantic versioning
+            self.initial_version = self._normalize_version(self.version)
 
     @property
     def prefix(self) -> str | None:
@@ -152,7 +158,8 @@ class Ontology(OntologyProperties):
     def set_properties(self, **kwargs):
         """Set ontology properties from keyword arguments and sync to graph.
         Only update properties if they are missing (None or empty).
-        Also enforces ontology_id/iri consistency as in __init__, but only if graph does not provide a valid pair.
+        Also enforces ontology_id/iri consistency as in __init__, but only
+        if graph does not provide a valid pair.
         """
         for k, v in kwargs.items():
             if hasattr(self, k):
@@ -163,12 +170,7 @@ class Ontology(OntologyProperties):
         graph_had_ontology = False
         if self.graph:
             self.sync_properties_from_graph()
-            if (
-                self.iri
-                and self.iri != ONTOLOGY_NULL_IRI
-                and self.ontology_id
-                and self.ontology_id != ONTOLOGY_NULL_ID
-            ):
+            if self.iri and self.iri != ONTOLOGY_NULL_IRI and self.ontology_id:
                 graph_had_ontology = True
         if not graph_had_ontology:
             if self.ontology_id and (not self.iri or self.iri == ONTOLOGY_NULL_IRI):
@@ -177,7 +179,8 @@ class Ontology(OntologyProperties):
                 expected_iri = f"{self.current_domain}/{self.ontology_id}"
                 if not self.iri.endswith(f"/{self.ontology_id}"):
                     logger.warning(
-                        f"Ontology IRI '{self.iri}' does not match expected '{expected_iri}'"
+                        f"Ontology IRI '{self.iri}' does not match expected "
+                        f"'{expected_iri}'"
                     )
             elif not self.ontology_id and self.iri and self.iri != ONTOLOGY_NULL_IRI:
                 self.ontology_id = derive_ontology_id(self.iri)
@@ -191,20 +194,21 @@ class Ontology(OntologyProperties):
         Optimized to avoid multiple loops over triples.
         """
 
-        if self.ontology_id is not None and self.ontology_id is not ONTOLOGY_NULL_ID:
-            if self.iri and (not self.iri or self.iri == ONTOLOGY_NULL_IRI):
+        if self.ontology_id is not None:
+            if not self.iri or self.iri == ONTOLOGY_NULL_IRI:
                 self.iri = f"{self.current_domain}/{self.ontology_id}"
             elif self.iri:
                 expected_iri = f"{self.current_domain}/{self.ontology_id}"
                 if not self.iri.endswith(f"/{self.ontology_id}"):
                     logger.warning(
-                        f"Ontology IRI '{self.iri}' does not match expected '{expected_iri}', fixing"
+                        f"Ontology IRI '{self.iri}' does not match expected "
+                        f"'{expected_iri}', fixing"
                     )
                     self.iri = expected_iri
         elif self.iri:
             self.ontology_id = derive_ontology_id(self.iri)
 
-        if self.iri is ONTOLOGY_NULL_IRI:
+        if self.iri == ONTOLOGY_NULL_IRI:
             return
         else:
             onto_iri = URIRef(self.iri)
@@ -260,29 +264,226 @@ class Ontology(OntologyProperties):
                 )
             )
 
-    def _increment_version(self) -> None:
+    def _normalize_version(self, version: str) -> str:
+        """Normalize version string to semantic versioning format.
+
+        Handles various version formats and converts them to MAJOR.MINOR.PATCH:
+        - "3.5.1" -> "3.5.1" (already valid)
+        - "3.5" -> "3.5.0" (adds missing PATCH)
+        - "3" -> "3.0.0" (adds missing MINOR and PATCH)
+        - Invalid formats -> "1.0.0"
+
+        Args:
+            version: The version string to normalize
+
+        Returns:
+            A valid semantic version string (MAJOR.MINOR.PATCH)
+        """
+        # Already valid semantic version
+        match = re.match(r"^(\d+)\.(\d+)\.(\d+)$", version)
+        if match:
+            return version
+
+        # Try to parse as MAJOR.MINOR (missing PATCH)
+        match = re.match(r"^(\d+)\.(\d+)$", version)
+        if match:
+            major, minor = match.groups()
+            normalized = f"{major}.{minor}.0"
+            logger.info(
+                f"Version '{version}' missing PATCH component, normalized to '{normalized}'"
+            )
+            return normalized
+
+        # Try to parse as just MAJOR (missing MINOR and PATCH)
+        match = re.match(r"^(\d+)$", version)
+        if match:
+            major = match.group(1)
+            normalized = f"{major}.0.0"
+            logger.info(
+                f"Version '{version}' missing MINOR and PATCH components, normalized to '{normalized}'"
+            )
+            return normalized
+
+        # Invalid format, use default
+        logger.warning(
+            f"Version '{version}' does not match any recognized format, "
+            f"normalizing to '1.0.0'"
+        )
+        return "1.0.0"
+
+    def _analyze_version_increment_type(
+        self, updates: list[GraphUpdate]
+    ) -> tuple[str, str]:
+        """Analyze the updates to determine the appropriate version increment type.
+
+        Args:
+            updates: List of GraphUpdate objects that were applied to the ontology
+
+        Returns:
+            Tuple of (increment_type, reason) where increment_type is
+            'major', 'minor', or 'patch' and reason explains the decision
+        """
+        if not updates:
+            return ("patch", "No updates to analyze")
+
+        # Count operations by type
+        total_deletes = 0
+        total_inserts = 0
+
+        # Track specific types of changes
+        class_changes = 0
+        property_changes = 0
+        instance_changes = 0
+
+        for update in updates:
+            for op in update.operations:
+                if isinstance(op, TripleOp):
+                    if op.type == "delete":
+                        total_deletes += len(op.triples)
+                        # Check if deleting core ontology constructs
+                        for triple in op.triples:
+                            if "rdf:type" in triple.predicate:
+                                if any(
+                                    cls in triple.object.lower()
+                                    for cls in ["class", "property", "ontology"]
+                                ):
+                                    if (
+                                        "owl:class" in triple.object
+                                        or "rdfs:class" in triple.object
+                                    ):
+                                        class_changes += 1
+                                    elif "owl:ontology" in triple.object:
+                                        class_changes += 1
+                    else:  # insert
+                        total_inserts += len(op.triples)
+                        # Check if adding core ontology constructs
+                        for triple in op.triples:
+                            if "rdf:type" in triple.predicate:
+                                if (
+                                    "owl:class" in triple.object
+                                    or "rdfs:class" in triple.object
+                                ):
+                                    class_changes += 1
+                                elif "owl:ontology" in triple.object:
+                                    class_changes += 1
+                                elif (
+                                    "owl:objectproperty" in triple.object
+                                    or "owl:datatypeproperty" in triple.object
+                                    or "rdf:property" in triple.object
+                                ):
+                                    property_changes += 1
+                                else:
+                                    instance_changes += 1
+
+        # Decision logic - conservative approach, favor PATCH
+
+        # Check for substantial breaking changes first (MAJOR)
+        if total_deletes > 5 and (class_changes > 2 or property_changes > 3):
+            reason = (
+                f"MAJOR: Deleted {total_deletes} triples including "
+                f"{class_changes} classes and {property_changes} properties "
+                "(significant breaking change)"
+            )
+            return ("major", reason)
+
+        # Any deletions trigger MINOR (even small ones indicate changes)
+        if total_deletes > 0:
+            reason = (
+                f"MINOR: Deleted {total_deletes} triples "
+                f"({class_changes} classes, {property_changes} properties removed)"
+            )
+            return ("minor", reason)
+
+        # Only increment MINOR for substantial new features (>=5 classes or properties)
+        if class_changes >= 5 or property_changes >= 5:
+            reason = (
+                f"MINOR: Added {total_inserts} triples including "
+                f"{class_changes} classes and {property_changes} properties "
+                "(substantial new features)"
+            )
+            return ("minor", reason)
+
+        # Default to PATCH for most additions
+        # This includes: instances, descriptions, small numbers of classes/properties
+        reason = f"PATCH: Added {total_inserts} triples"
+        if class_changes > 0 or property_changes > 0:
+            reason += f" ({class_changes} classes, {property_changes} properties)"
+        reason += " (updates to existing structures)"
+        return ("patch", reason)
+
+    def _increment_version(self, increment_type: str = "patch") -> None:
         """Increment the ontology version using semantic versioning.
 
-        Increments the patch version (e.g., 1.0.0 -> 1.0.1, 2.3.4 -> 2.3.5).
+        Args:
+            increment_type: Type of increment - 'major', 'minor', or 'patch'
         """
-        # Parse version string (e.g., "1.2.3")
+        # If version is None, set to default
+        if self.version is None:
+            self.version = "1.0.0"
+            return
+
+        # Normalize to ensure semantic versioning
+        normalized_version = self._normalize_version(self.version)
+        if normalized_version != self.version:
+            logger.warning(
+                f"Version '{self.version}' normalized to '{normalized_version}' "
+                "before incrementing"
+            )
+            self.version = normalized_version
+
+        # Parse and increment version string based on increment_type
         match = re.match(r"^(\d+)\.(\d+)\.(\d+)$", self.version)
         if match:
             major, minor, patch = map(int, match.groups())
-            patch += 1
+
+            if increment_type == "major":
+                major += 1
+                minor = 0
+                patch = 0
+                logger.info(
+                    f"Incrementing MAJOR version from {self.version} to {major}.{minor}.{patch}"
+                )
+            elif increment_type == "minor":
+                minor += 1
+                patch = 0
+                logger.info(
+                    f"Incrementing MINOR version from {self.version} to {major}.{minor}.{patch}"
+                )
+            else:  # patch
+                patch += 1
+                logger.info(
+                    f"Incrementing PATCH version from {self.version} to {major}.{minor}.{patch}"
+                )
+
             self.version = f"{major}.{minor}.{patch}"
         else:
-            # If version doesn't follow semantic versioning, increment as string
-            self.version = f"{self.version}+1"
+            # Should never reach here after normalization, but handle gracefully
+            logger.error(f"Version '{self.version}' still invalid after normalization")
+            self.version = "1.0.1"
+
         logger.info(f"Incremented ontology version to {self.version}")
 
-    def mark_as_updated(self) -> None:
+    def mark_as_updated(self, updates: list[GraphUpdate] | None = None) -> None:
         """Mark the ontology as updated and update version.
 
         Sets the updated_at timestamp to now (UTC) and increments the version.
+        Analyzes the updates to determine appropriate version increment type.
+
+        Args:
+            updates: Optional list of GraphUpdate objects that were applied.
+                If provided, analyzes them to determine MAJOR/MINOR/PATCH increment.
         """
         self.updated_at = datetime.now(timezone.utc)
-        self._increment_version()
+
+        # Analyze updates to determine increment type
+        if updates:
+            increment_type, reason = self._analyze_version_increment_type(updates)
+            logger.info(f"Version increment analysis: {reason}")
+            self._increment_version(increment_type)
+        else:
+            # Default to patch increment if no updates provided
+            self._increment_version("patch")
+
         logger.info(
             f"Marked ontology {self.ontology_id} as updated at {self.updated_at}"
         )
@@ -313,7 +514,7 @@ class Ontology(OntologyProperties):
             pred_map[p].append(o)
 
         # Title: try rdfs:label, dcterms:title
-        if not getattr(self, "title", None):
+        if self.title is None:
             title = None
             if RDFS.label in pred_map:
                 title = str(pred_map[RDFS.label][0])
@@ -323,7 +524,7 @@ class Ontology(OntologyProperties):
                 self.title = title
 
         # Description: try dcterms:description, rdfs:comment
-        if not getattr(self, "description", None):
+        if self.description is None:
             description = None
             if DCTERMS.description in pred_map:
                 description = str(pred_map[DCTERMS.description][0])
@@ -332,9 +533,10 @@ class Ontology(OntologyProperties):
             if description:
                 self.description = description
         # Version
-        if not getattr(self, "version", None):
+        if self.version is None:
             if OWL.versionInfo in pred_map:
-                self.version = str(pred_map[OWL.versionInfo][0])
+                version_str = str(pred_map[OWL.versionInfo][0])
+                self.version = self._normalize_version(version_str)
         # Updated at
         if not getattr(self, "updated_at", None):
             if DCTERMS.modified in pred_map:

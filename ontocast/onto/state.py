@@ -8,7 +8,6 @@ from ontocast.onto.chunk import Chunk
 from ontocast.onto.constants import (
     CHUNK_NULL_IRI,
     DEFAULT_DOMAIN,
-    ONTOLOGY_NULL_ID,
     ONTOLOGY_NULL_IRI,
 )
 from ontocast.onto.context import AgentContext, AgentType, ContextManager
@@ -96,9 +95,9 @@ class AgentState(BasePydanticModel):
     )
     current_ontology: Ontology = Field(
         default_factory=lambda: Ontology(
-            ontology_id=ONTOLOGY_NULL_ID,
-            title="null title",
-            description="null description",
+            ontology_id=None,
+            title=None,
+            description=None,
             graph=RDFGraph(),
             iri=ONTOLOGY_NULL_IRI,
         ),
@@ -148,9 +147,9 @@ class AgentState(BasePydanticModel):
 
     ontology_addendum: Ontology = Field(
         default_factory=lambda: Ontology(
-            ontology_id=ONTOLOGY_NULL_ID,
-            title="null title",
-            description="null description",
+            ontology_id=None,
+            title=None,
+            description=None,
             graph=RDFGraph(),
             iri=ONTOLOGY_NULL_IRI,
         ),
