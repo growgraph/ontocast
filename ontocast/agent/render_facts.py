@@ -217,6 +217,13 @@ def render_facts_update(state: AgentState, tools: ToolBox) -> AgentState:
 
         graph_update = parser.parse(response.content)
         state.facts_updates.append(graph_update)
+
+        num_operations, num_triples = graph_update.count_total_triples()
+        logger.info(
+            f"Facts update has {num_operations} operation(s) "
+            f"with {num_triples} total triple(s)."
+        )
+
         state.set_node_status(WorkflowNode.TEXT_TO_FACTS, Status.SUCCESS)
         state.clear_failure()
         return state

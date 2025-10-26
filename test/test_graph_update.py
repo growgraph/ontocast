@@ -15,6 +15,56 @@ from ontocast.onto.sparql_models import (
 )
 
 
+def test_graph_update_with_language_tags():
+    """Test GraphUpdate with language-tagged literals."""
+    # Create initial RDFGraph
+    graph = RDFGraph._from_turtle_str(
+        """
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix ex: <http://example.org/> .
+        
+        ex:Test a rdfs:Class .
+        """
+    )
+
+    initial_triple_count = len(graph)
+
+    # Create GraphUpdate with language-tagged literals
+    graph_update = GraphUpdate(
+        operations=[
+            TripleOp(
+                type="insert",
+                triples=[
+                    Triple(
+                        subject="ex:Test",
+                        predicate="rdfs:label",
+                        object='"Test Label"@en',
+                    ),
+                    Triple(
+                        subject="ex:Test",
+                        predicate="rdfs:comment",
+                        object='"Un commentaire"@fr',
+                    ),
+                ],
+                prefixes={"ex": "http://example.org/"},
+            )
+        ]
+    )
+
+    # Generate SPARQL queries
+    queries = graph_update.generate_sparql_queries()
+
+    # Should generate one query
+    assert len(queries) == 1
+
+    # Execute the query on the graph
+    graph.update(queries[0])
+
+    # Verify new triples were added
+    assert len(graph) == initial_triple_count + 2
+
+
 def test_graph_update_insert_operation():
     """Test GraphUpdate with TripleOp insert operations."""
     # Create initial RDFGraph

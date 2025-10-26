@@ -302,16 +302,20 @@ class Triple(BaseModel):
             return BNode(object_str[2:])
         elif object_str.startswith("<") and object_str.endswith(">"):
             return URIRef(object_str[1:-1])
-        elif object_str.startswith('"') and object_str.endswith('"'):
-            # Simple literal
-            return Literal(object_str[1:-1])
-        elif object_str.startswith('"') and '"^^' in object_str:
-            # Typed literal
-            value, datatype = object_str.split('"^^', 1)
+        elif '"@' in object_str:
+            # Language-tagged literal: "text"@en (check first before simple literal)
+            value, lang = object_str.rsplit('"@', 1)
+            return Literal(value[1:], lang=lang)
+        elif '"^^' in object_str:
+            # Typed literal: "text"^^<type> (check before simple literal)
+            value, datatype = object_str.rsplit('"^^', 1)
             # Clean up datatype URI if it has angle brackets
             if datatype.startswith("<") and datatype.endswith(">"):
                 datatype = datatype[1:-1]
             return Literal(value[1:], datatype=URIRef(datatype))
+        elif object_str.startswith('"') and object_str.endswith('"'):
+            # Simple literal (check last)
+            return Literal(object_str[1:-1])
         else:
             # For prefixed names or bare URIs, return as-is for now
             return URIRef(object_str)
@@ -433,6 +437,20 @@ class GraphUpdate(BaseModel):
                     queries.append(op.query)
         return queries
 
+    def count_total_triples(self) -> tuple[int, int]:
+        """Count total triples across all operations.
+
+        Returns:
+            Tuple of (total_operations, total_triples) where:
+            - total_operations: Number of operations
+            - total_triples: Total number of triples across all TripleOp operations
+        """
+        total_triples = 0
+        for op in self.operations:
+            if isinstance(op, TripleOp):
+                total_triples += len(op.triples)
+        return (len(self.operations), total_triples)
+
     def generate_diff_summary(self) -> str:
         """Generate a human-readable diff summary of all operations for LLM consumption.
 
@@ -546,7 +564,10 @@ class GraphUpdate(BaseModel):
         elif isinstance(term, BNode):
             return f"_:{term}"
         elif isinstance(term, Literal):
-            if term.datatype:
+            # Handle language-tagged literals first
+            if term.language:
+                return f'"{term}"@{term.language}'
+            elif term.datatype:
                 return f'"{term}"^^<{term.datatype}>'
             else:
                 return f'"{term}"'

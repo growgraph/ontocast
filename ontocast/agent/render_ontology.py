@@ -208,7 +208,11 @@ def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
         state.ontology_updates.append(graph_update)
         state.update_ontology()
 
-        logger.info(f"Ontology update has {len(graph_update.operations)} operations.")
+        num_operations, num_triples = graph_update.count_total_triples()
+        logger.info(
+            f"Ontology update has {num_operations} operation(s) "
+            f"with {num_triples} total triple(s)."
+        )
         state.clear_failure()
         state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.SUCCESS)
         return state

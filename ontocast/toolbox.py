@@ -273,7 +273,8 @@ def render_ontology_summary(ontology: Ontology, llm_tool) -> OntologyProperties:
     # Sample the graph intelligently (first 100 triples + ontology metadata)
     # This provides context without overwhelming the LLM
     sampled_graph = sample_ontology_graph(ontology.graph)
-    ontology_str = sampled_graph.serialize(format="turtle")
+    # Serialize with consistent ordering to ensure determinism
+    ontology_str = sampled_graph.serialize()
 
     # Determine which fields are unset and need LLM inference
     unset_fields = {}
@@ -336,11 +337,11 @@ def render_ontology_summary(ontology: Ontology, llm_tool) -> OntologyProperties:
 def sample_ontology_graph(graph: RDFGraph, max_triples: int = 100) -> RDFGraph:
     """Sample an ontology graph to provide a representative subset.
 
-    This function extracts key triples from the ontology, prioritizing:
-    1. Ontology metadata (ontology-level properties)
-    2. Class definitions (owl:Class, rdfs:Class)
-    3. Property definitions (owl:ObjectProperty, owl:DatatypeProperty)
-    4. Fills the rest with triples from the graph
+    This function extracts key triples using direct queries with deterministic ordering:
+    1. Ontology metadata (all properties of owl:Ontology)
+    2. Class definitions (owl:Class, rdfs:Class) - sorted and limited
+    3. Property definitions (owl:ObjectProperty, owl:DatatypeProperty) - sorted and limited
+    4. Fills with other triples (sorted, no blank nodes if graph has none)
 
     Args:
         graph: The full ontology graph
@@ -349,44 +350,72 @@ def sample_ontology_graph(graph: RDFGraph, max_triples: int = 100) -> RDFGraph:
     Returns:
         RDFGraph: A sampled version of the ontology with representative triples
     """
-    from rdflib import OWL, RDF, RDFS
+    from rdflib import OWL, RDF, RDFS, BNode
 
     sampled = RDFGraph()
+    sampled_set = set()
 
-    # Priority 1: Get ontology entity and its properties
+    # Priority 1: Get all ontology metadata
     for s, p, o in graph.triples((None, RDF.type, OWL.Ontology)):
-        sampled.add((s, p, o))
+        if (s, p, o) not in sampled_set:
+            sampled.add((s, p, o))
+            sampled_set.add((s, p, o))
         # Get all properties of the ontology
         for prop, obj in graph.predicate_objects(s):
-            sampled.add((s, prop, obj))
+            if (s, prop, obj) not in sampled_set:
+                sampled.add((s, prop, obj))
+                sampled_set.add((s, prop, obj))
 
-    # Priority 2: Get class definitions
+    # Priority 2: Get class definitions (sorted for determinism)
+    classes = []
     for s, p, o in graph.triples((None, RDF.type, OWL.Class)):
-        if len(sampled) >= max_triples // 2:
-            break
-        sampled.add((s, p, o))
-
+        classes.append((s, p, o))
     for s, p, o in graph.triples((None, RDF.type, RDFS.Class)):
+        classes.append((s, p, o))
+    classes.sort(key=lambda t: str(t))
+
+    for s, p, o in classes:
         if len(sampled) >= max_triples // 2:
             break
-        sampled.add((s, p, o))
+        if (s, p, o) not in sampled_set:
+            sampled.add((s, p, o))
+            sampled_set.add((s, p, o))
 
-    # Priority 3: Get property definitions
+    # Priority 3: Get property definitions (sorted for determinism)
+    properties = []
     for prop_type in [OWL.ObjectProperty, OWL.DatatypeProperty]:
         for s, p, o in graph.triples((None, RDF.type, prop_type)):
-            if len(sampled) >= max_triples * 3 // 4:
-                break
-            sampled.add((s, p, o))
+            properties.append((s, p, o))
+    properties.sort(key=lambda t: str(t))
 
-    # Priority 4: Fill the rest with any remaining triples
+    for s, p, o in properties:
+        if len(sampled) >= max_triples * 3 // 4:
+            break
+        if (s, p, o) not in sampled_set:
+            sampled.add((s, p, o))
+            sampled_set.add((s, p, o))
+
+    # Priority 4: Fill remaining with other triples (sorted, always exclude blank nodes)
+    remaining = []
     for triple in graph:
+        if triple not in sampled_set:
+            # Always exclude blank nodes from the sample
+            if not any(isinstance(term, BNode) for term in triple):
+                remaining.append(triple)
+    remaining.sort(key=lambda t: str(t))
+
+    for triple in remaining:
         if len(sampled) >= max_triples:
             break
-        if triple not in sampled:
-            sampled.add(triple)
+        sampled.add(triple)
 
-    # Copy namespaces
-    for prefix, namespace in graph.namespaces():
-        sampled.bind(prefix, namespace)
+    # Copy namespaces (sorted for determinism)
+    namespaces = [
+        (prefix or "", str(namespace)) for prefix, namespace in graph.namespaces()
+    ]
+    namespaces.sort(key=lambda x: (x[0], x[1]))
+    for prefix, namespace in namespaces:
+        if prefix:
+            sampled.bind(prefix, namespace)
 
     return sampled

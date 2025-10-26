@@ -3,6 +3,11 @@ from ontocast.toolbox import render_ontology_summary
 
 
 def test_extract_metadata(test_ontology, llm_tool):
+    # Clear the fields that should be extracted by LLM to test the extraction
+    test_ontology.title = None
+    test_ontology.description = None
+    test_ontology.ontology_id = None
+
     summary = render_ontology_summary(test_ontology, llm_tool)
 
     # Validate output
