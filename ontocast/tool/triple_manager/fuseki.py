@@ -6,19 +6,58 @@ and facts, with proper authentication and dataset management.
 """
 
 import logging
+import re
+from collections import defaultdict
+from urllib.parse import quote
 
 import requests
 from pydantic import Field
-from rdflib import Graph, URIRef
+from rdflib import Graph
 from rdflib.namespace import OWL, RDF
 
 from ontocast.onto.constants import DEFAULT_DATASET, DEFAULT_ONTOLOGIES_DATASET
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.util import derive_ontology_id
 from ontocast.tool.triple_manager.core import TripleStoreManagerWithAuth
 
 logger = logging.getLogger(__name__)
+
+
+def _compare_versions(ver1: str, ver2: str) -> int:
+    """Compare two semantic version strings.
+
+    Args:
+        ver1: First version string (e.g., "1.2.3")
+        ver2: Second version string (e.g., "1.3.0")
+
+    Returns:
+        int: Negative if ver1 < ver2, 0 if equal, positive if ver1 > ver2
+    """
+
+    def _parse_version(v: str) -> tuple:
+        # Simple version parser - splits by dots and converts to int
+        parts = v.split(".")
+        result = []
+        for part in parts:
+            # Remove any non-numeric suffix
+            numeric_part = re.sub(r"[^0-9].*$", "", part)
+            result.append(int(numeric_part) if numeric_part else 0)
+        # Pad to 3 components
+        while len(result) < 3:
+            result.append(0)
+        return tuple(result)
+
+    try:
+        v1_parts = _parse_version(ver1)
+        v2_parts = _parse_version(ver2)
+        if v1_parts < v2_parts:
+            return -1
+        elif v1_parts > v2_parts:
+            return 1
+        return 0
+    except Exception:
+        # If parsing fails, use string comparison
+        return 1 if ver1 > ver2 else (-1 if ver1 < ver2 else 0)
 
 
 class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
@@ -227,31 +266,27 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         """Fetch all ontologies from their corresponding named graphs.
 
         This method discovers all ontologies in the Fuseki ontologies dataset and
-        fetches each one from its corresponding named graph. It uses
-        a two-step process:
+        fetches each one from its corresponding named graph. For versioned ontologies,
+        it returns only the latest version for each unique ontology IRI.
 
-        1. Discovery: Query for all ontology URIs using SPARQL
+        1. Discovery: List all named graphs (which may be versioned URIs)
         2. Fetching: Retrieve each ontology from its named graph
-
-        The method handles both named graphs and the default graph,
-        and verifies that each ontology is properly typed as owl:Ontology.
+        3. Deduplication: For versioned ontologies, keep only the latest version
 
         Returns:
-            list[Ontology]: List of all ontologies found in the ontologies dataset.
+            list[Ontology]: List of the latest version of each ontology found.
 
         Example:
             >>> ontologies = manager.fetch_ontologies()
             >>> for onto in ontologies:
-            ...     print(f"Found ontology: {onto.iri}")
+            ...     print(f"Found ontology: {onto.iri} v{onto.version}")
         """
         sparql_url = f"{self._get_ontologies_dataset_url()}/sparql"
 
-        # Step 1: List all ontology URIs from all graphs
+        # Step 1: List all named graphs
         list_query = """
-        SELECT DISTINCT ?s WHERE {
-          { GRAPH ?g { ?s a <http://www.w3.org/2002/07/owl#Ontology> } }
-          UNION
-          { ?s a <http://www.w3.org/2002/07/owl#Ontology> }
+        SELECT DISTINCT ?g WHERE {
+          GRAPH ?g { ?s ?p ?o }
         }
         """
         response = requests.post(
@@ -260,49 +295,92 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             auth=self.auth,
         )
         if response.status_code != 200:
-            logger.error(f"Failed to list ontologies from Fuseki: {response.text}")
+            logger.error(f"Failed to list graphs from Fuseki: {response.text}")
             return []
 
         results = response.json()
-        ontology_iris = []
+        graph_uris = []
         for binding in results.get("results", {}).get("bindings", []):
-            onto_iri = binding["s"]["value"]
-            ontology_iris.append(onto_iri)
+            graph_uri = binding["g"]["value"]
+            graph_uris.append(graph_uri)
 
-        logger.debug(f"Found {len(ontology_iris)} ontology URIs: {ontology_iris}")
+        logger.debug(f"Found {len(graph_uris)} named graphs: {graph_uris}")
 
         # Step 2: Fetch each ontology from its corresponding named graph
-        ontologies = []
-        for onto_iri in ontology_iris:
-            # Fetch the ontology from its corresponding named graph
+        all_ontologies = []
+        for graph_uri in graph_uris:
             graph = RDFGraph()
-            export_url = f"{self._get_ontologies_dataset_url()}/get?graph={onto_iri}"
+            # URL encode the graph URI to handle special characters like #
+            encoded_graph_uri = quote(str(graph_uri), safe="/:")
+            export_url = (
+                f"{self._get_ontologies_dataset_url()}/get?graph={encoded_graph_uri}"
+            )
             export_resp = requests.get(
                 export_url, auth=self.auth, headers={"Accept": "text/turtle"}
             )
 
             if export_resp.status_code == 200:
                 graph.parse(data=export_resp.text, format="turtle")
-                # Verify the ontology is actually in this graph
-                onto_iri_ref = URIRef(onto_iri)
-                if (onto_iri_ref, RDF.type, OWL.Ontology) in graph:
-                    ontology_id = derive_ontology_id(onto_iri)
-                    ontologies.append(
-                        Ontology(
-                            graph=graph,
-                            iri=onto_iri,
-                            ontology_id=ontology_id,
-                        )
+                # Find the ontology IRI in the graph
+                for onto_subj, _, obj in graph.triples((None, RDF.type, OWL.Ontology)):
+                    onto_iri = str(onto_subj)
+                    # Extract base IRI if it's versioned
+                    if "#v" in graph_uri:
+                        # Versioned graph - extract base IRI
+                        onto_iri = graph_uri.split("#v")[0]
+
+                    ontology = Ontology(
+                        graph=graph,
+                        iri=onto_iri,
                     )
-                    logger.debug(f"Successfully loaded ontology: {onto_iri}")
-                else:
-                    logger.warning(f"Ontology {onto_iri} not found in its named graph")
+                    # Load properties from graph
+                    ontology.sync_properties_from_graph()
+                    all_ontologies.append(ontology)
+                    logger.debug(
+                        f"Successfully loaded ontology: {onto_iri} version: {ontology.version}"
+                    )
+                    break  # Only one ontology per graph
             else:
                 logger.warning(
-                    f"Failed to fetch ontology graph {onto_iri}: {export_resp.status_code}"
+                    f"Failed to fetch graph {graph_uri}: {export_resp.status_code}"
                 )
 
-        logger.info(f"Successfully loaded {len(ontologies)} ontologies from Fuseki")
+        # Step 3: Deduplicate and keep latest versions
+        ontology_dict = defaultdict(list)
+
+        for onto in all_ontologies:
+            ontology_dict[onto.iri].append(onto)
+
+        # For each unique IRI, select the latest version
+        ontologies = []
+
+        for iri, versions in ontology_dict.items():
+            if len(versions) == 1:
+                ontologies.append(versions[0])
+            else:
+                # Multiple versions - keep the latest
+                try:
+                    # Sort by version if available
+                    versions_with_ver = [v for v in versions if v.version]
+                    if versions_with_ver:
+                        # Sort by version using custom comparison
+                        versions_with_ver.sort(
+                            key=lambda x: str(x.version), reverse=False
+                        )
+                        ontologies.append(versions_with_ver[-1])
+                        logger.debug(
+                            f"Selected latest version for {iri}: {versions_with_ver[-1].version}"
+                        )
+                    else:
+                        # No version info, keep first one
+                        ontologies.append(versions[0])
+                except Exception as e:
+                    logger.warning(f"Could not compare versions for {iri}: {e}")
+                    ontologies.append(versions[0])
+
+        logger.info(
+            f"Successfully loaded {len(ontologies)} unique ontologies from Fuseki (latest versions)"
+        )
         return ontologies
 
     def serialize_graph(self, graph: Graph, **kwargs) -> bool | None:
@@ -327,7 +405,9 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         if graph_uri is None:
             graph_uri = default_graph_uri
 
-        url = f"{dataset_url}/data?graph={graph_uri}"
+        # URL encode the graph URI to handle special characters like #
+        encoded_graph_uri = quote(str(graph_uri), safe="/:")
+        url = f"{dataset_url}/data?graph={encoded_graph_uri}"
         headers = {"Content-Type": "text/turtle;charset=utf-8"}
         response = requests.put(url, headers=headers, data=turtle_data, auth=self.auth)
         if response.status_code in (200, 201, 204):
@@ -366,19 +446,25 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
         if isinstance(o, Ontology):
             graph = o.graph
+            # Use versioned IRI for storage to enable multiple versions to coexist
+            graph_uri = o.versioned_iri
             default_graph_uri = "urn:ontology:default"
             log_prefix = "Ontology"
+            # Use ontologies dataset for ontology storage
+            dataset_url = self._get_ontologies_dataset_url()
         elif isinstance(o, RDFGraph):
             graph = o
             default_graph_uri = "urn:data:default"
             log_prefix = "Graph"
+            # Use regular dataset for facts storage
+            dataset_url = self._get_dataset_url()
         else:
             raise TypeError(f"unsupported obj of type {type(o)} received")
 
         return self.serialize_graph(
             graph=graph,
             graph_uri=graph_uri,
-            dataset_url=self._get_dataset_url(),
+            dataset_url=dataset_url,
             default_graph_uri=default_graph_uri,
             log_prefix=log_prefix,
         )

@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Version analysis based on ontology changes (classes, properties, instances)
 - `mark_as_updated()` method in Ontology class for version and timestamp management
 - `sync_properties_to_graph()` method updates version and `updated_at` in RDF graph
+- `versioned_iri` property on Ontology class for storing multiple versions in triple stores
+- URL encoding for versioned IRIs in Fuseki to preserve `#` characters in URIs
+- Multiple ontology version support in Fuseki triple store (versions stored as separate named graphs)
+- Automatic ontology synchronization from filesystem to triple store during initialization
 - Budget tracking system integrated into AgentState with usage statistics
 - Triple generation metrics (ontology and facts tracking)
 - Budget tracker summary reports at end of processing

@@ -76,6 +76,30 @@ class OntologyProperties(BaseModel):
         """
         return iri2namespace(self.iri, ontology=True)
 
+    @property
+    def versioned_iri(self) -> str:
+        """Get the versioned URI for this ontology (for storage purposes).
+
+        This creates a versioned URI by appending the version as a fragment
+        to the ontology's IRI. This allows multiple versions of the same
+        ontology to coexist in storage (e.g., Fuseki named graphs).
+
+        The semantic ontology IRI in the graph remains unchanged; this is
+        only used for storage organization.
+
+        Returns:
+            str: The versioned URI if version exists, otherwise the base IRI.
+
+        Examples:
+            >>> ont = Ontology(iri="http://example.org/ontology", version="1.0.0")
+            >>> ont.versioned_iri
+            'http://example.org/ontology#v1.0.0'
+        """
+        if self.version:
+            # Use fragment to keep base IRI semantically meaningful
+            return f"{self.iri}#v{self.version}"
+        return self.iri
+
 
 class Ontology(OntologyProperties):
     """A Pydantic model representing an ontology with its RDF graph and description.

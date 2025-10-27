@@ -230,11 +230,10 @@ class ToolBox:
             list: The final set of ontologies after synchronization
         """
 
-        ontologies = []
-
+        filesystem_ontologies = []
         if self.filesystem_manager is not None:
-            ontologies += self.filesystem_manager.fetch_ontologies()
-            logger.debug(f"Found {len(ontologies)} ontologies in filesystem")
+            filesystem_ontologies += self.filesystem_manager.fetch_ontologies()
+            logger.debug(f"Found {len(filesystem_ontologies)} ontologies in filesystem")
 
         triple_store_ontologies = []
         if (
@@ -246,13 +245,23 @@ class ToolBox:
                 f"Found {len(triple_store_ontologies)} ontologies in triple store"
             )
 
-        # Find ontologies in filesystem that are not in triple store
-        for o in triple_store_ontologies:
-            if o.iri not in [item.iri for item in ontologies]:
-                ontologies.append(o)
-                logger.debug(f"Found new ontology in filesystem: {o.iri}")
+        # Get IRIs from both sources
+        triple_store_iris = {o.iri for o in triple_store_ontologies}
 
-        return ontologies
+        # Find ontologies in filesystem that need to be synced to triple store
+        for fs_onto in filesystem_ontologies:
+            if fs_onto.iri not in triple_store_iris:
+                logger.info(
+                    f"Syncing ontology from filesystem to triple store: {fs_onto.iri} "
+                    f"(version: {fs_onto.version})"
+                )
+                # Store the filesystem ontology to triple store with its version
+                if self.triple_store_manager is not None:
+                    self.triple_store_manager.serialize(fs_onto)
+                # Add to triple_store_ontologies list
+                triple_store_ontologies.append(fs_onto)
+
+        return triple_store_ontologies
 
 
 def render_ontology_summary(ontology: Ontology, llm_tool) -> OntologyProperties:
