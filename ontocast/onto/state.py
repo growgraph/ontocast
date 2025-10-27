@@ -224,6 +224,10 @@ class AgentState(BasePydanticModel):
     skip_ontology_development: bool = Field(
         default=False, description="Skip ontology create/improve steps if True"
     )
+    skip_facts_rendering: bool = Field(
+        default=False,
+        description="Skip facts rendering and go straight to aggregation if True",
+    )
     context_manager: ContextManager = Field(
         default_factory=ContextManager,
         description="Context manager for passing information between agents",

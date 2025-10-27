@@ -129,6 +129,9 @@ class ServerConfig(BaseSettings):
     skip_ontology_development: bool = Field(
         default=False, description="Skip ontology critique step"
     )
+    skip_facts_rendering: bool = Field(
+        default=False, description="Skip facts rendering and go straight to aggregation"
+    )
 
     model_config = SettingsConfigDict(
         case_sensitive=False,

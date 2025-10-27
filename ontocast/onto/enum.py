@@ -18,6 +18,14 @@ class OntologyDecision(StrEnum):
     IMPROVE_CREATE_ONTOLOGY = "improve/create ontology"
 
 
+class FactsDecision(StrEnum):
+    """Enumeration of Ontology Decisions used in the workflow."""
+
+    TEXT_TO_FACTS = "adequate ontology; render facts"
+    TEXT_TO_ONTOLOGY = "inadequate ontology; retry render onto"
+    SERIALIZE = "skip to serialize"
+
+
 class FailureStage(StrEnum):
     """Enumeration of possible failure stages in the workflow."""
 
@@ -51,6 +59,7 @@ class WorkflowNode(StrEnum):
     CRITICISE_FACTS = "Criticise Facts"
     CHUNKS_EMPTY = "Chunks Empty?"
     AGGREGATE_FACTS = "Aggregate Facts"
+    SERIALIZE = "Serialize"
 
 
 class SPARQLOperationType(StrEnum):

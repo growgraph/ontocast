@@ -148,10 +148,24 @@ def create_app(
             logger.debug(f"Request headers: {request.headers}")
             logger.debug(f"Request body: {request.body}")
 
-            # Extract dataset from query parameters
+            # Extract parameters from query parameters
             dataset = request.query_params.get("dataset")
             if dataset:
                 logger.debug(f"Using dataset: {dataset}")
+
+            # Extract skip_facts_rendering from query parameters
+            skip_facts_rendering = request.query_params.get("skip_facts_rendering")
+            if skip_facts_rendering:
+                logger.debug(f"Using skip_facts_rendering: {skip_facts_rendering}")
+
+            # Extract skip_ontology_development from query parameters
+            skip_ontology_development = request.query_params.get(
+                "skip_ontology_development"
+            )
+            if skip_ontology_development:
+                logger.debug(
+                    f"Using skip_ontology_development: {skip_ontology_development}"
+                )
 
             if content_type and content_type.startswith("application/json"):
                 data = request.body
@@ -234,11 +248,26 @@ def create_app(
             facts_user_instruction = (
                 facts_user_instruction if "facts_user_instruction" in locals() else ""
             )
+
+            # Determine boolean flags from API params or server config
+            def parse_bool_param(value, default):
+                if value:
+                    return value.lower() == "true"
+                return default
+
+            skip_facts_rendering_value = parse_bool_param(
+                skip_facts_rendering, server_config.skip_facts_rendering
+            )
+            skip_ontology_development_value = parse_bool_param(
+                skip_ontology_development, server_config.skip_ontology_development
+            )
+
             initial_state = AgentState(
                 files=files,
                 max_visits=server_config.max_visits,
                 max_chunks=head_chunks,
-                skip_ontology_development=server_config.skip_ontology_development,
+                skip_ontology_development=skip_ontology_development_value,
+                skip_facts_rendering=skip_facts_rendering_value,
                 dataset=dataset,
                 ontology_user_instruction=ontology_user_instruction,
                 facts_user_instruction=facts_user_instruction,
@@ -402,6 +431,7 @@ def run(
                         max_visits=config.server.max_visits,
                         max_chunks=head_chunks,
                         skip_ontology_development=config.server.skip_ontology_development,
+                        skip_facts_rendering=config.server.skip_facts_rendering,
                         dataset=config.tool_config.fuseki.dataset,
                     )
                     async for _ in workflow.astream(

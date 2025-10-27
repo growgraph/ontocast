@@ -93,9 +93,7 @@ class ToolBox:
         # Automatically determine which backends to use based on available configuration
         use_fuseki = tool_config.fuseki.uri and tool_config.fuseki.auth
         use_neo4j = tool_config.neo4j.uri and tool_config.neo4j.auth
-        use_filesystem_triple_store = (
-            working_directory is not None and ontology_directory is not None
-        )
+        use_filesystem_triple_store = working_directory is not None
         use_filesystem_manager = working_directory is not None
 
         # Validate that we have at least one backend configured
@@ -120,9 +118,9 @@ class ToolBox:
                 uri=tool_config.neo4j.uri, auth=tool_config.neo4j.auth, clean=clean
             )
         elif use_filesystem_triple_store:
-            if working_directory is None or ontology_directory is None:
+            if working_directory is None:
                 raise ValueError(
-                    "Working directory and ontology directory must be provided for filesystem triple store"
+                    "Working directory directory must be provided for filesystem triple store"
                 )
             self.triple_store_manager = FilesystemTripleStoreManager(
                 working_directory=working_directory,
@@ -131,10 +129,6 @@ class ToolBox:
 
         # Create filesystem manager (can be combined with other backends)
         if use_filesystem_manager:
-            if working_directory is None or ontology_directory is None:
-                raise ValueError(
-                    "Working directory and ontology directory must be provided for filesystem manager"
-                )
             self.filesystem_manager = FilesystemTripleStoreManager(
                 working_directory=working_directory,
                 ontology_path=ontology_directory,

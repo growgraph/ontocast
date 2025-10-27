@@ -7,15 +7,23 @@ disambiguation.
 
 import logging
 
+from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
 
 
-def aggregate_serialize(state: AgentState, tools: ToolBox) -> AgentState:
-    """Create a node that saves the knowledge graph."""
+def aggregate(state: AgentState, tools: ToolBox) -> AgentState:
+    """Aggregate facts from multiple processed chunks into a single RDF graph.
 
+    Args:
+        state: Current agent state with processed chunks
+        tools: ToolBox containing aggregation tools
+
+    Returns:
+        Updated agent state with aggregated facts
+    """
     for c in state.chunks_processed:
         c.sanitize()
 
@@ -28,6 +36,29 @@ def aggregate_serialize(state: AgentState, tools: ToolBox) -> AgentState:
         f"ontology {len(state.current_ontology.graph)} triples; "
         f"facts graph: {len(state.aggregated_facts)} triples"
     )
+
+    return state
+
+
+def serialize(state: AgentState, tools: ToolBox) -> AgentState:
+    """Serialize the knowledge graph to the triple store.
+
+    This function:
+    - Handles version management for updated ontologies
+    - Tracks budget usage
+    - Serializes both ontology and facts to the triple store
+
+    Args:
+        state: Current agent state with ontology and facts
+        tools: ToolBox containing serialization tools
+
+    Returns:
+        Updated agent state after serialization
+    """
+    # Initialize empty facts graph if not set (for skip_facts_rendering case)
+    if not hasattr(state, "aggregated_facts") or state.aggregated_facts is None:
+        state.aggregated_facts = RDFGraph()
+        logger.info("No facts to serialize (skip_facts_rendering mode)")
 
     # Check if the ontology was updated during processing
     # If there were updates applied, increment the version (MAJOR/MINOR/PATCH)

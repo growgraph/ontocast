@@ -152,6 +152,7 @@ OntoCast uses a hierarchical configuration system built on Pydantic BaseSettings
 | `PORT` | Server port | 8999 | No |
 | `MAX_VISITS` | Maximum visits per node | 3 | No |
 | `SKIP_ONTOLOGY_DEVELOPMENT` | Skip ontology critique | false | No |
+| `SKIP_FACTS_RENDERING` | Skip facts rendering and go straight to aggregation | false | No |
 
 ### Triple Store Configuration
 

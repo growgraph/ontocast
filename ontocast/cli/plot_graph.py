@@ -58,7 +58,9 @@ def main():
     # Create a minimal config for plotting (no API keys needed)
     config = Config(
         tool_config=ToolConfig(
-            path_config=PathConfig(ontology_directory=None),
+            path_config=PathConfig(
+                ontology_directory=None, working_directory=Path("/tmp")
+            ),
             llm_config=LLMConfig(
                 provider=LLMProvider.OLLAMA,
                 model_name=OllamaModel.LLAMA3_1,
@@ -122,7 +124,7 @@ def main():
     try:
         import pygraphviz as pgv  # type: ignore
 
-        tweak_draw("docs/assets/graph", extensions=("svg", "pnt"))
+        tweak_draw("docs/assets/graph", extensions=("svg", "png"))
     except ImportError as e:
         logger.info(f"Could not import graphviz: {e}")
 

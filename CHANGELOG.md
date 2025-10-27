@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - URL encoding for versioned IRIs in Fuseki to preserve `#` characters in URIs
 - Multiple ontology version support in Fuseki triple store (versions stored as separate named graphs)
 - Automatic ontology synchronization from filesystem to triple store during initialization
+- `skip_facts_rendering` parameter to skip facts extraction and go straight to serialization
+- Separated `aggregate` and `serialize` into distinct workflow nodes for better control
+- Added `serialize` node to the workflow graph
+- API support for `skip_facts_rendering` and `skip_ontology_development` as query parameters
 - Budget tracking system integrated into AgentState with usage statistics
 - Triple generation metrics (ontology and facts tracking)
 - Budget tracker summary reports at end of processing

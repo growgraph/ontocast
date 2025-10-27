@@ -26,15 +26,18 @@ graph TD;
 	Criticise\20Facts(Criticise Facts)
 	Chunks\20Empty\3f(Chunks Empty?)
 	Aggregate\20Facts(Aggregate Facts)
+	Serialize(Serialize)
 	__end__([<p>__end__</p>]):::last
+	Aggregate\20Facts --> Serialize;
 	Chunk\20Text --> Chunks\20Empty\3f;
 	Chunks\20Empty\3f -. &nbsp;success&nbsp; .-> Aggregate\20Facts;
 	Chunks\20Empty\3f -. &nbsp;failed&nbsp; .-> Select\20Ontology;
 	Convert\20to\20Markdown --> Chunk\20Text;
 	Criticise\20Facts -. &nbsp;success&nbsp; .-> Chunks\20Empty\3f;
 	Criticise\20Facts -. &nbsp;failed&nbsp; .-> Text\20to\20Facts;
-	Criticise\20Ontology -. &nbsp;success&nbsp; .-> Text\20to\20Facts;
-	Criticise\20Ontology -. &nbsp;failed&nbsp; .-> Text\20to\20Ontology;
+	Criticise\20Ontology -. &nbsp;skip to serialize&nbsp; .-> Serialize;
+	Criticise\20Ontology -. &nbsp;adequate ontology; render facts&nbsp; .-> Text\20to\20Facts;
+	Criticise\20Ontology -. &nbsp;inadequate ontology; retry render onto&nbsp; .-> Text\20to\20Ontology;
 	Select\20Ontology -. &nbsp;ontology found; skip to facts&nbsp; .-> Text\20to\20Facts;
 	Select\20Ontology -. &nbsp;improve/create ontology&nbsp; .-> Text\20to\20Ontology;
 	Select\20Ontology -. &nbsp;ontology not found; ffwd to END&nbsp; .-> __end__;
@@ -42,7 +45,7 @@ graph TD;
 	Text\20to\20Facts -. &nbsp;success&nbsp; .-> Sublimate\20Ontology;
 	Text\20to\20Ontology -. &nbsp;success&nbsp; .-> Criticise\20Ontology;
 	__start__ --> Convert\20to\20Markdown;
-	Aggregate\20Facts --> __end__;
+	Serialize --> __end__;
 	Text\20to\20Facts -. &nbsp;failed&nbsp; .-> Text\20to\20Facts;
 	Text\20to\20Ontology -. &nbsp;failed&nbsp; .-> Text\20to\20Ontology;
 	classDef default fill:#f2f0ff,line-height:1.2
