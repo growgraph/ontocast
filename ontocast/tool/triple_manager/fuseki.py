@@ -23,6 +23,39 @@ from ontocast.tool.triple_manager.core import TripleStoreManagerWithAuth
 logger = logging.getLogger(__name__)
 
 
+def deterministic_turtle_serialization(graph: Graph) -> str:
+    """Create a deterministic Turtle serialization of an RDF graph.
+
+    This function ensures that the same graph content will always produce
+    the same Turtle output, regardless of the order triples were added or
+    how they're stored in Fuseki. This is crucial for caching to work
+    correctly.
+
+    Args:
+        graph: The RDF graph to serialize.
+
+    Returns:
+        str: Deterministically serialized Turtle string.
+    """
+    # Capture and sort namespaces
+    prefix_lines = [
+        f"@prefix {p}: <{ns}> ."
+        for p, ns in sorted(graph.namespace_manager.namespaces())
+    ]
+
+    # Sort triples by their string representation
+    triples_sorted = sorted(graph, key=lambda t: (str(t[0]), str(t[1]), str(t[2])))
+
+    # Serialize triples using n3 format to get proper Turtle syntax
+    triple_lines = [
+        f"{s.n3(graph.namespace_manager)} {p.n3(graph.namespace_manager)} {o.n3(graph.namespace_manager)} ."
+        for s, p, o in triples_sorted
+    ]
+
+    # Return sorted prefixes followed by sorted triples
+    return "\n".join(prefix_lines + [""] + triple_lines)
+
+
 def _compare_versions(ver1: str, ver2: str) -> int:
     """Compare two semantic version strings.
 
@@ -321,6 +354,22 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
             if export_resp.status_code == 200:
                 graph.parse(data=export_resp.text, format="turtle")
+
+                # Re-serialize deterministically to ensure consistent cache keys
+                # This sorts both namespaces and triples alphabetically
+                deterministic_turtle = deterministic_turtle_serialization(graph)
+
+                # Re-parse from deterministic serialization to ensure we have RDFGraph
+                deterministic_graph = RDFGraph()
+                deterministic_graph.parse(data=deterministic_turtle, format="turtle")
+
+                # Copy namespace bindings from original graph
+                for prefix, namespace in graph.namespaces():
+                    if prefix:
+                        deterministic_graph.bind(prefix, namespace)
+
+                graph = deterministic_graph
+
                 # Find the ontology IRI in the graph
                 for onto_subj, _, obj in graph.triples((None, RDF.type, OWL.Ontology)):
                     onto_iri = str(onto_subj)
