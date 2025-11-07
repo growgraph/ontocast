@@ -34,12 +34,9 @@ jobs:
         -   name: Install dependencies
             run: |
                 uv sync --group docs --no-group dev
-
-
         -   name: Build site
             run: |
                 uv run mkdocs build --site-dir _site
-
         -   name: Upload Pages artifact
             uses: actions/upload-pages-artifact@v3
             with:
