@@ -1,3 +1,5 @@
+import hashlib
+import json
 import logging
 import re
 from collections import defaultdict
@@ -6,6 +8,7 @@ from typing import Any, Union
 
 from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
+from pyld import jsonld
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import NamespaceManager
 
@@ -380,3 +383,17 @@ class RDFGraph(Graph):
 
         self.remove((subj, pred, obj))
         logger.debug(f"Removed triple: {subj} {pred} {obj}")
+
+    def hash(self: Graph) -> str:
+        # Serialize to JSON-LD
+        data = self.serialize(format="json-ld")
+
+        # Parse the JSON string
+        doc = json.loads(data)
+
+        # Canonicalize using URDNA2015 normalization
+        normalized = jsonld.normalize(
+            doc,
+            {"algorithm": "URDNA2015", "format": "application/n-quads"},
+        )
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()

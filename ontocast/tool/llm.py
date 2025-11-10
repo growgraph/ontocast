@@ -237,7 +237,7 @@ class LLMTool(Tool):
 
     @track_llm_usage
     def __call__(self, *args: Any, **kwds: Any) -> Any:
-        """Call the language model directly.
+        """Call the language model directly (synchronous).
 
         Args:
             *args: Positional arguments passed to the LLM.
@@ -273,6 +273,55 @@ class LLMTool(Tool):
         logger.debug(f"Cache miss, calling LLM for __call__: {prompt_str[:50]}...")
 
         response = self.llm.invoke(*args, **kwds)
+
+        # Cache the response
+        response_data = {
+            "content": response.content,
+            "prompt": self._prompt_to_string(prompt),
+            "kwargs": kwds,
+        }
+        self.cache.set(prompt, response_data, config=config_dict, **kwds)
+
+        return response
+
+    @track_llm_usage
+    async def acall(self, *args: Any, **kwds: Any) -> Any:
+        """Call the language model directly (asynchronous).
+
+        Args:
+            *args: Positional arguments passed to the LLM.
+            **kwds: Keyword arguments passed to the LLM.
+
+        Returns:
+            Any: The LLM's response.
+        """
+        # Extract prompt from args (first argument is typically the prompt)
+        prompt = args[0] if args else ""
+
+        # Prepare configuration for caching
+        config_dict = {
+            "provider": self.config.provider,
+            "model_name": self.config.model_name,
+            "temperature": self.config.temperature,
+            "base_url": self.config.base_url,
+        }
+
+        # Check cache first
+        cached_response = self.cache.get(prompt, config=config_dict, **kwds)
+
+        if cached_response is not None:
+            prompt_str = self._prompt_to_string(prompt)
+            logger.debug(f"Cache hit for acall: {prompt_str[:50]}...")
+            # Return a mock BaseMessage object with the cached content
+            content = cached_response["content"]
+            content_str = content if isinstance(content, str) else str(content)
+            return AIMessage(content=content_str)
+
+        # Generate new response
+        prompt_str = self._prompt_to_string(prompt)
+        logger.debug(f"Cache miss, calling LLM for acall: {prompt_str[:50]}...")
+
+        response = await self.llm.ainvoke(*args, **kwds)
 
         # Cache the response
         response_data = {

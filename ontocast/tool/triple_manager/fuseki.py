@@ -5,12 +5,13 @@ using Apache Fuseki as the backend. It supports named graphs for ontologies
 and facts, with proper authentication and dataset management.
 """
 
+import asyncio
 import logging
 import re
 from collections import defaultdict
 from urllib.parse import quote
 
-import requests
+import httpx
 from pydantic import Field
 from rdflib import Graph
 from rdflib.namespace import OWL, RDF
@@ -157,15 +158,72 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             self.dataset = dataset
         self.ontologies_dataset = ontologies_dataset or DEFAULT_ONTOLOGIES_DATASET
         self.clean = clean
-        self.init_dataset(self.dataset)
+
+        # Initialize httpx client for async operations
+        self._client: httpx.AsyncClient | None = None
+
+        # Initialize datasets synchronously (for backward compatibility)
+        # In async contexts, use async_init() instead
+        asyncio.run(self._async_init_with_cleanup())
+
+    async def _async_init_with_cleanup(self):
+        """Wrapper for async_init that ensures proper cleanup when using asyncio.run().
+
+        This method creates a temporary client and ensures it's properly closed
+        before returning, preventing "Event loop is closed" errors.
+        """
+        async with httpx.AsyncClient(
+            auth=self._prepare_auth(), timeout=30.0
+        ) as temp_client:
+            # Temporarily replace the client
+            original_client = self._client
+            self._client = temp_client
+            try:
+                await self._async_init()
+            finally:
+                # Restore original client
+                self._client = original_client
+
+    async def _async_init(self):
+        """Async initialization of datasets."""
+        await self.init_dataset(self.dataset)
         if self.ontologies_dataset != self.dataset:
-            self.init_dataset(self.ontologies_dataset)
+            await self.init_dataset(self.ontologies_dataset)
 
         # Clean dataset if requested
         if self.clean:
-            self._clean_dataset()
+            await self._clean_dataset()
 
-    def update_dataset(self, new_dataset: str) -> None:
+    def _prepare_auth(self) -> httpx.BasicAuth | None:
+        """Prepare httpx BasicAuth from self.auth.
+
+        Returns:
+            httpx.BasicAuth instance or None if no auth is configured.
+        """
+        if self.auth:
+            if isinstance(self.auth, tuple):
+                return httpx.BasicAuth(*self.auth)
+            elif isinstance(self.auth, str) and "/" in self.auth:
+                parts = self.auth.split("/", 1)
+                if len(parts) == 2:
+                    username, password = parts[0], parts[1]
+                    return httpx.BasicAuth(username, password)
+        return None
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Get or create the httpx async client."""
+        if self._client is None:
+            auth = self._prepare_auth()
+            self._client = httpx.AsyncClient(auth=auth, timeout=30.0)
+        return self._client
+
+    async def close(self):
+        """Close the httpx client."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    async def update_dataset(self, new_dataset: str) -> None:
         """Update the dataset name for this manager.
 
         This method allows changing the dataset without recreating the entire
@@ -178,10 +236,10 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             raise ValueError("Dataset name cannot be empty")
 
         self.dataset = new_dataset
-        self.init_dataset(self.dataset)
+        await self.init_dataset(self.dataset)
         logger.info(f"Updated Fuseki dataset to: {self.dataset}")
 
-    def _clean_dataset(self):
+    async def _clean_dataset(self):
         """Delete all data from the dataset.
 
         This method removes all named graphs and clears the default graph
@@ -192,6 +250,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         each cleanup operation.
         """
         try:
+            client = await self._get_client()
             # Get the SPARQL update endpoint
             sparql_update_url = f"{self._get_dataset_url()}/update"
 
@@ -202,36 +261,48 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
               GRAPH ?g { ?s ?p ?o }
             }
             """
-            response = requests.post(
+            response = await client.post(
                 sparql_url,
                 data={"query": query, "format": "application/sparql-results+json"},
-                auth=self.auth,
             )
 
             if response.status_code == 200:
                 results = response.json()
+                # Delete graphs in parallel
+                tasks = []
                 for binding in results.get("results", {}).get("bindings", []):
                     graph_uri = binding["g"]["value"]
                     # Delete the named graph using SPARQL UPDATE
                     drop_query = f"DROP GRAPH <{graph_uri}>"
-                    delete_response = requests.post(
-                        sparql_update_url,
-                        data={"update": drop_query},
-                        auth=self.auth,
-                    )
-                    if delete_response.status_code in (200, 204):
-                        logger.debug(f"Deleted named graph: {graph_uri}")
-                    else:
-                        logger.warning(
-                            f"Failed to delete graph {graph_uri}: {delete_response.status_code}"
+                    tasks.append(
+                        client.post(
+                            sparql_update_url,
+                            data={"update": drop_query},
                         )
+                    )
+
+                # Execute all deletions in parallel
+                delete_responses = await asyncio.gather(*tasks, return_exceptions=True)
+                for i, delete_response in enumerate(delete_responses):
+                    graph_uri = results["results"]["bindings"][i]["g"]["value"]
+                    if isinstance(delete_response, Exception):
+                        logger.warning(
+                            f"Failed to delete graph {graph_uri}: {delete_response}"
+                        )
+                    elif isinstance(delete_response, httpx.Response):
+                        # delete_response is an httpx.Response
+                        if delete_response.status_code in (200, 204):
+                            logger.debug(f"Deleted named graph: {graph_uri}")
+                        else:
+                            logger.warning(
+                                f"Failed to delete graph {graph_uri}: {delete_response.status_code}"
+                            )
 
             # Clear the default graph using SPARQL UPDATE
             clear_query = "CLEAR DEFAULT"
-            clear_response = requests.post(
+            clear_response = await client.post(
                 sparql_update_url,
                 data={"update": clear_query},
-                auth=self.auth,
             )
             if clear_response.status_code in (200, 204):
                 logger.debug("Cleared default graph")
@@ -245,7 +316,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         except Exception as e:
             logger.warning(f"Fuseki cleanup failed: {e}")
 
-    def init_dataset(self, dataset_name):
+    async def init_dataset(self, dataset_name):
         """Initialize a Fuseki dataset.
 
         This method creates a new dataset in Fuseki if it doesn't already exist.
@@ -257,15 +328,14 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         Note:
             This method will not fail if the dataset already exists.
         """
+        client = await self._get_client()
         fuseki_admin_url = f"{self.uri}/$/datasets"
 
         payload = {"dbName": dataset_name, "dbType": "tdb2"}
 
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
-        response = requests.post(
-            fuseki_admin_url, data=payload, headers=headers, auth=self.auth
-        )
+        response = await client.post(fuseki_admin_url, data=payload, headers=headers)
 
         if response.status_code == 200 or response.status_code == 201:
             logger.info(f"Fuseki dataset '{dataset_name}' created successfully.")
@@ -296,6 +366,39 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         return f"{self.uri}/{self.ontologies_dataset}"
 
     def fetch_ontologies(self) -> list[Ontology]:
+        """Synchronous wrapper for fetch_ontologies.
+
+        For async usage, use afetch_ontologies() instead.
+        """
+        # Use a temporary client for this operation to avoid event loop cleanup issues
+        return asyncio.run(self._fetch_ontologies_with_cleanup())
+
+    async def afetch_ontologies(self) -> list[Ontology]:
+        """Async version of fetch_ontologies.
+
+        This is the preferred method when running in an async context.
+        """
+        return await self._fetch_ontologies_async()
+
+    async def _fetch_ontologies_with_cleanup(self) -> list[Ontology]:
+        """Wrapper that ensures proper cleanup when using asyncio.run().
+
+        This method creates a temporary client and ensures it's properly closed
+        before returning, preventing "Event loop is closed" errors.
+        """
+        async with httpx.AsyncClient(
+            auth=self._prepare_auth(), timeout=30.0
+        ) as temp_client:
+            # Temporarily replace the client
+            original_client = self._client
+            self._client = temp_client
+            try:
+                return await self._fetch_ontologies_async()
+            finally:
+                # Restore original client
+                self._client = original_client
+
+    async def _fetch_ontologies_async(self) -> list[Ontology]:
         """Fetch all ontologies from their corresponding named graphs.
 
         This method discovers all ontologies in the Fuseki ontologies dataset and
@@ -303,17 +406,18 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         it returns only the latest version for each unique ontology IRI.
 
         1. Discovery: List all named graphs (which may be versioned URIs)
-        2. Fetching: Retrieve each ontology from its named graph
+        2. Fetching: Retrieve each ontology from its named graph (in parallel)
         3. Deduplication: For versioned ontologies, keep only the latest version
 
         Returns:
             list[Ontology]: List of the latest version of each ontology found.
 
         Example:
-            >>> ontologies = manager.fetch_ontologies()
+            >>> ontologies = await manager.fetch_ontologies()
             >>> for onto in ontologies:
             ...     print(f"Found ontology: {onto.iri} v{onto.version}")
         """
+        client = await self._get_client()
         sparql_url = f"{self._get_ontologies_dataset_url()}/sparql"
 
         # Step 1: List all named graphs
@@ -322,10 +426,9 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
           GRAPH ?g { ?s ?p ?o }
         }
         """
-        response = requests.post(
+        response = await client.post(
             sparql_url,
             data={"query": list_query, "format": "application/sparql-results+json"},
-            auth=self.auth,
         )
         if response.status_code != 200:
             logger.error(f"Failed to list graphs from Fuseki: {response.text}")
@@ -339,60 +442,78 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
         logger.debug(f"Found {len(graph_uris)} named graphs: {graph_uris}")
 
-        # Step 2: Fetch each ontology from its corresponding named graph
-        all_ontologies = []
-        for graph_uri in graph_uris:
-            graph = RDFGraph()
-            # URL encode the graph URI to handle special characters like #
-            encoded_graph_uri = quote(str(graph_uri), safe="/:")
-            export_url = (
-                f"{self._get_ontologies_dataset_url()}/get?graph={encoded_graph_uri}"
-            )
-            export_resp = requests.get(
-                export_url, auth=self.auth, headers={"Accept": "text/turtle"}
-            )
-
-            if export_resp.status_code == 200:
-                graph.parse(data=export_resp.text, format="turtle")
-
-                # Re-serialize deterministically to ensure consistent cache keys
-                # This sorts both namespaces and triples alphabetically
-                deterministic_turtle = deterministic_turtle_serialization(graph)
-
-                # Re-parse from deterministic serialization to ensure we have RDFGraph
-                deterministic_graph = RDFGraph()
-                deterministic_graph.parse(data=deterministic_turtle, format="turtle")
-
-                # Copy namespace bindings from original graph
-                for prefix, namespace in graph.namespaces():
-                    if prefix:
-                        deterministic_graph.bind(prefix, namespace)
-
-                graph = deterministic_graph
-
-                # Find the ontology IRI in the graph
-                for onto_subj, _, obj in graph.triples((None, RDF.type, OWL.Ontology)):
-                    onto_iri = str(onto_subj)
-                    # Extract base IRI if it's versioned
-                    if "#v" in graph_uri:
-                        # Versioned graph - extract base IRI
-                        onto_iri = graph_uri.split("#v")[0]
-
-                    ontology = Ontology(
-                        graph=graph,
-                        iri=onto_iri,
-                    )
-                    # Load properties from graph
-                    ontology.sync_properties_from_graph()
-                    all_ontologies.append(ontology)
-                    logger.debug(
-                        f"Successfully loaded ontology: {onto_iri} version: {ontology.version}"
-                    )
-                    break  # Only one ontology per graph
-            else:
-                logger.warning(
-                    f"Failed to fetch graph {graph_uri}: {export_resp.status_code}"
+        # Step 2: Fetch each ontology from its corresponding named graph (in parallel)
+        async def fetch_single_ontology(graph_uri: str) -> Ontology | None:
+            """Fetch a single ontology from a graph URI."""
+            try:
+                graph = RDFGraph()
+                # URL encode the graph URI to handle special characters like #
+                encoded_graph_uri = quote(str(graph_uri), safe="/:")
+                export_url = f"{self._get_ontologies_dataset_url()}/get?graph={encoded_graph_uri}"
+                export_resp = await client.get(
+                    export_url, headers={"Accept": "text/turtle"}
                 )
+
+                if export_resp.status_code == 200:
+                    graph.parse(data=export_resp.text, format="turtle")
+
+                    # Re-serialize deterministically to ensure consistent cache keys
+                    # This sorts both namespaces and triples alphabetically
+                    deterministic_turtle = deterministic_turtle_serialization(graph)
+
+                    # Re-parse from deterministic serialization to ensure we have RDFGraph
+                    deterministic_graph = RDFGraph()
+                    deterministic_graph.parse(
+                        data=deterministic_turtle, format="turtle"
+                    )
+
+                    # Copy namespace bindings from original graph
+                    for prefix, namespace in graph.namespaces():
+                        if prefix:
+                            deterministic_graph.bind(prefix, namespace)
+
+                    graph = deterministic_graph
+
+                    # Find the ontology IRI in the graph
+                    for onto_subj, _, obj in graph.triples(
+                        (None, RDF.type, OWL.Ontology)
+                    ):
+                        onto_iri = str(onto_subj)
+                        # Extract base IRI if it's versioned
+                        if "#v" in graph_uri:
+                            # Versioned graph - extract base IRI
+                            onto_iri = graph_uri.split("#v")[0]
+
+                        ontology = Ontology(
+                            graph=graph,
+                            iri=onto_iri,
+                        )
+                        # Load properties from graph
+                        ontology.sync_properties_from_graph()
+                        logger.debug(
+                            f"Successfully loaded ontology: {onto_iri} version: {ontology.version}"
+                        )
+                        return ontology
+                else:
+                    logger.warning(
+                        f"Failed to fetch graph {graph_uri}: {export_resp.status_code}"
+                    )
+            except Exception as e:
+                logger.warning(f"Error fetching ontology from {graph_uri}: {e}")
+            return None
+
+        # Fetch all ontologies in parallel
+        all_ontologies_results = await asyncio.gather(
+            *[fetch_single_ontology(uri) for uri in graph_uris], return_exceptions=True
+        )
+
+        # Filter out None and exceptions
+        all_ontologies = []
+        for result in all_ontologies_results:
+            if isinstance(result, Exception):
+                logger.warning(f"Exception fetching ontology: {result}")
+            elif result is not None:
+                all_ontologies.append(result)
 
         # Step 3: Deduplicate and keep latest versions
         ontology_dict = defaultdict(list)
@@ -433,6 +554,40 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         return ontologies
 
     def serialize_graph(self, graph: Graph, **kwargs) -> bool | None:
+        """Synchronous wrapper for serialize_graph.
+
+        For async usage, use aserialize_graph() instead.
+        """
+        return asyncio.run(self._serialize_graph_with_cleanup(graph, **kwargs))
+
+    async def aserialize_graph(self, graph: Graph, **kwargs) -> bool | None:
+        """Async version of serialize_graph.
+
+        This is the preferred method when running in an async context.
+        """
+        return await self._serialize_graph_async(graph, **kwargs)
+
+    async def _serialize_graph_with_cleanup(
+        self, graph: Graph, **kwargs
+    ) -> bool | None:
+        """Wrapper that ensures proper cleanup when using asyncio.run().
+
+        This method creates a temporary client and ensures it's properly closed
+        before returning, preventing "Event loop is closed" errors.
+        """
+        async with httpx.AsyncClient(
+            auth=self._prepare_auth(), timeout=30.0
+        ) as temp_client:
+            # Temporarily replace the client
+            original_client = self._client
+            self._client = temp_client
+            try:
+                return await self._serialize_graph_async(graph, **kwargs)
+            finally:
+                # Restore original client
+                self._client = original_client
+
+    async def _serialize_graph_async(self, graph: Graph, **kwargs) -> bool | None:
         """Store an RDF graph as a named graph in a specific Fuseki dataset.
 
         This is a private helper method that handles the common logic for storing
@@ -445,6 +600,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         Returns:
             bool: True if the graph was successfully stored, False otherwise.
         """
+        client = await self._get_client()
         graph_uri = kwargs.get("graph_uri")
         dataset_url = kwargs.get("dataset_url")
         default_graph_uri = kwargs.get("default_graph_uri")
@@ -458,7 +614,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         encoded_graph_uri = quote(str(graph_uri), safe="/:")
         url = f"{dataset_url}/data?graph={encoded_graph_uri}"
         headers = {"Content-Type": "text/turtle;charset=utf-8"}
-        response = requests.put(url, headers=headers, data=turtle_data, auth=self.auth)
+        response = await client.put(url, headers=headers, content=turtle_data)
         if response.status_code in (200, 201, 204):
             logger.info(
                 f"{log_prefix} graph {graph_uri} uploaded to Fuseki as named graph."
@@ -472,6 +628,40 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             return False
 
     def serialize(self, o: Ontology | RDFGraph, **kwargs) -> bool | None:
+        """Synchronous wrapper for serialize.
+
+        For async usage, use aserialize() instead.
+        """
+        return asyncio.run(self._serialize_with_cleanup(o, **kwargs))
+
+    async def aserialize(self, o: Ontology | RDFGraph, **kwargs) -> bool | None:
+        """Async version of serialize.
+
+        This is the preferred method when running in an async context.
+        """
+        return await self._serialize_async(o, **kwargs)
+
+    async def _serialize_with_cleanup(
+        self, o: Ontology | RDFGraph, **kwargs
+    ) -> bool | None:
+        """Wrapper that ensures proper cleanup when using asyncio.run().
+
+        This method creates a temporary client and ensures it's properly closed
+        before returning, preventing "Event loop is closed" errors.
+        """
+        async with httpx.AsyncClient(
+            auth=self._prepare_auth(), timeout=30.0
+        ) as temp_client:
+            # Temporarily replace the client
+            original_client = self._client
+            self._client = temp_client
+            try:
+                return await self._serialize_async(o, **kwargs)
+            finally:
+                # Restore original client
+                self._client = original_client
+
+    async def _serialize_async(self, o: Ontology | RDFGraph, **kwargs) -> bool | None:
         """Store an RDF graph as a named graph in Fuseki.
 
         This method stores the given RDF graph as a named graph in Fuseki.
@@ -487,9 +677,9 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
         Example:
             >>> graph = RDFGraph()
-            >>> success = manager.serialize(graph)
+            >>> success = await manager.serialize(graph)
 
-            >>> success = manager.serialize(graph, graph_uri="http://example.org/chunk1")
+            >>> success = await manager.serialize(graph, graph_uri="http://example.org/chunk1")
         """
         graph_uri = kwargs.get("graph_uri")
 
@@ -510,7 +700,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         else:
             raise TypeError(f"unsupported obj of type {type(o)} received")
 
-        return self.serialize_graph(
+        return await self._serialize_graph_async(
             graph=graph,
             graph_uri=graph_uri,
             dataset_url=dataset_url,

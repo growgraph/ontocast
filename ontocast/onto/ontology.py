@@ -8,7 +8,7 @@ from typing import Annotated, Union
 from pydantic import BaseModel, ConfigDict, Field
 from rdflib import DCTERMS, OWL, RDF, RDFS, XSD, Literal, URIRef
 
-from ontocast.onto.constants import DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI
+from ontocast.onto.constants import DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI, PROV
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.util import derive_ontology_id
@@ -101,7 +101,33 @@ class OntologyProperties(BaseModel):
         return self.iri
 
 
-class Ontology(OntologyProperties):
+class OntologyPropertiesWithLineage(OntologyProperties):
+    """Properties of an ontology with versioning lineage information.
+
+    This class extends OntologyProperties with hash-based versioning support,
+    similar to git-style versioning. Each ontology has a hash of its graph
+    and optionally a parent hash.
+
+    Attributes:
+        hash: Hash of the ontology graph (computed from canonicalized graph).
+        parent_hash: Hash of the parent ontology. If not available, the ontology
+            is its own parent (parent_hash equals hash).
+    """
+
+    hash: str | None = Field(
+        default=None,
+        description="Hash of the ontology graph (SHA256 of canonicalized graph)",
+    )
+    parent_hash: str | None = Field(
+        default=None,
+        description=(
+            "Hash of the parent ontology. If not available, "
+            "the ontology is its own parent (parent_hash equals hash)"
+        ),
+    )
+
+
+class Ontology(OntologyPropertiesWithLineage):
     """A Pydantic model representing an ontology with its RDF graph and description.
 
     Attributes:
@@ -154,7 +180,15 @@ class Ontology(OntologyProperties):
         if self.version is None:
             self.version = "1.0.0"
 
-        # Always ensure graph is up to date with properties
+        # Compute hash and parent_hash if not already present
+        # Only compute if hash is not already set (from graph or kwargs)
+        if self.hash is None:
+            self._compute_and_set_hash()
+        # If parent_hash is not set, set it to hash (ontology is its own parent)
+        if self.parent_hash is None:
+            self.parent_hash = self.hash
+
+        # Always ensure graph is up to date with properties (including hash/parent_hash)
         self.sync_properties_to_graph()
 
         # Set initial_version if not already set
@@ -287,6 +321,85 @@ class Ontology(OntologyProperties):
                     Literal(self.updated_at.isoformat(), datatype=XSD.dateTime),
                 )
             )
+        # Add hash and parent_hash (only if not already present in graph)
+        # Use dcterms:identifier for hash (with "hash:" prefix to distinguish from other identifiers)
+        if self.hash:
+            # Check if hash already exists in graph
+            existing_hash = [
+                str(obj)
+                for _, _, obj in g.triples((onto_iri, DCTERMS.identifier, None))
+                if str(obj).startswith("hash:")
+            ]
+            if not existing_hash:
+                g.add((onto_iri, DCTERMS.identifier, Literal(f"hash:{self.hash}")))
+        # Use prov:wasDerivedFrom for parent_hash (standard PROV predicate)
+        if self.parent_hash:
+            # Check if parent_hash already exists in graph
+            existing_parent_hash = [
+                str(obj)
+                for _, _, obj in g.triples((onto_iri, PROV.wasDerivedFrom, None))
+            ]
+            if not existing_parent_hash:
+                # Store parent hash as a URI reference
+                parent_hash_uri = URIRef(f"urn:hash:{self.parent_hash}")
+                g.add((onto_iri, PROV.wasDerivedFrom, parent_hash_uri))
+
+    def _compute_and_set_hash(self) -> None:
+        """Compute the hash of the ontology graph and set it.
+
+        The hash is computed from the canonicalized graph using SHA256.
+        The hash is computed from the graph WITHOUT hash/parent_hash triples,
+        as these are metadata about the graph, not part of the graph content.
+        This method should only be called if hash is not already set.
+        """
+        if self.graph and len(self.graph) > 0:
+            try:
+                # Find the ontology IRI from the graph if not set
+                onto_iri = None
+                if self.iri and self.iri != ONTOLOGY_NULL_IRI:
+                    onto_iri = URIRef(self.iri)
+                else:
+                    # Try to find ontology IRI from graph
+                    onto_triples = [
+                        subj
+                        for subj, _, o in self.graph.triples((None, RDF.type, None))
+                        if o == OWL.Ontology
+                    ]
+                    if onto_triples:
+                        onto_iri = onto_triples[0]
+
+                # Create a temporary graph without hash/parent_hash triples for hashing
+                temp_graph = RDFGraph()
+
+                # Copy all triples except hash/parent_hash metadata
+                for s, p, o in self.graph:
+                    # Skip hash (dcterms:identifier with "hash:" prefix) and parent_hash (prov:wasDerivedFrom) triples
+                    if onto_iri and s == onto_iri:
+                        if (
+                            p == DCTERMS.identifier
+                            and isinstance(o, Literal)
+                            and str(o).startswith("hash:")
+                        ):
+                            continue
+                        if p == PROV.wasDerivedFrom:
+                            continue
+                    temp_graph.add((s, p, o))
+
+                # Copy namespace bindings
+                for prefix, uri in self.graph.namespaces():
+                    temp_graph.bind(prefix, uri)
+
+                # Use RDFGraph.hash() directly
+                self.hash = temp_graph.hash()
+                logger.debug(
+                    f"Computed hash for ontology {self.ontology_id}: {self.hash}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to compute hash for ontology {self.ontology_id}: {e}"
+                )
+                # Set a placeholder hash if computation fails
+                self.hash = None
 
     def _normalize_version(self, version: str) -> str:
         """Normalize version string to semantic versioning format.
@@ -578,6 +691,21 @@ class Ontology(OntologyProperties):
         if not getattr(self, "ontology_id", None):
             if DCTERMS.title in pred_map:
                 self.ontology_id = str(pred_map[DCTERMS.title][0])
+        # Hash: read from dcterms:identifier with "hash:" prefix if present
+        if self.hash is None:
+            if DCTERMS.identifier in pred_map:
+                for obj in pred_map[DCTERMS.identifier]:
+                    obj_str = str(obj)
+                    if obj_str.startswith("hash:"):
+                        self.hash = obj_str[5:]  # Remove "hash:" prefix
+                        break
+        # Parent_hash: read from prov:wasDerivedFrom if present
+        if self.parent_hash is None:
+            if PROV.wasDerivedFrom in pred_map:
+                parent_uri = str(pred_map[PROV.wasDerivedFrom][0])
+                # Extract hash from URN format: urn:hash:<hash>
+                if parent_uri.startswith("urn:hash:"):
+                    self.parent_hash = parent_uri[9:]  # Remove "urn:hash:" prefix
 
     def __iadd__(self, other: Union["Ontology", RDFGraph]) -> "Ontology":
         """In-place addition operator for Ontology instances.
@@ -599,6 +727,8 @@ class Ontology(OntologyProperties):
             self.version = other.version
             self.updated_at = other.updated_at
             self.initial_version = other.initial_version
+            self.hash = other.hash
+            self.parent_hash = other.parent_hash
         else:
             self.graph += other
         return self
