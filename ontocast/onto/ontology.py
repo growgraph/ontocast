@@ -76,55 +76,65 @@ class OntologyProperties(BaseModel):
         """
         return iri2namespace(self.iri, ontology=True)
 
-    @property
-    def versioned_iri(self) -> str:
-        """Get the versioned URI for this ontology (for storage purposes).
-
-        This creates a versioned URI by appending the version as a fragment
-        to the ontology's IRI. This allows multiple versions of the same
-        ontology to coexist in storage (e.g., Fuseki named graphs).
-
-        The semantic ontology IRI in the graph remains unchanged; this is
-        only used for storage organization.
-
-        Returns:
-            str: The versioned URI if version exists, otherwise the base IRI.
-
-        Examples:
-            >>> ont = Ontology(iri="http://example.org/ontology", version="1.0.0")
-            >>> ont.versioned_iri
-            'http://example.org/ontology#v1.0.0'
-        """
-        if self.version:
-            # Use fragment to keep base IRI semantically meaningful
-            return f"{self.iri}#v{self.version}"
-        return self.iri
-
 
 class OntologyPropertiesWithLineage(OntologyProperties):
     """Properties of an ontology with versioning lineage information.
 
     This class extends OntologyProperties with hash-based versioning support,
     similar to git-style versioning. Each ontology has a hash of its graph
-    and optionally a parent hash.
+    and optionally multiple parent hashes to support parallel branches and merges.
 
     Attributes:
         hash: Hash of the ontology graph (computed from canonicalized graph).
-        parent_hash: Hash of the parent ontology. If not available, the ontology
-            is its own parent (parent_hash equals hash).
+        parent_hashes: List of hashes of parent ontologies. Supports multiple
+            parents for parallel branches and merges. If empty or None, the
+            ontology is its own parent (parent_hashes contains only its own hash).
     """
 
     hash: str | None = Field(
         default=None,
         description="Hash of the ontology graph (SHA256 of canonicalized graph)",
     )
-    parent_hash: str | None = Field(
-        default=None,
+    parent_hashes: list[str] = Field(
+        default_factory=list,
         description=(
-            "Hash of the parent ontology. If not available, "
-            "the ontology is its own parent (parent_hash equals hash)"
+            "List of hashes of parent ontologies. Supports multiple parents "
+            "for parallel branches and merges. If empty, the ontology "
+            "is its own parent (parent_hashes contains only its own hash)."
         ),
     )
+
+    @property
+    def versioned_iri(self) -> str:
+        """Get the versioned URI for this ontology (for storage purposes).
+
+        This creates a versioned URI using hash-based fragments for git-style
+        versioning. Format: <base_iri>#<hash>. Falls back to semantic version
+        fragment (#v1.2.3) or base IRI if hash is not available.
+
+        This allows multiple versions of the same ontology to coexist in storage
+        (e.g., Fuseki named graphs). The semantic ontology IRI in the graph
+        remains unchanged; this is only used for storage organization.
+
+        Returns:
+            str: The versioned URI with hash fragment, or semantic version fragment,
+            or base IRI if neither is available.
+
+        Examples:
+            >>> ont = Ontology(iri="https://growgraph.dev/fcaont", hash="abc123...")
+            >>> ont.versioned_iri
+            'https://growgraph.dev/fcaont#abc123...'
+            >>> ont2 = Ontology(iri="http://example.org/ontology", version="1.0.0")
+            >>> ont2.versioned_iri
+            'http://example.org/ontology#v1.0.0'
+        """
+        if self.hash:
+            # Use hash-based fragment for git-style versioning
+            return f"{self.iri}#{self.hash}"
+        elif self.version:
+            # Fall back to semantic version fragment for backward compatibility
+            return f"{self.iri}#v{self.version}"
+        return self.iri
 
 
 class Ontology(OntologyPropertiesWithLineage):
@@ -153,6 +163,25 @@ class Ontology(OntologyPropertiesWithLineage):
         current_domain = kwargs.pop("current_domain", DEFAULT_DOMAIN)
         super().__init__(**kwargs)
         self.current_domain = current_domain
+
+        # Parse IRI fragment for hash-based or version-based identifiers
+        if self.iri and "#" in self.iri:
+            base_iri, fragment = self.iri.rsplit("#", 1)
+            # Check if fragment is a hash (long hex string) or version (v1.2.3)
+            if len(fragment) > 20 and all(c in "0123456789abcdef" for c in fragment):
+                # Looks like a hash - extract it
+                if self.hash is None:
+                    self.hash = fragment
+                    self.iri = base_iri  # Remove fragment from IRI
+                    logger.debug(f"Extracted hash from IRI fragment: {fragment}")
+            elif fragment.startswith("v") and re.match(r"^v\d+\.\d+\.\d+$", fragment):
+                # Semantic version fragment - extract version
+                version_str = fragment[1:]  # Remove 'v' prefix
+                if self.version is None:
+                    self.version = version_str
+                self.iri = base_iri  # Remove fragment from IRI
+                logger.debug(f"Extracted version from IRI fragment: {version_str}")
+
         # Only apply fallback if graph doesn't contain an owl:Ontology
         # Try to sync from graph first
         graph_had_ontology = False
@@ -180,15 +209,16 @@ class Ontology(OntologyPropertiesWithLineage):
         if self.version is None:
             self.version = "1.0.0"
 
-        # Compute hash and parent_hash if not already present
+        # Compute hash and parent_hashes if not already present
         # Only compute if hash is not already set (from graph or kwargs)
         if self.hash is None:
             self._compute_and_set_hash()
-        # If parent_hash is not set, set it to hash (ontology is its own parent)
-        if self.parent_hash is None:
-            self.parent_hash = self.hash
+        # If parent_hashes is empty, set it to [hash] (ontology is its own parent)
+        if len(self.parent_hashes) == 0:
+            if self.hash:
+                self.parent_hashes = [self.hash]
 
-        # Always ensure graph is up to date with properties (including hash/parent_hash)
+        # Always ensure graph is up to date with properties (including hash/parent_hashes)
         self.sync_properties_to_graph()
 
         # Set initial_version if not already set
@@ -321,7 +351,7 @@ class Ontology(OntologyPropertiesWithLineage):
                     Literal(self.updated_at.isoformat(), datatype=XSD.dateTime),
                 )
             )
-        # Add hash and parent_hash (only if not already present in graph)
+        # Add hash (only if not already present in graph)
         # Use dcterms:identifier for hash (with "hash:" prefix to distinguish from other identifiers)
         if self.hash:
             # Check if hash already exists in graph
@@ -332,17 +362,21 @@ class Ontology(OntologyPropertiesWithLineage):
             ]
             if not existing_hash:
                 g.add((onto_iri, DCTERMS.identifier, Literal(f"hash:{self.hash}")))
-        # Use prov:wasDerivedFrom for parent_hash (standard PROV predicate)
-        if self.parent_hash:
-            # Check if parent_hash already exists in graph
-            existing_parent_hash = [
+
+        # Add parent_hashes (multiple parents supported)
+        # Use prov:wasDerivedFrom for each parent hash (standard PROV predicate)
+        if self.parent_hashes:
+            # Get existing parent hashes to avoid duplicates
+            existing_parent_uris = {
                 str(obj)
                 for _, _, obj in g.triples((onto_iri, PROV.wasDerivedFrom, None))
-            ]
-            if not existing_parent_hash:
-                # Store parent hash as a URI reference
-                parent_hash_uri = URIRef(f"urn:hash:{self.parent_hash}")
-                g.add((onto_iri, PROV.wasDerivedFrom, parent_hash_uri))
+            }
+
+            # Add each parent hash as a URIRef if not already present
+            for parent_hash in self.parent_hashes:
+                parent_hash_uri = URIRef(f"urn:hash:{parent_hash}")
+                if str(parent_hash_uri) not in existing_parent_uris:
+                    g.add((onto_iri, PROV.wasDerivedFrom, parent_hash_uri))
 
     def _compute_and_set_hash(self) -> None:
         """Compute the hash of the ontology graph and set it.
@@ -699,13 +733,16 @@ class Ontology(OntologyPropertiesWithLineage):
                     if obj_str.startswith("hash:"):
                         self.hash = obj_str[5:]  # Remove "hash:" prefix
                         break
-        # Parent_hash: read from prov:wasDerivedFrom if present
-        if self.parent_hash is None:
+
+        # Parent_hashes: read all from prov:wasDerivedFrom if present
+        if len(self.parent_hashes) == 0:
             if PROV.wasDerivedFrom in pred_map:
-                parent_uri = str(pred_map[PROV.wasDerivedFrom][0])
-                # Extract hash from URN format: urn:hash:<hash>
-                if parent_uri.startswith("urn:hash:"):
-                    self.parent_hash = parent_uri[9:]  # Remove "urn:hash:" prefix
+                for parent_uri_obj in pred_map[PROV.wasDerivedFrom]:
+                    parent_uri = str(parent_uri_obj)
+                    # Extract hash from URN format: urn:hash:<hash>
+                    if parent_uri.startswith("urn:hash:"):
+                        parent_hash = parent_uri[9:]  # Remove "urn:hash:" prefix
+                        self.parent_hashes.append(parent_hash)
 
     def __iadd__(self, other: Union["Ontology", RDFGraph]) -> "Ontology":
         """In-place addition operator for Ontology instances.
@@ -728,7 +765,7 @@ class Ontology(OntologyPropertiesWithLineage):
             self.updated_at = other.updated_at
             self.initial_version = other.initial_version
             self.hash = other.hash
-            self.parent_hash = other.parent_hash
+            self.parent_hashes = other.parent_hashes
         else:
             self.graph += other
         return self
@@ -760,3 +797,174 @@ class Ontology(OntologyPropertiesWithLineage):
             f"Description: {self.description}\n"
             f"Ontology IRI: {self.iri}\n"
         )
+
+    def to_lineage_node(self) -> dict:
+        """Convert ontology to a lineage node representation.
+
+        Returns a dictionary suitable for constructing a meta-graph representing
+        the ontology lineage. This representation can be used to build the full
+        ontology lineage graph.
+
+        Returns:
+            dict: Lineage node with hash, parents, and metadata.
+
+        Example:
+            >>> ont = Ontology(iri="https://example.org/ont", hash="abc123", parent_hashes=["def456"])
+            >>> node = ont.to_lineage_node()
+            >>> node["hash"]
+            'abc123'
+            >>> node["parents"]
+            ['def456']
+        """
+        return {
+            "hash": self.hash,
+            "parents": self.parent_hashes,
+            "iri": self.iri,
+            "title": self.title,
+            "version": self.version,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+    @staticmethod
+    def build_lineage_graph(ontologies: list["Ontology"]):
+        """Build a NetworkX directed graph representing the lineage of all given ontologies.
+
+        Constructs a directed graph where nodes represent ontologies (by their hash)
+        and edges represent parent-child relationships. Each node includes metadata
+        as node attributes (iri, title, version, updated_at, etc.).
+
+        Args:
+            ontologies: List of Ontology instances to include in the lineage graph.
+
+        Returns:
+            networkx.DiGraph: A directed graph representing the full ontology lineage.
+                Nodes are identified by hash strings, with edges from children to parents.
+                Each node has attributes: iri, title, ontology_id, version, updated_at.
+
+        Example:
+            >>> import networkx as nx
+            >>> ont1 = Ontology(iri="https://example.org/ont1", hash="abc123")
+            >>> ont2 = Ontology(iri="https://example.org/ont2", hash="def456", parent_hashes=["abc123"])
+            >>> lineage = Ontology.build_lineage_graph([ont1, ont2])
+            >>> isinstance(lineage, nx.DiGraph)
+            True
+            >>> "def456" in lineage.nodes()
+            True
+            >>> "abc123" in lineage["def456"]  # Check if edge exists
+            True
+        """
+        import networkx as nx
+
+        lineage_graph = nx.DiGraph()
+
+        for ontology in ontologies:
+            if not ontology.hash:
+                logger.warning(
+                    f"Skipping ontology {ontology.iri} in lineage graph: no hash"
+                )
+                continue
+
+            # Add node with metadata attributes
+            lineage_graph.add_node(
+                ontology.hash,
+                iri=ontology.iri,
+                title=ontology.title,
+                ontology_id=ontology.ontology_id,
+                version=ontology.version,
+                updated_at=ontology.updated_at.isoformat()
+                if ontology.updated_at
+                else None,
+            )
+
+            # Add edges from this ontology to its parents
+            if ontology.parent_hashes:
+                for parent_hash in ontology.parent_hashes:
+                    # Ensure parent node exists (even if not in the ontologies list)
+                    if parent_hash not in lineage_graph:
+                        lineage_graph.add_node(parent_hash)
+                    lineage_graph.add_edge(ontology.hash, parent_hash)
+
+        return lineage_graph
+
+    def add_parent_hash(self, parent_hash: str) -> None:
+        """Add a parent hash to the ontology's parent list.
+
+        Appends the given hash to parent_hashes if not already present,
+        and updates the RDF graph accordingly by adding a new prov:wasDerivedFrom triple.
+
+        Args:
+            parent_hash: The hash of the parent ontology to add.
+
+        Example:
+            >>> ont = Ontology(iri="https://example.org/ont", hash="abc123")
+            >>> ont.add_parent_hash("def456")
+            >>> "def456" in ont.parent_hashes
+            True
+        """
+        if parent_hash not in self.parent_hashes:
+            self.parent_hashes.append(parent_hash)
+            # Update graph
+            if self.iri and self.iri != ONTOLOGY_NULL_IRI:
+                onto_iri = URIRef(self.iri)
+                parent_hash_uri = URIRef(f"urn:hash:{parent_hash}")
+                self.graph.add((onto_iri, PROV.wasDerivedFrom, parent_hash_uri))
+                logger.debug(
+                    f"Added parent hash {parent_hash} to ontology {self.ontology_id}"
+                )
+
+    def validate_lineage(self) -> list[str]:
+        """Validate the ontology lineage for integrity issues.
+
+        Checks for cycles and ensures that self.hash is not in its own parent_hashes.
+        Returns a list of warning messages if any issues are found.
+
+        Returns:
+            list[str]: List of warning messages describing any lineage issues found.
+                Empty list if lineage is valid.
+
+        Example:
+            >>> ont = Ontology(iri="https://example.org/ont", hash="abc123", parent_hashes=["abc123"])
+            >>> warnings = ont.validate_lineage()
+            >>> len(warnings) > 0
+            True
+        """
+        warnings = []
+
+        if not self.hash:
+            return warnings
+
+        # Check if hash is in its own parent_hashes
+        if self.parent_hashes and self.hash in self.parent_hashes:
+            warnings.append(
+                f"Ontology {self.ontology_id} (hash: {self.hash[:8]}...) "
+                "has itself as a parent, which may indicate a cycle"
+            )
+
+        # Check for cycles using a simple depth-first search
+        visited = set()
+        to_visit = [(self.hash, [self.hash])]
+
+        while to_visit:
+            current_hash, path = to_visit.pop()
+            if current_hash in visited:
+                continue
+            visited.add(current_hash)
+
+            # Find ontology with this hash in the graph
+            # This is a simplified check - in practice, you'd need access to all ontologies
+            # For now, we just check immediate parents
+            if self.parent_hashes:
+                for parent_hash in self.parent_hashes:
+                    if parent_hash == current_hash and len(path) > 1:
+                        warnings.append(
+                            f"Potential cycle detected in lineage: "
+                            f"{' -> '.join(path)} -> {parent_hash}"
+                        )
+                    elif parent_hash not in visited:
+                        to_visit.append((parent_hash, path + [parent_hash]))
+
+        if warnings:
+            for warning in warnings:
+                logger.warning(warning)
+
+        return warnings
