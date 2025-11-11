@@ -28,6 +28,9 @@ OntoCast is a framework for extracting semantic triples (creating a Knowledge Gr
 - **Hierarchical Configuration**: Type-safe configuration system with environment variable support
 - **CLI Parameters**: Flexible command-line interface with `--skip-ontology-critique` option
 - **Automatic LLM Caching**: Built-in response caching for improved performance and cost reduction
+- **GraphUpdate Operations**: Token-efficient SPARQL-based updates instead of full graph regeneration
+- **Budget Tracking**: Comprehensive tracking of LLM usage and triple generation metrics
+- **Ontology Versioning**: Automatic semantic versioning with hash-based lineage tracking
 
 ---
 
@@ -153,6 +156,7 @@ OntoCast uses a hierarchical configuration system built on Pydantic BaseSettings
 | `MAX_VISITS` | Maximum visits per node | 3 | No |
 | `SKIP_ONTOLOGY_DEVELOPMENT` | Skip ontology critique | false | No |
 | `SKIP_FACTS_RENDERING` | Skip facts rendering and go straight to aggregation | false | No |
+| `ONTOCAST_CACHE_DIR` | Custom cache directory for LLM responses | Platform default | No |
 
 ### Triple Store Configuration
 
@@ -229,9 +233,24 @@ See [Triple Store Setup](docs/user_guide/triple_stores.md) for detailed instruct
 ### Ontology Management Improvements
 
 - **Automatic Versioning**: Semantic version increment based on change analysis (MAJOR/MINOR/PATCH)
+- **Hash-Based Lineage**: Git-style versioning with parent hashes for tracking ontology evolution
+- **Multiple Version Storage**: Versions stored as separate named graphs in Fuseki triple stores
 - **Timestamp Tracking**: `updated_at` field tracks when ontology was last modified
-- **Smart Version Analysis**: Analyzes ontology changes to determine appropriate version bump
-- **Budget Tracking**: LLM usage and triple generation statistics with summary reports
+- **Smart Version Analysis**: Analyzes ontology changes (classes, properties, instances) to determine appropriate version bump
+
+### GraphUpdate System
+
+- **Token Efficiency**: LLM outputs structured SPARQL operations (insert/delete) instead of full TTL graphs
+- **Incremental Updates**: Only changes are generated, dramatically reducing token usage
+- **Structured Operations**: TripleOp operations with explicit prefix declarations for precise updates
+- **SPARQL Generation**: Automatic conversion of operations to executable SPARQL queries
+
+### Budget Tracking
+
+- **LLM Statistics**: Tracks API calls, characters sent/received for cost monitoring
+- **Triple Metrics**: Tracks ontology and facts triples generated per operation
+- **Summary Reports**: Budget summaries logged at end of processing
+- **Integrated Tracking**: Budget tracker integrated into AgentState for clean dependency injection
 
 ### Configuration System Overhaul
 
@@ -243,9 +262,10 @@ See [Triple Store Setup](docs/user_guide/triple_stores.md) for detailed instruct
 
 ### Enhanced Features
 
-- **CLI Parameters**: New `--skip-ontology-critique` parameter
+- **CLI Parameters**: New `--skip-ontology-critique` and `--skip-facts-rendering` parameters
 - **RDFGraph Operations**: Improved `__iadd__` method with proper prefix binding
 - **Triple Store Management**: Better separation between filesystem and external stores
+- **Serialization Interface**: Unified `serialize()` method for storing Ontology and RDFGraph objects
 - **Error Handling**: Improved error handling and validation
 
 See [CHANGELOG.md](CHANGELOG.md) for complete details.

@@ -1,64 +1,137 @@
 """Test API client for OntoCast.
 
 This module provides a simple command-line client for testing the OntoCast API.
-It can send requests to the API server with either a default payload or
-a custom JSON payload from a file.
+It can send requests to the API server with either a default payload, a JSON file,
+or a PDF file.
 
 The client supports:
 - Custom server URLs
-- JSON payload loading from files
+- JSON or PDF file uploads
 - Default test payload for Apple 10-Q document
 - Response formatting and display
 
 Example:
+    # Send default test payload
     python test_api.py --url http://localhost:8999
-    python test_api.py --url http://localhost:8999 --json-file payload.json
+
+    # Send a JSON file (as multipart/form-data)
+    python test_api.py --url http://localhost:8999 --file sample.json
+
+    # Send a PDF file
+    python test_api.py --url http://localhost:8999 --file document.pdf
 """
 
+import io
 import json
+import pathlib
 
 import click
 import requests
 
 
 @click.command()
-@click.option("--url", help="Base URL for the server (e.g. http://localhost:8999")
 @click.option(
-    "--json-file",
-    type=click.Path(exists=True),
-    default=None,
-    help="Path to JSON file to send as payload",
+    "--url",
+    required=True,
+    help="Base URL for the server (e.g. http://localhost:8999)",
 )
-def main(url, json_file):
+@click.option(
+    "--file",
+    type=str,
+    default=None,
+    help="Path to JSON or PDF file to upload (supports ~ expansion)",
+)
+def main(url, file):
     """Send a test request to the OntoCast API server.
 
-    This function sends a POST request to the specified API endpoint with
-    either a custom JSON payload from a file or a default test payload
-    containing Apple's 10-Q document text.
+    This function sends a POST request to the /process endpoint with either:
+    - A file upload (JSON or PDF) as multipart/form-data
+    - A JSON text payload as application/json
+    - A default test payload if no file or json-text is provided
 
     Args:
-        url: The base URL of the API server to send the request to.
-        json_file: Optional path to a JSON file containing the request payload.
+        url: The base URL of the API server (e.g. http://localhost:8999).
+        file: Optional path to a JSON or PDF file to upload.
 
     Example:
-        >>> main("http://localhost:8999", None)
+        >>> main("http://localhost:8999", None, None)
         # Sends default Apple 10-Q payload
 
-        >>> main("http://localhost:8999", "custom_payload.json")
-        # Sends custom payload from file
+        >>> main("http://localhost:8999", pathlib.Path("document.pdf"), None)
+        # Sends PDF file as multipart/form-data
+
+        >>> main("http://localhost:8999", None, '{"text": "Hello"}')
+        # Sends JSON text payload
     """
-    if json_file:
-        with open(json_file, "r") as f:
-            payload = json.load(f)
+    if not url.endswith("/process"):
+        url = f"{url.rstrip('/')}/process"
+
+    if file:
+        # Expand ~ and convert to Path
+        file_path = pathlib.Path(file).expanduser()
+        if not file_path.exists():
+            raise click.BadParameter(
+                f"File does not exist: {file_path}",
+                param_hint="--file",
+            )
+
+        file_ext = file_path.suffix.lower()
+        if file_ext not in [".json", ".pdf"]:
+            raise click.BadParameter(
+                f"File must be .json or .pdf, got {file_ext}",
+                param_hint="--file",
+            )
+
+        print(f"POSTing file '{file_path.name}' to: {url}")
+        with open(file_path, "rb") as f:
+            file_content = f.read()
+
+        # Determine MIME type
+        mime_type = "application/pdf" if file_ext == ".pdf" else "application/json"
+        # Use BytesIO to create a file-like object for requests
+        file_obj = io.BytesIO(file_content)
+        files = {"file": (file_path.name, file_obj, mime_type)}
+        r = requests.post(url, files=files)
     else:
+        # Default test payload
         payload = {
             "text": (
-                "## UNITED STATES SECURITIES AND EXCHANGE COMMISSION\n\nWashington, D.C. 20549 ## FORM 10-Q\n\n<!-- image -->\n\n(Mark One)\n\n\u2612 QUARTERLY REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934\n\nFor the quarterly period ended April 1, 2023\n\nor\n\n\u2610 TRANSITION REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934\n\nFor the transition period from              to             .\n\nCommission File Number: 001-36743 ## Apple Inc.\n\n(Exact name of Registrant as specified in its charter)\n\nCalifornia\n\n94-2404110\n\n(State or other jurisdiction of incorporation or organization)\n\n(I.R.S. Employer Identification No.)\n\nOne Apple Park Way Cupertino, California\n\n95014\n\n(Address of principal executive offices)\n\n(Zip Code) ## (408) 996-1010\n\n(Registrant's telephone number, including area code)\n\nSecurities registered pursuant to Section 12(b) of the Act:\n\nTitle of each class\n\nTrading symbol(s)\n\nName of each exchange on which registered\n\nCommon Stock, $0.00001 par value per share\n\nAAPL\n\nThe Nasdaq Stock Market LLC\n\n1.375% Notes due 2024\n\n-\n\nThe Nasdaq Stock Market LLC\n\n0.000% Notes due 2025\n\n-\n\nThe Nasdaq Stock Market LLC\n\n0.875% Notes due 2025\n\n-\n\nThe Nasdaq Stock Market LLC\n\n1.625% Notes due 2026\n\n-\n\nThe Nasdaq Stock Market LLC\n\n2.000% Notes due 2027\n\n-\n\nThe Nasdaq Stock Market LLC\n\n1.375% Notes due 2029\n\n-\n\nThe Nasdaq Stock Market LLC\n\n3.050% Notes due 2029\n\n-\n\nThe Nasdaq Stock Market LLC\n\n0.500% Notes due 2031\n\n-\n\nThe Nasdaq Stock Market LLC\n\n3.600% Notes due 2042\n\n-\n\nThe Nasdaq Stock Market LLC\n\nIndicate by check mark whether the Registrant (1) has filed all reports required to be filed by Section 13 or 15(d) of the Securities Exchange Act of 1934 during the preceding 12 months (or for such shorter period that the Registrant was required to file such reports), and (2) has been subject to such filing requirements for the past 90 days.\n\nYes \u2612\n\nNo \u2610\n\nIndicate by check mark whether the Registrant has submitted electronically every Interactive Data File required to be submitted pursuant to Rule 405 of Regulation S-T (\u00a7232.405 of this chapter) during the preceding 12 months (or for such shorter period that the Registrant was required to submit such files).\n\nYes \u2612\n\nNo \u2610\n\nIndicate by check mark whether the Registrant is a large accelerated filer, an accelerated filer, a non-accelerated filer, a smaller reporting company, or an emerging growth company. See the definitions of 'large accelerated filer,' 'accelerated filer,' 'smaller reporting company,' and 'emerging growth company' in Rule 12b-2 of the Exchange Act.\n\nLarge accelerated filer\n\n\u2612\n\nAccelerated filer\n\n\u2610\n\nNon-accelerated filer\n\n\u2610\n\nSmaller reporting company\n\n\u2610\n\n\u2610\n\nEmerging growth company\n\nIf  an  emerging growth company, indicate by check mark if the Registrant has elected not to use the extended transition period for complying with any new or revised financial accounting standards provided pursuant to Section 13(a) of the Exchange Act. \u2610\n\nIndicate by check mark whether the Registrant is a shell company (as defined in Rule 12b-2 of the Exchange Act).\n\nYes \u2610\n\nNo \u2612\n\n15,728,702,000 shares of common stock were issued and outstanding as of April 21, 2023. ## Apple Inc. ## Form 10-Q ## For the Fiscal Quarter Ended April 1, 2023"
+                "## UNITED STATES SECURITIES AND EXCHANGE COMMISSION\n\n"
+                "Washington, D.C. 20549 ## FORM 10-Q\n\n"
+                "<!-- image -->\n\n"
+                "(Mark One)\n\n"
+                "☒ QUARTERLY REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934\n\n"
+                "For the quarterly period ended April 1, 2023\n\n"
+                "or\n\n"
+                "☐ TRANSITION REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934\n\n"
+                "For the transition period from              to             .\n\n"
+                "Commission File Number: 001-36743 ## Apple Inc.\n\n"
+                "(Exact name of Registrant as specified in its charter)\n\n"
+                "California\n\n"
+                "94-2404110\n\n"
+                "(State or other jurisdiction of incorporation or organization)\n\n"
+                "(I.R.S. Employer Identification No.)\n\n"
+                "One Apple Park Way Cupertino, California\n\n"
+                "95014\n\n"
+                "(Address of principal executive offices)\n\n"
+                "(Zip Code) ## (408) 996-1010\n\n"
+                "(Registrant's telephone number, including area code)\n\n"
+                "Securities registered pursuant to Section 12(b) of the Act:\n\n"
+                "Title of each class\n\n"
+                "Trading symbol(s)\n\n"
+                "Name of each exchange on which registered\n\n"
+                "Common Stock, $0.00001 par value per share\n\n"
+                "AAPL\n\n"
+                "The Nasdaq Stock Market LLC\n\n"
+                "15,728,702,000 shares of common stock were issued and outstanding as of April 21, 2023. "
+                "## Apple Inc. ## Form 10-Q ## For the Fiscal Quarter Ended April 1, 2023"
             ),
         }
+        print(f"POSTing default test payload to: {url}")
+        r = requests.post(
+            url, json=payload, headers={"Content-Type": "application/json"}
+        )
 
-    print(f"POSTing to: {url}")
-    r = requests.post(url, json=payload)
     print(f"Status: {r.status_code}")
     print("Response:")
     try:

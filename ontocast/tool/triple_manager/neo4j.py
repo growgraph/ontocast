@@ -10,7 +10,6 @@ import logging
 from typing import Any
 
 from neo4j import GraphDatabase
-from pydantic import Field
 from rdflib import Graph
 from rdflib.namespace import OWL, RDF
 
@@ -36,26 +35,21 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
     - Faithful RDF graph reconstruction
 
     Attributes:
-        clean: Whether to clean the database on initialization.
         _driver: Private Neo4j driver instance.
     """
 
-    clean: bool = Field(
-        default=False, description="If True, clean the database on init."
-    )
     _driver: Any = None  # private attribute, not a pydantic field
 
-    def __init__(self, uri=None, auth=None, clean=False, **kwargs):
+    def __init__(self, uri=None, auth=None, **kwargs):
         """Initialize the Neo4j triple store manager.
 
         This method sets up the connection to Neo4j, initializes the n10s
-        plugin configuration, creates necessary constraints and indexes,
-        and optionally cleans all data from the database.
+        plugin configuration, and creates necessary constraints and indexes.
+        The database is NOT cleaned on initialization.
 
         Args:
             uri: Neo4j connection URI (e.g., "bolt://localhost:7687").
             auth: Authentication tuple (username, password) or string in "user/password" format.
-            clean: If True, delete all nodes in the database on initialization.
             **kwargs: Additional keyword arguments passed to the parent class.
 
         Raises:
@@ -64,14 +58,14 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
         Example:
             >>> manager = Neo4jTripleStoreManager(
             ...     uri="bolt://localhost:7687",
-            ...     auth="neo4j/password",
-            ...     clean=True
+            ...     auth="neo4j/password"
             ... )
+            >>> # To clean the database, use the clean() method explicitly:
+            >>> await manager.clean()
         """
         super().__init__(
             uri=uri, auth=auth, env_uri="NEO4J_URI", env_auth="NEO4J_AUTH", **kwargs
         )
-        self.clean = clean
         if GraphDatabase is None:
             raise ImportError("neo4j Python driver is not installed.")
         if self.uri is None:
@@ -82,19 +76,42 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
         assert self._driver is not None
 
         with self._driver.session() as session:
-            # Clean database if requested
-            if self.clean:
-                try:
-                    session.run("MATCH (n) DETACH DELETE n")
-                    logger.debug("Neo4j database cleaned (all nodes deleted)")
-                except Exception as e:
-                    logger.debug(f"Neo4j cleanup failed: {e}")
-
             # Initialize n10s configuration
             self._init_n10s_config(session)
 
             # Create constraints and indexes
             self._create_constraints_and_indexes(session)
+
+    async def clean(self, dataset: str | None = None) -> None:
+        """Clean/flush all data from the Neo4j database.
+
+        This method deletes all nodes and relationships from the Neo4j database,
+        effectively clearing all stored data.
+
+        Args:
+            dataset: Optional dataset parameter (ignored for Neo4j, which doesn't
+                support datasets). Included for interface compatibility.
+
+        Warning: This operation is irreversible and will delete all data.
+
+        Raises:
+            Exception: If the cleanup operation fails.
+        """
+        if dataset is not None:
+            logger.warning(
+                f"Dataset parameter '{dataset}' ignored for Neo4j (datasets not supported)"
+            )
+
+        if self._driver is None:
+            raise ValueError("Neo4j driver is not initialized")
+
+        with self._driver.session() as session:
+            try:
+                session.run("MATCH (n) DETACH DELETE n")
+                logger.info("Neo4j database cleaned (all nodes deleted)")
+            except Exception as e:
+                logger.error(f"Neo4j cleanup failed: {e}")
+                raise
 
     def _init_n10s_config(self, session):
         """Initialize n10s configuration with better RDF handling.

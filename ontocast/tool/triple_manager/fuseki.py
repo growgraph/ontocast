@@ -124,19 +124,18 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         auth=None,
         dataset=None,
         ontologies_dataset=None,
-        clean=False,
         **kwargs,
     ):
         """Initialize the Fuseki triple store manager.
 
-        This method sets up the connection to Fuseki, creates the dataset
-        if it doesn't exist, and optionally cleans all data from the dataset.
+        This method sets up the connection to Fuseki and creates the dataset
+        if it doesn't exist. The dataset is NOT cleaned on initialization.
 
         Args:
             uri: Fuseki server URI (e.g., "http://localhost:3030").
             auth: Authentication tuple (username, password) or string in "user/password" format.
             dataset: Dataset name to use for storage.
-            clean: If True, delete all data from the dataset on initialization.
+            ontologies_dataset: Dataset name for ontologies (defaults to separate dataset).
             **kwargs: Additional keyword arguments passed to the parent class.
 
         Raises:
@@ -145,9 +144,10 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         Example:
             >>> manager = FusekiTripleStoreManager(
             ...     uri="http://localhost:3030",
-            ...     dataset="test",
-            ...     clean=True
+            ...     dataset="test"
             ... )
+            >>> # To clean the dataset, use the clean() method explicitly:
+            >>> await manager.clean()
         """
         super().__init__(
             uri=uri, auth=auth, env_uri="FUSEKI_URI", env_auth="FUSEKI_AUTH", **kwargs
@@ -157,7 +157,6 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         else:
             self.dataset = dataset
         self.ontologies_dataset = ontologies_dataset or DEFAULT_ONTOLOGIES_DATASET
-        self.clean = clean
 
         # Initialize httpx client for async operations
         self._client: httpx.AsyncClient | None = None
@@ -189,10 +188,6 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         await self.init_dataset(self.dataset)
         if self.ontologies_dataset != self.dataset:
             await self.init_dataset(self.ontologies_dataset)
-
-        # Clean dataset if requested
-        if self.clean:
-            await self._clean_dataset()
 
     def _prepare_auth(self) -> httpx.BasicAuth | None:
         """Prepare httpx BasicAuth from self.auth.
@@ -239,23 +234,65 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         await self.init_dataset(self.dataset)
         logger.info(f"Updated Fuseki dataset to: {self.dataset}")
 
-    async def _clean_dataset(self):
-        """Delete all data from the dataset.
+    async def clean(self, dataset: str | None = None) -> None:
+        """Clean/flush data from Fuseki dataset(s).
 
         This method removes all named graphs and clears the default graph
-        from the Fuseki dataset. It uses Fuseki's REST API to perform
-        the cleanup operations.
+        from the specified dataset, or all datasets if no dataset is specified.
+
+        Args:
+            dataset: Optional dataset name to clean. If None, cleans both the main
+                dataset and the ontologies dataset. If specified, cleans only that dataset.
+
+        Warning: This operation is irreversible and will delete all data
+        from the specified dataset(s).
 
         The method handles errors gracefully and logs the results of
         each cleanup operation.
+
+        Example:
+            >>> # Clean all datasets
+            >>> await manager.clean()
+            >>> # Clean specific dataset
+            >>> await manager.clean(dataset="my_dataset")
+        """
+        if dataset is None:
+            # Clean all datasets (main and ontologies)
+            # self.dataset is guaranteed to be a string (set to DEFAULT_DATASET if None in __init__)
+            assert self.dataset is not None, "Dataset should never be None"
+            await self._clean_dataset_by_name(self.dataset)
+            logger.info(f"Fuseki dataset '{self.dataset}' cleaned (all data deleted)")
+
+            # Also clean the ontologies dataset if it's different
+            if self.ontologies_dataset != self.dataset:
+                await self._clean_dataset_by_name(self.ontologies_dataset)
+                logger.info(
+                    f"Fuseki ontologies dataset '{self.ontologies_dataset}' cleaned (all data deleted)"
+                )
+        else:
+            # Clean only the specified dataset
+            await self._clean_dataset_by_name(dataset)
+            logger.info(f"Fuseki dataset '{dataset}' cleaned (all data deleted)")
+
+    async def _clean_dataset_by_name(self, dataset_name: str) -> None:
+        """Clean a specific dataset by name.
+
+        This is a helper method that performs the actual cleaning of a single dataset.
+        It deletes all named graphs and clears the default graph.
+
+        Args:
+            dataset_name: Name of the dataset to clean.
+
+        Raises:
+            Exception: If the cleanup operation fails.
         """
         try:
             client = await self._get_client()
-            # Get the SPARQL update endpoint
-            sparql_update_url = f"{self._get_dataset_url()}/update"
+            dataset_url = f"{self.uri}/{dataset_name}"
+            sparql_update_url = f"{dataset_url}/update"
+            sparql_url = f"{dataset_url}/sparql"
 
             # Delete all named graphs
-            sparql_url = f"{self._get_dataset_url()}/sparql"
             query = """
             SELECT DISTINCT ?g WHERE {
               GRAPH ?g { ?s ?p ?o }
@@ -268,7 +305,6 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
             if response.status_code == 200:
                 results = response.json()
-                # Delete graphs in parallel
                 tasks = []
                 for binding in results.get("results", {}).get("bindings", []):
                     graph_uri = binding["g"]["value"]
@@ -290,7 +326,6 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                             f"Failed to delete graph {graph_uri}: {delete_response}"
                         )
                     elif isinstance(delete_response, httpx.Response):
-                        # delete_response is an httpx.Response
                         if delete_response.status_code in (200, 204):
                             logger.debug(f"Deleted named graph: {graph_uri}")
                         else:
@@ -305,16 +340,14 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                 data={"update": clear_query},
             )
             if clear_response.status_code in (200, 204):
-                logger.debug("Cleared default graph")
+                logger.debug(f"Cleared default graph in dataset '{dataset_name}'")
             else:
                 logger.warning(
-                    f"Failed to clear default graph: {clear_response.status_code}"
+                    f"Failed to clear default graph in dataset '{dataset_name}': {clear_response.status_code}"
                 )
-
-            logger.info(f"Fuseki dataset '{self.dataset}' cleaned (all data deleted)")
-
         except Exception as e:
-            logger.warning(f"Fuseki cleanup failed: {e}")
+            logger.error(f"Failed to clean dataset '{dataset_name}': {e}")
+            raise
 
     async def init_dataset(self, dataset_name):
         """Initialize a Fuseki dataset.
@@ -607,7 +640,6 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
         logger.info(
             f"Successfully loaded {len(ontologies)} unique ontologies from Fuseki "
-            f"(latest terminal versions by created_at)"
         )
         return ontologies
 

@@ -103,19 +103,18 @@ class ToolBox:
             )
 
         # Create main triple store manager (only one can be active)
+        # Note: Dataset/database is NOT cleaned on initialization
+        # Use the clean() method or /flush endpoint to explicitly clean the store
         if use_fuseki and tool_config.fuseki.uri and tool_config.fuseki.auth:
-            clean = config.server.clean
             self.triple_store_manager = FusekiTripleStoreManager(
                 uri=tool_config.fuseki.uri,
                 auth=tool_config.fuseki.auth,
                 dataset=tool_config.fuseki.dataset,
                 ontologies_dataset=tool_config.fuseki.ontologies_dataset,
-                clean=clean,
             )
         elif use_neo4j and tool_config.neo4j.uri and tool_config.neo4j.auth:
-            clean = config.server.clean
             self.triple_store_manager = Neo4jTripleStoreManager(
-                uri=tool_config.neo4j.uri, auth=tool_config.neo4j.auth, clean=clean
+                uri=tool_config.neo4j.uri, auth=tool_config.neo4j.auth
             )
         elif use_filesystem_triple_store:
             if working_directory is None:

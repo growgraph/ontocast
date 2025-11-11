@@ -64,6 +64,7 @@ ESTIMATED_CHUNKS=30                    # Estimated number of chunks
 MAX_VISITS=3                           # Maximum visits per node
 CLEAN=false                            # Clean triple store on startup
 SKIP_ONTOLOGY_DEVELOPMENT=false        # Skip ontology critique step
+SKIP_FACTS_RENDERING=false             # Skip facts extraction and go straight to serialization
 ```
 
 ### Backend Configuration
@@ -245,6 +246,7 @@ class ServerConfig(BaseSettings):
     max_visits: int = 3                        # Max visits
     clean: bool = False                        # Clean startup
     skip_ontology_development: bool = False     # Skip critique
+    skip_facts_rendering: bool = False         # Skip facts rendering
 ```
 
 

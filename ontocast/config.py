@@ -125,7 +125,6 @@ class ServerConfig(BaseSettings):
     max_visits: int = Field(
         default=3, description="Maximum number of visits allowed per node"
     )
-    clean: bool = Field(default=False, description="Clean triple store on startup")
     skip_ontology_development: bool = Field(
         default=False, description="Skip ontology critique step"
     )

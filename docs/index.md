@@ -26,6 +26,9 @@ OntoCast is a framework for extracting semantic triples (creating a Knowledge Gr
 - **RDF Output**: Produces standardized RDF/Turtle
 - **Triple Store Integration**: Supports Neo4j (n10s) and Apache Fuseki
 - **Automatic LLM Caching**: Built-in response caching for improved performance and cost reduction
+- **GraphUpdate Operations**: Token-efficient SPARQL-based updates instead of full graph regeneration
+- **Budget Tracking**: Comprehensive tracking of LLM usage and triple generation metrics
+- **Ontology Versioning**: Automatic semantic versioning with hash-based lineage tracking
 
 ---
 

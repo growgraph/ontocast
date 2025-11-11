@@ -138,6 +138,85 @@ def create_app(
             ),
         )
 
+    @app.post("/flush")
+    async def flush(request: Request):
+        """Flush/clean data from the triple store.
+
+        This endpoint deletes data from the configured triple store.
+        For Fuseki, you can specify a dataset query parameter to clean a specific dataset,
+        or omit it to clean all datasets. For Neo4j, this deletes all nodes (dataset parameter is ignored).
+
+        Query Parameters:
+            dataset (optional): For Fuseki only - name of the dataset to clean.
+                If omitted, cleans all datasets (main and ontologies).
+
+        Warning: This operation is irreversible and will delete all data.
+
+        Returns:
+            JSON response with status and message.
+
+        Example:
+            # Clean all datasets (Fuseki) or entire database (Neo4j)
+            POST /flush
+
+            # Clean specific Fuseki dataset
+            POST /flush?dataset=my_dataset
+        """
+        try:
+            if tools.triple_store_manager is None:
+                return Response(
+                    status_code=400,
+                    headers=Headers({"Content-Type": "application/json"}),
+                    description=jsonify(
+                        {
+                            "status": "error",
+                            "error": "No triple store manager configured",
+                        }
+                    ),
+                )
+
+            # Extract dataset parameter (used by Fuseki, ignored by others)
+            dataset = request.query_params.get("dataset", None)
+
+            # All implementations accept the dataset parameter
+            # Fuseki uses it, Neo4j and Filesystem ignore it with a warning
+            await tools.triple_store_manager.clean(dataset=dataset)
+
+            # Generate appropriate success message
+            from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
+
+            if isinstance(tools.triple_store_manager, FusekiTripleStoreManager):
+                if dataset:
+                    message = f"Fuseki dataset '{dataset}' flushed successfully"
+                else:
+                    message = "Fuseki triple store flushed successfully (all datasets)"
+            else:
+                message = "Triple store flushed successfully"
+
+            return Response(
+                status_code=200,
+                headers=Headers({"Content-Type": "application/json"}),
+                description=jsonify(
+                    {
+                        "status": "success",
+                        "message": message,
+                    }
+                ),
+            )
+        except Exception as e:
+            logger.error(f"Error flushing triple store: {str(e)}")
+            return Response(
+                status_code=500,
+                headers=Headers({"Content-Type": "application/json"}),
+                description=jsonify(
+                    {
+                        "status": "error",
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                    }
+                ),
+            )
+
     @app.post("/process")
     async def process(request: Request):
         """MCP process endpoint."""
@@ -149,22 +228,40 @@ def create_app(
             logger.debug(f"Request body: {request.body}")
 
             # Extract parameters from query parameters
-            dataset = request.query_params.get("dataset")
+            dataset = request.query_params.get("dataset", None)
             if dataset:
                 logger.debug(f"Using dataset: {dataset}")
 
             # Extract skip_facts_rendering from query parameters
-            skip_facts_rendering = request.query_params.get("skip_facts_rendering")
+            skip_facts_rendering = request.query_params.get(
+                "skip_facts_rendering", None
+            )
             if skip_facts_rendering:
                 logger.debug(f"Using skip_facts_rendering: {skip_facts_rendering}")
 
             # Extract skip_ontology_development from query parameters
             skip_ontology_development = request.query_params.get(
-                "skip_ontology_development"
+                "skip_ontology_development", None
             )
             if skip_ontology_development:
                 logger.debug(
                     f"Using skip_ontology_development: {skip_ontology_development}"
+                )
+
+            # Extract user instructions from query parameters (available for both JSON and multipart)
+            ontology_user_instruction = request.query_params.get(
+                "ontology_user_instruction", ""
+            )
+            facts_user_instruction = request.query_params.get(
+                "facts_user_instruction", ""
+            )
+            if ontology_user_instruction:
+                logger.debug(
+                    f"Query param - ontology_user_instruction: {ontology_user_instruction}"
+                )
+            if facts_user_instruction:
+                logger.debug(
+                    f"Query param - facts_user_instruction: {facts_user_instruction}"
                 )
 
             if content_type and content_type.startswith("application/json"):
@@ -178,34 +275,32 @@ def create_app(
                     f"Parsed JSON data: {data}, bytes length: {len(bytes_data)}"
                 )
                 files = {"input.json": bytes_data}
-                # For JSON requests, user instructions will be extracted by
-                # convert_document.py
-                ontology_user_instruction = ""
-                facts_user_instruction = ""
+                # User instructions already extracted from query params above
+                # They can also be overridden by convert_document.py for JSON files
             elif content_type and content_type.startswith("multipart/form-data"):
                 files = request.files
                 logger.debug(f"Files: {files.keys()}")
                 logger.debug(f"Files-types: {[(k, type(v)) for k, v in files.items()]}")
 
-                # Extract user instructions from form data
-                ontology_user_instruction = ""
-                facts_user_instruction = ""
-
-                # Check if form data contains user instructions
+                # Check if form data contains user instructions (overrides query params)
                 if hasattr(request, "form_data") and request.form_data:
-                    ontology_user_instruction = request.form_data.get(
+                    form_ontology_instruction = request.form_data.get(
                         "ontology_user_instruction", ""
                     )
-                    facts_user_instruction = request.form_data.get(
+                    form_facts_instruction = request.form_data.get(
                         "facts_user_instruction", ""
                     )
-                    logger.debug(
-                        f"Form data - ontology_user_instruction: "
-                        f"{ontology_user_instruction}"
-                    )
-                    logger.debug(
-                        f"Form data - facts_user_instruction: {facts_user_instruction}"
-                    )
+                    if form_ontology_instruction:
+                        ontology_user_instruction = form_ontology_instruction
+                        logger.debug(
+                            f"Form data - ontology_user_instruction: "
+                            f"{ontology_user_instruction}"
+                        )
+                    if form_facts_instruction:
+                        facts_user_instruction = form_facts_instruction
+                        logger.debug(
+                            f"Form data - facts_user_instruction: {facts_user_instruction}"
+                        )
                 if not files:
                     return Response(
                         status_code=400,
@@ -236,29 +331,35 @@ def create_app(
             if dataset:
                 await tools.update_dataset(dataset)
 
-            # Initialize budget tracker for this workflow
-
-            # Set default values for user instructions (will be overridden by
-            # convert_document.py for JSON files)
-            ontology_user_instruction = (
-                ontology_user_instruction
-                if "ontology_user_instruction" in locals()
-                else ""
-            )
-            facts_user_instruction = (
-                facts_user_instruction if "facts_user_instruction" in locals() else ""
-            )
-
             # Determine boolean flags from API params or server config
             def parse_bool_param(value, default):
-                if value:
-                    return value.lower() == "true"
+                """Parse a boolean parameter from query string or use default.
+
+                Args:
+                    value: String value from query params (e.g., "true", "false", "1", "0")
+                    default: Default boolean value from server config
+
+                Returns:
+                    bool: Parsed boolean value
+                """
+                if value is None:
+                    return default
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, str):
+                    # Handle string representations of booleans
+                    value_lower = value.lower().strip()
+                    if value_lower in ("true", "1", "yes", "on"):
+                        return True
+                    if value_lower in ("false", "0", "no", "off"):
+                        return False
+                # If value is truthy but not a recognized boolean string, return default
                 return default
 
-            skip_facts_rendering_value = parse_bool_param(
+            skip_facts_rendering_value: bool = parse_bool_param(
                 skip_facts_rendering, server_config.skip_facts_rendering
             )
-            skip_ontology_development_value = parse_bool_param(
+            skip_ontology_development_value: bool = parse_bool_param(
                 skip_ontology_development, server_config.skip_ontology_development
             )
 
@@ -283,6 +384,13 @@ def create_app(
             if workflow_state is None:
                 raise ValueError("Workflow did not return a valid state")
 
+            # Extract budget tracker data if available
+            budget_tracker_data = {}
+            if workflow_state.get("budget_tracker"):
+                budget_tracker = workflow_state["budget_tracker"]
+                # Convert Pydantic model to dict using model_dump()
+                budget_tracker_data = budget_tracker.model_dump()
+
             result = {
                 "status": "success",
                 "data": {
@@ -301,6 +409,7 @@ def create_app(
                     "status": workflow_state["status"],
                     "chunks_processed": len(workflow_state.get("chunks_processed", [])),
                     "chunks_remaining": len(workflow_state.get("chunks", [])),
+                    "budget": budget_tracker_data,
                 },
             }
 
@@ -365,7 +474,6 @@ def run(
 
     No explicit backend configuration flags are needed - backends are automatically detected.
 
-    If --clean is set, the triple store will be initialized as clean (all data deleted on startup).
     """
 
     _ = load_dotenv(dotenv_path=env_file.expanduser())
@@ -424,8 +532,6 @@ def run(
         async def process_files():
             for file_path in files:
                 try:
-                    # Initialize budget tracker for each file
-
                     state = AgentState(
                         files={file_path.as_posix(): file_path.read_bytes()},
                         max_visits=config.server.max_visits,

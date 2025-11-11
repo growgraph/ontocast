@@ -126,3 +126,47 @@ class FilesystemTripleStoreManager(TripleStoreManager):
             raise TypeError(f"unsupported obj of type {type(o)} received")
 
         self.serialize_graph(graph=graph, fname=fname)
+
+    async def clean(self, dataset: str | None = None) -> None:
+        """Clean/flush all data from the filesystem triple store.
+
+        This method deletes all Turtle (.ttl) files from both the working
+        directory and the ontology directory.
+
+        Args:
+            dataset: Optional dataset parameter (ignored for Filesystem, which doesn't
+                support datasets). Included for interface compatibility.
+
+        Warning: This operation is irreversible and will delete all data.
+
+        Raises:
+            Exception: If the cleanup operation fails.
+        """
+        if dataset is not None:
+            logger.warning(
+                f"Dataset parameter '{dataset}' ignored for Filesystem (datasets not supported)"
+            )
+
+        try:
+            deleted_count = 0
+
+            # Clean working directory
+            if self.working_directory is not None and self.working_directory.exists():
+                for ttl_file in self.working_directory.glob("*.ttl"):
+                    ttl_file.unlink()
+                    deleted_count += 1
+                    logger.debug(f"Deleted file: {ttl_file}")
+
+            # Clean ontology directory
+            if self.ontology_path is not None and self.ontology_path.exists():
+                for ttl_file in self.ontology_path.glob("*.ttl"):
+                    ttl_file.unlink()
+                    deleted_count += 1
+                    logger.debug(f"Deleted ontology file: {ttl_file}")
+
+            logger.info(
+                f"Filesystem triple store cleaned: {deleted_count} file(s) deleted"
+            )
+        except Exception as e:
+            logger.error(f"Filesystem cleanup failed: {e}")
+            raise

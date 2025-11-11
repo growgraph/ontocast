@@ -80,6 +80,25 @@ class TripleStoreManager(Tool):
         """
         pass
 
+    @abc.abstractmethod
+    async def clean(self, dataset: str | None = None) -> None:
+        """Clean/flush data from the triple store.
+
+        This method removes data from the triple store. For Fuseki, the optional
+        dataset parameter allows cleaning a specific dataset, or all datasets if None.
+        For Neo4j and Filesystem, the dataset parameter is ignored.
+
+        Args:
+            dataset: Optional dataset name to clean (Fuseki only). If None, cleans
+                all data. For other stores, this parameter is ignored.
+
+        Warning: This operation is irreversible and will delete all data.
+
+        Raises:
+            NotImplementedError: If the triple store doesn't support cleaning.
+        """
+        raise NotImplementedError("clean() method must be implemented by subclasses")
+
 
 class TripleStoreManagerWithAuth(TripleStoreManager):
     """Base class for triple store managers that require authentication.
@@ -96,9 +115,6 @@ class TripleStoreManagerWithAuth(TripleStoreManager):
     uri: str | None = Field(default=None, description="Triple store connection URI")
     auth: tuple | None = Field(
         default=None, description="Triple store authentication tuple (user, password)"
-    )
-    clean: bool = Field(
-        default=False, description="If True, clean the database on init."
     )
 
     def __init__(self, uri=None, auth=None, env_uri=None, env_auth=None, **kwargs):
