@@ -40,7 +40,7 @@ def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
 
     parser = PydanticOutputParser(pydantic_object=OntologySelectorReport)
 
-    if len(om_tool.ontologies) > 0:
+    if om_tool.has_ontologies > 0:
         ontologies_desc = "\n\n".join([o.describe() for o in om_tool.ontologies])
         logger.info(f"Retrieved descriptions for {len(om_tool.ontologies)} ontologies")
 

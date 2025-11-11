@@ -40,6 +40,9 @@ class OntologyManager(Tool):
             **kwargs: Additional keyword arguments passed to the parent class.
         """
         super().__init__(**kwargs)
+        # Cache dictionary mapping ontology_id to hash of freshest terminal ontology.
+        # Updated incrementally when ontologies are added.
+        self._cached_ontologies: dict[str, str] = {}
 
     def __contains__(self, item):
         """Check if an item (ontology_id or IRI) is in the ontology manager.
@@ -98,6 +101,10 @@ class OntologyManager(Tool):
         existing_hashes = {o.hash for o in self.ontology_versions[ontology.ontology_id]}
         if ontology.hash not in existing_hashes:
             self.ontology_versions[ontology.ontology_id].append(ontology)
+            # Update cache for this specific ontology_id (store hash only)
+            freshest = self.get_freshest_terminal_ontology(ontology.ontology_id)
+            if freshest and freshest.hash:
+                self._cached_ontologies[ontology.ontology_id] = freshest.hash
             logger.debug(
                 f"Added ontology {ontology.ontology_id} with hash {ontology.hash[:8]}..."
             )
@@ -280,6 +287,15 @@ class OntologyManager(Tool):
         return list(self.ontology_versions.keys())
 
     @property
+    def has_ontologies(self) -> bool:
+        """Check if there are any ontologies available.
+
+        Returns:
+            bool: True if there are any ontologies, False otherwise.
+        """
+        return len(self._cached_ontologies) > 0 or len(self.ontology_versions) > 0
+
+    @property
     def ontologies(self) -> list[Ontology]:
         """Get freshest terminal ontology for each ontology_id.
 
@@ -287,14 +303,36 @@ class OntologyManager(Tool):
         a list of ontologies. Returns the freshest (most recently created)
         terminal version for each ontology_id.
 
+        The result is cached per ontology_id (as hashes) and updated incrementally
+        when ontologies are added.
+
         Returns:
             list[Ontology]: List of freshest terminal ontologies, one per ontology_id.
         """
         result = []
+
+        # Ensure cache is up to date for all ontology_ids
         for ontology_id in self.ontology_versions.keys():
-            freshest = self.get_freshest_terminal_ontology(ontology_id)
-            if freshest:
-                result.append(freshest)
+            if ontology_id not in self._cached_ontologies:
+                freshest = self.get_freshest_terminal_ontology(ontology_id)
+                if freshest and freshest.hash:
+                    self._cached_ontologies[ontology_id] = freshest.hash
+
+        # Remove entries for ontology_ids that no longer exist
+        cached_ids = set(self._cached_ontologies.keys())
+        current_ids = set(self.ontology_versions.keys())
+        for removed_id in cached_ids - current_ids:
+            del self._cached_ontologies[removed_id]
+
+        # Look up actual ontology objects by hash
+        for ontology_id, cached_hash in self._cached_ontologies.items():
+            if ontology_id in self.ontology_versions:
+                # Find ontology with matching hash
+                for ontology in self.ontology_versions[ontology_id]:
+                    if ontology.hash == cached_hash:
+                        result.append(ontology)
+                        break
+
         return result
 
     def update_ontology(self, ontology_id: str, ontology_addendum: RDFGraph):
@@ -313,3 +351,7 @@ class OntologyManager(Tool):
         terminals = self.get_terminal_ontologies(ontology_id)
         if terminals:
             terminals[0] += ontology_addendum
+            # Update cache for this ontology_id (though this method is deprecated)
+            freshest = self.get_freshest_terminal_ontology(ontology_id)
+            if freshest and freshest.hash:
+                self._cached_ontologies[ontology_id] = freshest.hash
