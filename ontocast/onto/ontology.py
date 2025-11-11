@@ -167,10 +167,15 @@ class Ontology(OntologyPropertiesWithLineage):
         super().__init__(**kwargs)
         self.current_domain = current_domain
 
-        # Early return for NULL_ONTOLOGY - skip all normal initialization
-        # This prevents deriving ontology_id from ONTOLOGY_NULL_IRI and other processing
-        if self.iri == ONTOLOGY_NULL_IRI and self.ontology_id is None:
-            # This is a null ontology - don't derive ontology_id, don't compute hash, etc.
+        # Check if this is explicitly a null ontology (only if both IRI is null AND no graph provided)
+        # Don't return early if graph is provided - graph might contain ontology information
+        is_explicitly_null = (
+            self.iri == ONTOLOGY_NULL_IRI
+            and self.ontology_id is None
+            and (not self.graph or len(self.graph) == 0)
+        )
+        if is_explicitly_null:
+            # This is explicitly a null ontology - don't derive ontology_id, don't compute hash, etc.
             return
 
         # Parse IRI fragment for hash-based or version-based identifiers
@@ -191,29 +196,86 @@ class Ontology(OntologyPropertiesWithLineage):
                 self.iri = base_iri  # Remove fragment from IRI
                 logger.debug(f"Extracted version from IRI fragment: {version_str}")
 
-        # Only apply fallback if graph doesn't contain an owl:Ontology
-        # Try to sync from graph first
+        # Try to sync from graph first (this is the primary source of truth)
         graph_had_ontology = False
+        iri_from_graph = None
         if self.graph:
             # Try to extract from graph
             self.sync_properties_from_graph()
-            # If after sync, both iri and ontology_id are set, do nothing further
-            if self.iri and not self.is_null() and self.ontology_id:
-                graph_had_ontology = True
+            # Check if graph provided valid ontology information
+            # IRI should be set and not null, ontology_id should be set
+            if self.iri and self.iri != ONTOLOGY_NULL_IRI:
+                iri_from_graph = self.iri  # Remember that IRI came from graph
+                if self.ontology_id:
+                    graph_had_ontology = True
+                else:
+                    # IRI is set but ontology_id is missing - try to derive it
+                    self.ontology_id = (
+                        self._extract_ontology_id_from_prefixes()
+                        or derive_ontology_id(self.iri)
+                    )
+                    if self.ontology_id:
+                        graph_had_ontology = True
+
         # Only apply fallback if graph did not provide a valid pair
         if not graph_had_ontology:
-            if self.ontology_id and (not self.iri or self.is_null()):
+            # Try to extract ontology_id from prefixes if IRI is available
+            if self.iri and self.iri != ONTOLOGY_NULL_IRI and not self.ontology_id:
+                # Prefer derivation from IRI over prefix
+                derived_id = derive_ontology_id(self.iri)
+                prefix_id = self._extract_ontology_id_from_prefixes()
+
+                if derived_id:
+                    self.ontology_id = derived_id
+                    # If prefix exists but doesn't match ontology_id, rebind it
+                    if prefix_id and prefix_id != derived_id:
+                        self._rebind_prefix_to_ontology_id(prefix_id, derived_id)
+                elif prefix_id:
+                    # Fallback to prefix if IRI derivation fails
+                    self.ontology_id = prefix_id
+
+            # Fallback logic: construct IRI from ontology_id or vice versa
+            # BUT: Never override IRI that came from graph
+            if self.ontology_id and (not self.iri or self.iri == ONTOLOGY_NULL_IRI):
                 self.iri = f"{self.current_domain}/{self.ontology_id}"
-            elif self.ontology_id and self.iri:
-                expected_iri = f"{self.current_domain}/{self.ontology_id}"
-                if not self.iri.endswith(f"/{self.ontology_id}"):
-                    logger.warning(
-                        f"Ontology IRI '{self.iri}' does not match expected "
-                        f"'{expected_iri}', correcting IRI"
-                    )
-                    self.iri = expected_iri
-            elif not self.ontology_id and self.iri and not self.is_null():
-                self.ontology_id = derive_ontology_id(self.iri)
+            elif self.ontology_id and self.iri and self.iri != ONTOLOGY_NULL_IRI:
+                # IRI is set - check if it came from graph
+                if iri_from_graph and self.iri == iri_from_graph:
+                    # IRI came from graph - don't override, just log if pattern doesn't match
+                    expected_iri = f"{self.current_domain}/{self.ontology_id}"
+                    if (
+                        not self.iri.endswith(f"/{self.ontology_id}")
+                        and self.iri != expected_iri
+                    ):
+                        logger.debug(
+                            f"Ontology IRI '{self.iri}' from graph does not match expected pattern "
+                            f"'{expected_iri}', but keeping IRI from graph (authoritative)"
+                        )
+                else:
+                    # IRI didn't come from graph - check if it matches expected pattern
+                    expected_iri = f"{self.current_domain}/{self.ontology_id}"
+                    if (
+                        not self.iri.endswith(f"/{self.ontology_id}")
+                        and self.iri != expected_iri
+                    ):
+                        logger.warning(
+                            f"Ontology IRI '{self.iri}' does not match expected "
+                            f"'{expected_iri}', correcting IRI"
+                        )
+                        self.iri = expected_iri
+            elif not self.ontology_id and self.iri and self.iri != ONTOLOGY_NULL_IRI:
+                # Extract ontology_id: prefer IRI derivation, rebind prefix if needed
+                derived_id = derive_ontology_id(self.iri)
+                prefix_id = self._extract_ontology_id_from_prefixes()
+
+                if derived_id:
+                    self.ontology_id = derived_id
+                    # If prefix exists but doesn't match ontology_id, rebind it
+                    if prefix_id and prefix_id != derived_id:
+                        self._rebind_prefix_to_ontology_id(prefix_id, derived_id)
+                elif prefix_id:
+                    # Fallback to prefix if IRI derivation fails
+                    self.ontology_id = prefix_id
         # Set default values for fields that are still None
         if self.version is None:
             self.version = "1.0.0"
@@ -310,12 +372,26 @@ class Ontology(OntologyPropertiesWithLineage):
                 self.iri = f"{self.current_domain}/{self.ontology_id}"
             elif self.iri:
                 expected_iri = f"{self.current_domain}/{self.ontology_id}"
-                if not self.iri.endswith(f"/{self.ontology_id}"):
-                    logger.warning(
-                        f"Ontology IRI '{self.iri}' does not match expected "
-                        f"'{expected_iri}', fixing"
-                    )
-                    self.iri = expected_iri
+                # Only fix IRI if it doesn't match expected pattern AND it's not from an external source
+                # Don't override IRIs that came from the graph or were explicitly provided
+                if (
+                    not self.iri.endswith(f"/{self.ontology_id}")
+                    and self.iri != expected_iri
+                ):
+                    # Check if IRI looks like it came from an external source (not our default domain)
+                    if self.current_domain not in self.iri:
+                        # IRI is from external source (e.g., graph) - don't override
+                        logger.debug(
+                            f"Ontology IRI '{self.iri}' does not match expected pattern "
+                            f"'{expected_iri}', but keeping IRI (likely from graph or external source)"
+                        )
+                    else:
+                        # IRI is from our domain but doesn't match - fix it
+                        logger.warning(
+                            f"Ontology IRI '{self.iri}' does not match expected "
+                            f"'{expected_iri}', fixing"
+                        )
+                        self.iri = expected_iri
         elif self.iri and not self.is_null():
             # Only derive ontology_id if this is not a null ontology
             self.ontology_id = derive_ontology_id(self.iri)
@@ -686,6 +762,82 @@ class Ontology(OntologyPropertiesWithLineage):
             f"Updated semantic version for ontology {self.ontology_id} to {self.version}"
         )
 
+    def _extract_ontology_id_from_prefixes(self) -> str | None:
+        """Extract ontology_id from namespace prefixes that match the ontology IRI.
+
+        Looks for prefixes where the namespace URI matches the ontology IRI or namespace.
+        For example, if IRI is 'https://growgraph.dev/fcaont' and there's a prefix
+        'fca' with namespace 'https://growgraph.dev/fcaont#', returns 'fca'.
+
+        Returns:
+            str | None: The prefix name if found, None otherwise.
+        """
+        if not self.graph or not self.iri or self.iri == ONTOLOGY_NULL_IRI:
+            return None
+
+        # Try exact IRI match first
+        ontology_namespace = iri2namespace(self.iri, ontology=True)
+
+        for prefix, namespace_uri in self.graph.namespaces():
+            namespace_str = str(namespace_uri)
+            # Check if namespace matches ontology IRI or namespace
+            if namespace_str == self.iri or namespace_str == ontology_namespace:
+                if prefix and prefix not in [
+                    "rdf",
+                    "rdfs",
+                    "owl",
+                    "xsd",
+                    "dc",
+                    "dcterms",
+                    "skos",
+                    "foaf",
+                    "schema",
+                    "prov",
+                ]:
+                    logger.debug(f"Found prefix '{prefix}' matching IRI '{self.iri}'")
+                    return prefix
+
+        return None
+
+    def _rebind_prefix_to_ontology_id(self, old_prefix: str, ontology_id: str) -> None:
+        """Rebind a prefix to match the ontology_id.
+
+        If a prefix exists that matches the ontology IRI but has a different name
+        than the ontology_id, rebind it to use the ontology_id as the prefix name.
+        This ensures consistency between the prefix name and ontology_id.
+
+        Args:
+            old_prefix: The existing prefix name that needs to be rebound.
+            ontology_id: The ontology_id that should be used as the new prefix name.
+        """
+        if not self.graph or not self.iri or self.iri == ONTOLOGY_NULL_IRI:
+            return
+
+        ontology_namespace = iri2namespace(self.iri, ontology=True)
+
+        # Find the namespace URI for the old prefix
+        old_namespace_uri = None
+        for prefix, namespace_uri in self.graph.namespaces():
+            if prefix == old_prefix:
+                old_namespace_uri = str(namespace_uri)
+                break
+
+        if old_namespace_uri and old_namespace_uri == ontology_namespace:
+            # Only rebind if the namespace matches
+            # Bind the new prefix with ontology_id (this will override if it exists)
+            from rdflib import Namespace
+
+            ns = Namespace(ontology_namespace)
+            self.graph.namespace_manager.bind(ontology_id, ns, override=True)
+
+            # If old prefix is different, we can optionally remove it
+            # But keep it for now to avoid breaking existing references in the graph
+            # The new prefix will be used going forward
+            logger.debug(
+                f"Rebound prefix: '{old_prefix}' -> '{ontology_id}' "
+                f"for namespace '{ontology_namespace}'"
+            )
+
     def sync_properties_from_graph(self):
         """
         Update Ontology properties from the RDF graph if present,
@@ -693,6 +845,9 @@ class Ontology(OntologyPropertiesWithLineage):
         Optimized to avoid multiple loops over triples.
         """
         g = self.graph
+        if not g or len(g) == 0:
+            return
+
         # Only proceed if this subject is explicitly typed as owl:Ontology
         onto_triple = [
             subj
@@ -700,7 +855,34 @@ class Ontology(OntologyPropertiesWithLineage):
             if o == OWL.Ontology
         ]
         if not onto_triple:
+            # No owl:Ontology found - try to extract IRI from prefixes as fallback
+            if not self.iri or self.iri == ONTOLOGY_NULL_IRI:
+                # Look for prefixes that might indicate the ontology IRI
+                for prefix, namespace_uri in g.namespaces():
+                    namespace_str = str(namespace_uri).rstrip("#/")
+                    # Skip standard prefixes
+                    if prefix and prefix not in [
+                        "rdf",
+                        "rdfs",
+                        "owl",
+                        "xsd",
+                        "dc",
+                        "dcterms",
+                        "skos",
+                        "foaf",
+                        "schema",
+                        "prov",
+                    ]:
+                        # Use this namespace as potential IRI
+                        self.iri = namespace_str
+                        self.ontology_id = prefix
+                        logger.debug(
+                            f"No owl:Ontology found, extracted IRI '{self.iri}' and "
+                            f"ontology_id '{self.ontology_id}' from prefix '{prefix}'"
+                        )
+                        return
             return
+
         onto_iri = onto_triple[0]
         iri_str = str(onto_iri)
 
@@ -722,8 +904,32 @@ class Ontology(OntologyPropertiesWithLineage):
                 iri_str = base_iri
                 logger.debug(f"Stripped version fragment from IRI in graph: {fragment}")
 
-        self.iri = iri_str
-        self.ontology_id = derive_ontology_id(self.iri)
+        # Set IRI from graph (this is authoritative)
+        if not self.iri or self.iri == ONTOLOGY_NULL_IRI:
+            self.iri = iri_str
+        elif self.iri != iri_str:
+            # Graph has different IRI - prefer graph IRI but log the difference
+            logger.debug(
+                f"Graph IRI '{iri_str}' differs from provided IRI '{self.iri}', "
+                f"using graph IRI"
+            )
+            self.iri = iri_str
+
+        # Extract ontology_id: prefer derivation from IRI over prefix
+        # If both exist, use IRI-derived ontology_id and rebind prefix to match
+        if not self.ontology_id:
+            # First try to derive from IRI (preferred)
+            derived_id = derive_ontology_id(self.iri)
+            prefix_id = self._extract_ontology_id_from_prefixes()
+
+            if derived_id:
+                self.ontology_id = derived_id
+                # If prefix exists but doesn't match ontology_id, rebind it
+                if prefix_id and prefix_id != derived_id:
+                    self._rebind_prefix_to_ontology_id(prefix_id, derived_id)
+            elif prefix_id:
+                # Fallback to prefix if IRI derivation fails
+                self.ontology_id = prefix_id
 
         # Collect all predicates and objects for this subject in one pass
         pred_map = defaultdict(list)
