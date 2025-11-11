@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from functools import wraps
 from typing import Callable
@@ -43,7 +44,7 @@ def wrap_with(func, node_name, post_func) -> tuple[WorkflowNode, Callable]:
     functionality, typically used for workflow node execution.
 
     Args:
-        func: The function to wrap.
+        func: The function to wrap (can be sync or async).
         node_name: The name of the node.
         post_func: Function to execute after the main function.
 
@@ -51,12 +52,24 @@ def wrap_with(func, node_name, post_func) -> tuple[WorkflowNode, Callable]:
         tuple[WorkflowNode, Callable]: A tuple containing the node name and
             the wrapped function.
     """
+    # Check if the function is async
+    if asyncio.iscoroutinefunction(func):
 
-    @wraps(func)
-    def wrapper(state: AgentState):
-        logger.info(f"Starting to execute {node_name}")
-        state = func(state)
-        state = post_func(state, node_name)
-        return state
+        @wraps(func)
+        async def async_wrapper(state: AgentState):
+            logger.info(f"Starting to execute {node_name}")
+            state = await func(state)
+            state = post_func(state, node_name)
+            return state
 
-    return node_name, wrapper
+        return node_name, async_wrapper
+    else:
+
+        @wraps(func)
+        def sync_wrapper(state: AgentState):
+            logger.info(f"Starting to execute {node_name}")
+            state = func(state)
+            state = post_func(state, node_name)
+            return state
+
+        return node_name, sync_wrapper

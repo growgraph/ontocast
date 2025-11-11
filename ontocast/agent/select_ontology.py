@@ -10,8 +10,9 @@ import logging
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import PromptTemplate
 
-from ontocast.onto.extras import NULL_ONTOLOGY
+from ontocast.agent.common import call_llm_with_retry
 from ontocast.onto.model import OntologySelectorReport
+from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.state import AgentState
 from ontocast.prompt.select_ontology import template_prompt
 from ontocast.tool import OntologyManager
@@ -20,7 +21,7 @@ from ontocast.toolbox import ToolBox
 logger = logging.getLogger(__name__)
 
 
-def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
+async def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     """Select an appropriate ontology for the current chunk.
 
     This function analyzes the current chunk and selects the most appropriate
@@ -40,7 +41,7 @@ def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
 
     parser = PydanticOutputParser(pydantic_object=OntologySelectorReport)
 
-    if om_tool.has_ontologies > 0:
+    if om_tool.has_ontologies:
         ontologies_desc = "\n\n".join([o.describe() for o in om_tool.ontologies])
         logger.info(f"Retrieved descriptions for {len(om_tool.ontologies)} ontologies")
 
@@ -51,14 +52,16 @@ def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
             input_variables=["excerpt", "ontologies_desc", "format_instructions"],
         )
 
-        response = llm_tool(
-            prompt.format_prompt(
-                excerpt=excerpt,
-                ontologies_desc=ontologies_desc,
-                format_instructions=parser.get_format_instructions(),
-            ),
+        selector = await call_llm_with_retry(
+            llm_tool=llm_tool,
+            prompt=prompt,
+            parser=parser,
+            prompt_kwargs={
+                "excerpt": excerpt,
+                "ontologies_desc": ontologies_desc,
+                "format_instructions": parser.get_format_instructions(),
+            },
         )
-        selector = parser.parse(response.content)
         logger.debug(
             f"Parsed selector report - Selected ontology: {selector.ontology_id}"
         )

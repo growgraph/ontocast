@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from rdflib import Literal, URIRef
 
@@ -46,7 +48,7 @@ def test_select_ontology_fsec(
     state_onto_selected_filename,
 ):
     state = state_chunked
-    state = select_ontology(state=state, tools=tools)
+    state = asyncio.run(select_ontology(state=state, tools=tools))
     assert state.current_ontology.ontology_id == "fcaont"
 
     state.serialize(state_onto_selected_filename)
@@ -61,7 +63,7 @@ def test_select_ontology_null(
     state.set_text(random_report["text"])
     state = chunk_text(state, tools)
     state = check_chunks_empty(state)
-    state = select_ontology(state=state, tools=tools)
+    state = asyncio.run(select_ontology(state=state, tools=tools))
     assert state.current_ontology.ontology_id == "fcaont"
 
     state.serialize(state_onto_null_filename)

@@ -1,7 +1,7 @@
 import pathlib
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ontocast.onto.rdfgraph import RDFGraph
 
@@ -114,8 +114,30 @@ class TripleFix(BaseModel):
     )
 
     severity: Literal["critical", "important", "minor"] = Field(
-        description="critical: breaks semantic graph | important: significant gap | minor: polish"
+        description=(
+            "Severity level: "
+            "'critical' (breaks semantic graph), "
+            "'important' (significant gap), or "
+            "'minor' (polish). "
+            "Note: 'major' will be automatically converted to 'important'."
+        )
     )
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def normalize_severity(cls, v: str) -> str:
+        """Normalize severity values to accepted literals.
+
+        Maps 'major' to 'important' for backward compatibility with prompts
+        that use 'major' terminology. This allows the LLM to use either term.
+        """
+        if isinstance(v, str):
+            v_lower = v.lower().strip()
+            if v_lower == "major":
+                return "important"
+            # Return as-is if already valid (will be validated by Literal)
+            return v
+        return v
 
     target: str | None = Field(
         default=None,

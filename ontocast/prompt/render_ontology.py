@@ -33,9 +33,8 @@ Update/modify the domain ontology {ontology_iri} provided below with abstract en
 Feel free to update the description of the ontology to make it more accurate and complete, do not change neither ontology IRI nor predix nor id.
 """
 
-prefix_instruction_fresh = """Use prefix based on the proposed `ontology_id`"""
-
-prefix_instruction_update = """Use prefix `{ontology_prefix}` for entities/properties placed in the current domain ontology."""
+prefix_instruction = """Use prefix `{ontology_prefix}` for entities/properties placed in the current domain ontology. DECLARE the prefix in preamble!"""
+prefix_instruction_fresh = """Define a new prefix for the current domain ontology. DECLARE the prefix in preamble!"""
 
 
 general_ontology_instruction = """

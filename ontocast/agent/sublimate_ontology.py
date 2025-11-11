@@ -75,17 +75,21 @@ def _sublimate_ontology(state: AgentState):
 def sublimate_ontology(state: AgentState, tools: ToolBox):
     logger.debug("Starting ontology sublimation")
 
-    om_tool = tools.ontology_manager
     if state.current_ontology is None:
         return state
     try:
         state.update_facts()
         graph_onto_addendum, graph_facts = _sublimate_ontology(state=state)
 
-        # Ensure ontology_id is set before updating
-        if state.current_ontology.ontology_id:
-            om_tool.update_ontology(
-                state.current_ontology.ontology_id, graph_onto_addendum
+        # Ensure ontology is not null and ontology_id is set before updating
+        if state.current_ontology.is_null():
+            logger.warning("Cannot update ontology: null ontology cannot be updated")
+        elif state.current_ontology.ontology_id:
+            # Only update state.current_ontology, not OntologyManager
+            # OntologyManager will be updated in serialize() during final serialization
+            state.current_ontology.graph += graph_onto_addendum
+            logger.debug(
+                f"Updated state.current_ontology with {len(graph_onto_addendum)} triples from sublimation"
             )
         else:
             logger.warning("Cannot update ontology: ontology_id is None")

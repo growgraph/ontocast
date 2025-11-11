@@ -1,3 +1,5 @@
+import asyncio
+
 from ontocast.onto.ontology import OntologyProperties
 from ontocast.toolbox import render_ontology_summary
 
@@ -8,7 +10,7 @@ def test_extract_metadata(test_ontology, llm_tool):
     test_ontology.description = None
     test_ontology.ontology_id = None
 
-    summary = render_ontology_summary(test_ontology, llm_tool)
+    summary = asyncio.run(render_ontology_summary(test_ontology, llm_tool))
 
     # Validate output
     assert isinstance(summary, OntologyProperties)

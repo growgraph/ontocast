@@ -8,7 +8,7 @@ import logging
 from langchain.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
-from ontocast.onto.constants import ONTOLOGY_NULL_IRI
+from ontocast.agent.common import call_llm_with_retry
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import OntologyCritiqueReport, Suggestions
 from ontocast.onto.state import AgentState
@@ -25,7 +25,7 @@ from ontocast.toolbox import ToolBox
 logger = logging.getLogger(__name__)
 
 
-def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
+async def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     """Enhanced ontology criticism with SPARQL operations.
 
     This function performs a critical analysis of the ontology in the current
@@ -45,13 +45,13 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
         state.status = Status.FAILED
         return state
 
-    if state.current_ontology.iri == ONTOLOGY_NULL_IRI:
+    if state.current_ontology.is_null():
         raise ValueError(
-            f"{state.current_ontology.ontology_id} : {state.current_ontology.iri} is not a valid ontology"
+            f"Null ontology cannot be criticised: {state.current_ontology.iri} is not a valid ontology"
         )
 
     parser = PydanticOutputParser(pydantic_object=OntologyCritiqueReport)
-    llm_tool: LLMTool = tools.get_llm_tool(state.budget_tracker)
+    llm_tool: LLMTool = await tools.get_llm_tool(state.budget_tracker)
 
     ontology_ttl = state.current_ontology.graph.serialize(format="turtle")
 
@@ -77,19 +77,20 @@ def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     )
 
     try:
-        response = llm_tool(
-            prompt.format_prompt(
-                preamble=system_preamble,
-                intro_instruction=intro_instruction,
-                ontology_criteria=ontology_criteria,
-                text_chapter=text_chapter,
-                user_instruction=user_instruction,
-                ontology_chapter=ontology_chapter,
-                format_instructions=parser.get_format_instructions(),
-            )
+        critique: OntologyCritiqueReport = await call_llm_with_retry(
+            llm_tool=llm_tool,
+            prompt=prompt,
+            parser=parser,
+            prompt_kwargs={
+                "preamble": system_preamble,
+                "intro_instruction": intro_instruction,
+                "ontology_criteria": ontology_criteria,
+                "text_chapter": text_chapter,
+                "user_instruction": user_instruction,
+                "ontology_chapter": ontology_chapter,
+                "format_instructions": parser.get_format_instructions(),
+            },
         )
-
-        critique: OntologyCritiqueReport = parser.parse(response.content)
         logger.debug(
             f"Parsed critique report - success: {critique.success}, "
             f"score: {critique.score}"

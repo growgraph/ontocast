@@ -234,7 +234,7 @@ def create_app(
 
             # Update dataset if provided (efficient - no model reloading)
             if dataset:
-                tools.update_dataset(dataset)
+                await tools.update_dataset(dataset)
 
             # Initialize budget tracker for this workflow
 
@@ -402,7 +402,7 @@ def run(
 
     # Create ToolBox with config
     tools: ToolBox = ToolBox(config)
-    tools.initialize()
+    asyncio.run(tools.initialize())
 
     workflow: CompiledStateGraph = create_agent_graph(tools)
 

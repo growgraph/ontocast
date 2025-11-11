@@ -9,7 +9,7 @@ import logging
 
 from pydantic import Field
 
-from ..onto.extras import NULL_ONTOLOGY
+from ..onto.null import NULL_ONTOLOGY
 from ..onto.ontology import Ontology
 from ..onto.rdfgraph import RDFGraph
 from ..onto.util import derive_ontology_id

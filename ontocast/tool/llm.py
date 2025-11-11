@@ -236,8 +236,8 @@ class LLMTool(Tool):
             raise ValueError(f"Unsupported provider: {self.config.provider}")
 
     @track_llm_usage
-    def __call__(self, *args: Any, **kwds: Any) -> Any:
-        """Call the language model directly (synchronous).
+    async def __call__(self, *args: Any, **kwds: Any) -> Any:
+        """Call the language model directly (asynchronous).
 
         Args:
             *args: Positional arguments passed to the LLM.
@@ -272,7 +272,7 @@ class LLMTool(Tool):
         prompt_str = self._prompt_to_string(prompt)
         logger.debug(f"Cache miss, calling LLM for __call__: {prompt_str[:50]}...")
 
-        response = self.llm.invoke(*args, **kwds)
+        response = await self.llm.ainvoke(*args, **kwds)
 
         # Cache the response
         response_data = {

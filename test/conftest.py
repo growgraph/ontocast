@@ -135,7 +135,9 @@ def tools(
     config = Config(tool_config=tool_config)
 
     tools: ToolBox = ToolBox(config=config)
-    tools.initialize()
+    import asyncio
+
+    asyncio.run(tools.initialize())
     return tools
 
 

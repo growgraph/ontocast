@@ -479,16 +479,19 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                         (None, RDF.type, OWL.Ontology)
                     ):
                         onto_iri = str(onto_subj)
-                        # Extract base IRI if it's versioned
-                        if "#v" in graph_uri:
-                            # Versioned graph - extract base IRI
-                            onto_iri = graph_uri.split("#v")[0]
+                        # Extract base IRI if graph_uri is versioned
+                        # Handle both hash fragments (#19193944...) and semantic versions (#v1.2.3)
+                        if "#" in graph_uri:
+                            base_iri = graph_uri.split("#")[0]
+                            # Use base IRI from graph_uri (named graph identifier)
+                            # The graph content should have simplified IRI, but use graph_uri as source of truth
+                            onto_iri = base_iri
 
                         ontology = Ontology(
                             graph=graph,
                             iri=onto_iri,
                         )
-                        # Load properties from graph
+                        # Load properties from graph (will strip any hash fragments if present)
                         ontology.sync_properties_from_graph()
                         logger.debug(
                             f"Successfully loaded ontology: {onto_iri} version: {ontology.version}"
@@ -515,41 +518,96 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             elif result is not None:
                 all_ontologies.append(result)
 
-        # Step 3: Deduplicate and keep latest versions
+        # Step 3: Deduplicate and keep latest terminal versions
         ontology_dict = defaultdict(list)
 
         for onto in all_ontologies:
             ontology_dict[onto.iri].append(onto)
 
-        # For each unique IRI, select the latest version
+        # Build set of all parent hashes to identify terminal ontologies
+        # A terminal ontology is one that is not a parent for any other ontology
+        all_parent_hashes = set()
+
+        for onto in all_ontologies:
+            if onto.hash:
+                # Collect all parent hashes
+                for parent_hash in onto.parent_hashes:
+                    all_parent_hashes.add(parent_hash)
+
+        # For each unique IRI, select the latest terminal ontology
         ontologies = []
 
         for iri, versions in ontology_dict.items():
             if len(versions) == 1:
                 ontologies.append(versions[0])
             else:
-                # Multiple versions - keep the latest
+                # Multiple versions - find terminal ontologies (not parents)
+                terminal_versions = [
+                    v for v in versions if v.hash and v.hash not in all_parent_hashes
+                ]
+
+                if not terminal_versions:
+                    # No terminal ontologies found - all are parents
+                    # Fall back to non-terminal versions
+                    logger.warning(
+                        f"No terminal ontologies found for {iri}, "
+                        f"using all versions for selection"
+                    )
+                    terminal_versions = versions
+
+                # Select latest by created_at among terminal ontologies
                 try:
-                    # Sort by version if available
-                    versions_with_ver = [v for v in versions if v.version]
-                    if versions_with_ver:
-                        # Sort by version using custom comparison
-                        versions_with_ver.sort(
-                            key=lambda x: str(x.version), reverse=False
+                    versions_with_created = [
+                        v for v in terminal_versions if v.created_at is not None
+                    ]
+
+                    if versions_with_created:
+                        # Sort by created_at (most recent first)
+                        versions_with_created.sort(
+                            key=lambda x: x.created_at, reverse=True
                         )
-                        ontologies.append(versions_with_ver[-1])
+                        selected = versions_with_created[0]
+                        hash_str = (
+                            f"{selected.hash[:16]}..." if selected.hash else "no hash"
+                        )
                         logger.debug(
-                            f"Selected latest version for {iri}: {versions_with_ver[-1].version}"
+                            f"Selected terminal ontology for {iri} "
+                            f"by created_at: {selected.created_at} "
+                            f"(hash: {hash_str})"
                         )
+                        ontologies.append(selected)
                     else:
-                        # No version info, keep first one
-                        ontologies.append(versions[0])
+                        # No created_at available - fall back to version-based sorting
+                        versions_with_ver = [v for v in terminal_versions if v.version]
+                        if versions_with_ver:
+                            versions_with_ver.sort(
+                                key=lambda x: str(x.version), reverse=False
+                            )
+                            selected = versions_with_ver[-1]
+                            logger.debug(
+                                f"Selected terminal ontology for {iri} "
+                                f"by version: {selected.version} "
+                                f"(no created_at available)"
+                            )
+                            ontologies.append(selected)
+                        else:
+                            # No version info either - use first terminal ontology
+                            selected = terminal_versions[0]
+                            logger.debug(
+                                f"Selected first terminal ontology for {iri} "
+                                f"(no created_at or version available)"
+                            )
+                            ontologies.append(selected)
                 except Exception as e:
-                    logger.warning(f"Could not compare versions for {iri}: {e}")
-                    ontologies.append(versions[0])
+                    logger.warning(
+                        f"Could not select terminal ontology for {iri}: {e}, "
+                        f"using first version"
+                    )
+                    ontologies.append(terminal_versions[0])
 
         logger.info(
-            f"Successfully loaded {len(ontologies)} unique ontologies from Fuseki (latest versions)"
+            f"Successfully loaded {len(ontologies)} unique ontologies from Fuseki "
+            f"(latest terminal versions by created_at)"
         )
         return ontologies
 

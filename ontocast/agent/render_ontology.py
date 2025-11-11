@@ -12,7 +12,7 @@ import logging
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
-from ontocast.agent.common import render_suggestions_prompt
+from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.sparql_models import GraphUpdate
@@ -28,8 +28,8 @@ from ontocast.prompt.render_ontology import (
     general_ontology_instruction,
     intro_instruction_fresh,
     intro_instruction_update,
+    prefix_instruction,
     prefix_instruction_fresh,
-    prefix_instruction_update,
     template_prompt,
 )
 from ontocast.toolbox import ToolBox
@@ -37,7 +37,7 @@ from ontocast.toolbox import ToolBox
 logger = logging.getLogger(__name__)
 
 
-def render_ontology(state: AgentState, tools: ToolBox) -> AgentState:
+async def render_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     """Structured hybrid ontology renderer with Turtle/SPARQL decision logic.
 
     This function decides between generating bare Turtle for fresh ontologies
@@ -55,15 +55,15 @@ def render_ontology(state: AgentState, tools: ToolBox) -> AgentState:
         f"Structured ontology rendering for {progress_info} with Turtle/SPARQL output"
     )
 
-    has_no_seed_ontology = state.ontology_id is None
+    has_no_seed_ontology = state.current_ontology.is_null()
 
     if has_no_seed_ontology:
-        return render_ontology_fresh(state, tools)
+        return await render_ontology_fresh(state, tools)
     else:
-        return render_ontology_update(state, tools)
+        return await render_ontology_update(state, tools)
 
 
-def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
+async def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
     """Render ontology triples into a human-readable format.
 
     This function takes the triples from the current ontology and renders them
@@ -80,13 +80,16 @@ def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
 
     parser = PydanticOutputParser(pydantic_object=Ontology)
     logger.info("Rendering fresh ontology")
-    intro_instruction = intro_instruction_fresh
+    intro_instruction = intro_instruction_fresh.format(
+        current_domain=state.current_domain
+    )
     output_instruction = output_instruction_ttl
     ontology_ttl = ""
     improvement_instruction_str = ""
     general_ontology_instruction_str = general_ontology_instruction.format(
         prefix_instruction=prefix_instruction_fresh
     )
+
     text_chapter = text_template.format(text=state.current_chunk.text)
 
     prompt = PromptTemplate(
@@ -105,22 +108,23 @@ def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
     )
 
     try:
-        llm_tool = tools.get_llm_tool(state.budget_tracker)
-        response = llm_tool(
-            prompt.format_prompt(
-                preamble=system_preamble,
-                intro_instruction=intro_instruction,
-                ontology_instruction=general_ontology_instruction_str,
-                output_instruction=output_instruction,
-                ontology_ttl=ontology_ttl,
-                user_instruction=state.ontology_user_instruction,
-                improvement_instruction=improvement_instruction_str,
-                text=text_chapter,
-                format_instructions=parser.get_format_instructions(),
-            ),
+        llm_tool = await tools.get_llm_tool(state.budget_tracker)
+        state.current_ontology = await call_llm_with_retry(
+            llm_tool=llm_tool,
+            prompt=prompt,
+            parser=parser,
+            prompt_kwargs={
+                "preamble": system_preamble,
+                "intro_instruction": intro_instruction,
+                "ontology_instruction": general_ontology_instruction_str,
+                "output_instruction": output_instruction,
+                "ontology_ttl": ontology_ttl,
+                "user_instruction": state.ontology_user_instruction,
+                "improvement_instruction": improvement_instruction_str,
+                "text": text_chapter,
+                "format_instructions": parser.get_format_instructions(),
+            },
         )
-
-        state.current_ontology = parser.parse(response.content)
         state.current_ontology.graph.sanitize_prefixes_namespaces()
 
         num_triples = len(state.current_ontology.graph)
@@ -142,7 +146,7 @@ def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
         return state
 
 
-def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
+async def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
     """Render ontology triples into a human-readable format.
 
     This function takes the triples from the current ontology and renders them
@@ -172,7 +176,7 @@ def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
     )
 
     general_ontology_instruction_str = general_ontology_instruction.format(
-        prefix_instruction=prefix_instruction_update.format(
+        prefix_instruction=prefix_instruction.format(
             ontology_prefix=state.current_ontology.prefix
         )
     )
@@ -194,22 +198,23 @@ def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
     )
 
     try:
-        llm_tool = tools.get_llm_tool(state.budget_tracker)
-        response = llm_tool(
-            prompt.format_prompt(
-                preamble=system_preamble,
-                intro_instruction=intro_instruction,
-                ontology_instruction=general_ontology_instruction_str,
-                output_instruction=output_instruction,
-                improvement_instruction=improvement_instruction_str,
-                ontology_ttl=ontology_chapter,
-                user_instruction=state.ontology_user_instruction,
-                text=text_chapter,
-                format_instructions=parser.get_format_instructions(),
-            ),
+        llm_tool = await tools.get_llm_tool(state.budget_tracker)
+        graph_update: GraphUpdate = await call_llm_with_retry(
+            llm_tool=llm_tool,
+            prompt=prompt,
+            parser=parser,
+            prompt_kwargs={
+                "preamble": system_preamble,
+                "intro_instruction": intro_instruction,
+                "ontology_instruction": general_ontology_instruction_str,
+                "output_instruction": output_instruction,
+                "improvement_instruction": improvement_instruction_str,
+                "ontology_ttl": ontology_chapter,
+                "user_instruction": state.ontology_user_instruction,
+                "text": text_chapter,
+                "format_instructions": parser.get_format_instructions(),
+            },
         )
-
-        graph_update: GraphUpdate = parser.parse(response.content)
         state.ontology_updates.append(graph_update)
         state.update_ontology()
 

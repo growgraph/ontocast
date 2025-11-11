@@ -167,6 +167,12 @@ class Ontology(OntologyPropertiesWithLineage):
         super().__init__(**kwargs)
         self.current_domain = current_domain
 
+        # Early return for NULL_ONTOLOGY - skip all normal initialization
+        # This prevents deriving ontology_id from ONTOLOGY_NULL_IRI and other processing
+        if self.iri == ONTOLOGY_NULL_IRI and self.ontology_id is None:
+            # This is a null ontology - don't derive ontology_id, don't compute hash, etc.
+            return
+
         # Parse IRI fragment for hash-based or version-based identifiers
         if self.iri and "#" in self.iri:
             base_iri, fragment = self.iri.rsplit("#", 1)
@@ -192,11 +198,11 @@ class Ontology(OntologyPropertiesWithLineage):
             # Try to extract from graph
             self.sync_properties_from_graph()
             # If after sync, both iri and ontology_id are set, do nothing further
-            if self.iri and self.iri != ONTOLOGY_NULL_IRI and self.ontology_id:
+            if self.iri and not self.is_null() and self.ontology_id:
                 graph_had_ontology = True
         # Only apply fallback if graph did not provide a valid pair
         if not graph_had_ontology:
-            if self.ontology_id and (not self.iri or self.iri == ONTOLOGY_NULL_IRI):
+            if self.ontology_id and (not self.iri or self.is_null()):
                 self.iri = f"{self.current_domain}/{self.ontology_id}"
             elif self.ontology_id and self.iri:
                 expected_iri = f"{self.current_domain}/{self.ontology_id}"
@@ -206,7 +212,7 @@ class Ontology(OntologyPropertiesWithLineage):
                         f"'{expected_iri}', correcting IRI"
                     )
                     self.iri = expected_iri
-            elif not self.ontology_id and self.iri and self.iri != ONTOLOGY_NULL_IRI:
+            elif not self.ontology_id and self.iri and not self.is_null():
                 self.ontology_id = derive_ontology_id(self.iri)
         # Set default values for fields that are still None
         if self.version is None:
@@ -242,6 +248,20 @@ class Ontology(OntologyPropertiesWithLineage):
         else:
             return prefixes[0]
 
+    def is_null(self) -> bool:
+        """Check if this ontology is the null ontology.
+
+        Returns:
+            bool: True if this is NULL_ONTOLOGY or has null characteristics.
+        """
+        from ontocast.onto.null import NULL_ONTOLOGY
+
+        # Check identity first (fastest)
+        if self is NULL_ONTOLOGY:
+            return True
+        # Check characteristics
+        return self.iri == ONTOLOGY_NULL_IRI and self.ontology_id is None
+
     def set_properties(self, **kwargs):
         """Set ontology properties from keyword arguments and sync to graph.
         Only update properties if they are missing (None or empty).
@@ -257,10 +277,10 @@ class Ontology(OntologyPropertiesWithLineage):
         graph_had_ontology = False
         if self.graph:
             self.sync_properties_from_graph()
-            if self.iri and self.iri != ONTOLOGY_NULL_IRI and self.ontology_id:
+            if self.iri and not self.is_null() and self.ontology_id:
                 graph_had_ontology = True
         if not graph_had_ontology:
-            if self.ontology_id and (not self.iri or self.iri == ONTOLOGY_NULL_IRI):
+            if self.ontology_id and (not self.iri or self.is_null()):
                 self.iri = f"{self.current_domain}/{self.ontology_id}"
             elif self.ontology_id and self.iri:
                 expected_iri = f"{self.current_domain}/{self.ontology_id}"
@@ -269,7 +289,7 @@ class Ontology(OntologyPropertiesWithLineage):
                         f"Ontology IRI '{self.iri}' does not match expected "
                         f"'{expected_iri}'"
                     )
-            elif not self.ontology_id and self.iri and self.iri != ONTOLOGY_NULL_IRI:
+            elif not self.ontology_id and self.iri and not self.is_null():
                 self.ontology_id = derive_ontology_id(self.iri)
         self.sync_properties_to_graph()
 
@@ -281,8 +301,12 @@ class Ontology(OntologyPropertiesWithLineage):
         Optimized to avoid multiple loops over triples.
         """
 
+        # Early return for NULL_ONTOLOGY - don't sync anything
+        if self.is_null():
+            return
+
         if self.ontology_id is not None:
-            if not self.iri or self.iri == ONTOLOGY_NULL_IRI:
+            if not self.iri or self.is_null():
                 self.iri = f"{self.current_domain}/{self.ontology_id}"
             elif self.iri:
                 expected_iri = f"{self.current_domain}/{self.ontology_id}"
@@ -292,13 +316,11 @@ class Ontology(OntologyPropertiesWithLineage):
                         f"'{expected_iri}', fixing"
                     )
                     self.iri = expected_iri
-        elif self.iri:
+        elif self.iri and not self.is_null():
+            # Only derive ontology_id if this is not a null ontology
             self.ontology_id = derive_ontology_id(self.iri)
 
-        if self.iri == ONTOLOGY_NULL_IRI:
-            return
-        else:
-            onto_iri = URIRef(self.iri)
+        onto_iri = URIRef(self.iri)
         g = self.graph
 
         onto_triple = [
@@ -391,7 +413,7 @@ class Ontology(OntologyPropertiesWithLineage):
             try:
                 # Find the ontology IRI from the graph if not set
                 onto_iri = None
-                if self.iri and self.iri != ONTOLOGY_NULL_IRI:
+                if self.iri and not self.is_null():
                     onto_iri = URIRef(self.iri)
                 else:
                     # Try to find ontology IRI from graph
@@ -680,8 +702,27 @@ class Ontology(OntologyPropertiesWithLineage):
         if not onto_triple:
             return
         onto_iri = onto_triple[0]
-        self.iri = str(onto_iri)
+        iri_str = str(onto_iri)
 
+        # Strip hash fragment from IRI to ensure simplified representation
+        # Hash fragments are long hex strings (64+ chars) used for versioning
+        if "#" in iri_str:
+            base_iri, fragment = iri_str.rsplit("#", 1)
+            # Check if fragment is a hash (long hex string) or version (v1.2.3)
+            if len(fragment) > 20 and all(
+                c in "0123456789abcdef" for c in fragment.lower()
+            ):
+                # Looks like a hash - use base IRI only
+                iri_str = base_iri
+                logger.debug(
+                    f"Stripped hash fragment from IRI in graph: {fragment[:20]}..."
+                )
+            elif fragment.startswith("v") and re.match(r"^v\d+\.\d+\.\d+$", fragment):
+                # Semantic version fragment - use base IRI only
+                iri_str = base_iri
+                logger.debug(f"Stripped version fragment from IRI in graph: {fragment}")
+
+        self.iri = iri_str
         self.ontology_id = derive_ontology_id(self.iri)
 
         # Collect all predicates and objects for this subject in one pass
@@ -909,7 +950,7 @@ class Ontology(OntologyPropertiesWithLineage):
         if parent_hash not in self.parent_hashes:
             self.parent_hashes.append(parent_hash)
             # Update graph
-            if self.iri and self.iri != ONTOLOGY_NULL_IRI:
+            if self.iri and not self.is_null():
                 onto_iri = URIRef(self.iri)
                 parent_hash_uri = URIRef(f"urn:hash:{parent_hash}")
                 self.graph.add((onto_iri, PROV.wasDerivedFrom, parent_hash_uri))

@@ -10,7 +10,7 @@ import logging
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
-from ontocast.agent.common import render_suggestions_prompt
+from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.onto.constants import DEFAULT_CHUNK_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import SemanticTriplesFactsReport
@@ -34,7 +34,7 @@ from ontocast.toolbox import ToolBox
 logger = logging.getLogger(__name__)
 
 
-def render_facts(state: AgentState, tools: ToolBox) -> AgentState:
+async def render_facts(state: AgentState, tools: ToolBox) -> AgentState:
     """Structured hybrid facts renderer with Turtle/SPARQL decision logic.
 
     This function decides between generating bare Turtle for fresh facts
@@ -55,10 +55,10 @@ def render_facts(state: AgentState, tools: ToolBox) -> AgentState:
 
     if is_first_visit:
         logger.info("Generating fresh facts as Turtle")
-        return render_facts_fresh(state, tools)
+        return await render_facts_fresh(state, tools)
     else:
         logger.info("Generating facts update")
-        return render_facts_update(state, tools)
+        return await render_facts_update(state, tools)
 
 
 def _prepare_prompt_data(state: AgentState) -> dict[str, str]:
@@ -138,7 +138,7 @@ def _handle_rendering_error(
     return state
 
 
-def render_facts_fresh(state: AgentState, tools: ToolBox) -> AgentState:
+async def render_facts_fresh(state: AgentState, tools: ToolBox) -> AgentState:
     """Render fresh facts from the current chunk into Turtle format.
 
     Args:
@@ -163,13 +163,15 @@ def render_facts_fresh(state: AgentState, tools: ToolBox) -> AgentState:
     prompt = _create_prompt_template()
 
     try:
-        response = llm_tool(
-            prompt.format_prompt(
-                format_instructions=parser.get_format_instructions(), **prompt_data
-            ),
+        proj = await call_llm_with_retry(
+            llm_tool=llm_tool,
+            prompt=prompt,
+            parser=parser,
+            prompt_kwargs={
+                "format_instructions": parser.get_format_instructions(),
+                **prompt_data,
+            },
         )
-
-        proj = parser.parse(response.content)
         proj.semantic_graph.sanitize_prefixes_namespaces()
         state.current_chunk.graph = proj.semantic_graph
 
@@ -185,7 +187,7 @@ def render_facts_fresh(state: AgentState, tools: ToolBox) -> AgentState:
         return _handle_rendering_error(state, e, FailureStage.GENERATE_TTL_FOR_FACTS)
 
 
-def render_facts_update(state: AgentState, tools: ToolBox) -> AgentState:
+async def render_facts_update(state: AgentState, tools: ToolBox) -> AgentState:
     """Render facts updates using SPARQL operations.
 
     Args:
@@ -214,13 +216,15 @@ def render_facts_update(state: AgentState, tools: ToolBox) -> AgentState:
     prompt = _create_prompt_template()
 
     try:
-        response = llm_tool(
-            prompt.format_prompt(
-                format_instructions=parser.get_format_instructions(), **prompt_data
-            ),
+        graph_update = await call_llm_with_retry(
+            llm_tool=llm_tool,
+            prompt=prompt,
+            parser=parser,
+            prompt_kwargs={
+                "format_instructions": parser.get_format_instructions(),
+                **prompt_data,
+            },
         )
-
-        graph_update = parser.parse(response.content)
         state.facts_updates.append(graph_update)
 
         num_operations, num_triples = graph_update.count_total_triples()

@@ -29,7 +29,7 @@ from ontocast.tool.triple_manager.core import (
 logger = logging.getLogger(__name__)
 
 
-def update_ontology_properties(o: Ontology, llm_tool: LLMTool):
+async def update_ontology_properties(o: Ontology, llm_tool: LLMTool):
     """Update ontology properties using LLM analysis, only if missing.
 
     This function uses the LLM tool to analyze and update the properties
@@ -38,11 +38,11 @@ def update_ontology_properties(o: Ontology, llm_tool: LLMTool):
     """
     # Only update if any key property is missing or empty
     if (o.title is None) or (o.ontology_id is None) or (o.description is None):
-        props = render_ontology_summary(o, llm_tool)
+        props = await render_ontology_summary(o, llm_tool)
         o.set_properties(**props.model_dump())
 
 
-def update_ontology_manager(om: OntologyManager, llm_tool: LLMTool):
+async def update_ontology_manager(om: OntologyManager, llm_tool: LLMTool):
     """Update properties for all ontologies in the manager.
 
     This function iterates through all ontologies in the manager and updates
@@ -53,7 +53,7 @@ def update_ontology_manager(om: OntologyManager, llm_tool: LLMTool):
         llm_tool: The LLM tool instance for analysis.
     """
     for o in om.ontologies:
-        update_ontology_properties(o, llm_tool)
+        await update_ontology_properties(o, llm_tool)
 
 
 class ToolBox:
@@ -148,7 +148,7 @@ class ToolBox:
         self.version_manager: GraphVersionManager = GraphVersionManager()
         self.diff_tool: DiffTool = DiffTool()
 
-    def get_llm_tool(self, budget_tracker):
+    async def get_llm_tool(self, budget_tracker):
         """Get an LLM tool instance with a specific budget tracker.
 
         Args:
@@ -158,13 +158,13 @@ class ToolBox:
             LLMTool: LLM tool with the specified budget tracker.
         """
         # Create a new LLM tool with the budget tracker
-        return LLMTool.create(
+        return await LLMTool.acreate(
             config=self.config.tool_config.llm_config,
             cache=self.shared_cache,
             budget_tracker=budget_tracker,
         )
 
-    def update_dataset(self, dataset: str) -> None:
+    async def update_dataset(self, dataset: str) -> None:
         """Update the dataset for the Fuseki triple store manager.
 
         This method allows changing the dataset without recreating the entire
@@ -174,12 +174,10 @@ class ToolBox:
             dataset: The new dataset name to use.
         """
         if self.triple_store_manager is not None:
-            import asyncio
-
             from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
 
             if isinstance(self.triple_store_manager, FusekiTripleStoreManager):
-                asyncio.run(self.triple_store_manager.update_dataset(dataset))
+                await self.triple_store_manager.update_dataset(dataset)
             else:
                 logger.warning(
                     "Cannot update dataset: triple store manager is not Fuseki"
@@ -207,7 +205,7 @@ class ToolBox:
                 graph_uri=state.doc_namespace,
             )
 
-    def initialize(self) -> None:
+    async def initialize(self) -> None:
         """Initialize the toolbox with ontologies and their properties.
 
         This method synchronizes ontologies between filesystem and triple store,
@@ -216,12 +214,12 @@ class ToolBox:
         """
 
         # Synchronize ontologies and add them to ontology manager
-        synchronized_ontologies = self._synchronize_ontologies()
+        synchronized_ontologies = await self._synchronize_ontologies()
         for ontology in synchronized_ontologies:
             self.ontology_manager.add_ontology(ontology)
-        update_ontology_manager(om=self.ontology_manager, llm_tool=self.llm)
+        await update_ontology_manager(om=self.ontology_manager, llm_tool=self.llm)
 
-    def _synchronize_ontologies(self) -> list[Ontology]:
+    async def _synchronize_ontologies(self) -> list[Ontology]:
         """Synchronize ontologies between filesystem and triple store.
 
         This method checks both filesystem_manager and triple_store_manager for
@@ -231,10 +229,14 @@ class ToolBox:
         Returns:
             list: The final set of ontologies after synchronization
         """
+        import asyncio
 
         filesystem_ontologies = []
         if self.filesystem_manager is not None:
-            filesystem_ontologies += self.filesystem_manager.fetch_ontologies()
+            # Run sync method in thread pool to avoid blocking
+            filesystem_ontologies += await asyncio.to_thread(
+                self.filesystem_manager.fetch_ontologies
+            )
             logger.debug(f"Found {len(filesystem_ontologies)} ontologies in filesystem")
 
         triple_store_ontologies = []
@@ -242,7 +244,16 @@ class ToolBox:
             self.triple_store_manager is not None
             and self.triple_store_manager != self.filesystem_manager
         ):
-            triple_store_ontologies += self.triple_store_manager.fetch_ontologies()
+            # Use async version if available, otherwise run sync version in thread pool
+            afetch_method = getattr(
+                self.triple_store_manager, "afetch_ontologies", None
+            )
+            if afetch_method is not None:
+                triple_store_ontologies += await afetch_method()
+            else:
+                triple_store_ontologies += await asyncio.to_thread(
+                    self.triple_store_manager.fetch_ontologies
+                )
             logger.debug(
                 f"Found {len(triple_store_ontologies)} ontologies in triple store"
             )
@@ -259,14 +270,23 @@ class ToolBox:
                 )
                 # Store the filesystem ontology to triple store with its version
                 if self.triple_store_manager is not None:
-                    self.triple_store_manager.serialize(fs_onto)
+                    # Use async version if available, otherwise run sync version in thread pool
+                    aserialize_method = getattr(
+                        self.triple_store_manager, "aserialize", None
+                    )
+                    if aserialize_method is not None:
+                        await aserialize_method(fs_onto)
+                    else:
+                        await asyncio.to_thread(
+                            self.triple_store_manager.serialize, fs_onto
+                        )
                 # Add to triple_store_ontologies list
                 triple_store_ontologies.append(fs_onto)
 
         return triple_store_ontologies
 
 
-def render_ontology_summary(ontology: Ontology, llm_tool) -> OntologyProperties:
+async def render_ontology_summary(ontology: Ontology, llm_tool) -> OntologyProperties:
     """Generate a summary of ontology properties using LLM analysis.
 
     This function uses the LLM tool to analyze an RDF graph and generate
@@ -332,7 +352,7 @@ def render_ontology_summary(ontology: Ontology, llm_tool) -> OntologyProperties:
         partial_variables={"format_instructions": format_instructions},
     )
 
-    response = llm_tool(prompt.format_prompt(ontology_str=ontology_str))
+    response = await llm_tool(prompt.format_prompt(ontology_str=ontology_str))
     dynamic_props = parser.parse(response.content)
 
     # Convert dynamic props to OntologyProperties

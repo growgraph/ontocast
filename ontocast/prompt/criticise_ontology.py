@@ -41,7 +41,8 @@ Provide a constructive, actionable critique following these priorities:
 
 ## OUTPUT REQUIREMENTS:
 1. Start with what works well (2-3 strengths)
-2. Group fixes by severity: critical → major → minor
+2. Group fixes by severity: critical → important → minor
+   - Use severity: "critical" (breaks semantic graph), "important" (significant gap), or "minor" (polish)
 3. For each fix, provide:
    - Exact text evidence (quote from source)
    - Clear before/after using Turtle syntax

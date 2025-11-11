@@ -9,6 +9,7 @@ import logging
 from langchain.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
+from ontocast.agent.common import call_llm_with_retry
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import FactsCritiqueReport, Suggestions
 from ontocast.onto.state import AgentState
@@ -28,7 +29,7 @@ from ontocast.toolbox import ToolBox
 logger = logging.getLogger(__name__)
 
 
-def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
+async def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
     """Enhanced criticize facts with SPARQL operations.
 
     This function performs a critical analysis of the facts in the current chunk,
@@ -50,7 +51,7 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
         f"Criticize facts for {progress_info}: visit {state.node_visits[WorkflowNode.CRITICISE_FACTS] + 1}/{state.max_visits}"
     )
 
-    llm_tool = tools.get_llm_tool(state.budget_tracker)
+    llm_tool = await tools.get_llm_tool(state.budget_tracker)
     parser = PydanticOutputParser(pydantic_object=FactsCritiqueReport)
 
     ontology_ttl = state.current_ontology.graph.serialize(format="turtle")
@@ -97,9 +98,12 @@ def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
     }
 
     try:
-        response = llm_tool(prompt.format_prompt(**prompt_data))
-
-        critique: FactsCritiqueReport = parser.parse(response.content)
+        critique: FactsCritiqueReport = await call_llm_with_retry(
+            llm_tool=llm_tool,
+            prompt=prompt,
+            parser=parser,
+            prompt_kwargs=prompt_data,
+        )
         logger.debug(
             f"Parsed critique report - success: {critique.success}, "
             f"score: {critique.score}"
