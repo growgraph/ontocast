@@ -12,7 +12,6 @@ from pydantic import Field
 from ..onto.null import NULL_ONTOLOGY
 from ..onto.ontology import Ontology
 from ..onto.rdfgraph import RDFGraph
-from ..onto.util import derive_ontology_id
 from .onto import Tool
 
 logger = logging.getLogger(__name__)
@@ -22,12 +21,12 @@ class OntologyManager(Tool):
     """Manager for handling multiple ontologies with version tracking.
 
     This class provides functionality for managing a collection of ontologies,
-    tracking version lineage using hash-based identifiers. For each ontology_id,
+    tracking version lineage using hash-based identifiers. For each IRI,
     it maintains a tree/graph of all versions identified by their hashes.
 
     Attributes:
-        ontology_versions: Dictionary mapping ontology_id to list of all
-            ontology versions (identified by hash). Each ontology_id can have
+        ontology_versions: Dictionary mapping IRI to list of all
+            ontology versions (identified by hash). Each IRI can have
             multiple versions forming a lineage tree.
     """
 
@@ -40,49 +39,47 @@ class OntologyManager(Tool):
             **kwargs: Additional keyword arguments passed to the parent class.
         """
         super().__init__(**kwargs)
-        # Cache dictionary mapping ontology_id to hash of freshest terminal ontology.
+        # Cache dictionary mapping IRI to hash of freshest terminal ontology.
         # Updated incrementally when ontologies are added.
         self._cached_ontologies: dict[str, str] = {}
 
     def __contains__(self, item):
-        """Check if an item (ontology_id or IRI) is in the ontology manager.
+        """Check if an item (IRI or ontology_id) is in the ontology manager.
 
         Args:
-            item: The ontology_id or IRI to check.
+            item: The IRI or ontology_id to check.
 
         Returns:
             bool: True if the item exists in any version of any ontology.
         """
-        # Check by ontology_id
+        # Check by IRI (primary key)
         if item in self.ontology_versions:
             return True
-        # Check by IRI in all versions
+        # Check by ontology_id (fallback for backward compatibility)
         for versions in self.ontology_versions.values():
             for o in versions:
-                if o.iri == item:
+                if o.ontology_id == item:
                     return True
         return False
 
     def add_ontology(self, ontology: Ontology) -> None:
-        """Add an ontology to the version tree for its ontology_id.
+        """Add an ontology to the version tree for its IRI.
 
         If an ontology with the same hash already exists, it is not added again.
-        The ontology is added to the version tree for its ontology_id.
+        The ontology is added to the version tree for its IRI.
         Ensures that created_at is set if not already present.
 
         Args:
             ontology: The ontology to add.
         """
-        if not ontology.ontology_id:
+        if not ontology.iri or ontology.iri == NULL_ONTOLOGY.iri:
             logger.warning(
-                f"Cannot add ontology without ontology_id (IRI: {ontology.iri})"
+                f"Cannot add ontology without valid IRI (ontology_id: {ontology.ontology_id})"
             )
             return
 
         if not ontology.hash:
-            logger.warning(
-                f"Cannot add ontology without hash (ontology_id: {ontology.ontology_id})"
-            )
+            logger.warning(f"Cannot add ontology without hash (IRI: {ontology.iri})")
             return
 
         # Ensure created_at is set
@@ -91,45 +88,45 @@ class OntologyManager(Tool):
 
             ontology.created_at = datetime.now(timezone.utc)
             logger.debug(
-                f"Set created_at for ontology {ontology.ontology_id} with hash {ontology.hash[:8]}..."
+                f"Set created_at for ontology {ontology.iri} with hash {ontology.hash[:8]}..."
             )
 
-        if ontology.ontology_id not in self.ontology_versions:
-            self.ontology_versions[ontology.ontology_id] = []
+        if ontology.iri not in self.ontology_versions:
+            self.ontology_versions[ontology.iri] = []
 
         # Check if this hash already exists
-        existing_hashes = {o.hash for o in self.ontology_versions[ontology.ontology_id]}
+        existing_hashes = {o.hash for o in self.ontology_versions[ontology.iri]}
         if ontology.hash not in existing_hashes:
-            self.ontology_versions[ontology.ontology_id].append(ontology)
-            # Update cache for this specific ontology_id (store hash only)
-            freshest = self.get_freshest_terminal_ontology(ontology.ontology_id)
+            self.ontology_versions[ontology.iri].append(ontology)
+            # Update cache for this specific IRI (store hash only)
+            freshest = self.get_freshest_terminal_ontology_by_iri(ontology.iri)
             if freshest and freshest.hash:
-                self._cached_ontologies[ontology.ontology_id] = freshest.hash
+                self._cached_ontologies[ontology.iri] = freshest.hash
             logger.debug(
-                f"Added ontology {ontology.ontology_id} with hash {ontology.hash[:8]}..."
+                f"Added ontology {ontology.iri} with hash {ontology.hash[:8]}..."
             )
         else:
             logger.debug(
-                f"Ontology {ontology.ontology_id} with hash {ontology.hash[:8]}... already exists"
+                f"Ontology {ontology.iri} with hash {ontology.hash[:8]}... already exists"
             )
 
-    def get_terminal_ontologies(self, ontology_id: str | None = None) -> list[Ontology]:
+    def get_terminal_ontologies_by_iri(self, iri: str | None = None) -> list[Ontology]:
         """Get terminal (leaf) ontologies in the version graph.
 
         Terminal ontologies are those that are not parents of any other ontology
-        in the version tree. If ontology_id is provided, returns terminals for
+        in the version tree. If iri is provided, returns terminals for
         that ontology only; otherwise returns terminals for all ontologies.
 
         Args:
-            ontology_id: Optional ontology_id to filter by.
+            iri: Optional IRI to filter by.
 
         Returns:
             list[Ontology]: List of terminal ontologies.
         """
-        if ontology_id:
-            if ontology_id not in self.ontology_versions:
+        if iri:
+            if iri not in self.ontology_versions:
                 return []
-            ontologies = self.ontology_versions[ontology_id]
+            ontologies = self.ontology_versions[iri]
         else:
             ontologies = [
                 o for versions in self.ontology_versions.values() for o in versions
@@ -148,8 +145,34 @@ class OntologyManager(Tool):
 
         return [o for o in ontologies if o.hash in terminal_hashes]
 
-    def get_freshest_terminal_ontology(
-        self, ontology_id: str | None = None
+    def get_terminal_ontologies(self, ontology_id: str | None = None) -> list[Ontology]:
+        """Get terminal (leaf) ontologies by ontology_id (backward compatibility wrapper).
+
+        Args:
+            ontology_id: Optional ontology_id to filter by.
+
+        Returns:
+            list[Ontology]: List of terminal ontologies.
+        """
+        if ontology_id:
+            # Find IRI(s) matching this ontology_id
+            matching_iris = [
+                iri
+                for iri, versions in self.ontology_versions.items()
+                if any(o.ontology_id == ontology_id for o in versions)
+            ]
+            if not matching_iris:
+                return []
+            # Get terminals for all matching IRIs
+            all_terminals = []
+            for iri in matching_iris:
+                all_terminals.extend(self.get_terminal_ontologies_by_iri(iri))
+            return all_terminals
+        else:
+            return self.get_terminal_ontologies_by_iri(None)
+
+    def get_freshest_terminal_ontology_by_iri(
+        self, iri: str | None = None
     ) -> Ontology | None:
         """Get the freshest terminal ontology based on created_at timestamp.
 
@@ -158,14 +181,14 @@ class OntologyManager(Tool):
         created. If no created_at is set, falls back to the first terminal ontology.
 
         Args:
-            ontology_id: Optional ontology_id to filter by. If None, searches across
+            iri: Optional IRI to filter by. If None, searches across
                 all ontologies.
 
         Returns:
             Ontology: The freshest terminal ontology, or None if no terminal
                 ontologies exist.
         """
-        terminals = self.get_terminal_ontologies(ontology_id)
+        terminals = self.get_terminal_ontologies_by_iri(iri)
 
         if not terminals:
             return None
@@ -191,8 +214,59 @@ class OntologyManager(Tool):
 
         return None
 
+    def get_freshest_terminal_ontology(
+        self, ontology_id: str | None = None
+    ) -> Ontology | None:
+        """Get the freshest terminal ontology by ontology_id (backward compatibility wrapper).
+
+        Args:
+            ontology_id: Optional ontology_id to filter by.
+
+        Returns:
+            Ontology: The freshest terminal ontology, or None if no terminal
+                ontologies exist.
+        """
+        if ontology_id:
+            # Find IRI(s) matching this ontology_id
+            matching_iris = [
+                iri
+                for iri, versions in self.ontology_versions.items()
+                if any(o.ontology_id == ontology_id for o in versions)
+            ]
+            if not matching_iris:
+                return None
+            # Get freshest for all matching IRIs and return the most recent
+            candidates = []
+            for iri in matching_iris:
+                freshest = self.get_freshest_terminal_ontology_by_iri(iri)
+                if freshest:
+                    candidates.append(freshest)
+            if not candidates:
+                return None
+            # Return the most recent among all candidates
+            from datetime import datetime
+            from typing import cast
+
+            with_timestamp = [o for o in candidates if o.created_at is not None]
+            if with_timestamp:
+                return max(with_timestamp, key=lambda o: cast(datetime, o.created_at))
+            return candidates[0]
+        else:
+            return self.get_freshest_terminal_ontology_by_iri(None)
+
+    def get_ontology_versions_by_iri(self, iri: str) -> list[Ontology]:
+        """Get all versions of an ontology by IRI.
+
+        Args:
+            iri: The IRI to retrieve versions for.
+
+        Returns:
+            list[Ontology]: List of all versions of the ontology.
+        """
+        return self.ontology_versions.get(iri, [])
+
     def get_ontology_versions(self, ontology_id: str) -> list[Ontology]:
-        """Get all versions of an ontology by ontology_id.
+        """Get all versions of an ontology by ontology_id (backward compatibility wrapper).
 
         Args:
             ontology_id: The ontology_id to retrieve versions for.
@@ -200,10 +274,29 @@ class OntologyManager(Tool):
         Returns:
             list[Ontology]: List of all versions of the ontology.
         """
-        return self.ontology_versions.get(ontology_id, [])
+        # Find all IRIs matching this ontology_id
+        all_versions = []
+        for iri, versions in self.ontology_versions.items():
+            if any(o.ontology_id == ontology_id for o in versions):
+                all_versions.extend(versions)
+        return all_versions
+
+    def get_lineage_graph_by_iri(self, iri: str):
+        """Get the lineage graph for a specific IRI.
+
+        Args:
+            iri: The IRI to get the lineage graph for.
+
+        Returns:
+            networkx.DiGraph: The lineage graph for the ontology, or None if not found.
+        """
+        if iri not in self.ontology_versions:
+            return None
+
+        return Ontology.build_lineage_graph(self.ontology_versions[iri])
 
     def get_lineage_graph(self, ontology_id: str):
-        """Get the lineage graph for a specific ontology_id.
+        """Get the lineage graph for a specific ontology_id (backward compatibility wrapper).
 
         Args:
             ontology_id: The ontology_id to get the lineage graph for.
@@ -211,10 +304,11 @@ class OntologyManager(Tool):
         Returns:
             networkx.DiGraph: The lineage graph for the ontology, or None if not found.
         """
-        if ontology_id not in self.ontology_versions:
-            return None
-
-        return Ontology.build_lineage_graph(self.ontology_versions[ontology_id])
+        # Find first IRI matching this ontology_id
+        for iri, versions in self.ontology_versions.items():
+            if any(o.ontology_id == ontology_id for o in versions):
+                return Ontology.build_lineage_graph(versions)
+        return None
 
     def get_ontology(
         self,
@@ -222,14 +316,15 @@ class OntologyManager(Tool):
         ontology_iri: str | None = None,
         hash: str | None = None,
     ) -> Ontology:
-        """Get an ontology by its short name, IRI, or hash.
+        """Get an ontology by its IRI, ontology_id, or hash.
 
         If hash is provided, returns the specific version. Otherwise, returns
         a terminal (most recent) version if multiple versions exist.
+        IRI is preferred over ontology_id for lookup.
 
         Args:
-            ontology_id: The short name of the ontology to retrieve (optional).
-            ontology_iri: The IRI of the ontology to retrieve (optional).
+            ontology_id: The short name of the ontology to retrieve (optional, for backward compatibility).
+            ontology_iri: The IRI of the ontology to retrieve (preferred).
             hash: The hash of a specific version to retrieve (optional).
 
         Returns:
@@ -242,10 +337,10 @@ class OntologyManager(Tool):
                     if o.hash == hash:
                         return o
 
-        # Try by ontology_id if provided
-        if ontology_id is not None:
-            if ontology_id in self.ontology_versions:
-                versions = self.ontology_versions[ontology_id]
+        # Try by IRI first (preferred method)
+        if ontology_iri is not None:
+            if ontology_iri in self.ontology_versions:
+                versions = self.ontology_versions[ontology_iri]
                 if hash:
                     # Find specific version by hash
                     for o in versions:
@@ -253,7 +348,33 @@ class OntologyManager(Tool):
                             return o
                 else:
                     # Return terminal version (most recent)
-                    terminals = self.get_terminal_ontologies(ontology_id)
+                    terminals = self.get_terminal_ontologies_by_iri(ontology_iri)
+                    if terminals:
+                        return terminals[0]
+                    # Fallback to first version if no terminals
+                    if versions:
+                        return versions[0]
+
+        # Try by ontology_id if provided (backward compatibility)
+        if ontology_id is not None:
+            # Find IRI(s) matching this ontology_id
+            matching_iris = [
+                iri
+                for iri, versions in self.ontology_versions.items()
+                if any(o.ontology_id == ontology_id for o in versions)
+            ]
+            if matching_iris:
+                # Use first matching IRI
+                iri = matching_iris[0]
+                versions = self.ontology_versions[iri]
+                if hash:
+                    # Find specific version by hash
+                    for o in versions:
+                        if o.hash == hash:
+                            return o
+                else:
+                    # Return terminal version (most recent)
+                    terminals = self.get_terminal_ontologies_by_iri(iri)
                     if terminals:
                         return terminals[0]
                     # Fallback to first version if no terminals
@@ -261,30 +382,34 @@ class OntologyManager(Tool):
                         return versions[0]
 
                 # If IRI is also provided, check consistency
-                if ontology_iri:
-                    derived_id = derive_ontology_id(ontology_iri)
-                    if ontology_id != derived_id:
-                        logger.warning(
-                            f"Ontology id '{ontology_id}' does not match id derived from IRI '{ontology_iri}': '{derived_id}'"
-                        )
-
-        # Try by IRI if provided
-        if ontology_iri is not None:
-            for versions in self.ontology_versions.values():
-                for o in versions:
-                    if o.iri == ontology_iri:
-                        return o
+                if ontology_iri and ontology_iri != iri:
+                    logger.warning(
+                        f"Ontology id '{ontology_id}' matches IRI '{iri}' but different IRI '{ontology_iri}' was provided"
+                    )
 
         # Not found
         return NULL_ONTOLOGY
 
-    def get_ontology_names(self) -> list[str]:
-        """Get a list of all ontology short names.
+    def get_ontology_iris(self) -> list[str]:
+        """Get a list of all ontology IRIs.
 
         Returns:
-            list[str]: List of ontology short names.
+            list[str]: List of ontology IRIs.
         """
         return list(self.ontology_versions.keys())
+
+    def get_ontology_names(self) -> list[str]:
+        """Get a list of all ontology short names (backward compatibility wrapper).
+
+        Returns:
+            list[str]: List of unique ontology short names.
+        """
+        names = set()
+        for versions in self.ontology_versions.values():
+            for o in versions:
+                if o.ontology_id:
+                    names.add(o.ontology_id)
+        return sorted(list(names))
 
     @property
     def has_ontologies(self) -> bool:
@@ -297,38 +422,38 @@ class OntologyManager(Tool):
 
     @property
     def ontologies(self) -> list[Ontology]:
-        """Get freshest terminal ontology for each ontology_id.
+        """Get freshest terminal ontology for each IRI.
 
         This property provides backward compatibility with code that expects
         a list of ontologies. Returns the freshest (most recently created)
-        terminal version for each ontology_id.
+        terminal version for each IRI.
 
-        The result is cached per ontology_id (as hashes) and updated incrementally
+        The result is cached per IRI (as hashes) and updated incrementally
         when ontologies are added.
 
         Returns:
-            list[Ontology]: List of freshest terminal ontologies, one per ontology_id.
+            list[Ontology]: List of freshest terminal ontologies, one per IRI.
         """
         result = []
 
-        # Ensure cache is up to date for all ontology_ids
-        for ontology_id in self.ontology_versions.keys():
-            if ontology_id not in self._cached_ontologies:
-                freshest = self.get_freshest_terminal_ontology(ontology_id)
+        # Ensure cache is up to date for all IRIs
+        for iri in self.ontology_versions.keys():
+            if iri not in self._cached_ontologies:
+                freshest = self.get_freshest_terminal_ontology_by_iri(iri)
                 if freshest and freshest.hash:
-                    self._cached_ontologies[ontology_id] = freshest.hash
+                    self._cached_ontologies[iri] = freshest.hash
 
-        # Remove entries for ontology_ids that no longer exist
-        cached_ids = set(self._cached_ontologies.keys())
-        current_ids = set(self.ontology_versions.keys())
-        for removed_id in cached_ids - current_ids:
-            del self._cached_ontologies[removed_id]
+        # Remove entries for IRIs that no longer exist
+        cached_iris = set(self._cached_ontologies.keys())
+        current_iris = set(self.ontology_versions.keys())
+        for removed_iri in cached_iris - current_iris:
+            del self._cached_ontologies[removed_iri]
 
         # Look up actual ontology objects by hash
-        for ontology_id, cached_hash in self._cached_ontologies.items():
-            if ontology_id in self.ontology_versions:
+        for iri, cached_hash in self._cached_ontologies.items():
+            if iri in self.ontology_versions:
                 # Find ontology with matching hash
-                for ontology in self.ontology_versions[ontology_id]:
+                for ontology in self.ontology_versions[iri]:
                     if ontology.hash == cached_hash:
                         result.append(ontology)
                         break
@@ -351,7 +476,8 @@ class OntologyManager(Tool):
         terminals = self.get_terminal_ontologies(ontology_id)
         if terminals:
             terminals[0] += ontology_addendum
-            # Update cache for this ontology_id (though this method is deprecated)
-            freshest = self.get_freshest_terminal_ontology(ontology_id)
+            # Update cache for the IRI (though this method is deprecated)
+            iri = terminals[0].iri
+            freshest = self.get_freshest_terminal_ontology_by_iri(iri)
             if freshest and freshest.hash:
-                self._cached_ontologies[ontology_id] = freshest.hash
+                self._cached_ontologies[iri] = freshest.hash

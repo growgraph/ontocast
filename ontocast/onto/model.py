@@ -40,27 +40,59 @@ class BasePydanticModel(BaseModel):
         return cls.model_validate_json(state_json)
 
 
-class OntologySelectorReport(BasePydanticModel):
-    """Report from ontology selection process.
+def create_ontology_selector_report_model(
+    num_ontologies: int,
+) -> type[BasePydanticModel]:
+    """Create a dynamic OntologySelectorReport model with answer_index constraint.
 
-    Attributes:
-        ontology_id: Ontology id that could be used
-            to represent the domain of the document, None if no ontology is suitable.
-        present: Whether an ontology that could represent the domain of the document
-            is present in the list of ontologies.
+    The answer_index field is constrained to be between 1 and num_ontologies + 1,
+    where:
+    - 1 to num_ontologies: corresponds to the ontology at that index (1-based)
+    - num_ontologies + 1: represents "None" (no suitable ontology)
+
+    Args:
+        num_ontologies: The number of ontologies in the selection list.
+
+    Returns:
+        A dynamically created Pydantic model class with the appropriate constraint.
+    """
+    max_index = num_ontologies + 1
+
+    class OntologySelectorReport(BasePydanticModel):
+        """Report from ontology selection process.
+
+        Attributes:
+            answer_index: Index of the selected option (1-based).
+                1 to num_ontologies: select the ontology at that position.
+                num_ontologies + 1: select None (no suitable ontology).
+        """
+
+        answer_index: int = Field(
+            ge=1,
+            le=max_index,
+            description=(
+                f"Index of the selected ontology from the numbered list (1-{num_ontologies}) "
+                f"or {max_index} for 'None' (no suitable ontology). "
+                f"Use the number corresponding to your choice from the list."
+            ),
+        )
+
+    # Set the class name for better error messages
+    OntologySelectorReport.__name__ = f"OntologySelectorReport_{num_ontologies}"
+    return OntologySelectorReport
+
+
+# Keep a base class for backward compatibility and type hints
+class OntologySelectorReport(BasePydanticModel):
+    """Base class for ontology selection report.
+
+    Note: Use create_ontology_selector_report_model() to create
+    a model with the correct answer_index constraint.
     """
 
-    ontology_id: str | None = Field(
-        description="id of the ontology"
-        "to represent the domain of the document, None if no ontology is suitable"
-    )
-    ontology_iri: str | None = Field(
-        description="URI / IRI of the ontology"
-        "to represent the domain of the document, None if no ontology is suitable"
-    )
-    present: bool = Field(
-        description="Whether an ontology that could represent "
-        "the domain of the document is present in the list of ontologies"
+    answer_index: int = Field(
+        description="Index of the selected ontology from the numbered list (1-based). "
+        "The maximum value depends on the number of ontologies available."
     )
 
 

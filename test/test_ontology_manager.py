@@ -148,8 +148,8 @@ class TestOntologyManagerVersionTracking:
         """Test that adding an ontology creates a version tree."""
         ontology_manager.add_ontology(sample_ontology)
 
-        assert "test" in ontology_manager.ontology_versions
-        assert len(ontology_manager.ontology_versions["test"]) == 1
+        assert sample_ontology.iri in ontology_manager.ontology_versions
+        assert len(ontology_manager.ontology_versions[sample_ontology.iri]) == 1
 
     def test_add_duplicate_hash_not_added(self, ontology_manager, sample_ontology):
         """Test that adding the same ontology twice doesn't create duplicates."""
@@ -170,13 +170,11 @@ class TestOntologyManagerVersionTracking:
         ontology_manager.add_ontology(ontology)
 
         # Should not be added
-        assert "test" not in ontology_manager.ontology_versions
+        assert ontology.iri not in ontology_manager.ontology_versions
 
-    def test_add_ontology_without_ontology_id_rejected(
-        self, ontology_manager, sample_ontology
-    ):
-        """Test that adding ontology without ontology_id is rejected."""
-        sample_ontology.ontology_id = None
+    def test_add_ontology_without_iri_rejected(self, ontology_manager, sample_ontology):
+        """Test that adding ontology without valid IRI is rejected."""
+        sample_ontology.iri = None
 
         ontology_manager.add_ontology(sample_ontology)
 
@@ -274,9 +272,9 @@ class TestFreshestTerminalOntology:
         # but test the fallback logic
         sample_ontology.created_at = None
         # Manually add to bypass add_ontology's created_at setting
-        if "test" not in ontology_manager.ontology_versions:
-            ontology_manager.ontology_versions["test"] = []
-        ontology_manager.ontology_versions["test"].append(sample_ontology)
+        if sample_ontology.iri not in ontology_manager.ontology_versions:
+            ontology_manager.ontology_versions[sample_ontology.iri] = []
+        ontology_manager.ontology_versions[sample_ontology.iri].append(sample_ontology)
 
         freshest = ontology_manager.get_freshest_terminal_ontology("test")
         # Should still return something (fallback to first)
@@ -327,8 +325,11 @@ class TestOntologiesProperty:
         ontology_manager.add_ontology(sample_ontology)
         assert ontology_manager.has_ontologies
         assert len(ontology_manager.ontologies) == 1
-        assert "test" in ontology_manager._cached_ontologies
-        assert ontology_manager._cached_ontologies["test"] == sample_ontology.hash
+        assert sample_ontology.iri in ontology_manager._cached_ontologies
+        assert (
+            ontology_manager._cached_ontologies[sample_ontology.iri]
+            == sample_ontology.hash
+        )
 
         # Add second ontology with different ID
         graph2 = RDFGraph()
@@ -352,9 +353,9 @@ class TestOntologiesProperty:
 
         ontology_manager.add_ontology(ontology2)
         assert len(ontology_manager.ontologies) == 2
-        assert "test" in ontology_manager._cached_ontologies
-        assert "test2" in ontology_manager._cached_ontologies
-        assert ontology_manager._cached_ontologies["test2"] == ontology2.hash
+        assert sample_ontology.iri in ontology_manager._cached_ontologies
+        assert ontology2.iri in ontology_manager._cached_ontologies
+        assert ontology_manager._cached_ontologies[ontology2.iri] == ontology2.hash
 
     def test_ontologies_cache_updates_when_new_version_added(
         self, ontology_manager, sample_ontology, ontology_with_parent
@@ -365,17 +366,26 @@ class TestOntologiesProperty:
         ontology_manager.add_ontology(sample_ontology)
 
         # Check cache has initial hash
-        assert ontology_manager._cached_ontologies["test"] == sample_ontology.hash
+        assert (
+            ontology_manager._cached_ontologies[sample_ontology.iri]
+            == sample_ontology.hash
+        )
 
-        # Add newer version
+        # Add newer version (same IRI)
         ontology_with_parent.created_at = datetime(
             2024, 1, 2, 12, 0, 0, tzinfo=timezone.utc
         )
         ontology_manager.add_ontology(ontology_with_parent)
 
         # Cache should be updated to newer hash
-        assert ontology_manager._cached_ontologies["test"] == ontology_with_parent.hash
-        assert ontology_manager._cached_ontologies["test"] != sample_ontology.hash
+        assert (
+            ontology_manager._cached_ontologies[sample_ontology.iri]
+            == ontology_with_parent.hash
+        )
+        assert (
+            ontology_manager._cached_ontologies[sample_ontology.iri]
+            != sample_ontology.hash
+        )
 
 
 class TestHasOntologies:

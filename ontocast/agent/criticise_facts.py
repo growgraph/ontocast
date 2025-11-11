@@ -48,7 +48,7 @@ async def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
 
     progress_info = state.get_chunk_progress_string()
     logger.info(
-        f"Criticize facts for {progress_info}: visit {state.node_visits[WorkflowNode.CRITICISE_FACTS] + 1}/{state.max_visits}"
+        f"Facts critic for {progress_info}: visit {state.node_visits[WorkflowNode.CRITICISE_FACTS] + 1}/{state.max_visits}"
     )
 
     llm_tool = await tools.get_llm_tool(state.budget_tracker)

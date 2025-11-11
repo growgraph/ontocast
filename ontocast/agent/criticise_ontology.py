@@ -38,8 +38,11 @@ async def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     Returns:
         AgentState: Updated state with analysis results.
     """
+
     progress_info = state.get_chunk_progress_string()
-    logger.info(f"Ontology Critic for {progress_info}")
+    logger.info(
+        f"Ontology Critic for {progress_info}: visit {state.node_visits[WorkflowNode.CRITICISE_ONTOLOGY] + 1}/{state.max_visits}"
+    )
 
     if state.current_chunk is None:
         state.status = Status.FAILED
@@ -91,7 +94,7 @@ async def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
                 "format_instructions": parser.get_format_instructions(),
             },
         )
-        logger.debug(
+        logger.info(
             f"Parsed critique report - success: {critique.success}, "
             f"score: {critique.score}"
         )

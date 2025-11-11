@@ -82,7 +82,7 @@ def create_agent_graph(tools: ToolBox) -> CompiledStateGraph:
             WorkflowNode: The next node to execute.
         """
         if state.skip_ontology_development:
-            if state.status:
+            if state.status == Status.SUCCESS:
                 return OntologyDecision.SKIP_TO_FACTS
             else:
                 return OntologyDecision.FAILURE_NO_ONTOLOGY
@@ -104,7 +104,7 @@ def create_agent_graph(tools: ToolBox) -> CompiledStateGraph:
         if state.skip_facts_rendering:
             return FactsDecision.SERIALIZE
         else:
-            if state.status:
+            if state.status == Status.SUCCESS:
                 return FactsDecision.TEXT_TO_FACTS
             else:
                 return FactsDecision.TEXT_TO_ONTOLOGY

@@ -50,11 +50,11 @@ async def render_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     Returns:
         AgentState: Updated state with rendered ontology
     """
+
     progress_info = state.get_chunk_progress_string()
     logger.info(
-        f"Structured ontology rendering for {progress_info} with Turtle/SPARQL output"
+        f"Ontology Renderer for {progress_info}: visit {state.node_visits[WorkflowNode.TEXT_TO_ONTOLOGY] + 1}/{state.max_visits}"
     )
-
     has_no_seed_ontology = state.current_ontology.is_null()
 
     if has_no_seed_ontology:
