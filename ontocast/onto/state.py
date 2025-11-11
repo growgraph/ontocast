@@ -356,11 +356,14 @@ class AgentState(BasePydanticModel):
         1. Creates a copy of the current ontology
         2. Generates SPARQL queries from all GraphUpdate objects
         3. Executes the queries on the copied ontology graph
-        4. Syncs properties to ensure object fields are updated
-        5. Returns the updated ontology copy
+        4. Sets the current hash as parent_hash in the updated ontology
+        5. Computes a new hash for the updated ontology
+        6. Syncs properties to ensure object fields are updated
+        7. Returns the updated ontology copy
 
         Returns:
-            Ontology: A copy of the current ontology with all updates applied
+            Ontology: A copy of the current ontology with all updates applied and
+            a new hash generated, with the previous hash set as parent.
         """
         if not self.ontology_updates:
             return self.current_ontology
@@ -374,6 +377,29 @@ class AgentState(BasePydanticModel):
         updated_ontology.graph = self.render_updated_graph(
             self.current_ontology.graph, self.ontology_updates
         )
+
+        # Set current hash as parent and generate new hash
+        if self.current_ontology.hash:
+            # Set current hash as parent
+            updated_ontology.parent_hashes = [self.current_ontology.hash]
+        else:
+            # If no current hash, this is a root ontology with no parents
+            updated_ontology.parent_hashes = []
+
+        # Set created_at for new version if not already set
+        if not updated_ontology.created_at:
+            from datetime import datetime, timezone
+
+            updated_ontology.created_at = datetime.now(timezone.utc)
+
+        # Compute new hash for the updated ontology
+        # Clear existing hash first so it gets recomputed
+        updated_ontology.hash = None
+        updated_ontology._compute_and_set_hash()
+
+        # If hash computation failed and we have a parent, use parent hash as fallback
+        if not updated_ontology.hash and updated_ontology.parent_hashes:
+            updated_ontology.hash = updated_ontology.parent_hashes[0]
 
         # Sync properties to update object fields after graph changes
         updated_ontology.sync_properties_to_graph()

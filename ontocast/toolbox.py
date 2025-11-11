@@ -174,16 +174,22 @@ class ToolBox:
             dataset: The new dataset name to use.
         """
         if self.triple_store_manager is not None:
+            import asyncio
+
             from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
 
             if isinstance(self.triple_store_manager, FusekiTripleStoreManager):
-                self.triple_store_manager.update_dataset(dataset)
+                asyncio.run(self.triple_store_manager.update_dataset(dataset))
             else:
                 logger.warning(
                     "Cannot update dataset: triple store manager is not Fuseki"
                 )
 
     def serialize(self, state: AgentState) -> None:
+        # Add current ontology to ontology manager for version tracking
+        if state.current_ontology and state.current_ontology.hash:
+            self.ontology_manager.add_ontology(state.current_ontology)
+
         if self.filesystem_manager is not None:
             self.filesystem_manager.serialize(state.current_ontology)
             self.filesystem_manager.serialize(
@@ -209,8 +215,10 @@ class ToolBox:
         using the LLM tool.
         """
 
-        # Synchronize ontologies and get the final set
-        self.ontology_manager.ontologies = self._synchronize_ontologies()
+        # Synchronize ontologies and add them to ontology manager
+        synchronized_ontologies = self._synchronize_ontologies()
+        for ontology in synchronized_ontologies:
+            self.ontology_manager.add_ontology(ontology)
         update_ontology_manager(om=self.ontology_manager, llm_tool=self.llm)
 
     def _synchronize_ontologies(self) -> list[Ontology]:
@@ -283,7 +291,7 @@ def render_ontology_summary(ontology: Ontology, llm_tool) -> OntologyProperties:
     unset_fields = {}
     fields_to_fetch = []
 
-    # Fields we want to potentially fetch from LLM (excluding internal fields like updated_at)
+    # Fields we want to potentially fetch from LLM (excluding internal fields like created_at)
     fields_to_check = ["title", "description", "ontology_id", "version", "iri"]
 
     # For Ontology objects, only fetch fields that are unset

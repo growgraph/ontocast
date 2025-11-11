@@ -2,7 +2,7 @@ import logging
 import pathlib
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Annotated, Union
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -55,10 +55,6 @@ class OntologyProperties(BaseModel):
         default=ONTOLOGY_NULL_IRI,
         description="Ontology IRI (Internationalized Resource Identifier)",
     )
-    updated_at: datetime | None = Field(
-        default=None,
-        description="Timestamp when the ontology was last updated (UTC)",
-    )
     initial_version: SemanticVersion | None = Field(
         default=None,
         description=(
@@ -87,8 +83,10 @@ class OntologyPropertiesWithLineage(OntologyProperties):
     Attributes:
         hash: Hash of the ontology graph (computed from canonicalized graph).
         parent_hashes: List of hashes of parent ontologies. Supports multiple
-            parents for parallel branches and merges. If empty or None, the
-            ontology is its own parent (parent_hashes contains only its own hash).
+            parents for parallel branches and merges. Can be empty, indicating
+            this is a root ontology with no parents.
+        created_at: Timestamp when the ontology version was created (UTC).
+            This is set deterministically when a version is created, not by LLM.
     """
 
     hash: str | None = Field(
@@ -99,9 +97,14 @@ class OntologyPropertiesWithLineage(OntologyProperties):
         default_factory=list,
         description=(
             "List of hashes of parent ontologies. Supports multiple parents "
-            "for parallel branches and merges. If empty, the ontology "
-            "is its own parent (parent_hashes contains only its own hash)."
+            "for parallel branches and merges. Can be empty, indicating "
+            "this is a root ontology with no parents."
         ),
+    )
+    created_at: datetime | None = Field(
+        default=None,
+        description="Timestamp when the ontology version was created (UTC). "
+        "Set deterministically when a version is created, not by LLM.",
     )
 
     @property
@@ -213,10 +216,6 @@ class Ontology(OntologyPropertiesWithLineage):
         # Only compute if hash is not already set (from graph or kwargs)
         if self.hash is None:
             self._compute_and_set_hash()
-        # If parent_hashes is empty, set it to [hash] (ontology is its own parent)
-        if len(self.parent_hashes) == 0:
-            if self.hash:
-                self.parent_hashes = [self.hash]
 
         # Always ensure graph is up to date with properties (including hash/parent_hashes)
         self.sync_properties_to_graph()
@@ -338,19 +337,21 @@ class Ontology(OntologyPropertiesWithLineage):
                 g.remove((onto_iri, OWL.versionInfo, obj))
             # Add new version
             g.add((onto_iri, OWL.versionInfo, Literal(self.version)))
-        # Add updated_at if set
-        if self.updated_at:
-            # Remove existing dcterms:modified triples to update them
-            for _, _, obj in g.triples((onto_iri, DCTERMS.modified, None)):
-                g.remove((onto_iri, DCTERMS.modified, obj))
-            # Add new updated_at with datetime type
-            g.add(
-                (
-                    onto_iri,
-                    DCTERMS.modified,
-                    Literal(self.updated_at.isoformat(), datatype=XSD.dateTime),
+        # Add created_at if set (only if not already present in graph)
+        if self.created_at:
+            # Check if created_at already exists in graph - don't overwrite if present
+            existing_created = [
+                str(obj) for _, _, obj in g.triples((onto_iri, DCTERMS.created, None))
+            ]
+            if not existing_created:
+                # Add new created_at with datetime type
+                g.add(
+                    (
+                        onto_iri,
+                        DCTERMS.created,
+                        Literal(self.created_at.isoformat(), datatype=XSD.dateTime),
+                    )
                 )
-            )
         # Add hash (only if not already present in graph)
         # Use dcterms:identifier for hash (with "hash:" prefix to distinguish from other identifiers)
         if self.hash:
@@ -405,9 +406,10 @@ class Ontology(OntologyPropertiesWithLineage):
                 # Create a temporary graph without hash/parent_hash triples for hashing
                 temp_graph = RDFGraph()
 
-                # Copy all triples except hash/parent_hash metadata
+                # Copy all triples except hash/parent_hash/created_at metadata
                 for s, p, o in self.graph:
-                    # Skip hash (dcterms:identifier with "hash:" prefix) and parent_hash (prov:wasDerivedFrom) triples
+                    # Skip hash (dcterms:identifier with "hash:" prefix), parent_hash (prov:wasDerivedFrom),
+                    # and created_at (dcterms:created) triples - these are metadata, not content
                     if onto_iri and s == onto_iri:
                         if (
                             p == DCTERMS.identifier
@@ -416,6 +418,8 @@ class Ontology(OntologyPropertiesWithLineage):
                         ):
                             continue
                         if p == PROV.wasDerivedFrom:
+                            continue
+                        if p == DCTERMS.created:
                             continue
                     temp_graph.add((s, p, o))
 
@@ -635,17 +639,18 @@ class Ontology(OntologyPropertiesWithLineage):
         logger.info(f"Incremented ontology version to {self.version}")
 
     def mark_as_updated(self, updates: list[GraphUpdate] | None = None) -> None:
-        """Mark the ontology as updated and update version.
+        """Mark the ontology version and update semantic version.
 
-        Sets the updated_at timestamp to now (UTC) and increments the version.
+        Note: Ontologies are immutable - modifications create new versions.
+        This method only updates the semantic version number, not the creation timestamp.
+        The creation timestamp is set when a new version is created.
+
         Analyzes the updates to determine appropriate version increment type.
 
         Args:
             updates: Optional list of GraphUpdate objects that were applied.
                 If provided, analyzes them to determine MAJOR/MINOR/PATCH increment.
         """
-        self.updated_at = datetime.now(timezone.utc)
-
         # Analyze updates to determine increment type
         if updates:
             increment_type, reason = self._analyze_version_increment_type(updates)
@@ -656,7 +661,7 @@ class Ontology(OntologyPropertiesWithLineage):
             self._increment_version("patch")
 
         logger.info(
-            f"Marked ontology {self.ontology_id} as updated at {self.updated_at}"
+            f"Updated semantic version for ontology {self.ontology_id} to {self.version}"
         )
 
     def sync_properties_from_graph(self):
@@ -708,15 +713,15 @@ class Ontology(OntologyPropertiesWithLineage):
             if OWL.versionInfo in pred_map:
                 version_str = str(pred_map[OWL.versionInfo][0])
                 self.version = self._normalize_version(version_str)
-        # Updated at
-        if not getattr(self, "updated_at", None):
-            if DCTERMS.modified in pred_map:
-                # Get the first modified date
-                modified_str = str(pred_map[DCTERMS.modified][0])
+        # Created at - only read if not already set (preserve existing value)
+        if not getattr(self, "created_at", None):
+            if DCTERMS.created in pred_map:
+                # Get the first created date
+                created_str = str(pred_map[DCTERMS.created][0])
                 # Try to parse as datetime
                 try:
-                    self.updated_at = datetime.fromisoformat(
-                        modified_str.replace("Z", "+00:00")
+                    self.created_at = datetime.fromisoformat(
+                        created_str.replace("Z", "+00:00")
                     )
                 except (ValueError, AttributeError):
                     # If parsing fails, keep it as None
@@ -762,7 +767,7 @@ class Ontology(OntologyPropertiesWithLineage):
             self.description = other.description
             self.iri = other.iri
             self.version = other.version
-            self.updated_at = other.updated_at
+            self.created_at = other.created_at
             self.initial_version = other.initial_version
             self.hash = other.hash
             self.parent_hashes = other.parent_hashes
@@ -822,7 +827,7 @@ class Ontology(OntologyPropertiesWithLineage):
             "iri": self.iri,
             "title": self.title,
             "version": self.version,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
     @staticmethod
@@ -831,7 +836,7 @@ class Ontology(OntologyPropertiesWithLineage):
 
         Constructs a directed graph where nodes represent ontologies (by their hash)
         and edges represent parent-child relationships. Each node includes metadata
-        as node attributes (iri, title, version, updated_at, etc.).
+        as node attributes (iri, title, version, created_at, etc.).
 
         Args:
             ontologies: List of Ontology instances to include in the lineage graph.
@@ -839,7 +844,7 @@ class Ontology(OntologyPropertiesWithLineage):
         Returns:
             networkx.DiGraph: A directed graph representing the full ontology lineage.
                 Nodes are identified by hash strings, with edges from children to parents.
-                Each node has attributes: iri, title, ontology_id, version, updated_at.
+                Each node has attributes: iri, title, ontology_id, version, created_at.
 
         Example:
             >>> import networkx as nx
@@ -871,8 +876,8 @@ class Ontology(OntologyPropertiesWithLineage):
                 title=ontology.title,
                 ontology_id=ontology.ontology_id,
                 version=ontology.version,
-                updated_at=ontology.updated_at.isoformat()
-                if ontology.updated_at
+                created_at=ontology.created_at.isoformat()
+                if ontology.created_at
                 else None,
             )
 

@@ -69,7 +69,7 @@ def serialize(state: AgentState, tools: ToolBox) -> AgentState:
         )
         # Pass the updates to analyze and increment version appropriately
         state.current_ontology.mark_as_updated(state.ontology_updates_applied)
-        # Sync the updated properties (version and updated_at) to the graph
+        # Sync the updated properties (version and created_at) to the graph
         state.current_ontology.sync_properties_to_graph()
     else:
         logger.debug(
