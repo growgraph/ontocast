@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Any, TypeVar
 
 from langchain_core.output_parsers import BaseOutputParser
@@ -21,6 +22,48 @@ from ontocast.tool import LLMTool
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+
+def sanitize_llm_response(content: str) -> str:
+    """Sanitize LLM response content by removing invalid control characters.
+
+    Removes control characters that are not valid in Turtle/RDF syntax,
+    while preserving valid escape sequences and whitespace.
+
+    This function handles common issues where LLMs output control characters
+    (like '^b' for backspace) that break Turtle parsing.
+
+    Args:
+        content: Raw LLM response content
+
+    Returns:
+        Sanitized content with control characters removed
+    """
+    # Remove control characters except newline, tab, and carriage return
+    # These are the only control characters valid in Turtle syntax
+    allowed_controls = {"\n", "\t", "\r"}
+
+    # Remove other control characters (non-printable except allowed ones)
+    sanitized = "".join(
+        char for char in content if char.isprintable() or char in allowed_controls
+    )
+
+    # Remove any remaining problematic patterns like '^b', '^X', etc.
+    # These are caret notation for control characters that sometimes appear
+    # in LLM outputs (e.g., '^b' for backspace, '^H' for backspace, etc.)
+    sanitized = re.sub(r"\^[a-zA-Z]", "", sanitized)
+
+    # Remove any null bytes
+    sanitized = sanitized.replace("\x00", "")
+
+    # Remove other common problematic control characters
+    # Bell, backspace, form feed, vertical tab
+    sanitized = sanitized.replace("\x07", "")  # Bell
+    sanitized = sanitized.replace("\x08", "")  # Backspace
+    sanitized = sanitized.replace("\x0c", "")  # Form feed
+    sanitized = sanitized.replace("\x0b", "")  # Vertical tab
+
+    return sanitized
 
 
 def render_suggestions_prompt(suggestions: Suggestions, stage: WorkflowNode) -> str:
@@ -94,6 +137,7 @@ async def call_llm_with_retry(
     """
     last_error: Exception | None = None
     last_response_content: str | None = None
+    last_sanitized_content: str | None = None
     original_format_instructions = prompt_kwargs.get("format_instructions", "")
 
     for attempt in range(max_retries):
@@ -103,11 +147,16 @@ async def call_llm_with_retry(
 
             # On retry, add error feedback to help LLM correct format
             if attempt > 0 and retry_error_feedback and last_error is not None:
+                # Use sanitized content in error feedback for consistency
+                feedback_content = (
+                    last_sanitized_content if last_sanitized_content else ""
+                )
                 error_feedback = (
                     f"\n\nIMPORTANT: The previous attempt failed to parse the response. "
                     f"Error: {str(last_error)}\n"
-                    f"Previous response (for reference):\n{last_response_content}\n\n"
-                    f"Please ensure your response strictly follows the format instructions."
+                    f"Previous response (for reference):\n{feedback_content}\n\n"
+                    f"Please ensure your response strictly follows the format instructions "
+                    f"and does not contain any control characters or invalid syntax."
                 )
                 # Add error feedback to format_instructions if present
                 if "format_instructions" in attempt_kwargs:
@@ -122,8 +171,22 @@ async def call_llm_with_retry(
             response = await llm_tool(prompt.format_prompt(**attempt_kwargs))
             last_response_content = response.content
 
+            # Sanitize response content before parsing to remove control characters
+            # that might break Turtle/RDF parsing
+            sanitized_content = sanitize_llm_response(last_response_content)
+            last_sanitized_content = (
+                sanitized_content  # Store for error feedback on retry
+            )
+
+            # Log if sanitization removed anything (for debugging)
+            if sanitized_content != last_response_content:
+                logger.debug(
+                    f"Sanitized LLM response: removed {len(last_response_content) - len(sanitized_content)} "
+                    "control characters"
+                )
+
             # Try to parse
-            parsed = parser.parse(response.content)
+            parsed = parser.parse(sanitized_content)
             logger.debug(
                 f"Successfully parsed LLM response on attempt {attempt + 1}/{max_retries}"
             )

@@ -167,6 +167,11 @@ class AgentState(BasePydanticModel):
         default=None,
     )
 
+    source_url: str | None = Field(
+        description="Source URL from JSON input file (for provenance tracking)",
+        default=None,
+    )
+
     ontology_updates: list[GraphUpdate] = Field(
         default_factory=list,
         description="A list of graph update that improve the current ontology",

@@ -280,74 +280,80 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         This is a helper method that performs the actual cleaning of a single dataset.
         It deletes all named graphs and clears the default graph.
 
+        Uses a temporary client to avoid event loop cleanup issues when called
+        from different async contexts.
+
         Args:
             dataset_name: Name of the dataset to clean.
 
         Raises:
             Exception: If the cleanup operation fails.
         """
-        try:
-            client = await self._get_client()
-            dataset_url = f"{self.uri}/{dataset_name}"
-            sparql_update_url = f"{dataset_url}/update"
-            sparql_url = f"{dataset_url}/sparql"
+        # Use a temporary client to avoid event loop cleanup issues
+        async with httpx.AsyncClient(auth=self._prepare_auth(), timeout=30.0) as client:
+            try:
+                dataset_url = f"{self.uri}/{dataset_name}"
+                sparql_update_url = f"{dataset_url}/update"
+                sparql_url = f"{dataset_url}/sparql"
 
-            # Delete all named graphs
-            query = """
-            SELECT DISTINCT ?g WHERE {
-              GRAPH ?g { ?s ?p ?o }
-            }
-            """
-            response = await client.post(
-                sparql_url,
-                data={"query": query, "format": "application/sparql-results+json"},
-            )
-
-            if response.status_code == 200:
-                results = response.json()
-                tasks = []
-                for binding in results.get("results", {}).get("bindings", []):
-                    graph_uri = binding["g"]["value"]
-                    # Delete the named graph using SPARQL UPDATE
-                    drop_query = f"DROP GRAPH <{graph_uri}>"
-                    tasks.append(
-                        client.post(
-                            sparql_update_url,
-                            data={"update": drop_query},
-                        )
-                    )
-
-                # Execute all deletions in parallel
-                delete_responses = await asyncio.gather(*tasks, return_exceptions=True)
-                for i, delete_response in enumerate(delete_responses):
-                    graph_uri = results["results"]["bindings"][i]["g"]["value"]
-                    if isinstance(delete_response, Exception):
-                        logger.warning(
-                            f"Failed to delete graph {graph_uri}: {delete_response}"
-                        )
-                    elif isinstance(delete_response, httpx.Response):
-                        if delete_response.status_code in (200, 204):
-                            logger.debug(f"Deleted named graph: {graph_uri}")
-                        else:
-                            logger.warning(
-                                f"Failed to delete graph {graph_uri}: {delete_response.status_code}"
-                            )
-
-            # Clear the default graph using SPARQL UPDATE
-            clear_query = "CLEAR DEFAULT"
-            clear_response = await client.post(
-                sparql_update_url,
-                data={"update": clear_query},
-            )
-            if clear_response.status_code in (200, 204):
-                logger.debug(f"Cleared default graph in dataset '{dataset_name}'")
-            else:
-                logger.warning(
-                    f"Failed to clear default graph in dataset '{dataset_name}': {clear_response.status_code}"
+                # Delete all named graphs
+                query = """
+                SELECT DISTINCT ?g WHERE {
+                  GRAPH ?g { ?s ?p ?o }
+                }
+                """
+                response = await client.post(
+                    sparql_url,
+                    data={"query": query, "format": "application/sparql-results+json"},
                 )
-        except Exception as e:
-            logger.error(f"Failed to clean dataset '{dataset_name}': {e}")
-            raise
+
+                if response.status_code == 200:
+                    results = response.json()
+                    tasks = []
+                    for binding in results.get("results", {}).get("bindings", []):
+                        graph_uri = binding["g"]["value"]
+                        # Delete the named graph using SPARQL UPDATE
+                        drop_query = f"DROP GRAPH <{graph_uri}>"
+                        tasks.append(
+                            client.post(
+                                sparql_update_url,
+                                data={"update": drop_query},
+                            )
+                        )
+
+                    # Execute all deletions in parallel
+                    delete_responses = await asyncio.gather(
+                        *tasks, return_exceptions=True
+                    )
+                    for i, delete_response in enumerate(delete_responses):
+                        graph_uri = results["results"]["bindings"][i]["g"]["value"]
+                        if isinstance(delete_response, Exception):
+                            logger.warning(
+                                f"Failed to delete graph {graph_uri}: {delete_response}"
+                            )
+                        elif isinstance(delete_response, httpx.Response):
+                            if delete_response.status_code in (200, 204):
+                                logger.debug(f"Deleted named graph: {graph_uri}")
+                            else:
+                                logger.warning(
+                                    f"Failed to delete graph {graph_uri}: {delete_response.status_code}"
+                                )
+
+                # Clear the default graph using SPARQL UPDATE
+                clear_query = "CLEAR DEFAULT"
+                clear_response = await client.post(
+                    sparql_update_url,
+                    data={"update": clear_query},
+                )
+                if clear_response.status_code in (200, 204):
+                    logger.debug(f"Cleared default graph in dataset '{dataset_name}'")
+                else:
+                    logger.warning(
+                        f"Failed to clear default graph in dataset '{dataset_name}': {clear_response.status_code}"
+                    )
+            except Exception as e:
+                logger.error(f"Failed to clean dataset '{dataset_name}': {e}")
+                raise
 
     async def init_dataset(self, dataset_name):
         """Initialize a Fuseki dataset.
@@ -355,32 +361,38 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         This method creates a new dataset in Fuseki if it doesn't already exist.
         It uses Fuseki's admin API to create the dataset with TDB2 storage.
 
+        Uses a temporary client to avoid event loop cleanup issues when called
+        from different async contexts.
+
         Args:
             dataset_name: Name of the dataset to create.
 
         Note:
             This method will not fail if the dataset already exists.
         """
-        client = await self._get_client()
-        fuseki_admin_url = f"{self.uri}/$/datasets"
+        # Use a temporary client to avoid event loop cleanup issues
+        async with httpx.AsyncClient(auth=self._prepare_auth(), timeout=30.0) as client:
+            fuseki_admin_url = f"{self.uri}/$/datasets"
 
-        payload = {"dbName": dataset_name, "dbType": "tdb2"}
+            payload = {"dbName": dataset_name, "dbType": "tdb2"}
 
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+            headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
-        response = await client.post(fuseki_admin_url, data=payload, headers=headers)
-
-        if response.status_code == 200 or response.status_code == 201:
-            logger.info(f"Fuseki dataset '{dataset_name}' created successfully.")
-        elif response.status_code == 409:
-            logger.info(
-                f"Fuseki status code: {response.status_code}; {response.text.strip()}"
+            response = await client.post(
+                fuseki_admin_url, data=payload, headers=headers
             )
-        else:
-            logger.error(
-                f"Failed to create dataset {dataset_name}. Status code: {response.status_code}"
-            )
-            logger.error(f"Response: {response.text.strip()}")
+
+            if response.status_code == 200 or response.status_code == 201:
+                logger.info(f"Fuseki dataset '{dataset_name}' created successfully.")
+            elif response.status_code == 409:
+                logger.info(
+                    f"Fuseki status code: {response.status_code}; {response.text.strip()}"
+                )
+            else:
+                logger.error(
+                    f"Failed to create dataset {dataset_name}. Status code: {response.status_code}"
+                )
+                logger.error(f"Response: {response.text.strip()}")
 
     def _get_dataset_url(self):
         """Get the full URL for the dataset.

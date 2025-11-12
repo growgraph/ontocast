@@ -7,6 +7,7 @@ functions.
 Available commands:
 - serve: Start the OntoCast API server
 - test_api: Test the API server with sample requests
+- batch_process: Batch process multiple files asynchronously
 - plot_graph: Visualize workflow graphs
 - merge_ontologies: Merge terminal ontologies from Fuseki
 - split_chunks: Split documents into chunks

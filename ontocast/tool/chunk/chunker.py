@@ -1,5 +1,6 @@
 import logging
 import re
+import threading
 from typing import Any, Literal
 
 from pydantic import Field
@@ -59,6 +60,7 @@ class ChunkerTool(Tool):
         """
         super().__init__(**kwargs)
         self._model = None
+        self._model_lock = threading.Lock()  # Lock for thread-safe model initialization
 
         # Initialize cache - use shared cacher or create new one
         if cache is not None:
@@ -81,17 +83,35 @@ class ChunkerTool(Tool):
             )
 
     def _init_model(self):
-        if self._model is None and SEMANTIC_CHUNKING_AVAILABLE:
-            if HuggingFaceEmbeddings is not None:  # type: ignore
-                self._model = HuggingFaceEmbeddings(
-                    model_name=self.model,
-                    model_kwargs={
-                        "device": "cuda"
-                        if torch is not None and torch.cuda.is_available()
-                        else "cpu"
-                    },
-                    encode_kwargs={"normalize_embeddings": False},
-                )
+        """Initialize the embedding model in a thread-safe manner.
+
+        Uses double-checked locking pattern to ensure the model is only
+        initialized once, even when called concurrently from multiple threads.
+        """
+        # Fast path: if model already initialized, return immediately
+        if self._model is not None:
+            return
+
+        # Acquire lock for thread-safe initialization
+        with self._model_lock:
+            # Double-check: another thread might have initialized it while we waited
+            if self._model is None and SEMANTIC_CHUNKING_AVAILABLE:
+                if HuggingFaceEmbeddings is not None:  # type: ignore
+                    try:
+                        self._model = HuggingFaceEmbeddings(
+                            model_name=self.model,
+                            model_kwargs={
+                                "device": "cuda"
+                                if torch is not None and torch.cuda.is_available()
+                                else "cpu"
+                            },
+                            encode_kwargs={"normalize_embeddings": False},
+                        )
+                        logger.debug(f"Initialized embedding model: {self.model}")
+                    except Exception as e:
+                        logger.error(f"Failed to initialize embedding model: {e}")
+                        # Set to a sentinel value to prevent repeated failed attempts
+                        self._model = False  # type: ignore
 
     def _naive_chunk(self, doc: str) -> list[str]:
         """Naive chunking fallback when semantic chunking is not available.
@@ -204,7 +224,7 @@ class ChunkerTool(Tool):
                 self._init_model()
                 documents = [doc]
 
-                if self._model is None:
+                if self._model is None or self._model is False:
                     logger.warning(
                         "Model not initialized. Falling back to naive chunking."
                     )

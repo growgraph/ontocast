@@ -136,7 +136,7 @@ def plot_ontology_graph(
         iri: Optional IRI to plot (if None, plots all ontologies)
     """
     try:
-        import pygraphviz as pgv
+        import pygraphviz as pgv  # type: ignore
     except ImportError:
         logger.error("pygraphviz not installed. Cannot plot graph.")
         logger.info("Install with: pip install pygraphviz")

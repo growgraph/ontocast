@@ -7,6 +7,8 @@ disambiguation.
 
 import logging
 
+from rdflib import DCTERMS, URIRef
+
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.toolbox import ToolBox
@@ -36,6 +38,16 @@ def aggregate(state: AgentState, tools: ToolBox) -> AgentState:
         f"ontology {len(state.current_ontology.graph)} triples; "
         f"facts graph: {len(state.aggregated_facts)} triples"
     )
+
+    # Add provenance information if source URL is available
+    if state.source_url and state.doc_namespace:
+        doc_iri = URIRef(state.doc_namespace)
+        source_url_uri = URIRef(state.source_url)
+        # Add dcterms:source to link the document to its source URL
+        state.aggregated_facts.add((doc_iri, DCTERMS.source, source_url_uri))
+        logger.info(
+            f"Added provenance: {state.doc_namespace} dcterms:source {state.source_url}"
+        )
 
     return state
 

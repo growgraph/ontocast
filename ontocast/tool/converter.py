@@ -6,6 +6,7 @@ into structured data that can be processed by the OntoCast system.
 
 import logging
 import pathlib
+import threading
 from io import BytesIO
 from typing import Any, Union
 
@@ -48,6 +49,7 @@ class ConverterTool(Tool):
         """
         super().__init__(**kwargs)
         self._converter = None
+        self._converter_lock = threading.Lock()  # Lock for thread-safe converter access
 
         # Initialize cache - use shared cacher or create new one
         if cache is not None:
@@ -92,30 +94,35 @@ class ConverterTool(Tool):
             logger.debug("Cache hit for document conversion")
             return cached_result
 
-        # Convert document
-        if isinstance(file_input, bytes):
-            if self._converter is None:
-                raise ImportError("DocumentConverter not available")
-            try:
-                from docling.datamodel.base_models import (  # type: ignore
-                    DocumentStream,
-                )
+        # Convert document (with thread-safe access to converter)
+        with self._converter_lock:
+            if isinstance(file_input, bytes):
+                if self._converter is None:
+                    raise ImportError("DocumentConverter not available")
+                try:
+                    from docling.datamodel.base_models import (  # type: ignore
+                        DocumentStream,
+                    )
 
-                ds = DocumentStream(name="doc", stream=BytesIO(file_input))
-            except ImportError:
-                raise ImportError(f"Could not import DocumentConverter: {file_input}")
-            result = self._converter.convert(ds)
-            doc = result.document.export_to_markdown()
-            converted_result = {"text": doc}
-        elif isinstance(file_input, pathlib.Path):
-            if self._converter is None:
-                raise ImportError(f"Could not import DocumentConverter: {file_input}")
-            result = self._converter.convert(file_input)
-            doc = result.document.export_to_markdown()
-            converted_result = {"text": doc}
-        else:
-            # Fallback for other types
-            converted_result = {"text": str(file_input)}
+                    ds = DocumentStream(name="doc", stream=BytesIO(file_input))
+                except ImportError:
+                    raise ImportError(
+                        f"Could not import DocumentConverter: {file_input}"
+                    )
+                result = self._converter.convert(ds)
+                doc = result.document.export_to_markdown()
+                converted_result = {"text": doc}
+            elif isinstance(file_input, pathlib.Path):
+                if self._converter is None:
+                    raise ImportError(
+                        f"Could not import DocumentConverter: {file_input}"
+                    )
+                result = self._converter.convert(file_input)
+                doc = result.document.export_to_markdown()
+                converted_result = {"text": doc}
+            else:
+                # Fallback for other types
+                converted_result = {"text": str(file_input)}
 
         # Cache the result
         self.cache.set(content_for_cache, converted_result)
