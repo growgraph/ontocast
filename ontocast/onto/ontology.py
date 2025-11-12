@@ -280,10 +280,7 @@ class Ontology(OntologyPropertiesWithLineage):
         if self.version is None:
             self.version = "1.0.0"
 
-        # Compute hash and parent_hashes if not already present
-        # Only compute if hash is not already set (from graph or kwargs)
-        if self.hash is None:
-            self._compute_and_set_hash()
+        self._compute_and_set_hash()
 
         # Always ensure graph is up to date with properties (including hash/parent_hashes)
         self.sync_properties_to_graph()
@@ -504,21 +501,31 @@ class Ontology(OntologyPropertiesWithLineage):
                 # Create a temporary graph without hash/parent_hash triples for hashing
                 temp_graph = RDFGraph()
 
-                # Copy all triples except hash/parent_hash/created_at metadata
+                # Copy all triples except metadata triples - these are metadata, not content
+                # Metadata to exclude: hash, parent_hash, created_at, version, title, description
                 for s, p, o in self.graph:
-                    # Skip hash (dcterms:identifier with "hash:" prefix), parent_hash (prov:wasDerivedFrom),
-                    # and created_at (dcterms:created) triples - these are metadata, not content
+                    # Skip metadata triples for the ontology IRI
                     if onto_iri and s == onto_iri:
                         if (
                             p == DCTERMS.identifier
                             and isinstance(o, Literal)
                             and str(o).startswith("hash:")
                         ):
-                            continue
+                            continue  # Skip hash identifier
                         if p == PROV.wasDerivedFrom:
-                            continue
+                            continue  # Skip parent hash
                         if p == DCTERMS.created:
-                            continue
+                            continue  # Skip created_at
+                        if p == OWL.versionInfo:
+                            continue  # Skip version
+                        if p == RDFS.label:
+                            continue  # Skip title/label
+                        if p == DCTERMS.title:
+                            continue  # Skip title
+                        if p == DCTERMS.description:
+                            continue  # Skip description
+                        if p == RDFS.comment:
+                            continue  # Skip description (comment)
                     temp_graph.add((s, p, o))
 
                 # Copy namespace bindings

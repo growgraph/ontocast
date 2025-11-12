@@ -4,7 +4,7 @@
 !ontocast/**/*py
 !test/
 !test/**
-!test/**/*py 
+!test/**/*py
 !docs/
 !docs/*
 !docs/**

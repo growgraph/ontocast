@@ -31,8 +31,8 @@ Config
     ├── recursion_limit: int   # Workflow recursion limit
     ├── estimated_chunks: int  # Estimated number of chunks
     ├── max_visits: int        # Maximum visits per node
-    ├── clean: bool            # Clean triple store on startup
     └── skip_ontology_development: bool  # Skip ontology critique
+    └── skip_facts_rendering: bool  # Skip ontology critique
 ```
 
 ---
@@ -62,7 +62,6 @@ PORT=8999                              # Server port
 RECURSION_LIMIT=1000                   # Workflow recursion limit
 ESTIMATED_CHUNKS=30                    # Estimated number of chunks
 MAX_VISITS=3                           # Maximum visits per node
-CLEAN=false                            # Clean triple store on startup
 SKIP_ONTOLOGY_DEVELOPMENT=false        # Skip ontology critique step
 SKIP_FACTS_RENDERING=false             # Skip facts extraction and go straight to serialization
 ```
@@ -244,7 +243,6 @@ class ServerConfig(BaseSettings):
     recursion_limit: int = 1000                 # Recursion limit
     estimated_chunks: int = 30                  # Estimated chunks
     max_visits: int = 3                        # Max visits
-    clean: bool = False                        # Clean startup
     skip_ontology_development: bool = False     # Skip critique
     skip_facts_rendering: bool = False         # Skip facts rendering
 ```

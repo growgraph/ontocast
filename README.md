@@ -103,6 +103,28 @@ ontocast serve \
 curl -X POST http://localhost:8999/process -F "file=@document.pdf"
 ```
 
+### 4. API Endpoints
+
+The OntoCast server provides the following endpoints:
+
+- **POST /process**: Process documents and extract semantic triples
+  ```bash
+  curl -X POST http://localhost:8999/process -F "file=@document.pdf"
+  ```
+
+- **POST /flush**: Flush/clean triple store data
+  ```bash
+  # Clean all datasets (Fuseki) or entire database (Neo4j)
+  curl -X POST http://localhost:8999/flush
+  
+  # Clean specific Fuseki dataset
+  curl -X POST "http://localhost:8999/flush?dataset=my_dataset"
+  ```
+  **Note:** For Fuseki, you can specify a `dataset` query parameter to clean a specific dataset. If omitted, all datasets are cleaned. For Neo4j, the `dataset` parameter is ignored and all data is deleted.
+
+- **GET /health**: Health check endpoint
+- **GET /info**: Service information endpoint
+
 ---
 
 
@@ -180,8 +202,6 @@ ontocast serve --skip-ontology-critique
 # Process only first N chunks (for testing)
 ontocast serve --head-chunks 5
 
-# Clean triple store on startup
-ontocast serve --clean
 ```
 
 ---

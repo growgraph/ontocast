@@ -8,6 +8,7 @@ The server supports:
 - Health check endpoint (/health)
 - Service information endpoint (/info)
 - Document processing endpoint (/process)
+- Triple store flush endpoint (/flush)
 - Multiple input formats (JSON, multipart/form-data)
 - Streaming workflow execution
 - Comprehensive error handling and logging

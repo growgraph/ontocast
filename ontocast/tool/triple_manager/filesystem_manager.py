@@ -146,27 +146,6 @@ class FilesystemTripleStoreManager(TripleStoreManager):
             logger.warning(
                 f"Dataset parameter '{dataset}' ignored for Filesystem (datasets not supported)"
             )
-
-        try:
-            deleted_count = 0
-
-            # Clean working directory
-            if self.working_directory is not None and self.working_directory.exists():
-                for ttl_file in self.working_directory.glob("*.ttl"):
-                    ttl_file.unlink()
-                    deleted_count += 1
-                    logger.debug(f"Deleted file: {ttl_file}")
-
-            # Clean ontology directory
-            if self.ontology_path is not None and self.ontology_path.exists():
-                for ttl_file in self.ontology_path.glob("*.ttl"):
-                    ttl_file.unlink()
-                    deleted_count += 1
-                    logger.debug(f"Deleted ontology file: {ttl_file}")
-
-            logger.info(
-                f"Filesystem triple store cleaned: {deleted_count} file(s) deleted"
+            logger.warning(
+                "clean method not implemented for FilesystemTripleStoreManager"
             )
-        except Exception as e:
-            logger.error(f"Filesystem cleanup failed: {e}")
-            raise

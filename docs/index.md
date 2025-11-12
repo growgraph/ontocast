@@ -134,7 +134,6 @@ uv run serve --env-path .env --head-chunks 5
 - Backend selection is **fully automatic** based on available configuration
 - No explicit backend flags needed - just provide the required credentials/paths in .env
 - All paths and directories are configured via .env file
-- `--clean` (optional): If set, the triple store will be initialized as clean (all data deleted on startup). **Warning:** Use with caution in production!
 
 ---
 
@@ -163,6 +162,7 @@ curl -X POST http://url:port/process -F "file=@test2/sample.json"
 - `GET /health`: Health check
 - `GET /info`: Service info
 - `POST /process`: Document processing
+- `POST /flush`: Flush/clean triple store data (optional `dataset` query parameter for Fuseki)
 
 ---
 

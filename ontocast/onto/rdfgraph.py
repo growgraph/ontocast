@@ -114,6 +114,24 @@ class RDFGraph(Graph):
 
         return self
 
+    def copy(self) -> "RDFGraph":
+        """Create a copy of this RDFGraph.
+
+        Returns:
+            RDFGraph: A new RDFGraph instance with all triples and namespace bindings copied.
+        """
+        result = RDFGraph()
+
+        # Copy all triples
+        for triple in self:
+            result.add(triple)
+
+        # Copy namespace bindings
+        for prefix, uri in self.namespaces():
+            result.bind(prefix, uri)
+
+        return result
+
     @staticmethod
     def _ensure_prefixes(turtle_str: str) -> str:
         """Ensure all common prefixes are declared in the Turtle string.

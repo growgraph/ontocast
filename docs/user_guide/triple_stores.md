@@ -35,8 +35,6 @@ FUSEKI_DATASET=dataset_name
 NEO4J_URI=bolt://localhost:7689
 NEO4J_AUTH=neo4j:password
 
-# Clean startup (optional)
-CLEAN=true
 ```
 
 ### Configuration Hierarchy
@@ -190,7 +188,7 @@ If neither Fuseki nor Neo4j is configured, OntoCast will store ontologies and fa
 - Use **Neo4j** if you need advanced graph analytics or visualization
 - Monitor triple store performance and logs
 - Backup your data regularly
-- Use the `CLEAN` environment variable to reset triple stores during development
+- Use the `/flush` API endpoint to clean triple stores when needed (see below)
 
 ---
 
@@ -226,20 +224,29 @@ cypher-shell -u neo4j -p test!passfortesting "CALL n10s.graphconfig.show()"
 
 ---
 
-## Clean Triple Store Initialization
+## Flushing Triple Store Data
 
-You can start OntoCast with the `--clean` option or set `CLEAN=true` in your environment to initialize the triple store (Neo4j or Fuseki) as clean. This will delete all data from the triple store on startup.
+You can clean/flush data from the triple store using the `/flush` API endpoint. This endpoint allows you to explicitly delete data when needed.
+
+### Using the Flush Endpoint
 
 ```bash
-# Via CLI
-ontocast serve --working-directory WORKING_DIR --ontology-directory ONTOLOGY_DIR --clean
+# Clean all datasets (Fuseki) or entire database (Neo4j)
+curl -X POST http://localhost:8999/flush
 
-# Via environment variable
-CLEAN=true
-ontocast serve --working-directory WORKING_DIR --ontology-directory ONTOLOGY_DIR
+# Clean specific Fuseki dataset
+curl -X POST "http://localhost:8999/flush?dataset=my_dataset"
 ```
 
-- **Warning:** This will delete all data from the configured triple store (Neo4j or Fuseki) on startup. Use with caution in production environments!
+**For Fuseki:**
+- If no `dataset` parameter is provided, both the main dataset and ontologies dataset are cleaned
+- If a `dataset` parameter is provided, only that specific dataset is cleaned
+
+**For Neo4j:**
+- The `dataset` parameter is ignored (Neo4j doesn't support datasets)
+- All nodes and relationships are deleted
+
+**Warning:** This operation is irreversible and will delete all data. Use with caution in production environments!
 
 ---
 

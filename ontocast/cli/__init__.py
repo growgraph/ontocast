@@ -8,6 +8,7 @@ Available commands:
 - serve: Start the OntoCast API server
 - test_api: Test the API server with sample requests
 - plot_graph: Visualize workflow graphs
+- merge_ontologies: Merge terminal ontologies from Fuseki
 - split_chunks: Split documents into chunks
 - cmp_states: Compare agent states
 - pdfs_to_markdown: Convert PDFs to Markdown format
