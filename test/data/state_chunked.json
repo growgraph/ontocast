@@ -21,29 +21,38 @@
     },
     "chunks_processed": [],
     "current_ontology": {
-        "ontology_id": "__null_id",
-        "title": "null title",
-        "description": "null description",
-        "version": "1.0.0",
-        "iri": "https://example.com/__null_id",
-        "graph": "@prefix dcterms: <http://purl.org/dc/terms/> .\n@prefix owl: <http://www.w3.org/2002/07/owl#> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\n<https://example.com/__null_id> a owl:Ontology ;\n    rdfs:label \"null title\" ;\n    dcterms:description \"null description\" ;\n    dcterms:title \"__null_id\" ;\n    rdfs:comment \"null description\" ;\n    owl:versionInfo \"1.0.0\" .\n\n",
+        "ontology_id": null,
+        "title": null,
+        "description": null,
+        "version": null,
+        "iri": "https://example.com/__null__",
+        "initial_version": null,
+        "hash": null,
+        "parent_hashes": [],
+        "created_at": null,
+        "graph": "\n",
         "current_domain": "https://example.com"
     },
     "aggregated_facts": "\n",
     "ontology_user_instruction": "",
     "facts_user_instruction": "",
     "dataset": null,
+    "source_url": null,
     "ontology_updates": [],
     "ontology_updates_applied": [],
     "facts_updates": [],
     "facts_updates_applied": [],
     "ontology_addendum": {
-        "ontology_id": "__null_id",
-        "title": "null title",
-        "description": "null description",
-        "version": "1.0.0",
-        "iri": "https://example.com/__null_id",
-        "graph": "@prefix dcterms: <http://purl.org/dc/terms/> .\n@prefix owl: <http://www.w3.org/2002/07/owl#> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\n<https://example.com/__null_id> a owl:Ontology ;\n    rdfs:label \"null title\" ;\n    dcterms:description \"null description\" ;\n    dcterms:title \"__null_id\" ;\n    rdfs:comment \"null description\" ;\n    owl:versionInfo \"1.0.0\" .\n\n",
+        "ontology_id": null,
+        "title": null,
+        "description": null,
+        "version": null,
+        "iri": "https://example.com/__null__",
+        "initial_version": null,
+        "hash": null,
+        "parent_hashes": [],
+        "created_at": null,
+        "graph": "\n",
         "current_domain": "https://example.com"
     },
     "failure_stage": null,
@@ -56,6 +65,7 @@
     "max_visits": 3,
     "max_chunks": null,
     "skip_ontology_development": false,
+    "skip_facts_rendering": false,
     "context_manager": {
         "context_history": [],
         "current_context": null
@@ -64,9 +74,13 @@
         "actionable_fixes": [],
         "systemic_critique_summary": ""
     },
-    "llm_budget_tracker": {
+    "budget_tracker": {
         "chars_sent": 0,
         "chars_received": 0,
-        "calls_count": 0
+        "calls_count": 0,
+        "ontology_triples_generated": 0,
+        "facts_triples_generated": 0,
+        "ontology_operations_count": 0,
+        "facts_operations_count": 0
     }
 }

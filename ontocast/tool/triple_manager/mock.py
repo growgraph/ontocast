@@ -152,6 +152,14 @@ class MockTripleStoreManager(TripleStoreManager):
         self.ontologies.clear()
         self.graphs.clear()
 
+    async def clean(self, dataset: str | None = None) -> None:
+        """Clean/flush data from the mock triple store.
+
+        Args:
+            dataset: Optional dataset name (ignored for mock, kept for interface compatibility).
+        """
+        self.clear()
+
     def _create_rdf_graph_from_graph(self, graph: Graph) -> RDFGraph:
         """Create an RDFGraph from a regular Graph by copying all triples.
 
@@ -314,6 +322,14 @@ class MockFusekiTripleStoreManager(TripleStoreManagerWithAuth):
         self.ontologies.clear()
         self.graphs.clear()
 
+    async def clean(self, dataset: str | None = None) -> None:
+        """Clean/flush data from the mock Fuseki triple store.
+
+        Args:
+            dataset: Optional dataset name (ignored for mock, kept for interface compatibility).
+        """
+        self.clear()
+
     def _create_rdf_graph_from_graph(self, graph: Graph) -> RDFGraph:
         """Create an RDFGraph from a regular Graph by copying all triples.
 
@@ -465,6 +481,14 @@ class MockNeo4jTripleStoreManager(TripleStoreManagerWithAuth):
         """Clear all stored data."""
         self.ontologies.clear()
         self.graphs.clear()
+
+    async def clean(self, dataset: str | None = None) -> None:
+        """Clean/flush data from the mock Neo4j triple store.
+
+        Args:
+            dataset: Optional dataset name (ignored for Neo4j mock, kept for interface compatibility).
+        """
+        self.clear()
 
     def _create_rdf_graph_from_graph(self, graph: Graph) -> RDFGraph:
         """Create an RDFGraph from a regular Graph by copying all triples.

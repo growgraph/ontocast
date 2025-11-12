@@ -4,9 +4,15 @@ from pathlib import Path
 import pytest
 from suthing import FileHandle
 
-from ontocast.config import Config, LLMConfig, LLMProvider, PathConfig, ToolConfig
+from ontocast.config import (
+    Config,
+    LLMConfig,
+    LLMProvider,
+    OpenAIModel,
+    PathConfig,
+    ToolConfig,
+)
 from ontocast.onto.constants import DEFAULT_DOMAIN
-from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.tool import (
@@ -33,12 +39,12 @@ def llm_base_url():
 
 @pytest.fixture
 def provider():
-    return os.getenv("LLM_PROVIDER", "openai")
+    return os.getenv("LLM_PROVIDER", LLMProvider.OPENAI)
 
 
 @pytest.fixture
 def model_name():
-    return os.getenv("LLM_MODEL_NAME", None)
+    return OpenAIModel(os.getenv("LLM_MODEL_NAME", OpenAIModel.GPT4_O_MINI))
 
 
 @pytest.fixture
@@ -109,7 +115,13 @@ def om_tool_fname():
 
 @pytest.fixture
 def tools(
-    ontology_path, working_directory, model_name, temperature, provider, llm_base_url
+    ontology_path,
+    working_directory,
+    model_name,
+    temperature,
+    provider,
+    llm_base_url,
+    om_tool_fname,
 ) -> ToolBox:
     # Create LLM config
     llm_config = LLMConfig(
@@ -138,6 +150,20 @@ def tools(
     import asyncio
 
     asyncio.run(tools.initialize())
+
+    # Load ontologies from JSON file if it exists (using Pydantic's load method)
+    json_path = Path(om_tool_fname)
+    if json_path.exists():
+        try:
+            loaded_om = OntologyManager.load(json_path)
+            # Merge loaded ontologies into the toolbox's ontology manager
+            for iri, versions in loaded_om.ontology_versions.items():
+                for ontology in versions:
+                    tools.ontology_manager.add_ontology(ontology)
+        except Exception:
+            # Silently fail if JSON loading fails
+            pass
+
     return tools
 
 
@@ -292,7 +318,8 @@ def fuseki_triple_store_manager():
 
 
 def triple_store_roundtrip(manager, test_ontology):
-    ontology = Ontology(graph=test_ontology)
+    # test_ontology is already an Ontology object, use it directly
+    ontology = test_ontology
     # Store ontology
     manager.serialize(ontology)
     # Fetch ontologies

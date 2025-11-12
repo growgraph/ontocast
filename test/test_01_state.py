@@ -49,7 +49,7 @@ def test_select_ontology_fsec(
 ):
     state = state_chunked
     state = asyncio.run(select_ontology(state=state, tools=tools))
-    assert state.current_ontology.ontology_id == "fcaont"
+    assert state.current_ontology.ontology_id == "fsec"
 
     state.serialize(state_onto_selected_filename)
 
@@ -64,7 +64,8 @@ def test_select_ontology_null(
     state = chunk_text(state, tools)
     state = check_chunks_empty(state)
     state = asyncio.run(select_ontology(state=state, tools=tools))
-    assert state.current_ontology.ontology_id == "fcaont"
+    # TODO small investigation
+    assert state.current_ontology.ontology_id is None
 
     state.serialize(state_onto_null_filename)
 

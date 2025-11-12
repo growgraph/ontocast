@@ -63,6 +63,9 @@ def ontology_with_parent(sample_ontology):
         
         <https://example.org/test> a owl:Ontology ;
             rdfs:label "Test Ontology v2" .
+        
+        <https://example.org/test#NewClass> a owl:Class ;
+            rdfs:label "New Class" .
         """,
         format="turtle",
     )
