@@ -5,7 +5,7 @@ from rdflib import Literal, URIRef
 
 from ontocast.agent import check_chunks_empty, chunk_text, select_ontology
 from ontocast.onto.ontology import Ontology
-from ontocast.onto.sparql_models import GraphUpdate, Triple, TripleOp
+from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.state import AgentState
 
 
@@ -84,18 +84,18 @@ def test_render_updated_graph():
         )
     )
 
-    # Create a GraphUpdate that adds a new triple
+    # Create a GraphUpdate that adds a new triple using JSON-LD
     graph_update = GraphUpdate(
         operations=[
             TripleOp(
                 type="insert",
-                triples=[
-                    Triple(
-                        subject="ex:subject",
-                        predicate="ex:predicate",
-                        object='"updated_value"',
-                    )
-                ],
+                triples="""{
+  "@context": {
+    "ex": "http://example.com/"
+  },
+  "@id": "ex:subject",
+  "ex:predicate": "updated_value"
+}""",  # type: ignore[arg-type]
                 prefixes={"ex": "http://example.com/"},
             ),
         ]
@@ -139,19 +139,19 @@ def test_render_uptodate_facts():
         )
     )
 
-    # Create a facts update
+    # Create a facts update using JSON-LD
     state.facts_updates = [
         GraphUpdate(
             operations=[
                 TripleOp(
                     type="insert",
-                    triples=[
-                        Triple(
-                            subject="ex:subject",
-                            predicate="ex:predicate",
-                            object='"facts_value"',
-                        )
-                    ],
+                    triples="""{
+  "@context": {
+    "ex": "http://example.com/"
+  },
+  "@id": "ex:subject",
+  "ex:predicate": "facts_value"
+}""",  # type: ignore[arg-type]
                     prefixes={"ex": "http://example.com/"},
                 ),
             ]
@@ -191,19 +191,19 @@ def test_update_facts():
         )
     )
 
-    # Create a facts update
+    # Create a facts update using JSON-LD
     state.facts_updates = [
         GraphUpdate(
             operations=[
                 TripleOp(
                     type="insert",
-                    triples=[
-                        Triple(
-                            subject="ex:subject",
-                            predicate="ex:predicate",
-                            object='"facts_value"',
-                        )
-                    ],
+                    triples="""{
+  "@context": {
+    "ex": "http://example.com/"
+  },
+  "@id": "ex:subject",
+  "ex:predicate": "facts_value"
+}""",  # type: ignore[arg-type]
                     prefixes={"ex": "http://example.com/"},
                 ),
             ]

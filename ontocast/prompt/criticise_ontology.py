@@ -16,7 +16,7 @@ template_prompt = """
 
 intro_instruction = """
 You are given a text and an ontology.
-You task is to provide a constructive critique of the ontology with respect to provided text.
+You task is to evaluate if the ontology is adequate and provide a constructive critique of the ontology with respect to provided text.
 """
 
 
@@ -32,7 +32,7 @@ Provide a constructive, actionable critique following these priorities:
 5. **Abstraction**: Uses abstract classes/properties (no instances)
 6. **Domain Coverage**: Includes implicit domain knowledge beyond literal text
 
-## SCORING RUBRIC:
+## SCORING:
 - 90-100: Excellent - minor refinements only
 - 70-89: Good - some improvements needed
 - 50-69: Adequate - significant gaps or errors

@@ -5,11 +5,11 @@ that can be used with PydanticOutputParser for LLM integration.
 """
 
 import logging
-from typing import Any, Union
+from typing import Annotated, Any
 from typing import Literal as TypingLiteral
 
-from pydantic import BaseModel, Field, model_validator
-from rdflib import BNode, Literal, URIRef
+from pydantic import BaseModel, BeforeValidator, Field
+from rdflib import BNode, Literal, Node, URIRef
 
 from ontocast.onto.constants import COMMON_PREFIXES
 from ontocast.onto.enum import SPARQLOperationType
@@ -243,117 +243,31 @@ class FreshFactsReport(BaseModel):
     )
 
 
-class Triple(BaseModel):
-    """Represents a single RDF triple (subject, predicate, object).
-
-    This is the basic building block for RDF data and SPARQL operations.
-    All components should be valid RDF terms (URIs, literals, or blank nodes).
-    Strings are automatically converted to proper RDF terms after initialization.
-    """
-
-    subject: str = Field(
-        description="The subject of the RDF triple (URI, blank node, or literal)"
-    )
-    predicate: str = Field(
-        description="The predicate of the RDF triple (typically a URI)"
-    )
-    object: str = Field(
-        description="The object of the RDF triple (URI, blank node, or literal)"
-    )
-
-    # Internal RDF terms (computed from strings)
-    _subject_term: Union[URIRef, BNode] | None = None
-    _predicate_term: None | URIRef = None
-    _object_term: Union[URIRef, BNode, Literal] | None = None
-
-    @model_validator(mode="after")
-    def convert_to_rdf_terms(self):
-        """Convert string representations to proper RDF terms."""
-        self._subject_term = self._parse_subject(self.subject)
-        self._predicate_term = self._parse_predicate(self.predicate)
-        self._object_term = self._parse_object(self.object)
-        return self
-
-    def _parse_subject(self, subject: str) -> Union[URIRef, BNode]:
-        """Parse subject string to RDF term."""
-        subject = subject.strip()
-        if subject.startswith("_:"):
-            return BNode(subject[2:])
-        elif subject.startswith("<") and subject.endswith(">"):
-            return URIRef(subject[1:-1])
-        else:
-            # For prefixed names or bare URIs, return as-is for now
-            # The SPARQL serialization will handle proper formatting
-            return URIRef(subject)
-
-    def _parse_predicate(self, predicate: str) -> URIRef:
-        """Parse predicate string to URIRef."""
-        predicate = predicate.strip()
-        if predicate.startswith("<") and predicate.endswith(">"):
-            return URIRef(predicate[1:-1])
-        else:
-            # For prefixed names or bare URIs, return as-is for now
-            return URIRef(predicate)
-
-    def _parse_object(self, object_str: str) -> Union[URIRef, BNode, Literal]:
-        """Parse object string to RDF term."""
-        object_str = object_str.strip()
-        if object_str.startswith("_:"):
-            return BNode(object_str[2:])
-        elif object_str.startswith("<") and object_str.endswith(">"):
-            return URIRef(object_str[1:-1])
-        elif '"@' in object_str:
-            # Language-tagged literal: "text"@en (check first before simple literal)
-            value, lang = object_str.rsplit('"@', 1)
-            return Literal(value[1:], lang=lang)
-        elif '"^^' in object_str:
-            # Typed literal: "text"^^<type> (check before simple literal)
-            value, datatype = object_str.rsplit('"^^', 1)
-            # Clean up datatype URI if it has angle brackets
-            if datatype.startswith("<") and datatype.endswith(">"):
-                datatype = datatype[1:-1]
-            return Literal(value[1:], datatype=URIRef(datatype))
-        elif object_str.startswith('"') and object_str.endswith('"'):
-            # Simple literal (check last)
-            return Literal(object_str[1:-1])
-        else:
-            # For prefixed names or bare URIs, return as-is for now
-            return URIRef(object_str)
-
-    def to_rdf_terms(
-        self,
-    ) -> tuple[Union[URIRef, BNode], URIRef, Union[URIRef, BNode, Literal]]:
-        """Get the RDF terms for this triple."""
-        if (
-            self._subject_term is None
-            or self._predicate_term is None
-            or self._object_term is None
-        ):
-            raise ValueError(
-                "RDF terms not initialized. This should not happen after model validation."
-            )
-        return (self._subject_term, self._predicate_term, self._object_term)
-
-
 class TripleOp(BaseModel):
     """Operation to modify triples in the RDF graph.
 
-    This operation can insert or delete triples. REQUIRES explicit prefix declarations.
+    This operation can insert or delete triples. Prefixes are automatically extracted
+    from the RDFGraph's namespace bindings (from @context in JSON-LD or @prefix in Turtle).
     """
 
     type: TypingLiteral["insert", "delete"] = Field(
         description="Type of operation: 'insert' to add triples, 'delete' to remove triples"
     )
-    triples: list[Triple] = Field(
-        default_factory=list,
-        description="List of RDF triples to insert or delete. "
-        "Example: [Triple(subject='fca:CriminalChamber', predicate='rdf:type', object='fca:ChamberType')]",
+    triples: Annotated[
+        RDFGraph,
+        BeforeValidator(lambda v: RDFGraph._from_str(v) if isinstance(v, str) else v),
+    ] = Field(
+        default_factory=RDFGraph,
+        description="RDF graph containing triples to insert or delete. "
+        "Can be provided as an RDFGraph instance, JSON-LD string, or Turtle string. "
+        'Example JSON-LD: {"@context": {"fcaont": "http://example.org/fcaont#", "rdfs": "http://www.w3.org/2000/01/rdf-schema#"}, "@id": "fcaont:OffenseType", "rdfs:label": {"@value": "Offense Type", "@language": "en"}}',
     )
     prefixes: dict[str, str] = Field(
         default_factory=dict,
-        description="REQUIRED: ALL custom prefixes used in the triples must be declared here. "
-        "Standard prefixes from COMMON_PREFIXES in constants.py (rdf, rdfs, owl, xsd, dc, dcterms, skos, foaf, schema, prov, ex) are automatically available and do NOT need to be declared. "
-        "For example, if you use 'fca:CriminalChamber', you must include 'fca' in this dictionary. "
+        description="Optional: Additional or override prefixes. "
+        "Prefixes are automatically extracted from the RDFGraph's namespace bindings. "
+        "Standard prefixes from COMMON_PREFIXES in constants.py (rdf, rdfs, owl, xsd, dc, dcterms, skos, foaf, schema, prov, ex) are automatically available. "
+        "This field can be used to add or override prefixes if needed. "
         "Mapping format: {'prefix_name': 'namespace_uri'}. Example: {'fca': 'http://example.org/ontologies/fca#'}",
     )
 
@@ -388,9 +302,9 @@ class GraphUpdate(BaseModel):
     operations: list[Operation] = Field(
         default_factory=list,
         description="List of graph update operations in execution order. "
-        "Each operation should be a TripleOp (for insert/delete) with explicit prefix declarations, "
+        "Each operation should be a TripleOp (for insert/delete) with RDFGraph containing triples, "
         "or a GenericSparqlQuery for complex custom queries. "
-        "Example: [TripleOp(type='insert', triples=[...], prefixes={'fca': 'http://example.org/fca#'})]",
+        "Example: [TripleOp(type='insert', triples=RDFGraph(...), prefixes={'fca': 'http://example.org/fca#'})]",
     )
 
     def generate_sparql_queries(self) -> list[str]:
@@ -405,10 +319,16 @@ class GraphUpdate(BaseModel):
         # Process operations in order, generating a query for each operation
         for op in self.operations:
             if isinstance(op, TripleOp):
-                if op.triples:  # Only generate query if there are triples
+                if len(op.triples) > 0:  # Only generate query if there are triples
                     # Build prefix block for this operation
                     # Start with standard prefixes from COMMON_PREFIXES
                     prefixes = STANDARD_PREFIXES.copy()
+
+                    # Extract prefixes from RDFGraph's namespace bindings
+                    for prefix, uri in op.triples.namespaces():
+                        if prefix:  # Skip empty prefix
+                            prefixes[prefix] = str(uri)
+
                     # Add custom prefixes declared in this operation (may override standard ones)
                     prefixes.update(op.prefixes)
 
@@ -466,24 +386,27 @@ class GraphUpdate(BaseModel):
 
         for i, op in enumerate(self.operations, 1):
             if isinstance(op, TripleOp):
-                if op.triples:
+                if len(op.triples) > 0:
                     op_type = op.type.upper()
                     diff_parts.append(f"{i}. {op_type} {len(op.triples)} triple(s):")
 
-                    # Show declared prefixes if any
-                    if op.prefixes:
+                    # Show prefixes from graph and explicit prefixes
+                    graph_prefixes = {
+                        prefix: str(uri)
+                        for prefix, uri in op.triples.namespaces()
+                        if prefix
+                    }
+                    all_prefixes = {**graph_prefixes, **op.prefixes}
+                    if all_prefixes:
                         prefix_list = ", ".join(
-                            [f"{k}: {v}" for k, v in op.prefixes.items()]
+                            [f"{k}: {v}" for k, v in all_prefixes.items()]
                         )
                         diff_parts.append(f"   Prefixes: {prefix_list}")
 
-                    for triple in op.triples:
-                        subject_term, predicate_term, object_term = (
-                            triple.to_rdf_terms()
-                        )
+                    for subject, predicate, obj in op.triples:
                         symbol = "+" if op.type == "insert" else "-"
                         diff_parts.append(
-                            f"   {symbol} {self._serialize_rdf_term(subject_term)} {self._serialize_rdf_term(predicate_term)} {self._serialize_rdf_term(object_term)}"
+                            f"   {symbol} {self._serialize_rdf_term(subject)} {self._serialize_rdf_term(predicate)} {self._serialize_rdf_term(obj)}"
                         )
                     operation_count += 1
 
@@ -505,17 +428,16 @@ class GraphUpdate(BaseModel):
 
         return summary
 
-    def _generate_insert_query(self, triples: list[Triple], prefix_block: str) -> str:
-        """Generate a SPARQL INSERT query for the given triples."""
-        if not triples:
+    def _generate_insert_query(self, graph: RDFGraph, prefix_block: str) -> str:
+        """Generate a SPARQL INSERT query for the given RDFGraph."""
+        if len(graph) == 0:
             return ""
 
         # Format triples for SPARQL using proper RDF term serialization
         triple_patterns = []
-        for triple in triples:
-            subject_term, predicate_term, object_term = triple.to_rdf_terms()
+        for subject, predicate, obj in graph:
             triple_patterns.append(
-                f"    {self._serialize_rdf_term(subject_term)} {self._serialize_rdf_term(predicate_term)} {self._serialize_rdf_term(object_term)} ."
+                f"    {self._serialize_rdf_term(subject)} {self._serialize_rdf_term(predicate)} {self._serialize_rdf_term(obj)} ."
             )
 
         triples_block = "\n".join(triple_patterns)
@@ -529,17 +451,16 @@ class GraphUpdate(BaseModel):
 
         return "\n".join(query_parts)
 
-    def _generate_delete_query(self, triples: list[Triple], prefix_block: str) -> str:
-        """Generate a SPARQL DELETE query for the given triples."""
-        if not triples:
+    def _generate_delete_query(self, graph: RDFGraph, prefix_block: str) -> str:
+        """Generate a SPARQL DELETE query for the given RDFGraph."""
+        if len(graph) == 0:
             return ""
 
         # Format triples for SPARQL using proper RDF term serialization
         triple_patterns = []
-        for triple in triples:
-            subject_term, predicate_term, object_term = triple.to_rdf_terms()
+        for subject, predicate, obj in graph:
             triple_patterns.append(
-                f"    {self._serialize_rdf_term(subject_term)} {self._serialize_rdf_term(predicate_term)} {self._serialize_rdf_term(object_term)} ."
+                f"    {self._serialize_rdf_term(subject)} {self._serialize_rdf_term(predicate)} {self._serialize_rdf_term(obj)} ."
             )
 
         triples_block = "\n".join(triple_patterns)
@@ -553,7 +474,7 @@ class GraphUpdate(BaseModel):
 
         return "\n".join(query_parts)
 
-    def _serialize_rdf_term(self, term: Union[URIRef, BNode, Literal]) -> str:
+    def _serialize_rdf_term(self, term: Node) -> str:
         """Serialize an RDF term to its SPARQL string representation."""
         if isinstance(term, URIRef):
             # Check if it's already a prefixed name (contains ':')

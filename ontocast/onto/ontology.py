@@ -621,35 +621,39 @@ class Ontology(OntologyPropertiesWithLineage):
                     if op.type == "delete":
                         total_deletes += len(op.triples)
                         # Check if deleting core ontology constructs
-                        for triple in op.triples:
-                            if "rdf:type" in triple.predicate:
+                        for subject, predicate, object_ in op.triples:
+                            predicate_str = str(predicate)
+                            object_str = str(object_)
+                            if "rdf:type" in predicate_str:
                                 if any(
-                                    cls in triple.object.lower()
+                                    cls in object_str.lower()
                                     for cls in ["class", "property", "ontology"]
                                 ):
                                     if (
-                                        "owl:class" in triple.object
-                                        or "rdfs:class" in triple.object
+                                        "owl:class" in object_str
+                                        or "rdfs:class" in object_str
                                     ):
                                         class_changes += 1
-                                    elif "owl:ontology" in triple.object:
+                                    elif "owl:ontology" in object_str:
                                         class_changes += 1
                     else:  # insert
                         total_inserts += len(op.triples)
                         # Check if adding core ontology constructs
-                        for triple in op.triples:
-                            if "rdf:type" in triple.predicate:
+                        for subject, predicate, object_ in op.triples:
+                            predicate_str = str(predicate)
+                            object_str = str(object_)
+                            if "rdf:type" in predicate_str:
                                 if (
-                                    "owl:class" in triple.object
-                                    or "rdfs:class" in triple.object
+                                    "owl:class" in object_str
+                                    or "rdfs:class" in object_str
                                 ):
                                     class_changes += 1
-                                elif "owl:ontology" in triple.object:
+                                elif "owl:ontology" in object_str:
                                     class_changes += 1
                                 elif (
-                                    "owl:objectproperty" in triple.object
-                                    or "owl:datatypeproperty" in triple.object
-                                    or "rdf:property" in triple.object
+                                    "owl:objectproperty" in object_str
+                                    or "owl:datatypeproperty" in object_str
+                                    or "rdf:property" in object_str
                                 ):
                                     property_changes += 1
                                 else:

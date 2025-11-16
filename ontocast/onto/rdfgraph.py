@@ -36,6 +36,7 @@ class RDFGraph(Graph):
 
         Returns:
             A union schema that handles both Graph instances and string conversion.
+            Supports both Turtle and JSON-LD string formats.
         """
         return core_schema.union_schema(
             [
@@ -43,9 +44,7 @@ class RDFGraph(Graph):
                 core_schema.chain_schema(
                     [
                         core_schema.str_schema(),
-                        core_schema.no_info_plain_validator_function(
-                            cls._from_turtle_str
-                        ),
+                        core_schema.no_info_plain_validator_function(cls._from_str),
                     ]
                 ),
             ],
@@ -162,6 +161,51 @@ class RDFGraph(Graph):
 
         return prefix_block + turtle_str
 
+    @staticmethod
+    def _is_jsonld_str(s: str) -> bool:
+        """Check if a string appears to be JSON-LD format.
+
+        Args:
+            s: The string to check.
+
+        Returns:
+            bool: True if the string appears to be JSON-LD.
+        """
+        s = s.strip()
+        if not (s.startswith("{") or s.startswith("[")):
+            return False
+        try:
+            # Try to parse as JSON
+            data = json.loads(s)
+            # Check if it's a dict/object with @context or @id, or an array containing such objects
+            if isinstance(data, dict):
+                return "@context" in data or "@id" in data
+            elif isinstance(data, list):
+                return any(
+                    isinstance(item, dict) and ("@context" in item or "@id" in item)
+                    for item in data
+                )
+            return False
+        except (json.JSONDecodeError, ValueError):
+            return False
+
+    @classmethod
+    def _from_str(cls, data_str: str) -> "RDFGraph":
+        """Create an RDFGraph instance from a string (Turtle or JSON-LD).
+
+        Automatically detects the format and parses accordingly.
+
+        Args:
+            data_str: The input string in Turtle or JSON-LD format.
+
+        Returns:
+            RDFGraph: A new RDFGraph instance.
+        """
+        if cls._is_jsonld_str(data_str):
+            return cls._from_jsonld_str(data_str)
+        else:
+            return cls._from_turtle_str(data_str)
+
     @classmethod
     def _from_turtle_str(cls, turtle_str: str) -> "RDFGraph":
         """Create an RDFGraph instance from a Turtle string.
@@ -172,10 +216,130 @@ class RDFGraph(Graph):
         Returns:
             RDFGraph: A new RDFGraph instance.
         """
-        turtle_str = bytes(turtle_str, "utf-8").decode("unicode_escape")
+        # Sanitize control characters and problematic patterns that might be inserted by LLMs
+        import re
+        import string
+
+        original_str = turtle_str
+
+        # Remove literal '^b' or "^b" patterns (which might be how LLMs represent backspace)
+        # Handle various quote combinations: '^b', "^b", '^b", "^b', etc.
+        # Use a more aggressive pattern that handles any combination of quotes
+        turtle_str = re.sub(r"['\"]?\^[a-z]['\"]?", "", turtle_str)
+        # Also handle cases where there might be no quotes: ^bfcaont
+        turtle_str = re.sub(r"\^[a-z](?=[a-zA-Z])", "", turtle_str)
+
+        # Remove actual control characters (ASCII 0-31 except newline, tab, carriage return)
+        # Keep printable characters and whitespace
+        allowed_chars = set(string.printable)
+        turtle_str = "".join(
+            c for c in turtle_str if c in allowed_chars or ord(c) >= 0x20
+        )
+
+        # Note: We removed unicode_escape decoding as it can reintroduce control characters
+        # and is not necessary for valid Turtle syntax from LLMs
+
+        # Final verification and cleanup - be more aggressive
+        iterations = 0
+        while (
+            "'^" in turtle_str
+            or '"^' in turtle_str
+            or re.search(r"\^[a-z]", turtle_str)
+        ) and iterations < 10:
+            turtle_str = re.sub(r"['\"]?\^[a-z]['\"]?", "", turtle_str)
+            turtle_str = re.sub(r"\^[a-z](?=[a-zA-Z])", "", turtle_str)
+            iterations += 1
+
+        # Log if we found and removed control characters
+        if "'^b'" in original_str or '"^b"' in original_str or "^b" in original_str:
+            logger.debug(
+                f"Removed control character patterns from Turtle string (original length: {len(original_str)}, sanitized length: {len(turtle_str)})"
+            )
+
         patched_turtle = cls._ensure_prefixes(turtle_str)
         g = cls()
-        g.parse(data=patched_turtle, format="turtle")
+        try:
+            g.parse(data=patched_turtle, format="turtle")
+        except Exception as e:
+            # rdflib's error message often shows the original string from its internal buffer,
+            # which can be misleading. Check if the sanitized string is actually valid.
+            # If the error mentions control characters, the sanitization might have failed.
+            error_str = str(e)
+            if "'^b'" in error_str or '"^b"' in error_str or "^b" in error_str:
+                # The error message contains the pattern, but our sanitized string should be clean
+                # Log the actual sanitized content around the problematic area for debugging
+                lines = patched_turtle.split("\n")
+                problematic_line_idx = None
+                for i, line in enumerate(lines):
+                    if "Appeal" in line or "subClassOf" in line:
+                        problematic_line_idx = i
+                        break
+                if problematic_line_idx is not None:
+                    context_start = max(0, problematic_line_idx - 2)
+                    context_end = min(len(lines), problematic_line_idx + 3)
+                    context = "\n".join(lines[context_start:context_end])
+                    logger.error(
+                        f"Turtle parsing failed. Context around problematic line:\n{context}"
+                    )
+                    logger.error(f"Full error (may show original string): {e}")
+                else:
+                    logger.error(f"Turtle parsing failed. Error: {e}")
+            else:
+                logger.error(f"Turtle parsing failed. Error: {e}")
+            raise
+        return g
+
+    @classmethod
+    def _from_jsonld_str(cls, jsonld_str: str) -> "RDFGraph":
+        """Create an RDFGraph instance from a JSON-LD string.
+
+        Args:
+            jsonld_str: The input JSON-LD string.
+
+        Returns:
+            RDFGraph: A new RDFGraph instance with namespace prefixes extracted from @context.
+        """
+        # Use pyld to convert JSON-LD to n-quads, then parse to avoid rdflib's deprecated ConjunctiveGraph
+        # This adapts to the new convention by using pyld directly instead of rdflib's JSON-LD parser
+        jsonld_data = json.loads(jsonld_str)
+        normalized = jsonld.normalize(
+            jsonld_data,
+            {"algorithm": "URDNA2015", "format": "application/n-quads"},
+        )
+
+        # jsonld.normalize returns a string when format is "application/n-quads"
+        normalized_str = normalized if isinstance(normalized, str) else str(normalized)
+
+        # Parse the normalized n-quads into RDFGraph
+        g = cls()
+        g.parse(data=normalized_str, format="nquads")
+
+        # Extract prefixes from @context in JSON-LD and bind them
+        try:
+            context = None
+
+            # Handle single object or array
+            if isinstance(jsonld_data, dict):
+                context = jsonld_data.get("@context")
+            elif isinstance(jsonld_data, list) and jsonld_data:
+                # For arrays, check first item for @context
+                first_item = jsonld_data[0]
+                if isinstance(first_item, dict):
+                    context = first_item.get("@context")
+
+            # Bind prefixes from @context
+            if context and isinstance(context, dict):
+                for prefix, uri in context.items():
+                    if isinstance(uri, str) and not prefix.startswith("@"):
+                        # Skip JSON-LD keywords (starting with @)
+                        try:
+                            g.bind(prefix, uri)
+                        except Exception as e:
+                            logger.debug(f"Failed to bind prefix '{prefix}': {e}")
+
+        except (json.JSONDecodeError, ValueError, AttributeError) as e:
+            logger.debug(f"Could not extract prefixes from JSON-LD @context: {e}")
+
         return g
 
     @staticmethod
@@ -414,4 +578,6 @@ class RDFGraph(Graph):
             doc,
             {"algorithm": "URDNA2015", "format": "application/n-quads"},
         )
-        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        # jsonld.normalize returns a string when format is "application/n-quads"
+        normalized_str = normalized if isinstance(normalized, str) else str(normalized)
+        return hashlib.sha256(normalized_str.encode("utf-8")).hexdigest()

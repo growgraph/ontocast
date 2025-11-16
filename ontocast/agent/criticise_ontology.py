@@ -96,7 +96,7 @@ async def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
         )
         logger.info(
             f"Parsed critique report - success: {critique.success}, "
-            f"score: {critique.score}"
+            f"score: {critique.score}, n fixes: {len(critique.actionable_ontology_fixes)}."
         )
 
         if critique.success or critique.score > 90:

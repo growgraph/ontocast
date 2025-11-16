@@ -1,4 +1,7 @@
+"""Pytest configuration for test suite."""
+
 import os
+import warnings
 from pathlib import Path
 
 import pytest
@@ -25,6 +28,26 @@ from ontocast.tool.triple_manager.mock import (
     MockNeo4jTripleStoreManager,
 )
 from ontocast.toolbox import ToolBox
+
+# Suppress deprecation warnings from third-party libraries that we cannot control
+# Note: We adapt to new conventions where possible (e.g., using pyld directly for JSON-LD
+# instead of rdflib's deprecated ConjunctiveGraph). These suppressions are only for
+# warnings from external libraries that we cannot modify.
+warnings.filterwarnings(
+    "ignore",
+    category=DeprecationWarning,
+    message=".*@model_validator.*mode='after'.*",
+    module="docling_core",
+)
+
+
+def pytest_configure(config):
+    """Configure pytest to suppress known deprecation warnings from third-party libraries."""
+    # Suppress Pydantic deprecation warnings from docling_core (third-party library we cannot modify)
+    config.addinivalue_line(
+        "filterwarnings",
+        "ignore::DeprecationWarning:docling_core",
+    )
 
 
 @pytest.fixture
@@ -273,7 +296,7 @@ def max_iter():
 @pytest.fixture
 def apple_report():
     r = FileHandle.load(Path("data/json/fin.10Q.apple.json"))
-    return {"text": r["text"]}
+    return {"text": r["text"]}  # type: ignore[index]
 
 
 @pytest.fixture

@@ -43,7 +43,6 @@ def aggregate(state: AgentState, tools: ToolBox) -> AgentState:
     if state.source_url and state.doc_namespace:
         doc_iri = URIRef(state.doc_namespace)
         source_url_uri = URIRef(state.source_url)
-        # Add dcterms:source to link the document to its source URL
         state.aggregated_facts.add((doc_iri, DCTERMS.source, source_url_uri))
         logger.info(
             f"Added provenance: {state.doc_namespace} dcterms:source {state.source_url}"
