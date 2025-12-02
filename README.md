@@ -87,7 +87,7 @@ SKIP_ONTOLOGY_DEVELOPMENT=false
 ### 2. Start Server
 
 ```bash
-ontocast serve \
+uv run serve \
     --working-directory /path/to/working \
     --ontology-directory /path/to/ontologies
 ```
