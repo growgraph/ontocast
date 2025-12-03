@@ -131,6 +131,12 @@ class ServerConfig(BaseSettings):
     skip_facts_rendering: bool = Field(
         default=False, description="Skip facts rendering and go straight to aggregation"
     )
+    ontology_max_triples: int | None = Field(
+        default=50000,
+        description="Maximum number of triples allowed in ontology graph. "
+        "Updates that would exceed this limit are skipped with a warning. "
+        "Set to None for unlimited.",
+    )
 
     model_config = SettingsConfigDict(
         case_sensitive=False,

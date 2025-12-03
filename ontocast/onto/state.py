@@ -233,6 +233,12 @@ class AgentState(BasePydanticModel):
         default=False,
         description="Skip facts rendering and go straight to aggregation if True",
     )
+    ontology_max_triples: int | None = Field(
+        default=50000,
+        description="Maximum number of triples allowed in ontology graph. "
+        "Updates that would exceed this limit are skipped with a warning. "
+        "Set to None for unlimited.",
+    )
     context_manager: ContextManager = Field(
         default_factory=ContextManager,
         description="Context manager for passing information between agents",
@@ -303,25 +309,28 @@ class AgentState(BasePydanticModel):
 
     @classmethod
     def render_updated_graph(
-        cls, graph: RDFGraph, updates: list[GraphUpdate]
-    ) -> RDFGraph:
+        cls, graph: RDFGraph, updates: list[GraphUpdate], max_triples: int | None = None
+    ) -> tuple[RDFGraph, bool]:
         """Create a copy of the given graph with all GraphUpdate objects applied.
 
         This method:
         1. Creates a copy of the input graph
         2. Generates SPARQL queries from all GraphUpdate objects
         3. Executes the queries on the copied graph
-        4. Returns the updated graph copy
+        4. Checks if the updated graph exceeds max_triples limit
+        5. Returns the updated graph copy, or original if limit exceeded
 
         Args:
             graph: The RDFGraph to update
             updates: List of GraphUpdate objects to apply
+            max_triples: Maximum number of triples allowed. If None, no limit enforced.
 
         Returns:
-            RDFGraph: A copy of the input graph with all updates applied
+            Tuple of (RDFGraph, bool): The updated graph (or original if limit exceeded),
+            and a boolean indicating if the update was applied (True) or skipped (False)
         """
         if not updates:
-            return graph
+            return graph, True
 
         # Create a copy of the input graph
         # Use RDFGraph's copy method to preserve type
@@ -352,7 +361,19 @@ class AgentState(BasePydanticModel):
             for query in queries:
                 updated_graph.update(query)
 
-        return updated_graph
+        # Check if updated graph exceeds max_triples limit
+        if max_triples is not None and len(updated_graph) > max_triples:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                f"Ontology update skipped: would exceed limit "
+                f"({len(updated_graph)} > {max_triples} triples). "
+                f"Original size: {len(graph)} triples."
+            )
+            return graph, False  # Return original, unchanged
+
+        return updated_graph, True
 
     def render_uptodate_ontology(self) -> Ontology:
         """Create a copy of the current ontology with all GraphUpdate objects applied.
@@ -361,14 +382,16 @@ class AgentState(BasePydanticModel):
         1. Creates a copy of the current ontology
         2. Generates SPARQL queries from all GraphUpdate objects
         3. Executes the queries on the copied ontology graph
-        4. Sets the current hash as parent_hash in the updated ontology
-        5. Computes a new hash for the updated ontology
-        6. Syncs properties to ensure object fields are updated
-        7. Returns the updated ontology copy
+        4. Checks if the updated graph exceeds max_triples limit
+        5. Sets the current hash as parent_hash in the updated ontology
+        6. Computes a new hash for the updated ontology
+        7. Syncs properties to ensure object fields are updated
+        8. Returns the updated ontology copy, or original if limit exceeded
 
         Returns:
             Ontology: A copy of the current ontology with all updates applied and
             a new hash generated, with the previous hash set as parent.
+            Returns original ontology if update would exceed max_triples limit.
         """
         if not self.ontology_updates:
             return self.current_ontology
@@ -379,9 +402,16 @@ class AgentState(BasePydanticModel):
         updated_ontology = deepcopy(self.current_ontology)
 
         # Use the generalized function to update the graph
-        updated_ontology.graph = self.render_updated_graph(
-            self.current_ontology.graph, self.ontology_updates
+        updated_graph, was_applied = self.render_updated_graph(
+            self.current_ontology.graph,
+            self.ontology_updates,
+            max_triples=self.ontology_max_triples,
         )
+        updated_ontology.graph = updated_graph
+
+        # If graph wasn't updated (limit exceeded), return original ontology
+        if not was_applied:
+            return self.current_ontology
 
         # Set current hash as parent and generate new hash
         if self.current_ontology.hash:
@@ -449,7 +479,10 @@ class AgentState(BasePydanticModel):
             return self.current_chunk.graph
 
         # Use the generalized function to update the graph
-        return self.render_updated_graph(self.current_chunk.graph, self.facts_updates)
+        updated_graph, _ = self.render_updated_graph(
+            self.current_chunk.graph, self.facts_updates, max_triples=None
+        )
+        return updated_graph
 
     def update_facts(self) -> None:
         """Update the current chunk's graph with all facts GraphUpdate objects and clear the updates list.

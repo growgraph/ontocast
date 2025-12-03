@@ -31,8 +31,9 @@ Config
     ├── recursion_limit: int   # Workflow recursion limit
     ├── estimated_chunks: int  # Estimated number of chunks
     ├── max_visits: int        # Maximum visits per node
-    └── skip_ontology_development: bool  # Skip ontology critique
-    └── skip_facts_rendering: bool  # Skip ontology critique
+    ├── skip_ontology_development: bool  # Skip ontology critique
+    ├── skip_facts_rendering: bool  # Skip facts rendering
+    └── ontology_max_triples: int | None  # Maximum triples in ontology graph
 ```
 
 ---
@@ -64,6 +65,7 @@ ESTIMATED_CHUNKS=30                    # Estimated number of chunks
 MAX_VISITS=3                           # Maximum visits per node
 SKIP_ONTOLOGY_DEVELOPMENT=false        # Skip ontology critique step
 SKIP_FACTS_RENDERING=false             # Skip facts extraction and go straight to serialization
+ONTOLOGY_MAX_TRIPLES=10000             # Maximum triples allowed in ontology graph (set empty for unlimited)
 ```
 
 ### Backend Configuration
@@ -245,6 +247,7 @@ class ServerConfig(BaseSettings):
     max_visits: int = 3                        # Max visits
     skip_ontology_development: bool = False     # Skip critique
     skip_facts_rendering: bool = False         # Skip facts rendering
+    ontology_max_triples: int | None = 10000    # Max triples in ontology graph
 ```
 
 
@@ -352,6 +355,7 @@ PORT=8999
 MAX_VISITS=3
 RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
+ONTOLOGY_MAX_TRIPLES=10000
 
 # Backend Configuration (auto-detected)
 FUSEKI_URI=http://localhost:3032/test

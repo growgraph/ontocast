@@ -98,7 +98,9 @@ ex:subject ex:predicate "updated_value" .""",  # type: ignore[arg-type]
     )
 
     # Apply the update
-    updated_graph = state.render_updated_graph(original_graph, [graph_update])
+    updated_graph, _ = state.render_updated_graph(
+        original_graph, [graph_update], max_triples=None
+    )
 
     # Check that the original graph is unchanged
     assert len(original_graph) == 1

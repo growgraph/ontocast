@@ -85,12 +85,30 @@ def sublimate_ontology(state: AgentState, tools: ToolBox):
         if state.current_ontology.is_null():
             logger.warning("Cannot update ontology: null ontology cannot be updated")
         elif state.current_ontology.ontology_id:
-            # Only update state.current_ontology, not OntologyManager
-            # OntologyManager will be updated in serialize() during final serialization
-            state.current_ontology.graph += graph_onto_addendum
-            logger.debug(
-                f"Updated state.current_ontology with {len(graph_onto_addendum)} triples from sublimation"
-            )
+            # Check if adding triples would exceed max_triples limit
+            max_triples = state.ontology_max_triples
+            if max_triples is not None:
+                current_size = len(state.current_ontology.graph)
+                addendum_size = len(graph_onto_addendum)
+                if current_size + addendum_size > max_triples:
+                    logger.warning(
+                        f"Ontology sublimation skipped: would exceed limit "
+                        f"({current_size + addendum_size} > {max_triples} triples). "
+                        f"Current size: {current_size} triples."
+                    )
+                else:
+                    # Only update state.current_ontology, not OntologyManager
+                    # OntologyManager will be updated in serialize() during final serialization
+                    state.current_ontology.graph += graph_onto_addendum
+                    logger.debug(
+                        f"Updated state.current_ontology with {len(graph_onto_addendum)} triples from sublimation"
+                    )
+            else:
+                # No limit set, proceed with update
+                state.current_ontology.graph += graph_onto_addendum
+                logger.debug(
+                    f"Updated state.current_ontology with {len(graph_onto_addendum)} triples from sublimation"
+                )
         else:
             logger.warning("Cannot update ontology: ontology_id is None")
 

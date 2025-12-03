@@ -370,6 +370,7 @@ def create_app(
                 max_chunks=head_chunks,
                 skip_ontology_development=skip_ontology_development_value,
                 skip_facts_rendering=skip_facts_rendering_value,
+                ontology_max_triples=server_config.ontology_max_triples,
                 dataset=dataset,
                 ontology_user_instruction=ontology_user_instruction,
                 facts_user_instruction=facts_user_instruction,

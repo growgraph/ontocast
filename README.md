@@ -74,6 +74,7 @@ PORT=8999
 MAX_VISITS=3
 RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
+ONTOLOGY_MAX_TRIPLES=10000
 
 # Path Configuration
 ONTOCAST_WORKING_DIRECTORY=/path/to/working
@@ -87,6 +88,8 @@ FUSEKI_DATASET=ontocast
 
 # Optional: Skip ontology critique
 SKIP_ONTOLOGY_DEVELOPMENT=false
+# Optional: Maximum triples allowed in ontology graph (set empty for unlimited)
+ONTOLOGY_MAX_TRIPLES=10000
 ```
 
 ### 2. Start Server
@@ -177,6 +180,7 @@ OntoCast uses a hierarchical configuration system built on Pydantic BaseSettings
 | `PORT` | Server port | 8999 | No |
 | `MAX_VISITS` | Maximum visits per node | 3 | No |
 | `SKIP_ONTOLOGY_DEVELOPMENT` | Skip ontology critique | false | No |
+| `ONTOLOGY_MAX_TRIPLES` | Maximum triples allowed in ontology graph | 10000 | No |
 | `SKIP_FACTS_RENDERING` | Skip facts rendering and go straight to aggregation | false | No |
 | `ONTOCAST_CACHE_DIR` | Custom cache directory for LLM responses | Platform default | No |
 

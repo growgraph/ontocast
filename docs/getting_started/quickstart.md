@@ -80,6 +80,8 @@ FUSEKI_DATASET=dataset_name
 
 # Skip ontology critique (optional)
 SKIP_ONTOLOGY_DEVELOPMENT=false
+# Maximum triples allowed in ontology graph (optional, set empty for unlimited)
+ONTOLOGY_MAX_TRIPLES=10000
 ```
 
 #### Alternative: Ollama Configuration
@@ -143,6 +145,7 @@ OntoCast uses a hierarchical configuration system:
 | `ONTOCAST_ONTOLOGY_DIRECTORY` | Ontology files directory | Provide seed ontologies |
 | `MAX_VISITS` | Maximum visits per node | 3 |
 | `SKIP_ONTOLOGY_DEVELOPMENT` | Skip ontology critique | false |
+| `ONTOLOGY_MAX_TRIPLES` | Maximum triples allowed in ontology graph | 10000 |
 
 ## Next Steps
 

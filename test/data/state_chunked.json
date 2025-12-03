@@ -66,6 +66,7 @@
     "max_chunks": null,
     "skip_ontology_development": false,
     "skip_facts_rendering": false,
+    "ontology_max_triples": 50000,
     "context_manager": {
         "context_history": [],
         "current_context": null
