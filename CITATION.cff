@@ -4,9 +4,9 @@ authors:
   family-names: Belikov
   given-names: Alexander
   orcid: 0000-0002-5649-0913
-cff-version: 0.2.2
+cff-version: 0.2.3
 date-released: '2025-12-03'
-# doi: abc
+doi: 10.5281/zenodo.17796467
 license: []
 license-url: https://github.com/growgraph/ontocast/blob/main/LICENSE
 message: If you use this software, please cite it using the metadata from this file.
