@@ -247,7 +247,7 @@ class TripleOp(BaseModel):
     """Operation to modify triples in the RDF graph.
 
     This operation can insert or delete triples. Prefixes are automatically extracted
-    from the RDFGraph's namespace bindings (from @context in JSON-LD or @prefix in Turtle).
+    from the RDFGraph's namespace bindings (from @prefix declarations in Turtle).
     """
 
     type: TypingLiteral["insert", "delete"] = Field(
@@ -255,12 +255,14 @@ class TripleOp(BaseModel):
     )
     graph: Annotated[
         RDFGraph,
-        BeforeValidator(lambda v: RDFGraph._from_str(v) if isinstance(v, str) else v),
+        BeforeValidator(
+            lambda v: RDFGraph._from_turtle_str(v) if isinstance(v, str) else v
+        ),
     ] = Field(
         default_factory=RDFGraph,
         description="RDF graph containing triples to insert or delete. "
-        "Can be provided as an RDFGraph instance, JSON-LD string, or Turtle string. "
-        'Example JSON-LD: {"@context": {"fcaont": "http://example.org/fcaont#", "rdfs": "http://www.w3.org/2000/01/rdf-schema#"}, "@id": "fcaont:OffenseType", "rdfs:label": {"@value": "Offense Type", "@language": "en"}}',
+        "Must be provided as a Turtle format string or RDFGraph instance. "
+        'Example Turtle: "@prefix ex: <http://example.org/> . ex:John a ex:Person ; rdfs:label "John Doe" ."',
     )
     prefixes: dict[str, str] = Field(
         default_factory=dict,
@@ -299,8 +301,8 @@ class GraphUpdate(BaseModel):
     triple_operations: list[TripleOp] = Field(
         default_factory=list,
         description="List of graph update operations in execution order. "
-        "Each operation should be a TripleOp (for insert/delete) with RDFGraph containing triples."
-        "Example: [TripleOp(type='insert', triples=RDFGraph(...), prefixes={'fca': 'http://example.org/fca#'})]",
+        "Each operation should be a TripleOp (for insert/delete) with RDFGraph containing triples in Turtle format."
+        "Example: [TripleOp(type='insert', graph='@prefix ex: <http://example.org/> . ex:John a ex:Person .', prefixes={'ex': 'http://example.org/'})]",
     )
 
     sparql_operations: list[GenericSparqlQuery] = Field(
@@ -318,7 +320,7 @@ class GraphUpdate(BaseModel):
         """
         queries = []
 
-        # Process operations in order, generating a query for each operation
+        # Process triple operations first
         for op in self.triple_operations:
             if len(op.graph) > 0:  # Only generate query if there are triples
                 # Build prefix block for this operation
@@ -348,10 +350,13 @@ class GraphUpdate(BaseModel):
                 else:  # delete
                     triple_query = self._generate_delete_query(op.graph, prefix_block)
                 queries.append(triple_query)
-            for op in self.sparql_operations:
-                if op.query.strip():  # Only generate query if there's content
-                    # For custom SPARQL queries, use them as-is
-                    queries.append(op.query)
+
+        # Process SPARQL operations
+        for op in self.sparql_operations:
+            if op.query.strip():  # Only generate query if there's content
+                # For custom SPARQL queries, use them as-is
+                queries.append(op.query)
+
         return queries
 
     def count_total_triples(self) -> tuple[int, int]:

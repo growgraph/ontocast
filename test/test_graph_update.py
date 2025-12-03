@@ -7,7 +7,6 @@ queries that can be executed on RDFGraph instances using rdflib's update() metho
 import json
 from typing import Any
 
-import pytest
 from rdflib import Literal, URIRef
 
 from ontocast.onto.rdfgraph import RDFGraph
@@ -139,33 +138,20 @@ def test_graph_update_with_language_tags():
 
     initial_triple_count = len(graph)
 
-    # Create JSON-LD with language tags using helper function
-    # jsonld_label = create_jsonld_with_language_tag(
-    #     "ex:Test", "rdfs:label", "Test Label", "en"
-    # )
-    # jsonld_comment = create_jsonld_with_language_tag(
-    #     "ex:Test", "rdfs:comment", "Un commentaire", "fr"
-    # )
-
-    # Create a combined JSON-LD with both properties
-    combined_jsonld = json.dumps(
-        {
-            "@context": {
-                "ex": "http://example.org/",
-                "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
-            },
-            "@id": "ex:Test",
-            "rdfs:label": {"@value": "Test Label", "@language": "en"},
-            "rdfs:comment": {"@value": "Un commentaire", "@language": "fr"},
-        },
-        indent=2,
-    )
+    # Create Turtle with language-tagged literals
+    triples = """
+    @prefix ex: <http://example.org/> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    
+    ex:Test rdfs:label "Test Label"@en ;
+        rdfs:comment "Un commentaire"@fr .
+    """
 
     graph_update = GraphUpdate(
         triple_operations=[
             TripleOp(
                 type="insert",
-                graph=combined_jsonld,  # type: ignore[arg-type]
+                graph=triples,  # type: ignore[arg-type]
                 prefixes={"ex": "http://example.org/"},
             )
         ]
@@ -184,12 +170,8 @@ def test_graph_update_with_language_tags():
     assert len(graph) == initial_triple_count + 2
 
 
-@pytest.mark.parametrize(
-    "format_type",
-    ["jsonld", "turtle"],
-)
-def test_graph_update_insert_operation(format_type: str):
-    """Test GraphUpdate with TripleOp insert operations using different formats."""
+def test_graph_update_insert_operation():
+    """Test GraphUpdate with TripleOp insert operations using Turtle format."""
     # Create initial RDFGraph
     graph = RDFGraph._from_turtle_str(
         """
@@ -204,21 +186,15 @@ def test_graph_update_insert_operation(format_type: str):
 
     initial_triple_count = len(graph)
 
-    # Create triples in the specified format
-    if format_type == "jsonld":
-        triples = create_jsonld_triples(
-            "ex:John",
-            {"rdf:type": "ex:Person", "rdfs:label": "John Doe"},
-        )
-    else:  # turtle
-        triples = """
-        @prefix ex: <http://example.org/> .
-        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-        
-        ex:John a ex:Person ;
-            rdfs:label "John Doe" .
-        """
+    # Create triples in Turtle format
+    triples = """
+    @prefix ex: <http://example.org/> .
+    @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    
+    ex:John a ex:Person ;
+        rdfs:label "John Doe" .
+    """
 
     graph_update = GraphUpdate(
         triple_operations=[
@@ -275,11 +251,15 @@ def test_graph_update_delete_operation():
 
     initial_triple_count = len(graph)
 
-    # Create GraphUpdate with TripleOp using helper function
-    triples = create_jsonld_triples(
-        "ex:John",
-        {"rdf:type": "ex:Person", "rdfs:label": "John Doe"},
-    )
+    # Create GraphUpdate with TripleOp using Turtle format
+    triples = """
+    @prefix ex: <http://example.org/> .
+    @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    
+    ex:John a ex:Person ;
+        rdfs:label "John Doe" .
+    """
 
     graph_update = GraphUpdate(
         triple_operations=[
@@ -334,16 +314,15 @@ def test_graph_update_with_prefixes():
 
     initial_triple_count = len(graph)
 
-    # Create GraphUpdate with custom prefixes using helper function
-    triples = create_jsonld_triples(
-        "ex:John",
-        {"rdf:type": "ex:Person", "schema:name": "John Doe"},
-        context={
-            "ex": "http://example.org/",
-            "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
-            "schema": "https://schema.org/",
-        },
-    )
+    # Create GraphUpdate with custom prefixes using Turtle format
+    triples = """
+    @prefix ex: <http://example.org/> .
+    @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+    @prefix schema: <https://schema.org/> .
+    
+    ex:John a ex:Person ;
+        schema:name "John Doe" .
+    """
 
     graph_update = GraphUpdate(
         triple_operations=[
@@ -403,24 +382,27 @@ def test_graph_update_mixed_operations_ordered():
 
     initial_triple_count = len(graph)
 
-    # Create GraphUpdate with mixed operations using helper functions
-    insert_jane = create_jsonld_triples(
-        "ex:Jane",
-        {"rdf:type": "ex:Person", "schema:name": "Jane Smith"},
-        context={
-            "ex": "http://example.org/",
-            "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
-            "schema": "https://schema.org/",
-        },
-    )
-    delete_john_label = create_jsonld_triples(
-        "ex:John",
-        {"rdfs:label": "John Doe"},
-    )
-    insert_john_label = create_jsonld_triples(
-        "ex:John",
-        {"rdfs:label": "John Updated"},
-    )
+    # Create GraphUpdate with mixed operations using Turtle format
+    insert_jane = """
+    @prefix ex: <http://example.org/> .
+    @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+    @prefix schema: <https://schema.org/> .
+    
+    ex:Jane a ex:Person ;
+        schema:name "Jane Smith" .
+    """
+    delete_john_label = """
+    @prefix ex: <http://example.org/> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    
+    ex:John rdfs:label "John Doe" .
+    """
+    insert_john_label = """
+    @prefix ex: <http://example.org/> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    
+    ex:John rdfs:label "John Updated" .
+    """
 
     graph_update = GraphUpdate(
         triple_operations=[
