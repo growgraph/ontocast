@@ -165,9 +165,9 @@ tools = ToolBox(config)
 
 ```bash
 # Skip ontology critique step
-ontocast serve --skip-ontology-critique
+ontocast --skip-ontology-critique
 
 # Or set environment variable
 export SKIP_ONTOLOGY_DEVELOPMENT=true
-ontocast serve
+ontocast --env-path .env
 ```

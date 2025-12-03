@@ -19,13 +19,13 @@ and aggregation.
 
 Example:
     # With Fuseki backend (auto-detected from FUSEKI_URI and FUSEKI_AUTH)
-    python -m ontocast.cli.serve --env-path .env
+    ontocast --env-path .env
 
     # Process specific file
-    python -m ontocast.cli.serve --env-path .env --input-path ./document.pdf
+    ontocast --env-path .env --input-path ./document.pdf
 
     # Process with chunk limit
-    python -m ontocast.cli.serve --env-path .env --head-chunks 5
+    ontocast --env-path .env --head-chunks 5
 """
 
 import asyncio

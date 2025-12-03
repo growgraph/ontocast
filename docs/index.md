@@ -122,13 +122,13 @@ OntoCast supports multiple triple store backends. When both Fuseki and Neo4j are
 
 ```bash
 # Backend automatically detected from .env configuration
-uv run serve --env-path .env
+ontocast --env-path .env
 
 # Process specific file
-uv run serve --env-path .env --input-path ./document.pdf
+ontocast --env-path .env --input-path ./document.pdf
 
 # Process with chunk limit (for testing)
-uv run serve --env-path .env --head-chunks 5
+ontocast --env-path .env --head-chunks 5
 ```
 
 - Backend selection is **fully automatic** based on available configuration

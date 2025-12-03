@@ -25,13 +25,13 @@ To start an OntoCast server:
 
 ```bash
 # Backend automatically detected from .env configuration
-ontocast serve --env-path .env
+ontocast --env-path .env
 
 # Process specific file
-ontocast serve --env-path .env --input-path ./document.pdf
+ontocast --env-path .env --input-path ./document.pdf
 
 # Process with chunk limit (for testing)
-ontocast serve --env-path .env --head-chunks 5
+ontocast --env-path .env --head-chunks 5
 ```
 
 - Backend selection is **fully automatic** based on available configuration
@@ -99,13 +99,13 @@ You can use these CLI parameters:
 
 ```bash
 # Use custom .env file
-ontocast serve --env-path /path/to/custom.env
+ontocast --env-path /path/to/custom.env
 
 # Process specific input file
-ontocast serve --env-path .env --input-path /path/to/document.pdf
+ontocast --env-path .env --input-path /path/to/document.pdf
 
 # Process only first 5 chunks (for testing)
-ontocast serve --env-path .env --head-chunks 5
+ontocast --env-path .env --head-chunks 5
 ```
 
 **Note:** All paths and directories are configured via the `.env` file - no CLI overrides needed.

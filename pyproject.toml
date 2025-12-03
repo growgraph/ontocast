@@ -58,13 +58,13 @@ description = "Agentic ontology and knowledge graph co-generation"
 name = "ontocast"
 readme = "README.md"
 requires-python = ">=3.12"
-version = "0.2.0"
+version = "0.2.1"
 
 [project.scripts]
 cmp-states = "ontocast.cli.cmp_states:main"
+ontocast = "ontocast.cli.serve:run"
 pdfs-to-markdown = "ontocast.cli.pdfs_to_markdown:main"
 plot-graph = "ontocast.cli.plot_graph:main"
-serve = "ontocast.cli.serve:run"
 test-api = "ontocast.cli.test_api:main"
 
 [tool.hatch.build.targets.wheel]

@@ -102,7 +102,7 @@ export XDG_CACHE_HOME=/path/to/custom/cache
 Specify cache directory via command line:
 
 ```bash
-ontocast serve --env-path .env --working-directory ./work --cache-dir /custom/cache/path
+ontocast --env-path .env --working-directory ./work --cache-dir /custom/cache/path
 ```
 
 ---
@@ -288,7 +288,7 @@ The server automatically uses caching for all LLM operations:
 
 ```bash
 # Start server with automatic caching
-ontocast serve --working-directory /data/working
+ontocast --env-path .env --working-directory /data/working
 ```
 
 ---
@@ -387,7 +387,7 @@ export XDG_CACHE_HOME=/custom/cache/path
 #### 2. CLI Parameter
 
 ```bash
-ontocast serve --env-path .env --working-directory ./work --cache-dir /custom/cache/path
+ontocast --env-path .env --working-directory ./work --cache-dir /custom/cache/path
 ```
 
 #### 3. Programmatic Configuration

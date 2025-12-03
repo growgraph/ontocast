@@ -95,7 +95,8 @@ ONTOLOGY_MAX_TRIPLES=10000
 ### 2. Start Server
 
 ```bash
-uv run serve \
+ontocast \
+    --env-path .env \
     --working-directory /path/to/working \
     --ontology-directory /path/to/ontologies
 ```
@@ -201,10 +202,10 @@ NEO4J_AUTH=neo4j:password
 
 ```bash
 # Skip ontology critique step
-ontocast serve --skip-ontology-critique
+ontocast --skip-ontology-critique
 
 # Process only first N chunks (for testing)
-ontocast serve --head-chunks 5
+ontocast --head-chunks 5
 
 ```
 
@@ -318,7 +319,8 @@ tools = ToolBox(config)
 
 ```bash
 # Start server with custom configuration
-ontocast serve \
+ontocast \
+    --env-path .env \
     --working-directory /data/working \
     --ontology-directory /data/ontologies \
     --skip-ontology-critique \
