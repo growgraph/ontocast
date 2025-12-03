@@ -84,18 +84,14 @@ def test_render_updated_graph():
         )
     )
 
-    # Create a GraphUpdate that adds a new triple using JSON-LD
+    # Create a GraphUpdate that adds a new triple using Turtle format
     graph_update = GraphUpdate(
         triple_operations=[
             TripleOp(
                 type="insert",
-                graph="""{
-  "@context": {
-    "ex": "http://example.com/"
-  },
-  "@id": "ex:subject",
-  "ex:predicate": "updated_value"
-}""",  # type: ignore[arg-type]
+                graph="""@prefix ex: <http://example.com/> .
+
+ex:subject ex:predicate "updated_value" .""",  # type: ignore[arg-type]
                 prefixes={"ex": "http://example.com/"},
             ),
         ]
@@ -139,19 +135,15 @@ def test_render_uptodate_facts():
         )
     )
 
-    # Create a facts update using JSON-LD
+    # Create a facts update using Turtle format
     state.facts_updates = [
         GraphUpdate(
             triple_operations=[
                 TripleOp(
                     type="insert",
-                    graph="""{
-  "@context": {
-    "ex": "http://example.com/"
-  },
-  "@id": "ex:subject",
-  "ex:predicate": "facts_value"
-}""",  # type: ignore[arg-type]
+                    graph="""@prefix ex: <http://example.com/> .
+
+ex:subject ex:predicate "facts_value" .""",  # type: ignore[arg-type]
                     prefixes={"ex": "http://example.com/"},
                 ),
             ]
@@ -191,19 +183,15 @@ def test_update_facts():
         )
     )
 
-    # Create a facts update using JSON-LD
+    # Create a facts update using Turtle format
     state.facts_updates = [
         GraphUpdate(
             triple_operations=[
                 TripleOp(
                     type="insert",
-                    graph="""{
-  "@context": {
-    "ex": "http://example.com/"
-  },
-  "@id": "ex:subject",
-  "ex:predicate": "facts_value"
-}""",  # type: ignore[arg-type]
+                    graph="""@prefix ex: <http://example.com/> .
+
+ex:subject ex:predicate "facts_value" .""",  # type: ignore[arg-type]
                     prefixes={"ex": "http://example.com/"},
                 ),
             ]

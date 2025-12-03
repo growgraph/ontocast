@@ -4,9 +4,6 @@ This test verifies that GraphUpdate.generate_sparql_queries() generates valid SP
 queries that can be executed on RDFGraph instances using rdflib's update() method.
 """
 
-import json
-from typing import Any
-
 from rdflib import Literal, URIRef
 
 from ontocast.onto.rdfgraph import RDFGraph
@@ -15,112 +12,6 @@ from ontocast.onto.sparql_models import (
     GraphUpdate,
     TripleOp,
 )
-
-
-def create_jsonld_triples(
-    subject_id: str,
-    properties: dict[str, Any],
-    context: dict[str, str] | None = None,
-) -> str:
-    """Create a JSON-LD string for triples.
-
-    Args:
-        subject_id: The subject ID (e.g., "ex:John")
-        properties: Dictionary of properties to add (e.g., {"rdf:type": "ex:Person", "rdfs:label": "John"})
-        context: Optional @context dictionary. If None, will infer from properties.
-
-    Returns:
-        JSON-LD string representation
-    """
-    default_context = {
-        "ex": "http://example.org/",
-        "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
-        "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
-    }
-
-    if context is None:
-        # Infer context from property keys and values
-        context = default_context.copy()
-        for key in properties.keys():
-            if ":" in key:
-                prefix = key.split(":")[0]
-                if prefix not in context and prefix not in [
-                    "rdf",
-                    "rdfs",
-                    "owl",
-                    "xsd",
-                ]:
-                    # Add a default namespace for unknown prefixes
-                    context[prefix] = f"http://example.org/{prefix}#"
-
-        # Also check property values for prefixes
-        for value in properties.values():
-            if (
-                isinstance(value, str)
-                and ":" in value
-                and not value.startswith("http")
-                and not value.startswith('"')
-            ):
-                prefix = value.split(":")[0]
-                if prefix not in context and prefix not in [
-                    "rdf",
-                    "rdfs",
-                    "owl",
-                    "xsd",
-                ]:
-                    context[prefix] = f"http://example.org/{prefix}#"
-
-    # Convert property values that look like URIs to use @id
-    processed_properties = {}
-    for key, value in properties.items():
-        # If value is a string that looks like a prefixed URI (contains ":" but not a full URI or quoted)
-        if (
-            isinstance(value, str)
-            and ":" in value
-            and not value.startswith("http")
-            and not value.startswith('"')
-        ):
-            # Treat as URI reference
-            processed_properties[key] = {"@id": value}
-        else:
-            processed_properties[key] = value
-
-    jsonld_data = {"@context": context, "@id": subject_id, **processed_properties}
-    return json.dumps(jsonld_data, indent=2)
-
-
-def create_jsonld_with_language_tag(
-    subject_id: str,
-    property_key: str,
-    value: str,
-    language: str,
-    context: dict[str, str] | None = None,
-) -> str:
-    """Create JSON-LD with a language-tagged literal.
-
-    Args:
-        subject_id: The subject ID
-        property_key: The property key (e.g., "rdfs:label")
-        value: The literal value
-        language: The language tag (e.g., "en")
-        context: Optional @context dictionary
-
-    Returns:
-        JSON-LD string representation
-    """
-    default_context = {
-        "ex": "http://example.org/",
-        "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
-    }
-    if context is None:
-        context = default_context
-
-    jsonld_data = {
-        "@context": context,
-        "@id": subject_id,
-        property_key: {"@value": value, "@language": language},
-    }
-    return json.dumps(jsonld_data, indent=2)
 
 
 def test_graph_update_with_language_tags():
