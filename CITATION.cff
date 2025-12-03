@@ -1,0 +1,14 @@
+abstract: OntoCast is a framework for extracting semantic triples (creating a Knowledge Graph) from documents using an agentic, ontology-driven approach. It combines ontology management, natural language processing, and knowledge graph serialization to turn unstructured text into structured, queryable data.
+authors:
+- affiliation: GrowGraph
+  family-names: Belikov
+  given-names: Alexander
+  orcid: 0000-0002-5649-0913
+cff-version: 0.2.2
+date-released: '2025-12-03'
+# doi: abc
+license: []
+license-url: https://github.com/growgraph/ontocast/blob/main/LICENSE
+message: If you use this software, please cite it using the metadata from this file.
+title: ontocast
+type: software
