@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ToolCacher wrapper for tool-specific cache access
 - Environment variable `ONTOCAST_CACHE_DIR` for cache directory configuration
 - New `serialize()` method in triple store managers as primary interface for storing Ontology and RDFGraph objects
+- `ONTOLOGY_MAX_TRIPLES` configuration parameter to limit ontology graph size (default: 10000)
+- Automatic limit checking in `render_updated_graph()` to prevent unbounded ontology growth
+- Limit enforcement in `sublimate_ontology()` for direct graph modifications
+- Updates exceeding the limit are silently skipped with warning logs
 
 ### Changed
 - **BREAKING**: `serialize()` method is now the primary interface for storing data in triple stores
