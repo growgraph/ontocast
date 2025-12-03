@@ -253,7 +253,7 @@ class TripleOp(BaseModel):
     type: TypingLiteral["insert", "delete"] = Field(
         description="Type of operation: 'insert' to add triples, 'delete' to remove triples"
     )
-    triples: Annotated[
+    graph: Annotated[
         RDFGraph,
         BeforeValidator(lambda v: RDFGraph._from_str(v) if isinstance(v, str) else v),
     ] = Field(
@@ -289,9 +289,6 @@ class GenericSparqlQuery(BaseModel):
     )
 
 
-Operation = TripleOp | GenericSparqlQuery
-
-
 class GraphUpdate(BaseModel):
     """Structured representation of RDF graph updates for LLM output.
 
@@ -299,12 +296,17 @@ class GraphUpdate(BaseModel):
     Each operation in the list is executed in order to modify the graph.
     """
 
-    operations: list[Operation] = Field(
+    triple_operations: list[TripleOp] = Field(
         default_factory=list,
         description="List of graph update operations in execution order. "
-        "Each operation should be a TripleOp (for insert/delete) with RDFGraph containing triples, "
-        "or a GenericSparqlQuery for complex custom queries. "
+        "Each operation should be a TripleOp (for insert/delete) with RDFGraph containing triples."
         "Example: [TripleOp(type='insert', triples=RDFGraph(...), prefixes={'fca': 'http://example.org/fca#'})]",
+    )
+
+    sparql_operations: list[GenericSparqlQuery] = Field(
+        default_factory=list,
+        description="List of graph update operations in execution order. "
+        "Each operation should be a GenericSparqlQuery for complex custom queries. ",
     )
 
     def generate_sparql_queries(self) -> list[str]:
@@ -317,41 +319,36 @@ class GraphUpdate(BaseModel):
         queries = []
 
         # Process operations in order, generating a query for each operation
-        for op in self.operations:
-            if isinstance(op, TripleOp):
-                if len(op.triples) > 0:  # Only generate query if there are triples
-                    # Build prefix block for this operation
-                    # Start with standard prefixes from COMMON_PREFIXES
-                    prefixes = STANDARD_PREFIXES.copy()
+        for op in self.triple_operations:
+            if len(op.graph) > 0:  # Only generate query if there are triples
+                # Build prefix block for this operation
+                # Start with standard prefixes from COMMON_PREFIXES
+                prefixes = STANDARD_PREFIXES.copy()
 
-                    # Extract prefixes from RDFGraph's namespace bindings
-                    for prefix, uri in op.triples.namespaces():
-                        if prefix:  # Skip empty prefix
-                            prefixes[prefix] = str(uri)
+                # Extract prefixes from RDFGraph's namespace bindings
+                for prefix, uri in op.graph.namespaces():
+                    if prefix:  # Skip empty prefix
+                        prefixes[prefix] = str(uri)
 
-                    # Add custom prefixes declared in this operation (may override standard ones)
-                    prefixes.update(op.prefixes)
+                # Add custom prefixes declared in this operation (may override standard ones)
+                prefixes.update(op.prefixes)
 
-                    # Generate PREFIX declarations block
-                    if prefixes:
-                        prefix_declarations = []
-                        for prefix, uri in prefixes.items():
-                            prefix_declarations.append(f"PREFIX {prefix}: <{uri}>")
-                        prefix_block = "\n".join(prefix_declarations)
-                    else:
-                        prefix_block = ""
+                # Generate PREFIX declarations block
+                if prefixes:
+                    prefix_declarations = []
+                    for prefix, uri in prefixes.items():
+                        prefix_declarations.append(f"PREFIX {prefix}: <{uri}>")
+                    prefix_block = "\n".join(prefix_declarations)
+                else:
+                    prefix_block = ""
 
-                    # Generate query based on operation type
-                    if op.type == "insert":
-                        triple_query = self._generate_insert_query(
-                            op.triples, prefix_block
-                        )
-                    else:  # delete
-                        triple_query = self._generate_delete_query(
-                            op.triples, prefix_block
-                        )
-                    queries.append(triple_query)
-            elif isinstance(op, GenericSparqlQuery):
+                # Generate query based on operation type
+                if op.type == "insert":
+                    triple_query = self._generate_insert_query(op.graph, prefix_block)
+                else:  # delete
+                    triple_query = self._generate_delete_query(op.graph, prefix_block)
+                queries.append(triple_query)
+            for op in self.sparql_operations:
                 if op.query.strip():  # Only generate query if there's content
                     # For custom SPARQL queries, use them as-is
                     queries.append(op.query)
@@ -366,10 +363,10 @@ class GraphUpdate(BaseModel):
             - total_triples: Total number of triples across all TripleOp operations
         """
         total_triples = 0
-        for op in self.operations:
+        for op in self.triple_operations:
             if isinstance(op, TripleOp):
-                total_triples += len(op.triples)
-        return (len(self.operations), total_triples)
+                total_triples += len(op.graph)
+        return (len(self.triple_operations), total_triples)
 
     def generate_diff_summary(self) -> str:
         """Generate a human-readable diff summary of all operations for LLM consumption.
@@ -378,22 +375,22 @@ class GraphUpdate(BaseModel):
             String representation of all operations showing what will be added, removed, and modified.
             Returns empty string if no operations to perform.
         """
-        if not self.operations:
+        if not self.triple_operations:
             return ""
 
         diff_parts = []
         operation_count = 0
 
-        for i, op in enumerate(self.operations, 1):
+        for i, op in enumerate(self.triple_operations, 1):
             if isinstance(op, TripleOp):
-                if len(op.triples) > 0:
+                if len(op.graph) > 0:
                     op_type = op.type.upper()
-                    diff_parts.append(f"{i}. {op_type} {len(op.triples)} triple(s):")
+                    diff_parts.append(f"{i}. {op_type} {len(op.graph)} triple(s):")
 
                     # Show prefixes from graph and explicit prefixes
                     graph_prefixes = {
                         prefix: str(uri)
-                        for prefix, uri in op.triples.namespaces()
+                        for prefix, uri in op.graph.namespaces()
                         if prefix
                     }
                     all_prefixes = {**graph_prefixes, **op.prefixes}
@@ -403,7 +400,7 @@ class GraphUpdate(BaseModel):
                         )
                         diff_parts.append(f"   Prefixes: {prefix_list}")
 
-                    for subject, predicate, obj in op.triples:
+                    for subject, predicate, obj in op.graph:
                         symbol = "+" if op.type == "insert" else "-"
                         diff_parts.append(
                             f"   {symbol} {self._serialize_rdf_term(subject)} {self._serialize_rdf_term(predicate)} {self._serialize_rdf_term(obj)}"

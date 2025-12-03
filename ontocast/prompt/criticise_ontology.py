@@ -16,7 +16,7 @@ template_prompt = """
 
 intro_instruction = """
 You are given a text and an ontology.
-You task is to evaluate if the ontology is adequate and provide a constructive critique of the ontology with respect to provided text.
+You task is to evaluate the quality of the ontology with respect to the provided doc and provide a constructive critique of the ontology with respect to provided text.
 """
 
 

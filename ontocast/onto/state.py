@@ -334,7 +334,7 @@ class AgentState(BasePydanticModel):
 
         all_prefixes = {}
         for graph_update in updates:
-            for op in graph_update.operations:
+            for op in graph_update.triple_operations:
                 # Extract prefixes from TripleOp operations
                 if isinstance(op, TripleOp) and op.prefixes:
                     all_prefixes.update(op.prefixes)

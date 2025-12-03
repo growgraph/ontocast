@@ -216,77 +216,10 @@ class RDFGraph(Graph):
         Returns:
             RDFGraph: A new RDFGraph instance.
         """
-        # Sanitize control characters and problematic patterns that might be inserted by LLMs
-        import re
-        import string
-
-        original_str = turtle_str
-
-        # Remove literal '^b' or "^b" patterns (which might be how LLMs represent backspace)
-        # Handle various quote combinations: '^b', "^b", '^b", "^b', etc.
-        # Use a more aggressive pattern that handles any combination of quotes
-        turtle_str = re.sub(r"['\"]?\^[a-z]['\"]?", "", turtle_str)
-        # Also handle cases where there might be no quotes: ^bfcaont
-        turtle_str = re.sub(r"\^[a-z](?=[a-zA-Z])", "", turtle_str)
-
-        # Remove actual control characters (ASCII 0-31 except newline, tab, carriage return)
-        # Keep printable characters and whitespace
-        allowed_chars = set(string.printable)
-        turtle_str = "".join(
-            c for c in turtle_str if c in allowed_chars or ord(c) >= 0x20
-        )
-
-        # Note: We removed unicode_escape decoding as it can reintroduce control characters
-        # and is not necessary for valid Turtle syntax from LLMs
-
-        # Final verification and cleanup - be more aggressive
-        iterations = 0
-        while (
-            "'^" in turtle_str
-            or '"^' in turtle_str
-            or re.search(r"\^[a-z]", turtle_str)
-        ) and iterations < 10:
-            turtle_str = re.sub(r"['\"]?\^[a-z]['\"]?", "", turtle_str)
-            turtle_str = re.sub(r"\^[a-z](?=[a-zA-Z])", "", turtle_str)
-            iterations += 1
-
-        # Log if we found and removed control characters
-        if "'^b'" in original_str or '"^b"' in original_str or "^b" in original_str:
-            logger.debug(
-                f"Removed control character patterns from Turtle string (original length: {len(original_str)}, sanitized length: {len(turtle_str)})"
-            )
-
+        turtle_str = bytes(turtle_str, "utf-8").decode("unicode_escape")
         patched_turtle = cls._ensure_prefixes(turtle_str)
         g = cls()
-        try:
-            g.parse(data=patched_turtle, format="turtle")
-        except Exception as e:
-            # rdflib's error message often shows the original string from its internal buffer,
-            # which can be misleading. Check if the sanitized string is actually valid.
-            # If the error mentions control characters, the sanitization might have failed.
-            error_str = str(e)
-            if "'^b'" in error_str or '"^b"' in error_str or "^b" in error_str:
-                # The error message contains the pattern, but our sanitized string should be clean
-                # Log the actual sanitized content around the problematic area for debugging
-                lines = patched_turtle.split("\n")
-                problematic_line_idx = None
-                for i, line in enumerate(lines):
-                    if "Appeal" in line or "subClassOf" in line:
-                        problematic_line_idx = i
-                        break
-                if problematic_line_idx is not None:
-                    context_start = max(0, problematic_line_idx - 2)
-                    context_end = min(len(lines), problematic_line_idx + 3)
-                    context = "\n".join(lines[context_start:context_end])
-                    logger.error(
-                        f"Turtle parsing failed. Context around problematic line:\n{context}"
-                    )
-                    logger.error(f"Full error (may show original string): {e}")
-                else:
-                    logger.error(f"Turtle parsing failed. Error: {e}")
-            else:
-                logger.error(f"Turtle parsing failed. Error: {e}")
-            raise
+        g.parse(data=patched_turtle, format="turtle")
         return g
 
     @classmethod

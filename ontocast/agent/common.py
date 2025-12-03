@@ -127,57 +127,6 @@ async def call_llm_with_retry(
             response = await llm_tool(prompt.format_prompt(**attempt_kwargs))
             content_to_parse = response.content
 
-            # Sanitize content to remove control characters that LLMs might insert
-            # This prevents parsing errors from characters like '^b' (backspace)
-            # We sanitize the JSON string values before Pydantic parses them
-            import json
-            import re
-            import string
-
-            # Try to parse as JSON first and sanitize string values within
-            try:
-                # Parse JSON to access string values
-                json_data = json.loads(content_to_parse)
-
-                def sanitize_strings(obj):
-                    """Recursively sanitize string values in JSON."""
-                    if isinstance(obj, dict):
-                        return {k: sanitize_strings(v) for k, v in obj.items()}
-                    elif isinstance(obj, list):
-                        return [sanitize_strings(item) for item in obj]
-                    elif isinstance(obj, str):
-                        # Remove control character patterns
-                        s = re.sub(r"['\"]?\^[a-z]['\"]?", "", obj)
-                        s = re.sub(r"\^[a-z](?=[a-zA-Z])", "", s)
-                        # Remove actual control characters
-                        allowed_chars = set(string.printable)
-                        s = "".join(
-                            c for c in s if c in allowed_chars or ord(c) >= 0x20
-                        )
-                        return s
-                    return obj
-
-                # Sanitize all string values in the JSON
-                json_data = sanitize_strings(json_data)
-                # Re-serialize to JSON string for parser
-                content_to_parse = json.dumps(json_data)
-            except (json.JSONDecodeError, ValueError):
-                # If not valid JSON, sanitize as plain text
-                content_to_parse = re.sub(r"['\"]?\^[a-z]['\"]?", "", content_to_parse)
-                content_to_parse = re.sub(r"\^[a-z](?=[a-zA-Z])", "", content_to_parse)
-                allowed_chars = set(string.printable)
-                content_to_parse = "".join(
-                    c for c in content_to_parse if c in allowed_chars or ord(c) >= 0x20
-                )
-
-            # Store sanitized content for error feedback
-            last_sanitized_content = (
-                content_to_parse[:500]
-                if len(content_to_parse) > 500
-                else content_to_parse
-            )
-
-            # Try to parse
             parsed = parser.parse(content_to_parse)
             logger.debug(
                 f"Successfully parsed LLM response on attempt {attempt + 1}/{max_retries}"

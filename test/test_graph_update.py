@@ -162,10 +162,10 @@ def test_graph_update_with_language_tags():
     )
 
     graph_update = GraphUpdate(
-        operations=[
+        triple_operations=[
             TripleOp(
                 type="insert",
-                triples=combined_jsonld,  # type: ignore[arg-type]
+                graph=combined_jsonld,  # type: ignore[arg-type]
                 prefixes={"ex": "http://example.org/"},
             )
         ]
@@ -221,10 +221,10 @@ def test_graph_update_insert_operation(format_type: str):
         """
 
     graph_update = GraphUpdate(
-        operations=[
+        triple_operations=[
             TripleOp(
                 type="insert",
-                triples=triples,  # type: ignore[arg-type]
+                graph=triples,  # type: ignore[arg-type]
                 prefixes={"ex": "http://example.org/"},
             )
         ]
@@ -282,10 +282,10 @@ def test_graph_update_delete_operation():
     )
 
     graph_update = GraphUpdate(
-        operations=[
+        triple_operations=[
             TripleOp(
                 type="delete",
-                triples=triples,  # type: ignore[arg-type]
+                graph=triples,  # type: ignore[arg-type]
                 prefixes={"ex": "http://example.org/"},
             )
         ]
@@ -346,10 +346,10 @@ def test_graph_update_with_prefixes():
     )
 
     graph_update = GraphUpdate(
-        operations=[
+        triple_operations=[
             TripleOp(
                 type="insert",
-                triples=triples,  # type: ignore[arg-type]
+                graph=triples,  # type: ignore[arg-type]
                 prefixes={
                     "ex": "http://example.org/",
                     "schema": "https://schema.org/",
@@ -423,11 +423,11 @@ def test_graph_update_mixed_operations_ordered():
     )
 
     graph_update = GraphUpdate(
-        operations=[
+        triple_operations=[
             # First: Insert new person with custom schema prefix
             TripleOp(
                 type="insert",
-                triples=insert_jane,  # type: ignore[arg-type]
+                graph=insert_jane,  # type: ignore[arg-type]
                 prefixes={
                     "ex": "http://example.org/",
                     "schema": "https://schema.org/",
@@ -436,13 +436,13 @@ def test_graph_update_mixed_operations_ordered():
             # Second: Delete John's label
             TripleOp(
                 type="delete",
-                triples=delete_john_label,  # type: ignore[arg-type]
+                graph=delete_john_label,  # type: ignore[arg-type]
                 prefixes={"ex": "http://example.org/"},
             ),
             # Third: Insert new label for John
             TripleOp(
                 type="insert",
-                triples=insert_john_label,  # type: ignore[arg-type]
+                graph=insert_john_label,  # type: ignore[arg-type]
                 prefixes={"ex": "http://example.org/"},
             ),
         ]
@@ -511,7 +511,7 @@ def test_graph_update_generic_sparql_query():
     # Create GraphUpdate with GenericSparqlQuery
     # Note: GenericSparqlQuery handles its own prefix declarations
     graph_update = GraphUpdate(
-        operations=[
+        sparql_operations=[
             GenericSparqlQuery(
                 query="PREFIX ex: <http://example.org/>\nPREFIX schema: <https://schema.org/>\nPREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>\nINSERT { ex:John schema:age 30 } WHERE { ex:John rdf:type ex:Person }"
             ),
@@ -554,7 +554,7 @@ def test_graph_update_empty_operations():
     initial_triple_count = len(graph)
 
     # Create GraphUpdate with empty operations
-    graph_update = GraphUpdate(operations=[])
+    graph_update = GraphUpdate(triple_operations=[])
 
     # Generate SPARQL queries
     queries = graph_update.generate_sparql_queries()
@@ -581,9 +581,9 @@ def test_graph_update_operations_with_empty_triples():
 
     # Create GraphUpdate with operations that have empty triples
     graph_update = GraphUpdate(
-        operations=[
-            TripleOp(type="insert", triples=RDFGraph()),
-            TripleOp(type="delete", triples=RDFGraph()),
+        triple_operations=[
+            TripleOp(type="insert", graph=RDFGraph()),
+            TripleOp(type="delete", graph=RDFGraph()),
         ]
     )
 

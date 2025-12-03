@@ -616,12 +616,12 @@ class Ontology(OntologyPropertiesWithLineage):
         instance_changes = 0
 
         for update in updates:
-            for op in update.operations:
+            for op in update.triple_operations:
                 if isinstance(op, TripleOp):
                     if op.type == "delete":
-                        total_deletes += len(op.triples)
+                        total_deletes += len(op.graph)
                         # Check if deleting core ontology constructs
-                        for subject, predicate, object_ in op.triples:
+                        for subject, predicate, object_ in op.graph:
                             predicate_str = str(predicate)
                             object_str = str(object_)
                             if "rdf:type" in predicate_str:
@@ -637,9 +637,9 @@ class Ontology(OntologyPropertiesWithLineage):
                                     elif "owl:ontology" in object_str:
                                         class_changes += 1
                     else:  # insert
-                        total_inserts += len(op.triples)
+                        total_inserts += len(op.graph)
                         # Check if adding core ontology constructs
-                        for subject, predicate, object_ in op.triples:
+                        for subject, predicate, object_ in op.graph:
                             predicate_str = str(predicate)
                             object_str = str(object_)
                             if "rdf:type" in predicate_str:

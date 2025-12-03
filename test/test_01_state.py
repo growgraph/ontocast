@@ -86,10 +86,10 @@ def test_render_updated_graph():
 
     # Create a GraphUpdate that adds a new triple using JSON-LD
     graph_update = GraphUpdate(
-        operations=[
+        triple_operations=[
             TripleOp(
                 type="insert",
-                triples="""{
+                graph="""{
   "@context": {
     "ex": "http://example.com/"
   },
@@ -142,10 +142,10 @@ def test_render_uptodate_facts():
     # Create a facts update using JSON-LD
     state.facts_updates = [
         GraphUpdate(
-            operations=[
+            triple_operations=[
                 TripleOp(
                     type="insert",
-                    triples="""{
+                    graph="""{
   "@context": {
     "ex": "http://example.com/"
   },
@@ -194,10 +194,10 @@ def test_update_facts():
     # Create a facts update using JSON-LD
     state.facts_updates = [
         GraphUpdate(
-            operations=[
+            triple_operations=[
                 TripleOp(
                     type="insert",
-                    triples="""{
+                    graph="""{
   "@context": {
     "ex": "http://example.com/"
   },
