@@ -3,7 +3,7 @@ FROM python:3.12-slim-bullseye AS builder
 
 RUN apt update -y \
  && apt install -y curl git \
- && curl -LsSf https://astral.sh/uv/0.7.11/install.sh | sh \
+ && curl -LsSf https://astral.sh/uv/0.9.5/install.sh | sh \
  && rm -rf /var/lib/apt/lists/*
 
 ENV PATH="${PATH}:/root/.local/bin"

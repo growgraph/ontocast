@@ -21,21 +21,94 @@ from ontocast.toolbox import ToolBox
 logger = logging.getLogger(__name__)
 
 
-async def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
-    """Select an appropriate ontology for the current chunk.
+def _create_document_excerpt(state: AgentState, max_length: int = 3000) -> str:
+    """Create a representative excerpt from the document for ontology selection.
 
-    This function analyzes the current chunk and selects the most appropriate
-    ontology based on its content and requirements using a numbered list selection.
+    This function samples text from multiple chunks to provide a better
+    representation of the document content than just the first chunk.
 
     Args:
-        state: The current agent state containing the chunk to process.
+        state: The current agent state.
+        max_length: Maximum total length of the excerpt.
+
+    Returns:
+        str: A representative excerpt from the document.
+    """
+    excerpt_parts = []
+    total_length = 0
+    chunk_length = max_length // 3  # Aim for ~3 chunks, ~1000 chars each
+
+    # Strategy: Sample from first, middle, and last chunks if available
+    if state.chunks:
+        num_chunks = len(state.chunks)
+        indices_to_sample = []
+
+        if num_chunks == 1:
+            indices_to_sample = [0]
+        elif num_chunks == 2:
+            indices_to_sample = [0, 1]
+        else:
+            # Sample first, middle, and last
+            indices_to_sample = [0, num_chunks // 2, num_chunks - 1]
+
+        for idx in indices_to_sample:
+            if idx < num_chunks and total_length < max_length:
+                chunk_text = state.chunks[idx].text
+                # Take a portion of this chunk
+                remaining = max_length - total_length
+                sample_length = min(chunk_length, remaining, len(chunk_text))
+
+                if sample_length > 0:
+                    if sample_length < len(chunk_text):
+                        excerpt_parts.append(chunk_text[:sample_length] + " ...")
+                    else:
+                        excerpt_parts.append(chunk_text)
+                    total_length += sample_length
+
+        if excerpt_parts:
+            return "\n\n[...]\n\n".join(excerpt_parts)
+
+    # Fallback: Use input_text if available
+    if state.input_text:
+        if len(state.input_text) <= max_length:
+            return state.input_text
+        return state.input_text[:max_length] + " ..."
+
+    # Last resort: Use current_chunk
+    if state.current_chunk and state.current_chunk.text:
+        chunk_text = state.current_chunk.text
+        if len(chunk_text) <= max_length:
+            return chunk_text
+        return chunk_text[:max_length] + " ..."
+
+    return ""
+
+
+async def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
+    """Select an appropriate ontology for the document.
+
+    This function analyzes the document and selects the most appropriate
+    ontology based on its content and requirements using a numbered list selection.
+    If an ontology is already selected, it skips selection to ensure one ontology
+    per document.
+
+    Args:
+        state: The current agent state containing the document to process.
         tools: The toolbox instance providing utility functions.
 
     Returns:
         AgentState: Updated state with selected ontology.
     """
+    # Skip if ontology already selected (for subsequent chunks in the loop)
+    if not state.current_ontology.is_null():
+        logger.debug(
+            f"Ontology already selected: {state.current_ontology.ontology_id}, "
+            "skipping selection to maintain one ontology per document"
+        )
+        return state
+
     progress_info = state.get_chunk_progress_string()
-    logger.info(f"Selecting ontology for {progress_info}")
+    logger.info(f"Selecting ontology for document ({progress_info})")
     llm_tool = tools.llm
     om_tool: OntologyManager = tools.ontology_manager
 
@@ -54,7 +127,8 @@ async def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
 
         logger.info(f"Presenting {num_ontologies} ontologies for selection")
 
-        excerpt = state.current_chunk.text[:1000] + " ..."
+        # Create a better document excerpt using multiple chunks
+        excerpt = _create_document_excerpt(state, max_length=3000)
 
         # Create dynamic model with correct constraint
         ontology_selector_report_model = create_ontology_selector_report_model(
