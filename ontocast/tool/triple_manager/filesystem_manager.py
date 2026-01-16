@@ -110,7 +110,7 @@ class FilesystemTripleStoreManager(TripleStoreManager):
         graph.serialize(format="turtle", destination=output_path)
         logger.info(f"Graph saved to {output_path}")
 
-    def serialize(self, o: Ontology | RDFGraph, graph_uri: str | None = None):
+    def serialize(self, o: Ontology | RDFGraph, graph_uri: str | None = None):  # type: ignore[override]
         if isinstance(o, Ontology):
             graph = o.graph
             fname = f"ontology_{o.ontology_id}_{o.version}.ttl"

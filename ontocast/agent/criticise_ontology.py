@@ -5,7 +5,7 @@ This module provides enhanced functionality for analyzing and validating ontolog
 
 import logging
 
-from langchain.output_parsers import PydanticOutputParser
+from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry

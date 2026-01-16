@@ -145,10 +145,17 @@ def main(input_path, output_path, prefix):
     input_path = input_path.expanduser()
     output_path = output_path.expanduser()
 
-    chunker = ChunkerTool(
-        breakpoint_threshold_amount=95,
+    from ontocast.config import ChunkConfig
+
+    chunk_config = ChunkConfig(
+        breakpoint_threshold_amount=95.0,
         breakpoint_threshold_type="percentile",
-        max_chunk_size=20000,
+        max_size=4000,  # Match the reported issue parameters
+        min_size=2000,  # Match the reported issue parameters
+    )
+
+    chunker = ChunkerTool(
+        chunk_config=chunk_config,
         model="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
     )
 

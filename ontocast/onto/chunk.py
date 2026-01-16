@@ -47,3 +47,6 @@ class Chunk(BaseModel):
     def sanitize(self):
         self.graph = self.graph.unbind_chunk_namespaces()
         self.graph.sanitize_prefixes_namespaces()
+
+    def __len__(self):
+        return len(self.text)

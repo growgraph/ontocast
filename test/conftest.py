@@ -1,11 +1,25 @@
 """Pytest configuration for test suite."""
 
+import hashlib
+import json
 import os
 import warnings
 from pathlib import Path
 
 import pytest
+from langchain_core.embeddings import Embeddings
 from suthing import FileHandle
+
+# Try to import real embeddings
+try:
+    import torch
+    from langchain_huggingface import HuggingFaceEmbeddings
+
+    REAL_EMBEDDINGS_AVAILABLE = True
+except ImportError:
+    HuggingFaceEmbeddings = None  # type: ignore
+    torch = None  # type: ignore
+    REAL_EMBEDDINGS_AVAILABLE = False
 
 from ontocast.config import (
     Config,
@@ -296,7 +310,7 @@ def max_iter():
 @pytest.fixture
 def apple_report():
     r = FileHandle.load(Path("data/json/fin.10Q.apple.json"))
-    return {"text": r["text"]}  # type: ignore[index]
+    return {"text": r["text"]}
 
 
 @pytest.fixture
@@ -338,6 +352,156 @@ def fuseki_triple_store_manager():
     if auth and "/" in auth:
         auth = tuple(auth.split("/", 1))
     return MockFusekiTripleStoreManager(uri=uri, auth=auth, dataset="test", clean=True)
+
+
+class MockEmbeddings(Embeddings):
+    """Mock embeddings for testing.
+
+    Returns deterministic embeddings based on text content.
+    """
+
+    def __init__(self, embedding_dim: int = 384):
+        """Initialize mock embeddings.
+
+        Args:
+            embedding_dim: Dimension of the embedding vectors. Defaults to 384.
+        """
+        self.embedding_dim = embedding_dim
+        # Simple hash-based embedding for deterministic results
+        self._cache: dict[str, list[float]] = {}
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """Generate embeddings for a list of texts."""
+        return [self.embed_query(text) for text in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        """Generate an embedding for a single text."""
+        if text in self._cache:
+            return self._cache[text]
+
+        hash_obj = hashlib.md5(text.encode())
+        hash_int = int(hash_obj.hexdigest(), 16)
+
+        embedding = []
+        for i in range(self.embedding_dim):
+            val = (hash_int + i * 17) % 1000
+            embedding.append((val / 1000.0) - 0.5)
+
+        self._cache[text] = embedding
+        return embedding
+
+
+@pytest.fixture(scope="session")
+def real_embeddings():
+    """Fixture providing real HuggingFace embeddings if available, otherwise None.
+
+    Uses the same model as in split_chunks.py for consistency.
+    Session-scoped so the model is loaded only once per test session and reused.
+    """
+    if not REAL_EMBEDDINGS_AVAILABLE or HuggingFaceEmbeddings is None:
+        return None
+
+    try:
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+            model_kwargs={
+                "device": "cuda"
+                if torch is not None and torch.cuda.is_available()
+                else "cpu"
+            },
+            encode_kwargs={"normalize_embeddings": False},
+        )
+        return embeddings
+    except Exception:
+        return None
+
+
+@pytest.fixture(scope="session")
+def mock_embeddings():
+    """Fixture providing a mock embeddings instance. Session-scoped for consistency."""
+    return MockEmbeddings()
+
+
+@pytest.fixture(scope="session")
+def embeddings(real_embeddings, mock_embeddings):
+    """Fixture providing embeddings - prefers real embeddings, falls back to mock.
+
+    Session-scoped so the model is loaded only once per test session.
+    """
+    if real_embeddings is not None:
+        return real_embeddings
+    return mock_embeddings
+
+
+@pytest.fixture
+def sample_text():
+    """Fixture providing realistic sample text (~10k characters) from clinical trial JSON."""
+    json_file = (
+        Path(__file__).parent.parent
+        / "data"
+        / "json"
+        / "clinical.trials.NCT01239745.json"
+    )
+    if json_file.exists():
+        data = json.load(open(json_file))
+
+        def json_to_md(data, depth=1):
+            md = []
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    if isinstance(value, (str, int, float, bool, type(None))):
+                        md.append(f"{key}: {value}\n")
+                    elif isinstance(value, dict):
+                        md.append(f"{key}:\n")
+                        md.extend(json_to_md(value, depth + 1))
+                    elif isinstance(value, list):
+                        md.append(f"{key}:\n")
+                        for item in value:
+                            if isinstance(item, (str, int, float, bool, type(None))):
+                                md.append(f"  - {item}\n")
+                            else:
+                                md.extend(json_to_md(item, depth + 1))
+            elif isinstance(data, list):
+                for item in data:
+                    if isinstance(item, (str, int, float, bool, type(None))):
+                        md.append(f"- {item}\n")
+                    else:
+                        md.extend(json_to_md(item, depth))
+            return md
+
+        text_lines = json_to_md(data)
+        text = "".join(text_lines)
+        return text[:10000]
+
+    # Fallback
+    return (
+        "This is the first sentence. "
+        "This is the second sentence. "
+        "This is the third sentence. "
+        "This is the fourth sentence. "
+        "This is the fifth sentence. "
+        "This is the sixth sentence. "
+        "This is the seventh sentence. "
+        "This is the eighth sentence. "
+        "This is the ninth sentence. "
+        "This is the tenth sentence."
+    ) * 100
+
+
+@pytest.fixture
+def long_text():
+    """Fixture providing longer text for testing min/max size constraints."""
+    paragraphs = []
+    for i in range(5):
+        sentences = []
+        for j in range(10):
+            sentences.append(
+                f"This is paragraph {i + 1}, sentence {j + 1}. "
+                f"It contains some content to make it longer. "
+                f"Here is more text to ensure we have enough characters."
+            )
+        paragraphs.append(" ".join(sentences))
+    return "\n\n".join(paragraphs)
 
 
 def triple_store_roundtrip(manager, test_ontology):

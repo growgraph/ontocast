@@ -64,7 +64,7 @@ class TripleStoreManager(Tool):
         pass
 
     @abc.abstractmethod
-    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> bool | None:
+    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> bool | None:  # type: ignore[override]
         """Store an RDF graph in the triple store.
 
         This method should store the given RDF graph in the triple store.

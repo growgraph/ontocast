@@ -548,8 +548,15 @@ class ChunkRDFGraphAggregator:
 
     def _get_best_label(self, metadata_list: list[EntityMetadata | None]) -> str | None:
         """Get the best label from a list of entity metadata."""
-        labels = [m.label for m in metadata_list if m and m.label]
-        return max(labels, key=len) if labels else None
+        labels: list[str] = [
+            m.label for m in metadata_list if m and m.label is not None
+        ]
+        if not labels:
+            return None
+        # Type assertion: labels is list[str], so max() with key=len returns str
+        result = max(labels, key=len)
+        assert isinstance(result, str)
+        return result
 
     def _get_merged_predicate_info(
         self, originals: list[URIRef], all_predicates: dict[URIRef, PredicateMetadata]

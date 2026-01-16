@@ -7,10 +7,11 @@ domain and requirements of the text.
 
 import logging
 
-from langchain.output_parsers import PydanticOutputParser
-from langchain.prompts import PromptTemplate
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry
+from ontocast.onto.enum import Status
 from ontocast.onto.model import create_ontology_selector_report_model
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.state import AgentState
@@ -120,9 +121,7 @@ async def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
         ontologies_list_lines = []
         for i, ontology in enumerate(ontologies, start=1):
             ontologies_list_lines.append(f"{i}. {ontology.describe()}")
-        ontologies_list_lines.append(
-            f"{len(ontologies) + 1}. None of the ontologies matches the text"
-        )
+
         ontologies_list = "\n\n".join(ontologies_list_lines)
 
         logger.info(f"Presenting {num_ontologies} ontologies for selection")
@@ -159,9 +158,10 @@ async def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
         )
 
         # Map answer_index to ontology
+        # answer_index: 0 -> select None
         # answer_index: 1 to num_ontologies -> select ontology at (answer_index - 1)
-        # answer_index: num_ontologies + 1 -> select None
-        if selector.answer_index == num_ontologies + 1:
+        state.status = Status.FAILED
+        if selector.answer_index == 0:
             # None selected
             logger.debug("LLM selected: None (no suitable ontology)")
             state.current_ontology = NULL_ONTOLOGY
@@ -173,11 +173,11 @@ async def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
                 f"{selected_ontology.ontology_id} ({selected_ontology.iri})"
             )
             state.current_ontology = selected_ontology
+            state.status = Status.SUCCESS
         else:
             # This should not happen due to Pydantic validation, but handle gracefully
             logger.warning(
-                f"Invalid answer_index {selector.answer_index} "
-                f"(expected 1-{num_ontologies + 1}), defaulting to NULL_ONTOLOGY"
+                f"Invalid answer_index {selector.answer_index} defaulting to NULL_ONTOLOGY"
             )
             state.current_ontology = NULL_ONTOLOGY
     else:
@@ -191,4 +191,5 @@ async def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
         )
 
     logger.debug(f"Current ontology set to: {state.current_ontology.ontology_id}")
+
     return state

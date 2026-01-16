@@ -32,8 +32,13 @@ def chunk_text(state: AgentState, tools: ToolBox) -> AgentState:
     logger.info("Chunking the text")
     if state.input_text is not None:
         chunks_txt: list[str] = tools.chunker(state.input_text)
+        logger.info(
+            f"Created {len(chunks_txt)} chunks for processing: {[len(c) for c in chunks_txt]}"
+        )
 
         if state.max_chunks is not None:
+            logger.info(f"Selecting {state.max_chunks} chunks")
+
             chunks_txt = chunks_txt[: state.max_chunks]
 
         for chunk_txt in chunks_txt:
@@ -45,7 +50,9 @@ def chunk_text(state: AgentState, tools: ToolBox) -> AgentState:
                 )
             )
 
-        logger.info(f"Created {len(state.chunks)} chunks for processing")
+        logger.info(
+            f"Created {len(state.chunks)} chunks for processing: {[len(c) for c in state.chunks]}"
+        )
         state.status = Status.SUCCESS
     else:
         state.status = Status.FAILED

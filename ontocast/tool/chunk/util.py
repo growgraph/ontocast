@@ -1,306 +1,292 @@
 import copy
 import re
-from typing import Any, Iterable, Literal, Sequence, cast
+from typing import Any, Iterable, List, Sequence
 
 import numpy as np
-from langchain_community.utils.math import cosine_similarity
+from hdbscan import HDBSCAN
 from langchain_core.documents import BaseDocumentTransformer, Document
 from langchain_core.embeddings import Embeddings
+from sklearn.decomposition import PCA
+from umap import UMAP
 
-BreakpointThresholdType = Literal[
-    "percentile", "standard_deviation", "interquartile", "gradient"
-]
-BREAKPOINT_DEFAULTS: dict[BreakpointThresholdType, float] = {
-    "percentile": 95,
-    "standard_deviation": 3,
-    "interquartile": 1.5,
-    "gradient": 95,
-}
+from ontocast.config import ChunkConfig
+
+# Regex pattern for splitting text into sentences
+# Matches: paragraph breaks (double newlines) OR sentence endings followed by capital letters
+SENTENCE_SPLIT_REGEX = r"(?:\n\s*\n+)|(?<=[.!?])\s+(?=[A-Z][a-z])"
 
 
 class SemanticChunker(BaseDocumentTransformer):
-    """Split the text based on semantic similarity.
-
-    Taken from Greg Kamradt's wonderful notebook:
-    https://github.com/FullStackRetrieval-com/RetrievalTutorials/blob/main/tutorials/LevelsOfTextSplitting/5_Levels_Of_Text_Splitting.ipynb
-
-    All credits to him.
-
-    At a high level, this splits into sentences, then groups into groups of 3
-    sentences, and then merges one that are similar in the embedding space.
-    """
-
     def __init__(
         self,
         embeddings: Embeddings,
-        buffer_size: int = 1,
-        add_start_index: bool = False,
-        breakpoint_threshold_type: BreakpointThresholdType = "percentile",
-        breakpoint_threshold_amount: float | None = None,
-        number_of_chunks: int | None = None,
-        sentence_split_regex: str = r"(?<=[.?!])\s+",
-        min_chunk_size: int | None = None,
+        chunk_config: ChunkConfig,
+        sentence_split_regex: str,
     ):
-        self._add_start_index = add_start_index
+        """Initialize SemanticChunker.
+
+        Args:
+            embeddings: Embeddings model for generating sentence embeddings.
+            chunk_config: Chunking configuration containing min_size, max_size, etc.
+            sentence_split_regex: Regular expression pattern for splitting text into sentences.
+        """
         self.embeddings = embeddings
-        self.buffer_size = buffer_size
-        self.breakpoint_threshold_type = breakpoint_threshold_type
-        self.number_of_chunks = number_of_chunks
+        self.chunk_config = chunk_config
+        self.min_size = chunk_config.min_size
+        self.max_size = chunk_config.max_size
         self.sentence_split_regex = sentence_split_regex
-        if breakpoint_threshold_amount is None:
-            self.breakpoint_threshold_amount = BREAKPOINT_DEFAULTS[
-                breakpoint_threshold_type
-            ]
-        else:
-            self.breakpoint_threshold_amount = breakpoint_threshold_amount
-        self.min_chunk_size = min_chunk_size
 
-    def _calculate_breakpoint_threshold(
-        self, distances: list[float]
-    ) -> tuple[float, list[float]]:
-        if self.breakpoint_threshold_type == "percentile":
-            return cast(
-                float,
-                np.percentile(distances, self.breakpoint_threshold_amount),
-            ), distances
-        elif self.breakpoint_threshold_type == "standard_deviation":
-            return (
-                float(
-                    np.mean(distances)
-                    + self.breakpoint_threshold_amount * np.std(distances)
-                ),
-                distances,
-            )
-        elif self.breakpoint_threshold_type == "interquartile":
-            # Calculate percentiles separately to avoid type issues
-            q1 = float(np.percentile(distances, 25))
-            q3 = float(np.percentile(distances, 75))
-            iqr = q3 - q1
-
-            return (
-                float(np.mean(distances) + self.breakpoint_threshold_amount * iqr),
-                distances,
-            )
-        elif self.breakpoint_threshold_type == "gradient":
-            # Calculate the threshold based on the distribution of gradient of distance array. # noqa: E501
-            distance_gradient = np.gradient(distances, range(0, len(distances)))
-            return cast(
-                float,
-                np.percentile(distance_gradient, self.breakpoint_threshold_amount),
-            ), distance_gradient
-        else:
-            # This should never happen due to Literal type, but helps with type checking
-            raise ValueError(
-                f"Got unexpected `breakpoint_threshold_type`: "
-                f"{self.breakpoint_threshold_type}"
-            )
-
-    def _threshold_from_clusters(self, distances: list[float]) -> float:
-        """
-        Calculate the threshold based on the number of chunks.
-        Inverse of percentile method.
-        """
-        if self.number_of_chunks is None:
-            raise ValueError(
-                "This should never be called if `number_of_chunks` is None."
-            )
-        x1, y1 = len(distances), 0.0
-        x2, y2 = 1.0, 100.0
-
-        x = max(min(self.number_of_chunks, x1), x2)
-
-        # Linear interpolation formula
-        if x2 == x1:
-            y = y2
-        else:
-            y = y1 + ((y2 - y1) / (x2 - x1)) * (x - x1)
-
-        y = min(max(y, 0), 100)
-
-        return cast(float, np.percentile(distances, y))
-
-    def _calculate_sentence_distances(
-        self, single_sentences_list: list[str]
-    ) -> tuple[list[float], list[dict]]:
-        """Split text into multiple components."""
-
-        _sentences = [
-            {"sentence": x, "index": i} for i, x in enumerate(single_sentences_list)
-        ]
-        sentences = combine_sentences(_sentences, self.buffer_size)
-        embeddings = self.embeddings.embed_documents(
-            [x["combined_sentence"] for x in sentences]
-        )
-        for i, sentence in enumerate(sentences):
-            sentence["combined_sentence_embedding"] = embeddings[i]
-
-        return calculate_cosine_distances(sentences)
-
-    def split_text(
+    def _build_sentence_windows(
         self,
-        text: str,
-    ) -> list[str]:
-        # Splitting the essay (by default on '.', '?', and '!')
-        single_sentences_list = re.split(self.sentence_split_regex, text)
-        single_sentences_list = [
-            s.strip() for s in single_sentences_list if s is not None
-        ]
-        single_sentences_list = [s for s in single_sentences_list if s]
+        sentences: List[str],
+        window_size: int = 5,
+    ) -> List[str]:
+        if len(sentences) <= window_size:
+            return [" ".join(sentences)]
 
-        # having len(single_sentences_list) == 1 would cause the following
-        # np.percentile to fail.
-        if len(single_sentences_list) == 1:
-            return single_sentences_list
-        # similarly, the following np.gradient would fail
-        if (
-            self.breakpoint_threshold_type == "gradient"
-            and len(single_sentences_list) == 2
-        ):
-            return single_sentences_list
-        distances, sentences = self._calculate_sentence_distances(single_sentences_list)
-        if self.number_of_chunks is not None:
-            breakpoint_distance_threshold = self._threshold_from_clusters(distances)
-            breakpoint_array = distances
+        windows = []
+        for i in range(len(sentences)):
+            start = max(0, i - window_size // 2)
+            end = min(len(sentences), start + window_size)
+            window = " ".join(sentences[start:end])
+            windows.append(window)
+
+        return windows
+
+    def _get_embeddings(self, sentences: List[str]) -> np.ndarray:
+        """Embeds sentences directly without buffering.
+
+        Since we cluster all sentences together, the clustering algorithm
+        naturally captures semantic relationships without needing context windows.
+        """
+        return np.array(self.embeddings.embed_documents(sentences))
+
+    def _cluster_sentences(
+        self, vectors: np.ndarray, sentences: List[str]
+    ) -> np.ndarray:
+        """Pipeline: PCA -> UMAP -> HDBSCAN with parameters favoring more clusters.
+
+        Uses HDBSCAN hyperparameters tuned to create more clusters, which helps
+        ensure chunks respect max_size constraints. Large clusters will be split
+        post-processing.
+
+        Args:
+            vectors: Embedding vectors for sentences.
+            sentences: Original sentence texts for length validation.
+
+        Returns:
+            Cluster labels for each sentence.
+        """
+        # 1. PCA to reduce noise
+        pca_dims = min(vectors.shape[0] - 1, 50)
+        if pca_dims > 1:
+            vectors = PCA(n_components=pca_dims).fit_transform(vectors)
+
+        # 2. UMAP to 5 dimensions
+        # n_neighbors=2 captures very local structure for chunking
+        reducer = UMAP(n_components=5, n_neighbors=2, min_dist=0.0, metric="cosine")
+        reduced_vectors = reducer.fit_transform(vectors)
+
+        # 3. HDBSCAN with parameters favoring more clusters
+        # Calculate optimal min_cluster_size based on max_size constraint
+        # We want clusters small enough that they can be combined without exceeding max_size
+        if len(sentences) > 0:
+            avg_sentence_len = sum(len(s) for s in sentences) / len(sentences)
+            # Target: clusters should be small enough that 2-3 clusters can fit in max_size
+            # This encourages more, smaller clusters
+            target_cluster_size = max(2, int(self.max_size / (avg_sentence_len * 2.5)))
+            min_cluster_size = min(target_cluster_size, len(sentences) // 3, 10)
+            min_cluster_size = max(2, min_cluster_size)  # At least 2, at most 10
         else:
-            (
-                breakpoint_distance_threshold,
-                breakpoint_array,
-            ) = self._calculate_breakpoint_threshold(distances)
+            min_cluster_size = 2
 
-        indices_above_thresh = [
-            i
-            for i, x in enumerate(breakpoint_array)
-            if x > breakpoint_distance_threshold
-        ]
+        # Use cluster_selection_epsilon to encourage more splits
+        # Higher epsilon = more aggressive splitting = more clusters
+        # We use a small epsilon (0.1-0.3) to encourage splits while maintaining semantics
+        clusterer = HDBSCAN(
+            min_cluster_size=min_cluster_size,
+            min_samples=1,  # Lower min_samples = more clusters
+            metric="euclidean",
+            cluster_selection_epsilon=0.1,  # Encourage more splits
+            cluster_selection_method="eom",  # Excess of Mass method
+        )
+        labels = clusterer.fit_predict(reduced_vectors)
 
+        return labels
+
+    def split_text(self, text: str) -> List[str]:
+        # Atomic split into sentences - chunks must contain whole sentences
+        # Use capturing groups to preserve delimiters
+        # Wrap the regex in a capturing group so delimiters are included in split result
+        pattern_with_capture = f"({self.sentence_split_regex})"
+        parts = re.split(pattern_with_capture, text)
+
+        # Reconstruct sentences with their following delimiters
+        # parts alternates: [text1, delimiter1, text2, delimiter2, ..., textN]
+        # Handle case where text starts with delimiter (parts[0] empty)
+        sentences = []
+        delimiters = []  # Track delimiter after each sentence
+
+        # Skip leading empty part if text starts with delimiter
+        start_idx = 1 if parts and not parts[0].strip() else 0
+
+        i = start_idx
+        while i < len(parts):
+            if i % 2 == start_idx % 2:  # Text parts (same parity as start)
+                text_part = parts[i].strip()
+                if text_part:  # Non-empty text
+                    sentences.append(parts[i])  # Keep original (with whitespace)
+                    # Get the delimiter that follows (if any)
+                    if i + 1 < len(parts):
+                        delimiters.append(parts[i + 1])
+                    else:
+                        delimiters.append("")  # No delimiter after last sentence
+            i += 1
+
+        # Filter out empty sentences
+        if not sentences:
+            return [text] if text.strip() else []
+
+        if len(sentences) <= 1:
+            # If single sentence, return it even if it exceeds max_size
+            # (we can't split sentences, so we must keep it whole)
+            return sentences
+
+        windows = self._build_sentence_windows(sentences, window_size=5)
+        vectors = self._get_embeddings(windows)
+        labels = self._cluster_sentences(vectors, sentences)
+
+        # Process sentences in original order, grouping consecutive sentences
+        # from the same cluster into chunks
         chunks = []
-        start_index = 0
+        i = 0
+        while i < len(sentences):
+            label = labels[i]
 
-        # Iterate through the breakpoints to slice the sentences
-        for index in indices_above_thresh:
-            # The end index is the current breakpoint
-            end_index = index
+            # Collect consecutive sentences with the same label
+            cluster_sentences = [sentences[i]]
+            cluster_delimiters = [delimiters[i] if i < len(delimiters) else ""]
+            i += 1
 
-            # Slice the sentence_dicts from the current start index to the end index
-            group = sentences[start_index : end_index + 1]
-            combined_text = " ".join([d["sentence"] for d in group])
-            # If specified, merge together small chunks.
-            if (
-                self.min_chunk_size is not None
-                and len(combined_text) < self.min_chunk_size
-            ):
-                continue
-            chunks.append(combined_text)
+            while i < len(sentences) and labels[i] == label:
+                cluster_sentences.append(sentences[i])
+                cluster_delimiters.append(delimiters[i] if i < len(delimiters) else "")
+                i += 1
 
-            # Update the start index for the next group
-            start_index = index + 1
+            # Process this cluster
+            if label == -1:
+                # Noise cluster: each sentence becomes its own chunk
+                for idx, sentence in enumerate(cluster_sentences):
+                    chunk = sentence
+                    if idx < len(cluster_delimiters) and cluster_delimiters[idx]:
+                        chunk += cluster_delimiters[idx]
+                    chunks.append(chunk)
+            else:
+                # Regular cluster: group sentences respecting max_size
+                cluster_len = sum(len(s) for s in cluster_sentences)
+                delimiter_len = sum(len(d) for d in cluster_delimiters)
+                total_cluster_len = cluster_len + delimiter_len
 
-        # The last group, if any sentences remain
-        if start_index < len(sentences):
-            combined_text = " ".join([d["sentence"] for d in sentences[start_index:]])
-            chunks.append(combined_text)
-        return chunks
+                if total_cluster_len <= self.max_size:
+                    # Cluster fits in one chunk
+                    chunk_parts = []
+                    for j, sentence in enumerate(cluster_sentences):
+                        chunk_parts.append(sentence)
+                        if j < len(cluster_delimiters) and cluster_delimiters[j]:
+                            chunk_parts.append(cluster_delimiters[j])
+                    chunks.append("".join(chunk_parts))
+                else:
+                    # Split cluster into multiple chunks
+                    current_chunk = []
+                    current_delims = []
+                    current_len = 0
 
-    def create_documents(
-        self, texts: list[str], metadatas: list[dict] | None = None
-    ) -> list[Document]:
-        """Create documents from a list of texts."""
-        _metadatas = metadatas or [{}] * len(texts)
-        documents = []
-        for i, text in enumerate(texts):
-            start_index = 0
-            for chunk in self.split_text(text):
-                metadata = copy.deepcopy(_metadatas[i])
-                if self._add_start_index:
-                    metadata["start_index"] = start_index
-                new_doc = Document(page_content=chunk, metadata=metadata)
-                documents.append(new_doc)
-                start_index += len(chunk)
-        return documents
+                    for j, sentence in enumerate(cluster_sentences):
+                        sentence_len = len(sentence)
+                        delim = (
+                            cluster_delimiters[j] if j < len(cluster_delimiters) else ""
+                        )
+                        delim_len = len(delim)
 
-    def split_documents(self, documents: Iterable[Document]) -> list[Document]:
-        """Split documents."""
-        texts, metadatas = [], []
-        for doc in documents:
-            texts.append(doc.page_content)
-            metadatas.append(doc.metadata)
-        return self.create_documents(texts, metadatas=metadatas)
+                        if current_len + sentence_len + delim_len > self.max_size:
+                            # Current chunk is full
+                            if current_chunk:
+                                chunk_parts = []
+                                for k, s in enumerate(current_chunk):
+                                    chunk_parts.append(s)
+                                    if k < len(current_delims) and current_delims[k]:
+                                        chunk_parts.append(current_delims[k])
+                                chunks.append("".join(chunk_parts))
+                            current_chunk = [sentence]
+                            current_delims = [delim]
+                            current_len = sentence_len + delim_len
+                        else:
+                            current_chunk.append(sentence)
+                            current_delims.append(delim)
+                            current_len += sentence_len + delim_len
+
+                    # Add remaining chunk
+                    if current_chunk:
+                        chunk_parts = []
+                        for k, s in enumerate(current_chunk):
+                            chunk_parts.append(s)
+                            if k < len(current_delims) and current_delims[k]:
+                                chunk_parts.append(current_delims[k])
+                        chunks.append("".join(chunk_parts))
+
+        return self._merge_small_chunks(chunks)
+
+    def _merge_small_chunks(self, chunks: List[str]) -> List[str]:
+        """Greedy merge chunks that fall below min_size.
+
+        Ensures no chunk exceeds max_size after merging.
+        Note: Chunks must contain whole sentences, so we merge at sentence boundaries.
+        """
+        merged = []
+        if not chunks:
+            return []
+
+        current = chunks[0]
+        for next_chunk in chunks[1:]:
+            # Calculate merged length - join without extra separator since chunks
+            # already contain their delimiters
+            merged_len = len(current) + len(next_chunk)
+
+            if len(current) < self.min_size and merged_len <= self.max_size:
+                # Merge chunks (both contain whole sentences, so result is valid)
+                current += next_chunk
+            else:
+                # Can't merge without exceeding max_size, so keep current chunk
+                # Note: current chunk might exceed max_size if it's a single long sentence,
+                # but we can't split sentences, so we keep it as-is
+                merged.append(current)
+                current = next_chunk
+
+        # Handle last chunk
+        merged.append(current)
+
+        return merged
 
     def transform_documents(
         self, documents: Sequence[Document], **kwargs: Any
     ) -> Sequence[Document]:
-        """Transform sequence of documents by splitting them."""
         return self.split_documents(list(documents))
 
+    def create_documents(
+        self, texts: List[str], metadatas: List[dict] | None = None
+    ) -> List[Document]:
+        _metadatas = metadatas or [{}] * len(texts)
+        documents = []
+        for i, text in enumerate(texts):
+            for chunk in self.split_text(text):
+                metadata = copy.deepcopy(_metadatas[i])
+                documents.append(Document(page_content=chunk, metadata=metadata))
+        return documents
 
-def calculate_cosine_distances(sentences: list[dict]) -> tuple[list[float], list[dict]]:
-    """Calculate cosine distances between sentences.
-
-    Args:
-        sentences: List of sentences to calculate distances for.
-
-    Returns:
-        Tuple of distances and sentences.
-    """
-    distances = []
-    for i in range(len(sentences) - 1):
-        embedding_current = sentences[i]["combined_sentence_embedding"]
-        embedding_next = sentences[i + 1]["combined_sentence_embedding"]
-
-        # Calculate cosine similarity
-        similarity = cosine_similarity([embedding_current], [embedding_next])[0][0]
-
-        # Convert to cosine distance
-        distance = 1 - similarity
-
-        # Append cosine distance to the list
-        distances.append(distance)
-
-        # Store distance in the dictionary
-        sentences[i]["distance_to_next"] = distance
-
-    # Optionally handle the last sentence
-    # sentences[-1]['distance_to_next'] = None  # or a default value
-
-    return distances, sentences
-
-
-def combine_sentences(sentences: list[dict], buffer_size: int = 1) -> list[dict]:
-    """Combine sentences based on buffer size.
-
-    Args:
-        sentences: List of sentences to combine.
-        buffer_size: Number of sentences to combine. Defaults to 1.
-
-    Returns:
-        List of sentences with combined sentences.
-    """
-
-    # Go through each sentence dict
-    for i in range(len(sentences)):
-        # Create a string that will hold the sentences which are joined
-        combined_sentence = ""
-
-        # Add sentences before the current one, based on the buffer size.
-        for j in range(i - buffer_size, i):
-            # Check if the index j is not negative
-            # (to avoid index out of range like on the first one)
-            if j >= 0:
-                # Add the sentence at index j to the combined_sentence string
-                combined_sentence += sentences[j]["sentence"] + ""
-
-        # Add the current sentence
-        combined_sentence += sentences[i]["sentence"]
-
-        # Add sentences after the current one, based on the buffer size
-        for j in range(i + 1, i + 1 + buffer_size):
-            # Check if the index j is within the range of the sentences list
-            if j < len(sentences):
-                # Add the sentence at index j to the combined_sentence string
-                combined_sentence += " " + sentences[j]["sentence"]
-
-        # Then add the whole thing to your dict
-        # Store the combined sentence in the current sentence dict
-        sentences[i]["combined_sentence"] = combined_sentence
-
-    return sentences
+    def split_documents(self, documents: Iterable[Document]) -> List[Document]:
+        texts = []
+        metadatas = []
+        for doc in documents:
+            texts.append(doc.page_content)
+            metadatas.append(doc.metadata)
+        return self.create_documents(texts, metadatas)

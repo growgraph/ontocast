@@ -64,18 +64,17 @@ class MockTripleStoreManager(TripleStoreManager):
         """
         return self.ontologies.copy()
 
-    def serialize_graph(
-        self, graph: Graph, graph_uri: str | None = None
-    ) -> bool | None:
+    def serialize_graph(self, graph: Graph, **kwargs) -> bool | None:
         """Store an RDF graph in the mock store.
 
         Args:
             graph: The RDF graph to store.
-            graph_uri: Optional URI to use as the graph identifier.
+            **kwargs: Optional keyword arguments including graph_uri.
 
         Returns:
             bool: True if the graph was stored successfully.
         """
+        graph_uri = kwargs.get("graph_uri")
         # Create a new Graph and copy all triples
         new_graph = Graph()
         for triple in graph:
@@ -130,7 +129,7 @@ class MockTripleStoreManager(TripleStoreManager):
         else:
             raise TypeError(f"unsupported obj of type {type(o)} received")
 
-        return self.serialize_graph(graph, graph_uri)
+        return self.serialize_graph(graph, graph_uri=graph_uri)
 
     def _extract_ontology_id(self, graph: Graph) -> str | None:
         """Extract ontology ID from graph content.
@@ -234,18 +233,17 @@ class MockFusekiTripleStoreManager(TripleStoreManagerWithAuth):
         """
         return self.ontologies.copy()
 
-    def serialize_graph(
-        self, graph: Graph, graph_uri: str | None = None
-    ) -> bool | None:
+    def serialize_graph(self, graph: Graph, **kwargs) -> bool | None:
         """Store an RDF graph in the mock store.
 
         Args:
             graph: The RDF graph to store.
-            graph_uri: Optional URI to use as the graph identifier.
+            **kwargs: Optional keyword arguments including graph_uri.
 
         Returns:
             bool: True if the graph was stored successfully.
         """
+        graph_uri = kwargs.get("graph_uri")
         # Create a new Graph and copy all triples
         new_graph = Graph()
         for triple in graph:
@@ -300,7 +298,7 @@ class MockFusekiTripleStoreManager(TripleStoreManagerWithAuth):
         else:
             raise TypeError(f"unsupported obj of type {type(o)} received")
 
-        return self.serialize_graph(graph, graph_uri)
+        return self.serialize_graph(graph, graph_uri=graph_uri)
 
     def _extract_ontology_id(self, graph: Graph) -> str | None:
         """Extract ontology ID from graph content.
@@ -388,18 +386,17 @@ class MockNeo4jTripleStoreManager(TripleStoreManagerWithAuth):
         """
         return self.ontologies.copy()
 
-    def serialize_graph(
-        self, graph: Graph, graph_uri: str | None = None
-    ) -> Dict[str, Any] | None:
+    def serialize_graph(self, graph: Graph, **kwargs) -> Dict[str, Any] | None:  # type: ignore[override]
         """Store an RDF graph in the mock store.
 
         Args:
             graph: The RDF graph to store.
-            graph_uri: Optional URI to use as the graph identifier.
+            **kwargs: Optional keyword arguments including graph_uri.
 
         Returns:
             Dict[str, Any]: Mock summary of the operation.
         """
+        graph_uri = kwargs.get("graph_uri")
         # Create a new Graph and copy all triples
         new_graph = Graph()
         for triple in graph:
@@ -441,7 +438,7 @@ class MockNeo4jTripleStoreManager(TripleStoreManagerWithAuth):
             "labels_added": 1,
         }
 
-    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> Dict[str, Any] | None:
+    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> Dict[str, Any] | None:  # type: ignore[override]
         """Store an Ontology or RDFGraph in the mock store.
 
         Args:
@@ -460,7 +457,7 @@ class MockNeo4jTripleStoreManager(TripleStoreManagerWithAuth):
         else:
             raise TypeError(f"unsupported obj of type {type(o)} received")
 
-        return self.serialize_graph(graph, graph_uri)
+        return self.serialize_graph(graph, graph_uri=graph_uri)
 
     def _extract_ontology_id(self, graph: Graph) -> str | None:
         """Extract ontology ID from graph content.

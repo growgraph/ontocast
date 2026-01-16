@@ -4,6 +4,7 @@ import logging
 import re
 from collections import defaultdict
 from collections.abc import Iterable
+from contextvars import ContextVar
 from typing import Any, Union
 
 from pydantic import GetCoreSchemaHandler
@@ -17,6 +18,13 @@ from ontocast.onto.constants import COMMON_PREFIXES
 logger = logging.getLogger(__name__)
 
 PREFIX_PATTERN = re.compile(r"@prefix\s+(\w+):\s+<[^>]+>\s+\.")
+# Pattern to match prefix usage: prefix:something (not in @prefix declarations)
+PREFIX_USAGE_PATTERN = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]*):[^\s]")
+
+# Context variable to store known prefixes during parsing
+_known_prefixes_context: ContextVar[dict[str, str] | None] = ContextVar[
+    dict[str, str] | None
+]("known_prefixes", default=None)
 
 
 class RDFGraph(Graph):
@@ -133,29 +141,59 @@ class RDFGraph(Graph):
 
     @staticmethod
     def _ensure_prefixes(turtle_str: str) -> str:
-        """Ensure all common prefixes are declared in the Turtle string.
+        """Ensure all common prefixes and used custom prefixes are declared in the Turtle string.
+
+        This method:
+        1. Adds missing common prefixes (rdf, rdfs, owl, etc.)
+        2. Detects prefixes that are used but not declared
+        3. Adds declarations for used prefixes if they're available in the context
 
         Args:
             turtle_str: The input Turtle string.
 
         Returns:
-            str: The Turtle string with all common prefixes declared.
+            str: The Turtle string with all necessary prefixes declared.
         """
         declared_prefixes = set(
             match.group(1) for match in PREFIX_PATTERN.finditer(turtle_str)
         )
 
-        missing = {
+        # Add missing common prefixes
+        missing_common = {
             prefix: uri
             for prefix, uri in COMMON_PREFIXES.items()
             if prefix not in declared_prefixes
         }
 
-        if not missing:
+        # Detect prefixes that are used but not declared
+        used_prefixes = set()
+        for match in PREFIX_USAGE_PATTERN.finditer(turtle_str):
+            prefix = match.group(1)
+            # Skip if already declared or is a common prefix we're about to add
+            if prefix not in declared_prefixes and prefix not in missing_common:
+                used_prefixes.add(prefix)
+
+        # Get known prefixes from context (set by caller)
+        known_prefixes = _known_prefixes_context.get()
+        missing_custom = {}
+        if known_prefixes and used_prefixes:
+            for prefix in used_prefixes:
+                if prefix in known_prefixes:
+                    namespace_uri = known_prefixes[prefix]
+                    # Format as Turtle prefix declaration
+                    if not namespace_uri.startswith("<"):
+                        namespace_uri = f"<{namespace_uri}>"
+                    missing_custom[prefix] = namespace_uri
+
+        all_missing = {**missing_common, **missing_custom}
+
+        if not all_missing:
             return turtle_str
 
         prefix_block = (
-            "\n".join(f"@prefix {prefix}: {uri} ." for prefix, uri in missing.items())
+            "\n".join(
+                f"@prefix {prefix}: {uri} ." for prefix, uri in all_missing.items()
+            )
             + "\n\n"
         )
 
@@ -210,6 +248,9 @@ class RDFGraph(Graph):
     def _from_turtle_str(cls, turtle_str: str) -> "RDFGraph":
         """Create an RDFGraph instance from a Turtle string.
 
+        This method uses context variables to access known prefixes that may be
+        needed to complete missing prefix declarations in the Turtle string.
+
         Args:
             turtle_str: The input Turtle string.
 
@@ -221,6 +262,29 @@ class RDFGraph(Graph):
         g = cls()
         g.parse(data=patched_turtle, format="turtle")
         return g
+
+    @classmethod
+    def set_known_prefixes(cls, prefixes: dict[str, str] | None) -> None:
+        """Set known prefixes in the context for use during parsing.
+
+        This should be called before parsing TTL strings that may use prefixes
+        from an ontology or other source. The prefixes will be automatically
+        added if they're used but not declared in the TTL string.
+
+        Args:
+            prefixes: Dictionary mapping prefix names to namespace URIs.
+                Example: {"fcaont": "https://growgraph.dev/fcaont#"}
+        """
+        _known_prefixes_context.set(prefixes)
+
+    @classmethod
+    def get_known_prefixes(cls) -> dict[str, str] | None:
+        """Get currently known prefixes from context.
+
+        Returns:
+            Dictionary mapping prefix names to namespace URIs, or None.
+        """
+        return _known_prefixes_context.get()
 
     @classmethod
     def _from_jsonld_str(cls, jsonld_str: str) -> "RDFGraph":

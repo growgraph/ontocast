@@ -92,7 +92,9 @@ class ToolBox:
 
         # Automatically determine which backends to use based on available configuration
         use_fuseki = tool_config.fuseki.uri and tool_config.fuseki.auth
-        use_neo4j = tool_config.neo4j.uri and tool_config.neo4j.auth
+        use_neo4j = (
+            tool_config.neo4j.uri is not None and tool_config.neo4j.auth is not None
+        )
         use_filesystem_triple_store = working_directory is not None
         use_filesystem_manager = working_directory is not None
 
@@ -236,7 +238,7 @@ class ToolBox:
             filesystem_ontologies += await asyncio.to_thread(
                 self.filesystem_manager.fetch_ontologies
             )
-            logger.debug(f"Found {len(filesystem_ontologies)} ontologies in filesystem")
+            logger.info(f"Found {len(filesystem_ontologies)} ontologies in filesystem")
 
         triple_store_ontologies = []
         if (
@@ -253,7 +255,7 @@ class ToolBox:
                 triple_store_ontologies += await asyncio.to_thread(
                     self.triple_store_manager.fetch_ontologies
                 )
-            logger.debug(
+            logger.info(
                 f"Found {len(triple_store_ontologies)} ontologies in triple store"
             )
 

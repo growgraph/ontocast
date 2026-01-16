@@ -14,6 +14,7 @@ from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.onto.constants import DEFAULT_CHUNK_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import SemanticTriplesFactsReport
+from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.state import AgentState
 from ontocast.prompt.common import (
@@ -152,6 +153,18 @@ async def render_facts_fresh(state: AgentState, tools: ToolBox) -> AgentState:
     llm_tool = tools.llm
     parser = PydanticOutputParser(pydantic_object=SemanticTriplesFactsReport)
 
+    # Extract prefixes from the ontology graph to help with parsing LLM responses
+    # that may use these prefixes without declaring them
+    known_prefixes = {}
+    if state.current_ontology and state.current_ontology.graph:
+        for prefix, namespace_uri in state.current_ontology.graph.namespaces():
+            if prefix:  # Skip empty prefixes
+                known_prefixes[prefix] = str(namespace_uri)
+
+    # Also add the ontology prefix explicitly if we know it
+    if state.current_ontology.prefix and state.current_ontology.namespace:
+        known_prefixes[state.current_ontology.prefix] = state.current_ontology.namespace
+
     prompt_data = _prepare_prompt_data(state)
     prompt_data_fresh = {
         "preamble": preamble,
@@ -163,6 +176,9 @@ async def render_facts_fresh(state: AgentState, tools: ToolBox) -> AgentState:
     prompt = _create_prompt_template()
 
     try:
+        # Set known prefixes in context before parsing
+        RDFGraph.set_known_prefixes(known_prefixes if known_prefixes else None)
+
         proj = await call_llm_with_retry(
             llm_tool=llm_tool,
             prompt=prompt,
@@ -185,6 +201,9 @@ async def render_facts_fresh(state: AgentState, tools: ToolBox) -> AgentState:
 
     except Exception as e:
         return _handle_rendering_error(state, e, FailureStage.GENERATE_TTL_FOR_FACTS)
+    finally:
+        # Clear the context after parsing
+        RDFGraph.set_known_prefixes(None)
 
 
 async def render_facts_update(state: AgentState, tools: ToolBox) -> AgentState:

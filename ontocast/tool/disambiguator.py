@@ -204,6 +204,10 @@ class EntityDisambiguator:
         # Add the largest type group
         if type_groups:
             largest_group = max(type_groups.values(), key=len)
+            # Type assertion: type_groups.values() contains lists, so max() returns a list
+            assert isinstance(largest_group, list), (
+                "Expected list from type_groups.values()"
+            )
             compatible_entities.extend(largest_group)
 
         # Add typeless entities (they're compatible with everything)
@@ -311,9 +315,14 @@ class EntityDisambiguator:
         )
 
         best_metadata = entity_labels.get(best_entity, EntityMetadata(local_name=""))
-        local_name = best_metadata.local_name or derive_ontology_id(best_entity)
+        derived_id = derive_ontology_id(best_entity)
+        local_name = best_metadata.local_name or (
+            derived_id if derived_id is not None else ""
+        )
 
         # Create canonical URI in document namespace
+        if not local_name:
+            local_name = str(best_entity)
         clean_local_name = self._clean_local_name(local_name)
         return URIRef(f"{doc_namespace}{clean_local_name}")
 
@@ -345,9 +354,14 @@ class EntityDisambiguator:
 
         best_pred = max(similar_predicates, key=info_completeness)
         best_info = predicate_info.get(best_pred, PredicateMetadata(local_name=""))
-        local_name = best_info.local_name or derive_ontology_id(best_pred)
+        derived_id = derive_ontology_id(best_pred)
+        local_name = best_info.local_name or (
+            derived_id if derived_id is not None else ""
+        )
 
         # Create canonical URI in document namespace
+        if not local_name:
+            local_name = str(best_pred)
         clean_local_name = self._clean_local_name(local_name)
         return URIRef(f"{doc_namespace}{clean_local_name}")
 

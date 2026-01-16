@@ -4,9 +4,11 @@ You are given a numbered list of ontologies and a document excerpt.
 You need to select which ontology can be used for the document to create a semantic graph.
 
 Select from the following options:
+
+0. No suitable ontology available
+
 {ontologies_list}
 
-{num_ontologies}. None - No suitable ontology available
 
 Here is an excerpt from the document:
 {excerpt}

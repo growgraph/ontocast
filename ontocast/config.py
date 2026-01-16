@@ -104,7 +104,6 @@ class ChunkConfig(BaseSettings):
     breakpoint_threshold_amount: float = Field(
         default=95.0, description="Threshold amount for breakpoint detection"
     )
-    buffer_size: int = Field(default=5, description="Buffer size for semantic chunking")
     min_size: int = Field(default=3000, description="Minimum chunk size in characters")
     max_size: int = Field(default=12000, description="Maximum chunk size in characters")
 
