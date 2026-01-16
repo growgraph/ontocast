@@ -2,24 +2,17 @@
 
 import hashlib
 import json
+import logging
 import os
 import warnings
 from pathlib import Path
+from typing import TYPE_CHECKING, Optional
 
 import pytest
-from langchain_core.embeddings import Embeddings
 from suthing import FileHandle
 
-# Try to import real embeddings
-try:
-    import torch
+if TYPE_CHECKING:
     from langchain_huggingface import HuggingFaceEmbeddings
-
-    REAL_EMBEDDINGS_AVAILABLE = True
-except ImportError:
-    HuggingFaceEmbeddings = None  # type: ignore
-    torch = None  # type: ignore
-    REAL_EMBEDDINGS_AVAILABLE = False
 
 from ontocast.config import (
     Config,
@@ -43,10 +36,13 @@ from ontocast.tool.triple_manager.mock import (
 )
 from ontocast.toolbox import ToolBox
 
+logger = logging.getLogger(__name__)
+
 # Suppress deprecation warnings from third-party libraries that we cannot control
 # Note: We adapt to new conventions where possible (e.g., using pyld directly for JSON-LD
 # instead of rdflib's deprecated ConjunctiveGraph). These suppressions are only for
 # warnings from external libraries that we cannot modify.
+
 warnings.filterwarnings(
     "ignore",
     category=DeprecationWarning,
@@ -354,54 +350,18 @@ def fuseki_triple_store_manager():
     return MockFusekiTripleStoreManager(uri=uri, auth=auth, dataset="test", clean=True)
 
 
-class MockEmbeddings(Embeddings):
-    """Mock embeddings for testing.
-
-    Returns deterministic embeddings based on text content.
-    """
-
-    def __init__(self, embedding_dim: int = 384):
-        """Initialize mock embeddings.
-
-        Args:
-            embedding_dim: Dimension of the embedding vectors. Defaults to 384.
-        """
-        self.embedding_dim = embedding_dim
-        # Simple hash-based embedding for deterministic results
-        self._cache: dict[str, list[float]] = {}
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """Generate embeddings for a list of texts."""
-        return [self.embed_query(text) for text in texts]
-
-    def embed_query(self, text: str) -> list[float]:
-        """Generate an embedding for a single text."""
-        if text in self._cache:
-            return self._cache[text]
-
-        hash_obj = hashlib.md5(text.encode())
-        hash_int = int(hash_obj.hexdigest(), 16)
-
-        embedding = []
-        for i in range(self.embedding_dim):
-            val = (hash_int + i * 17) % 1000
-            embedding.append((val / 1000.0) - 0.5)
-
-        self._cache[text] = embedding
-        return embedding
-
-
 @pytest.fixture(scope="session")
-def real_embeddings():
+def real_embeddings() -> Optional["HuggingFaceEmbeddings"]:
     """Fixture providing real HuggingFace embeddings if available, otherwise None.
 
     Uses the same model as in split_chunks.py for consistency.
     Session-scoped so the model is loaded only once per test session and reused.
     """
-    if not REAL_EMBEDDINGS_AVAILABLE or HuggingFaceEmbeddings is None:
-        return None
 
     try:
+        import torch  # ty: ignore[unresolved-import]
+        from langchain_huggingface import HuggingFaceEmbeddings
+
         embeddings = HuggingFaceEmbeddings(
             model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
             model_kwargs={
@@ -412,13 +372,56 @@ def real_embeddings():
             encode_kwargs={"normalize_embeddings": False},
         )
         return embeddings
+    except ImportError as e:
+        logger.error(f"Could not import HuggingFaceEmbeddings: {e}")
+        return None
     except Exception:
         return None
 
 
 @pytest.fixture(scope="session")
 def mock_embeddings():
-    """Fixture providing a mock embeddings instance. Session-scoped for consistency."""
+    try:
+        from langchain_core.embeddings import Embeddings
+    except ImportError as e:
+        logger.error(f"Could not import Embeddings: {e}")
+
+    class MockEmbeddings(Embeddings):
+        """Mock embeddings for testing.
+
+        Returns deterministic embeddings based on text content.
+        """
+
+        def __init__(self, embedding_dim: int = 384):
+            """Initialize mock embeddings.
+
+            Args:
+                embedding_dim: Dimension of the embedding vectors. Defaults to 384.
+            """
+            self.embedding_dim = embedding_dim
+            # Simple hash-based embedding for deterministic results
+            self._cache: dict[str, list[float]] = {}
+
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            """Generate embeddings for a list of texts."""
+            return [self.embed_query(text) for text in texts]
+
+        def embed_query(self, text: str) -> list[float]:
+            """Generate an embedding for a single text."""
+            if text in self._cache:
+                return self._cache[text]
+
+            hash_obj = hashlib.md5(text.encode())
+            hash_int = int(hash_obj.hexdigest(), 16)
+
+            embedding = []
+            for i in range(self.embedding_dim):
+                val = (hash_int + i * 17) % 1000
+                embedding.append((val / 1000.0) - 0.5)
+
+            self._cache[text] = embedding
+            return embedding
+
     return MockEmbeddings()
 
 

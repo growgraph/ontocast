@@ -1,29 +1,29 @@
 import logging
 import re
 import threading
-from typing import Any, Literal
+from typing import Any, Literal, Union
 
 from pydantic import Field
 
 from ontocast.config import ChunkConfig
 from ontocast.tool.cache import Cacher, ToolCacher
-from ontocast.tool.chunk.util import SENTENCE_SPLIT_REGEX
+from ontocast.tool.chunk.util import SENTENCE_SPLIT_REGEX, SemanticChunker
 from ontocast.tool.onto import Tool
 
-try:
-    import torch
-    from langchain_huggingface import HuggingFaceEmbeddings
+logger = logging.getLogger(__name__)
 
-    from ontocast.tool.chunk.util import SemanticChunker
+# Optional imports for semantic chunking
+try:
+    import torch  # type: ignore[import-untyped]  # noqa: F401
+    from langchain_huggingface import (
+        HuggingFaceEmbeddings,  # type: ignore[import-untyped]  # noqa: F401
+    )
 
     SEMANTIC_CHUNKING_AVAILABLE = True
 except ImportError:
-    HuggingFaceEmbeddings = None  # type: ignore
-    torch = None  # type: ignore
-    SemanticChunker = None  # type: ignore
+    torch = None  # type: ignore[assignment]
+    HuggingFaceEmbeddings = None  # type: ignore[assignment, misc]
     SEMANTIC_CHUNKING_AVAILABLE = False
-
-logger = logging.getLogger(__name__)
 
 
 class ChunkerTool(Tool):
@@ -60,7 +60,7 @@ class ChunkerTool(Tool):
             **kwargs: Additional keyword arguments passed to the parent class.
         """
         super().__init__(**kwargs)
-        self._model = None
+        self._model: Union[Any, None, bool] = None  # type: ignore[assignment]
         self._model_lock = threading.Lock()  # Lock for thread-safe model initialization
 
         # Initialize cache - use shared cacher or create new one
@@ -236,7 +236,7 @@ class ChunkerTool(Tool):
                     result = self._naive_chunk(doc)
                 else:
                     text_splitter = SemanticChunker(
-                        embeddings=self._model,
+                        embeddings=self._model,  # type: ignore[arg-type]
                         chunk_config=self.config,
                         sentence_split_regex=SENTENCE_SPLIT_REGEX,
                     )
