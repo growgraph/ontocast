@@ -1,0 +1,18 @@
+services:
+    qdrant:
+        image: ${IMAGE_VERSION}
+        restart: "no"
+        profiles: ["${CONTAINER_NAME}"]
+        ports:
+        -   "${QDRANT_HTTP_PORT}:6333"
+        -   "${QDRANT_GRPC_PORT}:6334"
+        container_name: ${CONTAINER_NAME}
+        volumes:
+        -   qdrant_data:/qdrant/storage
+        environment:
+        -   QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
+        -   QDRANT__LOG_LEVEL=${QDRANT_LOG_LEVEL}
+
+volumes:
+    qdrant_data:
+        driver: local

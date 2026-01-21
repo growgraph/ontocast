@@ -3,7 +3,7 @@ services:
         image: ${IMAGE_VERSION}
         user: "${UID}:${GID}"
         restart: "no"
-        profiles: ["test.fuseki"]
+        profiles: ["${CONTAINER_NAME}"]
         ports:
         -   "${TS_PORT}:3030"
         container_name: ${CONTAINER_NAME}
