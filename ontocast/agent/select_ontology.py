@@ -106,6 +106,7 @@ async def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
             f"Ontology already selected: {state.current_ontology.ontology_id}, "
             "skipping selection to maintain one ontology per document"
         )
+        state.status = Status.SUCCESS
         return state
 
     progress_info = state.get_chunk_progress_string()
