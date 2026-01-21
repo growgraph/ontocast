@@ -49,8 +49,8 @@ cp .env.example .env
 **Example `docker/fuseki/.env.example`:**
 ```bash
 IMAGE_VERSION=secoresearch/fuseki:5.1.0
-ENVIRONMENT_ACTUAL=test
-CONTAINER_NAME="${ENVIRONMENT_ACTUAL}.fuseki"
+SPEC=test
+CONTAINER_NAME="${SPEC}.fuseki"
 STORE_FOLDER="$HOME/tmp/${CONTAINER_NAME}"
 TS_PORT=3032
 TS_PASSWORD="abc123-qwe"

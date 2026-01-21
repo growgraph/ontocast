@@ -8,6 +8,9 @@ services:
         -   "${TS_PORT}:3030"
         container_name: ${CONTAINER_NAME}
         volumes:
-        -   ${STORE_FOLDER}:/fuseki
+        -   fuseki_data:/fuseki
         environment:
         -   ADMIN_PASSWORD=${TS_PASSWORD}
+volumes:
+    fuseki_data:
+        driver: local
