@@ -270,7 +270,9 @@ class LLMTool(Tool):
 
         # Generate new response
         prompt_str = self._prompt_to_string(prompt)
-        logger.debug(f"Cache miss, calling LLM for __call__: {prompt_str[:50]}...")
+        logger.debug(
+            f"Cache miss, calling LLM for __call__, prompt size {len(prompt_str[:50])}..."
+        )
 
         response = await self.llm.ainvoke(*args, **kwds)
 
