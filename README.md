@@ -50,9 +50,17 @@ OntoCast can be used for:
 ## Installation
 
 ```sh
-uv add ontocast 
+uv add ontocast[doc-processing] 
 # or
 pip install ontocast
+```
+
+### Optional features: document processing (PDFs, PPT, OCR, semantic chunking):
+
+```sh
+uv add "ontocast[doc-processing]"
+# or
+pip install "ontocast[doc-processing]"
 ```
 
 ---

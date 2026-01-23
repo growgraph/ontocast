@@ -8,7 +8,7 @@ We welcome contributions to Suthing! This document provides guidelines and instr
 2. Clone your fork locally
 3. Install the development dependencies:
    ```bash
-   uv sync --dev
+   uv sync --all-groups --extra doc-processing
    ```
 4. Install pre-commit hooks:
    ```bash
