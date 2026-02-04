@@ -5,11 +5,7 @@ from typing import Any
 from pydantic import ConfigDict, Field
 
 from ontocast.onto.chunk import Chunk
-from ontocast.onto.constants import (
-    CHUNK_NULL_IRI,
-    DEFAULT_DOMAIN,
-    ONTOLOGY_NULL_IRI,
-)
+from ontocast.onto.constants import CHUNK_NULL_IRI, DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI
 from ontocast.onto.context import AgentContext, AgentType, ContextManager
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import BasePydanticModel, Suggestions
@@ -166,6 +162,8 @@ class AgentState(BasePydanticModel):
         description="Fuseki dataset name for this request (optional)",
         default=None,
     )
+
+    namespace_override: str | None = Field(default=None)
 
     source_url: str | None = Field(
         description="Source URL from JSON input file (for provenance tracking)",
@@ -576,6 +574,8 @@ class AgentState(BasePydanticModel):
         Returns:
             str: The document namespace.
         """
+        if self.namespace_override is not None:
+            return self.namespace_override
         return iri2namespace(self.doc_iri, ontology=False)
 
     @property

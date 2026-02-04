@@ -60,6 +60,7 @@ def check_chunks_empty(state: AgentState) -> AgentState:
         state.current_chunk = state.chunks.pop(0)
         state.node_visits = defaultdict(int)
         state.status = Status.FAILED
+        # TODO use method for easier tracing
     else:
         state.current_chunk = Chunk(
             text="",
