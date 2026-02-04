@@ -22,9 +22,7 @@ from ontocast.tool.graph_version_manager import GraphVersionManager
 from ontocast.tool.llm import LLMTool
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.sparql import SPARQLTool
-from ontocast.tool.triple_manager.core import (
-    TripleStoreManager,
-)
+from ontocast.tool.triple_manager.core import TripleStoreManager
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +191,7 @@ class ToolBox:
             self.filesystem_manager.serialize(state.current_ontology)
             self.filesystem_manager.serialize(
                 state.aggregated_facts,
-                graph_uri=state.doc_namespace,
+                graph_uri=state.graph_uri,
             )
         if (
             self.triple_store_manager is not None
@@ -203,7 +201,7 @@ class ToolBox:
             self.triple_store_manager.serialize(state.current_ontology)
             self.triple_store_manager.serialize(
                 state.aggregated_facts,
-                graph_uri=state.doc_namespace,
+                graph_uri=state.graph_uri,
             )
 
     async def initialize(self) -> None:

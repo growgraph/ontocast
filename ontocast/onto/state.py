@@ -163,7 +163,7 @@ class AgentState(BasePydanticModel):
         default=None,
     )
 
-    namespace_override: str | None = Field(default=None)
+    graph_uri_override: str | None = Field(default=None)
 
     source_url: str | None = Field(
         description="Source URL from JSON input file (for provenance tracking)",
@@ -574,9 +574,13 @@ class AgentState(BasePydanticModel):
         Returns:
             str: The document namespace.
         """
-        if self.namespace_override is not None:
-            return self.namespace_override
         return iri2namespace(self.doc_iri, ontology=False)
+
+    @property
+    def graph_uri(self):
+        if self.graph_uri_override is not None:
+            return self.graph_uri_override
+        return self.doc_namespace
 
     @property
     def ontology_id(self):
