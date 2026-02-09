@@ -1,11 +1,10 @@
-from rdflib import Namespace
+from rdflib import Namespace, URIRef
 
-DEFAULT_DOMAIN = "https://example.com"
+DEFAULT_DOMAIN = "https://ontocast.io"
 ONTOLOGY_NULL_ID = "__null__"
 ONTOLOGY_NULL_IRI = f"{DEFAULT_DOMAIN}/{ONTOLOGY_NULL_ID}"
-DEFAULT_CHUNK_IRI = f"{DEFAULT_DOMAIN}/ch#"
-CHUNK_NULL_ID = "__null__"
-CHUNK_NULL_IRI = f"{DEFAULT_CHUNK_IRI}{CHUNK_NULL_ID}"
+DEFAULT_IRI = f"{DEFAULT_DOMAIN}/facts"
+CHUNK_NULL_IRI = f"{DEFAULT_DOMAIN}/__null__"
 DEFAULT_DATASET = "dataset0"
 DEFAULT_ONTOLOGIES_DATASET = "ontologies"
 COMMON_PREFIXES = {
@@ -23,3 +22,7 @@ COMMON_PREFIXES = {
 }
 PROV = Namespace("http://www.w3.org/ns/prov#")
 SCHEMA = Namespace("https://schema.org/")
+
+# RDF 1.2 term for linking a reification node to its quoted triple.
+# Not yet in rdflib's RDF namespace, so we define it manually.
+RDF_REIFIES = URIRef("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies")

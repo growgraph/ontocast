@@ -11,8 +11,8 @@ from typing import cast
 from pydantic import BaseModel, ConfigDict, Field
 from rdflib import RDF, RDFS, Graph, Literal, URIRef
 
-from ontocast.onto.chunk import Chunk
 from ontocast.onto.constants import PROV, SCHEMA
+from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.rdfgraph import RDFGraph
 
 logger = logging.getLogger(__name__)
@@ -60,9 +60,9 @@ class ConnectivityResult(BaseModel):
 
 
 def validate_and_connect_chunk(
-    chunk: Chunk,
+    chunk: ContentUnit,
     auto_connect: bool = True,
-) -> Chunk:
+) -> ContentUnit:
     """Validate and optionally connect a chunk graph.
 
     This function validates the connectivity of a chunk's RDF graph and
@@ -73,7 +73,7 @@ def validate_and_connect_chunk(
         auto_connect: Whether to automatically connect disconnected graphs.
 
     Returns:
-        Chunk: The chunk with a validated and optionally connected graph.
+        ContentUnit: The chunk with a validated and optionally connected graph.
     """
 
     # Ensure an RDFGraph instance

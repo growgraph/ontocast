@@ -27,15 +27,20 @@ def get_rdflib_namespace_mappings() -> dict:
 CONVENTIONAL_MAPPINGS = get_rdflib_namespace_mappings()
 
 
-def render_text_hash(text: str, digits=12) -> str:
-    """
-    Generate a hash for the given text.
+def render_text_hash(text: str, digits: int | None = 12) -> str:
+    """Generate a SHA-256 hash for the given text.
+
+    This is the single hashing entry point for the entire codebase.
+    All modules that need to derive a hash from text should use this function
+    instead of calling ``hashlib`` directly.
 
     Args:
-        text: The text to hash
-        digits: Number of digits in the hash (default: 12)
+        text: The text to hash.
+        digits: Number of hex digits to return (default: 12).
+            Pass ``None`` to return the full 64-character hex digest.
 
     Returns:
-        A string hash of the text
+        A hex string hash of the text.
     """
-    return hashlib.sha256(text.encode()).hexdigest()[:digits]
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    return digest[:digits] if digits is not None else digest

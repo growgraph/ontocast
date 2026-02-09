@@ -41,6 +41,7 @@ dependencies = [
   "neo4j>=5.28.1",
   "networkx>=3.0",
   "owlready2>=0.47",
+  "oxrdflib>=0.5.0",
   "pydantic>=2.11.9",
   "pyld>=2.0.4",
   "rapidfuzz>=3.13.0",

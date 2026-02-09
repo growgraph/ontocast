@@ -112,7 +112,7 @@ class ChunkerTool(Tool):
                     except Exception as e:
                         logger.error(f"Failed to initialize embedding model: {e}")
                         # Set to a sentinel value to prevent repeated failed attempts
-                        self._model = False
+                        self._model = None
 
     def _naive_chunk(self, doc: str) -> list[str]:
         """Naive chunking fallback when semantic chunking is not available.
@@ -224,7 +224,7 @@ class ChunkerTool(Tool):
                 self._init_model()
                 documents = [doc]
 
-                if self._model is None or self._model is False:
+                if self._model is None:
                     logger.warning(
                         "Model not initialized. Falling back to naive chunking."
                     )

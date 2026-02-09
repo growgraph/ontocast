@@ -4,12 +4,13 @@ This module provides a generic caching mechanism that can be used by various
 tools to cache their results based on input content and configuration parameters.
 """
 
-import hashlib
 import json
 import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from ontocast.util import render_text_hash
 
 if TYPE_CHECKING:
     from ontocast.config import Config
@@ -122,7 +123,7 @@ class Cacher:
 
         # Convert to JSON string and hash it
         cache_string = json.dumps(cache_data, sort_keys=True, default=str)
-        return hashlib.sha256(cache_string.encode()).hexdigest()
+        return render_text_hash(cache_string, digits=None)
 
     def _get_cache_file_path(self, cache_key: str, subdirectory: str) -> Path:
         """Get the cache file path for a given cache key and subdirectory.

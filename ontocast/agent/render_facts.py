@@ -11,7 +11,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
-from ontocast.onto.constants import DEFAULT_CHUNK_IRI
+from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import SemanticTriplesFactsReport
 from ontocast.onto.rdfgraph import RDFGraph
@@ -78,7 +78,7 @@ def _prepare_prompt_data(state: AgentState) -> dict[str, str]:
     facts_instruction_str = facts_instruction_template.format(
         ontology_namespace=state.current_ontology.namespace,
         ontology_prefix=state.current_ontology.prefix,
-        current_doc_namespace=DEFAULT_CHUNK_IRI,
+        current_doc_namespace=DEFAULT_IRI,
     )
 
     text_chapter = text_template.format(text=state.current_chunk.text)

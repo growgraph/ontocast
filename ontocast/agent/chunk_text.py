@@ -7,7 +7,7 @@ documents.
 
 import logging
 
-from ontocast.onto.chunk import Chunk
+from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import Status
 from ontocast.onto.state import AgentState
 from ontocast.toolbox import ToolBox
@@ -41,10 +41,11 @@ def chunk_text(state: AgentState, tools: ToolBox) -> AgentState:
 
             chunks_txt = chunks_txt[: state.max_chunks]
 
-        for chunk_txt in chunks_txt:
+        for i, chunk_txt in enumerate(chunks_txt):
             state.chunks.append(
-                Chunk(
+                ContentUnit(
                     text=chunk_txt,
+                    index=i,
                     hid=render_text_hash(chunk_txt),
                     doc_iri=state.doc_iri,
                 )

@@ -1,6 +1,5 @@
 """Pytest configuration for test suite."""
 
-import hashlib
 import json
 import logging
 import os
@@ -411,8 +410,9 @@ def mock_embeddings():
             if text in self._cache:
                 return self._cache[text]
 
-            hash_obj = hashlib.md5(text.encode())
-            hash_int = int(hash_obj.hexdigest(), 16)
+            from ontocast.util import render_text_hash
+
+            hash_int = int(render_text_hash(text, digits=None), 16)
 
             embedding = []
             for i in range(self.embedding_dim):
@@ -511,17 +511,11 @@ def long_text():
 
 
 @pytest.fixture
-def ontology_ns():
-    """Ontology namespace set for EntityNormalizer."""
-    return {"http://ontology.org/"}
-
-
-@pytest.fixture
-def normalizer(ontology_ns):
+def normalizer():
     """EntityNormalizer instance for aggregator tests."""
     from ontocast.tool.agg.normalizer import EntityNormalizer
 
-    return EntityNormalizer(ontology_ns)
+    return EntityNormalizer()
 
 
 @pytest.fixture
@@ -533,29 +527,11 @@ def cluster_representative_selector():
 
 
 @pytest.fixture
-def doc_namespace():
-    """Document namespace for URIPromoter."""
-    return "http://doc.org/"
+def uri_builder():
+    """URIBuilder instance for aggregator tests."""
+    from ontocast.tool.agg.uri_builder import URIBuilder
 
-
-@pytest.fixture
-def chunk_namespaces():
-    """Chunk namespaces for URIPromoter."""
-    return {"http://chunk1.org/", "http://chunk2.org/"}
-
-
-@pytest.fixture
-def ontology_namespaces():
-    """Ontology namespaces for URIPromoter."""
-    return {"http://ontology.org/"}
-
-
-@pytest.fixture
-def promoter(doc_namespace, chunk_namespaces, ontology_namespaces):
-    """URIPromoter instance for aggregator tests."""
-    from ontocast.tool.agg.promoter import URIPromoter
-
-    return URIPromoter(doc_namespace, chunk_namespaces, ontology_namespaces)
+    return URIBuilder()
 
 
 @pytest.fixture

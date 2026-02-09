@@ -9,6 +9,8 @@ import re
 
 from rdflib import URIRef
 
+from ontocast.onto.constants import DEFAULT_IRI
+
 from .normalizer import EntityRepresentation
 
 logger = logging.getLogger(__name__)
@@ -25,18 +27,20 @@ class URIPromoter:
         self,
         doc_namespace: str,
         chunk_namespaces: set[str],
-        ontology_namespaces: set[str],
+        facts_iri: str = DEFAULT_IRI,
     ):
         """Initialize the URI promoter.
 
         Args:
             doc_namespace: Document namespace for promoted URIs
             chunk_namespaces: Set of chunk namespace URIs
-            ontology_namespaces: Set of ontology namespace URIs (preserved as-is)
+            facts_iri: Base IRI for fact entities. Entities under this
+                namespace are facts; all other entities are ontology
+                entities and preserved as-is.
         """
         self.doc_namespace = self._normalize_namespace(doc_namespace)
         self.chunk_namespaces = chunk_namespaces
-        self.ontology_namespaces = ontology_namespaces
+        self.facts_iri = facts_iri.rstrip("/") + "/"
         self._used_uris: set[str] = set()
 
     def _normalize_namespace(self, namespace: str) -> str:
@@ -106,8 +110,8 @@ class URIPromoter:
         """
         entity_str = str(entity)
 
-        # Don't promote ontology entities
-        if any(entity_str.startswith(ns) for ns in self.ontology_namespaces):
+        # Don't promote ontology entities (anything not under facts_iri)
+        if not entity_str.startswith(self.facts_iri):
             return False
 
         # Promote chunk entities

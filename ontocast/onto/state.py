@@ -4,8 +4,8 @@ from typing import Any
 
 from pydantic import ConfigDict, Field
 
-from ontocast.onto.chunk import Chunk
 from ontocast.onto.constants import CHUNK_NULL_IRI, DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI
+from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.context import AgentContext, AgentType, ContextManager
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import BasePydanticModel, Suggestions
@@ -117,18 +117,19 @@ class AgentState(BasePydanticModel):
     files: dict[str, bytes] = Field(
         default_factory=lambda: dict(), description="Files to process"
     )
-    chunks: list[Chunk] = Field(
+    chunks: list[ContentUnit] = Field(
         default_factory=lambda: list(), description="Chunks of the input text"
     )
-    current_chunk: Chunk = Field(
-        default_factory=lambda: Chunk(
+    current_chunk: ContentUnit = Field(
+        default_factory=lambda: ContentUnit(
             text="",
+            index=0,
             hid="default",
             doc_iri=CHUNK_NULL_IRI,
         ),
         description="Chunks of the input text",
     )
-    chunks_processed: list[Chunk] = Field(
+    chunks_processed: list[ContentUnit] = Field(
         default_factory=lambda: list(), description="Chunks of the input text"
     )
     current_ontology: Ontology = Field(

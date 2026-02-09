@@ -1,4 +1,3 @@
-import hashlib
 import json
 import logging
 import re
@@ -14,6 +13,7 @@ from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import NamespaceManager
 
 from ontocast.onto.constants import COMMON_PREFIXES
+from ontocast.util import render_text_hash
 
 logger = logging.getLogger(__name__)
 
@@ -343,18 +343,97 @@ class RDFGraph(Graph):
     def _to_turtle_str(g: Any) -> str:
         """Convert an RDFGraph to a Turtle string.
 
+        For graphs backed by the *oxigraph* store the serialisation is
+        delegated to ``pyoxigraph`` so that RDF 1.2 triple-term syntax
+        (``<<( s p o )>>``) is emitted correctly.
+
         Args:
             g: The RDFGraph instance.
 
         Returns:
-            str: The Turtle string representation.
+            str: The Turtle (or Turtle-star) string representation.
         """
+        if hasattr(g, "store") and type(g.store).__name__ == "OxigraphStore":
+            return g.serialize_turtle_star()
         return g.serialize(format="turtle")
+
+    def serialize_turtle_star(self) -> str:
+        """Serialize an oxigraph-backed graph to Turtle-star via *pyoxigraph*.
+
+        This method extracts all quads belonging to this graph's context
+        from the underlying ``pyoxigraph.Store`` and serialises them into
+        the default graph using ``pyoxigraph.serialize`` with the Turtle
+        format, which natively supports RDF 1.2 ``<<( … )>>`` syntax.
+
+        Returns:
+            Turtle-star string.
+
+        Raises:
+            RuntimeError: If the graph is not backed by an oxigraph store.
+        """
+        try:
+            import pyoxigraph as ox
+            from oxrdflib._converter import to_ox
+        except ImportError as exc:
+            raise RuntimeError(
+                "pyoxigraph / oxrdflib must be installed for Turtle-star serialisation"
+            ) from exc
+
+        inner_store: ox.Store = self.store._inner  # type: ignore[attr-defined]
+        graph_ctx = to_ox(self.identifier)
+
+        # Copy quads into a temporary store under the default graph so
+        # that ``ox.serialize`` can emit plain Turtle (Turtle-star).
+        tmp = ox.Store()
+        for quad in inner_store.quads_for_pattern(
+            None,
+            None,
+            None,
+            graph_ctx,
+        ):
+            tmp.add(
+                ox.Quad(quad.subject, quad.predicate, quad.object, ox.DefaultGraph())
+            )
+        raw: bytes = ox.serialize(tmp, format=ox.RdfFormat.TURTLE)  # type: ignore[assignment]
+        return raw.decode()
 
     def __new__(cls, *args, **kwargs):
         """Create a new RDFGraph instance."""
         instance = super().__new__(cls)
         return instance
+
+    def serialize(
+        self,
+        destination: Any = None,
+        format: str = "turtle",
+        base: str | None = None,
+        encoding: str | None = None,
+        **args: Any,
+    ) -> Any:
+        """Serialize the graph, delegating to pyoxigraph for oxigraph stores.
+
+        When the graph is backed by an *oxigraph* store and the requested
+        format is ``"turtle"`` (or ``"ttl"``), serialisation is handled by
+        ``pyoxigraph`` which natively supports RDF 1.2 triple terms.
+        For all other stores or formats the default rdflib serialiser is
+        used.
+        """
+        is_ox = type(self.store).__name__ == "OxigraphStore"
+        if is_ox and format in ("turtle", "ttl"):
+            ttl = self.serialize_turtle_star()
+            if destination is not None:
+                enc = encoding or "utf-8"
+                with open(destination, "w", encoding=enc) as fh:
+                    fh.write(ttl)
+                return None
+            return ttl
+        return super().serialize(
+            destination=destination,
+            format=format,
+            base=base,
+            encoding=encoding,
+            **args,
+        )
 
     def sanitize_prefixes_namespaces(self):
         """
@@ -577,4 +656,4 @@ class RDFGraph(Graph):
         )
         # jsonld.normalize returns a string when format is "application/n-quads"
         normalized_str = normalized if isinstance(normalized, str) else str(normalized)
-        return hashlib.sha256(normalized_str.encode("utf-8")).hexdigest()
+        return render_text_hash(normalized_str, digits=None)

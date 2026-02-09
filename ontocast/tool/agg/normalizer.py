@@ -6,13 +6,20 @@ It creates normalized string representations r(e) that include:
 - Semantic neighbors (types, properties)
 """
 
+from __future__ import annotations
+
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from rdflib import RDF, RDFS, Literal, URIRef
 
+from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.rdfgraph import RDFGraph
+
+if TYPE_CHECKING:
+    from ontocast.tool.agg.uri_builder import EntityRole
 
 
 @dataclass
@@ -27,6 +34,7 @@ class EntityRepresentation:
         labels: List of labels found for this entity
         representation: Combined string representation r(e) for embedding
         is_ontology_entity: Whether this entity is from an ontology namespace
+        role: Detected entity role (class / property / instance)
     """
 
     entity: URIRef
@@ -36,6 +44,7 @@ class EntityRepresentation:
     labels: list[str]
     representation: str
     is_ontology_entity: bool
+    role: EntityRole | None = field(default=None)
 
 
 class EntityNormalizer:
@@ -45,14 +54,14 @@ class EntityNormalizer:
     string representations that can be embedded and compared.
     """
 
-    def __init__(self, ontology_namespaces: set[str] | None = None):
+    def __init__(self, facts_iri: str = DEFAULT_IRI):
         """Initialize the entity normalizer.
 
         Args:
-            ontology_namespaces: Set of namespace URIs that identify ontology entities.
-                Entities from these namespaces are preferred as representatives.
+            facts_iri: Base IRI for fact entities. Entities under this namespace
+                are facts; all other entities are considered ontology entities.
         """
-        self.ontology_namespaces = ontology_namespaces or set()
+        self.facts_iri = facts_iri.rstrip("/") + "/"
 
     def normalize_string(self, text: str) -> str:
         """Normalize a string: lowercase, remove diacritics, clean special chars.
@@ -123,18 +132,19 @@ class EntityNormalizer:
     def is_ontology_entity(self, entity: URIRef) -> bool:
         """Check if an entity belongs to an ontology namespace.
 
+        Facts live under ``facts_iri``; everything else is an ontology entity.
+
         Args:
             entity: Entity URI to check
 
         Returns:
-            True if entity is from an ontology namespace
+            True if entity is **not** from the facts namespace
         """
-        entity_str = str(entity)
-        return any(entity_str.startswith(ns) for ns in self.ontology_namespaces)
+        return not str(entity).startswith(self.facts_iri)
 
     def extract_entity_context(
         self, entity: URIRef, graph: RDFGraph
-    ) -> tuple[list[URIRef], list[URIRef], list[str]]:
+    ) -> tuple[list[URIRef], list[URIRef], list[str], bool]:
         """Extract semantic context for an entity from the graph.
 
         Args:
@@ -142,11 +152,14 @@ class EntityNormalizer:
             graph: RDF graph containing the entity
 
         Returns:
-            Tuple of (types, properties, labels)
+            Tuple of (types, properties, labels, is_predicate).
+            *is_predicate* is ``True`` when the entity appears in the
+            predicate position of at least one triple.
         """
         types = []
         properties = set()
         labels = []
+        is_predicate = False
 
         # Extract information from triples
         for s, p, o in graph:
@@ -166,7 +179,11 @@ class EntityNormalizer:
             elif o == entity:
                 properties.add(p)
 
-        return types, list(properties), labels
+            # When entity is used as predicate
+            if p == entity:
+                is_predicate = True
+
+        return types, list(properties), labels, is_predicate
 
     def create_representation(
         self, entity: URIRef, graph: RDFGraph
@@ -174,7 +191,9 @@ class EntityNormalizer:
         """Create a normalized representation r(e) for an entity.
 
         This combines the normalized form with semantic neighbors to create
-        a rich representation suitable for embedding.
+        a rich representation suitable for embedding.  The entity role
+        (class / property / instance) is detected from the already-extracted
+        context so no additional graph scan is needed downstream.
 
         Args:
             entity: Entity URI
@@ -183,11 +202,18 @@ class EntityNormalizer:
         Returns:
             EntityRepresentation containing r(e) and metadata
         """
+        from ontocast.tool.agg.uri_builder import detect_role_from_context
+
         # Get normalized form
         normal_form = self.normalize_uri(entity)
 
         # Extract semantic context
-        types, properties, labels = self.extract_entity_context(entity, graph)
+        types, properties, labels, is_predicate = self.extract_entity_context(
+            entity, graph
+        )
+
+        # Detect role from the already-extracted context (no extra graph scan)
+        role = detect_role_from_context(types, is_predicate)
 
         # Build representation string r(e)
         parts = [normal_form]
@@ -228,6 +254,7 @@ class EntityNormalizer:
             labels=labels,
             representation=representation,
             is_ontology_entity=is_ontology,
+            role=role,
         )
 
     def create_representations_batch(

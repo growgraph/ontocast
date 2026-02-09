@@ -30,7 +30,7 @@ def aggregate(state: AgentState, tools: ToolBox) -> AgentState:
         c.sanitize()
 
     state.aggregated_facts = tools.aggregator.aggregate_graphs(
-        chunks=state.chunks_processed, doc_namespace=state.doc_namespace
+        units=state.chunks_processed
     )
     total_chunks = len(state.chunks_processed)
     logger.info(

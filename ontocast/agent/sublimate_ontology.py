@@ -7,7 +7,7 @@ and expressiveness of the ontological knowledge.
 
 import logging
 
-from ontocast.onto.constants import DEFAULT_CHUNK_IRI
+from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import FailureStage
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
@@ -16,7 +16,7 @@ from ontocast.toolbox import ToolBox
 logger = logging.getLogger(__name__)
 
 
-def _sublimate_ontology(state: AgentState):
+def _sublimate_ontology(state: AgentState) -> tuple[RDFGraph, RDFGraph]:
     graph_onto_addendum = RDFGraph()
     graph_facts_pure = RDFGraph()
 
@@ -26,7 +26,7 @@ def _sublimate_ontology(state: AgentState):
         graph_facts_pure.bind(prefix, namespace)
 
     query_ontology = f"""
-    PREFIX cd: <{DEFAULT_CHUNK_IRI}>
+    PREFIX cd: <{DEFAULT_IRI}>
 
     SELECT ?s ?p ?o
     WHERE {{
@@ -47,7 +47,7 @@ def _sublimate_ontology(state: AgentState):
         graph_onto_addendum.add((s, p, o))
 
     query_facts = f"""
-        PREFIX cd: <{DEFAULT_CHUNK_IRI}>
+        PREFIX cd: <{DEFAULT_IRI}>
 
         SELECT ?s ?p ?o
         WHERE {{
@@ -82,35 +82,40 @@ def sublimate_ontology(state: AgentState, tools: ToolBox):
         graph_onto_addendum, graph_facts = _sublimate_ontology(state=state)
 
         # Ensure ontology is not null and ontology_id is set before updating
-        if state.current_ontology.is_null():
-            logger.warning("Cannot update ontology: null ontology cannot be updated")
-        elif state.current_ontology.ontology_id:
-            # Check if adding triples would exceed max_triples limit
-            max_triples = state.ontology_max_triples
-            if max_triples is not None:
-                current_size = len(state.current_ontology.graph)
-                addendum_size = len(graph_onto_addendum)
-                if current_size + addendum_size > max_triples:
-                    logger.warning(
-                        f"Ontology sublimation skipped: would exceed limit "
-                        f"({current_size + addendum_size} > {max_triples} triples). "
-                        f"Current size: {current_size} triples."
-                    )
+        if len(graph_onto_addendum) > 0:
+            logger.info("ontology seeped into facts:")
+            logger.info(f"graph: {graph_onto_addendum.serialize()}")
+            if state.current_ontology.is_null():
+                logger.warning(
+                    "Cannot update ontology: null ontology cannot be updated"
+                )
+            elif state.current_ontology.ontology_id:
+                # Check if adding triples would exceed max_triples limit
+                max_triples = state.ontology_max_triples
+                if max_triples is not None:
+                    current_size = len(state.current_ontology.graph)
+                    addendum_size = len(graph_onto_addendum)
+                    if current_size + addendum_size > max_triples:
+                        logger.warning(
+                            f"Ontology sublimation skipped: would exceed limit "
+                            f"({current_size + addendum_size} > {max_triples} triples). "
+                            f"Current size: {current_size} triples."
+                        )
+                    else:
+                        # Only update state.current_ontology, not OntologyManager
+                        # OntologyManager will be updated in serialize() during final serialization
+                        state.current_ontology.graph += graph_onto_addendum
+                        logger.debug(
+                            f"Updated state.current_ontology with {len(graph_onto_addendum)} triples from sublimation"
+                        )
                 else:
-                    # Only update state.current_ontology, not OntologyManager
-                    # OntologyManager will be updated in serialize() during final serialization
+                    # No limit set, proceed with update
                     state.current_ontology.graph += graph_onto_addendum
                     logger.debug(
                         f"Updated state.current_ontology with {len(graph_onto_addendum)} triples from sublimation"
                     )
             else:
-                # No limit set, proceed with update
-                state.current_ontology.graph += graph_onto_addendum
-                logger.debug(
-                    f"Updated state.current_ontology with {len(graph_onto_addendum)} triples from sublimation"
-                )
-        else:
-            logger.warning("Cannot update ontology: ontology_id is None")
+                logger.warning("Cannot update ontology: ontology_id is None")
 
         # Ensure graph_facts is an RDFGraph instance
         if not isinstance(graph_facts, RDFGraph):

@@ -4,7 +4,7 @@ import pytest
 from rdflib import Literal, URIRef
 from rdflib.namespace import FOAF, RDF, RDFS, SKOS
 
-from ontocast.onto.chunk import Chunk
+from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.aggregate import EmbeddingBasedAggregator
 from ontocast.tool.validate import (
@@ -13,7 +13,7 @@ from ontocast.tool.validate import (
 )
 
 
-def create_sample_chunk_graph(current_domain, chunk_id: str) -> Chunk:
+def create_sample_chunk_graph(current_domain, chunk_id: str) -> ContentUnit:
     """Create a sample chunk graph for testing.
 
     Args:
@@ -21,7 +21,7 @@ def create_sample_chunk_graph(current_domain, chunk_id: str) -> Chunk:
         chunk_id: The chunk identifier.
 
     Returns:
-        Chunk: A sample chunk with a graph.
+        ContentUnit: A sample chunk with a graph.
     """
     g = RDFGraph()
 
@@ -37,7 +37,7 @@ def create_sample_chunk_graph(current_domain, chunk_id: str) -> Chunk:
 
     doc_iri = f"{current_domain}/doc/123"
 
-    c = Chunk(graph=g, doc_iri=doc_iri, text="", hid=chunk_id)
+    c = ContentUnit(graph=g, doc_iri=doc_iri, text="", index=0, hid=chunk_id)
     return c
 
 
@@ -85,9 +85,7 @@ def test_aggregation(doc_id, connected_chunks, current_domain):
     aggregator = EmbeddingBasedAggregator()
     for chunk in connected_chunks:
         chunk.sanitize()
-    aggregated_graph = aggregator.aggregate_graphs(
-        chunks=connected_chunks, doc_namespace=f"{current_domain}/{doc_id}/"
-    )
+    aggregated_graph = aggregator.aggregate_graphs(units=connected_chunks)
 
     # Validate aggregated graph connectivity
     connectivity_result = RDFGraphConnectivityValidator(
@@ -111,8 +109,12 @@ def create_test_chunks_basic_similarity(current_domain):
     # Chunk 1: Person entities with similar names
     g1 = RDFGraph()
     doc_iri = f"{current_domain}/doc/test1"
-    c1 = Chunk(
-        graph=g1, doc_iri=doc_iri, text="First chunk about John", hid="chunk_001"
+    c1 = ContentUnit(
+        graph=g1,
+        doc_iri=doc_iri,
+        text="First chunk about John",
+        index=0,
+        hid="chunk_001",
     )
 
     person1 = URIRef(c1.namespace + "john_doe")
@@ -131,8 +133,12 @@ def create_test_chunks_basic_similarity(current_domain):
 
     # Chunk 2: Similar entities with slight variations
     g2 = RDFGraph()
-    c2 = Chunk(
-        graph=g2, doc_iri=doc_iri, text="Second chunk about John", hid="chunk_002"
+    c2 = ContentUnit(
+        graph=g2,
+        doc_iri=doc_iri,
+        text="Second chunk about John",
+        index=1,
+        hid="chunk_002",
     )
 
     person1_var = URIRef(c2.namespace + "john_d")
@@ -151,8 +157,12 @@ def create_test_chunks_basic_similarity(current_domain):
 
     # Chunk 3: More variations and edge cases
     g3 = RDFGraph()
-    c3 = Chunk(
-        graph=g3, doc_iri=doc_iri, text="Third chunk with variations", hid="chunk_003"
+    c3 = ContentUnit(
+        graph=g3,
+        doc_iri=doc_iri,
+        text="Third chunk with variations",
+        index=2,
+        hid="chunk_003",
     )
 
     person1_var2 = URIRef(c3.namespace + "j_doe")
@@ -187,7 +197,13 @@ def create_test_chunks_predicate_disambiguation(current_domain):
     # Chunk 1: Various relationship predicates
     g1 = RDFGraph()
     doc_iri = f"{current_domain}/doc/test2"
-    c1 = Chunk(graph=g1, doc_iri=doc_iri, text="Relationships chunk 1", hid="chunk_101")
+    c1 = ContentUnit(
+        graph=g1,
+        doc_iri=doc_iri,
+        text="Relationships chunk 1",
+        index=0,
+        hid="chunk_101",
+    )
 
     person1 = URIRef(c1.namespace + "alice")
     person2 = URIRef(c1.namespace + "bob")
@@ -210,7 +226,13 @@ def create_test_chunks_predicate_disambiguation(current_domain):
 
     # Chunk 2: Similar predicates with variations
     g2 = RDFGraph()
-    c2 = Chunk(graph=g2, doc_iri=doc_iri, text="Relationships chunk 2", hid="chunk_102")
+    c2 = ContentUnit(
+        graph=g2,
+        doc_iri=doc_iri,
+        text="Relationships chunk 2",
+        index=1,
+        hid="chunk_102",
+    )
 
     person3 = URIRef(c2.namespace + "charlie")
     person4 = URIRef(c2.namespace + "diana")
@@ -232,8 +254,12 @@ def create_test_chunks_predicate_disambiguation(current_domain):
 
     # Chunk 3: Different domain predicates (should not be merged)
     g3 = RDFGraph()
-    c3 = Chunk(
-        graph=g3, doc_iri=doc_iri, text="Different domain chunk", hid="chunk_103"
+    c3 = ContentUnit(
+        graph=g3,
+        doc_iri=doc_iri,
+        text="Different domain chunk",
+        index=2,
+        hid="chunk_103",
     )
 
     book1 = URIRef(c3.namespace + "book1")
@@ -268,7 +294,9 @@ def create_test_chunks_edge_cases(current_domain):
     # Chunk 1: Entities without labels (using local names)
     g1 = RDFGraph()
     doc_iri = f"{current_domain}/doc/test3"
-    c1 = Chunk(graph=g1, doc_iri=doc_iri, text="Edge case chunk 1", hid="chunk_201")
+    c1 = ContentUnit(
+        graph=g1, doc_iri=doc_iri, text="Edge case chunk 1", index=0, hid="chunk_201"
+    )
 
     entity1 = URIRef(c1.namespace + "mysterious_entity")
     entity2 = URIRef(c1.namespace + "unknown_thing")
@@ -282,7 +310,9 @@ def create_test_chunks_edge_cases(current_domain):
 
     # Chunk 2: Exact URI matches (should be trivially merged)
     g2 = RDFGraph()
-    c2 = Chunk(graph=g2, doc_iri=doc_iri, text="Edge case chunk 2", hid="chunk_202")
+    c2 = ContentUnit(
+        graph=g2, doc_iri=doc_iri, text="Edge case chunk 2", index=1, hid="chunk_202"
+    )
 
     # Intentionally same URIs as chunk 1 (simulating perfect matches)
     entity1_exact = URIRef(c1.namespace + "mysterious_entity")  # Exact match
@@ -297,8 +327,12 @@ def create_test_chunks_edge_cases(current_domain):
 
     # Chunk 3: Special characters and Unicode
     g3 = RDFGraph()
-    c3 = Chunk(
-        graph=g3, doc_iri=doc_iri, text="Special characters chunk", hid="chunk_203"
+    c3 = ContentUnit(
+        graph=g3,
+        doc_iri=doc_iri,
+        text="Special characters chunk",
+        index=2,
+        hid="chunk_203",
     )
 
     entity_unicode = URIRef(c3.namespace + "café_owner")
@@ -332,7 +366,9 @@ def create_test_chunks_type_disambiguation(current_domain):
     # Chunk 1: Person named "Apple"
     g1 = RDFGraph()
     doc_iri = f"{current_domain}/doc/test4"
-    c1 = Chunk(graph=g1, doc_iri=doc_iri, text="Person Apple chunk", hid="chunk_301")
+    c1 = ContentUnit(
+        graph=g1, doc_iri=doc_iri, text="Person Apple chunk", index=0, hid="chunk_301"
+    )
 
     apple_person = URIRef(c1.namespace + "apple")
     john = URIRef(c1.namespace + "john")
@@ -347,7 +383,9 @@ def create_test_chunks_type_disambiguation(current_domain):
 
     # Chunk 2: Company named "Apple"
     g2 = RDFGraph()
-    c2 = Chunk(graph=g2, doc_iri=doc_iri, text="Company Apple chunk", hid="chunk_302")
+    c2 = ContentUnit(
+        graph=g2, doc_iri=doc_iri, text="Company Apple chunk", index=1, hid="chunk_302"
+    )
 
     apple_company = URIRef(c2.namespace + "apple")  # Same local name!
     employee = URIRef(c2.namespace + "employee1")
@@ -362,7 +400,9 @@ def create_test_chunks_type_disambiguation(current_domain):
 
     # Chunk 3: Fruit "apple" (no specific type)
     g3 = RDFGraph()
-    c3 = Chunk(graph=g3, doc_iri=doc_iri, text="Fruit apple chunk", hid="chunk_303")
+    c3 = ContentUnit(
+        graph=g3, doc_iri=doc_iri, text="Fruit apple chunk", index=2, hid="chunk_303"
+    )
 
     apple_fruit = URIRef(c3.namespace + "apple")  # Same local name again!
     color_red = URIRef(c3.namespace + "red")
@@ -393,10 +433,11 @@ def create_test_chunks_large_scale(current_domain):
     for chunk_num in range(5):
         g = RDFGraph()
         chunk_id = f"chunk_{400 + chunk_num:03d}"
-        c = Chunk(
+        c = ContentUnit(
             graph=g,
             doc_iri=doc_iri,
             text=f"Large scale chunk {chunk_num}",
+            index=chunk_num,
             hid=chunk_id,
         )
 
@@ -459,7 +500,9 @@ def create_test_chunks_complex_predicates(current_domain):
     # Chunk 1: Family relationships
     g1 = RDFGraph()
     doc_iri = f"{current_domain}/doc/test6"
-    c1 = Chunk(graph=g1, doc_iri=doc_iri, text="Family relationships", hid="chunk_501")
+    c1 = ContentUnit(
+        graph=g1, doc_iri=doc_iri, text="Family relationships", index=0, hid="chunk_501"
+    )
 
     father = URIRef(c1.namespace + "john_senior")
     son = URIRef(c1.namespace + "john_junior")
@@ -490,8 +533,12 @@ def create_test_chunks_complex_predicates(current_domain):
 
     # Chunk 2: Similar family relationships with different naming
     g2 = RDFGraph()
-    c2 = Chunk(
-        graph=g2, doc_iri=doc_iri, text="More family relationships", hid="chunk_502"
+    c2 = ContentUnit(
+        graph=g2,
+        doc_iri=doc_iri,
+        text="More family relationships",
+        index=1,
+        hid="chunk_502",
     )
 
     mother = URIRef(c2.namespace + "susan")
@@ -567,7 +614,7 @@ def test_basic_similarity_aggregation(basic_similarity_chunks):
     """Test aggregation with basic similarity scenarios."""
     chunks, doc_iri = basic_similarity_chunks
     aggregator = EmbeddingBasedAggregator()
-    aggregated_graph = aggregator.aggregate_graphs(chunks=chunks, doc_namespace=doc_iri)
+    aggregated_graph = aggregator.aggregate_graphs(units=chunks)
 
     # Validate aggregated graph connectivity
     connectivity_result = RDFGraphConnectivityValidator(
@@ -583,7 +630,7 @@ def test_predicate_disambiguation_aggregation(predicate_disambiguation_chunks):
     """Test aggregation with predicate disambiguation scenarios."""
     chunks, doc_iri = predicate_disambiguation_chunks
     aggregator = EmbeddingBasedAggregator()
-    aggregated_graph = aggregator.aggregate_graphs(chunks=chunks, doc_namespace=doc_iri)
+    aggregated_graph = aggregator.aggregate_graphs(units=chunks)
 
     # Validate aggregated graph connectivity
     connectivity_result = RDFGraphConnectivityValidator(
@@ -599,7 +646,7 @@ def test_edge_cases_aggregation(edge_cases_chunks):
     """Test aggregation with edge cases."""
     chunks, doc_iri = edge_cases_chunks
     aggregator = EmbeddingBasedAggregator()
-    aggregated_graph = aggregator.aggregate_graphs(chunks=chunks, doc_namespace=doc_iri)
+    aggregated_graph = aggregator.aggregate_graphs(units=chunks)
 
     # Validate aggregated graph connectivity
     connectivity_result = RDFGraphConnectivityValidator(
@@ -615,7 +662,7 @@ def test_type_disambiguation_aggregation(type_disambiguation_chunks):
     """Test aggregation with type-based disambiguation."""
     chunks, doc_iri = type_disambiguation_chunks
     aggregator = EmbeddingBasedAggregator()
-    aggregated_graph = aggregator.aggregate_graphs(chunks=chunks, doc_namespace=doc_iri)
+    aggregated_graph = aggregator.aggregate_graphs(units=chunks)
 
     # Validate aggregated graph connectivity
     connectivity_result = RDFGraphConnectivityValidator(
@@ -631,7 +678,7 @@ def test_large_scale_aggregation(large_scale_chunks):
     """Test aggregation with large scale scenarios."""
     chunks, doc_iri = large_scale_chunks
     aggregator = EmbeddingBasedAggregator()
-    aggregated_graph = aggregator.aggregate_graphs(chunks=chunks, doc_namespace=doc_iri)
+    aggregated_graph = aggregator.aggregate_graphs(units=chunks)
 
     # Validate aggregated graph connectivity
     connectivity_result = RDFGraphConnectivityValidator(
@@ -647,7 +694,7 @@ def test_complex_predicates_aggregation(complex_predicates_chunks):
     """Test aggregation with complex predicate scenarios."""
     chunks, doc_iri = complex_predicates_chunks
     aggregator = EmbeddingBasedAggregator()
-    aggregated_graph = aggregator.aggregate_graphs(chunks=chunks, doc_namespace=doc_iri)
+    aggregated_graph = aggregator.aggregate_graphs(units=chunks)
 
     # Validate aggregated graph connectivity
     connectivity_result = RDFGraphConnectivityValidator(
