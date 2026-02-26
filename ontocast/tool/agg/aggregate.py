@@ -18,7 +18,7 @@ import logging
 from rdflib import URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI
-from ontocast.onto.content_unit import ContentUnit
+from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.rdfgraph import RDFGraph
 
 from .clustering import ClusterRepresentativeSelector, EntityClusterer
@@ -77,7 +77,12 @@ class EmbeddingBasedAggregator:
     def _collect_all_entities(
         self,
         units: list[ContentUnit],
-    ) -> tuple[list[URIRef], dict[URIRef, RDFGraph], dict[URIRef, str]]:
+    ) -> tuple[
+        list[URIRef],
+        dict[URIRef, RDFGraph],
+        dict[URIRef, URIRef],
+        dict[URIRef, bool],
+    ]:
         """Collect all entities from all content unit graphs.
 
         Each entity is associated with the graph it was found in and the
@@ -90,26 +95,43 @@ class EmbeddingBasedAggregator:
             units: List of content units to aggregate.
 
         Returns:
-            Tuple of (entities, entity_to_graph, entity_to_doc_iri).
+            Tuple of (
+                entities,
+                entity_to_graph,
+                entity_to_doc_iri,
+                entity_to_is_ontology,
+            ).
         """
         entities: set[URIRef] = set()
         entity_graphs: dict[URIRef, RDFGraph] = {}
-        entity_doc_iris: dict[URIRef, str] = {}
+        entity_doc_iris: dict[URIRef, URIRef] = {}
+        entity_is_ontology: dict[URIRef, bool] = {}
 
         for unit in units:
             if unit.graph is None:
                 continue
-            for s, p, o in unit.graph_absolute:
+            # Keep collection in the same URI space that rewrite/merge consumes
+            # (unit.graph). Using graph_absolute here causes mapping keys to miss
+            # during rewrite, because unit.graph still contains the original terms.
+            for s, p, o in unit.graph:
                 if isinstance(s, URIRef):
                     entities.add(s)
-                    entity_graphs[s] = unit.graph_absolute
+                    entity_graphs[s] = unit.graph
                     entity_doc_iris[s] = unit.doc_iri
+                    entity_is_ontology[s] = (
+                        entity_is_ontology.get(s, False)
+                        or unit.type == OutputType.ONTOLOGIES
+                    )
                 if isinstance(o, URIRef):
                     entities.add(o)
-                    entity_graphs[o] = unit.graph_absolute
+                    entity_graphs[o] = unit.graph
                     entity_doc_iris[o] = unit.doc_iri
+                    entity_is_ontology[o] = (
+                        entity_is_ontology.get(o, False)
+                        or unit.type == OutputType.ONTOLOGIES
+                    )
 
-        return list(entities), entity_graphs, entity_doc_iris
+        return list(entities), entity_graphs, entity_doc_iris, entity_is_ontology
 
     def aggregate_graphs(self, units: list[ContentUnit]) -> RDFGraph:
         """Aggregate multiple content unit graphs with embedding-based disambiguation.
@@ -126,7 +148,9 @@ class EmbeddingBasedAggregator:
             return RDFGraph()
 
         # Steps 1-3: Collect, normalise, embed, cluster
-        entities, entity_graphs, entity_doc_iris = self._collect_all_entities(units)
+        entities, entity_graphs, entity_doc_iris, entity_is_ontology = (
+            self._collect_all_entities(units)
+        )
         representations = self.normalizer.create_representations_batch(
             entities, entity_graphs
         )
@@ -139,6 +163,7 @@ class EmbeddingBasedAggregator:
             representatives,
             representations,
             entity_doc_iris=entity_doc_iris,
+            entity_is_ontology=entity_is_ontology,
         )
         final_mapping = URIBuilder.compose_mappings(clustering_mapping, uri_mapping)
 

@@ -539,7 +539,7 @@ def graph_rewriter():
     """GraphRewriter instance for aggregator tests (add_sameas_links=True)."""
     from ontocast.tool.agg.rewriter import GraphRewriter
 
-    return GraphRewriter(add_sameas_links=True)
+    return GraphRewriter(add_sameas_links=False)
 
 
 def triple_store_roundtrip(manager, test_ontology):

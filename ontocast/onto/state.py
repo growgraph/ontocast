@@ -3,6 +3,7 @@ from collections import defaultdict
 from typing import Any
 
 from pydantic import ConfigDict, Field
+from rdflib import URIRef
 
 from ontocast.onto.constants import CHUNK_NULL_IRI, DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI
 from ontocast.onto.content_unit import ContentUnit
@@ -125,7 +126,7 @@ class AgentState(BasePydanticModel):
             text="",
             index=0,
             hid="default",
-            doc_iri=CHUNK_NULL_IRI,
+            doc_iri=URIRef(CHUNK_NULL_IRI),
         ),
         description="Chunks of the input text",
     )

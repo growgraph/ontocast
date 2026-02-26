@@ -267,7 +267,8 @@ class URIBuilder:
         entity: URIRef,
         representation: EntityRepresentation,
         role: EntityRole | str,
-        target_iri: str | None = None,
+        target_iri: URIRef | str | None = None,
+        is_ontology_entity: bool | None = None,
     ) -> URIRef:
         """Build a normalised URI for a single entity.
 
@@ -285,6 +286,8 @@ class URIBuilder:
                 different ``doc_iri`` values the caller passes the appropriate
                 one here so that each fact is placed under its document
                 namespace.
+            is_ontology_entity: Explicit ontology/fact classification.  When
+                provided this takes precedence over namespace-based inference.
 
         Returns:
             Normalised URI.
@@ -292,19 +295,26 @@ class URIBuilder:
         local_name = normalize_local_name(representation, role)
         unique_name = self._ensure_unique(local_name)
 
-        if self.is_ontology_entity(entity):
+        is_ontology = (
+            self.is_ontology_entity(entity)
+            if is_ontology_entity is None
+            else is_ontology_entity
+        )
+
+        if is_ontology:
             namespace = self._extract_namespace(entity)
             return URIRef(f"{namespace}{unique_name}")
 
         # Use target_iri (doc_iri) when provided, otherwise fall back to base_iri
-        base = (target_iri.rstrip("/") + "/") if target_iri else self.base_iri
+        base = (str(target_iri).rstrip("/") + "/") if target_iri else self.base_iri
         return URIRef(f"{base}{unique_name}")
 
     def create_uri_mapping(
         self,
         representatives: list[URIRef],
         representations: dict[URIRef, EntityRepresentation],
-        entity_doc_iris: dict[URIRef, str] | None = None,
+        entity_doc_iris: dict[URIRef, URIRef] | None = None,
+        entity_is_ontology: dict[URIRef, bool] | None = None,
     ) -> dict[URIRef, URIRef]:
         """Create a mapping from representative URIs to normalised URIs.
 
@@ -324,6 +334,9 @@ class URIBuilder:
                 document IRI.  When provided the ``doc_iri`` of the
                 representative is used as the target namespace for all fact
                 entities in that cluster.
+            entity_is_ontology: Optional explicit ontology/fact classification.
+                When provided, this classification is used instead of
+                inferring entity type from namespace shape.
 
         Returns:
             Mapping ``e_rep → final_uri``.
@@ -338,7 +351,14 @@ class URIBuilder:
 
             role = rep.role if rep.role is not None else EntityRole.INSTANCE
             doc_iri = entity_doc_iris.get(entity) if entity_doc_iris else None
-            mapping[entity] = self.build_uri(entity, rep, role, target_iri=doc_iri)
+            is_ontology = entity_is_ontology.get(entity) if entity_is_ontology else None
+            mapping[entity] = self.build_uri(
+                entity,
+                rep,
+                role,
+                target_iri=doc_iri,
+                is_ontology_entity=is_ontology,
+            )
 
         normalised = sum(1 for e, u in mapping.items() if e != u)
         logger.info(

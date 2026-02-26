@@ -14,6 +14,8 @@ The module supports:
 import logging
 from collections import defaultdict
 
+from rdflib import URIRef
+
 from ontocast.onto.constants import CHUNK_NULL_IRI, DEFAULT_IRI
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import Status
@@ -66,7 +68,7 @@ def check_chunks_empty(state: AgentState) -> AgentState:
             text="",
             index=0,
             hid="default",
-            doc_iri=CHUNK_NULL_IRI,
+            doc_iri=URIRef(CHUNK_NULL_IRI),
         )
         state.status = Status.SUCCESS
         logger.info(

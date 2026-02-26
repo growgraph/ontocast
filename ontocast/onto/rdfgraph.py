@@ -380,21 +380,63 @@ class RDFGraph(Graph):
             ) from exc
 
         inner_store: ox.Store = self.store._inner  # type: ignore[attr-defined]
-        graph_ctx = to_ox(self.identifier)
+        graph_ctx_raw = to_ox(self.identifier)
+        assert isinstance(
+            graph_ctx_raw,
+            (ox.NamedNode, ox.BlankNode, ox.DefaultGraph),
+        )
+        graph_ctx: ox.NamedNode | ox.BlankNode | ox.DefaultGraph = graph_ctx_raw
 
         # Copy quads into a temporary store under the default graph so
         # that ``ox.serialize`` can emit plain Turtle (Turtle-star).
         tmp = ox.Store()
+        used_iri_terms: set[str] = set()
+
+        def _collect_used_iris(term: Any) -> None:
+            if isinstance(term, ox.NamedNode):
+                used_iri_terms.add(term.value)
+                return
+            if isinstance(term, ox.Triple):
+                _collect_used_iris(term.subject)
+                _collect_used_iris(term.predicate)
+                _collect_used_iris(term.object)
+
         for quad in inner_store.quads_for_pattern(
             None,
             None,
             None,
             graph_ctx,
         ):
+            _collect_used_iris(quad.subject)
+            _collect_used_iris(quad.predicate)
+            _collect_used_iris(quad.object)
             tmp.add(
                 ox.Quad(quad.subject, quad.predicate, quad.object, ox.DefaultGraph())
             )
-        raw: bytes = ox.serialize(tmp, format=ox.RdfFormat.TURTLE)  # type: ignore[assignment]
+
+        namespace_to_prefix: dict[str, str] = {}
+        for prefix, namespace in self.namespaces():
+            if not prefix:
+                continue
+            prefix_str = str(prefix)
+            namespace_str = str(namespace)
+            current = namespace_to_prefix.get(namespace_str)
+            if current is None or (len(prefix_str), prefix_str) < (
+                len(current),
+                current,
+            ):
+                namespace_to_prefix[namespace_str] = prefix_str
+
+        prefixes = {
+            prefix: namespace
+            for namespace, prefix in namespace_to_prefix.items()
+            if any(iri.startswith(namespace) for iri in used_iri_terms)
+        }
+        raw: bytes = tmp.dump(
+            format=ox.RdfFormat.TURTLE,
+            from_graph=ox.DefaultGraph(),
+            prefixes=prefixes or None,
+        )  # type: ignore[assignment]
         return raw.decode()
 
     def __new__(cls, *args, **kwargs):

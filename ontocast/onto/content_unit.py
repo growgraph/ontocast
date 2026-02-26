@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 from enum import StrEnum
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+from rdflib import URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.rdfgraph import RDFGraph
@@ -26,10 +27,12 @@ class ContentUnit(BaseModel):
         type: Type of content unit (facts or ontology).
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     text: str = Field(description="Text of the chunk")
     index: int = Field(description="Index of the chunk of the document")
     hid: str = Field(description="An almost unique (hash) id for the chunk")
-    doc_iri: str = Field(description="IRI of parent doc")
+    doc_iri: URIRef = Field(description="IRI of parent doc")
     graph: RDFGraph = Field(
         description="RDF triples representing the facts from a document chunk in turtle format "
         "as a string in compact form: use prefixes for namespaces, do NOT add comments",
@@ -46,6 +49,13 @@ class ContentUnit(BaseModel):
     type: OutputType = Field(
         default=OutputType.FACTS, description="Type of content unit"
     )
+
+    @field_validator("doc_iri", mode="before")
+    @classmethod
+    def _coerce_doc_iri(cls, value: URIRef | str) -> URIRef:
+        if isinstance(value, URIRef):
+            return value
+        return URIRef(value)
 
     @property
     def graph_absolute(self):
