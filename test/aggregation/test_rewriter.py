@@ -84,6 +84,7 @@ def test_merge_graphs_deduplicates_triples(graph_rewriter: GraphRewriter) -> Non
 def test_rewrite_graph_adds_sameas_for_merged_entities(
     graph_rewriter: GraphRewriter,
 ) -> None:
+    graph_rewriter = GraphRewriter(add_sameas_links=True)
     graph = RDFGraph()
     e1 = URIRef("http://chunk1.org/e1")
     e2 = URIRef("http://chunk2.org/e2")

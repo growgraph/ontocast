@@ -1,7 +1,8 @@
+import importlib
 import logging
 import re
 import threading
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -13,16 +14,16 @@ from ontocast.tool.onto import Tool
 logger = logging.getLogger(__name__)
 
 # Optional imports for semantic chunking
+torch_module: Any | None = None
+embedding_model_cls: Any | None = None
 try:
-    import torch  # type: ignore[import-untyped]  # noqa: F401
-    from langchain_huggingface import (
-        HuggingFaceEmbeddings,  # noqa: F401
+    torch_module = importlib.import_module("torch")
+    langchain_huggingface_module = importlib.import_module("langchain_huggingface")
+    embedding_model_cls = getattr(
+        langchain_huggingface_module, "HuggingFaceEmbeddings", None
     )
-
-    SEMANTIC_CHUNKING_AVAILABLE = True
+    SEMANTIC_CHUNKING_AVAILABLE = embedding_model_cls is not None
 except ImportError:
-    torch = None
-    HuggingFaceEmbeddings = None  # type: ignore[assignment, misc]
     SEMANTIC_CHUNKING_AVAILABLE = False
 
 
@@ -60,7 +61,7 @@ class ChunkerTool(Tool):
             **kwargs: Additional keyword arguments passed to the parent class.
         """
         super().__init__(**kwargs)
-        self._model: Union[Any, None, bool] = None
+        self._model: Any | None = None
         self._model_lock = threading.Lock()  # Lock for thread-safe model initialization
 
         # Initialize cache - use shared cacher or create new one
@@ -97,13 +98,14 @@ class ChunkerTool(Tool):
         with self._model_lock:
             # Double-check: another thread might have initialized it while we waited
             if self._model is None and SEMANTIC_CHUNKING_AVAILABLE:
-                if HuggingFaceEmbeddings is not None:
+                if embedding_model_cls is not None:
                     try:
-                        self._model = HuggingFaceEmbeddings(
+                        self._model = embedding_model_cls(
                             model_name=self.model,
                             model_kwargs={
                                 "device": "cuda"
-                                if torch is not None and torch.cuda.is_available()
+                                if torch_module is not None
+                                and torch_module.cuda.is_available()
                                 else "cpu"
                             },
                             encode_kwargs={"normalize_embeddings": False},
@@ -236,7 +238,7 @@ class ChunkerTool(Tool):
                     result = self._naive_chunk(doc)
                 else:
                     text_splitter = SemanticChunker(
-                        embeddings=self._model,  # type: ignore[arg-type]
+                        embeddings=self._model,
                         chunk_config=self.config,
                         sentence_split_regex=SENTENCE_SPLIT_REGEX,
                     )

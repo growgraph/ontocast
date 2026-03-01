@@ -4,6 +4,7 @@ This module provides functionality for converting various document formats
 into structured data that can be processed by the OntoCast system.
 """
 
+import importlib
 import logging
 import pathlib
 import threading
@@ -60,10 +61,10 @@ class ConverterTool(Tool):
             self.cache = ToolCacher(shared_cache, "converter")
 
         try:
-            from docling.document_converter import (  # type: ignore[import-untyped]
-                DocumentConverter,
+            document_converter_module = importlib.import_module(
+                "docling.document_converter"
             )
-
+            DocumentConverter = getattr(document_converter_module, "DocumentConverter")
             self._converter = DocumentConverter()
         except ImportError as e:
             logger.error(f"Could not import DocumentConverter: {e}")
@@ -102,10 +103,10 @@ class ConverterTool(Tool):
                 if self._converter is None:
                     raise ImportError("DocumentConverter not available")
                 try:
-                    from docling.datamodel.base_models import (  # type: ignore[import-untyped]
-                        DocumentStream,
+                    base_models_module = importlib.import_module(
+                        "docling.datamodel.base_models"
                     )
-
+                    DocumentStream = getattr(base_models_module, "DocumentStream")
                     ds = DocumentStream(name="doc", stream=BytesIO(file_input))
                 except ImportError:
                     raise ImportError(

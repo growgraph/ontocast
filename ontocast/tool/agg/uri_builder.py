@@ -200,12 +200,8 @@ def normalize_local_name(
 class URIBuilder:
     """Build normalized URIs for all entities following RDF naming conventions.
 
-    Both fact and ontology entities have their local names normalised
-    (PascalCase for classes/instances, lowerCamelCase for properties).
-
     - **Fact entities** (under *base_iri*) get new URIs under *base_iri*.
-    - **Ontology entities** (everything else) keep their original namespace
-      but receive a normalised local name.
+    - **Ontology entities** (everything else) are preserved as-is.
     """
 
     def __init__(
@@ -272,10 +268,8 @@ class URIBuilder:
     ) -> URIRef:
         """Build a normalised URI for a single entity.
 
-        Both fact and ontology entities are normalised.  Fact entities are
-        placed under *target_iri* (falling back to *base_iri*); ontology
-        entities keep their original namespace but get a properly-cased local
-        name.
+        Fact entities are normalised and placed under *target_iri* (falling
+        back to *base_iri*). Ontology entities are preserved as-is.
 
         Args:
             entity: Original entity URI.
@@ -292,9 +286,6 @@ class URIBuilder:
         Returns:
             Normalised URI.
         """
-        local_name = normalize_local_name(representation, role)
-        unique_name = self._ensure_unique(local_name)
-
         is_ontology = (
             self.is_ontology_entity(entity)
             if is_ontology_entity is None
@@ -302,8 +293,10 @@ class URIBuilder:
         )
 
         if is_ontology:
-            namespace = self._extract_namespace(entity)
-            return URIRef(f"{namespace}{unique_name}")
+            return entity
+
+        local_name = normalize_local_name(representation, role)
+        unique_name = self._ensure_unique(local_name)
 
         # Use target_iri (doc_iri) when provided, otherwise fall back to base_iri
         base = (str(target_iri).rstrip("/") + "/") if target_iri else self.base_iri

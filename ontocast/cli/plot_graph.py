@@ -1,3 +1,4 @@
+import importlib
 import logging
 import re
 from pathlib import Path
@@ -122,7 +123,7 @@ def main():
                 viz.draw(fname + ".png", format="png", prog="dot", args="-Gdpi=300")
 
     try:
-        import pygraphviz as pgv  # type: ignore[import-untyped]
+        pgv = importlib.import_module("pygraphviz")
 
         tweak_draw("docs/assets/graph", extensions=("svg", "png"))
     except ImportError as e:

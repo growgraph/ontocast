@@ -25,6 +25,25 @@ def make_fact_unit(
     )
 
 
+def make_ontology_unit(
+    text: str,
+    index: int,
+    hid: str,
+    doc_iri: URIRef | str,
+    ttl: str,
+) -> ContentUnit:
+    graph = RDFGraph()
+    graph.parse(data=ttl, format="turtle")
+    return ContentUnit(
+        text=text,
+        index=index,
+        hid=hid,
+        doc_iri=URIRef(str(doc_iri)),
+        graph=graph,
+        type=OutputType.ONTOLOGIES,
+    )
+
+
 def test_aggregate_graphs_returns_empty_graph_for_no_units() -> None:
     aggregator = EmbeddingBasedAggregator()
     result = aggregator.aggregate_graphs([])
@@ -172,3 +191,62 @@ def test_aggregate_graphs_merges_overlapping_facts(monkeypatch) -> None:
 
     chunk_ids = {str(value) for value in result.objects(None, SCHEMA.identifier)}
     assert {"chunk0hash", "chunk1hash", "chunk2hash"} <= chunk_ids
+
+
+def test_aggregate_graphs_preserves_ontology_uris_and_provenance(monkeypatch) -> None:
+    doc_iri = "https://example.org/docs/report1"
+    ttl_chunk_0 = """
+    @prefix ex: <http://example.org/onto#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+    ex:Person rdf:type rdfs:Class .
+    ex:Person rdfs:label "Person" .
+    """
+    ttl_chunk_1 = """
+    @prefix ex: <http://example.org/onto#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+    ex:Persno rdf:type rdfs:Class .
+    ex:Persno rdfs:label "Person" .
+    """
+    units = [
+        make_ontology_unit(
+            "Defines Person class.", 0, "chunk0hash", doc_iri, ttl_chunk_0
+        ),
+        make_ontology_unit(
+            "Repeats class with typo URI.", 1, "chunk1hash", doc_iri, ttl_chunk_1
+        ),
+    ]
+
+    aggregator = EmbeddingBasedAggregator()
+
+    def force_typo_and_canonical_in_one_cluster(representations):
+        canonical = URIRef("http://example.org/onto#Person")
+        typo = URIRef("http://example.org/onto#Persno")
+        entities = set(representations.keys())
+        if canonical in entities and typo in entities:
+            return [[canonical, typo]], {}
+        return [list(entities)], {}
+
+    monkeypatch.setattr(
+        aggregator.clusterer,
+        "cluster_entities",
+        force_typo_and_canonical_in_one_cluster,
+    )
+
+    result = aggregator.aggregate_graphs(units)
+
+    canonical = URIRef("http://example.org/onto#Person")
+    typo = URIRef("http://example.org/onto#Persno")
+
+    assert (canonical, RDFS.label, Literal("Person")) in result
+    assert (typo, None, None) not in result
+    assert (canonical, OWL.sameAs, typo) in result
+    assert str(canonical).startswith("http://example.org/onto#")
+
+    statement_nodes = list(result.subjects(RDF_REIFIES, None))
+    assert statement_nodes
+    assert any(
+        len(set(result.objects(stmt, PROV.wasDerivedFrom))) >= 2
+        for stmt in statement_nodes
+    )
