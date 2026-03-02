@@ -43,7 +43,7 @@ def test_unit_state_to_agent_state_is_isolated() -> None:
         content_unit=_build_content_unit(), ontology_snapshot=_build_ontology()
     )
     agent_state = state.to_agent_state()
-    agent_state.current_chunk.text = "MUTATED"
+    agent_state.current_content_unit.text = "MUTATED"
 
     assert state.content_unit.text == "Alice works for ACME."
 

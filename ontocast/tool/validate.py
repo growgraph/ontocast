@@ -59,40 +59,40 @@ class ConnectivityResult(BaseModel):
     predicate_stats: PredicateStats = Field(default_factory=PredicateStats)
 
 
-def validate_and_connect_chunk(
-    chunk: ContentUnit,
+def validate_and_connect_content_unit(
+    unit: ContentUnit,
     auto_connect: bool = True,
 ) -> ContentUnit:
-    """Validate and optionally connect a chunk graph.
+    """Validate and optionally connect a content unit graph.
 
-    This function validates the connectivity of a chunk's RDF graph and
+    This function validates the connectivity of a content unit RDF graph and
     optionally connects any disconnected components.
 
     Args:
-        chunk: The chunk containing the RDF graph to validate.
+        unit: The content unit containing the RDF graph to validate.
         auto_connect: Whether to automatically connect disconnected graphs.
 
     Returns:
-        ContentUnit: The chunk with a validated and optionally connected graph.
+        ContentUnit: The content unit with a validated and optionally connected graph.
     """
 
     # Ensure an RDFGraph instance
-    if not isinstance(chunk.graph, RDFGraph):
+    if not isinstance(unit.graph, RDFGraph):
         logger.warning("received an redflib.Graph rather than RDFGraph")
         new_graph = RDFGraph()
         # Cast to Graph to satisfy type checker
-        graph = cast(Graph, chunk.graph)
+        graph = cast(Graph, unit.graph)
         for triple in graph:
             new_graph.add(triple)
         for prefix, namespace in graph.namespaces():
             new_graph.bind(prefix, namespace)
-        chunk.graph = new_graph
+        unit.graph = new_graph
 
-    validator = RDFGraphConnectivityValidator(chunk.graph)
+    validator = RDFGraphConnectivityValidator(unit.graph)
 
     result = validator.validate_connectivity()
 
-    logger.debug(f"\n=== Connectivity Analysis for Chunk {chunk.iri} ===")
+    logger.debug(f"\n=== Connectivity Analysis for Content Unit {unit.iri} ===")
     logger.debug(f"Fully connected: {result.is_fully_connected}")
     logger.debug(f"Number of components: {result.num_components}")
     logger.debug(f"Total entities: {result.total_entities}")
@@ -103,17 +103,25 @@ def validate_and_connect_chunk(
 
     # Create a new RDFGraph instance instead of using deepcopy
     final_graph = RDFGraph()
-    for triple in chunk.graph:
+    for triple in unit.graph:
         final_graph.add(triple)
     # Copy namespace bindings
-    for prefix, namespace in chunk.graph.namespaces():
+    for prefix, namespace in unit.graph.namespaces():
         final_graph.bind(prefix, namespace)
 
     if not result.is_fully_connected and auto_connect:
-        final_graph = validator.make_graph_connected(chunk.iri)
+        final_graph = validator.make_graph_connected(unit.iri)
 
-    chunk.graph = final_graph
-    return chunk
+    unit.graph = final_graph
+    return unit
+
+
+def validate_and_connect_chunk(
+    chunk: ContentUnit,
+    auto_connect: bool = True,
+) -> ContentUnit:
+    """Backward-compatible alias for validate_and_connect_content_unit()."""
+    return validate_and_connect_content_unit(unit=chunk, auto_connect=auto_connect)
 
 
 class RDFGraphConnectivityValidator:

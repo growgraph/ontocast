@@ -51,7 +51,7 @@ async def render_ontology(state: AgentState, tools: ToolBox) -> AgentState:
         AgentState: Updated state with rendered ontology
     """
 
-    progress_info = state.get_chunk_progress_string()
+    progress_info = state.get_content_unit_progress_string()
     logger.info(
         f"Ontology Renderer for {progress_info}: visit {state.node_visits[WorkflowNode.TEXT_TO_ONTOLOGY] + 1}/{state.max_visits}"
     )
@@ -90,7 +90,7 @@ async def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState
         prefix_instruction=prefix_instruction_fresh
     )
 
-    text_chapter = text_template.format(text=state.current_chunk.text)
+    text_chapter = text_template.format(text=state.current_content_unit.text)
 
     prompt = PromptTemplate(
         template=template_prompt,
@@ -180,7 +180,7 @@ async def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentStat
             ontology_prefix=state.current_ontology.prefix
         )
     )
-    text_chapter = text_template.format(text=state.current_chunk.text)
+    text_chapter = text_template.format(text=state.current_content_unit.text)
 
     prompt = PromptTemplate(
         template=template_prompt,

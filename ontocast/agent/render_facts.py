@@ -49,9 +49,9 @@ async def render_facts(state: AgentState, tools: ToolBox) -> AgentState:
         AgentState: Updated state with rendered facts
     """
 
-    is_first_visit = len(state.current_chunk.graph) == 0
+    is_first_visit = len(state.current_content_unit.graph) == 0
 
-    progress_info = state.get_chunk_progress_string()
+    progress_info = state.get_content_unit_progress_string()
     logger.info(f"Render facts for {progress_info}")
 
     if is_first_visit:
@@ -81,7 +81,7 @@ def _prepare_prompt_data(state: AgentState) -> dict[str, str]:
         facts_namespace=DEFAULT_IRI,
     )
 
-    text_chapter = text_template.format(text=state.current_chunk.text)
+    text_chapter = text_template.format(text=state.current_content_unit.text)
 
     fact_chapter = ""
 
@@ -189,7 +189,7 @@ async def render_facts_fresh(state: AgentState, tools: ToolBox) -> AgentState:
             },
         )
         proj.semantic_graph.sanitize_prefixes_namespaces()
-        state.current_chunk.graph = proj.semantic_graph
+        state.current_content_unit.graph = proj.semantic_graph
 
         # Track triples in budget tracker (fresh facts)
         num_triples = len(proj.semantic_graph)
@@ -228,7 +228,7 @@ async def render_facts_update(state: AgentState, tools: ToolBox) -> AgentState:
         ),
         "output_instruction": output_instruction_sparql,
         "fact_chapter": facts_template.format(
-            facts_ttl=state.current_chunk.graph.serialize(format="turtle")
+            facts_ttl=state.current_content_unit.graph.serialize(format="turtle")
         ),
     }
     prompt_data.update(prompt_data_update)

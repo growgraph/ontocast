@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 async def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
     """Enhanced criticize facts with SPARQL operations.
 
-    This function performs a critical analysis of the facts in the current chunk,
+    This function performs a critical analysis of the facts in the current content unit,
     with SPARQL operation support.
 
     Args:
@@ -42,11 +42,11 @@ async def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
     Returns:
         AgentState: Updated state with analysis results.
     """
-    if not state.current_chunk:
-        logger.warning("No current chunk to analyze")
+    if not state.current_content_unit:
+        logger.warning("No current content unit to analyze")
         return state
 
-    progress_info = state.get_chunk_progress_string()
+    progress_info = state.get_content_unit_progress_string()
     logger.info(
         f"Facts critic for {progress_info}: visit {state.node_visits[WorkflowNode.CRITICISE_FACTS] + 1}/{state.max_visits}"
     )
@@ -60,13 +60,13 @@ async def criticise_facts(state: AgentState, tools: ToolBox) -> AgentState:
         ontology_ttl=ontology_ttl,
     )
 
-    facts_ttl = state.current_chunk.graph.serialize(format="turtle")
+    facts_ttl = state.current_content_unit.graph.serialize(format="turtle")
 
     facts_chapter = facts_template.format(
         facts_ttl=facts_ttl,
     )
 
-    text_chapter = text_template.format(text=state.current_chunk.text)
+    text_chapter = text_template.format(text=state.current_content_unit.text)
 
     user_instruction = (
         user_template.format(user_instruction=state.facts_user_instruction)

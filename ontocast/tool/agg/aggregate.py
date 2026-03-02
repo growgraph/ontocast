@@ -190,7 +190,7 @@ class EmbeddingBasedAggregator:
 
 
 # Convenience function for backward compatibility
-def aggregate_chunk_graphs(
+def aggregate_content_unit_graphs(
     units: list[ContentUnit],
     similarity_threshold: float = 0.85,
 ) -> RDFGraph:
@@ -207,3 +207,14 @@ def aggregate_chunk_graphs(
         similarity_threshold=similarity_threshold,
     )
     return aggregator.aggregate_graphs(units)
+
+
+def aggregate_chunk_graphs(
+    units: list[ContentUnit],
+    similarity_threshold: float = 0.85,
+) -> RDFGraph:
+    """Backward-compatible alias for :func:`aggregate_content_unit_graphs`."""
+    return aggregate_content_unit_graphs(
+        units=units,
+        similarity_threshold=similarity_threshold,
+    )

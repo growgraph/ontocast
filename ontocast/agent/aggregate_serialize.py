@@ -1,7 +1,7 @@
 """Fact aggregation agent for OntoCast.
 
 This module provides functionality for aggregating and serializing facts from
-multiple chunks into a single RDF graph, handling entity and predicate
+multiple content units into a single RDF graph, handling entity and predicate
 disambiguation.
 """
 
@@ -17,24 +17,24 @@ logger = logging.getLogger(__name__)
 
 
 def aggregate(state: AgentState, tools: ToolBox) -> AgentState:
-    """Aggregate facts from multiple processed chunks into a single RDF graph.
+    """Aggregate facts from processed content units into a single RDF graph.
 
     Args:
-        state: Current agent state with processed chunks
+        state: Current agent state with processed content units
         tools: ToolBox containing aggregation tools
 
     Returns:
         Updated agent state with aggregated facts
     """
-    for c in state.chunks_processed:
+    for c in state.processed_content_units:
         c.sanitize()
 
     state.aggregated_facts = tools.aggregator.aggregate_graphs(
-        units=state.chunks_processed
+        units=state.processed_content_units
     )
-    total_chunks = len(state.chunks_processed)
+    total_units = len(state.processed_content_units)
     logger.info(
-        f"Aggregating {total_chunks} processed chunks: "
+        f"Aggregating {total_units} processed content units: "
         f"ontology {len(state.current_ontology.graph)} triples; "
         f"facts graph: {len(state.aggregated_facts)} triples"
     )

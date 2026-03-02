@@ -42,7 +42,7 @@ def chunk_text(state: AgentState, tools: ToolBox) -> AgentState:
             chunks_txt = chunks_txt[: state.max_chunks]
 
         for i, chunk_txt in enumerate(chunks_txt):
-            state.chunks.append(
+            state.content_units.append(
                 ContentUnit(
                     text=chunk_txt,
                     index=i,
@@ -52,7 +52,9 @@ def chunk_text(state: AgentState, tools: ToolBox) -> AgentState:
             )
 
         logger.info(
-            f"Created {len(state.chunks)} chunks for processing: {[len(c) for c in state.chunks]}"
+            "Created "
+            f"{len(state.content_units)} content units for processing: "
+            f"{[len(c) for c in state.content_units]}"
         )
         state.status = Status.SUCCESS
     else:

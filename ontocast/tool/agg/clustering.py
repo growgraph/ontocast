@@ -182,8 +182,8 @@ class ClusterRepresentativeSelector:
     """Selects the best representative entity from a cluster.
 
     The selection criteria are:
-    1. Prefer ontology entities over chunk entities
-    2. Among ontology entities (or chunk entities), prefer simpler URIs
+    1. Prefer ontology entities over fact entities
+    2. Among ontology entities (or fact entities), prefer simpler URIs
     """
 
     def __init__(self):
@@ -240,23 +240,23 @@ class ClusterRepresentativeSelector:
         if len(cluster) == 1:
             return cluster[0]
 
-        # Separate ontology entities from chunk entities
+        # Separate ontology entities from fact entities
         ontology_entities = [
             e for e in cluster if representations[e].is_ontology_entity
         ]
-        chunk_entities = [
+        fact_entities = [
             e for e in cluster if not representations[e].is_ontology_entity
         ]
 
         # Prefer ontology entities
-        candidates = ontology_entities if ontology_entities else chunk_entities
+        candidates = ontology_entities if ontology_entities else fact_entities
 
         # Among candidates, select the simplest
         best = min(candidates, key=self.compute_simplicity_score)
 
         logger.debug(
             f"Selected representative {best} from cluster of {len(cluster)} entities "
-            f"({len(ontology_entities)} ontology, {len(chunk_entities)} chunk)"
+            f"({len(ontology_entities)} ontology, {len(fact_entities)} facts)"
         )
 
         return best

@@ -15,33 +15,33 @@ class OutputType(StrEnum):
 
 
 class ContentUnit(BaseModel):
-    """A chunk of text with associated metadata and RDF graph.
+    """A processing unit with source content, metadata, and RDF output.
 
     Attributes:
-        text: Text content of the chunk.
-        index: Index of the chunk of the document.
-        hid: An almost unique (hash) id for the chunk.
+        text: Source text content for this unit.
+        index: Position of this unit in the source document.
+        hid: An almost unique (hash) id for this unit.
         doc_iri: IRI of parent document.
-        graph: RDF triples representing the facts from the current document.
-        processed: Whether chunk has been processed.
+        graph: RDF triples rendered from this unit.
+        processed: Whether this unit has been processed.
         type: Type of content unit (facts or ontology).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    text: str = Field(description="Text of the chunk")
-    index: int = Field(description="Index of the chunk of the document")
-    hid: str = Field(description="An almost unique (hash) id for the chunk")
+    text: str = Field(description="Source text content for this unit")
+    index: int = Field(description="Position of this unit in the source document")
+    hid: str = Field(description="An almost unique (hash) id for this unit")
     doc_iri: URIRef = Field(description="IRI of parent doc")
     graph: RDFGraph = Field(
-        description="RDF triples representing the facts from a document chunk in turtle format "
+        description="RDF triples representing facts rendered from this source unit in turtle format "
         "as a string in compact form: use prefixes for namespaces, do NOT add comments",
         default_factory=RDFGraph,
     )
 
     _graph_absolute: RDFGraph | None = PrivateAttr(default=None)
 
-    processed: bool = Field(default=False, description="Was the chunk processed?")
+    processed: bool = Field(default=False, description="Was this unit processed?")
     generated_at: datetime | None = Field(
         default=None, description="generated timestamp"
     )
@@ -66,28 +66,28 @@ class ContentUnit(BaseModel):
 
     @property
     def iri(self):
-        """Get the IRI for this chunk.
+        """Get the base IRI for this unit.
 
         Returns:
-            str: The chunk IRI.
+            str: The base unit IRI.
         """
         return DEFAULT_IRI
 
     @property
     def iri_absolute(self):
-        """Get the absolute IRI for this chunk.
+        """Get the absolute IRI for this unit.
 
         Returns:
-            str: The chunk IRI.
+            str: The unit IRI.
         """
         return f"{self.doc_iri}/{self.hid}"
 
     @property
     def generated_at_iso(self):
-        """Get the IRI for this chunk.
+        """Get generated timestamp in ISO format.
 
         Returns:
-            str: The chunk IRI.
+            str: Timestamp in ISO format.
         """
         if self.generated_at is None:
             self.generated_at = datetime.now(timezone.utc)
@@ -95,10 +95,10 @@ class ContentUnit(BaseModel):
 
     @property
     def namespace(self):
-        """Get the namespace for this chunk.
+        """Get the namespace for this unit.
 
         Returns:
-            str: The chunk namespace.
+            str: The unit namespace.
         """
         return iri2namespace(self.iri, ontology=False)
 

@@ -48,7 +48,7 @@ class UnitFactsState(BasePydanticModel):
         self.failure_reason = result.failure_reason
         self.suggestions = result.suggestions
         if result.status == Status.SUCCESS:
-            self.output_unit = result.current_chunk
+            self.output_unit = result.current_content_unit
 
 
 class UnitOntologyState(BasePydanticModel):

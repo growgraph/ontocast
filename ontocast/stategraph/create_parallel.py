@@ -35,19 +35,50 @@ def create_parallel_agent_graph(tools: ToolBox) -> CompiledStateGraph:
             return state
         if not state.current_ontology.is_null():
             return state
-        if not state.chunks:
+        if not state.content_units:
             return state
 
-        bootstrap_state = UnitOntologyState(
-            content_unit=state.chunks[0],
-            ontology_snapshot=state.current_ontology,
-            ontology_user_instruction=state.ontology_user_instruction,
-            budget_tracker=state.budget_tracker,
-            max_retries=tools.config.server.parallel_ontology_retries,
+        worker_limit = max(1, tools.config.server.parallel_workers)
+        semaphore = asyncio.Semaphore(worker_limit)
+
+        async def process_bootstrap_unit(
+            unit_idx: int,
+        ) -> tuple[int, UnitOntologyState]:
+            async with semaphore:
+                base_state = state.model_copy(deep=True)
+                ontology_state = UnitOntologyState(
+                    content_unit=state.content_units[unit_idx],
+                    ontology_snapshot=state.current_ontology,
+                    ontology_user_instruction=state.ontology_user_instruction,
+                    budget_tracker=base_state.budget_tracker,
+                    max_retries=tools.config.server.parallel_ontology_retries,
+                )
+                result = await run_unit_ontology_loop(ontology_state, tools)
+                return unit_idx, result
+
+        tasks = [process_bootstrap_unit(i) for i, _ in enumerate(state.content_units)]
+        raw_results = await asyncio.gather(*tasks)
+        ordered_results = sorted(raw_results, key=lambda item: item[0])
+
+        failed_chunks = 0
+        aggregated_updates = []
+        for _, result in ordered_results:
+            if result.status != Status.SUCCESS:
+                failed_chunks += 1
+            aggregated_updates.extend(result.output_updates)
+
+        if failed_chunks:
+            logger.warning(
+                "Parallel ontology bootstrap failed for "
+                f"{failed_chunks}/{len(state.content_units)} unit(s)"
+            )
+
+        state.current_ontology = reduce_ontology_updates(
+            base_ontology=state.current_ontology,
+            updates=aggregated_updates,
+            ontology_max_triples=state.ontology_max_triples,
         )
-        result = await run_unit_ontology_loop(bootstrap_state, tools)
-        if result.output_ontology and not result.output_ontology.is_null():
-            state.current_ontology = result.output_ontology
+        if not state.current_ontology.is_null():
             state.clear_failure()
         else:
             logger.warning(
@@ -57,7 +88,7 @@ def create_parallel_agent_graph(tools: ToolBox) -> CompiledStateGraph:
         return state
 
     async def map_units_parallel(state: AgentState) -> AgentState:
-        if not state.chunks:
+        if not state.content_units:
             state.parallel_facts_units = []
             state.parallel_ontology_updates = []
             state.status = Status.SUCCESS
@@ -66,11 +97,11 @@ def create_parallel_agent_graph(tools: ToolBox) -> CompiledStateGraph:
         worker_limit = max(1, tools.config.server.parallel_workers)
         semaphore = asyncio.Semaphore(worker_limit)
 
-        async def process_one_chunk(chunk_idx: int):
+        async def process_one_unit(unit_idx: int):
             async with semaphore:
                 base_state = state.model_copy(deep=True)
                 facts_state = UnitFactsState(
-                    content_unit=state.chunks[chunk_idx],
+                    content_unit=state.content_units[unit_idx],
                     ontology_snapshot=state.current_ontology,
                     facts_user_instruction=state.facts_user_instruction,
                     budget_tracker=base_state.budget_tracker,
@@ -82,7 +113,7 @@ def create_parallel_agent_graph(tools: ToolBox) -> CompiledStateGraph:
                     facts_result = await facts_task
                 else:
                     ontology_state = UnitOntologyState(
-                        content_unit=state.chunks[chunk_idx],
+                        content_unit=state.content_units[unit_idx],
                         ontology_snapshot=state.current_ontology,
                         ontology_user_instruction=state.ontology_user_instruction,
                         budget_tracker=base_state.budget_tracker,
@@ -92,9 +123,9 @@ def create_parallel_agent_graph(tools: ToolBox) -> CompiledStateGraph:
                     facts_result, ontology_result = await asyncio.gather(
                         facts_task, ontology_task
                     )
-                return chunk_idx, facts_result, ontology_result
+                return unit_idx, facts_result, ontology_result
 
-        tasks = [process_one_chunk(i) for i, _ in enumerate(state.chunks)]
+        tasks = [process_one_unit(i) for i, _ in enumerate(state.content_units)]
         raw_results = await asyncio.gather(*tasks)
         ordered_results = sorted(raw_results, key=lambda item: item[0])
 
@@ -117,7 +148,7 @@ def create_parallel_agent_graph(tools: ToolBox) -> CompiledStateGraph:
 
         if failed_facts:
             logger.warning(
-                f"Parallel facts map failed for {failed_facts}/{len(state.chunks)} chunk(s)"
+                f"Parallel facts map failed for {failed_facts}/{len(state.content_units)} unit(s)"
             )
 
         state.parallel_facts_units = facts_units

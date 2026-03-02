@@ -47,24 +47,25 @@ def check_chunks_empty(state: AgentState) -> AgentState:
     Example:
         >>> state = AgentState(chunks=[chunk1, chunk2], current_chunk=None)
         >>> updated_state = check_chunks_empty(state)
-        >>> print(updated_state.current_chunk)  # chunk1
+        >>> print(updated_state.current_content_unit)  # first content unit
         >>> print(updated_state.status)  # Status.FAILED
     """
 
-    if CHUNK_NULL_IRI not in state.current_chunk.iri:
-        state.current_chunk.processed = True
-        state.current_chunk.graph.remap_namespaces(
-            old_namespace=DEFAULT_IRI, new_namespace=state.current_chunk.namespace
+    if CHUNK_NULL_IRI not in state.current_content_unit.iri:
+        state.current_content_unit.processed = True
+        state.current_content_unit.graph.remap_namespaces(
+            old_namespace=DEFAULT_IRI,
+            new_namespace=state.current_content_unit.namespace,
         )
-        state.chunks_processed.append(state.current_chunk)
+        state.processed_content_units.append(state.current_content_unit)
 
-    if state.chunks:
-        state.current_chunk = state.chunks.pop(0)
+    if state.content_units:
+        state.current_content_unit = state.content_units.pop(0)
         state.node_visits = defaultdict(int)
         state.status = Status.FAILED
         # TODO use method for easier tracing
     else:
-        state.current_chunk = ContentUnit(
+        state.current_content_unit = ContentUnit(
             text="",
             index=0,
             hid="default",
@@ -72,7 +73,7 @@ def check_chunks_empty(state: AgentState) -> AgentState:
         )
         state.status = Status.SUCCESS
         logger.info(
-            f"All chunks processed ({len(state.chunks_processed)} total), "
+            f"All content units processed ({len(state.processed_content_units)} total), "
             "setting status to SUCCESS and proceeding to AGGREGATE_FACTS"
         )
 

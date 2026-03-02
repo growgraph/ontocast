@@ -237,36 +237,36 @@ class GraphRewriter:
         graph: RDFGraph,
         unit: ContentUnit,
     ) -> URIRef:
-        """Add chunk-level metadata triples and return the chunk URI.
+        """Add source-unit metadata triples and return the source unit URI.
 
         Emitted triples::
 
-        <chunk_iri> a prov:Entity, schema:Text ;
+        <unit_iri> a prov:Entity, schema:Text ;
             schema:position <index> ;
             schema:identifier <hid> ;
             prov:generatedAtTime <datetime> .
         """
 
-        chunk_uri = URIRef(unit.iri_absolute)
+        unit_uri = URIRef(unit.iri_absolute)
 
-        graph.add((chunk_uri, RDF.type, _PROV.Entity))
-        graph.add((chunk_uri, RDF.type, _SCHEMA.text))
+        graph.add((unit_uri, RDF.type, _PROV.Entity))
+        graph.add((unit_uri, RDF.type, _SCHEMA.text))
         graph.add(
             (
-                chunk_uri,
+                unit_uri,
                 _PROV.generatedAtTime,
                 Literal(f"{unit.generated_at_iso}", datatype=XSD.dateTime),
             )
         )
         graph.add(
             (
-                chunk_uri,
+                unit_uri,
                 _SCHEMA.position,
                 Literal(unit.index, datatype=XSD.integer),
             )
         )
-        graph.add((chunk_uri, _SCHEMA.identifier, Literal(unit.hid)))
-        return chunk_uri
+        graph.add((unit_uri, _SCHEMA.identifier, Literal(unit.hid)))
+        return unit_uri
 
     def _add_reified_provenance(
         self,

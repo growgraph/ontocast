@@ -1,7 +1,7 @@
 """Ontology selection agent for OntoCast.
 
 This module provides functionality for selecting appropriate ontologies based on
-the content of text chunks, ensuring that the chosen ontology best matches the
+the content of source text segments, ensuring that the chosen ontology best matches the
 domain and requirements of the text.
 """
 
@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 def _create_document_excerpt(state: AgentState, max_length: int = 3000) -> str:
     """Create a representative excerpt from the document for ontology selection.
 
-    This function samples text from multiple chunks to provide a better
-    representation of the document content than just the first chunk.
+    This function samples text from multiple content units to provide a better
+    representation of the document content than just the first unit.
 
     Args:
         state: The current agent state.
@@ -37,11 +37,11 @@ def _create_document_excerpt(state: AgentState, max_length: int = 3000) -> str:
     """
     excerpt_parts = []
     total_length = 0
-    chunk_length = max_length // 3  # Aim for ~3 chunks, ~1000 chars each
+    chunk_length = max_length // 3  # Aim for ~3 source chunks, ~1000 chars each
 
-    # Strategy: Sample from first, middle, and last chunks if available
-    if state.chunks:
-        num_chunks = len(state.chunks)
+    # Strategy: Sample from first, middle, and last units if available
+    if state.content_units:
+        num_chunks = len(state.content_units)
         indices_to_sample = []
 
         if num_chunks == 1:
@@ -54,8 +54,8 @@ def _create_document_excerpt(state: AgentState, max_length: int = 3000) -> str:
 
         for idx in indices_to_sample:
             if idx < num_chunks and total_length < max_length:
-                chunk_text = state.chunks[idx].text
-                # Take a portion of this chunk
+                chunk_text = state.content_units[idx].text
+                # Take a portion of this source chunk
                 remaining = max_length - total_length
                 sample_length = min(chunk_length, remaining, len(chunk_text))
 
@@ -75,9 +75,9 @@ def _create_document_excerpt(state: AgentState, max_length: int = 3000) -> str:
             return state.input_text
         return state.input_text[:max_length] + " ..."
 
-    # Last resort: Use current_chunk
-    if state.current_chunk and state.current_chunk.text:
-        chunk_text = state.current_chunk.text
+    # Last resort: Use current content unit
+    if state.current_content_unit and state.current_content_unit.text:
+        chunk_text = state.current_content_unit.text
         if len(chunk_text) <= max_length:
             return chunk_text
         return chunk_text[:max_length] + " ..."
@@ -109,7 +109,7 @@ async def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
         state.status = Status.SUCCESS
         return state
 
-    progress_info = state.get_chunk_progress_string()
+    progress_info = state.get_content_unit_progress_string()
     logger.info(f"Selecting ontology for document ({progress_info})")
     llm_tool = tools.llm
     om_tool: OntologyManager = tools.ontology_manager

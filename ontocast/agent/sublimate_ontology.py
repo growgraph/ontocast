@@ -6,6 +6,9 @@ and expressiveness of the ontological knowledge.
 """
 
 import logging
+from typing import Iterable, cast
+
+from rdflib.term import Node
 
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import FailureStage
@@ -21,7 +24,7 @@ def _sublimate_ontology(state: AgentState) -> tuple[RDFGraph, RDFGraph]:
     graph_facts_pure = RDFGraph()
 
     # Copy all prefixes from the original graph to both new graphs
-    for prefix, namespace in state.current_chunk.graph.namespaces():
+    for prefix, namespace in state.current_content_unit.graph.namespaces():
         graph_onto_addendum.bind(prefix, namespace)
         graph_facts_pure.bind(prefix, namespace)
 
@@ -40,7 +43,10 @@ def _sublimate_ontology(state: AgentState) -> tuple[RDFGraph, RDFGraph]:
     )
     }}
     """
-    results = state.current_chunk.graph.query(query_ontology)
+    results = cast(
+        Iterable[tuple[Node, Node, Node]],
+        state.current_content_unit.graph.query(query_ontology),
+    )
 
     # Add filtered triples to the new graph
     for s, p, o in results:
@@ -60,7 +66,10 @@ def _sublimate_ontology(state: AgentState) -> tuple[RDFGraph, RDFGraph]:
         }}
     """
 
-    results = state.current_chunk.graph.query(query_facts)
+    results = cast(
+        Iterable[tuple[Node, Node, Node]],
+        state.current_content_unit.graph.query(query_facts),
+    )
 
     # Add filtered triples to the new graph
     for s, p, o in results:
@@ -121,13 +130,17 @@ def sublimate_ontology(state: AgentState, tools: ToolBox):
         if not isinstance(graph_facts, RDFGraph):
             logger.warning("received an rdflib.Graph rather than RDFGraph")
             new_graph = RDFGraph()
-            for triple in graph_facts:
+            graph_facts_rdflib = cast(Iterable[tuple[Node, Node, Node]], graph_facts)
+            for triple in graph_facts_rdflib:
                 new_graph.add(triple)
-            for prefix, namespace in graph_facts.namespaces():
+            graph_facts_namespaces = cast(
+                Iterable[tuple[str, str]], graph_facts.namespaces()
+            )
+            for prefix, namespace in graph_facts_namespaces:
                 new_graph.bind(prefix, namespace)
             graph_facts = new_graph
 
-        state.current_chunk.graph = graph_facts
+        state.current_content_unit.graph = graph_facts
 
         state.clear_failure()
     except Exception as e:

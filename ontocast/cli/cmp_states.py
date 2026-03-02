@@ -36,7 +36,7 @@ def compare_states(states: list[tuple[pathlib.Path, AgentState]]) -> None:
     for fp, state in sorted_rows:
         table.add_row(
             str(fp.stem),
-            str(len(state.current_chunk.graph)),
+            str(len(state.current_content_unit.graph)),
             str(len(state.current_ontology.graph))
             if state.current_ontology is not None
             else "",
