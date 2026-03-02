@@ -192,6 +192,16 @@ class AgentState(BasePydanticModel):
         description="A list of graph update that improve the current graph of facts (applied)",
     )
 
+    parallel_facts_units: list[ContentUnit] = Field(
+        default_factory=list,
+        description="Successful per-unit facts outputs collected during parallel map phase",
+    )
+
+    parallel_ontology_updates: list[GraphUpdate] = Field(
+        default_factory=list,
+        description="Per-unit ontology updates collected during parallel map phase",
+    )
+
     ontology_addendum: Ontology = Field(
         default_factory=lambda: Ontology(
             ontology_id=None,

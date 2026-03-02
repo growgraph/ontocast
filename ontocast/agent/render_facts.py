@@ -78,7 +78,7 @@ def _prepare_prompt_data(state: AgentState) -> dict[str, str]:
     facts_instruction_str = facts_instruction_template.format(
         ontology_namespace=state.current_ontology.namespace,
         ontology_prefix=state.current_ontology.prefix,
-        current_doc_namespace=DEFAULT_IRI,
+        facts_namespace=DEFAULT_IRI,
     )
 
     text_chapter = text_template.format(text=state.current_chunk.text)

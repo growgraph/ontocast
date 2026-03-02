@@ -136,6 +136,18 @@ class ServerConfig(BaseSettings):
         "Updates that would exceed this limit are skipped with a warning. "
         "Set to None for unlimited.",
     )
+    parallel_workers: int = Field(
+        default=4,
+        description="Maximum number of concurrent unit workers in parallel pipeline",
+    )
+    parallel_facts_retries: int = Field(
+        default=3,
+        description="Retry budget for unit facts loop",
+    )
+    parallel_ontology_retries: int = Field(
+        default=3,
+        description="Retry budget for unit ontology loop",
+    )
 
     model_config = SettingsConfigDict(
         case_sensitive=False,

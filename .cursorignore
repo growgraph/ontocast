@@ -21,8 +21,11 @@
 
 
 !.github/**
+!.github/**/*yml
 !.env.example
 !pyproject.toml
 !mkdocs.yaml
 !*.md
 !Dockerfile
+
+!planning

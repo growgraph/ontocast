@@ -1,3 +1,5 @@
+from ontocast.onto.constants import DEFAULT_IRI
+
 template_prompt = """
 {preamble}
 
@@ -20,7 +22,7 @@ You task is to evaluate the quality of the ontology with respect to the provided
 """
 
 
-ontology_criteria = """
+ontology_criteria = f"""
 # TASK
 Provide a constructive, actionable critique following these priorities:
 
@@ -54,4 +56,5 @@ Provide a constructive, actionable critique following these priorities:
 - For relationship errors: explain the correct domain/range constraints
 - For redundancies: suggest consolidation strategy
 - Prioritize fixes that have cascading impact
+- Enforce namespace hygiene: ontology classes/properties MUST NOT be modeled in `cd:` (`{DEFAULT_IRI}`), since `cd:` is reserved for facts/instances
 """

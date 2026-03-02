@@ -60,6 +60,10 @@ class WorkflowNode(StrEnum):
     CHUNKS_EMPTY = "Chunks Empty?"
     AGGREGATE_FACTS = "Aggregate Facts"
     SERIALIZE = "Serialize"
+    BOOTSTRAP_ONTOLOGY = "Bootstrap Ontology"
+    PARALLEL_MAP_UNITS = "Parallel Map Units"
+    REDUCE_ONTOLOGY = "Reduce Ontology"
+    REDUCE_FACTS = "Reduce Facts"
 
 
 class SPARQLOperationType(StrEnum):

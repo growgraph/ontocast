@@ -1,6 +1,6 @@
 from rdflib import Namespace, URIRef
 
-DEFAULT_DOMAIN = "https://ontocast.io"
+DEFAULT_DOMAIN = "https://growgraph.dev"
 ONTOLOGY_NULL_ID = "__null__"
 ONTOLOGY_NULL_IRI = f"{DEFAULT_DOMAIN}/{ONTOLOGY_NULL_ID}"
 DEFAULT_IRI = f"{DEFAULT_DOMAIN}/facts"
