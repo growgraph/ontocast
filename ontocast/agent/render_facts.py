@@ -49,12 +49,12 @@ async def render_facts(state: UnitFactsState, tools: ToolBox) -> UnitFactsState:
         UnitFactsState: Updated state with rendered facts
     """
 
-    is_first_visit = len(state.content_unit.graph) == 0
+    is_fresh_facts_graph = len(state.content_unit.graph) == 0
 
     progress_info = state.get_content_unit_progress_string()
     logger.info(f"Render facts for {progress_info}")
 
-    if is_first_visit:
+    if is_fresh_facts_graph:
         logger.info("Generating fresh facts as Turtle")
         return await render_facts_fresh(state, tools)
     else:
@@ -136,6 +136,7 @@ def _handle_rendering_error(
     """
     logger.error(f"Failed to generate triples: {str(error)}")
     state.set_failure(stage, str(error))
+    state.set_node_status(WorkflowNode.TEXT_TO_FACTS, Status.FAILED)
     return state
 
 
@@ -150,7 +151,7 @@ async def render_facts_fresh(state: UnitFactsState, tools: ToolBox) -> UnitFacts
         UnitFactsState: Updated state with rendered facts.
     """
     logger.info("Rendering fresh facts")
-    llm_tool = tools.llm
+    llm_tool = await tools.get_llm_tool(state.budget_tracker)
     parser = PydanticOutputParser(pydantic_object=SemanticTriplesFactsReport)
 
     # Extract prefixes from the ontology graph to help with parsing LLM responses
@@ -181,7 +182,7 @@ async def render_facts_fresh(state: UnitFactsState, tools: ToolBox) -> UnitFacts
         # Set known prefixes in context before parsing
         RDFGraph.set_known_prefixes(known_prefixes if known_prefixes else None)
 
-        proj = await call_llm_with_retry(
+        facts_report = await call_llm_with_retry(
             llm_tool=llm_tool,
             prompt=prompt,
             parser=parser,
@@ -190,15 +191,16 @@ async def render_facts_fresh(state: UnitFactsState, tools: ToolBox) -> UnitFacts
                 **prompt_data,
             },
         )
-        proj.semantic_graph.sanitize_prefixes_namespaces()
-        state.content_unit.graph = proj.semantic_graph
+        facts_report.semantic_graph.sanitize_prefixes_namespaces()
+        state.content_unit.graph = facts_report.semantic_graph
 
         # Track triples in budget tracker (fresh facts)
-        num_triples = len(proj.semantic_graph)
+        num_triples = len(facts_report.semantic_graph)
         logger.info(f"Fresh facts generated with {num_triples} triple(s).")
         state.budget_tracker.add_facts_update(num_operations=1, num_triples=num_triples)
 
         state.clear_failure()
+        state.set_node_status(WorkflowNode.TEXT_TO_FACTS, Status.SUCCESS)
         return state
 
     except Exception as e:
@@ -219,7 +221,7 @@ async def render_facts_update(state: UnitFactsState, tools: ToolBox) -> UnitFact
         UnitFactsState: Updated state with rendered facts.
     """
     logger.info("Rendering updates for facts")
-    llm_tool = tools.llm
+    llm_tool = await tools.get_llm_tool(state.budget_tracker)
     parser = PydanticOutputParser(pydantic_object=GraphUpdate)
 
     prompt_data = _prepare_prompt_data(state)
