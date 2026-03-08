@@ -123,7 +123,6 @@ class AgentState(BasePydanticModel):
         default_factory=lambda: ContentUnit(
             text="",
             index=0,
-            hid="default",
             doc_iri=URIRef(CHUNK_NULL_IRI),
         ),
         alias="current_chunk",
@@ -578,13 +577,13 @@ class AgentState(BasePydanticModel):
         self.status = Status.SUCCESS
 
     @property
-    def doc_iri(self):
+    def doc_iri(self) -> URIRef:
         """Get the document IRI.
 
         Returns:
             str: The document IRI.
         """
-        return f"{self.current_domain}/doc/{self.doc_hid}"
+        return URIRef(f"{self.current_domain}/doc/{self.doc_hid}")
 
     @property
     def doc_namespace(self):

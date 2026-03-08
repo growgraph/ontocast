@@ -11,7 +11,6 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import Status
 from ontocast.onto.state import AgentState
 from ontocast.toolbox import ToolBox
-from ontocast.util import render_text_hash
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +45,6 @@ def chunk_text(state: AgentState, tools: ToolBox) -> AgentState:
                 ContentUnit(
                     text=chunk_txt,
                     index=i,
-                    hid=render_text_hash(chunk_txt),
                     doc_iri=state.doc_iri,
                 )
             )

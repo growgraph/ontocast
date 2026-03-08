@@ -17,7 +17,6 @@ def test_merge_graphs_with_provenance_adds_chunk_metadata(
     unit = ContentUnit(
         text="test",
         index=5,
-        hid="xyz687",
         doc_iri=URIRef("https://example.org/doc/abc123"),
         graph=graph,
         type=OutputType.FACTS,
@@ -50,7 +49,6 @@ def test_merge_graphs_with_provenance_reifies_mapped_triple(
     unit = ContentUnit(
         text="test",
         index=0,
-        hid="h1",
         doc_iri=URIRef("https://example.org/doc"),
         graph=graph,
         type=OutputType.FACTS,
@@ -88,7 +86,6 @@ def test_shared_triple_accumulates_multiple_provenance_sources(
     unit_a = ContentUnit(
         text="chunk 0",
         index=0,
-        hid="h0",
         doc_iri=URIRef("https://example.org/doc"),
         graph=graph_a,
         type=OutputType.FACTS,
@@ -96,7 +93,6 @@ def test_shared_triple_accumulates_multiple_provenance_sources(
     unit_b = ContentUnit(
         text="chunk 1",
         index=1,
-        hid="h1",
         doc_iri=URIRef("https://example.org/doc"),
         graph=graph_b,
         type=OutputType.FACTS,

@@ -1,12 +1,19 @@
 from datetime import datetime, timezone
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    computed_field,
+    field_validator,
+)
 from rdflib import URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.util import iri2namespace
+from ontocast.util import iri2namespace, render_text_hash
 
 
 class OutputType(StrEnum):
@@ -20,7 +27,7 @@ class SourceUnit(BaseModel):
     Attributes:
         text: Source text content for this unit.
         index: Position of this unit in the source document.
-        hid: An almost unique (hash) id for this unit.
+        hid: A stable hash id derived from text.
         doc_iri: IRI of parent document.
         type: Type of content unit (facts or ontology).
     """
@@ -29,11 +36,11 @@ class SourceUnit(BaseModel):
 
     text: str = Field(description="Source text content for this unit")
     index: int = Field(description="Position of this unit in the source document")
-    hid: str = Field(description="An almost unique (hash) id for this unit")
     doc_iri: URIRef = Field(description="IRI of parent doc")
     type: OutputType = Field(
         default=OutputType.FACTS, description="Type of content unit"
     )
+    _hid: str = PrivateAttr(default="")
 
     @field_validator("doc_iri", mode="before")
     @classmethod
@@ -41,6 +48,15 @@ class SourceUnit(BaseModel):
         if isinstance(value, URIRef):
             return value
         return URIRef(value)
+
+    @computed_field(return_type=str)
+    @property
+    def hid(self) -> str:
+        """Stable hash id generated from source text."""
+        rendered_hid = render_text_hash(self.text)
+        if self._hid != rendered_hid:
+            self._hid = rendered_hid
+        return self._hid
 
     @property
     def iri(self):

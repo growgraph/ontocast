@@ -58,7 +58,9 @@ async def render_ontology(
         f"Ontology Renderer for {progress_info}: visit {state.node_visits[WorkflowNode.TEXT_TO_ONTOLOGY] + 1}/{state.max_retries}"
     )
     current = state.current_ontology or state.ontology_snapshot
-    has_no_seed_ontology = current.is_null()
+    # Guardrail for map/reduce flow: if a non-null snapshot exists, stay in update mode.
+    has_seed_ontology = not state.ontology_snapshot.is_null()
+    has_no_seed_ontology = current.is_null() and not has_seed_ontology
 
     if has_no_seed_ontology:
         return await render_ontology_fresh(state, tools)

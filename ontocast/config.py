@@ -147,6 +147,10 @@ class ServerConfig(BaseSettings):
         default=3,
         description="Retry budget for unit ontology loop",
     )
+    enable_ontology_consolidation: bool = Field(
+        default=False,
+        description="Run optional ontology consolidation pass after normalization",
+    )
 
     model_config = SettingsConfigDict(
         case_sensitive=False,

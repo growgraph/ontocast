@@ -4,12 +4,12 @@ from ontocast.onto.constants import DEFAULT_IRI, PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.agg.aggregate import EmbeddingBasedAggregator
+from ontocast.util import render_text_hash
 
 
 def make_fact_unit(
     text: str,
     index: int,
-    hid: str,
     doc_iri: URIRef | str,
     ttl: str,
 ) -> ContentUnit:
@@ -18,7 +18,6 @@ def make_fact_unit(
     return ContentUnit(
         text=text,
         index=index,
-        hid=hid,
         doc_iri=URIRef(str(doc_iri)),
         graph=graph,
         type=OutputType.FACTS,
@@ -28,7 +27,6 @@ def make_fact_unit(
 def make_ontology_unit(
     text: str,
     index: int,
-    hid: str,
     doc_iri: URIRef | str,
     ttl: str,
 ) -> ContentUnit:
@@ -37,7 +35,6 @@ def make_ontology_unit(
     return ContentUnit(
         text=text,
         index=index,
-        hid=hid,
         doc_iri=URIRef(str(doc_iri)),
         graph=graph,
         type=OutputType.ONTOLOGIES,
@@ -60,7 +57,7 @@ def test_fact_entities_use_doc_iri_namespace() -> None:
     facts:Revenue rdfs:label "Revenue" .
     facts:Revenue facts:amount "42000000" .
     """
-    unit = make_fact_unit("Revenue was $42M.", 0, "rev01", doc_iri, ttl)
+    unit = make_fact_unit("Revenue was $42M.", 0, doc_iri, ttl)
 
     result = EmbeddingBasedAggregator().aggregate_graphs([unit])
     assert len(result) > 0
@@ -107,25 +104,25 @@ def test_aggregate_graphs_merges_overlapping_facts(monkeypatch) -> None:
     facts:UnitedStatesBank facts:headquarters "Portland" .
     """
 
+    text_0 = "The United States has capital Washington, D.C. and uses USD."
+    text_1 = "In another section, united_states is described with population data."
+    text_2 = "United States Bank is headquartered in Portland."
     units = [
         make_fact_unit(
-            "The United States has capital Washington, D.C. and uses USD.",
+            text_0,
             0,
-            "chunk0hash",
             doc_iri,
             ttl_chunk_0,
         ),
         make_fact_unit(
-            "In another section, united_states is described with population data.",
+            text_1,
             1,
-            "chunk1hash",
             doc_iri,
             ttl_chunk_1,
         ),
         make_fact_unit(
-            "United States Bank is headquartered in Portland.",
+            text_2,
             2,
-            "chunk2hash",
             doc_iri,
             ttl_chunk_2,
         ),
@@ -190,7 +187,12 @@ def test_aggregate_graphs_merges_overlapping_facts(monkeypatch) -> None:
     )
 
     chunk_ids = {str(value) for value in result.objects(None, SCHEMA.identifier)}
-    assert {"chunk0hash", "chunk1hash", "chunk2hash"} <= chunk_ids
+    expected_ids = {
+        render_text_hash(text_0),
+        render_text_hash(text_1),
+        render_text_hash(text_2),
+    }
+    assert expected_ids <= chunk_ids
 
 
 def test_aggregate_graphs_preserves_ontology_uris_and_provenance(monkeypatch) -> None:
@@ -210,12 +212,8 @@ def test_aggregate_graphs_preserves_ontology_uris_and_provenance(monkeypatch) ->
     ex:Persno rdfs:label "Person" .
     """
     units = [
-        make_ontology_unit(
-            "Defines Person class.", 0, "chunk0hash", doc_iri, ttl_chunk_0
-        ),
-        make_ontology_unit(
-            "Repeats class with typo URI.", 1, "chunk1hash", doc_iri, ttl_chunk_1
-        ),
+        make_ontology_unit("Defines Person class.", 0, doc_iri, ttl_chunk_0),
+        make_ontology_unit("Repeats class with typo URI.", 1, doc_iri, ttl_chunk_1),
     ]
 
     aggregator = EmbeddingBasedAggregator()

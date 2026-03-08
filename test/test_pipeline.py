@@ -1,3 +1,5 @@
+import importlib
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -15,13 +17,16 @@ from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph import unit_loops
 from ontocast.tool.aggregate import EmbeddingBasedAggregator
 from ontocast.toolbox import ToolBox
+from ontocast.util import render_text_hash
+
+render_ontology_module = importlib.import_module("ontocast.agent.render_ontology")
+select_ontology_module = importlib.import_module("ontocast.agent.select_ontology")
 
 
 def _build_content_unit() -> ContentUnit:
     return ContentUnit(
         text="Alice works for ACME.",
         index=0,
-        hid="chunk0",
         doc_iri=URIRef("https://example.com/doc/d1"),
     )
 
@@ -118,7 +123,6 @@ def test_reduce_ontology_units_aggregates_via_embedding() -> None:
     unit1 = ContentUnit(
         text="Alice works at ACME",
         index=0,
-        hid="c0",
         doc_iri=URIRef("https://example.com/doc/d1"),
         graph=_build_ontology().graph,
         type=OutputType.ONTOLOGIES,
@@ -128,6 +132,175 @@ def test_reduce_ontology_units_aggregates_via_embedding() -> None:
     assert reduced is not None
     assert len(reduced.graph) >= 0
     assert isinstance(applied, list)
+
+
+def test_reduce_ontology_units_creates_base_when_required() -> None:
+    class DummyAggregator:
+        def aggregate_graphs(self, units: list[ContentUnit]) -> RDFGraph:
+            graph = RDFGraph()
+            graph.parse(
+                data="""
+                @prefix ex: <https://example.com/onto#> .
+                @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+                @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+                ex:Company rdf:type rdfs:Class .
+                """,
+                format="turtle",
+            )
+            return graph
+
+    tools = cast(ToolBox, ToolBox.__new__(ToolBox))
+    tools.aggregator = cast(EmbeddingBasedAggregator, DummyAggregator())
+    unit = ContentUnit(
+        text="Company ontology snippet",
+        index=0,
+        doc_iri=URIRef("https://example.com/doc/d1"),
+        graph=RDFGraph(),
+        type=OutputType.ONTOLOGIES,
+    )
+    reduced, applied = normalize_ontology_units(
+        units=[unit],
+        tools=tools,
+        base_ontology=None,
+        require_base=True,
+    )
+
+    assert not reduced.is_null()
+    assert len(reduced.graph) > 0
+    assert isinstance(applied, list)
+
+
+@pytest.mark.anyio
+async def test_select_ontology_none_keeps_success_status(monkeypatch) -> None:
+    class SelectorResult:
+        answer_index = 0
+
+    async def fake_call_llm_with_retry(**kwargs):
+        return SelectorResult()
+
+    monkeypatch.setattr(
+        select_ontology_module, "call_llm_with_retry", fake_call_llm_with_retry
+    )
+
+    state = AgentState()
+    state.content_units = [_build_content_unit()]
+    tools = SimpleNamespace(
+        llm=object(),
+        ontology_manager=SimpleNamespace(
+            has_ontologies=True, ontologies=[_build_ontology()]
+        ),
+    )
+    result = await select_ontology_module.select_ontology(state, tools)  # type: ignore[arg-type]
+
+    assert result.status == Status.SUCCESS
+    assert result.current_ontology.is_null()
+
+
+@pytest.mark.anyio
+async def test_render_ontology_uses_update_when_snapshot_exists(monkeypatch) -> None:
+    calls = {"fresh": 0, "update": 0}
+
+    async def fake_fresh(state: UnitOntologyState, tools) -> UnitOntologyState:
+        calls["fresh"] += 1
+        return state
+
+    async def fake_update(state: UnitOntologyState, tools) -> UnitOntologyState:
+        calls["update"] += 1
+        return state
+
+    monkeypatch.setattr(render_ontology_module, "render_ontology_fresh", fake_fresh)
+    monkeypatch.setattr(render_ontology_module, "render_ontology_update", fake_update)
+
+    state = UnitOntologyState(
+        content_unit=_build_content_unit(),
+        ontology_snapshot=_build_ontology(),
+    )
+    # Simulate accidental null current ontology while a valid snapshot exists.
+    state.current_ontology = Ontology(iri=ONTOLOGY_NULL_IRI)
+    result = await render_ontology_module.render_ontology(
+        state, tools=cast(ToolBox, object())
+    )
+
+    assert result is state
+    assert calls["update"] == 1
+    assert calls["fresh"] == 0
+
+
+@pytest.mark.anyio
+async def test_create_graph_bootstraps_before_parallel_ontology_map(
+    monkeypatch,
+) -> None:
+    from ontocast.stategraph import create as create_module
+
+    calls: list[str] = []
+
+    async def fake_convert_document(state: AgentState, tools) -> AgentState:
+        return state
+
+    async def fake_chunk_text(state: AgentState, tools) -> AgentState:
+        state.content_units = [_build_content_unit()]
+        return state
+
+    async def fake_select_ontology(state: AgentState, tools) -> AgentState:
+        state.current_ontology = Ontology(iri=ONTOLOGY_NULL_IRI)
+        state.status = Status.SUCCESS
+        return state
+
+    async def fake_unit_ontology_loop(
+        state: UnitOntologyState,
+        tools,
+        max_retries: int | None = None,
+    ) -> UnitOntologyState:
+        calls.append(state.content_unit.hid)
+        state.status = Status.SUCCESS
+        state.current_ontology = Ontology(
+            graph=RDFGraph(),
+            iri="https://example.com/onto",
+        )
+        return state
+
+    def fake_normalize_ontology_units(
+        units: list[ContentUnit],
+        tools,
+        base_ontology: Ontology | None = None,
+        require_base: bool = False,
+    ) -> tuple[Ontology, list[GraphUpdate]]:
+        assert require_base is True
+        assert base_ontology is not None
+        assert not base_ontology.is_null()
+        return base_ontology, []
+
+    def fake_serialize(state: AgentState, tools) -> AgentState:
+        return state
+
+    monkeypatch.setattr(create_module, "convert_document", fake_convert_document)
+    monkeypatch.setattr(create_module, "chunk_text", fake_chunk_text)
+    monkeypatch.setattr(create_module, "select_ontology", fake_select_ontology)
+    monkeypatch.setattr(create_module, "unit_ontology_loop", fake_unit_ontology_loop)
+    monkeypatch.setattr(
+        create_module, "normalize_ontology_units", fake_normalize_ontology_units
+    )
+    monkeypatch.setattr(create_module, "serialize", fake_serialize)
+
+    tools = SimpleNamespace(
+        config=SimpleNamespace(
+            server=SimpleNamespace(
+                parallel_workers=1,
+                parallel_ontology_retries=1,
+                parallel_facts_retries=1,
+                ontology_max_triples=50000,
+                enable_ontology_consolidation=False,
+            )
+        ),
+        aggregator=EmbeddingBasedAggregator(),
+    )
+    graph = create_module.create_agent_graph(tools=cast(ToolBox, tools))
+
+    result = await graph.ainvoke(AgentState(render_mode=RenderMode.ONTOLOGY))
+
+    assert result["status"] == Status.SUCCESS
+    assert len(calls) == 2
+    assert calls[0] == render_text_hash(_build_content_unit().text)
 
 
 def test_agent_state_render_mode_properties() -> None:

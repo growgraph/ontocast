@@ -67,9 +67,11 @@ class WorkflowNode(StrEnum):
     SERIALIZE = "Serialize"
     PARALLEL_MAP_UNITS = "Parallel Map Units"
     SELECT_ONTOLOGY = "Select Ontology"
+    BOOTSTRAP_ONTOLOGY = "Bootstrap Ontology"
     RENDER_ONTOLOGY_UPDATE = "Update Ontology"
     RENDER_FACTS = "Render Facts"
     NORMALIZE_ONTOLOGY_UPDATES = "Normalize Ontology Updates"
+    CONSOLIDATE_ONTOLOGY = "Consolidate Ontology"
     MERGE_FACTS = "Merge Facts"
 
 

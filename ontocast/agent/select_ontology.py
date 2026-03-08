@@ -161,7 +161,7 @@ async def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
         # Map answer_index to ontology
         # answer_index: 0 -> select None
         # answer_index: 1 to num_ontologies -> select ontology at (answer_index - 1)
-        state.status = Status.FAILED
+        state.status = Status.SUCCESS
         if selector.answer_index == 0:
             # None selected
             logger.debug("LLM selected: None (no suitable ontology)")

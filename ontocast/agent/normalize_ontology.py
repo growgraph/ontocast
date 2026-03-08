@@ -2,7 +2,6 @@
 
 import logging
 
-from ontocast.onto.constants import DEFAULT_DOMAIN
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
@@ -12,11 +11,12 @@ from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
 
-AGGREGATED_ONTOLOGY_IRI = f"{DEFAULT_DOMAIN}/aggregated-ontology"
-
 
 def normalize_ontology_units(
-    units: list[ContentUnit], tools: ToolBox, base_ontology: Ontology | None = None
+    units: list[ContentUnit],
+    tools: ToolBox,
+    base_ontology: Ontology | None = None,
+    require_base: bool = False,
 ) -> tuple[Ontology, list[GraphUpdate]]:
     """Aggregate delta graphs from unit outputs, then apply merged delta to base.
 
@@ -28,6 +28,7 @@ def normalize_ontology_units(
         units: ContentUnits with type=ONTOLOGIES and delta graph from each unit.
         tools: ToolBox with aggregator.
         base_ontology: Optional ontology to use as base; merged delta is applied to it.
+        require_base: Whether map/reduce caller expects a base ontology.
 
     Returns:
         Tuple of (Ontology with aggregated graph, list of applied GraphUpdates for versioning).
@@ -40,6 +41,12 @@ def normalize_ontology_units(
     for unit in units:
         unit.sanitize()
     aggregated_delta = tools.aggregator.aggregate_graphs(units=units)
+
+    if require_base and (base_ontology is None or base_ontology.is_null()):
+        logger.warning(
+            "normalize_ontology_units expected a base ontology but none was available; "
+            "continuing with merged aggregated ontology output."
+        )
 
     merged_update: GraphUpdate | None = None
     if len(aggregated_delta) > 0:
@@ -63,7 +70,6 @@ def normalize_ontology_units(
 
     result = Ontology(
         graph=aggregated_delta,
-        iri=AGGREGATED_ONTOLOGY_IRI,
         ontology_id=base_ontology.ontology_id if base_ontology else None,
         title=base_ontology.title if base_ontology else None,
         description=base_ontology.description if base_ontology else None,
