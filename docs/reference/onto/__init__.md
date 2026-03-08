@@ -1,0 +1,3 @@
+# `ontocast.onto`
+
+::: ontocast.onto

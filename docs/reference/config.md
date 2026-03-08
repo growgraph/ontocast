@@ -1,0 +1,3 @@
+# `ontocast.config`
+
+::: ontocast.config

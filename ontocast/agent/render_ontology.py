@@ -14,8 +14,7 @@ from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
-from ontocast.onto.ontology import Ontology
-from ontocast.onto.sparql_models import GraphUpdate
+from ontocast.onto.model import GraphUpdateRenderReport, OntologyRenderReport
 from ontocast.onto.unit_states import UnitOntologyState
 from ontocast.prompt.common import (
     ontology_template,
@@ -32,13 +31,13 @@ from ontocast.prompt.render_ontology import (
     prefix_instruction_fresh,
     template_prompt,
 )
-from ontocast.toolbox import ToolBox
+from ontocast.tool.atomic import AtomicToolBox
 
 logger = logging.getLogger(__name__)
 
 
 async def render_ontology(
-    state: UnitOntologyState, tools: ToolBox
+    state: UnitOntologyState, tools: AtomicToolBox
 ) -> UnitOntologyState:
     """Structured hybrid ontology renderer with Turtle/SPARQL decision logic.
 
@@ -69,7 +68,7 @@ async def render_ontology(
 
 
 async def render_ontology_fresh(
-    state: UnitOntologyState, tools: ToolBox
+    state: UnitOntologyState, tools: AtomicToolBox
 ) -> UnitOntologyState:
     """Render ontology triples into a human-readable format.
 
@@ -85,7 +84,7 @@ async def render_ontology_fresh(
         AgentState: Updated state with rendered triples.
     """
 
-    parser = PydanticOutputParser(pydantic_object=Ontology)
+    parser = PydanticOutputParser(pydantic_object=OntologyRenderReport)
     logger.info("Rendering fresh ontology")
     intro_instruction = intro_instruction_fresh.format(
         current_domain=state.current_domain
@@ -99,6 +98,10 @@ async def render_ontology_fresh(
 
     text_chapter = text_template.format(text=state.content_unit.text)
 
+    external_evidence = state.external_evidence_text
+    if external_evidence:
+        state.mark_external_evidence_used(WorkflowNode.TEXT_TO_ONTOLOGY)
+
     prompt = PromptTemplate(
         template=template_prompt,
         input_variables=[
@@ -110,13 +113,14 @@ async def render_ontology_fresh(
             "improvement_instruction",
             "ontology_ttl",
             "text",
+            "external_evidence",
             "format_instructions",
         ],
     )
 
     try:
         llm_tool = await tools.get_llm_tool(state.budget_tracker)
-        state.current_ontology = await call_llm_with_retry(
+        render_report: OntologyRenderReport = await call_llm_with_retry(
             llm_tool=llm_tool,
             prompt=prompt,
             parser=parser,
@@ -129,9 +133,14 @@ async def render_ontology_fresh(
                 "user_instruction": state.ontology_user_instruction,
                 "improvement_instruction": improvement_instruction_str,
                 "text": text_chapter,
+                "external_evidence": external_evidence,
                 "format_instructions": parser.get_format_instructions(),
             },
         )
+        state.set_external_evidence_request(
+            WorkflowNode.TEXT_TO_ONTOLOGY, render_report.external_evidence_request
+        )
+        state.current_ontology = render_report.ontology
         state.current_ontology.graph.sanitize_prefixes_namespaces()
 
         num_triples = len(state.current_ontology.graph)
@@ -154,7 +163,7 @@ async def render_ontology_fresh(
 
 
 async def render_ontology_update(
-    state: UnitOntologyState, tools: ToolBox
+    state: UnitOntologyState, tools: AtomicToolBox
 ) -> UnitOntologyState:
     """Render ontology triples into a human-readable format.
 
@@ -170,7 +179,7 @@ async def render_ontology_update(
         UnitOntologyState: Updated state with rendered triples.
     """
 
-    parser = PydanticOutputParser(pydantic_object=GraphUpdate)
+    parser = PydanticOutputParser(pydantic_object=GraphUpdateRenderReport)
     current = state.current_ontology or state.ontology_snapshot
     ontology_iri = current.iri
     ontology_desc = current.describe()
@@ -186,9 +195,13 @@ async def render_ontology_update(
     )
 
     general_ontology_instruction_str = general_ontology_instruction.format(
-        prefix_instruction=prefix_instruction.format(ontology_prefix=current.prefix)
+        prefix_instruction=prefix_instruction.format(ontology_prefix=current.prefix),
+        ontology_prefix=current.prefix,
     )
     text_chapter = text_template.format(text=state.content_unit.text)
+    external_evidence = state.external_evidence_text
+    if external_evidence:
+        state.mark_external_evidence_used(WorkflowNode.TEXT_TO_ONTOLOGY)
 
     prompt = PromptTemplate(
         template=template_prompt,
@@ -201,13 +214,14 @@ async def render_ontology_update(
             "improvement_instruction",
             "ontology_ttl",
             "text",
+            "external_evidence",
             "format_instructions",
         ],
     )
 
     try:
         llm_tool = await tools.get_llm_tool(state.budget_tracker)
-        graph_update: GraphUpdate = await call_llm_with_retry(
+        render_report: GraphUpdateRenderReport = await call_llm_with_retry(
             llm_tool=llm_tool,
             prompt=prompt,
             parser=parser,
@@ -220,9 +234,14 @@ async def render_ontology_update(
                 "ontology_ttl": ontology_chapter,
                 "user_instruction": state.ontology_user_instruction,
                 "text": text_chapter,
+                "external_evidence": external_evidence,
                 "format_instructions": parser.get_format_instructions(),
             },
         )
+        state.set_external_evidence_request(
+            WorkflowNode.TEXT_TO_ONTOLOGY, render_report.external_evidence_request
+        )
+        graph_update = render_report.graph_update
         state.ontology_updates.append(graph_update)
         state.update_ontology()
 

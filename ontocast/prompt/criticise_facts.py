@@ -64,4 +64,12 @@ Before finalizing your critique:
    - Flag as error
    - Search available ontologies for semantically similar entities
    - Suggest REPLACE if found, or REMOVE if no suitable replacement exists
+
+# SEARCH DECISION OUTPUT
+
+Include `external_evidence_request` in your structured response:
+- Set `initiate_search=true` only if external web evidence is necessary to resolve uncertainty
+  that blocks a confident critique.
+- Keep `initiate_search=false` when the source text + ontology are sufficient.
+- When true, provide concise `rationale` and optional focused `query_hints`.
 """

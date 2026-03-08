@@ -13,9 +13,8 @@ from langchain_core.prompts import PromptTemplate
 from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
-from ontocast.onto.model import SemanticTriplesFactsReport
+from ontocast.onto.model import FactsRenderReport, GraphUpdateRenderReport
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.prompt.common import (
     facts_template,
@@ -30,12 +29,12 @@ from ontocast.prompt.render_facts import (
     preamble,
     template_prompt,
 )
-from ontocast.toolbox import ToolBox
+from ontocast.tool.atomic import AtomicToolBox
 
 logger = logging.getLogger(__name__)
 
 
-async def render_facts(state: UnitFactsState, tools: ToolBox) -> UnitFactsState:
+async def render_facts(state: UnitFactsState, tools: AtomicToolBox) -> UnitFactsState:
     """Structured hybrid facts renderer with Turtle/SPARQL decision logic.
 
     This function decides between generating bare Turtle for fresh facts
@@ -140,7 +139,9 @@ def _handle_rendering_error(
     return state
 
 
-async def render_facts_fresh(state: UnitFactsState, tools: ToolBox) -> UnitFactsState:
+async def render_facts_fresh(
+    state: UnitFactsState, tools: AtomicToolBox
+) -> UnitFactsState:
     """Render fresh facts from the current chunk into Turtle format.
 
     Args:
@@ -152,7 +153,7 @@ async def render_facts_fresh(state: UnitFactsState, tools: ToolBox) -> UnitFacts
     """
     logger.info("Rendering fresh facts")
     llm_tool = await tools.get_llm_tool(state.budget_tracker)
-    parser = PydanticOutputParser(pydantic_object=SemanticTriplesFactsReport)
+    parser = PydanticOutputParser(pydantic_object=FactsRenderReport)
 
     # Extract prefixes from the ontology graph to help with parsing LLM responses
     # that may use these prefixes without declaring them
@@ -182,7 +183,7 @@ async def render_facts_fresh(state: UnitFactsState, tools: ToolBox) -> UnitFacts
         # Set known prefixes in context before parsing
         RDFGraph.set_known_prefixes(known_prefixes if known_prefixes else None)
 
-        facts_report = await call_llm_with_retry(
+        render_report: FactsRenderReport = await call_llm_with_retry(
             llm_tool=llm_tool,
             prompt=prompt,
             parser=parser,
@@ -191,6 +192,10 @@ async def render_facts_fresh(state: UnitFactsState, tools: ToolBox) -> UnitFacts
                 **prompt_data,
             },
         )
+        state.set_external_evidence_request(
+            WorkflowNode.TEXT_TO_FACTS, render_report.external_evidence_request
+        )
+        facts_report = render_report.facts_report
         facts_report.semantic_graph.sanitize_prefixes_namespaces()
         state.content_unit.graph = facts_report.semantic_graph
 
@@ -210,7 +215,9 @@ async def render_facts_fresh(state: UnitFactsState, tools: ToolBox) -> UnitFacts
         RDFGraph.set_known_prefixes(None)
 
 
-async def render_facts_update(state: UnitFactsState, tools: ToolBox) -> UnitFactsState:
+async def render_facts_update(
+    state: UnitFactsState, tools: AtomicToolBox
+) -> UnitFactsState:
     """Render facts updates using SPARQL operations.
 
     Args:
@@ -222,7 +229,7 @@ async def render_facts_update(state: UnitFactsState, tools: ToolBox) -> UnitFact
     """
     logger.info("Rendering updates for facts")
     llm_tool = await tools.get_llm_tool(state.budget_tracker)
-    parser = PydanticOutputParser(pydantic_object=GraphUpdate)
+    parser = PydanticOutputParser(pydantic_object=GraphUpdateRenderReport)
 
     prompt_data = _prepare_prompt_data(state)
     prompt_data_update = {
@@ -239,7 +246,7 @@ async def render_facts_update(state: UnitFactsState, tools: ToolBox) -> UnitFact
     prompt = _create_prompt_template()
 
     try:
-        graph_update = await call_llm_with_retry(
+        render_report: GraphUpdateRenderReport = await call_llm_with_retry(
             llm_tool=llm_tool,
             prompt=prompt,
             parser=parser,
@@ -248,6 +255,10 @@ async def render_facts_update(state: UnitFactsState, tools: ToolBox) -> UnitFact
                 **prompt_data,
             },
         )
+        state.set_external_evidence_request(
+            WorkflowNode.TEXT_TO_FACTS, render_report.external_evidence_request
+        )
+        graph_update = render_report.graph_update
         state.facts_updates.append(graph_update)
         state.update_facts()
 

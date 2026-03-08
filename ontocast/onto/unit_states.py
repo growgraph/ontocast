@@ -8,7 +8,14 @@ from pydantic import Field
 from ontocast.onto.constants import DEFAULT_DOMAIN
 from ontocast.onto.content_unit import ContentUnit, SourceUnit
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
-from ontocast.onto.model import BasePydanticModel, Suggestions
+from ontocast.onto.model import (
+    BasePydanticModel,
+    ExternalEvidenceCacheEntry,
+    ExternalEvidenceHit,
+    ExternalEvidencePlan,
+    ExternalEvidenceRequest,
+    Suggestions,
+)
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate
@@ -36,6 +43,21 @@ class UnitState(BasePydanticModel):
     node_visits: dict[WorkflowNode, int] = Field(
         default_factory=lambda: defaultdict(int),
     )
+    external_evidence_plan: ExternalEvidencePlan = Field(
+        default_factory=ExternalEvidencePlan
+    )
+    external_evidence_hits: list[ExternalEvidenceHit] = Field(default_factory=list)
+    external_evidence_text: str = Field(default="")
+    external_evidence_source_count: int = Field(default=0, ge=0)
+    external_evidence_domains: list[str] = Field(default_factory=list)
+    external_evidence_planned_at_node: WorkflowNode | None = Field(default=None)
+    external_evidence_used_by_nodes: list[WorkflowNode] = Field(default_factory=list)
+    external_evidence_requests: dict[WorkflowNode, ExternalEvidenceRequest] = Field(
+        default_factory=dict
+    )
+    external_evidence_cache: dict[WorkflowNode, ExternalEvidenceCacheEntry] = Field(
+        default_factory=dict
+    )
 
     def get_content_unit_progress_string(self) -> str:
         """Progress string for logging (single unit context)."""
@@ -55,6 +77,59 @@ class UnitState(BasePydanticModel):
         """Clear failure state."""
         self.failure_stage = None
         self.failure_reason = None
+
+    def clear_external_evidence(self) -> None:
+        """Reset evidence plan, retrieved hits, and rendered evidence block."""
+        self.external_evidence_plan = ExternalEvidencePlan()
+        self.external_evidence_hits = []
+        self.external_evidence_text = ""
+        self.external_evidence_source_count = 0
+        self.external_evidence_domains = []
+        self.external_evidence_planned_at_node = None
+        self.external_evidence_cache = {}
+
+    def get_external_evidence_request(
+        self, node: WorkflowNode
+    ) -> ExternalEvidenceRequest:
+        """Return node-scoped search request, defaulting to disabled."""
+        return self.external_evidence_requests.get(node, ExternalEvidenceRequest())
+
+    def set_external_evidence_request(
+        self, node: WorkflowNode, request: ExternalEvidenceRequest
+    ) -> None:
+        """Store node-scoped search request."""
+        self.external_evidence_requests[node] = request
+
+    def clear_external_evidence_request(self, node: WorkflowNode) -> None:
+        """Clear node-scoped search request."""
+        self.external_evidence_requests.pop(node, None)
+
+    def set_external_evidence_cache_entry(
+        self, node: WorkflowNode, entry: ExternalEvidenceCacheEntry
+    ) -> None:
+        """Persist node-scoped evidence plan/fetch result cache."""
+        self.external_evidence_cache[node] = entry
+
+    def get_external_evidence_cache_entry(
+        self, node: WorkflowNode
+    ) -> ExternalEvidenceCacheEntry:
+        """Return node-scoped evidence cache entry."""
+        return self.external_evidence_cache.get(node, ExternalEvidenceCacheEntry())
+
+    def load_external_evidence_for_node(self, node: WorkflowNode) -> None:
+        """Load node-scoped evidence cache into active prompt fields."""
+        entry = self.get_external_evidence_cache_entry(node)
+        self.external_evidence_plan = entry.plan
+        self.external_evidence_hits = entry.hits
+        self.external_evidence_text = entry.text
+        self.external_evidence_source_count = entry.source_count
+        self.external_evidence_domains = entry.domains
+        self.external_evidence_planned_at_node = node
+
+    def mark_external_evidence_used(self, node: WorkflowNode) -> None:
+        """Record that a workflow node consumed prepared external evidence."""
+        if node not in self.external_evidence_used_by_nodes:
+            self.external_evidence_used_by_nodes.append(node)
 
 
 class UnitFactsState(UnitState):

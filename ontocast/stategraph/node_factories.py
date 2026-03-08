@@ -11,17 +11,19 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
+from ontocast.stategraph.atomic import facts_loop, ontology_loop
 from ontocast.stategraph.helpers import (
     build_document_excerpt,
     build_ontology_delta_graph,
 )
-from ontocast.stategraph.unit_loops import unit_facts_loop, unit_ontology_loop
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
 
 
 def make_bootstrap_ontology_node(tools: ToolBox):
+    atomic_tools = tools.get_atomic_tools()
+
     async def bootstrap_ontology(state: AgentState) -> AgentState:
         """Create one seed ontology for null-selection flow."""
         if not state.render_ontology or not state.current_ontology.is_null():
@@ -54,7 +56,7 @@ def make_bootstrap_ontology_node(tools: ToolBox):
             current_domain=state.current_domain,
             ontology_max_triples=tools.config.server.ontology_max_triples,
         )
-        result = await unit_ontology_loop(bootstrap_state, tools)
+        result = await ontology_loop(bootstrap_state, atomic_tools)
         if result.status == Status.SUCCESS and not result.current_ontology.is_null():
             state.current_ontology = result.current_ontology
             logger.info(
@@ -73,6 +75,8 @@ def make_bootstrap_ontology_node(tools: ToolBox):
 
 
 def make_render_ontology_node(tools: ToolBox):
+    atomic_tools = tools.get_atomic_tools()
+
     async def render_ontology_updates(state: AgentState) -> AgentState:
         if not state.content_units:
             state.ontology_units = []
@@ -94,7 +98,7 @@ def make_render_ontology_node(tools: ToolBox):
                     current_domain=state.current_domain,
                     ontology_max_triples=tools.config.server.ontology_max_triples,
                 )
-                result = await unit_ontology_loop(ontology_state, tools)
+                result = await ontology_loop(ontology_state, atomic_tools)
                 return unit_index, result
 
         tasks = [process_unit(i) for i, _ in enumerate(state.content_units)]
@@ -155,6 +159,8 @@ def make_normalize_ontology_node(tools: ToolBox):
 
 
 def make_consolidate_ontology_node(tools: ToolBox):
+    atomic_tools = tools.get_atomic_tools()
+
     async def consolidate_ontology(state: AgentState) -> AgentState:
         """Optional post-normalization ontology consolidation pass."""
         if not tools.config.server.enable_ontology_consolidation:
@@ -192,7 +198,7 @@ def make_consolidate_ontology_node(tools: ToolBox):
             current_domain=state.current_domain,
             ontology_max_triples=tools.config.server.ontology_max_triples,
         )
-        result = await render_ontology_update(consolidation_state, tools)
+        result = await render_ontology_update(consolidation_state, atomic_tools)
         if result.status == Status.SUCCESS and not result.current_ontology.is_null():
             state.current_ontology = result.current_ontology
             state.ontology_updates_applied.extend(result.ontology_updates_applied)
@@ -211,6 +217,8 @@ def make_consolidate_ontology_node(tools: ToolBox):
 
 
 def make_render_facts_node(tools: ToolBox):
+    atomic_tools = tools.get_atomic_tools()
+
     async def render_facts(state: AgentState) -> AgentState:
         if not state.content_units:
             state.parallel_facts_units = []
@@ -230,7 +238,7 @@ def make_render_facts_node(tools: ToolBox):
                     budget_tracker=base_state.budget_tracker,
                     max_retries=tools.config.server.parallel_facts_retries,
                 )
-                result = await unit_facts_loop(facts_state, tools)
+                result = await facts_loop(facts_state, atomic_tools)
                 return unit_index, result
 
         tasks = [process_unit(i) for i, _ in enumerate(state.content_units)]

@@ -134,7 +134,7 @@ async def test_render_facts_live_llm(live_tools: ToolBox, realistic_text: str) -
         ),
     )
 
-    result = await render_facts(state, live_tools)
+    result = await render_facts(state, live_tools.get_atomic_tools())
 
     assert result.failure_stage is None
     assert result.status == Status.SUCCESS
@@ -153,10 +153,10 @@ async def test_criticise_facts_live_llm(
             "Prioritize correct entities, relations, and measurable outcomes."
         ),
     )
-    rendered = await render_facts(state, live_tools)
+    rendered = await render_facts(state, live_tools.get_atomic_tools())
     assert len(rendered.content_unit.graph) > 0
 
-    critiqued = await criticise_facts(rendered, live_tools)
+    critiqued = await criticise_facts(rendered, live_tools.get_atomic_tools())
 
     assert (
         critiqued.failure_stage is None
@@ -179,7 +179,7 @@ async def test_render_ontology_live_llm(
         ),
     )
 
-    result = await render_ontology(state, live_tools)
+    result = await render_ontology(state, live_tools.get_atomic_tools())
 
     assert result.failure_stage is None
     assert result.status == Status.SUCCESS
@@ -200,11 +200,11 @@ async def test_criticise_ontology_live_llm(
             "Keep class hierarchy minimal and ensure relation naming consistency."
         ),
     )
-    rendered = await render_ontology(state, live_tools)
+    rendered = await render_ontology(state, live_tools.get_atomic_tools())
     assert not rendered.current_ontology.is_null()
     assert len(rendered.current_ontology.graph) > 0
 
-    critiqued = await criticise_ontology(rendered, live_tools)
+    critiqued = await criticise_ontology(rendered, live_tools.get_atomic_tools())
 
     assert (
         critiqued.failure_stage is None

@@ -3,12 +3,13 @@ import logging
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
-from ontocast.config import Config
+from ontocast.config import Config, WebSearchProvider
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI
 from ontocast.onto.ontology import Ontology, OntologyProperties
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.tool import (
+    AtomicToolBox,
     ChunkerTool,
     ConverterTool,
     FilesystemTripleStoreManager,
@@ -23,6 +24,7 @@ from ontocast.tool.llm import LLMTool
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.sparql import SPARQLTool
 from ontocast.tool.triple_manager.core import TripleStoreManager
+from ontocast.tool.web_search import DuckDuckGoSearchProvider
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +84,23 @@ class ToolBox:
         self.llm_provider = tool_config.llm_config.provider
         self.llm: LLMTool = LLMTool.create(
             config=tool_config.llm_config, cache=self.shared_cache
+        )
+        self.search_provider = None
+        if tool_config.web_search.enabled:
+            if tool_config.web_search.provider == WebSearchProvider.DUCKDUCKGO:
+                self.search_provider = DuckDuckGoSearchProvider(
+                    timeout_seconds=tool_config.web_search.timeout_seconds,
+                    region=tool_config.web_search.region,
+                    safesearch=tool_config.web_search.safesearch,
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported web-search provider: {tool_config.web_search.provider}"
+                )
+        self.atomic_tools = AtomicToolBox(
+            llm_provider=self,
+            search_provider=self.search_provider,
+            web_search_config=tool_config.web_search,
         )
 
         # Initialize managers based on backend configuration
@@ -181,6 +200,10 @@ class ToolBox:
                 logger.warning(
                     "Cannot update dataset: triple store manager is not Fuseki"
                 )
+
+    def get_atomic_tools(self) -> AtomicToolBox:
+        """Return the minimal toolbox used by atomic render/critic paths."""
+        return self.atomic_tools
 
     def serialize(self, state: AgentState) -> None:
         # Add current ontology to ontology manager for version tracking

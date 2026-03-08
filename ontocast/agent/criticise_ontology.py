@@ -20,13 +20,13 @@ from ontocast.prompt.criticise_ontology import (
     template_prompt,
 )
 from ontocast.tool import LLMTool
-from ontocast.toolbox import ToolBox
+from ontocast.tool.atomic import AtomicToolBox
 
 logger = logging.getLogger(__name__)
 
 
 async def criticise_ontology(
-    state: UnitOntologyState, tools: ToolBox
+    state: UnitOntologyState, tools: AtomicToolBox
 ) -> UnitOntologyState:
     """Enhanced ontology criticism with SPARQL operations.
 
@@ -68,16 +68,20 @@ async def criticise_ontology(
     text_chapter = text_template.format(text=state.content_unit.text)
 
     user_instruction = state.ontology_user_instruction
+    external_evidence = state.external_evidence_text
+    if external_evidence:
+        state.mark_external_evidence_used(WorkflowNode.CRITICISE_ONTOLOGY)
 
     prompt = PromptTemplate(
         template=template_prompt,
         input_variables=[
             "preamble",
-            "facts_instruction",
-            "ontology_instruction",
+            "intro_instruction",
+            "ontology_criteria",
             "user_instruction",
+            "ontology_chapter",
             "text_chapter",
-            "improvement_instruction",
+            "external_evidence",
             "format_instructions",
         ],
     )
@@ -94,8 +98,12 @@ async def criticise_ontology(
                 "text_chapter": text_chapter,
                 "user_instruction": user_instruction,
                 "ontology_chapter": ontology_chapter,
+                "external_evidence": external_evidence,
                 "format_instructions": parser.get_format_instructions(),
             },
+        )
+        state.set_external_evidence_request(
+            WorkflowNode.CRITICISE_ONTOLOGY, critique.external_evidence_request
         )
         logger.info(
             f"Parsed critique report - success: {critique.success}, "

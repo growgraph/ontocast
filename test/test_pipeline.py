@@ -8,18 +8,28 @@ from rdflib import URIRef
 from ontocast.agent.normalize_ontology import normalize_ontology_units
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI
 from ontocast.onto.content_unit import ContentUnit, OutputType
-from ontocast.onto.enum import RenderMode, Status
+from ontocast.onto.enum import RenderMode, Status, WorkflowNode
+from ontocast.onto.model import (
+    ExternalEvidenceCacheEntry,
+    ExternalEvidencePlan,
+    ExternalEvidenceRequest,
+    GraphUpdateRenderReport,
+    OntologyCritiqueReport,
+)
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
-from ontocast.stategraph import unit_loops
 from ontocast.tool.aggregate import EmbeddingBasedAggregator
+from ontocast.tool.atomic import AtomicToolBox, SearchHit
 from ontocast.toolbox import ToolBox
 
 render_ontology_module = importlib.import_module("ontocast.agent.render_ontology")
+criticise_ontology_module = importlib.import_module("ontocast.agent.criticise_ontology")
 select_ontology_module = importlib.import_module("ontocast.agent.select_ontology")
+unit_loops = importlib.import_module("ontocast.stategraph.atomic")
+external_evidence_module = importlib.import_module("ontocast.agent.external_evidence")
 
 
 def _build_content_unit() -> ContentUnit:
@@ -71,8 +81,8 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
     state = UnitFactsState(
         content_unit=_build_content_unit(), ontology_snapshot=_build_ontology()
     )
-    tools = cast(ToolBox, object())
-    result = await unit_loops.unit_facts_loop(state, tools=tools)
+    tools = cast(AtomicToolBox, object())
+    result = await unit_loops.facts_loop(state, tools=tools)
 
     assert result.status == Status.SUCCESS
     assert result.content_unit.hid == state.content_unit.hid
@@ -99,8 +109,8 @@ async def test_run_unit_ontology_loop_emits_updates(monkeypatch) -> None:
         content_unit=_build_content_unit(),
         ontology_snapshot=Ontology(iri=ONTOLOGY_NULL_IRI),
     )
-    tools = cast(ToolBox, object())
-    result = await unit_loops.unit_ontology_loop(state, tools=tools)
+    tools = cast(AtomicToolBox, object())
+    result = await unit_loops.ontology_loop(state, tools=tools)
 
     assert result.status == Status.SUCCESS
     assert len(result.all_updates) == 1
@@ -217,12 +227,288 @@ async def test_render_ontology_uses_update_when_snapshot_exists(monkeypatch) -> 
     # Simulate accidental null current ontology while a valid snapshot exists.
     state.current_ontology = Ontology(iri=ONTOLOGY_NULL_IRI)
     result = await render_ontology_module.render_ontology(
-        state, tools=cast(ToolBox, object())
+        state, tools=cast(AtomicToolBox, object())
     )
 
     assert result is state
     assert calls["update"] == 1
     assert calls["fresh"] == 0
+
+
+@pytest.mark.anyio
+async def test_render_ontology_update_adds_external_evidence_when_enabled(
+    monkeypatch,
+) -> None:
+    captured_prompt_kwargs: dict[str, object] = {}
+
+    async def fake_call_llm_with_retry(**kwargs):
+        captured_prompt_kwargs.update(kwargs["prompt_kwargs"])
+        return GraphUpdateRenderReport(graph_update=GraphUpdate())
+
+    async def fake_get_llm_tool(_budget_tracker):
+        return object()
+
+    monkeypatch.setattr(
+        render_ontology_module, "call_llm_with_retry", fake_call_llm_with_retry
+    )
+    tools = cast(
+        AtomicToolBox,
+        SimpleNamespace(
+            get_llm_tool=fake_get_llm_tool,
+        ),
+    )
+    state = UnitOntologyState(
+        content_unit=_build_content_unit(),
+        ontology_snapshot=_build_ontology(),
+    )
+    state.external_evidence_text = (
+        "### EXTERNAL EVIDENCE (WEB SEARCH)\n"
+        "1. Ontology engineering patterns | https://example.org/ontology\n"
+        "   Use consistent subclass hierarchies and explicit domains."
+    )
+
+    await render_ontology_module.render_ontology_update(state, tools=tools)
+
+    external_evidence = str(captured_prompt_kwargs.get("external_evidence", ""))
+    assert "EXTERNAL EVIDENCE" in external_evidence
+    assert "https://example.org/ontology" in external_evidence
+
+
+@pytest.mark.anyio
+async def test_criticise_ontology_skips_external_evidence_when_disabled(
+    monkeypatch,
+) -> None:
+    captured_prompt_kwargs: dict[str, object] = {}
+
+    async def fake_call_llm_with_retry(**kwargs):
+        captured_prompt_kwargs.update(kwargs["prompt_kwargs"])
+        return OntologyCritiqueReport(
+            success=True,
+            score=95,
+            systemic_critique_summary="Looks good.",
+            actionable_ontology_fixes=[],
+        )
+
+    async def fake_get_llm_tool(_budget_tracker):
+        return object()
+
+    monkeypatch.setattr(
+        criticise_ontology_module, "call_llm_with_retry", fake_call_llm_with_retry
+    )
+    tools = cast(
+        AtomicToolBox,
+        SimpleNamespace(
+            get_llm_tool=fake_get_llm_tool,
+        ),
+    )
+    state = UnitOntologyState(
+        content_unit=_build_content_unit(),
+        ontology_snapshot=_build_ontology(),
+    )
+
+    await criticise_ontology_module.criticise_ontology(state, tools=tools)
+
+    assert captured_prompt_kwargs.get("external_evidence") == ""
+
+
+@pytest.mark.anyio
+async def test_plan_external_evidence_uses_fallback_when_planner_disabled() -> None:
+    tools = cast(
+        AtomicToolBox,
+        SimpleNamespace(
+            web_grounding_enabled_for_node=lambda _node: True,
+            web_search_reuse_evidence_across_attempt=False,
+            web_search_planner_enabled=False,
+            web_search_planner_min_query_chars=8,
+            web_search_planner_max_queries=3,
+            web_search_planner_min_confidence=0.35,
+        ),
+    )
+    state = UnitOntologyState(
+        content_unit=_build_content_unit(),
+        ontology_snapshot=_build_ontology(),
+        ontology_user_instruction="Clarify company ontology terms.",
+    )
+    state.set_external_evidence_request(
+        WorkflowNode.TEXT_TO_ONTOLOGY,
+        ExternalEvidenceRequest(
+            initiate_search=True,
+            rationale="Need targeted terminology lookup for ontology refinement.",
+        ),
+    )
+
+    planned = await external_evidence_module.plan_external_evidence_for_node(
+        state, tools, WorkflowNode.TEXT_TO_ONTOLOGY
+    )
+
+    assert planned.external_evidence_plan.should_search is True
+    assert planned.external_evidence_plan.queries
+    assert planned.external_evidence_planned_at_node == WorkflowNode.TEXT_TO_ONTOLOGY
+
+
+@pytest.mark.anyio
+async def test_fetch_external_evidence_filters_domains_and_dedupes() -> None:
+    async def fake_search(query: str, max_results: int | None = None):
+        _ = query, max_results
+        return [
+            SearchHit(
+                title="Good result",
+                url="https://example.org/ontology",
+                snippet="This is a sufficiently detailed snippet for ontology guidance.",
+            ),
+            SearchHit(
+                title="Duplicate URL",
+                url="https://example.org/ontology",
+                snippet="Different text but same URL should be deduped.",
+            ),
+            SearchHit(
+                title="Other domain",
+                url="https://noise.test/entry",
+                snippet="This snippet is long enough but should be filtered by allowlist.",
+            ),
+        ]
+
+    tools = cast(
+        AtomicToolBox,
+        SimpleNamespace(
+            web_grounding_enabled_for_node=lambda _node: True,
+            search=fake_search,
+            web_search_allowed_domains={"example.org"},
+            web_search_blocked_domains=set(),
+            web_search_min_snippet_chars=20,
+            web_search_max_snippet_chars=180,
+            web_search_max_total_chars=1200,
+        ),
+    )
+    state = UnitOntologyState(
+        content_unit=_build_content_unit(),
+        ontology_snapshot=_build_ontology(),
+    )
+    state.set_external_evidence_request(
+        WorkflowNode.TEXT_TO_ONTOLOGY,
+        ExternalEvidenceRequest(
+            initiate_search=True,
+            rationale="Need clarification",
+            query_hints=["ontology engineering patterns"],
+            confidence=0.9,
+        ),
+    )
+    state.set_external_evidence_cache_entry(
+        WorkflowNode.TEXT_TO_ONTOLOGY,
+        ExternalEvidenceCacheEntry(
+            plan=ExternalEvidencePlan(
+                should_search=True,
+                rationale="Need clarification",
+                intent="definition",
+                confidence=0.9,
+                queries=["ontology engineering patterns"],
+            ),
+        ),
+    )
+
+    fetched = await external_evidence_module.fetch_external_evidence_for_node(
+        state, tools, WorkflowNode.TEXT_TO_ONTOLOGY
+    )
+
+    assert fetched.external_evidence_source_count == 1
+    assert fetched.external_evidence_domains == ["example.org"]
+    assert "https://example.org/ontology" in fetched.external_evidence_text
+
+
+@pytest.mark.anyio
+async def test_ontology_loop_runs_external_evidence_nodes(monkeypatch) -> None:
+    called_nodes: list[WorkflowNode] = []
+
+    async def fake_plan(state: UnitOntologyState, tools, target_node: WorkflowNode):
+        _ = tools
+        called_nodes.append(target_node)
+        return state
+
+    async def fake_fetch(state: UnitOntologyState, tools, target_node: WorkflowNode):
+        _ = tools, target_node
+        return state
+
+    async def fake_render(state: UnitOntologyState, tools) -> UnitOntologyState:
+        _ = tools
+        state.status = Status.SUCCESS
+        return state
+
+    async def fake_critic(state: UnitOntologyState, tools) -> UnitOntologyState:
+        _ = tools
+        state.status = Status.SUCCESS
+        return state
+
+    monkeypatch.setattr(unit_loops, "plan_external_evidence_for_node", fake_plan)
+    monkeypatch.setattr(unit_loops, "fetch_external_evidence_for_node", fake_fetch)
+    monkeypatch.setattr(unit_loops, "render_ontology", fake_render)
+    monkeypatch.setattr(unit_loops, "criticise_ontology", fake_critic)
+
+    state = UnitOntologyState(
+        content_unit=_build_content_unit(),
+        ontology_snapshot=Ontology(iri=ONTOLOGY_NULL_IRI),
+    )
+    tools = cast(AtomicToolBox, object())
+    result = await unit_loops.ontology_loop(state, tools=tools)
+
+    assert result.status == Status.SUCCESS
+    assert called_nodes == []
+
+
+@pytest.mark.anyio
+async def test_ontology_loop_plans_search_when_critic_requests_it(monkeypatch) -> None:
+    called_nodes: list[WorkflowNode] = []
+
+    async def fake_plan(state: UnitOntologyState, tools, target_node: WorkflowNode):
+        _ = tools
+        called_nodes.append(target_node)
+        return state
+
+    async def fake_fetch(state: UnitOntologyState, tools, target_node: WorkflowNode):
+        _ = tools
+        called_nodes.append(target_node)
+        return state
+
+    async def fake_render(state: UnitOntologyState, tools) -> UnitOntologyState:
+        _ = tools
+        state.status = Status.SUCCESS
+        return state
+
+    critic_calls = {"count": 0}
+
+    async def fake_critic(state: UnitOntologyState, tools) -> UnitOntologyState:
+        _ = tools
+        critic_calls["count"] += 1
+        if critic_calls["count"] == 1:
+            state.status = Status.FAILED
+            state.set_external_evidence_request(
+                WorkflowNode.CRITICISE_ONTOLOGY,
+                ExternalEvidenceRequest(
+                    initiate_search=True,
+                    rationale="Need domain standard disambiguation.",
+                    query_hints=["ontology modeling standard pattern"],
+                ),
+            )
+            return state
+        state.status = Status.SUCCESS
+        return state
+
+    monkeypatch.setattr(unit_loops, "plan_external_evidence_for_node", fake_plan)
+    monkeypatch.setattr(unit_loops, "fetch_external_evidence_for_node", fake_fetch)
+    monkeypatch.setattr(unit_loops, "render_ontology", fake_render)
+    monkeypatch.setattr(unit_loops, "criticise_ontology", fake_critic)
+
+    state = UnitOntologyState(
+        content_unit=_build_content_unit(),
+        ontology_snapshot=Ontology(iri=ONTOLOGY_NULL_IRI),
+    )
+    tools = cast(AtomicToolBox, object())
+    result = await unit_loops.ontology_loop(state, tools=tools)
+
+    assert result.status == Status.SUCCESS
+    assert called_nodes == [
+        WorkflowNode.CRITICISE_ONTOLOGY,
+        WorkflowNode.CRITICISE_ONTOLOGY,
+    ]
 
 
 def test_agent_state_render_mode_properties() -> None:

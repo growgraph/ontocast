@@ -14,3 +14,7 @@ The framework includes:
 
 For more information, see the documentation at https://growgraph.github.io/ontocast/
 """
+
+from ontocast.stategraph.atomic import facts_loop, ontology_loop
+
+__all__ = ["facts_loop", "ontology_loop"]

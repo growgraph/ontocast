@@ -99,6 +99,27 @@ FUSEKI_DATASET=ontocast
 SKIP_ONTOLOGY_DEVELOPMENT=false
 # Optional: Maximum triples allowed in ontology graph (set empty for unlimited)
 ONTOLOGY_MAX_TRIPLES=10000
+
+# Optional: Web search grounding (search-later mode)
+# Node execution starts without search; search runs only when node output requests it.
+WEB_SEARCH_ENABLED=false
+WEB_SEARCH_PROVIDER=duckduckgo
+WEB_SEARCH_TOP_K=3
+WEB_SEARCH_TIMEOUT_SECONDS=8.0
+WEB_SEARCH_MAX_SNIPPET_CHARS=400
+WEB_SEARCH_MAX_TOTAL_CHARS=1800
+WEB_SEARCH_ONTOLOGY_RENDER_ENABLED=true
+WEB_SEARCH_ONTOLOGY_CRITIC_ENABLED=true
+WEB_SEARCH_FACTS_RENDER_ENABLED=false
+WEB_SEARCH_FACTS_CRITIC_ENABLED=false
+WEB_SEARCH_PLANNER_ENABLED=true
+WEB_SEARCH_PLANNER_MAX_QUERIES=3
+WEB_SEARCH_PLANNER_MIN_QUERY_CHARS=12
+WEB_SEARCH_PLANNER_MIN_CONFIDENCE=0.35
+WEB_SEARCH_REUSE_EVIDENCE_ACROSS_ATTEMPT=true
+WEB_SEARCH_MIN_SNIPPET_CHARS=40
+WEB_SEARCH_ALLOWED_DOMAINS=
+WEB_SEARCH_BLOCKED_DOMAINS=
 ```
 
 ### 2. Start Server
@@ -193,6 +214,19 @@ OntoCast uses a hierarchical configuration system built on Pydantic BaseSettings
 | `ONTOLOGY_MAX_TRIPLES` | Maximum triples allowed in ontology graph | 10000 | No |
 | `SKIP_FACTS_RENDERING` | Skip facts rendering and go straight to aggregation | false | No |
 | `ONTOCAST_CACHE_DIR` | Custom cache directory for LLM responses | Platform default | No |
+| `WEB_SEARCH_ENABLED` | Enable optional web grounding (search runs only on node request) | false | No |
+| `WEB_SEARCH_PROVIDER` | Web search provider | duckduckgo | No |
+| `WEB_SEARCH_TOP_K` | Number of search results used per call | 3 | No |
+| `WEB_SEARCH_ONTOLOGY_RENDER_ENABLED` | Allow search-eligible ontology render retries | true | No |
+| `WEB_SEARCH_ONTOLOGY_CRITIC_ENABLED` | Allow search-eligible ontology critic retries | true | No |
+| `WEB_SEARCH_FACTS_RENDER_ENABLED` | Allow search-eligible facts render retries | false | No |
+| `WEB_SEARCH_FACTS_CRITIC_ENABLED` | Allow search-eligible facts critic retries | false | No |
+| `WEB_SEARCH_PLANNER_ENABLED` | Use LLM planner for query decisioning | true | No |
+| `WEB_SEARCH_PLANNER_MAX_QUERIES` | Maximum planned focused queries per node | 3 | No |
+| `WEB_SEARCH_PLANNER_MIN_QUERY_CHARS` | Guardrail minimum query length | 12 | No |
+| `WEB_SEARCH_PLANNER_MIN_CONFIDENCE` | Guardrail minimum planner confidence | 0.35 | No |
+| `WEB_SEARCH_ALLOWED_DOMAINS` | Optional comma-separated allowlist domains | empty | No |
+| `WEB_SEARCH_BLOCKED_DOMAINS` | Optional comma-separated blocklist domains | empty | No |
 
 ### Triple Store Configuration
 

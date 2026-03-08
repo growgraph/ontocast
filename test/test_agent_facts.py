@@ -9,13 +9,14 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import FailureStage, Status
 from ontocast.onto.model import (
     FactsCritiqueReport,
+    FactsRenderReport,
     SemanticTriplesFactsReport,
     TripleFix,
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitFactsState
-from ontocast.toolbox import ToolBox
+from ontocast.tool.atomic import AtomicToolBox
 
 criticise_facts_module = importlib.import_module("ontocast.agent.criticise_facts")
 render_facts_module = importlib.import_module("ontocast.agent.render_facts")
@@ -51,11 +52,11 @@ def _build_ontology() -> Ontology:
     return Ontology(graph=ontology_graph, iri="https://example.com/onto")
 
 
-def _build_tools() -> ToolBox:
+def _build_tools() -> AtomicToolBox:
     async def get_llm_tool(_budget_tracker):
         return object()
 
-    return cast(ToolBox, SimpleNamespace(get_llm_tool=get_llm_tool))
+    return cast(AtomicToolBox, SimpleNamespace(get_llm_tool=get_llm_tool))
 
 
 @pytest.mark.anyio
@@ -95,10 +96,12 @@ async def test_render_facts_fresh_sets_success_and_budget(monkeypatch) -> None:
             """,
             format="turtle",
         )
-        return SemanticTriplesFactsReport(
-            semantic_graph=rendered_graph,
-            ontology_relevance_score=95,
-            triples_generation_score=94,
+        return FactsRenderReport(
+            facts_report=SemanticTriplesFactsReport(
+                semantic_graph=rendered_graph,
+                ontology_relevance_score=95,
+                triples_generation_score=94,
+            )
         )
 
     monkeypatch.setattr(

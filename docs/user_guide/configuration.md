@@ -54,6 +54,36 @@ LLM_API_KEY=your-api-key-here         # API key (replaces OPENAI_API_KEY)
 LLM_BASE_URL=http://localhost:11434    # Base URL for Ollama
 ```
 
+### Optional Web Search (Ontology Grounding)
+
+```bash
+WEB_SEARCH_ENABLED=false                  # Enable optional web grounding (search-later mode)
+WEB_SEARCH_PROVIDER=duckduckgo            # currently: duckduckgo
+WEB_SEARCH_TOP_K=3                        # number of hits
+WEB_SEARCH_TIMEOUT_SECONDS=8.0            # request timeout
+WEB_SEARCH_MAX_SNIPPET_CHARS=400          # per-hit snippet truncation
+WEB_SEARCH_MAX_TOTAL_CHARS=1800           # total prompt evidence budget
+WEB_SEARCH_ONTOLOGY_RENDER_ENABLED=true   # allow search-eligible ontology render retries
+WEB_SEARCH_ONTOLOGY_CRITIC_ENABLED=true   # allow search-eligible ontology critic retries
+WEB_SEARCH_FACTS_RENDER_ENABLED=false     # allow search-eligible facts render retries
+WEB_SEARCH_FACTS_CRITIC_ENABLED=false     # allow search-eligible facts critic retries
+WEB_SEARCH_PLANNER_ENABLED=true           # use LLM planner to decide search necessity
+WEB_SEARCH_PLANNER_MAX_QUERIES=3          # max planned focused queries
+WEB_SEARCH_PLANNER_MIN_QUERY_CHARS=12     # guardrail query min length
+WEB_SEARCH_PLANNER_MIN_CONFIDENCE=0.35    # guardrail planner confidence threshold
+WEB_SEARCH_REUSE_EVIDENCE_ACROSS_ATTEMPT=true # reuse evidence across retries per node
+WEB_SEARCH_MIN_SNIPPET_CHARS=40           # drop low-signal short snippets
+WEB_SEARCH_ALLOWED_DOMAINS=               # optional comma-separated allowlist
+WEB_SEARCH_BLOCKED_DOMAINS=               # optional comma-separated blocklist
+WEB_SEARCH_REGION=wt-wt                   # DDG region code
+WEB_SEARCH_SAFESEARCH=moderate            # off|moderate|strict
+```
+
+Search-later semantics:
+- Each render/critic node runs first without web search.
+- Node output can request search by setting `external_evidence_request.initiate_search=true`.
+- Planner/fetch executes only for nodes that requested search, reducing unnecessary web calls.
+
 ### Server Configuration
 
 ```bash

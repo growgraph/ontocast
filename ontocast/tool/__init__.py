@@ -25,6 +25,7 @@ Example:
 
 from ontocast.tool.chunk.chunker import ChunkerTool
 
+from .atomic import AtomicToolBox, SearchHit
 from .converter import ConverterTool
 from .llm import LLMTool
 from .onto import Tool
@@ -46,4 +47,6 @@ __all__ = [
     "ConverterTool",
     "ChunkerTool",
     "Tool",
+    "AtomicToolBox",
+    "SearchHit",
 ]

@@ -3,7 +3,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.sparql_models import GraphUpdate
 
 
 class BasePydanticModel(BaseModel):
@@ -128,6 +130,71 @@ class SemanticTriplesFactsReport(BaseModel):
             "Score 0-100 for how well the semantic triples "
             "represent the document. 0 is the worst, 100 is the best."
         ),
+    )
+
+
+class ExternalEvidenceRequest(BaseModel):
+    """Node-level request for optional web search.
+
+    Nodes use this to explicitly signal whether downstream evidence planning/fetching
+    should run for another pass.
+    """
+
+    initiate_search: bool = Field(
+        default=False,
+        description="Whether this node requests external evidence before retrying.",
+    )
+    rationale: str = Field(
+        default="",
+        description="Short reason explaining why search is needed (or not needed).",
+    )
+    query_hints: list[str] = Field(
+        default_factory=list,
+        description="Optional focused query hints for planner targeting.",
+    )
+    confidence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Confidence in this search decision.",
+    )
+
+    @field_validator("query_hints", mode="before")
+    @classmethod
+    def normalize_query_hints(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            return []
+        normalized: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            hint = " ".join(item.split()).strip()
+            if hint:
+                normalized.append(hint)
+        return normalized
+
+
+class FactsRenderReport(BaseModel):
+    """Facts rendering output with optional search decision."""
+
+    facts_report: SemanticTriplesFactsReport = Field(
+        description="Rendered facts payload."
+    )
+    external_evidence_request: ExternalEvidenceRequest = Field(
+        default_factory=ExternalEvidenceRequest,
+        description="Optional request to run web search before retrying.",
+    )
+
+
+class GraphUpdateRenderReport(BaseModel):
+    """Graph update rendering output with optional search decision."""
+
+    graph_update: GraphUpdate = Field(description="SPARQL graph update payload.")
+    external_evidence_request: ExternalEvidenceRequest = Field(
+        default_factory=ExternalEvidenceRequest,
+        description="Optional request to run web search before retrying.",
     )
 
 
@@ -258,6 +325,10 @@ class OntologyCritiqueReport(BaseModel):
         default="",
         description="A high-level summary of systemic deficiencies in the ontology (e.g., poor hierarchy structure, redundant concepts, lack of appropriate granularity, or general failures in Domain Coverage). This addresses strategic issues beyond individual term fixes.",
     )
+    external_evidence_request: ExternalEvidenceRequest = Field(
+        default_factory=ExternalEvidenceRequest,
+        description="Optional request to run web search before retrying.",
+    )
 
 
 class FactsCritiqueReport(BaseModel):
@@ -293,6 +364,85 @@ class FactsCritiqueReport(BaseModel):
             "- Missing coverage of entire categories of information\n\n"
             "This guides strategic improvements to the fact-extraction process."
         ),
+    )
+    external_evidence_request: ExternalEvidenceRequest = Field(
+        default_factory=ExternalEvidenceRequest,
+        description="Optional request to run web search before retrying.",
+    )
+
+
+class ExternalEvidenceHit(BaseModel):
+    """Normalized external evidence hit metadata."""
+
+    title: str = Field(default="")
+    url: str = Field(default="")
+    snippet: str = Field(default="")
+    domain: str = Field(default="")
+
+
+class ExternalEvidencePlan(BaseModel):
+    """Structured plan for optional external evidence retrieval."""
+
+    should_search: bool = Field(
+        default=False,
+        description="Whether external evidence retrieval should run for this node.",
+    )
+    rationale: str = Field(
+        default="",
+        description="Short explanation of why search is or is not needed.",
+    )
+    intent: Literal[
+        "none",
+        "definition",
+        "disambiguation",
+        "standard",
+        "verification",
+        "background",
+    ] = Field(
+        default="none",
+        description="Primary reason for searching external evidence.",
+    )
+    confidence: float = Field(
+        default=0.0, ge=0.0, le=1.0, description="Confidence in the decision."
+    )
+    queries: list[str] = Field(
+        default_factory=list, description="Targeted search queries."
+    )
+
+    @field_validator("queries", mode="before")
+    @classmethod
+    def normalize_queries(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            return []
+        normalized: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            query = " ".join(item.split()).strip()
+            if query:
+                normalized.append(query)
+        return normalized
+
+
+class ExternalEvidenceCacheEntry(BaseModel):
+    """Node-scoped external evidence planning/fetch outputs."""
+
+    plan: ExternalEvidencePlan = Field(default_factory=ExternalEvidencePlan)
+    hits: list[ExternalEvidenceHit] = Field(default_factory=list)
+    text: str = Field(default="")
+    source_count: int = Field(default=0, ge=0)
+    domains: list[str] = Field(default_factory=list)
+
+
+class OntologyRenderReport(BaseModel):
+    """Ontology rendering output with optional search decision."""
+
+    ontology: Ontology = Field(description="Rendered ontology payload.")
+    external_evidence_request: ExternalEvidenceRequest = Field(
+        default_factory=ExternalEvidenceRequest,
+        description="Optional request to run web search before retrying.",
     )
 
 

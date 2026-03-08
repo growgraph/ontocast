@@ -24,12 +24,14 @@ from ontocast.prompt.criticise_facts import (
     preamble,
     template_prompt,
 )
-from ontocast.toolbox import ToolBox
+from ontocast.tool.atomic import AtomicToolBox
 
 logger = logging.getLogger(__name__)
 
 
-async def criticise_facts(state: UnitFactsState, tools: ToolBox) -> UnitFactsState:
+async def criticise_facts(
+    state: UnitFactsState, tools: AtomicToolBox
+) -> UnitFactsState:
     """Enhanced criticize facts with SPARQL operations.
 
     This function performs a critical analysis of the facts in the current content unit,
@@ -103,6 +105,9 @@ async def criticise_facts(state: UnitFactsState, tools: ToolBox) -> UnitFactsSta
             prompt=prompt,
             parser=parser,
             prompt_kwargs=prompt_data,
+        )
+        state.set_external_evidence_request(
+            WorkflowNode.CRITICISE_FACTS, critique.external_evidence_request
         )
         logger.debug(
             f"Parsed critique report - success: {critique.success}, "

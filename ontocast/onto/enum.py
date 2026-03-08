@@ -73,6 +73,8 @@ class WorkflowNode(StrEnum):
     NORMALIZE_ONTOLOGY_UPDATES = "Normalize Ontology Updates"
     CONSOLIDATE_ONTOLOGY = "Consolidate Ontology"
     MERGE_FACTS = "Merge Facts"
+    PLAN_EXTERNAL_EVIDENCE = "Plan External Evidence"
+    FETCH_EXTERNAL_EVIDENCE = "Fetch External Evidence"
 
 
 class SPARQLOperationType(StrEnum):
