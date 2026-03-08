@@ -13,3 +13,4 @@ alwaysApply: true
 - Avoid unused imports.
 - Use `async`/`await` where appropriate.
 - Always keep functions small and composable.
+- Avoid using hasattr at all costs, it's not safe

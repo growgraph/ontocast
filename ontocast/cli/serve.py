@@ -40,6 +40,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from ontocast.cli.util import crawl_directories
 from ontocast.config import Config, ServerConfig
+from ontocast.onto.enum import RenderMode
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import create_agent_graph
 from ontocast.toolbox import ToolBox
@@ -233,21 +234,10 @@ def create_app(
             if dataset:
                 logger.debug(f"Using dataset: {dataset}")
 
-            # Extract skip_facts_rendering from query parameters
-            skip_facts_rendering = request.query_params.get(
-                "skip_facts_rendering", None
-            )
-            if skip_facts_rendering:
-                logger.debug(f"Using skip_facts_rendering: {skip_facts_rendering}")
-
-            # Extract skip_ontology_development from query parameters
-            skip_ontology_development = request.query_params.get(
-                "skip_ontology_development", None
-            )
-            if skip_ontology_development:
-                logger.debug(
-                    f"Using skip_ontology_development: {skip_ontology_development}"
-                )
+            # Preferred rendering mode parameter
+            render_mode = request.query_params.get("render_mode", None)
+            if render_mode:
+                logger.debug(f"Using render_mode: {render_mode}")
 
             # Extract user instructions from query parameters (available for both JSON and multipart)
             ontology_user_instruction = request.query_params.get(
@@ -332,44 +322,32 @@ def create_app(
             if dataset:
                 await tools.update_dataset(dataset)
 
-            # Determine boolean flags from API params or server config
-            def parse_bool_param(value, default):
-                """Parse a boolean parameter from query string or use default.
-
-                Args:
-                    value: String value from query params (e.g., "true", "false", "1", "0")
-                    default: Default boolean value from server config
-
-                Returns:
-                    bool: Parsed boolean value
-                """
+            def parse_render_mode_param(value, default: RenderMode) -> RenderMode:
+                """Parse render mode from query string or use default."""
                 if value is None:
                     return default
-                if isinstance(value, bool):
+                if isinstance(value, RenderMode):
                     return value
                 if isinstance(value, str):
-                    # Handle string representations of booleans
-                    value_lower = value.lower().strip()
-                    if value_lower in ("true", "1", "yes", "on"):
-                        return True
-                    if value_lower in ("false", "0", "no", "off"):
-                        return False
-                # If value is truthy but not a recognized boolean string, return default
+                    normalized = value.lower().strip()
+                    try:
+                        return RenderMode(normalized)
+                    except ValueError:
+                        logger.warning(
+                            f"Invalid render_mode '{value}', using default '{default.value}'"
+                        )
                 return default
 
-            skip_facts_rendering_value: bool = parse_bool_param(
-                skip_facts_rendering, server_config.skip_facts_rendering
-            )
-            skip_ontology_development_value: bool = parse_bool_param(
-                skip_ontology_development, server_config.skip_ontology_development
+            render_mode_value: RenderMode = parse_render_mode_param(
+                render_mode,
+                server_config.render_mode,
             )
 
             initial_state = AgentState(
                 files=files,
                 max_visits=server_config.max_visits,
                 max_chunks=head_chunks,
-                skip_ontology_development=skip_ontology_development_value,
-                skip_facts_rendering=skip_facts_rendering_value,
+                render_mode=render_mode_value,
                 ontology_max_triples=server_config.ontology_max_triples,
                 dataset=dataset,
                 ontology_user_instruction=ontology_user_instruction,
@@ -393,6 +371,24 @@ def create_app(
                 # Convert Pydantic model to dict using model_dump()
                 budget_tracker_data = budget_tracker.model_dump()
 
+            total_content_units = len(
+                workflow_state.get("content_units", workflow_state.get("chunks", []))
+            )
+            render_mode = workflow_state.get("render_mode")
+            render_facts_enabled = render_mode in (
+                RenderMode.FACTS,
+                RenderMode.ONTOLOGY_AND_FACTS,
+                RenderMode.FACTS.value,
+                RenderMode.ONTOLOGY_AND_FACTS.value,
+            )
+            if render_facts_enabled:
+                processed_content_units = len(
+                    workflow_state.get("parallel_facts_units", [])
+                )
+            else:
+                processed_content_units = total_content_units
+            chunks_remaining = max(total_content_units - processed_content_units, 0)
+
             result = {
                 "status": "success",
                 "data": {
@@ -409,8 +405,8 @@ def create_app(
                 },
                 "metadata": {
                     "status": workflow_state["status"],
-                    "chunks_processed": len(workflow_state.get("chunks_processed", [])),
-                    "chunks_remaining": len(workflow_state.get("chunks", [])),
+                    "chunks_processed": processed_content_units,
+                    "chunks_remaining": chunks_remaining,
                     "budget": budget_tracker_data,
                 },
             }
@@ -538,8 +534,7 @@ def run(
                         files={file_path.as_posix(): file_path.read_bytes()},
                         max_visits=config.server.max_visits,
                         max_chunks=head_chunks,
-                        skip_ontology_development=config.server.skip_ontology_development,
-                        skip_facts_rendering=config.server.skip_facts_rendering,
+                        render_mode=config.server.render_mode,
                         dataset=config.tool_config.fuseki.dataset,
                     )
                     async for _ in workflow.astream(

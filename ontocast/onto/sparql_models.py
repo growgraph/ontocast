@@ -373,6 +373,27 @@ class GraphUpdate(BaseModel):
                 total_triples += len(op.graph)
         return (len(self.triple_operations), total_triples)
 
+    def extract_insert_graph(self) -> RDFGraph:
+        """Extract RDFGraph of all insert triples from triple_operations.
+
+        Only TripleOps with type='insert' are included. sparql_operations
+        are not extractable as triples and are skipped.
+
+        Returns:
+            RDFGraph containing the union of all insert triples.
+        """
+        result = RDFGraph()
+        for op in self.triple_operations:
+            if isinstance(op, TripleOp) and op.type == "insert" and len(op.graph) > 0:
+                for triple in op.graph:
+                    result.add(triple)
+                for prefix, uri in op.graph.namespaces():
+                    if prefix:
+                        result.bind(prefix, uri)
+                for prefix, uri in op.prefixes.items():
+                    result.bind(prefix, uri)
+        return result
+
     def generate_diff_summary(self) -> str:
         """Generate a human-readable diff summary of all operations for LLM consumption.
 

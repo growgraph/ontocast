@@ -12,6 +12,7 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ontocast.onto.constants import DEFAULT_DATASET, DEFAULT_ONTOLOGIES_DATASET
+from ontocast.onto.enum import RenderMode
 
 
 class LLMProvider(StrEnum):
@@ -124,11 +125,9 @@ class ServerConfig(BaseSettings):
     max_visits: int = Field(
         default=3, description="Maximum number of visits allowed per node"
     )
-    skip_ontology_development: bool = Field(
-        default=False, description="Skip ontology critique step"
-    )
-    skip_facts_rendering: bool = Field(
-        default=False, description="Skip facts rendering and go straight to aggregation"
+    render_mode: RenderMode = Field(
+        default=RenderMode.ONTOLOGY_AND_FACTS,
+        description="Rendering mode: ontology, facts, or ontology_and_facts.",
     )
     ontology_max_triples: int | None = Field(
         default=50000,

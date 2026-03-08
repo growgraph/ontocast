@@ -2,7 +2,7 @@ import json
 import logging
 import re
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextvars import ContextVar
 from typing import Any, Union
 
@@ -476,6 +476,34 @@ class RDFGraph(Graph):
             encoding=encoding,
             **args,
         )
+
+    def update(
+        self,
+        update_object: Any,
+        processor: Any = "sparql",
+        initNs: Mapping[str, Any] | None = None,
+        initBindings: Mapping[str, Any] | None = None,
+        use_store_provided: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        """Execute SPARQL update using a base Graph view.
+
+        rdflib's SPARQL update engine has internal checks that branch on exact
+        ``Graph`` type, which can break for subclasses on ``INSERT/DELETE ... WHERE``.
+        Running updates through a base ``Graph`` view avoids that edge case while
+        still operating on the same underlying store/identifier.
+        """
+        graph_view = Graph(store=self.store, identifier=self.identifier)
+        graph_view.namespace_manager = self.namespace_manager
+        graph_view.update(
+            update_object=update_object,
+            processor=processor,
+            initNs=initNs,
+            initBindings=initBindings,
+            use_store_provided=use_store_provided,
+            **kwargs,
+        )
+        return None
 
     def sanitize_prefixes_namespaces(self):
         """

@@ -14,16 +14,14 @@ class OutputType(StrEnum):
     ONTOLOGIES = "ontologies"
 
 
-class ContentUnit(BaseModel):
-    """A processing unit with source content, metadata, and RDF output.
+class SourceUnit(BaseModel):
+    """Immutable source unit identity and input text.
 
     Attributes:
         text: Source text content for this unit.
         index: Position of this unit in the source document.
         hid: An almost unique (hash) id for this unit.
         doc_iri: IRI of parent document.
-        graph: RDF triples rendered from this unit.
-        processed: Whether this unit has been processed.
         type: Type of content unit (facts or ontology).
     """
 
@@ -33,19 +31,6 @@ class ContentUnit(BaseModel):
     index: int = Field(description="Position of this unit in the source document")
     hid: str = Field(description="An almost unique (hash) id for this unit")
     doc_iri: URIRef = Field(description="IRI of parent doc")
-    graph: RDFGraph = Field(
-        description="RDF triples representing facts rendered from this source unit in turtle format "
-        "as a string in compact form: use prefixes for namespaces, do NOT add comments",
-        default_factory=RDFGraph,
-    )
-
-    _graph_absolute: RDFGraph | None = PrivateAttr(default=None)
-
-    processed: bool = Field(default=False, description="Was this unit processed?")
-    generated_at: datetime | None = Field(
-        default=None, description="generated timestamp"
-    )
-
     type: OutputType = Field(
         default=OutputType.FACTS, description="Type of content unit"
     )
@@ -56,13 +41,6 @@ class ContentUnit(BaseModel):
         if isinstance(value, URIRef):
             return value
         return URIRef(value)
-
-    @property
-    def graph_absolute(self):
-        if self._graph_absolute is None:
-            self._graph_absolute = self.graph.copy()
-            self._graph_absolute.remap_namespaces(self.iri, self.iri_absolute)
-        return self._graph_absolute
 
     @property
     def iri(self):
@@ -83,6 +61,42 @@ class ContentUnit(BaseModel):
         return f"{self.doc_iri}/{self.hid}"
 
     @property
+    def namespace(self):
+        """Get the namespace for this unit.
+
+        Returns:
+            str: The unit namespace.
+        """
+        return iri2namespace(self.iri, ontology=False)
+
+    def __len__(self):
+        return len(self.text)
+
+
+class ContentUnit(SourceUnit):
+    """A processing unit that extends source data with mutable output fields."""
+
+    graph: RDFGraph = Field(
+        description="RDF triples representing facts rendered from this source unit in turtle format "
+        "as a string in compact form: use prefixes for namespaces, do NOT add comments",
+        default_factory=RDFGraph,
+    )
+
+    _graph_absolute: RDFGraph | None = PrivateAttr(default=None)
+
+    processed: bool = Field(default=False, description="Was this unit processed?")
+    generated_at: datetime | None = Field(
+        default=None, description="generated timestamp"
+    )
+
+    @property
+    def graph_absolute(self):
+        if self._graph_absolute is None:
+            self._graph_absolute = self.graph.copy()
+            self._graph_absolute.remap_namespaces(self.iri, self.iri_absolute)
+        return self._graph_absolute
+
+    @property
     def generated_at_iso(self):
         """Get generated timestamp in ISO format.
 
@@ -93,18 +107,6 @@ class ContentUnit(BaseModel):
             self.generated_at = datetime.now(timezone.utc)
         return self.generated_at.isoformat()
 
-    @property
-    def namespace(self):
-        """Get the namespace for this unit.
-
-        Returns:
-            str: The unit namespace.
-        """
-        return iri2namespace(self.iri, ontology=False)
-
     def sanitize(self):
         self.graph = self.graph.unbind_chunk_namespaces()
         self.graph.sanitize_prefixes_namespaces()
-
-    def __len__(self):
-        return len(self.text)

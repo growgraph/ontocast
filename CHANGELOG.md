@@ -18,10 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - URL encoding for versioned IRIs in Fuseki to preserve `#` characters in URIs
 - Multiple ontology version support in Fuseki triple store (versions stored as separate named graphs)
 - Automatic ontology synchronization from filesystem to triple store during initialization
-- `skip_facts_rendering` parameter to skip facts extraction and go straight to serialization
+- `render_mode` parameter to select processing mode: `ontology`, `facts`, or `ontology_and_facts`
 - Separated `aggregate` and `serialize` into distinct workflow nodes for better control
 - Added `serialize` node to the workflow graph
-- API support for `skip_facts_rendering` and `skip_ontology_development` as query parameters
+- API support for `render_mode` as a query parameter
 - **GraphUpdate system**: Structured SPARQL operations (insert/delete) for token-efficient graph updates
 - `GraphUpdate` model with `TripleOp` operations for incremental graph modifications
 - `render_ontology_update()` and `render_facts_update()` functions using GraphUpdate instead of full TTL

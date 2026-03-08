@@ -11,7 +11,7 @@ from langchain_core.prompts import PromptTemplate
 from ontocast.agent.common import call_llm_with_retry
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import OntologyCritiqueReport, Suggestions
-from ontocast.onto.state import AgentState
+from ontocast.onto.unit_states import UnitOntologyState
 from ontocast.prompt.common import ontology_template, text_template
 from ontocast.prompt.common import system_preamble_ontology as system_preamble
 from ontocast.prompt.criticise_ontology import (
@@ -25,44 +25,47 @@ from ontocast.toolbox import ToolBox
 logger = logging.getLogger(__name__)
 
 
-async def criticise_ontology(state: AgentState, tools: ToolBox) -> AgentState:
+async def criticise_ontology(
+    state: UnitOntologyState, tools: ToolBox
+) -> UnitOntologyState:
     """Enhanced ontology criticism with SPARQL operations.
 
     This function performs a critical analysis of the ontology in the current
     state, with SPARQL operation support.
 
     Args:
-        state: The current agent state containing the ontology to analyze.
+        state: The current unit ontology state containing the ontology to analyze.
         tools: The toolbox instance providing utility functions.
 
     Returns:
-        AgentState: Updated state with analysis results.
+        UnitOntologyState: Updated state with analysis results.
     """
 
     progress_info = state.get_content_unit_progress_string()
     logger.info(
-        f"Ontology Critic for {progress_info}: visit {state.node_visits[WorkflowNode.CRITICISE_ONTOLOGY] + 1}/{state.max_visits}"
+        f"Ontology Critic for {progress_info}: visit {state.node_visits[WorkflowNode.CRITICISE_ONTOLOGY] + 1}/{state.max_retries}"
     )
 
-    if state.current_content_unit is None:
+    if state.content_unit is None:
         state.status = Status.FAILED
         return state
 
-    if state.current_ontology.is_null():
+    current = state.current_ontology or state.ontology_snapshot
+    if current.is_null():
         raise ValueError(
-            f"Null ontology cannot be criticised: {state.current_ontology.iri} is not a valid ontology"
+            f"Null ontology cannot be criticised: {current.iri} is not a valid ontology"
         )
 
     parser = PydanticOutputParser(pydantic_object=OntologyCritiqueReport)
     llm_tool: LLMTool = await tools.get_llm_tool(state.budget_tracker)
 
-    ontology_ttl = state.current_ontology.graph.serialize(format="turtle")
+    ontology_ttl = current.graph.serialize(format="turtle")
 
     ontology_chapter = ontology_template.format(
         ontology_ttl=ontology_ttl,
     )
 
-    text_chapter = text_template.format(text=state.current_content_unit.text)
+    text_chapter = text_template.format(text=state.content_unit.text)
 
     user_instruction = state.ontology_user_instruction
 

@@ -26,6 +26,14 @@ class FactsDecision(StrEnum):
     SERIALIZE = "skip to serialize"
 
 
+class RenderMode(StrEnum):
+    """Enumeration of supported rendering modes."""
+
+    ONTOLOGY = "ontology"
+    FACTS = "facts"
+    ONTOLOGY_AND_FACTS = "ontology_and_facts"
+
+
 class FailureStage(StrEnum):
     """Enumeration of possible failure stages in the workflow."""
 
@@ -51,19 +59,18 @@ class WorkflowNode(StrEnum):
 
     CONVERT_TO_MD = "Convert to Markdown"
     CHUNK = "Chunk Text"
-    SELECT_ONTOLOGY = "Select Ontology"
     TEXT_TO_ONTOLOGY = "Text to Ontology"
     TEXT_TO_FACTS = "Text to Facts"
-    SUBLIMATE_ONTOLOGY = "Sublimate Ontology"
     CRITICISE_ONTOLOGY = "Criticise Ontology"
     CRITICISE_FACTS = "Criticise Facts"
-    CHUNKS_EMPTY = "Chunks Empty?"
     AGGREGATE_FACTS = "Aggregate Facts"
     SERIALIZE = "Serialize"
-    BOOTSTRAP_ONTOLOGY = "Bootstrap Ontology"
     PARALLEL_MAP_UNITS = "Parallel Map Units"
-    REDUCE_ONTOLOGY = "Reduce Ontology"
-    REDUCE_FACTS = "Reduce Facts"
+    SELECT_ONTOLOGY = "Select Ontology"
+    RENDER_ONTOLOGY_UPDATE = "Update Ontology"
+    RENDER_FACTS = "Render Facts"
+    NORMALIZE_ONTOLOGY_UPDATES = "Normalize Ontology Updates"
+    MERGE_FACTS = "Merge Facts"
 
 
 class SPARQLOperationType(StrEnum):

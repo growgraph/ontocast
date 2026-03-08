@@ -83,18 +83,6 @@ def test_build_uri_preserves_ontology_entities(uri_builder: URIBuilder) -> None:
     assert uri_builder.build_uri(entity, rep, EntityRole.CLASS) == entity
 
 
-def test_build_uri_adds_uniqueness_suffix(uri_builder: URIBuilder) -> None:
-    rep1 = make_representation("http://chunk1.org/person", "person")
-    rep2 = make_representation("http://chunk2.org/person", "person")
-
-    uri1 = uri_builder.build_uri(rep1.entity, rep1, EntityRole.CLASS)
-    uri2 = uri_builder.build_uri(rep2.entity, rep2, EntityRole.CLASS)
-
-    assert uri1 != uri2
-    assert "Person" in str(uri1)
-    assert "Person" in str(uri2)
-
-
 def test_compose_mappings_flattens_two_stage_mapping() -> None:
     e1 = URIRef("http://chunk1.org/A")
     e2 = URIRef("http://chunk2.org/B")

@@ -8,7 +8,7 @@ from rdflib import URIRef
 from ontocast.onto.constants import CHUNK_NULL_IRI, DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.context import AgentContext, AgentType, ContextManager
-from ontocast.onto.enum import FailureStage, Status, WorkflowNode
+from ontocast.onto.enum import FailureStage, RenderMode, Status, WorkflowNode
 from ontocast.onto.model import BasePydanticModel, Suggestions
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
@@ -93,9 +93,6 @@ class AgentState(BasePydanticModel):
         current_domain: IRI used for forming document namespace.
         doc_hid: An almost unique hash/id for the parent document.
         files: Files to process.
-        current_content_unit: Current source unit under processing.
-        content_units: Pending source units to process.
-        processed_content_units: Completed source units.
         current_ontology: Current ontology object.
         ontology_addendum: Additional ontology content.
         failure_stage: Stage where failure occurred.
@@ -104,7 +101,7 @@ class AgentState(BasePydanticModel):
         status: Current workflow status.
         node_visits: Number of visits per node.
         max_visits: Maximum number of visits allowed per node.
-        max_chunks: Maximum number of source chunks to split and process.
+        max_chunks: Maximum number of source content units to split and process.
     """
 
     input_text: str = Field(description="Input text", default="")
@@ -118,22 +115,19 @@ class AgentState(BasePydanticModel):
     files: dict[str, bytes] = Field(
         default_factory=lambda: dict(), description="Files to process"
     )
-    chunks: list[ContentUnit] = Field(
-        default_factory=lambda: list(),
-        description="Pending content units to process (legacy name: chunks)",
+    content_units: list[ContentUnit] = Field(
+        default_factory=list,
+        description="Pending content units to process.",
     )
-    current_chunk: ContentUnit = Field(
+    current_content_unit: ContentUnit = Field(
         default_factory=lambda: ContentUnit(
             text="",
             index=0,
             hid="default",
             doc_iri=URIRef(CHUNK_NULL_IRI),
         ),
-        description="Current content unit under processing (legacy name: current_chunk)",
-    )
-    chunks_processed: list[ContentUnit] = Field(
-        default_factory=lambda: list(),
-        description="Processed content units (legacy name: chunks_processed)",
+        alias="current_chunk",
+        description="Current content unit under processing.",
     )
     current_ontology: Ontology = Field(
         default_factory=lambda: Ontology(
@@ -199,9 +193,9 @@ class AgentState(BasePydanticModel):
         description="Successful per-unit facts outputs collected during parallel map phase",
     )
 
-    parallel_ontology_updates: list[GraphUpdate] = Field(
+    ontology_units: list[ContentUnit] = Field(
         default_factory=list,
-        description="Per-unit ontology updates collected during parallel map phase",
+        description="Successful per-unit ontology outputs collected during parallel map phase",
     )
 
     ontology_addendum: Ontology = Field(
@@ -237,13 +231,10 @@ class AgentState(BasePydanticModel):
         default=3, description="Maximum number of visits allowed per node"
     )
     max_chunks: int | None = None
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-    skip_ontology_development: bool = Field(
-        default=False, description="Skip ontology create/improve steps if True"
-    )
-    skip_facts_rendering: bool = Field(
-        default=False,
-        description="Skip facts rendering and go straight to aggregation if True",
+    model_config = ConfigDict(arbitrary_types_allowed=True, populate_by_name=True)
+    render_mode: RenderMode = Field(
+        default=RenderMode.ONTOLOGY_AND_FACTS,
+        description=("Rendering mode: ontology, facts, or ontology_and_facts."),
     )
     ontology_max_triples: int | None = Field(
         default=50000,
@@ -280,31 +271,20 @@ class AgentState(BasePydanticModel):
         return self.statuses.get(node, Status.NOT_VISITED)
 
     @property
-    def content_units(self) -> list[ContentUnit]:
-        """Canonical name for pending content units."""
-        return self.chunks
-
-    @content_units.setter
-    def content_units(self, value: list[ContentUnit]) -> None:
-        self.chunks = value
-
-    @property
-    def current_content_unit(self) -> ContentUnit:
-        """Canonical name for the currently processed content unit."""
-        return self.current_chunk
-
-    @current_content_unit.setter
-    def current_content_unit(self, value: ContentUnit) -> None:
-        self.current_chunk = value
+    def render_ontology(self) -> bool:
+        """Whether ontology rendering should run."""
+        return self.render_mode in (
+            RenderMode.ONTOLOGY,
+            RenderMode.ONTOLOGY_AND_FACTS,
+        )
 
     @property
-    def processed_content_units(self) -> list[ContentUnit]:
-        """Canonical name for processed content units."""
-        return self.chunks_processed
-
-    @processed_content_units.setter
-    def processed_content_units(self, value: list[ContentUnit]) -> None:
-        self.chunks_processed = value
+    def render_facts(self) -> bool:
+        """Whether facts rendering should run."""
+        return self.render_mode in (
+            RenderMode.FACTS,
+            RenderMode.ONTOLOGY_AND_FACTS,
+        )
 
     def set_node_status(self, node: WorkflowNode, status: Status) -> None:
         """Set the status of a workflow node."""
@@ -315,13 +295,9 @@ class AgentState(BasePydanticModel):
         from ontocast.onto.constants import CHUNK_NULL_IRI
 
         has_current_content_unit = CHUNK_NULL_IRI not in self.current_content_unit.iri
-        current_content_unit_number = len(self.processed_content_units) + (
+        current_content_unit_number = 1 if has_current_content_unit else 0
+        total_content_units = len(self.content_units) + (
             1 if has_current_content_unit else 0
-        )
-        total_content_units = (
-            len(self.content_units)
-            + len(self.processed_content_units)
-            + (1 if has_current_content_unit else 0)
         )
         return current_content_unit_number, total_content_units
 

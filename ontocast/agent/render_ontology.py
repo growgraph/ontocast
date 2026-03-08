@@ -16,7 +16,7 @@ from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.sparql_models import GraphUpdate
-from ontocast.onto.state import AgentState
+from ontocast.onto.unit_states import UnitOntologyState
 from ontocast.prompt.common import (
     ontology_template,
     output_instruction_sparql,
@@ -37,25 +37,28 @@ from ontocast.toolbox import ToolBox
 logger = logging.getLogger(__name__)
 
 
-async def render_ontology(state: AgentState, tools: ToolBox) -> AgentState:
+async def render_ontology(
+    state: UnitOntologyState, tools: ToolBox
+) -> UnitOntologyState:
     """Structured hybrid ontology renderer with Turtle/SPARQL decision logic.
 
     This function decides between generating bare Turtle for fresh ontologies
     and SPARQL operations for updates based on whether the ontology exists.
 
     Args:
-        state: The current agent state
+        state: The current unit ontology state
         tools: The toolbox containing necessary tools
 
     Returns:
-        AgentState: Updated state with rendered ontology
+        UnitOntologyState: Updated state with rendered ontology
     """
 
     progress_info = state.get_content_unit_progress_string()
     logger.info(
-        f"Ontology Renderer for {progress_info}: visit {state.node_visits[WorkflowNode.TEXT_TO_ONTOLOGY] + 1}/{state.max_visits}"
+        f"Ontology Renderer for {progress_info}: visit {state.node_visits[WorkflowNode.TEXT_TO_ONTOLOGY] + 1}/{state.max_retries}"
     )
-    has_no_seed_ontology = state.current_ontology.is_null()
+    current = state.current_ontology or state.ontology_snapshot
+    has_no_seed_ontology = current.is_null()
 
     if has_no_seed_ontology:
         return await render_ontology_fresh(state, tools)
@@ -63,7 +66,9 @@ async def render_ontology(state: AgentState, tools: ToolBox) -> AgentState:
         return await render_ontology_update(state, tools)
 
 
-async def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState:
+async def render_ontology_fresh(
+    state: UnitOntologyState, tools: ToolBox
+) -> UnitOntologyState:
     """Render ontology triples into a human-readable format.
 
     This function takes the triples from the current ontology and renders them
@@ -90,7 +95,7 @@ async def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState
         prefix_instruction=prefix_instruction_fresh
     )
 
-    text_chapter = text_template.format(text=state.current_content_unit.text)
+    text_chapter = text_template.format(text=state.content_unit.text)
 
     prompt = PromptTemplate(
         template=template_prompt,
@@ -146,7 +151,9 @@ async def render_ontology_fresh(state: AgentState, tools: ToolBox) -> AgentState
         return state
 
 
-async def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentState:
+async def render_ontology_update(
+    state: UnitOntologyState, tools: ToolBox
+) -> UnitOntologyState:
     """Render ontology triples into a human-readable format.
 
     This function takes the triples from the current ontology and renders them
@@ -154,21 +161,22 @@ async def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentStat
     understand.
 
     Args:
-        state: The current agent state containing the ontology to render.
+        state: The current unit ontology state containing the ontology to render.
         tools: The toolbox instance providing utility functions.
 
     Returns:
-        AgentState: Updated state with rendered triples.
+        UnitOntologyState: Updated state with rendered triples.
     """
 
     parser = PydanticOutputParser(pydantic_object=GraphUpdate)
-    ontology_iri = state.current_ontology.iri
-    ontology_desc = state.current_ontology.describe()
+    current = state.current_ontology or state.ontology_snapshot
+    ontology_iri = current.iri
+    ontology_desc = current.describe()
     intro_instruction = intro_instruction_update.format(
         ontology_iri=ontology_iri, ontology_desc=ontology_desc
     )
     ontology_chapter = ontology_template.format(
-        ontology_ttl=state.current_ontology.graph.serialize(format="turtle")
+        ontology_ttl=current.graph.serialize(format="turtle")
     )
     output_instruction = output_instruction_sparql
     improvement_instruction_str = render_suggestions_prompt(
@@ -176,11 +184,9 @@ async def render_ontology_update(state: AgentState, tools: ToolBox) -> AgentStat
     )
 
     general_ontology_instruction_str = general_ontology_instruction.format(
-        prefix_instruction=prefix_instruction.format(
-            ontology_prefix=state.current_ontology.prefix
-        )
+        prefix_instruction=prefix_instruction.format(ontology_prefix=current.prefix)
     )
-    text_chapter = text_template.format(text=state.current_content_unit.text)
+    text_chapter = text_template.format(text=state.content_unit.text)
 
     prompt = PromptTemplate(
         template=template_prompt,
