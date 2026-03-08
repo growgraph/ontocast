@@ -19,18 +19,23 @@ graph TD;
 	Convert\20to\20Markdown(Convert to Markdown)
 	Chunk\20Text(Chunk Text)
 	Select\20Ontology(Select Ontology)
+	Bootstrap\20Ontology(Bootstrap Ontology)
 	Update\20Ontology(Update Ontology)
 	Normalize\20Ontology\20Updates(Normalize Ontology Updates)
+	Consolidate\20Ontology(Consolidate Ontology)
 	Render\20Facts(Render Facts)
 	Merge\20Facts(Merge Facts)
 	Serialize(Serialize)
 	__end__([<p>__end__</p>]):::last
+	Bootstrap\20Ontology --> Update\20Ontology;
 	Chunk\20Text --> Select\20Ontology;
+	Consolidate\20Ontology -.-> Render\20Facts;
+	Consolidate\20Ontology -.-> Serialize;
 	Convert\20to\20Markdown --> Chunk\20Text;
 	Merge\20Facts --> Serialize;
-	Normalize\20Ontology\20Updates -.-> Render\20Facts;
-	Normalize\20Ontology\20Updates -.-> Serialize;
+	Normalize\20Ontology\20Updates --> Consolidate\20Ontology;
 	Render\20Facts --> Merge\20Facts;
+	Select\20Ontology -.-> Bootstrap\20Ontology;
 	Select\20Ontology -.-> Render\20Facts;
 	Select\20Ontology -.-> Update\20Ontology;
 	Update\20Ontology --> Normalize\20Ontology\20Updates;
