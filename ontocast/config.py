@@ -8,7 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ontocast.onto.constants import DEFAULT_DATASET, DEFAULT_ONTOLOGIES_DATASET
@@ -128,8 +128,11 @@ class ServerConfig(BaseSettings):
         default=1000, description="Recursion limit for workflow"
     )
     estimated_chunks: int = Field(default=30, description="Estimated number of chunks")
-    max_visits: int = Field(
-        default=3, description="Maximum number of visits allowed per node"
+    max_visits_per_node: int = Field(
+        default=1,
+        ge=1,
+        description="Maximum number of visits allowed per node",
+        validation_alias=AliasChoices("max_visits_per_node", "max_visits"),
     )
     render_mode: RenderMode = Field(
         default=RenderMode.ONTOLOGY_AND_FACTS,

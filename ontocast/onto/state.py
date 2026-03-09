@@ -295,9 +295,7 @@ class AgentState(BasePydanticModel):
 
         has_current_content_unit = CHUNK_NULL_IRI not in self.current_content_unit.iri
         current_content_unit_number = 1 if has_current_content_unit else 0
-        total_content_units = len(self.content_units) + (
-            1 if has_current_content_unit else 0
-        )
+        total_content_units = len(self.content_units)
         return current_content_unit_number, total_content_units
 
     def get_content_unit_progress_string(self) -> str:

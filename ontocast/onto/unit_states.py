@@ -35,7 +35,7 @@ class UnitState(BasePydanticModel):
     ontology_snapshot: Ontology = Field(description="Immutable ontology snapshot")
     suggestions: Suggestions = Field(default_factory=Suggestions)
     budget_tracker: BudgetTracker = Field(default_factory=BudgetTracker)
-    max_retries: int = Field(default=3, ge=1)
+    max_visits_per_node: int = Field(default=1, ge=1)
 
     status: Status = Field(default=Status.NOT_VISITED)
     failure_stage: FailureStage | None = Field(default=None)
@@ -61,7 +61,7 @@ class UnitState(BasePydanticModel):
 
     def get_content_unit_progress_string(self) -> str:
         """Progress string for logging (single unit context)."""
-        return "content unit 1/1"
+        return "content unit"
 
     def set_node_status(self, node: WorkflowNode, status: Status) -> None:
         """Set workflow node status (for logging)."""
@@ -139,6 +139,10 @@ class UnitFactsState(UnitState):
     facts_user_instruction: str = Field(default="")
     facts_updates: list[GraphUpdate] = Field(default_factory=list)
 
+    def get_content_unit_progress_string(self) -> str:
+        """Progress string for logging with content unit index."""
+        return f"content unit {self.content_unit.index + 1}"
+
     def update_facts(self) -> None:
         """Apply facts_updates to content_unit.graph and clear the list."""
         if not self.facts_updates:
@@ -162,6 +166,10 @@ class UnitOntologyState(UnitState):
     ontology_updates_applied: list[GraphUpdate] = Field(default_factory=list)
     current_domain: str = Field(default=DEFAULT_DOMAIN)
     ontology_max_triples: int | None = Field(default=None)
+
+    def get_content_unit_progress_string(self) -> str:
+        """Progress string for logging with content unit index."""
+        return f"content unit {self.content_unit.index + 1}"
 
     def model_post_init(self, __context) -> None:
         """Initialize mutable ontology state from immutable snapshot."""

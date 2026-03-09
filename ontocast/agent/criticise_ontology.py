@@ -43,7 +43,7 @@ async def criticise_ontology(
 
     progress_info = state.get_content_unit_progress_string()
     logger.info(
-        f"Ontology Critic for {progress_info}: visit {state.node_visits[WorkflowNode.CRITICISE_ONTOLOGY] + 1}/{state.max_retries}"
+        f"Ontology Critic for {progress_info}: visit {state.node_visits[WorkflowNode.CRITICISE_ONTOLOGY]}/{state.max_visits_per_node}"
     )
 
     if state.content_unit is None:

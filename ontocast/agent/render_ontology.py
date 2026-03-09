@@ -54,7 +54,7 @@ async def render_ontology(
 
     progress_info = state.get_content_unit_progress_string()
     logger.info(
-        f"Ontology Renderer for {progress_info}: visit {state.node_visits[WorkflowNode.TEXT_TO_ONTOLOGY] + 1}/{state.max_retries}"
+        f"Ontology Renderer for {progress_info}: visit {state.node_visits[WorkflowNode.TEXT_TO_ONTOLOGY]}/{state.max_visits_per_node}"
     )
     current = state.current_ontology or state.ontology_snapshot
     # Guardrail for map/reduce flow: if a non-null snapshot exists, stay in update mode.

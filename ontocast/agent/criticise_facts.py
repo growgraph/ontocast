@@ -50,7 +50,7 @@ async def criticise_facts(
 
     progress_info = state.get_content_unit_progress_string()
     logger.info(
-        f"Facts critic for {progress_info}: visit {state.node_visits[WorkflowNode.CRITICISE_FACTS] + 1}/{state.max_retries}"
+        f"Facts critic for {progress_info}: visit {state.node_visits[WorkflowNode.CRITICISE_FACTS]}/{state.max_visits_per_node}"
     )
 
     llm_tool = await tools.get_llm_tool(state.budget_tracker)

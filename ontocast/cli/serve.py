@@ -52,7 +52,7 @@ def calculate_recursion_limit(
     head_chunks: int | None,
     server_config: ServerConfig,
 ) -> int:
-    """Calculate the recursion limit based on max_visits and head_chunks.
+    """Calculate the recursion limit based on max visits and head chunks.
 
     Args:
         head_chunks: Optional maximum number of chunks to process
@@ -64,13 +64,13 @@ def calculate_recursion_limit(
         # If we know the number of chunks, calculate exact limit
         return max(
             server_config.base_recursion_limit,
-            server_config.max_visits * head_chunks * 10,
+            server_config.max_visits_per_node * head_chunks * 10,
         )
     else:
         # If we don't know chunks, use a conservative estimate
         return max(
             server_config.base_recursion_limit,
-            server_config.max_visits * server_config.estimated_chunks * 10,
+            server_config.max_visits_per_node * server_config.estimated_chunks * 10,
         )
 
 
@@ -345,7 +345,7 @@ def create_app(
 
             initial_state = AgentState(
                 files=files,
-                max_visits=server_config.max_visits,
+                max_visits=server_config.max_visits_per_node,
                 max_chunks=head_chunks,
                 render_mode=render_mode_value,
                 ontology_max_triples=server_config.ontology_max_triples,
@@ -532,7 +532,7 @@ def run(
                 try:
                     state = AgentState(
                         files={file_path.as_posix(): file_path.read_bytes()},
-                        max_visits=config.server.max_visits,
+                        max_visits=config.server.max_visits_per_node,
                         max_chunks=head_chunks,
                         render_mode=config.server.render_mode,
                         dataset=config.tool_config.fuseki.dataset,

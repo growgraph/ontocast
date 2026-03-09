@@ -52,7 +52,7 @@ def make_bootstrap_ontology_node(tools: ToolBox):
             ontology_snapshot=Ontology(),
             ontology_user_instruction=state.ontology_user_instruction,
             budget_tracker=state.budget_tracker,
-            max_retries=tools.config.server.parallel_ontology_retries,
+            max_visits_per_node=tools.config.server.max_visits_per_node,
             current_domain=state.current_domain,
             ontology_max_triples=tools.config.server.ontology_max_triples,
         )
@@ -94,7 +94,7 @@ def make_render_ontology_node(tools: ToolBox):
                     ontology_snapshot=state.current_ontology,
                     ontology_user_instruction=state.ontology_user_instruction,
                     budget_tracker=base_state.budget_tracker,
-                    max_retries=tools.config.server.parallel_ontology_retries,
+                    max_visits_per_node=tools.config.server.max_visits_per_node,
                     current_domain=state.current_domain,
                     ontology_max_triples=tools.config.server.ontology_max_triples,
                 )
@@ -194,7 +194,7 @@ def make_consolidate_ontology_node(tools: ToolBox):
             ontology_snapshot=state.current_ontology,
             ontology_user_instruction=ontology_user_instruction,
             budget_tracker=state.budget_tracker,
-            max_retries=1,
+            max_visits_per_node=1,
             current_domain=state.current_domain,
             ontology_max_triples=tools.config.server.ontology_max_triples,
         )
@@ -236,7 +236,7 @@ def make_render_facts_node(tools: ToolBox):
                     ontology_snapshot=state.current_ontology,
                     facts_user_instruction=state.facts_user_instruction,
                     budget_tracker=base_state.budget_tracker,
-                    max_retries=tools.config.server.parallel_facts_retries,
+                    max_visits_per_node=tools.config.server.max_visits_per_node,
                 )
                 result = await facts_loop(facts_state, atomic_tools)
                 return unit_index, result
@@ -278,6 +278,11 @@ def make_merge_facts_node(tools: ToolBox):
         state.aggregated_facts = tools.aggregator.aggregate_graphs(
             units=state.parallel_facts_units
         )
+        if len(state.aggregated_facts) == 0:
+            logger.warning(
+                "Facts aggregation produced an empty graph from "
+                f"{len(state.parallel_facts_units)} successful unit(s)."
+            )
         if state.source_url and state.doc_namespace:
             state.aggregated_facts.add(
                 (URIRef(state.doc_namespace), DCTERMS.source, URIRef(state.source_url))
