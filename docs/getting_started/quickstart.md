@@ -46,7 +46,7 @@ OntoCast uses a hierarchical configuration system with environment variables. Cr
 # Domain configuration (used for URI generation) 
 CURRENT_DOMAIN=https://example.com
 PORT=8999
-LLM_TEMPERATURE=0.1
+LLM_TEMPERATURE=0.0
 
 # LLM Configuration
 LLM_PROVIDER=openai
@@ -55,8 +55,14 @@ LLM_MODEL_NAME=gpt-4o-mini
 
 # Server Configuration
 MAX_VISITS=3
-RECURSION_LIMIT=1000
+BASE_RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
+RENDER_MODE=ontology_and_facts
+ONTOLOGY_MAX_TRIPLES=50000
+PARALLEL_WORKERS=4
+PARALLEL_FACTS_RETRIES=3
+PARALLEL_ONTOLOGY_RETRIES=3
+ENABLE_ONTOLOGY_CONSOLIDATION=false
 
 # Backend Configuration (auto-detected)
 FUSEKI_URI=http://localhost:3032/test
@@ -68,7 +74,7 @@ ONTOCAST_WORKING_DIRECTORY=/path/to/working/directory
 ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files
 ONTOCAST_CACHE_DIR=/path/to/cache/directory
 
-# Triple Store Configuration (Optional)
+# Triple Store Configuration (optional)
 # For Neo4j
 NEO4J_URI=bolt://localhost:7687
 NEO4J_AUTH=username:password
@@ -77,11 +83,16 @@ NEO4J_AUTH=username:password
 FUSEKI_URI=http://localhost:3030
 FUSEKI_AUTH=username:password
 FUSEKI_DATASET=dataset_name
+FUSEKI_ONTOLOGIES_DATASET=ontologies
 
-# Skip ontology critique (optional)
-SKIP_ONTOLOGY_DEVELOPMENT=false
-# Maximum triples allowed in ontology graph (optional, set empty for unlimited)
-ONTOLOGY_MAX_TRIPLES=10000
+# Optional aggregation controls
+AGG_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+AGG_SIMILARITY_THRESHOLD=0.80
+
+# Optional web-search grounding
+WEB_SEARCH_ENABLED=false
+WEB_SEARCH_PROVIDER=duckduckgo
+WEB_SEARCH_TOP_K=3
 ```
 
 #### Alternative: Ollama Configuration
@@ -144,8 +155,9 @@ OntoCast uses a hierarchical configuration system:
 | `ONTOCAST_WORKING_DIRECTORY` + `ONTOCAST_ONTOLOGY_DIRECTORY` | Use filesystem as main triple store | Auto-detected |
 | `ONTOCAST_ONTOLOGY_DIRECTORY` | Ontology files directory | Provide seed ontologies |
 | `MAX_VISITS` | Maximum visits per node | 3 |
-| `SKIP_ONTOLOGY_DEVELOPMENT` | Skip ontology critique | false |
-| `ONTOLOGY_MAX_TRIPLES` | Maximum triples allowed in ontology graph | 10000 |
+| `BASE_RECURSION_LIMIT` | Base recursion limit for workflow | 1000 |
+| `ONTOLOGY_MAX_TRIPLES` | Maximum triples allowed in ontology graph | 50000 |
+| `ENABLE_ONTOLOGY_CONSOLIDATION` | Run ontology consolidation pass | false |
 
 ## Next Steps
 

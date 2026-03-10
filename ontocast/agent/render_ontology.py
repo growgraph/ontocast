@@ -15,6 +15,7 @@ from langchain_core.prompts import PromptTemplate
 from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import GraphUpdateRenderReport, OntologyRenderReport
+from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitOntologyState
 from ontocast.prompt.common import (
     ontology_template,
@@ -34,6 +35,22 @@ from ontocast.prompt.render_ontology import (
 from ontocast.tool.atomic import AtomicToolBox
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_known_prefixes(state: UnitOntologyState) -> dict[str, str]:
+    """Extract ontology prefixes used to patch missing declarations in LLM TTL output."""
+    current = state.current_ontology or state.ontology_snapshot
+    known_prefixes: dict[str, str] = {}
+
+    if current and current.graph:
+        for prefix, namespace_uri in current.graph.namespaces():
+            if prefix:  # Skip empty prefixes
+                known_prefixes[prefix] = str(namespace_uri)
+
+    if current.prefix and current.namespace:
+        known_prefixes[current.prefix] = current.namespace
+
+    return known_prefixes
 
 
 async def render_ontology(
@@ -218,9 +235,13 @@ async def render_ontology_update(
             "format_instructions",
         ],
     )
+    known_prefixes = _extract_known_prefixes(state)
 
     try:
         llm_tool = await tools.get_llm_tool(state.budget_tracker)
+        # Set known prefixes in context before parsing
+        RDFGraph.set_known_prefixes(known_prefixes if known_prefixes else None)
+
         render_report: GraphUpdateRenderReport = await call_llm_with_retry(
             llm_tool=llm_tool,
             prompt=prompt,
@@ -263,3 +284,6 @@ async def render_ontology_update(
         state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.FAILED)
         state.set_failure(FailureStage.GENERATE_SPARQL_UPDATE_FOR_ONTOLOGY, str(e))
         return state
+    finally:
+        # Clear the context after parsing
+        RDFGraph.set_known_prefixes(None)

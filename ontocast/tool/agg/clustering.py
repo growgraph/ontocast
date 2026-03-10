@@ -27,8 +27,8 @@ class EntityClusterer:
 
     def __init__(
         self,
-        embedding_model: str = "all-MiniLM-L6-v2",
-        similarity_threshold: float = 0.85,
+        embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2",
+        similarity_threshold: float = 0.80,
         min_cluster_size: int = 1,
     ):
         """Initialize the entity clusterer.

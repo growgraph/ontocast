@@ -51,12 +51,15 @@ evaluation_instruction = f"""\n\n
    - Every class, property, and individual using ontology prefixes (fca:, onto:, schema:, etc.) must be defined in its respective ontology
    - Invented entities using ontology prefixes are errors
    - Fix: REMOVE invented entities or REPLACE with semantically similar existing entities from available ontologies
+   - Treat morphology/casing variants of ontology terms as likely mistakes (e.g. `AppealCourt_Rouen` vs `AppealCourtRouen`) unless the variant exists explicitly in ontology
+   - For multilingual variants, prefer the exact canonical ontology IRI that exists in ontology; do not allow translated/reformatted ontology-prefixed IRIs as new entities
 
 # VERIFICATION CHECKLIST
 
 Before finalizing your critique:
 
 1. For every triple using a non-cd: prefix, confirm the entity exists in the corresponding ontology
+   - If it does not exist exactly, flag and propose replacement with the closest existing canonical ontology IRI
 
 2. For every fact entity, confirm it uses `cd:` with `<{DEFAULT_IRI}>`
 

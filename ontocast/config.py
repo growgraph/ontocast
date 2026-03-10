@@ -337,6 +337,26 @@ class WebSearchConfig(BaseSettings):
     )
 
 
+class AggregationConfig(BaseSettings):
+    """Aggregation settings for entity clustering/disambiguation."""
+
+    embedding_model: str = Field(
+        default="paraphrase-multilingual-MiniLM-L12-v2",
+        description="Sentence-transformers model name used for entity embeddings.",
+    )
+    similarity_threshold: float = Field(
+        default=0.80,
+        ge=0.0,
+        le=1.0,
+        description="Cosine similarity threshold used by DBSCAN clustering.",
+    )
+
+    model_config = SettingsConfigDict(
+        env_prefix="AGG_",
+        case_sensitive=False,
+    )
+
+
 class ToolConfig(BaseSettings):
     """Configuration for tools (LLM, triple stores, paths, chunking)."""
 
@@ -347,6 +367,7 @@ class ToolConfig(BaseSettings):
     fuseki: FusekiConfig = Field(default_factory=FusekiConfig)
     domain: DomainConfig = Field(default_factory=DomainConfig)
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+    aggregation: AggregationConfig = Field(default_factory=AggregationConfig)
 
 
 class Config(BaseSettings):

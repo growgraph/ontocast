@@ -410,49 +410,18 @@ class AgentState(BasePydanticModel):
         if not self.ontology_updates:
             return self.current_ontology
 
-        # Create a copy of the current ontology
-        from copy import deepcopy
-
-        updated_ontology = deepcopy(self.current_ontology)
-
         # Use the generalized function to update the graph
         updated_graph, was_applied = self.render_updated_graph(
             self.current_ontology.graph,
             self.ontology_updates,
             max_triples=self.ontology_max_triples,
         )
-        updated_ontology.graph = updated_graph
 
         # If graph wasn't updated (limit exceeded), return original ontology
         if not was_applied:
             return self.current_ontology
 
-        # Set current hash as parent and generate new hash
-        if self.current_ontology.hash:
-            # Set current hash as parent
-            updated_ontology.parent_hashes = [self.current_ontology.hash]
-        else:
-            # If no current hash, this is a root ontology with no parents
-            updated_ontology.parent_hashes = []
-
-        # Set created_at for new version if not already set
-        if not updated_ontology.created_at:
-            from datetime import datetime, timezone
-
-            updated_ontology.created_at = datetime.now(timezone.utc)
-
-        # Compute new hash for the updated ontology
-        # Clear existing hash first so it gets recomputed
-        updated_ontology.hash = None
-        updated_ontology._compute_and_set_hash()
-
-        # If hash computation failed and we have a parent, use parent hash as fallback
-        if not updated_ontology.hash and updated_ontology.parent_hashes:
-            updated_ontology.hash = updated_ontology.parent_hashes[0]
-
-        # Sync properties to update object fields after graph changes
-        updated_ontology.sync_properties_to_graph()
-        return updated_ontology
+        return self.current_ontology.derive_updated_version(updated_graph)
 
     def update_ontology(self) -> None:
         """Update the current ontology with all GraphUpdate objects and clear the updates list.

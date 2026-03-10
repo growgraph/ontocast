@@ -14,6 +14,31 @@ from ontocast.onto.sparql_models import (
 )
 
 
+def test_rdfgraph_recovers_dangling_semicolon_at_eof() -> None:
+    """RDFGraph should recover from common LLM-truncated Turtle at EOF."""
+    ttl = """
+    @prefix ex: <http://example.org/> .
+    @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+    ex:Case85_968 a ex:Appeal ;
+        ex:appealsTo ex:Cassation ;
+    """
+
+    graph = RDFGraph._from_turtle_str(ttl)
+
+    assert len(graph) == 2
+    assert (
+        URIRef("http://example.org/Case85_968"),
+        URIRef("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+        URIRef("http://example.org/Appeal"),
+    ) in graph
+    assert (
+        URIRef("http://example.org/Case85_968"),
+        URIRef("http://example.org/appealsTo"),
+        URIRef("http://example.org/Cassation"),
+    ) in graph
+
+
 def test_graph_update_with_language_tags():
     """Test GraphUpdate with language-tagged literals."""
     # Create initial RDFGraph

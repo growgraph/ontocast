@@ -474,6 +474,54 @@ class Ontology(OntologyPropertiesWithLineage):
                 if str(parent_hash_uri) not in existing_parent_uris:
                     g.add((onto_iri, PROV.wasDerivedFrom, parent_hash_uri))
 
+    def _resolve_ontology_subject(self) -> URIRef | None:
+        """Resolve ontology subject used for metadata triples."""
+        onto_subjects = [
+            subj for subj, _, obj in self.graph.triples((None, RDF.type, OWL.Ontology))
+        ]
+        if onto_subjects:
+            first_subject = onto_subjects[0]
+            if isinstance(first_subject, URIRef):
+                return first_subject
+        if self.iri and self.iri != ONTOLOGY_NULL_IRI:
+            return URIRef(self.iri)
+        return None
+
+    def _clear_lineage_metadata_triples(self) -> None:
+        """Remove lineage metadata triples before writing a new version."""
+        onto_iri = self._resolve_ontology_subject()
+        if onto_iri is None:
+            return
+
+        for _, _, obj in list(self.graph.triples((onto_iri, DCTERMS.created, None))):
+            self.graph.remove((onto_iri, DCTERMS.created, obj))
+
+        for _, _, obj in list(
+            self.graph.triples((onto_iri, PROV.wasDerivedFrom, None))
+        ):
+            self.graph.remove((onto_iri, PROV.wasDerivedFrom, obj))
+
+        for _, _, obj in list(self.graph.triples((onto_iri, DCTERMS.identifier, None))):
+            if isinstance(obj, Literal) and str(obj).startswith("hash:"):
+                self.graph.remove((onto_iri, DCTERMS.identifier, obj))
+
+    def derive_updated_version(self, updated_graph: RDFGraph) -> "Ontology":
+        """Create a new ontology version from an updated graph snapshot."""
+        from copy import deepcopy
+        from datetime import datetime, timezone
+
+        updated_ontology = deepcopy(self)
+        updated_ontology.graph = updated_graph
+        updated_ontology.parent_hashes = [self.hash] if self.hash else []
+        updated_ontology.created_at = datetime.now(timezone.utc)
+        updated_ontology.hash = None
+        updated_ontology._clear_lineage_metadata_triples()
+        updated_ontology._compute_and_set_hash()
+        if not updated_ontology.hash and updated_ontology.parent_hashes:
+            updated_ontology.hash = updated_ontology.parent_hashes[0]
+        updated_ontology.sync_properties_to_graph()
+        return updated_ontology
+
     def _compute_and_set_hash(self) -> None:
         """Compute the hash of the ontology graph and set it.
 

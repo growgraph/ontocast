@@ -39,6 +39,10 @@ facts_instruction_template = """\n\n
    - Check all language variants of `rdfs:label` and alternative names
    - If a matching entity exists in the domain ontology, use its IRI directly - DO NOT create a duplicate in the `cd:` namespace
    - Only create `cd:` entities for NEW facts not already defined in the ontology
+   - NEVER mint new entities under the ontology prefix (`{ontology_prefix}:`) unless that exact IRI already exists in the provided ontology
+   - Preserve canonical ontology IRIs exactly as given (character-for-character): no translation, no transliteration, no snake_case/camelCase changes, no suffix/prefix changes
+   - Cross-lingual mentions (e.g. French/English variants) MUST be linked to the existing canonical ontology IRI when semantically equivalent
+   - If no ontology entity can be verified, create a `cd:` entity instead of inventing a new ontology-prefixed IRI
 7. Maximize atomicity: decompose complex facts and complex literals into simple subject-predicate-object statements (e.g. decompose person's  first name and last name).
 8. Literals Handling:
     - Use appropriate XSD datatypes: xsd:integer, xsd:decimal, xsd:float, xsd:date, xsd:dateTime
@@ -88,6 +92,7 @@ Your task is to critically evaluate and improve the triples:
 5. Verify every change - Before finalizing, double-check that:
    - Each triple accurately represents information from the source text
    - Existing ontology entities are used instead of creating new cd: entities
+   - No ontology-prefixed entity was invented or renamed
    - All OPERATIONAL GUIDELINES are satisfied
    - The overall graph is more complete and accurate than before
 

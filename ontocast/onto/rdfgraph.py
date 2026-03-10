@@ -260,8 +260,36 @@ class RDFGraph(Graph):
         turtle_str = bytes(turtle_str, "utf-8").decode("unicode_escape")
         patched_turtle = cls._ensure_prefixes(turtle_str)
         g = cls()
-        g.parse(data=patched_turtle, format="turtle")
-        return g
+        try:
+            g.parse(data=patched_turtle, format="turtle")
+            return g
+        except Exception as parse_error:
+            # Typical LLM truncation: dangling ';' or ',' at EOF in property list.
+            if "EOF found when expected verb in property list" not in str(parse_error):
+                raise
+            repaired_turtle = cls._repair_truncated_turtle(patched_turtle)
+            if repaired_turtle == patched_turtle:
+                raise
+            logger.warning(
+                "Recovering truncated Turtle by closing dangling property list punctuation."
+            )
+            repaired_graph = cls()
+            repaired_graph.parse(data=repaired_turtle, format="turtle")
+            return repaired_graph
+
+    @staticmethod
+    def _repair_truncated_turtle(turtle_str: str) -> str:
+        """Repair common LLM Turtle truncation patterns.
+
+        This only applies a minimal fix when content ends with dangling property-list
+        punctuation (';' or ',') and no terminating '.'.
+        """
+        stripped = turtle_str.rstrip()
+        if not stripped:
+            return turtle_str
+        if stripped.endswith(";") or stripped.endswith(","):
+            return f"{stripped[:-1].rstrip()} .\n"
+        return turtle_str
 
     @classmethod
     def set_known_prefixes(cls, prefixes: dict[str, str] | None) -> None:

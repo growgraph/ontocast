@@ -192,21 +192,7 @@ class UnitOntologyState(UnitState):
         if not was_applied:
             return
 
-        updated_ontology = deepcopy(self.current_ontology)
-        updated_ontology.graph = updated_graph
-        if self.current_ontology.hash:
-            updated_ontology.parent_hashes = [self.current_ontology.hash]
-        else:
-            updated_ontology.parent_hashes = []
-        if not updated_ontology.created_at:
-            from datetime import datetime, timezone
-
-            updated_ontology.created_at = datetime.now(timezone.utc)
-        updated_ontology.hash = None
-        updated_ontology._compute_and_set_hash()
-        if not updated_ontology.hash and updated_ontology.parent_hashes:
-            updated_ontology.hash = updated_ontology.parent_hashes[0]
-        updated_ontology.sync_properties_to_graph()
+        updated_ontology = self.current_ontology.derive_updated_version(updated_graph)
         self.ontology_updates_applied += self.ontology_updates
         self.current_ontology = updated_ontology
         self.ontology_updates = []

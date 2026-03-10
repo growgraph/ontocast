@@ -157,7 +157,10 @@ class ToolBox:
         self.chunker: ChunkerTool = ChunkerTool(
             chunk_config=tool_config.chunk_config, cache=self.shared_cache
         )
-        self.aggregator: EmbeddingBasedAggregator = EmbeddingBasedAggregator()
+        self.aggregator: EmbeddingBasedAggregator = EmbeddingBasedAggregator(
+            embedding_model=tool_config.aggregation.embedding_model,
+            similarity_threshold=tool_config.aggregation.similarity_threshold,
+        )
 
         # SPARQL, version management, and diff tools
         self.sparql_tool: SPARQLTool = SPARQLTool(

@@ -1,6 +1,7 @@
 """Reducers for parallel map/reduce workflow outputs."""
 
 import logging
+from typing import Protocol
 
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.ontology import Ontology
@@ -12,9 +13,18 @@ from ontocast.toolbox import ToolBox
 logger = logging.getLogger(__name__)
 
 
+class AggregatorProtocol(Protocol):
+    def aggregate_graphs(self, units: list[ContentUnit]) -> RDFGraph: ...
+
+
+class NormalizeToolsProtocol(Protocol):
+    @property
+    def aggregator(self) -> AggregatorProtocol: ...
+
+
 def normalize_ontology_units(
     units: list[ContentUnit],
-    tools: ToolBox,
+    tools: ToolBox | NormalizeToolsProtocol,
     base_ontology: Ontology | None = None,
     require_base: bool = False,
 ) -> tuple[Ontology, list[GraphUpdate]]:
@@ -60,8 +70,12 @@ def normalize_ontology_units(
             updated_graph, _ = AgentState.render_updated_graph(
                 base_graph, [merged_update], max_triples=None
             )
-            result = base_ontology.model_copy(deep=True)
-            result.graph = updated_graph
+            graph_changed = set(updated_graph) != set(base_graph)
+            if graph_changed:
+                result = base_ontology.derive_updated_version(updated_graph)
+            else:
+                result = base_ontology.model_copy(deep=True)
+                result.graph = updated_graph
         else:
             result = base_ontology.model_copy(deep=True)
         result.sync_properties_to_graph()

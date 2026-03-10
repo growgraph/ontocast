@@ -34,6 +34,24 @@ from ontocast.tool.atomic import AtomicToolBox
 logger = logging.getLogger(__name__)
 
 
+def _extract_known_prefixes(state: UnitFactsState) -> dict[str, str]:
+    """Extract ontology prefixes used to patch missing declarations in LLM TTL output."""
+    known_prefixes: dict[str, str] = {}
+
+    if state.ontology_snapshot and state.ontology_snapshot.graph:
+        for prefix, namespace_uri in state.ontology_snapshot.graph.namespaces():
+            if prefix:  # Skip empty prefixes
+                known_prefixes[prefix] = str(namespace_uri)
+
+    # Also add the ontology prefix explicitly if available.
+    if state.ontology_snapshot.prefix and state.ontology_snapshot.namespace:
+        known_prefixes[state.ontology_snapshot.prefix] = (
+            state.ontology_snapshot.namespace
+        )
+
+    return known_prefixes
+
+
 async def render_facts(state: UnitFactsState, tools: AtomicToolBox) -> UnitFactsState:
     """Structured hybrid facts renderer with Turtle/SPARQL decision logic.
 
@@ -155,19 +173,7 @@ async def render_facts_fresh(
     llm_tool = await tools.get_llm_tool(state.budget_tracker)
     parser = PydanticOutputParser(pydantic_object=FactsRenderReport)
 
-    # Extract prefixes from the ontology graph to help with parsing LLM responses
-    # that may use these prefixes without declaring them
-    known_prefixes = {}
-    if state.ontology_snapshot and state.ontology_snapshot.graph:
-        for prefix, namespace_uri in state.ontology_snapshot.graph.namespaces():
-            if prefix:  # Skip empty prefixes
-                known_prefixes[prefix] = str(namespace_uri)
-
-    # Also add the ontology prefix explicitly if we know it
-    if state.ontology_snapshot.prefix and state.ontology_snapshot.namespace:
-        known_prefixes[state.ontology_snapshot.prefix] = (
-            state.ontology_snapshot.namespace
-        )
+    known_prefixes = _extract_known_prefixes(state)
 
     prompt_data = _prepare_prompt_data(state)
     prompt_data_fresh = {
@@ -244,8 +250,12 @@ async def render_facts_update(
     }
     prompt_data.update(prompt_data_update)
     prompt = _create_prompt_template()
+    known_prefixes = _extract_known_prefixes(state)
 
     try:
+        # Set known prefixes in context before parsing
+        RDFGraph.set_known_prefixes(known_prefixes if known_prefixes else None)
+
         render_report: GraphUpdateRenderReport = await call_llm_with_retry(
             llm_tool=llm_tool,
             prompt=prompt,
@@ -279,3 +289,6 @@ async def render_facts_update(
         return _handle_rendering_error(
             state, e, FailureStage.GENERATE_SPARQL_UPDATE_FOR_FACTS
         )
+    finally:
+        # Clear the context after parsing
+        RDFGraph.set_known_prefixes(None)

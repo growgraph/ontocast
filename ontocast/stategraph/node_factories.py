@@ -106,27 +106,39 @@ def make_render_ontology_node(tools: ToolBox):
         ordered_results = sorted(raw_results, key=lambda item: item[0])
 
         ontology_units: list[ContentUnit] = []
-        failed_count = 0
+        failed_without_output_count = 0
+        salvaged_failed_count = 0
         for _, result in ordered_results:
-            if result.status == Status.SUCCESS:
-                content_unit = result.content_unit
-                delta_graph = build_ontology_delta_graph(result)
-                ontology_units.append(
-                    ContentUnit(
-                        text=content_unit.text,
-                        index=content_unit.index,
-                        doc_iri=content_unit.doc_iri,
-                        graph=delta_graph,
-                        type=OutputType.ONTOLOGIES,
-                    )
-                )
-            else:
-                failed_count += 1
+            has_output = bool(result.all_updates) or (
+                result.current_ontology.hash != result.ontology_snapshot.hash
+            )
+            if not has_output:
+                failed_without_output_count += 1
+                continue
 
-        if failed_count:
+            content_unit = result.content_unit
+            delta_graph = build_ontology_delta_graph(result)
+            ontology_units.append(
+                ContentUnit(
+                    text=content_unit.text,
+                    index=content_unit.index,
+                    doc_iri=content_unit.doc_iri,
+                    graph=delta_graph,
+                    type=OutputType.ONTOLOGIES,
+                )
+            )
+            if result.status != Status.SUCCESS:
+                salvaged_failed_count += 1
+
+        if failed_without_output_count:
             logger.warning(
-                "Parallel ontology map failed for "
-                f"{failed_count}/{len(state.content_units)} unit(s)"
+                "Parallel ontology map failed without usable output for "
+                f"{failed_without_output_count}/{len(state.content_units)} unit(s)"
+            )
+        if salvaged_failed_count:
+            logger.warning(
+                "Parallel ontology map salvaged output from non-converged loop(s): "
+                f"{salvaged_failed_count}/{len(state.content_units)} unit(s)"
             )
 
         state.ontology_units = ontology_units
@@ -246,17 +258,27 @@ def make_render_facts_node(tools: ToolBox):
         ordered_results = sorted(raw_results, key=lambda item: item[0])
 
         facts_units: list[ContentUnit] = []
-        failed_count = 0
+        failed_without_output_count = 0
+        salvaged_failed_count = 0
         for _, result in ordered_results:
-            if result.status == Status.SUCCESS:
-                facts_units.append(result.content_unit)
-            else:
-                failed_count += 1
+            has_output = len(result.content_unit.graph) > 0
+            if not has_output:
+                failed_without_output_count += 1
+                continue
 
-        if failed_count:
+            facts_units.append(result.content_unit)
+            if result.status != Status.SUCCESS:
+                salvaged_failed_count += 1
+
+        if failed_without_output_count:
             logger.warning(
-                "Parallel facts map failed for "
-                f"{failed_count}/{len(state.content_units)} unit(s)"
+                "Parallel facts map failed without usable output for "
+                f"{failed_without_output_count}/{len(state.content_units)} unit(s)"
+            )
+        if salvaged_failed_count:
+            logger.warning(
+                "Parallel facts map salvaged output from non-converged loop(s): "
+                f"{salvaged_failed_count}/{len(state.content_units)} unit(s)"
             )
 
         state.parallel_facts_units = facts_units
@@ -276,7 +298,10 @@ def make_merge_facts_node(tools: ToolBox):
         for unit in state.parallel_facts_units:
             unit.sanitize()
         state.aggregated_facts = tools.aggregator.aggregate_graphs(
-            units=state.parallel_facts_units
+            units=state.parallel_facts_units,
+            ontology_graph=state.current_ontology.graph
+            if not state.current_ontology.is_null()
+            else None,
         )
         if len(state.aggregated_facts) == 0:
             logger.warning(

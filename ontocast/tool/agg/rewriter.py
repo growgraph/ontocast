@@ -144,8 +144,27 @@ class GraphRewriter:
 
         return rewritten
 
+    @staticmethod
+    def _merge_sameas_links(
+        merged_entities: dict[URIRef, set[URIRef]],
+        extra_sameas_links: dict[URIRef, set[URIRef]] | None,
+    ) -> dict[URIRef, set[URIRef]]:
+        """Merge mapping-derived sameAs links with explicitly provided aliases."""
+        if not extra_sameas_links:
+            return merged_entities
+        for canonical, originals in extra_sameas_links.items():
+            merged_entities[canonical].update(
+                original for original in originals if original != canonical
+            )
+        return merged_entities
+
     def merge_graphs(
-        self, graphs: list[RDFGraph], mapping: dict[URIRef, URIRef], base_namespace: str
+        self,
+        graphs: list[RDFGraph],
+        mapping: dict[URIRef, URIRef],
+        base_namespace: str,
+        extra_sameas_links: dict[URIRef, set[URIRef]] | None = None,
+        suppress_sameas_origins: set[URIRef] | None = None,
     ) -> RDFGraph:
         """Merge multiple graphs into one, applying entity mapping.
 
@@ -182,8 +201,11 @@ class GraphRewriter:
 
         # Track merged entities for owl:sameAs
         merged_entities: dict[URIRef, set[URIRef]] = defaultdict(set)
+        suppressed_origins = suppress_sameas_origins or set()
         for original, mapped in mapping.items():
             if original != mapped:
+                if original in suppressed_origins:
+                    continue
                 merged_entities[mapped].add(original)
 
         # Merge all graphs
@@ -197,6 +219,8 @@ class GraphRewriter:
                 if triple_sig not in processed_triples:
                     merged.add(triple_sig)
                     processed_triples.add(triple_sig)
+
+        merged_entities = self._merge_sameas_links(merged_entities, extra_sameas_links)
 
         # Add owl:sameAs links
         if self.add_sameas_links:
@@ -348,6 +372,8 @@ class GraphRewriter:
         self,
         units: list[ContentUnit],
         mapping: dict[URIRef, URIRef],
+        extra_sameas_links: dict[URIRef, set[URIRef]] | None = None,
+        suppress_sameas_origins: set[URIRef] | None = None,
     ) -> RDFGraph:
         """Merge multiple chunk graphs with per-triple provenance tracking.
 
@@ -410,8 +436,11 @@ class GraphRewriter:
 
         # Merged-entity tracking for owl:sameAs
         merged_entities: dict[URIRef, set[URIRef]] = defaultdict(set)
+        suppressed_origins = suppress_sameas_origins or set()
         for original, mapped in mapping.items():
             if original != mapped:
+                if original in suppressed_origins:
+                    continue
                 merged_entities[mapped].add(original)
 
         for unit in units:
@@ -451,6 +480,8 @@ class GraphRewriter:
                 )
                 if triple_sig not in reifier_map:
                     reifier_map[triple_sig] = reifier
+
+        merged_entities = self._merge_sameas_links(merged_entities, extra_sameas_links)
 
         # owl:sameAs links
         if self.add_sameas_links:

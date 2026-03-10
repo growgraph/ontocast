@@ -72,7 +72,7 @@ pip install ontocast
 Copy the example file and edit as needed:
 
 ```bash
-cp env.example .env
+cp .env.example .env
 # Edit with your values
 ```
 
@@ -92,8 +92,15 @@ LLM_BASE_URL=
 
 # Server
 PORT=8999
-RECURSION_LIMIT=1000
+BASE_RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
+MAX_VISITS=3
+RENDER_MODE=ontology_and_facts
+ONTOLOGY_MAX_TRIPLES=50000
+PARALLEL_WORKERS=4
+PARALLEL_FACTS_RETRIES=3
+PARALLEL_ONTOLOGY_RETRIES=3
+ENABLE_ONTOLOGY_CONSOLIDATION=false
 
 # Backend Configuration (auto-detected)
 FUSEKI_URI=http://localhost:3032/test
@@ -103,9 +110,19 @@ ONTOCAST_WORKING_DIRECTORY=/path/to/working
 # Optional: Triple Store Configuration (Fuseki preferred over Neo4j)
 FUSEKI_URI=http://localhost:3032/test
 FUSEKI_AUTH=admin/abc123-qwe
+FUSEKI_DATASET=dataset_name
+FUSEKI_ONTOLOGIES_DATASET=ontologies
 
 NEO4J_URI=bolt://localhost:7689
 NEO4J_AUTH=neo4j/test!passfortesting
+
+# Aggregation controls
+AGG_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+AGG_SIMILARITY_THRESHOLD=0.80
+
+# Optional web grounding
+WEB_SEARCH_ENABLED=false
+WEB_SEARCH_PROVIDER=duckduckgo
 ```
 
 ---
