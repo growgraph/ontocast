@@ -96,3 +96,46 @@ def test_compose_mappings_flattens_two_stage_mapping() -> None:
 
     assert composed[e1] == final
     assert composed[e2] == final
+
+
+def test_create_entity_uri_mapping_uses_doc_namespace_and_avoids_collisions() -> None:
+    builder = URIBuilder(base_iri=DEFAULT_IRI)
+    doc_iri = URIRef("https://example.org/docs/case-1")
+    left = URIRef("https://growgraph.dev/factsEntityA")
+    right = URIRef("https://growgraph.dev/factsEntityB")
+    left_canonical = URIRef("https://growgraph.dev/factsCanonicalA")
+    right_canonical = URIRef("https://growgraph.dev/factsCanonicalB")
+
+    shared_representation = EntityRepresentation(
+        entity=left_canonical,
+        normal_form="collision",
+        types=[],
+        properties=[],
+        labels=[],
+        representation="collision",
+        is_ontology_entity=False,
+    )
+
+    representations = {
+        left_canonical: shared_representation,
+        right_canonical: EntityRepresentation(
+            entity=right_canonical,
+            normal_form="collision",
+            types=[],
+            properties=[],
+            labels=[],
+            representation="collision",
+            is_ontology_entity=False,
+        ),
+    }
+
+    mapping = builder.create_entity_uri_mapping(
+        identity_mapping={left: left_canonical, right: right_canonical},
+        representations=representations,
+        entity_doc_iris={left: doc_iri, right: doc_iri},
+        entity_is_ontology={left_canonical: False, right_canonical: False},
+    )
+
+    assert str(mapping[left]).startswith(f"{doc_iri}/")
+    assert str(mapping[right]).startswith(f"{doc_iri}/")
+    assert mapping[left] != mapping[right]

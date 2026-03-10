@@ -6,17 +6,20 @@ disambiguation using embedding-based clustering.
 Pipeline:
 1. Collect entities from all content units
 2. Normalize entities: e -> r(e) (string representation with semantic context)
-3. Embed in parallel: r(e) -> v(e) (embedding vectors)
-4. Cluster by similarity: v(e) -> g(e) (groups of similar entities)
-5. Select representatives: g(e) -> e_rep (best entity per group)
-6. Build normalised URIs: e_rep -> e' (PascalCase/camelCase under DEFAULT_IRI)
+3. Generate embedding-based identity candidates
+4. Validate candidate merges with symbolic identity checks
+5. Select canonical identity per validated cluster
+6. Assign final URIs from canonical identity + document namespace policy
 7. Rewrite graphs: apply mapping e -> e' to all triples
 """
 
 import logging
 from difflib import SequenceMatcher
 from enum import StrEnum
+from itertools import combinations
+from typing import cast
 
+import numpy as np
 from rdflib import URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
 
@@ -70,6 +73,7 @@ class EmbeddingBasedAggregator:
         self,
         embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2",
         similarity_threshold: float = 0.80,
+        candidate_similarity_threshold: float = 0.70,
         add_sameas_links: bool = True,
         base_iri: str = DEFAULT_IRI,
     ):
@@ -78,12 +82,15 @@ class EmbeddingBasedAggregator:
         Args:
             embedding_model: Name of sentence transformer model.
             similarity_threshold: Cosine similarity threshold for clustering (0-1).
+            candidate_similarity_threshold: Lower cosine threshold used to
+                generate permissive merge candidates before symbolic validation.
             add_sameas_links: Whether to add owl:sameAs for merged entities.
             base_iri: Base IRI for fact entity URIs (default: DEFAULT_IRI).
                 Entities under this namespace are facts; everything else is
                 treated as an ontology entity and left unchanged.
         """
         self.base_iri = base_iri
+        self.candidate_similarity_threshold = candidate_similarity_threshold
 
         # Pipeline components
         self.normalizer = EntityNormalizer(facts_iri=self.base_iri)
@@ -93,7 +100,10 @@ class EmbeddingBasedAggregator:
         )
         self.selector = ClusterRepresentativeSelector()
         self.uri_builder = URIBuilder(base_iri=self.base_iri)
-        self.rewriter = GraphRewriter(add_sameas_links=add_sameas_links)
+        self.rewriter = GraphRewriter(
+            add_sameas_links=add_sameas_links,
+            blocked_sameas_namespaces=(self.base_iri,),
+        )
 
     @staticmethod
     def _entity_in_namespace(entity: URIRef, namespace: URIRef | str | None) -> bool:
@@ -167,8 +177,6 @@ class EmbeddingBasedAggregator:
         if not left and not right:
             return 1.0
         union = left | right
-        if not union:
-            return 0.0
         return len(left & right) / len(union)
 
     def _are_roles_compatible(
@@ -263,7 +271,7 @@ class EmbeddingBasedAggregator:
 
     def _cluster_entities_by_role(
         self, representations: dict[URIRef, EntityRepresentation]
-    ) -> list[list[URIRef]]:
+    ) -> tuple[list[list[URIRef]], dict[URIRef, np.ndarray]]:
         grouped_entities: dict[str, dict[URIRef, EntityRepresentation]] = {}
         for entity, representation in representations.items():
             grouped_entities.setdefault(self._role_key(representation), {})[entity] = (
@@ -271,25 +279,134 @@ class EmbeddingBasedAggregator:
             )
 
         all_clusters: list[list[URIRef]] = []
-        for role_representations in grouped_entities.values():
-            role_clusters, _ = self.clusterer.cluster_entities(role_representations)
-            all_clusters.extend(role_clusters)
-        return all_clusters
+        all_embeddings: dict[URIRef, np.ndarray] = {}
+        original_threshold = self.clusterer.similarity_threshold
+        self.clusterer.similarity_threshold = self.candidate_similarity_threshold
+        try:
+            for role_representations in grouped_entities.values():
+                role_clusters, role_embeddings = self.clusterer.cluster_entities(
+                    role_representations
+                )
+                all_clusters.extend(role_clusters)
+                all_embeddings.update(role_embeddings)
+        finally:
+            self.clusterer.similarity_threshold = original_threshold
+        return all_clusters, all_embeddings
+
+    @staticmethod
+    def _candidate_similarity(
+        left: URIRef,
+        right: URIRef,
+        embeddings: dict[URIRef, np.ndarray],
+    ) -> float | None:
+        left_embedding = embeddings.get(left)
+        right_embedding = embeddings.get(right)
+        if left_embedding is None or right_embedding is None:
+            return None
+
+        denominator = float(
+            np.linalg.norm(left_embedding) * np.linalg.norm(right_embedding)
+        )
+        if denominator == 0:
+            return None
+        return float(np.dot(left_embedding, right_embedding) / denominator)
+
+    def _merge_validation_failures(
+        self,
+        left: URIRef,
+        right: URIRef,
+        representations: dict[URIRef, EntityRepresentation],
+    ) -> list[str]:
+        failures: list[str] = []
+        if not self._are_roles_compatible(left, right, representations):
+            failures.append("role")
+        if not self._are_types_compatible(left, right, representations):
+            failures.append("type")
+        if not self._are_lexical_aliases(left, right, representations):
+            failures.append("lexical")
+        return failures
+
+    def _build_identity_clusters(
+        self,
+        candidate_clusters: list[list[URIRef]],
+        representations: dict[URIRef, EntityRepresentation],
+        embeddings: dict[URIRef, np.ndarray],
+    ) -> tuple[
+        list[list[URIRef]], list[tuple[URIRef, URIRef, float | None, tuple[str, ...]]]
+    ]:
+        validated_clusters: list[list[URIRef]] = []
+        rejected_merges: list[tuple[URIRef, URIRef, float | None, tuple[str, ...]]] = []
+
+        for candidate_cluster in candidate_clusters:
+            if len(candidate_cluster) <= 1:
+                validated_clusters.append(candidate_cluster)
+                continue
+
+            parents: dict[URIRef, URIRef] = {
+                entity: entity for entity in candidate_cluster
+            }
+
+            def find(entity: URIRef) -> URIRef:
+                root = parents[entity]
+                if root != entity:
+                    parents[entity] = find(root)
+                return parents[entity]
+
+            def union(left: URIRef, right: URIRef) -> None:
+                left_root = find(left)
+                right_root = find(right)
+                if left_root == right_root:
+                    return
+                if str(left_root) <= str(right_root):
+                    parents[right_root] = left_root
+                else:
+                    parents[left_root] = right_root
+
+            for left, right in combinations(candidate_cluster, 2):
+                score = self._candidate_similarity(left, right, embeddings)
+                if score is not None and score < self.candidate_similarity_threshold:
+                    continue
+                if self._can_merge_as_identity(left, right, representations):
+                    union(left, right)
+                    continue
+                rejected_merges.append(
+                    (
+                        left,
+                        right,
+                        score,
+                        tuple(
+                            self._merge_validation_failures(
+                                left, right, representations
+                            )
+                        ),
+                    )
+                )
+
+            grouped: dict[URIRef, list[URIRef]] = {}
+            for entity in candidate_cluster:
+                grouped.setdefault(find(entity), []).append(entity)
+
+            for group in grouped.values():
+                sorted_group = cast(list[URIRef], sorted(group, key=str))
+                validated_clusters.append(sorted_group)
+
+        return validated_clusters, rejected_merges
 
     def _select_ontology_anchor_candidates(
         self,
         tentative_entities: list[URIRef],
         tentative_representations: dict[URIRef, EntityRepresentation],
+        tentative_doc_iris: dict[URIRef, URIRef],
         ontology_graph: RDFGraph | None,
         known_ontology_entities: set[URIRef],
-    ) -> set[URIRef]:
-        """Pick a small ontology anchor set for tentative ontology-like entities."""
+    ) -> dict[URIRef, URIRef]:
+        """Pick ontology anchors and preserve the triggering document IRI."""
         if (
             ontology_graph is None
             or not tentative_entities
             or not known_ontology_entities
         ):
-            return set()
+            return {}
 
         ontology_entities = [
             entity
@@ -297,7 +414,7 @@ class EmbeddingBasedAggregator:
             if not self._is_standard_ontology_entity(entity)
         ]
         if not ontology_entities:
-            return set()
+            return {}
 
         ontology_graphs = {entity: ontology_graph for entity in ontology_entities}
         ontology_representations = self.normalizer.create_representations_batch(
@@ -309,10 +426,13 @@ class EmbeddingBasedAggregator:
             for token in self._tokenize(representation.representation):
                 token_index.setdefault(token, set()).add(entity)
 
-        selected: set[URIRef] = set()
+        selected: dict[URIRef, URIRef] = {}
         for tentative_entity in tentative_entities:
             tentative_representation = tentative_representations.get(tentative_entity)
             if tentative_representation is None:
+                continue
+            tentative_doc_iri = tentative_doc_iris.get(tentative_entity)
+            if tentative_doc_iri is None:
                 continue
             tentative_tokens = self._tokenize(tentative_representation.representation)
             if not tentative_tokens:
@@ -337,9 +457,9 @@ class EmbeddingBasedAggregator:
                 if overlap >= 2:
                     scored.append((overlap, candidate))
 
-            scored.sort(key=lambda item: item[0], reverse=True)
+            scored.sort(key=lambda item: (-item[0], str(item[1])))
             for _, candidate in scored[:3]:
-                selected.add(candidate)
+                selected.setdefault(candidate, tentative_doc_iri)
 
         return selected
 
@@ -373,63 +493,38 @@ class EmbeddingBasedAggregator:
         return 1
 
     @staticmethod
-    def _extract_local_name(entity: URIRef) -> str:
-        entity_str = str(entity)
-        if "#" in entity_str:
-            return entity_str.rsplit("#", 1)[-1]
-        trimmed = entity_str.rstrip("/")
-        return trimmed.rsplit("/", 1)[-1] if "/" in trimmed else trimmed
+    def _merge_into_context_graph(target: RDFGraph, source: RDFGraph) -> None:
+        """Merge source triples/namespaces into a per-entity context graph."""
+        target += source
 
-    def _to_doc_namespace_entity(
+    def _register_entity(
         self,
+        *,
         entity: URIRef,
-        current_target: URIRef,
-        doc_iri: URIRef | None,
-    ) -> URIRef:
-        """Force a mapped fact entity into its document namespace."""
-        if doc_iri is None:
-            return current_target
-        if self._entity_in_namespace(current_target, doc_iri):
-            return current_target
-
-        target_local = self._extract_local_name(current_target)
-        if not target_local:
-            target_local = self._extract_local_name(entity)
-        if not target_local:
-            target_local = "Entity"
-        return URIRef(f"{str(doc_iri).rstrip('/')}/{target_local}")
-
-    def _force_fact_targets_to_doc_namespace(
-        self,
-        final_mapping: dict[URIRef, URIRef],
+        unit: ContentUnit,
+        known_entities: set[URIRef],
+        entities: set[URIRef],
         source_entities: set[URIRef],
+        entity_graphs: dict[URIRef, RDFGraph],
         entity_doc_iris: dict[URIRef, URIRef],
         entity_classification: dict[URIRef, EntityClassification],
     ) -> None:
-        """Ensure all fact entities map to their source document namespace."""
-        for entity in source_entities:
-            if entity_classification.get(entity) != EntityClassification.FACT:
-                continue
-            current_target = final_mapping.get(entity, entity)
-            final_mapping[entity] = self._to_doc_namespace_entity(
-                entity=entity,
-                current_target=current_target,
-                doc_iri=entity_doc_iris.get(entity),
-            )
-
-    def _remove_base_namespace_sameas_leaks(self, graph: RDFGraph) -> None:
-        """Drop owl:sameAs links that expose base facts namespace IRIs."""
-        to_remove = []
-        for s, p, o in graph.triples((None, OWL.sameAs, None)):
-            if not isinstance(s, URIRef) or not isinstance(o, URIRef):
-                continue
-            if self._entity_in_namespace(s, self.base_iri) or self._entity_in_namespace(
-                o, self.base_iri
-            ):
-                to_remove.append((s, p, o))
-
-        for triple in to_remove:
-            graph.remove(triple)
+        """Register one URI entity with merged context and stable classification."""
+        entities.add(entity)
+        source_entities.add(entity)
+        if entity not in entity_graphs:
+            entity_graphs[entity] = unit.graph.copy()
+        else:
+            self._merge_into_context_graph(entity_graphs[entity], unit.graph)
+        entity_doc_iris.setdefault(entity, unit.doc_iri)
+        current = entity_classification.get(entity, EntityClassification.FACT)
+        candidate = self._classify_entity_for_unit(entity, unit, known_entities)
+        entity_classification[entity] = (
+            candidate
+            if self._classification_priority(candidate)
+            >= self._classification_priority(current)
+            else current
+        )
 
     def _collect_all_entities(
         self,
@@ -476,30 +571,37 @@ class EmbeddingBasedAggregator:
             # during rewrite, because unit.graph still contains the original terms.
             for s, p, o in unit.graph:
                 if isinstance(s, URIRef):
-                    entities.add(s)
-                    source_entities.add(s)
-                    entity_graphs[s] = unit.graph
-                    entity_doc_iris[s] = unit.doc_iri
-                    current = entity_classification.get(s, EntityClassification.FACT)
-                    candidate = self._classify_entity_for_unit(s, unit, known_entities)
-                    entity_classification[s] = (
-                        candidate
-                        if self._classification_priority(candidate)
-                        >= self._classification_priority(current)
-                        else current
+                    self._register_entity(
+                        entity=s,
+                        unit=unit,
+                        known_entities=known_entities,
+                        entities=entities,
+                        source_entities=source_entities,
+                        entity_graphs=entity_graphs,
+                        entity_doc_iris=entity_doc_iris,
+                        entity_classification=entity_classification,
+                    )
+                if isinstance(p, URIRef):
+                    self._register_entity(
+                        entity=p,
+                        unit=unit,
+                        known_entities=known_entities,
+                        entities=entities,
+                        source_entities=source_entities,
+                        entity_graphs=entity_graphs,
+                        entity_doc_iris=entity_doc_iris,
+                        entity_classification=entity_classification,
                     )
                 if isinstance(o, URIRef):
-                    entities.add(o)
-                    source_entities.add(o)
-                    entity_graphs[o] = unit.graph
-                    entity_doc_iris[o] = unit.doc_iri
-                    current = entity_classification.get(o, EntityClassification.FACT)
-                    candidate = self._classify_entity_for_unit(o, unit, known_entities)
-                    entity_classification[o] = (
-                        candidate
-                        if self._classification_priority(candidate)
-                        >= self._classification_priority(current)
-                        else current
+                    self._register_entity(
+                        entity=o,
+                        unit=unit,
+                        known_entities=known_entities,
+                        entities=entities,
+                        source_entities=source_entities,
+                        entity_graphs=entity_graphs,
+                        entity_doc_iris=entity_doc_iris,
+                        entity_classification=entity_classification,
                     )
 
         return (
@@ -530,7 +632,7 @@ class EmbeddingBasedAggregator:
         if not units:
             return RDFGraph()
 
-        # Steps 1-3: Collect, normalise, embed, cluster
+        # Steps 1-3: Collect, normalise, candidate clustering
         known_ontology_entities = self._build_known_ontology_entities(ontology_graph)
         (
             entities,
@@ -550,17 +652,17 @@ class EmbeddingBasedAggregator:
         anchor_candidates = self._select_ontology_anchor_candidates(
             tentative_entities=tentative_entities,
             tentative_representations=representations,
+            tentative_doc_iris=entity_doc_iris,
             ontology_graph=ontology_graph,
             known_ontology_entities=known_ontology_entities,
         )
-        if anchor_candidates and units and ontology_graph is not None:
-            first_doc_iri = units[0].doc_iri
-            for ontology_entity in anchor_candidates:
+        if anchor_candidates and ontology_graph is not None:
+            for ontology_entity, anchor_doc_iri in anchor_candidates.items():
                 if ontology_entity in entity_graphs:
                     continue
                 entities.append(ontology_entity)
                 entity_graphs[ontology_entity] = ontology_graph
-                entity_doc_iris[ontology_entity] = first_doc_iri
+                entity_doc_iris[ontology_entity] = anchor_doc_iri
                 entity_classification[ontology_entity] = (
                     EntityClassification.KNOWN_ONTOLOGY
                 )
@@ -579,23 +681,28 @@ class EmbeddingBasedAggregator:
             representation = representations.get(entity)
             if representation is not None:
                 representation.is_ontology_entity = is_known_ontology
-        clusters = self._cluster_entities_by_role(representations)
-
-        # Steps 4-6: Select, build URIs, compose
-        clustering_mapping = self.selector.create_mapping(clusters, representations)
-        representatives = list(set(clustering_mapping.values()))
-        uri_mapping = self.uri_builder.create_uri_mapping(
-            representatives,
-            representations,
-            entity_doc_iris=entity_doc_iris,
-            entity_is_ontology=entity_is_known_ontology,
+        candidate_clusters, embeddings = self._cluster_entities_by_role(representations)
+        clusters, rejected_merges = self._build_identity_clusters(
+            candidate_clusters=candidate_clusters,
+            representations=representations,
+            embeddings=embeddings,
         )
-        final_mapping = URIBuilder.compose_mappings(clustering_mapping, uri_mapping)
-        final_mapping = {
-            entity: mapped
-            for entity, mapped in final_mapping.items()
-            if entity in source_entities
-        }
+        if rejected_merges:
+            logger.info(
+                "Rejected %d candidate merges after symbolic validation",
+                len(rejected_merges),
+            )
+            for left, right, score, failed_checks in rejected_merges:
+                logger.debug(
+                    "Rejected candidate merge: %s <-> %s (score=%s, failed=%s)",
+                    left,
+                    right,
+                    f"{score:.3f}" if score is not None else "n/a",
+                    ",".join(failed_checks) if failed_checks else "unknown",
+                )
+
+        # Step 4: Canonical identity mapping (no URI policy yet)
+        identity_mapping = self.selector.create_mapping(clusters, representations)
 
         # Keep known ontology entities stable. Tentative ontology-like entities are:
         # - mapped to known ontology representatives when present in a mixed cluster
@@ -615,9 +722,14 @@ class EmbeddingBasedAggregator:
                 if entity_classification.get(entity)
                 == EntityClassification.TENTATIVE_ONTOLOGY
             ]
+            fact_entities_in_cluster = [
+                entity
+                for entity in cluster
+                if entity_classification.get(entity) == EntityClassification.FACT
+            ]
 
             for entity in known_ontology_entities_in_cluster:
-                final_mapping[entity] = entity
+                identity_mapping[entity] = entity
 
             if known_ontology_entities_in_cluster:
                 canonical_known_ontology = self.selector.select_representative(
@@ -630,14 +742,16 @@ class EmbeddingBasedAggregator:
                         canonical_known_ontology,
                         representations,
                     ):
-                        final_mapping[tentative_entity] = canonical_known_ontology
+                        identity_mapping[tentative_entity] = canonical_known_ontology
                         suppress_sameas_origins.add(tentative_entity)
                     else:
-                        final_mapping[tentative_entity] = tentative_entity
+                        identity_mapping[tentative_entity] = tentative_entity
+                for fact_entity in fact_entities_in_cluster:
+                    identity_mapping[fact_entity] = fact_entity
 
             elif tentative_entities_in_cluster:
                 for tentative_entity in tentative_entities_in_cluster:
-                    final_mapping[tentative_entity] = tentative_entity
+                    identity_mapping[tentative_entity] = tentative_entity
 
             if len(known_ontology_entities_in_cluster) > 1:
                 canonical = self.selector.select_representative(
@@ -655,12 +769,25 @@ class EmbeddingBasedAggregator:
                 if aliases:
                     ontology_sameas_links.setdefault(canonical, set()).update(aliases)
 
-        self._force_fact_targets_to_doc_namespace(
-            final_mapping=final_mapping,
-            source_entities=source_entities,
+        # Step 5: URI assignment from canonical identity + namespace policy
+        non_fact_entities = {
+            entity
+            for entity, classification in entity_classification.items()
+            if classification != EntityClassification.FACT
+        }
+        final_mapping = self.uri_builder.create_entity_uri_mapping(
+            identity_mapping=identity_mapping,
+            representations=representations,
             entity_doc_iris=entity_doc_iris,
-            entity_classification=entity_classification,
+            entity_is_ontology={
+                entity: entity in non_fact_entities for entity in representations
+            },
         )
+        final_mapping = {
+            entity: mapped
+            for entity, mapped in final_mapping.items()
+            if entity in source_entities
+        }
 
         # Step 7: Rewrite and merge with provenance
         active_units = [u for u in units if u.graph is not None]
@@ -670,18 +797,6 @@ class EmbeddingBasedAggregator:
             extra_sameas_links=ontology_sameas_links,
             suppress_sameas_origins=suppress_sameas_origins,
         )
-        self._remove_base_namespace_sameas_leaks(merged_graph)
-
-        # metadata = {
-        #     "entity_mapping": final_mapping,
-        #     "entity_doc_iris": entity_doc_iris,
-        #     "clusters": clusters,
-        #     "representations": representations,
-        #     "embeddings": embeddings,
-        #     "num_entities": len(entities),
-        #     "num_clusters": len(clusters),
-        #     "num_unique_targets": len(set(final_mapping.values())),
-        # }
 
         logger.info("Aggregation with metadata complete")
         return merged_graph

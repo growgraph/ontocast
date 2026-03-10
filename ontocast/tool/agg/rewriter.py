@@ -46,13 +46,54 @@ class GraphRewriter:
     according to a mapping, while preserving graph structure and metadata.
     """
 
-    def __init__(self, add_sameas_links: bool = True):
+    def __init__(
+        self,
+        add_sameas_links: bool = True,
+        blocked_sameas_namespaces: tuple[str, ...] = (),
+    ):
         """Initialize the graph rewriter.
 
         Args:
             add_sameas_links: Whether to add owl:sameAs links for merged entities
+            blocked_sameas_namespaces: Namespace prefixes that should never appear
+                as subject or object in emitted owl:sameAs links.
         """
         self.add_sameas_links = add_sameas_links
+        self.blocked_sameas_namespaces = blocked_sameas_namespaces
+
+    @staticmethod
+    def _in_namespace(entity: URIRef, namespace: str) -> bool:
+        entity_str = str(entity)
+        if entity_str.startswith(namespace):
+            return True
+        slash_variant = namespace.rstrip("/") + "/"
+        hash_variant = namespace.rstrip("#") + "#"
+        return entity_str.startswith(slash_variant) or entity_str.startswith(
+            hash_variant
+        )
+
+    def should_emit_sameas(self, original: URIRef, canonical: URIRef) -> bool:
+        """Return whether a sameAs link is valid for emission."""
+        if original == canonical:
+            return False
+        for namespace in self.blocked_sameas_namespaces:
+            if self._in_namespace(original, namespace) or self._in_namespace(
+                canonical, namespace
+            ):
+                return False
+        return True
+
+    def _emit_sameas_links(
+        self,
+        target_graph: RDFGraph,
+        merged_entities: dict[URIRef, set[URIRef]],
+    ) -> None:
+        if not self.add_sameas_links:
+            return
+        for canonical, originals in merged_entities.items():
+            for original in originals:
+                if self.should_emit_sameas(original, canonical):
+                    target_graph.add((canonical, OWL.sameAs, original))
 
     def apply_mapping_to_triple(
         self,
@@ -130,12 +171,7 @@ class GraphRewriter:
             processed_triples.add(triple_sig)
 
         # Add owl:sameAs links for merged entities
-        if self.add_sameas_links:
-            for canonical, originals in merged_entities.items():
-                for original in originals:
-                    # Only add sameAs if original and canonical are different
-                    if original != canonical:
-                        rewritten.add((canonical, OWL.sameAs, original))
+        self._emit_sameas_links(rewritten, merged_entities)
 
         logger.info(
             f"Rewrote graph: {len(graph)} -> {len(rewritten)} triples "
@@ -223,11 +259,7 @@ class GraphRewriter:
         merged_entities = self._merge_sameas_links(merged_entities, extra_sameas_links)
 
         # Add owl:sameAs links
-        if self.add_sameas_links:
-            for canonical, originals in merged_entities.items():
-                for original in originals:
-                    if original != canonical:
-                        merged.add((canonical, OWL.sameAs, original))
+        self._emit_sameas_links(merged, merged_entities)
 
         total_original_triples = sum(len(g) for g in graphs)
         logger.info(
@@ -484,11 +516,7 @@ class GraphRewriter:
         merged_entities = self._merge_sameas_links(merged_entities, extra_sameas_links)
 
         # owl:sameAs links
-        if self.add_sameas_links:
-            for canonical, originals in merged_entities.items():
-                for original in originals:
-                    if original != canonical:
-                        merged.add((canonical, OWL.sameAs, original))
+        self._emit_sameas_links(merged, merged_entities)
 
         total_original = sum(len(u.graph) for u in units if u.graph is not None)
         logger.info(

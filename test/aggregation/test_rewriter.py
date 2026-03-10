@@ -96,3 +96,28 @@ def test_rewrite_graph_adds_sameas_for_merged_entities(
 
     rewritten = graph_rewriter.rewrite_graph(graph, {e1: canonical, e2: canonical})
     assert len(list(rewritten.triples((canonical, OWL.sameAs, None)))) >= 1
+
+
+def test_rewriter_blocks_sameas_for_forbidden_namespace() -> None:
+    base = "https://growgraph.dev/facts"
+    graph_rewriter = GraphRewriter(
+        add_sameas_links=True,
+        blocked_sameas_namespaces=(base,),
+    )
+    graph = RDFGraph()
+    original_fact = URIRef("https://growgraph.dev/factsPersonA")
+    original_doc = URIRef("https://example.org/docs/case-1/PersonA")
+    canonical_doc = URIRef("https://example.org/docs/case-1/PersonCanonical")
+    relation = URIRef("https://example.org/relation")
+    graph.add((original_doc, relation, Literal("value")))
+
+    rewritten = graph_rewriter.rewrite_graph(
+        graph,
+        {
+            original_doc: canonical_doc,
+            original_fact: canonical_doc,
+        },
+    )
+
+    assert (canonical_doc, OWL.sameAs, original_doc) in rewritten
+    assert (canonical_doc, OWL.sameAs, original_fact) not in rewritten

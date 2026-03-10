@@ -216,7 +216,7 @@ class URIBuilder:
                 treated as an ontology entity.
         """
         self.base_iri = base_iri.rstrip("/") + "/"
-        self._used_names: set[str] = set()
+        self._used_uris: set[URIRef] = set()
 
     # ------------------------------------------------------------------
     # helpers
@@ -241,18 +241,20 @@ class URIBuilder:
             return trimmed.rsplit("/", 1)[0] + "/"
         return uri_str
 
-    def _ensure_unique(self, name: str) -> str:
-        """Return *name* or ``name_N`` if *name* was already used."""
-        if name not in self._used_names:
-            self._used_names.add(name)
-            return name
+    def _ensure_unique_uri(self, base: str, local_name: str) -> URIRef:
+        """Return a unique URI under *base* for *local_name*."""
+        candidate = URIRef(f"{base}{local_name}")
+        if candidate not in self._used_uris:
+            self._used_uris.add(candidate)
+            return candidate
 
         counter = 1
-        while f"{name}_{counter}" in self._used_names:
+        while True:
+            candidate = URIRef(f"{base}{local_name}_{counter}")
+            if candidate not in self._used_uris:
+                self._used_uris.add(candidate)
+                return candidate
             counter += 1
-        unique = f"{name}_{counter}"
-        self._used_names.add(unique)
-        return unique
 
     # ------------------------------------------------------------------
     # public API
@@ -296,62 +298,68 @@ class URIBuilder:
             return entity
 
         local_name = normalize_local_name(representation, role)
-        unique_name = self._ensure_unique(local_name)
-
-        # Use target_iri (doc_iri) when provided, otherwise fall back to base_iri
         base = (str(target_iri).rstrip("/") + "/") if target_iri else self.base_iri
-        return URIRef(f"{base}{unique_name}")
+        return self._ensure_unique_uri(base=base, local_name=local_name)
 
-    def create_uri_mapping(
+    def create_entity_uri_mapping(
         self,
-        representatives: list[URIRef],
+        identity_mapping: dict[URIRef, URIRef],
         representations: dict[URIRef, EntityRepresentation],
-        entity_doc_iris: dict[URIRef, URIRef] | None = None,
-        entity_is_ontology: dict[URIRef, bool] | None = None,
+        entity_doc_iris: dict[URIRef, URIRef],
+        entity_is_ontology: dict[URIRef, bool],
     ) -> dict[URIRef, URIRef]:
-        """Create a mapping from representative URIs to normalised URIs.
+        """Create final URI mapping from identity mapping + namespace policy.
 
-        The role of each entity is read from its
-        :class:`EntityRepresentation` (computed during normalisation),
-        so no graph lookup is needed here.
-
-        When *entity_doc_iris* is supplied, fact entities are placed under
-        their document IRI instead of the default ``base_iri``.  This allows
-        chunks from different documents to retain distinct namespaces even
-        after clustering.
+        This method decouples canonical identity choice from URI surface choice:
+        identity mapping decides *what* is the same entity, while this method
+        decides *how* each source entity should be rendered as a final URI.
+        Fact entities are always rendered in their source ``doc_iri`` namespace.
+        Ontology entities are preserved as their canonical URI.
 
         Args:
-            representatives: Representative entity URIs (one per cluster).
+            identity_mapping: Mapping ``entity -> canonical_entity``.
             representations: All entity representations.
-            entity_doc_iris: Optional mapping from entity to its source
-                document IRI.  When provided the ``doc_iri`` of the
-                representative is used as the target namespace for all fact
-                entities in that cluster.
-            entity_is_ontology: Optional explicit ontology/fact classification.
-                When provided, this classification is used instead of
-                inferring entity type from namespace shape.
+            entity_doc_iris: Mapping from source entity to source ``doc_iri``.
+            entity_is_ontology: Classification map where ``True`` means the
+                canonical entity should stay in ontology space.
 
         Returns:
-            Mapping ``e_rep → final_uri``.
+            Mapping ``entity -> final_uri``.
         """
+        self._used_uris.clear()
         mapping: dict[URIRef, URIRef] = {}
+        canonical_cache: dict[tuple[URIRef, str], URIRef] = {}
 
-        for entity in representatives:
-            rep = representations.get(entity)
+        for entity, canonical in identity_mapping.items():
+            rep = representations.get(canonical)
             if rep is None:
                 mapping[entity] = entity
                 continue
 
             role = rep.role if rep.role is not None else EntityRole.INSTANCE
-            doc_iri = entity_doc_iris.get(entity) if entity_doc_iris else None
-            is_ontology = entity_is_ontology.get(entity) if entity_is_ontology else None
-            mapping[entity] = self.build_uri(
-                entity,
+            is_ontology = entity_is_ontology.get(
+                canonical, self.is_ontology_entity(canonical)
+            )
+            if is_ontology:
+                mapping[entity] = canonical
+                continue
+
+            doc_iri = entity_doc_iris.get(entity)
+            base = (str(doc_iri).rstrip("/") + "/") if doc_iri else self.base_iri
+            cache_key = (canonical, base)
+            if cache_key in canonical_cache:
+                mapping[entity] = canonical_cache[cache_key]
+                continue
+
+            canonical_uri = self.build_uri(
+                canonical,
                 rep,
                 role,
                 target_iri=doc_iri,
-                is_ontology_entity=is_ontology,
+                is_ontology_entity=False,
             )
+            canonical_cache[cache_key] = canonical_uri
+            mapping[entity] = canonical_uri
 
         normalised = sum(1 for e, u in mapping.items() if e != u)
         logger.info(

@@ -671,3 +671,264 @@ def test_fact_entity_forced_with_known_ontology_uses_identity_guard(
         term for s, _, o in result for term in (s, o) if isinstance(term, URIRef)
     }
     assert all(not str(node).startswith(DEFAULT_IRI) for node in uri_nodes)
+
+
+def test_fact_predicate_is_collected_and_rewritten_to_doc_namespace() -> None:
+    doc_iri = "https://example.org/docs/predicate-case"
+    predicate = URIRef("https://growgraph.dev/factsHasCase")
+    ttl = f"""
+    @prefix doc: <{doc_iri}/> .
+    @prefix facts: <https://growgraph.dev/facts> .
+    @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+    doc:CaseA facts:HasCase doc:CaseB .
+    doc:CaseA rdf:type doc:Case .
+    """
+    unit = make_fact_unit("Predicate-only fact URI.", 0, doc_iri, ttl)
+
+    result = EmbeddingBasedAggregator().aggregate_graphs([unit])
+
+    rewritten_predicates = {
+        p for _, p, _ in result if isinstance(p, URIRef) and str(p).startswith(doc_iri)
+    }
+    assert rewritten_predicates
+    assert any("HasCase" in str(p) for p in rewritten_predicates)
+    assert predicate not in set(result.predicates(None, None))
+
+
+def test_cross_chunk_entity_context_is_merged_for_representation(monkeypatch) -> None:
+    doc_iri = "https://example.org/docs/context-merge"
+    shared = URIRef("https://growgraph.dev/factsSharedEntity")
+    rel_a = URIRef("https://growgraph.dev/factsHasAlpha")
+    rel_b = URIRef("https://growgraph.dev/factsHasBeta")
+    ttl_chunk_0 = """
+    @prefix facts: <https://growgraph.dev/facts> .
+    facts:SharedEntity facts:HasAlpha "A" .
+    """
+    ttl_chunk_1 = """
+    @prefix facts: <https://growgraph.dev/facts> .
+    facts:SharedEntity facts:HasBeta "B" .
+    """
+    units = [
+        make_fact_unit("First chunk", 0, doc_iri, ttl_chunk_0),
+        make_fact_unit("Second chunk", 1, doc_iri, ttl_chunk_1),
+    ]
+    aggregator = EmbeddingBasedAggregator()
+    original_create_representation = aggregator.normalizer.create_representation
+    seen_shared_context: dict[str, set[URIRef]] = {"properties": set()}
+
+    def capture_representation(entity, graph):
+        representation = original_create_representation(entity, graph)
+        if entity == shared:
+            seen_shared_context["properties"] = set(representation.properties)
+        return representation
+
+    monkeypatch.setattr(
+        aggregator.normalizer,
+        "create_representation",
+        capture_representation,
+    )
+
+    aggregator.aggregate_graphs(units)
+
+    assert rel_a in seen_shared_context["properties"]
+    assert rel_b in seen_shared_context["properties"]
+
+
+def test_doc_namespace_forcing_avoids_uri_collisions(monkeypatch) -> None:
+    doc_iri = "https://example.org/docs/collision-safe"
+    ttl = """
+    @prefix facts: <https://growgraph.dev/facts> .
+    facts:EntityA facts:RelatedTo "left" .
+    facts:EntityB facts:RelatedTo "right" .
+    """
+    unit = make_fact_unit("Collision case", 0, doc_iri, ttl)
+    aggregator = EmbeddingBasedAggregator()
+
+    def singleton_clusters(representations):
+        return [[entity] for entity in representations], {}
+
+    original_create_representations = aggregator.normalizer.create_representations_batch
+
+    def force_same_normal_form(entities, entity_graphs):
+        representations = original_create_representations(entities, entity_graphs)
+        for entity in entities:
+            if str(entity).endswith("EntityA") or str(entity).endswith("EntityB"):
+                rep = representations[entity]
+                rep.normal_form = "collision"
+                rep.representation = "collision"
+        return representations
+
+    monkeypatch.setattr(aggregator.clusterer, "cluster_entities", singleton_clusters)
+    monkeypatch.setattr(
+        aggregator.normalizer,
+        "create_representations_batch",
+        force_same_normal_form,
+    )
+
+    result = aggregator.aggregate_graphs([unit])
+
+    subject_targets = {
+        subject
+        for subject, _, obj in result
+        if isinstance(subject, URIRef)
+        and str(subject).startswith(doc_iri)
+        and isinstance(obj, Literal)
+        and str(obj) in {"left", "right"}
+    }
+    assert len(subject_targets) == 2
+    assert len({str(target).split("/")[-1] for target in subject_targets}) == 2
+    assert all(str(target).startswith(doc_iri) for target in subject_targets)
+
+
+def test_select_ontology_anchor_candidates_preserves_trigger_doc_iri() -> None:
+    aggregator = EmbeddingBasedAggregator()
+    doc_a = URIRef("https://example.org/docs/a")
+    doc_b = URIRef("https://example.org/docs/b")
+    known_court = URIRef("https://growgraph.dev/fcaont#AppealCourtRouen")
+    tentative_a = URIRef("https://growgraph.dev/fcaont#AppealCourt_Rouen")
+    tentative_b = URIRef("https://growgraph.dev/fcaont#AppealCourtRouenAlias")
+
+    ontology_graph = RDFGraph()
+    ontology_graph.add((known_court, RDFS.label, Literal("Appeal Court Rouen")))
+
+    tentative_graph = RDFGraph()
+    tentative_graph.add((tentative_a, RDFS.label, Literal("Appeal Court Rouen")))
+    tentative_graph.add((tentative_b, RDFS.label, Literal("Appeal Court Rouen")))
+    tentative_representations = aggregator.normalizer.create_representations_batch(
+        [tentative_a, tentative_b],
+        {
+            tentative_a: tentative_graph,
+            tentative_b: tentative_graph,
+        },
+    )
+
+    selected = aggregator._select_ontology_anchor_candidates(
+        tentative_entities=[tentative_a, tentative_b],
+        tentative_representations=tentative_representations,
+        tentative_doc_iris={
+            tentative_a: doc_a,
+            tentative_b: doc_b,
+        },
+        ontology_graph=ontology_graph,
+        known_ontology_entities={known_court},
+    )
+
+    assert selected[known_court] == doc_a
+
+
+def test_jaccard_handles_empty_and_partial_overlap() -> None:
+    assert EmbeddingBasedAggregator._jaccard(set(), set()) == 1.0
+    assert EmbeddingBasedAggregator._jaccard(set(), {"a"}) == 0.0
+    assert EmbeddingBasedAggregator._jaccard({"a", "b"}, {"b", "c"}) == 1 / 3
+
+
+def test_fact_to_fact_candidate_rejected_when_symbolically_incompatible(
+    monkeypatch,
+) -> None:
+    doc_iri = "https://example.org/docs/case-merge-gate-1"
+    criminal_court = URIRef(f"{DEFAULT_IRI}/CriminalCourt")
+    civil_court = URIRef(f"{DEFAULT_IRI}/CivilCourt")
+
+    ttl = f"""
+    @prefix doc: <{doc_iri}/> .
+    @prefix facts: <{DEFAULT_IRI}/> .
+    @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    doc:Case1 facts:heardAt facts:CriminalCourt .
+    doc:Case2 facts:heardAt facts:CivilCourt .
+    facts:CriminalCourt rdf:type <https://example.org/onto#CriminalCourt> .
+    facts:CivilCourt rdf:type <https://example.org/onto#CivilCourt> .
+    facts:CriminalCourt rdfs:label "Criminal Court" .
+    facts:CivilCourt rdfs:label "Civil Court" .
+    """
+    unit = make_fact_unit("Two related courts", 0, doc_iri, ttl)
+    aggregator = EmbeddingBasedAggregator()
+
+    def force_candidate_cluster(representations):
+        entities = set(representations.keys())
+        if criminal_court in entities and civil_court in entities:
+            remaining = [
+                entity
+                for entity in entities
+                if entity not in {criminal_court, civil_court}
+            ]
+            return [
+                [criminal_court, civil_court],
+                *[[entity] for entity in remaining],
+            ], {}
+        return [list(entities)], {}
+
+    monkeypatch.setattr(
+        aggregator.clusterer,
+        "cluster_entities",
+        force_candidate_cluster,
+    )
+
+    result = aggregator.aggregate_graphs([unit])
+    heard_at_targets = {
+        subject
+        for subject in result.subjects(RDFS.label, Literal("Criminal Court"))
+        if isinstance(subject, URIRef)
+    } | {
+        subject
+        for subject in result.subjects(RDFS.label, Literal("Civil Court"))
+        if isinstance(subject, URIRef)
+    }
+
+    assert len(heard_at_targets) == 2
+    assert all(str(target).startswith(doc_iri) for target in heard_at_targets)
+
+
+def test_fact_to_fact_candidate_merges_when_symbolically_compatible(
+    monkeypatch,
+) -> None:
+    doc_iri = "https://example.org/docs/case-merge-gate-2"
+    united_states = URIRef(f"{DEFAULT_IRI}/UnitedStates")
+    united_states_alias = URIRef(f"{DEFAULT_IRI}/united_states")
+    ttl = f"""
+    @prefix doc: <{doc_iri}/> .
+    @prefix facts: <{DEFAULT_IRI}/> .
+    @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    facts:UnitedStates rdf:type <https://example.org/onto#Country> .
+    facts:united_states rdf:type <https://example.org/onto#Country> .
+    facts:UnitedStates rdfs:label "United States" .
+    facts:united_states rdfs:label "United States" .
+    facts:UnitedStates facts:population "331000000" .
+    facts:united_states facts:population "332000000" .
+    """
+    unit = make_fact_unit("US aliases", 0, doc_iri, ttl)
+    aggregator = EmbeddingBasedAggregator()
+
+    def force_candidate_cluster(representations):
+        entities = set(representations.keys())
+        if united_states in entities and united_states_alias in entities:
+            remaining = [
+                entity
+                for entity in entities
+                if entity not in {united_states, united_states_alias}
+            ]
+            return [
+                [united_states, united_states_alias],
+                *[[entity] for entity in remaining],
+            ], {}
+        return [list(entities)], {}
+
+    monkeypatch.setattr(
+        aggregator.clusterer,
+        "cluster_entities",
+        force_candidate_cluster,
+    )
+
+    result = aggregator.aggregate_graphs([unit])
+    population_subjects = {
+        subject
+        for subject, _, obj in result
+        if isinstance(subject, URIRef)
+        and isinstance(obj, Literal)
+        and str(obj) in {"331000000", "332000000"}
+    }
+
+    assert len(population_subjects) == 1
+    target = next(iter(population_subjects))
+    assert str(target).startswith(doc_iri)
