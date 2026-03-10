@@ -196,6 +196,10 @@ class AgentState(BasePydanticModel):
         default_factory=list,
         description="Successful per-unit ontology outputs collected during parallel map phase",
     )
+    ontology_provenance_artifact: RDFGraph = Field(
+        default_factory=RDFGraph,
+        description="Provenance/reification triples stripped from normalized ontology.",
+    )
 
     ontology_addendum: Ontology = Field(
         default_factory=lambda: Ontology(
@@ -373,7 +377,7 @@ class AgentState(BasePydanticModel):
 
             # Execute each query on the copied graph
             for query in queries:
-                updated_graph.update(query)
+                cls._apply_update_query(updated_graph, query)
 
         # Check if updated graph exceeds max_triples limit
         if max_triples is not None and len(updated_graph) > max_triples:
@@ -388,6 +392,69 @@ class AgentState(BasePydanticModel):
             return graph, False  # Return original, unchanged
 
         return updated_graph, True
+
+    @classmethod
+    def _apply_update_query(cls, graph: RDFGraph, query: str) -> None:
+        """Apply one SPARQL update query, recovering common LLM compound outputs."""
+        try:
+            graph.update(query)
+            return
+        except Exception as exc:
+            split_queries = cls._split_compound_sparql_updates(query, exc)
+            if not split_queries:
+                raise
+            for split_query in split_queries:
+                graph.update(split_query)
+
+    @staticmethod
+    def _split_compound_sparql_updates(
+        query: str, parse_error: Exception
+    ) -> list[str] | None:
+        """Split concatenated top-level UPDATE statements if parser rejects input.
+
+        LLM outputs sometimes concatenate multiple update statements (e.g. two
+        top-level INSERT blocks) into a single custom SPARQL string without a
+        separator accepted by the parser. We only recover in that specific case.
+        """
+        message = str(parse_error)
+        if "Expected end of text, found" not in message:
+            return None
+
+        prefixes: list[str] = []
+        body_lines: list[str] = []
+        for raw_line in query.splitlines():
+            stripped = raw_line.strip()
+            if stripped.upper().startswith("PREFIX "):
+                prefixes.append(stripped)
+            elif stripped:
+                body_lines.append(stripped)
+
+        if not body_lines:
+            return None
+
+        top_level_ops = ("INSERT", "DELETE", "WITH")
+        segments: list[list[str]] = []
+        current: list[str] = []
+        for line in body_lines:
+            if current and line.upper().startswith(top_level_ops):
+                segments.append(current)
+                current = [line]
+            else:
+                current.append(line)
+        if current:
+            segments.append(current)
+
+        if len(segments) <= 1:
+            return None
+
+        prefix_block = "\n".join(prefixes)
+        rebuilt = []
+        for segment in segments:
+            segment_block = "\n".join(segment)
+            rebuilt.append(
+                f"{prefix_block}\n{segment_block}" if prefix_block else segment_block
+            )
+        return rebuilt
 
     def render_uptodate_ontology(self) -> Ontology:
         """Create a copy of the current ontology with all GraphUpdate objects applied.

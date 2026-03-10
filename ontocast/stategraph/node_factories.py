@@ -151,10 +151,11 @@ def make_render_ontology_node(tools: ToolBox):
 def make_normalize_ontology_node(tools: ToolBox):
     def normalize_ontology_updates(state: AgentState) -> AgentState:
         if not state.ontology_units:
+            state.ontology_provenance_artifact = RDFGraph()
             state.status = Status.SUCCESS
             return state
 
-        ontology, applied_updates = normalize_ontology_units(
+        ontology, applied_updates, provenance_artifact = normalize_ontology_units(
             units=state.ontology_units,
             tools=tools,
             base_ontology=state.current_ontology
@@ -164,6 +165,7 @@ def make_normalize_ontology_node(tools: ToolBox):
         )
         state.current_ontology = ontology
         state.ontology_updates_applied = applied_updates
+        state.ontology_provenance_artifact = provenance_artifact
         state.status = Status.SUCCESS
         return state
 
@@ -176,14 +178,23 @@ def make_consolidate_ontology_node(tools: ToolBox):
     async def consolidate_ontology(state: AgentState) -> AgentState:
         """Optional post-normalization ontology consolidation pass."""
         if not tools.config.server.enable_ontology_consolidation:
+            logger.info(
+                "Skipping ontology consolidation: enable_ontology_consolidation is false"
+            )
             state.status = Status.SUCCESS
             return state
         if not state.render_ontology or state.current_ontology.is_null():
+            logger.info(
+                "Skipping ontology consolidation: no rendered ontology snapshot available"
+            )
             state.status = Status.SUCCESS
             return state
 
         excerpt = build_document_excerpt(state).strip()
         if not excerpt:
+            logger.info(
+                "Skipping ontology consolidation: no usable document excerpt was produced"
+            )
             state.status = Status.SUCCESS
             return state
 

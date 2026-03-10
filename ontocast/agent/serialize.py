@@ -52,5 +52,27 @@ def serialize(state: AgentState, tools: ToolBox) -> AgentState:
     # Report LLM budget usage
     if state.budget_tracker:
         logger.info(state.budget_tracker.get_summary())
+
+    provenance_graph_uri = f"{str(state.graph_uri).rstrip('/')}/ontology-provenance"
+    if len(state.ontology_provenance_artifact) > 0:
+        logger.info(
+            "Persisting ontology provenance artifact (%d triples) to graph %s",
+            len(state.ontology_provenance_artifact),
+            provenance_graph_uri,
+        )
+        if tools.filesystem_manager is not None:
+            tools.filesystem_manager.serialize(
+                state.ontology_provenance_artifact,
+                graph_uri=provenance_graph_uri,
+            )
+        if (
+            tools.triple_store_manager is not None
+            and tools.triple_store_manager != tools.filesystem_manager
+        ):
+            tools.triple_store_manager.serialize(
+                state.ontology_provenance_artifact,
+                graph_uri=provenance_graph_uri,
+            )
+
     tools.serialize(state)
     return state

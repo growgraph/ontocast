@@ -3,10 +3,10 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from rdflib import URIRef
+from rdflib import OWL, RDF, BNode, Literal, URIRef
 
 from ontocast.agent.normalize_ontology import normalize_ontology_units
-from ontocast.onto.constants import ONTOLOGY_NULL_IRI
+from ontocast.onto.constants import ONTOLOGY_NULL_IRI, PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.enum import RenderMode, Status, WorkflowNode
 from ontocast.onto.model import (
@@ -18,9 +18,11 @@ from ontocast.onto.model import (
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.sparql_models import GraphUpdate
+from ontocast.onto.sparql_models import GenericSparqlQuery, GraphUpdate
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
+from ontocast.stategraph.node_factories import make_normalize_ontology_node
+from ontocast.stategraph.routing import route_after_ontology_consolidation
 from ontocast.tool.aggregate import EmbeddingBasedAggregator
 from ontocast.tool.atomic import AtomicToolBox, SearchHit
 from ontocast.toolbox import ToolBox
@@ -119,14 +121,15 @@ async def test_run_unit_ontology_loop_emits_updates(monkeypatch) -> None:
 def test_reduce_ontology_units_returns_ontology_when_no_units() -> None:
     tools = ToolBox.__new__(ToolBox)
     tools.aggregator = EmbeddingBasedAggregator()
-    reduced, applied = normalize_ontology_units(units=[], tools=tools)
+    reduced, applied, provenance = normalize_ontology_units(units=[], tools=tools)
 
     assert reduced is not None
     assert reduced.iri is not None
     assert applied == []
+    assert len(provenance) == 0
 
 
-def test_reduce_ontology_units_aggregates_via_embedding() -> None:
+def test_reduce_ontology_units_merges_unit_graphs_without_aggregator() -> None:
     tools = ToolBox.__new__(ToolBox)
     tools.aggregator = EmbeddingBasedAggregator()
     unit1 = ContentUnit(
@@ -136,38 +139,37 @@ def test_reduce_ontology_units_aggregates_via_embedding() -> None:
         graph=_build_ontology().graph,
         type=OutputType.ONTOLOGIES,
     )
-    reduced, applied = normalize_ontology_units(units=[unit1], tools=tools)
+    reduced, applied, provenance = normalize_ontology_units(units=[unit1], tools=tools)
 
     assert reduced is not None
-    assert len(reduced.graph) >= 0
+    assert len(reduced.graph) > 0
+    assert len(applied) == 1
+    assert len(applied[0].triple_operations) == 1
+    assert len(provenance) == 0
     assert isinstance(applied, list)
 
 
 def test_reduce_ontology_units_creates_base_when_required() -> None:
-    class DummyAggregator:
-        def aggregate_graphs(self, units: list[ContentUnit]) -> RDFGraph:
-            graph = RDFGraph()
-            graph.parse(
-                data="""
-                @prefix ex: <https://example.com/onto#> .
-                @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-                @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-                ex:Company rdf:type rdfs:Class .
-                """,
-                format="turtle",
-            )
-            return graph
-
     tools = cast(ToolBox, ToolBox.__new__(ToolBox))
-    tools.aggregator = cast(EmbeddingBasedAggregator, DummyAggregator())
+    tools.aggregator = EmbeddingBasedAggregator()
+    delta_graph = RDFGraph()
+    delta_graph.parse(
+        data="""
+        @prefix ex: <https://example.com/onto#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        ex:Company rdf:type rdfs:Class .
+        """,
+        format="turtle",
+    )
     unit = ContentUnit(
         text="Company ontology snippet",
         index=0,
         doc_iri=URIRef("https://example.com/doc/d1"),
-        graph=RDFGraph(),
+        graph=delta_graph,
         type=OutputType.ONTOLOGIES,
     )
-    reduced, applied = normalize_ontology_units(
+    reduced, applied, provenance = normalize_ontology_units(
         units=[unit],
         tools=tools,
         base_ontology=None,
@@ -176,7 +178,81 @@ def test_reduce_ontology_units_creates_base_when_required() -> None:
 
     assert not reduced.is_null()
     assert len(reduced.graph) > 0
+    assert len(provenance) == 0
     assert isinstance(applied, list)
+
+
+def test_reduce_ontology_units_strips_provenance_and_stores_artifact() -> None:
+    tools = ToolBox.__new__(ToolBox)
+    tools.aggregator = EmbeddingBasedAggregator()
+    doc_iri = URIRef("https://growgraph.dev/doc/test")
+    court = URIRef("https://growgraph.dev/fcaont#Court")
+    appeal_court = URIRef("https://growgraph.dev/fcaont#AppealCourt")
+    reifier = BNode()
+    source_chunk = URIRef(f"{doc_iri}/chunk-1")
+
+    graph = RDFGraph(store="oxigraph")
+    graph.add((appeal_court, RDF.type, court))
+    graph.add((appeal_court, OWL.sameAs, court))
+    graph.add((source_chunk, RDF.type, PROV.Entity))
+    graph.add((source_chunk, SCHEMA.identifier, Literal("chunk-1")))
+    graph.add((reifier, RDF_REIFIES, Literal("quoted-triple")))
+    graph.add((reifier, PROV.wasDerivedFrom, source_chunk))
+
+    unit = ContentUnit(
+        text="Appeal court ontology unit",
+        index=0,
+        doc_iri=doc_iri,
+        graph=graph,
+        type=OutputType.ONTOLOGIES,
+    )
+    reduced, _, provenance = normalize_ontology_units(units=[unit], tools=tools)
+
+    assert (appeal_court, RDF.type, court) in reduced.graph
+    assert (appeal_court, OWL.sameAs, court) not in reduced.graph
+    assert (source_chunk, SCHEMA.identifier, Literal("chunk-1")) not in reduced.graph
+
+    assert (appeal_court, OWL.sameAs, court) in provenance
+    assert list(provenance.triples((None, RDF_REIFIES, None)))
+    assert list(provenance.triples((None, PROV.wasDerivedFrom, source_chunk)))
+
+
+def test_normalize_ontology_node_feeds_clean_graph_to_consolidation() -> None:
+    class DummyTools:
+        aggregator = EmbeddingBasedAggregator()
+
+    normalize_node = make_normalize_ontology_node(cast(ToolBox, DummyTools()))
+
+    doc_iri = URIRef("https://growgraph.dev/doc/test-node")
+    class_uri = URIRef("https://growgraph.dev/fcaont#Judgement")
+    source_chunk = URIRef(f"{doc_iri}/chunk-1")
+    graph = RDFGraph()
+    graph.add(
+        (class_uri, RDF.type, URIRef("http://www.w3.org/2000/01/rdf-schema#Class"))
+    )
+    graph.add((source_chunk, RDF.type, PROV.Entity))
+    graph.add((source_chunk, SCHEMA.identifier, Literal("chunk-1")))
+    graph.add((class_uri, OWL.sameAs, URIRef("https://growgraph.dev/fcaont#Judgment")))
+
+    state = AgentState(render_mode=RenderMode.ONTOLOGY)
+    state.current_ontology = _build_ontology()
+    state.ontology_units = [
+        ContentUnit(
+            text="Ontology delta",
+            index=0,
+            doc_iri=doc_iri,
+            graph=graph,
+            type=OutputType.ONTOLOGIES,
+        )
+    ]
+
+    updated = normalize_node(state)
+    ontology_ttl = updated.current_ontology.graph.serialize(format="turtle")
+
+    assert "rdf:reifies" not in ontology_ttl
+    assert f"{doc_iri}/chunk-1" not in ontology_ttl
+    assert "owl:sameAs" not in ontology_ttl
+    assert len(updated.ontology_provenance_artifact) > 0
 
 
 @pytest.mark.anyio
@@ -526,3 +602,110 @@ def test_agent_state_render_mode_properties() -> None:
     assert both.render_mode == RenderMode.ONTOLOGY_AND_FACTS
     assert both.render_facts is True
     assert both.render_ontology is True
+
+
+def test_route_after_ontology_consolidation_respects_ontology_only_mode() -> None:
+    ontology_only = AgentState(render_mode=RenderMode.ONTOLOGY)
+    assert route_after_ontology_consolidation(ontology_only) == WorkflowNode.SERIALIZE
+
+    ontology_and_facts = AgentState(render_mode=RenderMode.ONTOLOGY_AND_FACTS)
+    assert (
+        route_after_ontology_consolidation(ontology_and_facts)
+        == WorkflowNode.RENDER_FACTS
+    )
+
+
+def test_toolbox_serialize_skips_facts_in_ontology_only_mode() -> None:
+    class RecordingOntologyManager:
+        def __init__(self) -> None:
+            self.added = 0
+
+        def add_ontology(self, ontology: Ontology) -> None:
+            self.added += 1
+
+    class RecordingStore:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, str | None]] = []
+
+        def serialize(self, payload: object, graph_uri: str | None = None) -> None:
+            self.calls.append((payload, graph_uri))
+
+    state = AgentState(render_mode=RenderMode.ONTOLOGY)
+    state.current_ontology = _build_ontology()
+    store = RecordingStore()
+    toolbox = SimpleNamespace(
+        ontology_manager=RecordingOntologyManager(),
+        filesystem_manager=store,
+        triple_store_manager=None,
+    )
+
+    ToolBox.serialize(cast(ToolBox, toolbox), state)
+
+    assert len(store.calls) == 1
+    assert isinstance(store.calls[0][0], Ontology)
+    assert store.calls[0][1] is None
+
+
+def test_toolbox_serialize_includes_facts_when_render_facts_enabled() -> None:
+    class RecordingOntologyManager:
+        def add_ontology(self, ontology: Ontology) -> None:
+            return None
+
+    class RecordingStore:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, str | None]] = []
+
+        def serialize(self, payload: object, graph_uri: str | None = None) -> None:
+            self.calls.append((payload, graph_uri))
+
+    state = AgentState(render_mode=RenderMode.ONTOLOGY_AND_FACTS)
+    state.current_ontology = _build_ontology()
+    store = RecordingStore()
+    toolbox = SimpleNamespace(
+        ontology_manager=RecordingOntologyManager(),
+        filesystem_manager=store,
+        triple_store_manager=None,
+    )
+
+    ToolBox.serialize(cast(ToolBox, toolbox), state)
+
+    assert len(store.calls) == 2
+    assert isinstance(store.calls[0][0], Ontology)
+    assert isinstance(store.calls[1][0], RDFGraph)
+    assert store.calls[1][1] == state.graph_uri
+
+
+def test_render_updated_graph_splits_compound_sparql_insert_updates() -> None:
+    graph = RDFGraph()
+    graph.parse(
+        data="""
+        @prefix ex: <http://example.org/> .
+        ex:Existing ex:kept ex:Value .
+        """,
+        format="turtle",
+    )
+    update = GraphUpdate(
+        sparql_operations=[
+            GenericSparqlQuery(
+                query=(
+                    "PREFIX ex: <http://example.org/>\n"
+                    "INSERT DATA { ex:Person ex:label ex:Alice }\n"
+                    "INSERT DATA { ex:Person ex:status ex:Active }"
+                )
+            )
+        ]
+    )
+
+    updated_graph, was_applied = AgentState.render_updated_graph(graph, [update])
+
+    assert was_applied is True
+    assert (
+        URIRef("http://example.org/Person"),
+        URIRef("http://example.org/label"),
+        URIRef("http://example.org/Alice"),
+    ) in updated_graph
+    assert (
+        URIRef("http://example.org/Person"),
+        URIRef("http://example.org/status"),
+        URIRef("http://example.org/Active"),
+    ) in updated_graph

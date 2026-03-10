@@ -215,20 +215,22 @@ class ToolBox:
 
         if self.filesystem_manager is not None:
             self.filesystem_manager.serialize(state.current_ontology)
-            self.filesystem_manager.serialize(
-                state.aggregated_facts,
-                graph_uri=state.graph_uri,
-            )
+            if state.render_facts:
+                self.filesystem_manager.serialize(
+                    state.aggregated_facts,
+                    graph_uri=state.graph_uri,
+                )
         if (
             self.triple_store_manager is not None
             and self.triple_store_manager != self.filesystem_manager
         ):
             # Store ontology in main dataset for reasoning
             self.triple_store_manager.serialize(state.current_ontology)
-            self.triple_store_manager.serialize(
-                state.aggregated_facts,
-                graph_uri=state.graph_uri,
-            )
+            if state.render_facts:
+                self.triple_store_manager.serialize(
+                    state.aggregated_facts,
+                    graph_uri=state.graph_uri,
+                )
 
     async def initialize(self) -> None:
         """Initialize the toolbox with ontologies and their properties.

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import cast
 
 from rdflib import DCTERMS, OWL, RDF, XSD, Literal, URIRef
 
@@ -7,6 +8,7 @@ from ontocast.onto.constants import PROV
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.toolbox import ToolBox
 
 
 def _make_base_ontology() -> Ontology:
@@ -64,17 +66,8 @@ def test_derive_updated_version_refreshes_lineage_metadata() -> None:
     assert datetime.fromisoformat(created_values[0]) == updated.created_at
 
 
-class _DummyAggregator:
-    def __init__(self, aggregated_graph: RDFGraph):
-        self._aggregated_graph = aggregated_graph
-
-    def aggregate_graphs(self, units: list[ContentUnit]) -> RDFGraph:
-        return self._aggregated_graph
-
-
 class _DummyTools:
-    def __init__(self, aggregated_graph: RDFGraph):
-        self.aggregator = _DummyAggregator(aggregated_graph)
+    pass
 
 
 def test_normalize_ontology_units_refreshes_lineage_for_updated_base() -> None:
@@ -93,9 +86,9 @@ def test_normalize_ontology_units_refreshes_lineage_for_updated_base() -> None:
         type=OutputType.ONTOLOGIES,
     )
 
-    normalized, applied = normalize_ontology_units(
+    normalized, applied, provenance = normalize_ontology_units(
         units=[unit],
-        tools=_DummyTools(delta_graph),
+        tools=cast(ToolBox, _DummyTools()),
         base_ontology=base,
         require_base=True,
     )
@@ -106,6 +99,7 @@ def test_normalize_ontology_units_refreshes_lineage_for_updated_base() -> None:
     assert normalized.hash != base_hash
     assert normalized.parent_hashes == [base_hash]
     assert normalized.created_at is not None
+    assert len(provenance) == 0
     assert (URIRef(f"{base.iri}#Case"), RDF.type, OWL.Class) in normalized.graph
     assert (
         onto_iri,
