@@ -6,6 +6,8 @@ lineage using hash-based identifiers.
 """
 
 import logging
+from copy import deepcopy
+from typing import TYPE_CHECKING
 
 from pydantic import Field
 
@@ -15,6 +17,9 @@ from ..onto.rdfgraph import RDFGraph
 from .onto import Tool
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from ontocast.tool.vector_store.patch_retriever import OntologyPatchRetriever
 
 
 class OntologyManager(Tool):
@@ -42,6 +47,7 @@ class OntologyManager(Tool):
         # Cache dictionary mapping IRI to hash of freshest terminal ontology.
         # Updated incrementally when ontologies are added.
         self._cached_ontologies: dict[str, str] = {}
+        self._patch_retriever: OntologyPatchRetriever | None = None
 
     def __contains__(self, item):
         """Check if an item (IRI or ontology_id) is in the ontology manager.
@@ -98,6 +104,8 @@ class OntologyManager(Tool):
         existing_hashes = {o.hash for o in self.ontology_versions[ontology.iri]}
         if ontology.hash not in existing_hashes:
             self.ontology_versions[ontology.iri].append(ontology)
+            if self._patch_retriever is not None:
+                self._patch_retriever.vector_store.reindex_ontology(ontology)
             # Update cache for this specific IRI (store hash only)
             freshest = self.get_freshest_terminal_ontology_by_iri(ontology.iri)
             if freshest and freshest.hash:
@@ -109,6 +117,38 @@ class OntologyManager(Tool):
             logger.debug(
                 f"Ontology {ontology.iri} with hash {ontology.hash[:8]}... already exists"
             )
+
+    def register_vector_store(self, retriever: "OntologyPatchRetriever") -> None:
+        """Register a patch retriever for vector context lookups."""
+        self._patch_retriever = retriever
+
+    def get_patch_context(self, query: str, top_k: int = 10) -> RDFGraph | None:
+        """Retrieve multi-ontology patch context for a query.
+
+        Falls back to the freshest available ontology graph if vector retrieval
+        is not configured or yields no atoms.
+        """
+        graph, _ = self.get_patch_context_with_sources(query=query, top_k=top_k)
+        return graph
+
+    def get_patch_context_with_sources(
+        self, query: str, top_k: int = 10
+    ) -> tuple[RDFGraph | None, list[str]]:
+        """Retrieve patch context and contributing ontology IRIs."""
+        if self._patch_retriever is not None:
+            patch_graph, atoms = self._patch_retriever.retrieve(
+                query=query, top_k=top_k
+            )
+            if len(patch_graph) > 0:
+                sources = sorted(
+                    {atom.ontology_iri for atom in atoms if atom.ontology_iri}
+                )
+                return patch_graph, sources
+
+        fallback = self.get_freshest_terminal_ontology_by_iri(None)
+        if fallback is None:
+            return None, []
+        return deepcopy(fallback.graph), [fallback.iri]
 
     def get_terminal_ontologies_by_iri(self, iri: str | None = None) -> list[Ontology]:
         """Get terminal (leaf) ontologies in the version graph.

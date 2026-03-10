@@ -58,6 +58,14 @@ class WebSearchProvider(StrEnum):
     DUCKDUCKGO = "duckduckgo"
 
 
+class EmbeddingProvider(StrEnum):
+    """Supported embedding providers."""
+
+    OPENAI = "openai"
+    HUGGINGFACE = "huggingface"
+    OLLAMA = "ollama"
+
+
 class LLMConfig(BaseSettings):
     """LLM configuration settings."""
 
@@ -357,6 +365,57 @@ class AggregationConfig(BaseSettings):
     )
 
 
+class EmbeddingConfig(BaseSettings):
+    """Embedding provider settings used by vector stores."""
+
+    provider: EmbeddingProvider = Field(
+        default=EmbeddingProvider.HUGGINGFACE, description="Embedding model provider"
+    )
+    model_name: str = Field(
+        default="paraphrase-multilingual-MiniLM-L12-v2",
+        description="Embedding model identifier used by the selected provider.",
+    )
+    api_key: str | None = Field(
+        default=None, description="Provider API key for hosted embedding services."
+    )
+    base_url: str | None = Field(
+        default=None, description="Provider base URL (for Ollama-compatible endpoints)."
+    )
+    dimension: int = Field(
+        default=384,
+        ge=1,
+        description="Expected embedding vector size.",
+    )
+
+    model_config = SettingsConfigDict(
+        env_prefix="EMBEDDING_",
+        case_sensitive=False,
+    )
+
+
+class QdrantConfig(BaseSettings):
+    """Qdrant vector store settings."""
+
+    uri: str | None = Field(default=None, description="Qdrant HTTP endpoint URI.")
+    api_key: str | None = Field(default=None, description="Qdrant API key.")
+    collection: str = Field(
+        default="ontology_atoms", description="Qdrant collection name."
+    )
+    grpc_port: int = Field(default=6334, description="Qdrant gRPC port.")
+    use_grpc: bool = Field(default=False, description="Use gRPC client transport.")
+    vector_size: int | None = Field(
+        default=None,
+        ge=1,
+        description="Vector size override. Defaults to EMBEDDING_DIMENSION when unset.",
+    )
+    top_k: int = Field(default=10, ge=1, description="Default patch retrieval size.")
+
+    model_config = SettingsConfigDict(
+        env_prefix="QDRANT_",
+        case_sensitive=False,
+    )
+
+
 class ToolConfig(BaseSettings):
     """Configuration for tools (LLM, triple stores, paths, chunking)."""
 
@@ -368,6 +427,8 @@ class ToolConfig(BaseSettings):
     domain: DomainConfig = Field(default_factory=DomainConfig)
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
     aggregation: AggregationConfig = Field(default_factory=AggregationConfig)
+    embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
 
 
 class Config(BaseSettings):

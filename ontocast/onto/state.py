@@ -140,6 +140,10 @@ class AgentState(BasePydanticModel):
         "as well as the description, name, short name, version, "
         "and IRI of the ontology",
     )
+    ontology_patch_sources: list[str] = Field(
+        default_factory=list,
+        description="Ontology IRIs that contributed to a retrieved multi-source patch context.",
+    )
     aggregated_facts: RDFGraph = Field(
         description="RDF triples representing aggregated facts "
         "from the current document",

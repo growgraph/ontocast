@@ -35,6 +35,7 @@ Update/modify the domain ontology {ontology_iri} provided below with abstract en
 {ontology_desc}
 
 Feel free to update the description of the ontology to make it more accurate and complete, do not change ontology IRI, prefix, or ontology_id.
+{multi_source_note}
 """
 
 prefix_instruction = """Use prefix `{ontology_prefix}` for entities/properties placed in the current domain ontology. DECLARE the prefix in preamble!"""

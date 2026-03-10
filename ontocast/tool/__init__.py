@@ -36,6 +36,7 @@ from .triple_manager import (
     Neo4jTripleStoreManager,
     TripleStoreManager,
 )
+from .vector_store import EmbeddingTool, OntologyPatchRetriever, QdrantVectorStore
 
 __all__ = [
     "LLMTool",
@@ -49,4 +50,7 @@ __all__ = [
     "Tool",
     "AtomicToolBox",
     "SearchHit",
+    "EmbeddingTool",
+    "QdrantVectorStore",
+    "OntologyPatchRetriever",
 ]

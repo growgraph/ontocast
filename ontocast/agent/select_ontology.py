@@ -14,6 +14,7 @@ from ontocast.agent.common import call_llm_with_retry
 from ontocast.onto.enum import Status
 from ontocast.onto.model import create_ontology_selector_report_model
 from ontocast.onto.null import NULL_ONTOLOGY
+from ontocast.onto.ontology import Ontology
 from ontocast.onto.state import AgentState
 from ontocast.prompt.select_ontology import template_prompt
 from ontocast.tool import OntologyManager
@@ -114,6 +115,35 @@ async def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     llm_tool = tools.llm
     om_tool: OntologyManager = tools.ontology_manager
 
+    if isinstance(tools, ToolBox) and tools.patch_retriever is not None:
+        excerpt = _create_document_excerpt(state, max_length=3000)
+        patch_graph, patch_sources = om_tool.get_patch_context_with_sources(
+            query=excerpt, top_k=tools.config.tool_config.qdrant.top_k
+        )
+        if patch_graph is not None and len(patch_graph) > 0:
+            seed_iri = patch_sources[0] if patch_sources else NULL_ONTOLOGY.iri
+            state.current_ontology = Ontology(
+                ontology_id=None,
+                title="Retrieved ontology patch context",
+                description=(
+                    "Composite ontology context assembled from vector-retrieved patches."
+                ),
+                graph=patch_graph,
+                iri=seed_iri,
+                current_domain=state.current_domain,
+            )
+            state.ontology_patch_sources = patch_sources
+            state.status = Status.SUCCESS
+            logger.info(
+                "Selected composite ontology patch context from %s source ontologies",
+                len(patch_sources),
+            )
+        else:
+            state.current_ontology = NULL_ONTOLOGY
+            state.ontology_patch_sources = []
+            state.status = Status.SUCCESS
+        return state
+
     if om_tool.has_ontologies:
         ontologies = om_tool.ontologies
         num_ontologies = len(ontologies)
@@ -166,6 +196,7 @@ async def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
             # None selected
             logger.debug("LLM selected: None (no suitable ontology)")
             state.current_ontology = NULL_ONTOLOGY
+            state.ontology_patch_sources = []
         elif 1 <= selector.answer_index <= num_ontologies:
             # Select ontology at index (answer_index - 1) since list is 0-based
             selected_ontology = ontologies[selector.answer_index - 1]
@@ -174,6 +205,7 @@ async def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
                 f"{selected_ontology.ontology_id} ({selected_ontology.iri})"
             )
             state.current_ontology = selected_ontology
+            state.ontology_patch_sources = [selected_ontology.iri]
             state.status = Status.SUCCESS
         else:
             # This should not happen due to Pydantic validation, but handle gracefully
@@ -181,8 +213,10 @@ async def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
                 f"Invalid answer_index {selector.answer_index} defaulting to NULL_ONTOLOGY"
             )
             state.current_ontology = NULL_ONTOLOGY
+            state.ontology_patch_sources = []
     else:
         state.current_ontology = NULL_ONTOLOGY
+        state.ontology_patch_sources = []
 
     # Set the initial version if not already set (tracks original version when ontology was selected)
     if state.current_ontology.initial_version is None:

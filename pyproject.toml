@@ -47,6 +47,7 @@ dependencies = [
   "oxrdflib>=0.5.0",
   "pydantic>=2.11.9",
   "pyld>=2.0.4",
+  "qdrant-client>=1.15.1",
   "rapidfuzz>=3.13.0",
   "rdflib>=7.1.4",
   "rich>=14.0.0",

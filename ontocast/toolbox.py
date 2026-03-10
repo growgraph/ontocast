@@ -24,6 +24,11 @@ from ontocast.tool.llm import LLMTool
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.sparql import SPARQLTool
 from ontocast.tool.triple_manager.core import TripleStoreManager
+from ontocast.tool.vector_store import (
+    EmbeddingTool,
+    OntologyPatchRetriever,
+    QdrantVectorStore,
+)
 from ontocast.tool.web_search import DuckDuckGoSearchProvider
 
 logger = logging.getLogger(__name__)
@@ -169,6 +174,22 @@ class ToolBox:
         self.version_manager: GraphVersionManager = GraphVersionManager()
         self.diff_tool: DiffTool = DiffTool()
 
+        self.embedding_tool: EmbeddingTool | None = None
+        self.vector_store: QdrantVectorStore | None = None
+        self.patch_retriever: OntologyPatchRetriever | None = None
+
+        if tool_config.qdrant.uri:
+            self.embedding_tool = EmbeddingTool.create(tool_config.embedding)
+            self.vector_store = QdrantVectorStore(
+                config=tool_config.qdrant,
+                embedding=self.embedding_tool,
+            )
+            self.patch_retriever = OntologyPatchRetriever(
+                vector_store=self.vector_store,
+                sparql_tool=self.sparql_tool,
+            )
+            self.ontology_manager.register_vector_store(self.patch_retriever)
+
     async def get_llm_tool(self, budget_tracker):
         """Get an LLM tool instance with a specific budget tracker.
 
@@ -239,6 +260,9 @@ class ToolBox:
         then fetches ontologies from the triple store and updates their properties
         using the LLM tool.
         """
+
+        if self.vector_store is not None:
+            await self.vector_store.initialize()
 
         # Synchronize ontologies and add them to ontology manager
         synchronized_ontologies = await self._synchronize_ontologies()

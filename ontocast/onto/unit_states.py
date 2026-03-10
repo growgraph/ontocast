@@ -33,6 +33,10 @@ class UnitState(BasePydanticModel):
     """Common per-unit workflow state."""
 
     ontology_snapshot: Ontology = Field(description="Immutable ontology snapshot")
+    ontology_patch_sources: list[str] = Field(
+        default_factory=list,
+        description="Ontology IRIs that contributed to the snapshot context.",
+    )
     suggestions: Suggestions = Field(default_factory=Suggestions)
     budget_tracker: BudgetTracker = Field(default_factory=BudgetTracker)
     max_visits_per_node: int = Field(default=1, ge=1)

@@ -50,6 +50,7 @@ def make_bootstrap_ontology_node(tools: ToolBox):
         bootstrap_state = UnitOntologyState(
             content_unit=bootstrap_unit,
             ontology_snapshot=Ontology(),
+            ontology_patch_sources=state.ontology_patch_sources,
             ontology_user_instruction=state.ontology_user_instruction,
             budget_tracker=state.budget_tracker,
             max_visits_per_node=tools.config.server.max_visits_per_node,
@@ -92,6 +93,7 @@ def make_render_ontology_node(tools: ToolBox):
                 ontology_state = UnitOntologyState(
                     content_unit=state.content_units[unit_index],
                     ontology_snapshot=state.current_ontology,
+                    ontology_patch_sources=state.ontology_patch_sources,
                     ontology_user_instruction=state.ontology_user_instruction,
                     budget_tracker=base_state.budget_tracker,
                     max_visits_per_node=tools.config.server.max_visits_per_node,
@@ -215,6 +217,7 @@ def make_consolidate_ontology_node(tools: ToolBox):
         consolidation_state = UnitOntologyState(
             content_unit=consolidation_unit,
             ontology_snapshot=state.current_ontology,
+            ontology_patch_sources=state.ontology_patch_sources,
             ontology_user_instruction=ontology_user_instruction,
             budget_tracker=state.budget_tracker,
             max_visits_per_node=1,

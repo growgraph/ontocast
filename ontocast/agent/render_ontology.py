@@ -200,8 +200,18 @@ async def render_ontology_update(
     current = state.current_ontology or state.ontology_snapshot
     ontology_iri = current.iri
     ontology_desc = current.describe()
+    multi_source_note = ""
+    if state.ontology_patch_sources:
+        joined_sources = ", ".join(state.ontology_patch_sources[:10])
+        multi_source_note = (
+            "\nThe provided ontology context may combine patches from multiple source "
+            f"ontologies: {joined_sources}. Preserve existing IRIs, namespace boundaries, "
+            "and avoid collapsing distinct source namespaces unless explicitly justified."
+        )
     intro_instruction = intro_instruction_update.format(
-        ontology_iri=ontology_iri, ontology_desc=ontology_desc
+        ontology_iri=ontology_iri,
+        ontology_desc=ontology_desc,
+        multi_source_note=multi_source_note,
     )
     ontology_chapter = ontology_template.format(
         ontology_ttl=current.graph.serialize(format="turtle")

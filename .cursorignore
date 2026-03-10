@@ -20,6 +20,12 @@
 !data/**
 
 
+!docker
+!docker/**
+
+!planning
+!planning/**
+
 !.github/**
 !.github/**/*yml
 !.env.example
