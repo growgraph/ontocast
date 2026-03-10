@@ -5,10 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-- No entries yet.
 
 ## [0.3.0] - 2026-03-10
 
@@ -38,7 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `serialize()` as a primary triple-manager interface for `Ontology` and `RDFGraph` objects.
 - `ONTOLOGY_MAX_TRIPLES` guardrail to prevent unbounded ontology growth.
 - Limit checks in `render_updated_graph()` and `sublimate_ontology()`.
-- Parallel pipeline controls via `PARALLEL_WORKERS`, `PARALLEL_FACTS_RETRIES`, and `PARALLEL_ONTOLOGY_RETRIES`.
+- Parallel unit/chunk processing with configurable worker concurrency and retry behavior.
+- More robust entity/property disambiguation across units/chunks during aggregation.
 - Optional ontology consolidation switch via `ENABLE_ONTOLOGY_CONSOLIDATION`.
 - Aggregation configuration via `AGG_EMBEDDING_MODEL` and `AGG_SIMILARITY_THRESHOLD`.
 - Web grounding configuration surface (`WEB_SEARCH_*`) with planner, retry, evidence-budget, and domain filtering controls.
