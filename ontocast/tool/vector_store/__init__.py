@@ -1,7 +1,7 @@
 """Vector store package for ontology patch retrieval."""
 
 from .atomizer import OntologyAtomizer
-from .core import OntologyAtom, VectorStoreTool
+from .core import OntologyAtom, OntologySearchHit, VectorStoreTool
 from .embedding import (
     EmbeddingTool,
     HuggingFaceEmbeddingTool,
@@ -17,6 +17,7 @@ __all__ = [
     "OllamaEmbeddingTool",
     "OpenAIEmbeddingTool",
     "OntologyAtom",
+    "OntologySearchHit",
     "OntologyAtomizer",
     "OntologyPatchRetriever",
     "QdrantVectorStore",

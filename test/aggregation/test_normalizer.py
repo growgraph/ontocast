@@ -2,7 +2,7 @@ from rdflib import RDF, RDFS, Literal, Namespace, URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.tool.agg.normalizer import EntityNormalizer
+from ontocast.tool.agg.normalizer import EntityNormalizer, EntityRepresentation
 
 
 def test_normalize_string_camel_case(normalizer: EntityNormalizer) -> None:
@@ -41,7 +41,7 @@ def test_create_representation_collects_metadata(normalizer: EntityNormalizer) -
 
     representation = normalizer.create_representation(entity, graph)
 
-    assert representation.entity == entity
+    assert representation.iri == entity
     assert "test entity" in representation.normal_form
     assert representation.types == [ont.Thing]
     assert "Test Entity" in representation.labels
@@ -59,3 +59,57 @@ def test_create_representation_marks_ontology_entity(
 
     representation = normalizer.create_representation(entity, graph)
     assert representation.is_ontology_entity is True
+
+
+def test_create_representation_builds_deterministic_neighborhood(
+    normalizer: EntityNormalizer,
+) -> None:
+    ex = Namespace("http://example.org/")
+    graph_a = RDFGraph()
+    graph_b = RDFGraph()
+    triples = [
+        (ex.A, ex.relatesTo, ex.B),
+        (ex.C, ex.relatesTo, ex.A),
+        (ex.B, ex.A, ex.C),
+    ]
+    for triple in triples:
+        graph_a.add(triple)
+    for triple in reversed(triples):
+        graph_b.add(triple)
+
+    rep_a = normalizer.create_representation(ex.A, graph_a)
+    rep_b = normalizer.create_representation(ex.A, graph_b)
+
+    assert rep_a.neighborhood_representation
+    assert rep_a.neighborhood_representation == rep_b.neighborhood_representation
+    assert rep_a.representation.startswith(rep_a.core_representation)
+    assert rep_a.neighborhood_representation in rep_a.representation
+
+
+def test_entity_representation_backfills_core_for_legacy_constructor() -> None:
+    entity = URIRef("http://example.org/Legacy")
+    representation = EntityRepresentation(
+        iri=entity,
+        normal_form="legacy",
+        types=[],
+        properties=[],
+        labels=[],
+        representation="legacy representation",
+        is_ontology_entity=False,
+    )
+
+    assert representation.core_representation == "legacy representation"
+    assert representation.representation == "legacy representation"
+
+
+def test_entity_representation_contract_iri_properties(
+    normalizer: EntityNormalizer,
+) -> None:
+    graph = RDFGraph()
+    ont = Namespace("http://ontology.org/")
+    entity = ont.SomeClass
+    graph.add((entity, RDF.type, RDFS.Class))
+
+    representation = normalizer.create_representation(entity, graph)
+    assert str(representation.iri) == str(entity)
+    assert representation.ontology_iri is None

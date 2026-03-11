@@ -17,7 +17,7 @@ from ontocast.tool.agg.uri_builder import (
 
 def make_representation(uri: str, normal_form: str) -> EntityRepresentation:
     return EntityRepresentation(
-        entity=URIRef(uri),
+        iri=URIRef(uri),
         normal_form=normal_form,
         types=[],
         properties=[],
@@ -72,7 +72,7 @@ def test_normalize_local_name_uses_role_specific_formatting() -> None:
 def test_build_uri_preserves_ontology_entities(uri_builder: URIBuilder) -> None:
     entity = URIRef("http://ontology.org/Thing")
     rep = EntityRepresentation(
-        entity=entity,
+        iri=entity,
         normal_form="thing",
         types=[],
         properties=[],
@@ -107,7 +107,7 @@ def test_create_entity_uri_mapping_uses_doc_namespace_and_avoids_collisions() ->
     right_canonical = URIRef("https://growgraph.dev/factsCanonicalB")
 
     shared_representation = EntityRepresentation(
-        entity=left_canonical,
+        iri=left_canonical,
         normal_form="collision",
         types=[],
         properties=[],
@@ -119,7 +119,7 @@ def test_create_entity_uri_mapping_uses_doc_namespace_and_avoids_collisions() ->
     representations = {
         left_canonical: shared_representation,
         right_canonical: EntityRepresentation(
-            entity=right_canonical,
+            iri=right_canonical,
             normal_form="collision",
             types=[],
             properties=[],

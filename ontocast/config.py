@@ -409,6 +409,28 @@ class QdrantConfig(BaseSettings):
         description="Vector size override. Defaults to EMBEDDING_DIMENSION when unset.",
     )
     top_k: int = Field(default=10, ge=1, description="Default patch retrieval size.")
+    embedding_batch_size: int = Field(
+        default=64,
+        ge=1,
+        description="Batch size used for embedding requests during indexing.",
+    )
+    upsert_batch_size: int = Field(
+        default=256,
+        ge=1,
+        description="Batch size used for Qdrant upsert operations.",
+    )
+    fusion_core_weight: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Core vector score weight for dual-vector ranking fusion.",
+    )
+    fusion_neighborhood_weight: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="Neighborhood vector score weight for dual-vector ranking fusion.",
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="QDRANT_",

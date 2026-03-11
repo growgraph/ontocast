@@ -9,14 +9,21 @@ It creates normalized string representations r(e) that include:
 from __future__ import annotations
 
 import re
-import unicodedata
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from rdflib import RDF, RDFS, Literal, URIRef
+from rdflib.term import Node
 
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.tool.representation_contract import combine_embedding_text
+from ontocast.tool.representation_text import (
+    normalize_text,
+    normalize_uri_local_name,
+    render_term_for_text,
+    stable_sorted_triples,
+)
 
 if TYPE_CHECKING:
     from ontocast.tool.agg.uri_builder import EntityRole
@@ -37,14 +44,24 @@ class EntityRepresentation:
         role: Detected entity role (class / property / instance)
     """
 
-    entity: URIRef
+    iri: URIRef
     normal_form: str
     types: list[URIRef]
     properties: list[URIRef]
     labels: list[str]
-    representation: str
     is_ontology_entity: bool
     role: EntityRole | None = field(default=None)
+    core_representation: str = ""
+    neighborhood_representation: str = ""
+    representation: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.core_representation:
+            self.core_representation = self.representation or self.normal_form
+        if not self.representation:
+            self.representation = combine_embedding_text(self)
+
+    ontology_iri: str | None = None
 
 
 class EntityNormalizer:
@@ -80,25 +97,9 @@ class EntityNormalizer:
             'PL_red_shift_value' -> 'pl red shift value'
             'Café' -> 'cafe'
         """
-        # Remove diacritics
-        text = "".join(
-            c
-            for c in unicodedata.normalize("NFD", text)
-            if unicodedata.category(c) != "Mn"
-        )
-
-        # Insert space before capitals that start a word (followed by lowercase)
-        # so e.g. PLRedShift -> PL Red Shift -> pl red shift (like snake_case)
+        # Keep legacy behavior for this method while sharing the same core utility.
         text = re.sub(r"(?=[A-Z][a-z])", " ", text)
-
-        # Convert to lowercase
-        text = text.lower()
-
-        # Replace underscores and hyphens with spaces
-        text = text.replace("_", " ").replace("-", " ")
-
-        # Collapse multiple spaces and strip
-        return re.sub(r"\s+", " ", text).strip()
+        return normalize_text(text)
 
     def normalize_uri(self, uri: URIRef) -> str:
         """Extract and normalize the local part of a URI.
@@ -113,21 +114,7 @@ class EntityNormalizer:
             'http://example.org/PLRedShift' -> 'pl red shift'
             'http://example.org/PL_red_shift_value' -> 'pl red shift value'
         """
-        uri_str = str(uri)
-
-        # Extract local name from fragment or path
-        if "#" in uri_str:
-            local = uri_str.rsplit("#", 1)[-1]
-        else:
-            trimmed = uri_str.rstrip("/")
-            local = trimmed.rsplit("/", 1)[-1] if "/" in trimmed else trimmed
-
-        # Handle camelCase before normalization
-        # Insert spaces before uppercase letters
-        local = re.sub(r"([a-z])([A-Z])", r"\1 \2", local)
-        local = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", local)
-
-        return self.normalize_string(local)
+        return normalize_uri_local_name(uri)
 
     def is_ontology_entity(self, entity: URIRef) -> bool:
         """Check if an entity belongs to an ontology namespace.
@@ -183,7 +170,85 @@ class EntityNormalizer:
             if p == entity:
                 is_predicate = True
 
-        return types, list(properties), labels, is_predicate
+        sorted_types = sorted(types, key=lambda entity: str(entity))
+        sorted_properties = sorted(properties, key=lambda entity: str(entity))
+        return sorted_types, sorted_properties, labels, is_predicate
+
+    def _render_term(self, term: Node) -> str:
+        return render_term_for_text(term)
+
+    def _build_neighborhood_representation(
+        self, entity: URIRef, graph: RDFGraph
+    ) -> str:
+        by_role: dict[str, list[str]] = {
+            "as_subject": [],
+            "as_object": [],
+            "as_predicate": [],
+        }
+        seen_by_role: dict[str, set[str]] = {
+            "as_subject": set(),
+            "as_object": set(),
+            "as_predicate": set(),
+        }
+
+        triples_sorted = stable_sorted_triples(list(graph))
+        for subj, pred, obj in triples_sorted:
+            if subj == entity:
+                sentence = (
+                    f"{self._render_term(subj)} has relation {self._render_term(pred)} "
+                    f"to {self._render_term(obj)}"
+                )
+                if sentence not in seen_by_role["as_subject"]:
+                    seen_by_role["as_subject"].add(sentence)
+                    by_role["as_subject"].append(sentence)
+            if obj == entity:
+                sentence = (
+                    f"{self._render_term(subj)} relates via {self._render_term(pred)} "
+                    f"to this entity {self._render_term(obj)}"
+                )
+                if sentence not in seen_by_role["as_object"]:
+                    seen_by_role["as_object"].add(sentence)
+                    by_role["as_object"].append(sentence)
+            if pred == entity:
+                sentence = (
+                    f"predicate {self._render_term(pred)} links {self._render_term(subj)} "
+                    f"and {self._render_term(obj)}"
+                )
+                if sentence not in seen_by_role["as_predicate"]:
+                    seen_by_role["as_predicate"].add(sentence)
+                    by_role["as_predicate"].append(sentence)
+
+        selected: list[str] = []
+        cap_per_role = 3
+        for role in ("as_subject", "as_object", "as_predicate"):
+            selected.extend(by_role[role][:cap_per_role])
+        if not selected:
+            return "no neighborhood facts available"
+        return ". ".join(selected)
+
+    def _build_core_representation(
+        self,
+        *,
+        normal_form: str,
+        types: list[URIRef],
+        properties: list[URIRef],
+        labels: list[str],
+    ) -> str:
+        parts = [normal_form]
+        if labels:
+            parts.extend(self.normalize_string(label) for label in labels[:3])
+        if types:
+            type_names = [self.normalize_uri(entity_type) for entity_type in types[:3]]
+            parts.extend(f"type {type_name}" for type_name in type_names)
+        if properties:
+            filtered_props = [
+                prop
+                for prop in properties
+                if prop not in {RDF.type, RDFS.label, RDFS.comment}
+            ]
+            prop_names = [self.normalize_uri(prop) for prop in filtered_props[:5]]
+            parts.extend(f"has {prop_name}" for prop_name in prop_names)
+        return " ".join(parts)
 
     def create_representation(
         self, entity: URIRef, graph: RDFGraph
@@ -215,46 +280,30 @@ class EntityNormalizer:
         # Detect role from the already-extracted context (no extra graph scan)
         role = detect_role_from_context(types, is_predicate)
 
-        # Build representation string r(e)
-        parts = [normal_form]
-
-        # Add labels if available (most informative)
-        if labels:
-            parts.extend(
-                self.normalize_string(label) for label in labels[:3]
-            )  # Max 3 labels
-
-        # Add type information (very important semantic signal)
-        if types:
-            type_names = [self.normalize_uri(t) for t in types[:3]]  # Max 3 types
-            parts.extend(f"type {tn}" for tn in type_names)
-
-        # Add property information (additional semantic signal)
-        if properties:
-            # Filter out very common properties
-            filtered_props = [
-                p for p in properties if p not in {RDF.type, RDFS.label, RDFS.comment}
-            ]
-            prop_names = [
-                self.normalize_uri(p) for p in filtered_props[:5]
-            ]  # Max 5 properties
-            parts.extend(f"has {pn}" for pn in prop_names)
-
-        # Combine into representation
-        representation = " ".join(parts)
+        core_representation = self._build_core_representation(
+            normal_form=normal_form,
+            types=types,
+            properties=properties,
+            labels=labels,
+        )
+        neighborhood_representation = self._build_neighborhood_representation(
+            entity=entity,
+            graph=graph,
+        )
 
         # Check if ontology entity
         is_ontology = self.is_ontology_entity(entity)
 
         return EntityRepresentation(
-            entity=entity,
+            iri=entity,
             normal_form=normal_form,
             types=types,
             properties=properties,
             labels=labels,
-            representation=representation,
             is_ontology_entity=is_ontology,
             role=role,
+            core_representation=core_representation,
+            neighborhood_representation=neighborhood_representation,
         )
 
     def create_representations_batch(

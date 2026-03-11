@@ -260,6 +260,83 @@ class SPARQLTool:
         """Clear the operation history."""
         self.operation_history.clear()
 
+    def get_induced_subgraph(
+        self,
+        entity_uris: list[str],
+        ontology_iris: list[str] | None = None,
+        depth: int = 1,
+        max_triples: int = 2000,
+    ) -> RDFGraph:
+        """Fetch a deterministic induced subgraph around selected entities."""
+        if self.triple_store_manager is None:
+            return RDFGraph()
+        if depth < 0:
+            raise ValueError("depth must be >= 0")
+        if max_triples <= 0:
+            return RDFGraph()
+
+        ontologies = self.triple_store_manager.fetch_ontologies()
+        ontology_filter = set(ontology_iris or [])
+        relevant_graphs = [
+            ontology.graph
+            for ontology in ontologies
+            if not ontology_filter or ontology.iri in ontology_filter
+        ]
+        if not relevant_graphs:
+            return RDFGraph()
+
+        merged_graph = RDFGraph()
+        for graph in relevant_graphs:
+            for prefix, namespace in graph.namespaces():
+                if prefix:
+                    merged_graph.bind(prefix, namespace)
+            merged_graph += graph
+
+        if not entity_uris:
+            return RDFGraph()
+        seeds = [URIRef(uri) for uri in sorted(set(entity_uris))]
+        result = RDFGraph()
+        for prefix, namespace in merged_graph.namespaces():
+            if prefix:
+                result.bind(prefix, namespace)
+
+        frontier: set[URIRef] = set(seeds)
+        visited: set[URIRef] = set()
+        for _ in range(depth + 1):
+            if not frontier:
+                break
+            next_frontier: set[URIRef] = set()
+            for node in sorted(frontier, key=lambda value: str(value)):
+                if node in visited:
+                    continue
+                visited.add(node)
+
+                outgoing = sorted(
+                    merged_graph.triples((node, None, None)),
+                    key=lambda triple: str(triple),
+                )
+                incoming = sorted(
+                    merged_graph.triples((None, None, node)),
+                    key=lambda triple: str(triple),
+                )
+                predicate_hits = sorted(
+                    merged_graph.triples((None, node, None)),
+                    key=lambda triple: str(triple),
+                )
+                for triple in outgoing + incoming + predicate_hits:
+                    if len(result) >= max_triples:
+                        return result
+                    result.add(triple)
+                    subj, pred, obj = triple
+                    if isinstance(subj, URIRef) and subj not in visited:
+                        next_frontier.add(subj)
+                    if isinstance(pred, URIRef) and pred not in visited:
+                        next_frontier.add(pred)
+                    if isinstance(obj, URIRef) and obj not in visited:
+                        next_frontier.add(obj)
+            frontier = next_frontier
+        return result
+
     def create_insert_operation(
         self, query: str, description: str = ""
     ) -> SPARQLOperationModel:

@@ -190,8 +190,8 @@ def normalize_local_name(
     if role == EntityRole.PROPERTY:
         return to_lower_camel_case(representation.normal_form)
 
-    if role == EntityRole.INSTANCE and has_structured_id(representation.entity):
-        return format_structured_id(representation.entity)
+    if role == EntityRole.INSTANCE and has_structured_id(representation.iri):
+        return format_structured_id(representation.iri)
 
     # Classes and instances with natural names → PascalCase
     return to_pascal_case(representation.normal_form)

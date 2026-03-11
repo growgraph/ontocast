@@ -116,11 +116,24 @@ def test_qdrant_vector_store_smoke() -> None:
         hits = vector_store.search_patches(query="alpha concept relation", top_k=5)
         assert len(hits) > 0
         assert any(hit.ontology_iri == ontology.iri for hit in hits)
+        assert all(hit.ontology_version == ontology.version for hit in hits)
+        assert all(hit.core_representation for hit in hits)
+        assert all(hit.neighborhood_representation for hit in hits)
 
-        retriever = OntologyPatchRetriever(vector_store=vector_store)
+        filtered_version_hits = vector_store.search_patches(
+            query="alpha concept relation",
+            top_k=5,
+            filter_version=ontology.version,
+        )
+        assert len(filtered_version_hits) > 0
+        assert all(
+            hit.ontology_version == ontology.version for hit in filtered_version_hits
+        )
+
+        retriever = OntologyPatchRetriever(vector_store=vector_store, sparql_tool=None)
         patch_graph, atoms = retriever.retrieve(query="beta concept", top_k=3)
         assert len(atoms) > 0
-        assert len(patch_graph) > 0
+        assert len(patch_graph) == 0
 
         vector_store.delete_ontology(ontology.iri)
         filtered_hits = vector_store.search_patches(
