@@ -19,20 +19,76 @@ class OntologyPatchRetriever(Tool):
     sparql_tool: Any | None = Field(default=None, exclude=True)
 
     def retrieve(
-        self, query: str, top_k: int = 10, expand_sparql: bool = True
+        self,
+        query: str,
+        top_k: int = 10,
+        expand_sparql: bool = True,
+        subgraph_depth: int = 1,
+        max_triples: int = 2000,
     ) -> tuple[RDFGraph, list[OntologyAtom]]:
         """Retrieve top-k atoms and expand graph via triple-store/SPARQL lookup."""
-        atoms = self.vector_store.search_patches(query=query, top_k=top_k)
-        if not expand_sparql or self.sparql_tool is None or not atoms:
-            return RDFGraph(), atoms
+        batched_results = self.retrieve_many(
+            queries=[query],
+            top_k=top_k,
+            expand_sparql=expand_sparql,
+            subgraph_depth=subgraph_depth,
+            max_triples=max_triples,
+        )
+        if not batched_results:
+            return RDFGraph(), []
+        return batched_results[0]
 
-        entity_uris = sorted({atom.iri for atom in atoms if atom.iri})
-        ontology_iris = sorted(
-            {atom.ontology_iri for atom in atoms if atom.ontology_iri}
+    def retrieve_many(
+        self,
+        queries: list[str],
+        top_k: int = 10,
+        expand_sparql: bool = True,
+        subgraph_depth: int = 1,
+        max_triples: int = 2000,
+    ) -> list[tuple[RDFGraph, list[OntologyAtom]]]:
+        """Batch retrieve graph patches for many proposition queries."""
+        if not queries:
+            return []
+        if not expand_sparql or self.sparql_tool is None:
+            hits_by_query = self.vector_store.search_patch_hits_many(
+                queries=queries,
+                top_k=top_k,
+            )
+            return [(RDFGraph(), [hit.atom for hit in hits]) for hits in hits_by_query]
+
+        hits_by_query = self.vector_store.search_patch_hits_many(
+            queries=queries,
+            top_k=top_k,
         )
-        expanded = self.sparql_tool.get_induced_subgraph(
-            entity_uris=entity_uris,
-            ontology_iris=ontology_iris,
-            depth=1,
-        )
-        return expanded, atoms
+        results: list[tuple[RDFGraph, list[OntologyAtom]]] = []
+        for hits in hits_by_query:
+            atoms = [hit.atom for hit in hits]
+            if not atoms:
+                results.append((RDFGraph(), []))
+                continue
+            entity_uris = sorted({atom.iri for atom in atoms if atom.iri})
+            ontology_iris = sorted(
+                {atom.ontology_iri for atom in atoms if atom.ontology_iri}
+            )
+            ontology_version_filters: dict[str, set[str]] = {}
+            ontology_hash_filters: dict[str, set[str]] = {}
+            for atom in atoms:
+                if atom.ontology_iri and atom.ontology_version:
+                    ontology_version_filters.setdefault(atom.ontology_iri, set()).add(
+                        str(atom.ontology_version)
+                    )
+                if atom.ontology_iri and atom.ontology_hash:
+                    ontology_hash_filters.setdefault(atom.ontology_iri, set()).add(
+                        atom.ontology_hash
+                    )
+
+            graph = self.sparql_tool.get_induced_subgraph(
+                entity_uris=entity_uris,
+                ontology_iris=ontology_iris,
+                depth=subgraph_depth,
+                max_triples=max_triples,
+                ontology_version_filters=ontology_version_filters or None,
+                ontology_hash_filters=ontology_hash_filters or None,
+            )
+            results.append((graph, atoms))
+        return results

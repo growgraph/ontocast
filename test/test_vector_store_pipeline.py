@@ -11,7 +11,11 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.sparql import SPARQLTool
 from ontocast.tool.vector_store.atomizer import OntologyAtomizer
-from ontocast.tool.vector_store.core import OntologyAtom, canonicalize_entity_role
+from ontocast.tool.vector_store.core import (
+    OntologyAtom,
+    OntologySearchHit,
+    canonicalize_entity_role,
+)
 from ontocast.tool.vector_store.embedding import EmbeddingTool
 from ontocast.tool.vector_store.patch_retriever import OntologyPatchRetriever
 from ontocast.tool.vector_store.qdrant import QdrantVectorStore
@@ -59,6 +63,28 @@ class StubVectorStore(QdrantVectorStore):
         del query, filter_iri, filter_version, filter_hash
         return self._atoms[:top_k]
 
+    def search_patch_hits(
+        self,
+        query: str,
+        top_k: int = 10,
+        filter_iri: str | None = None,
+        filter_version: str | None = None,
+        filter_hash: str | None = None,
+    ) -> list[OntologySearchHit]:
+        del query, filter_iri, filter_version, filter_hash
+        return [OntologySearchHit(atom=atom, score=1.0) for atom in self._atoms[:top_k]]
+
+    def search_patch_hits_many(
+        self,
+        queries: list[str],
+        top_k: int = 10,
+        filter_iri: str | None = None,
+        filter_version: str | None = None,
+        filter_hash: str | None = None,
+    ) -> list[list[OntologySearchHit]]:
+        del filter_iri, filter_version, filter_hash
+        return [self.search_patch_hits(query=query, top_k=top_k) for query in queries]
+
 
 class StubSPARQLTool(SPARQLTool):
     """SPARQL tool stub that records induced-subgraph requests."""
@@ -67,6 +93,8 @@ class StubSPARQLTool(SPARQLTool):
         super().__init__(**kwargs)
         self._last_entity_uris: list[str] = []
         self._last_ontology_iris: list[str] = []
+        self._last_ontology_version_filters: dict[str, set[str]] | None = None
+        self._last_ontology_hash_filters: dict[str, set[str]] | None = None
 
     @property
     def last_entity_uris(self) -> list[str]:
@@ -76,16 +104,28 @@ class StubSPARQLTool(SPARQLTool):
     def last_ontology_iris(self) -> list[str]:
         return self._last_ontology_iris
 
+    @property
+    def last_ontology_version_filters(self) -> dict[str, set[str]] | None:
+        return self._last_ontology_version_filters
+
+    @property
+    def last_ontology_hash_filters(self) -> dict[str, set[str]] | None:
+        return self._last_ontology_hash_filters
+
     def get_induced_subgraph(
         self,
         entity_uris: list[str],
         ontology_iris: list[str] | None = None,
         depth: int = 1,
         max_triples: int = 2000,
+        ontology_version_filters: dict[str, set[str]] | None = None,
+        ontology_hash_filters: dict[str, set[str]] | None = None,
     ) -> RDFGraph:
         del depth, max_triples
         self._last_entity_uris = entity_uris
         self._last_ontology_iris = ontology_iris or []
+        self._last_ontology_version_filters = ontology_version_filters
+        self._last_ontology_hash_filters = ontology_hash_filters
         graph = RDFGraph._from_turtle_str(
             """
             @prefix ex: <https://example.org/smoke#> .
@@ -212,6 +252,12 @@ def test_retriever_expands_graph_via_sparql_tool() -> None:
     assert len(graph) > 0
     assert sparql_tool.last_entity_uris == sorted({atom.iri for atom in atoms})
     assert sparql_tool.last_ontology_iris == ["https://example.org/smoke"]
+    assert sparql_tool.last_ontology_version_filters == {
+        "https://example.org/smoke": {"1.0.0"}
+    }
+    assert sparql_tool.last_ontology_hash_filters == {
+        "https://example.org/smoke": {"hash1"}
+    }
 
 
 def test_canonicalize_entity_role_maps_synonyms() -> None:

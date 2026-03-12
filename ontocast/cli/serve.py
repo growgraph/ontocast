@@ -40,7 +40,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from ontocast.cli.util import crawl_directories
 from ontocast.config import Config, ServerConfig
-from ontocast.onto.enum import RenderMode
+from ontocast.onto.enum import OntologyContextMode, RenderMode
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import create_agent_graph
 from ontocast.toolbox import ToolBox
@@ -238,6 +238,11 @@ def create_app(
             render_mode = request.query_params.get("render_mode", None)
             if render_mode:
                 logger.debug(f"Using render_mode: {render_mode}")
+            ontology_context_mode = request.query_params.get(
+                "ontology_context_mode", None
+            )
+            if ontology_context_mode:
+                logger.debug(f"Using ontology_context_mode: {ontology_context_mode}")
 
             # Extract user instructions from query parameters (available for both JSON and multipart)
             ontology_user_instruction = request.query_params.get(
@@ -338,9 +343,36 @@ def create_app(
                         )
                 return default
 
+            def parse_ontology_context_mode_param(
+                value: str | OntologyContextMode | None,
+                default: OntologyContextMode,
+            ) -> OntologyContextMode:
+                """Parse ontology context mode from query string or use default."""
+                if value is None:
+                    return default
+                if isinstance(value, OntologyContextMode):
+                    return value
+                if isinstance(value, str):
+                    normalized = value.lower().strip()
+                    try:
+                        return OntologyContextMode(normalized)
+                    except ValueError:
+                        logger.warning(
+                            "Invalid ontology_context_mode '%s', using default '%s'",
+                            value,
+                            default.value,
+                        )
+                return default
+
             render_mode_value: RenderMode = parse_render_mode_param(
                 render_mode,
                 server_config.render_mode,
+            )
+            ontology_context_mode_value: OntologyContextMode = (
+                parse_ontology_context_mode_param(
+                    ontology_context_mode,
+                    server_config.ontology_context_mode,
+                )
             )
 
             initial_state = AgentState(
@@ -348,6 +380,7 @@ def create_app(
                 max_visits=server_config.max_visits_per_node,
                 max_chunks=head_chunks,
                 render_mode=render_mode_value,
+                ontology_context_mode=ontology_context_mode_value,
                 ontology_max_triples=server_config.ontology_max_triples,
                 dataset=dataset,
                 ontology_user_instruction=ontology_user_instruction,
@@ -408,6 +441,7 @@ def create_app(
                     "chunks_processed": processed_content_units,
                     "chunks_remaining": chunks_remaining,
                     "budget": budget_tracker_data,
+                    "retrieval_metrics": workflow_state.get("retrieval_metrics", {}),
                 },
             }
 
@@ -535,6 +569,7 @@ def run(
                         max_visits=config.server.max_visits_per_node,
                         max_chunks=head_chunks,
                         render_mode=config.server.render_mode,
+                        ontology_context_mode=config.server.ontology_context_mode,
                         dataset=config.tool_config.fuseki.dataset,
                     )
                     async for _ in workflow.astream(

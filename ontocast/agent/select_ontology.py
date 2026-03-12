@@ -11,13 +11,15 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry
-from ontocast.onto.enum import Status
+from ontocast.onto.enum import OntologyContextMode, Status
 from ontocast.onto.model import create_ontology_selector_report_model
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.prompt.select_ontology import template_prompt
 from ontocast.tool import OntologyManager
+from ontocast.tool.chunk.util import split_proposition_windows
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -114,12 +116,45 @@ async def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
     logger.info(f"Selecting ontology for document ({progress_info})")
     llm_tool = tools.llm
     om_tool: OntologyManager = tools.ontology_manager
+    qdrant_config = tools.config.tool_config.qdrant
 
-    if isinstance(tools, ToolBox) and tools.patch_retriever is not None:
+    if (
+        state.ontology_context_mode == OntologyContextMode.RETRIEVED_INDUCED_GRAPH
+        and tools.patch_retriever is not None
+    ):
         excerpt = _create_document_excerpt(state, max_length=3000)
-        patch_graph, patch_sources = om_tool.get_patch_context_with_sources(
-            query=excerpt, top_k=tools.config.tool_config.qdrant.top_k
-        )
+        if qdrant_config.proposition_retrieval_enabled:
+            proposition_windows = split_proposition_windows(
+                excerpt,
+                max_sentences=qdrant_config.proposition_window_sentences,
+                max_windows=qdrant_config.proposition_max_windows,
+            )
+        else:
+            proposition_windows = [excerpt] if excerpt else []
+
+        stitched_graph = RDFGraph()
+        stitched_sources: set[str] = set()
+        if proposition_windows:
+            top_k = max(1, qdrant_config.top_k // max(1, len(proposition_windows)))
+            patch_batches = om_tool.get_patch_contexts_with_sources(
+                queries=proposition_windows,
+                top_k=top_k,
+                subgraph_depth=qdrant_config.induced_subgraph_depth,
+                max_triples=qdrant_config.induced_subgraph_max_triples,
+            )
+            for patch_graph, patch_sources in patch_batches:
+                if patch_graph is None or len(patch_graph) == 0:
+                    continue
+                stitched_graph += patch_graph
+                stitched_sources.update(patch_sources)
+        else:
+            stitched_graph = RDFGraph()
+
+        patch_graph = stitched_graph
+        patch_sources = sorted(stitched_sources)
+        state.retrieval_metrics["proposition_windows"] = len(proposition_windows)
+        state.retrieval_metrics["retrieved_source_ontologies"] = len(patch_sources)
+        state.retrieval_metrics["retrieved_stitched_triples"] = len(patch_graph)
         if patch_graph is not None and len(patch_graph) > 0:
             seed_iri = patch_sources[0] if patch_sources else NULL_ONTOLOGY.iri
             state.current_ontology = Ontology(
@@ -135,13 +170,19 @@ async def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
             state.ontology_patch_sources = patch_sources
             state.status = Status.SUCCESS
             logger.info(
-                "Selected composite ontology patch context from %s source ontologies",
+                "Selected composite ontology patch context from %s source ontologies "
+                "(mode=%s, windows=%s)",
                 len(patch_sources),
+                state.ontology_context_mode.value,
+                len(proposition_windows),
             )
         else:
-            state.current_ontology = NULL_ONTOLOGY
+            # Keep the baseline fallback path intact even in retrieval mode.
+            fallback = om_tool.get_freshest_terminal_ontology_by_iri(None)
+            state.current_ontology = fallback if fallback is not None else NULL_ONTOLOGY
             state.ontology_patch_sources = []
             state.status = Status.SUCCESS
+            state.retrieval_metrics["retrieval_fallback"] = "freshest_full_ttl"
         return state
 
     if om_tool.has_ontologies:

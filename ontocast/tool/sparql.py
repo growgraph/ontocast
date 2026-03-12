@@ -266,6 +266,8 @@ class SPARQLTool:
         ontology_iris: list[str] | None = None,
         depth: int = 1,
         max_triples: int = 2000,
+        ontology_version_filters: dict[str, set[str]] | None = None,
+        ontology_hash_filters: dict[str, set[str]] | None = None,
     ) -> RDFGraph:
         """Fetch a deterministic induced subgraph around selected entities."""
         if self.triple_store_manager is None:
@@ -277,11 +279,20 @@ class SPARQLTool:
 
         ontologies = self.triple_store_manager.fetch_ontologies()
         ontology_filter = set(ontology_iris or [])
-        relevant_graphs = [
-            ontology.graph
-            for ontology in ontologies
-            if not ontology_filter or ontology.iri in ontology_filter
-        ]
+        relevant_graphs = []
+        for ontology in ontologies:
+            if ontology_filter and ontology.iri not in ontology_filter:
+                continue
+            if ontology_version_filters and ontology.iri in ontology_version_filters:
+                ontology_version = (
+                    str(ontology.version) if ontology.version is not None else None
+                )
+                if ontology_version not in ontology_version_filters[ontology.iri]:
+                    continue
+            if ontology_hash_filters and ontology.iri in ontology_hash_filters:
+                if ontology.hash not in ontology_hash_filters[ontology.iri]:
+                    continue
+            relevant_graphs.append(ontology.graph)
         if not relevant_graphs:
             return RDFGraph()
 

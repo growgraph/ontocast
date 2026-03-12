@@ -34,6 +34,13 @@ class RenderMode(StrEnum):
     ONTOLOGY_AND_FACTS = "ontology_and_facts"
 
 
+class OntologyContextMode(StrEnum):
+    """Enumeration of ontology context selection strategies."""
+
+    FULL_TTL = "full_ttl"
+    RETRIEVED_INDUCED_GRAPH = "retrieved_induced_graph"
+
+
 class FailureStage(StrEnum):
     """Enumeration of possible failure stages in the workflow."""
 
@@ -75,6 +82,8 @@ class WorkflowNode(StrEnum):
     MERGE_FACTS = "Merge Facts"
     PLAN_EXTERNAL_EVIDENCE = "Plan External Evidence"
     FETCH_EXTERNAL_EVIDENCE = "Fetch External Evidence"
+    STRUCTURAL_PREPASS = "Structural Pre-pass"
+    CONSISTENCY_CRITIC = "Consistency Critic"
 
 
 class SPARQLOperationType(StrEnum):

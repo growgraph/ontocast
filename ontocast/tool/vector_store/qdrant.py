@@ -177,6 +177,41 @@ class QdrantVectorStore(VectorStoreTool):
             filter_hash=filter_hash,
         )
 
+    def search_patch_hits_many(
+        self,
+        queries: list[str],
+        top_k: int = 10,
+        filter_iri: str | None = None,
+        filter_version: str | None = None,
+        filter_hash: str | None = None,
+    ) -> list[list[OntologySearchHit]]:
+        """Search ontology atoms for many queries with batched embedding calls."""
+        if not queries:
+            return []
+
+        core_vectors = self.embedding.embed(queries)
+        neighborhood_vectors = self.embedding.embed(queries)
+        if len(core_vectors) != len(queries) or len(neighborhood_vectors) != len(
+            queries
+        ):
+            raise ValueError(
+                "Embedding provider returned mismatched vectors for queries"
+            )
+
+        results: list[list[OntologySearchHit]] = []
+        for core_vector, neighborhood_vector in zip(core_vectors, neighborhood_vectors):
+            results.append(
+                self.search_hits_by_vector(
+                    core_vector=core_vector,
+                    neighborhood_vector=neighborhood_vector,
+                    top_k=top_k,
+                    filter_iri=filter_iri,
+                    filter_version=filter_version,
+                    filter_hash=filter_hash,
+                )
+            )
+        return results
+
     def search_by_vector(
         self,
         core_vector: list[float],

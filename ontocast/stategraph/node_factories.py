@@ -1,12 +1,12 @@
 import asyncio
 import logging
 
-from rdflib import DCTERMS, URIRef
+from rdflib import DCTERMS, RDFS, Literal, URIRef
 
 from ontocast.agent.normalize_ontology import normalize_ontology_units
 from ontocast.agent.render_ontology import render_ontology_update
 from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
-from ontocast.onto.enum import Status
+from ontocast.onto.enum import OntologyContextMode, Status
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
@@ -16,6 +16,7 @@ from ontocast.stategraph.helpers import (
     build_document_excerpt,
     build_ontology_delta_graph,
 )
+from ontocast.tool.validate import RDFGraphConnectivityValidator
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -330,3 +331,114 @@ def make_merge_facts_node(tools: ToolBox):
         return state
 
     return merge_facts
+
+
+def make_structural_prepass_node(tools: ToolBox):
+    del tools
+
+    def structural_prepass(state: AgentState) -> AgentState:
+        """Run lightweight structural checks over stitched graphs before final critic."""
+        if (
+            not state.current_ontology.is_null()
+            and len(state.current_ontology.graph) > 0
+        ):
+            ontology_validation = RDFGraphConnectivityValidator(
+                state.current_ontology.graph
+            ).validate_connectivity()
+            state.retrieval_metrics["structural_ontology_components"] = (
+                ontology_validation.num_components
+            )
+            if not ontology_validation.is_fully_connected:
+                state.improvements_suggestions.append(
+                    "Structural pre-pass: ontology has disconnected components; "
+                    "prefer linking classes/properties explicitly."
+                )
+            if ontology_validation.missing_labels:
+                state.improvements_suggestions.append(
+                    "Structural pre-pass: ontology predicates missing labels were detected."
+                )
+
+        if len(state.aggregated_facts) > 0:
+            facts_validation = RDFGraphConnectivityValidator(
+                state.aggregated_facts
+            ).validate_connectivity()
+            state.retrieval_metrics["structural_facts_components"] = (
+                facts_validation.num_components
+            )
+            if not facts_validation.is_fully_connected:
+                state.improvements_suggestions.append(
+                    "Structural pre-pass: facts graph has disconnected components."
+                )
+        state.status = Status.SUCCESS
+        return state
+
+    return structural_prepass
+
+
+def _extract_consistency_queries(graph: RDFGraph, max_terms: int = 8) -> list[str]:
+    labels: list[str] = []
+    for _, _, obj in graph.triples((None, RDFS.label, None)):
+        if isinstance(obj, Literal):
+            value = str(obj).strip()
+            if value:
+                labels.append(value)
+    for subject, _, _ in graph:
+        if isinstance(subject, URIRef):
+            local_name = str(subject).rstrip("/").split("/")[-1].split("#")[-1]
+            if local_name and local_name not in labels:
+                labels.append(local_name.replace("_", " "))
+        if len(labels) >= max_terms:
+            break
+    return labels[:max_terms]
+
+
+def make_consistency_critic_node(tools: ToolBox):
+    def consistency_critic(state: AgentState) -> AgentState:
+        """Global consistency critic over candidate ontology atoms using vector re-query."""
+        if (
+            state.ontology_context_mode != OntologyContextMode.RETRIEVED_INDUCED_GRAPH
+            or tools.vector_store is None
+            or state.current_ontology.is_null()
+            or len(state.current_ontology.graph) == 0
+        ):
+            state.status = Status.SUCCESS
+            return state
+
+        query_terms = _extract_consistency_queries(state.current_ontology.graph)
+        if not query_terms:
+            state.status = Status.SUCCESS
+            return state
+
+        allowed_sources = set(state.ontology_patch_sources)
+        if state.current_ontology.iri:
+            allowed_sources.add(state.current_ontology.iri)
+        threshold = (
+            tools.config.tool_config.qdrant.consistency_critic_similarity_threshold
+        )
+        conflicts: list[str] = []
+        for query in query_terms:
+            hits = tools.vector_store.search_patch_hits(query=query, top_k=3)
+            for hit in hits:
+                if (
+                    hit.score >= threshold
+                    and hit.atom.ontology_iri
+                    and hit.atom.ontology_iri not in allowed_sources
+                ):
+                    conflicts.append(
+                        f"Potential cross-ontology conflict for '{query}' with "
+                        f"source {hit.atom.ontology_iri} (score={hit.score:.2f})."
+                    )
+            if len(conflicts) >= 5:
+                break
+
+        if conflicts:
+            state.improvements_suggestions.extend(conflicts[:5])
+            logger.warning(
+                "Consistency critic detected %s potential cross-ontology conflicts",
+                len(conflicts),
+            )
+        state.retrieval_metrics["consistency_conflicts"] = len(conflicts)
+        state.status = Status.SUCCESS
+        return state
+
+    return consistency_critic

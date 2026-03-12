@@ -8,7 +8,13 @@ from rdflib import URIRef
 from ontocast.onto.constants import CHUNK_NULL_IRI, DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.context import AgentContext, AgentType, ContextManager
-from ontocast.onto.enum import FailureStage, RenderMode, Status, WorkflowNode
+from ontocast.onto.enum import (
+    FailureStage,
+    OntologyContextMode,
+    RenderMode,
+    Status,
+    WorkflowNode,
+)
 from ontocast.onto.model import BasePydanticModel, Suggestions
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
@@ -144,6 +150,10 @@ class AgentState(BasePydanticModel):
         default_factory=list,
         description="Ontology IRIs that contributed to a retrieved multi-source patch context.",
     )
+    retrieval_metrics: dict[str, int | float | str] = Field(
+        default_factory=dict,
+        description="Runtime retrieval/evaluation metrics for observability.",
+    )
     aggregated_facts: RDFGraph = Field(
         description="RDF triples representing aggregated facts "
         "from the current document",
@@ -242,6 +252,12 @@ class AgentState(BasePydanticModel):
     render_mode: RenderMode = Field(
         default=RenderMode.ONTOLOGY_AND_FACTS,
         description=("Rendering mode: ontology, facts, or ontology_and_facts."),
+    )
+    ontology_context_mode: OntologyContextMode = Field(
+        default=OntologyContextMode.FULL_TTL,
+        description=(
+            "Ontology prompt context strategy: full_ttl or retrieved_induced_graph."
+        ),
     )
     ontology_max_triples: int | None = Field(
         default=50000,

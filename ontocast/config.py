@@ -12,7 +12,7 @@ from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ontocast.onto.constants import DEFAULT_DATASET, DEFAULT_ONTOLOGIES_DATASET
-from ontocast.onto.enum import RenderMode
+from ontocast.onto.enum import OntologyContextMode, RenderMode
 
 
 class LLMProvider(StrEnum):
@@ -145,6 +145,13 @@ class ServerConfig(BaseSettings):
     render_mode: RenderMode = Field(
         default=RenderMode.ONTOLOGY_AND_FACTS,
         description="Rendering mode: ontology, facts, or ontology_and_facts.",
+    )
+    ontology_context_mode: OntologyContextMode = Field(
+        default=OntologyContextMode.FULL_TTL,
+        description=(
+            "Ontology prompt context mode: full_ttl uses the complete selected ontology, "
+            "retrieved_induced_graph builds context from vector-retrieved induced subgraphs."
+        ),
     )
     ontology_max_triples: int | None = Field(
         default=50000,
@@ -409,6 +416,37 @@ class QdrantConfig(BaseSettings):
         description="Vector size override. Defaults to EMBEDDING_DIMENSION when unset.",
     )
     top_k: int = Field(default=10, ge=1, description="Default patch retrieval size.")
+    induced_subgraph_depth: int = Field(
+        default=1,
+        ge=0,
+        description="Neighborhood expansion depth for induced subgraph retrieval.",
+    )
+    induced_subgraph_max_triples: int = Field(
+        default=2000,
+        ge=1,
+        description="Maximum number of triples returned for induced subgraph retrieval.",
+    )
+    proposition_window_sentences: int = Field(
+        default=2,
+        ge=1,
+        le=4,
+        description="Sentence window size used for proposition-level retrieval slicing.",
+    )
+    proposition_max_windows: int = Field(
+        default=16,
+        ge=1,
+        description="Upper bound on proposition windows generated per document excerpt.",
+    )
+    proposition_retrieval_enabled: bool = Field(
+        default=True,
+        description="Enable proposition-level multi-query retrieval for induced graph mode.",
+    )
+    consistency_critic_similarity_threshold: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Minimum vector retrieval score to report potential cross-ontology conflicts.",
+    )
     embedding_batch_size: int = Field(
         default=64,
         ge=1,

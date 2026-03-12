@@ -15,4 +15,4 @@ def route_after_ontology_consolidation(state: AgentState) -> str:
     """Route after ontology stage: facts map if needed, else serialize."""
     if state.render_facts:
         return WorkflowNode.RENDER_FACTS
-    return WorkflowNode.SERIALIZE
+    return WorkflowNode.STRUCTURAL_PREPASS

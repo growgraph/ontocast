@@ -274,6 +274,7 @@ async def test_select_ontology_none_keeps_success_status(monkeypatch) -> None:
         ontology_manager=SimpleNamespace(
             has_ontologies=True, ontologies=[_build_ontology()]
         ),
+        config=SimpleNamespace(tool_config=SimpleNamespace(qdrant=SimpleNamespace())),
     )
     result = await select_ontology_module.select_ontology(state, tools)  # type: ignore[arg-type]
 
@@ -606,7 +607,10 @@ def test_agent_state_render_mode_properties() -> None:
 
 def test_route_after_ontology_consolidation_respects_ontology_only_mode() -> None:
     ontology_only = AgentState(render_mode=RenderMode.ONTOLOGY)
-    assert route_after_ontology_consolidation(ontology_only) == WorkflowNode.SERIALIZE
+    assert (
+        route_after_ontology_consolidation(ontology_only)
+        == WorkflowNode.STRUCTURAL_PREPASS
+    )
 
     ontology_and_facts = AgentState(render_mode=RenderMode.ONTOLOGY_AND_FACTS)
     assert (
