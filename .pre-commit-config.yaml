@@ -3,7 +3,7 @@ fail_fast: false
 repos:
   # Python linting and formatting
 -   repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.10
+    rev: v0.15.7
     hooks:
     -   id: ruff-check
         args: [--fix, --ignore, E722, --ignore, W293, --ignore, E501]
@@ -21,7 +21,7 @@ repos:
 
   # YAML formatting
 -   repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
-    rev: v2.15.0
+    rev: v2.16.0
     hooks:
     -   id: pretty-format-yaml
         args: [--autofix, --indent, '4', --preserve-quotes]
@@ -35,7 +35,7 @@ repos:
 
   # TOML formatting and sorting
 -   repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
-    rev: v2.15.0
+    rev: v2.16.0
     hooks:
     -   id: pretty-format-toml
         args: [--autofix]

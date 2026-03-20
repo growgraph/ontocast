@@ -28,9 +28,9 @@ def compare_states(states: list[tuple[pathlib.Path, AgentState]]) -> None:
     # Sort rows by the last number in the filename
     sorted_rows = sorted(
         [(fp, state) for fp, state in states],
-        key=lambda x: int(x[0].stem.split(".")[-1])
-        if x[0].stem.split(".")[-1].isdigit()
-        else 0,
+        key=lambda x: (
+            int(x[0].stem.split(".")[-1]) if x[0].stem.split(".")[-1].isdigit() else 0
+        ),
     )
 
     for fp, state in sorted_rows:
