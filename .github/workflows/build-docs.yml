@@ -33,7 +33,7 @@ jobs:
                 version: "0.10.12"
         -   name: Install dependencies
             run: |
-                uv sync --group docs --no-group dev
+                uv sync --extra docs
         -   name: Build site
             run: |
                 uv run mkdocs build --site-dir _site

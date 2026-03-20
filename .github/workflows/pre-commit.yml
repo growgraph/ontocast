@@ -15,6 +15,6 @@ jobs:
             with:
                 version: "0.10.12"
         -   name: Install dependencies (including dev)
-            run: uv sync --group dev
+            run: uv sync --extra dev
         -   name: Run pre-commit
             run: uv run pre-commit run --all-files
