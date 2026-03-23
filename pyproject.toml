@@ -23,10 +23,10 @@ dependencies = [
   "oxrdflib>=0.5.0",
   "pydantic>=2.11.9",
   "pyld>=2.0.4",
+  "qdrant-client>=1.15.1",
   "rapidfuzz>=3.13.0",
   "rdflib>=7.1.4",
   "rich>=14.0.0",
-  "sentence-transformers>=5.1.1",
   "simsimd>=6.2.1",
   "suthing>=0.4.1",
   "umap-learn>=0.5.11",
@@ -39,6 +39,11 @@ requires-python = ">=3.12,<4.0"
 version = "1.0.0"
 
 [project.optional-dependencies]
+all = [
+  "docling>=2.57.0",
+  "easyocr>=1.7.2",
+  "sentence-transformers>=5.1.1"
+]
 dev = [
   "pre-commit>=4.2.0",
   "pytest-dotenv>=0.5.2",
@@ -47,10 +52,6 @@ dev = [
   "requests>=2.32.3",
   "ruff>=0.11.2",
   "ty>=0.0.14"
-]
-doc-processing = [
-  "docling>=2.57.0",
-  "easyocr>=1.7.2"
 ]
 docs = [
   "griffe<2.0.0",
@@ -65,10 +66,6 @@ docs = [
 ]
 plot = [
   "pygraphviz>=1.14"
-]
-vector-db = [
-  "qdrant-client>=1.15.1",
-  "sentence-transformers>=5.1.1"
 ]
 
 [project.scripts]

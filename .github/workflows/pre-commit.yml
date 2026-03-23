@@ -14,8 +14,7 @@ jobs:
             uses: astral-sh/setup-uv@v7
             with:
                 version: "0.10.12"
-        -   name: Install dev dependencies
+        -   name: Install dependencies (including dev)
             run: uv sync --extra dev --no-install-project
-
         -   name: Run pre-commit
             run: uv run pre-commit run --all-files
