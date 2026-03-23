@@ -15,8 +15,8 @@ Example:
     # Process all JSON files in a directory (max 3 concurrent)
     python batch_process.py --url http://localhost:8999 --path ./data --pattern "*.json" --max-concurrent 3
 
-    # Process all PDF files recursively
-    python batch_process.py --url http://localhost:8999 --path ./documents --pattern "*.pdf" --recursive
+    # Target tenant/project (optional; server defaults apply when omitted)
+    python batch_process.py --url http://localhost:8999 --path ./data --tenant acme --project demo
 """
 
 import asyncio
@@ -34,7 +34,8 @@ async def process_file(
     file_path: pathlib.Path,
     semaphore: asyncio.Semaphore,
     results: dict,
-    dataset: Optional[str] = None,
+    tenant: Optional[str] = None,
+    project: Optional[str] = None,
 ) -> None:
     """Process a single file by sending it to the OntoCast API.
 
@@ -44,7 +45,8 @@ async def process_file(
         file_path: Path to the file to process
         semaphore: Semaphore to limit concurrent requests
         results: Dictionary to store results (success/error counts)
-        dataset: Optional dataset name for triple store storage
+        tenant: Optional tenant id (passed as query parameter when set)
+        project: Optional project id (passed as query parameter when set)
     """
     async with semaphore:
         try:
@@ -56,10 +58,11 @@ async def process_file(
 
             files = {"file": (file_path.name, file_content, mime_type)}
 
-            # Add dataset as query parameter if provided
-            params = {}
-            if dataset:
-                params["dataset"] = dataset
+            params: dict[str, str] = {}
+            if tenant:
+                params["tenant"] = tenant
+            if project:
+                params["project"] = project
 
             response = await client.post(url, files=files, params=params)
             status = response.status_code
@@ -91,7 +94,8 @@ async def process_files_async(
     url: str,
     file_paths: list[pathlib.Path],
     max_concurrent: int,
-    dataset: Optional[str] = None,
+    tenant: Optional[str] = None,
+    project: Optional[str] = None,
 ) -> dict:
     """Process multiple files asynchronously with concurrency control.
 
@@ -99,7 +103,8 @@ async def process_files_async(
         url: API endpoint URL
         file_paths: List of file paths to process
         max_concurrent: Maximum number of concurrent requests
-        dataset: Optional dataset name for triple store storage
+        tenant: Optional tenant query parameter
+        project: Optional project query parameter
 
     Returns:
         Dictionary with processing results (success count, error count, details)
@@ -119,12 +124,12 @@ async def process_files_async(
     click.echo(
         f"Processing {len(file_paths)} file(s) with max {max_concurrent} concurrent requests..."
     )
-    if dataset:
-        click.echo(f"Using dataset: {dataset}")
+    if tenant is not None or project is not None:
+        click.echo(f"Using tenancy: tenant={tenant!r} project={project!r}")
 
     async with httpx.AsyncClient(timeout=300.0) as client:
         tasks = [
-            process_file(client, url, file_path, semaphore, results, dataset)
+            process_file(client, url, file_path, semaphore, results, tenant, project)
             for file_path in file_paths
         ]
         await asyncio.gather(*tasks)
@@ -206,10 +211,16 @@ def find_files(
     help="Optional path to save results summary as JSON",
 )
 @click.option(
-    "--dataset",
+    "--tenant",
     type=str,
     default=None,
-    help="Dataset name for triple store storage (Fuseki only). If provided, all files will be processed into this dataset.",
+    help="Tenant id sent to /process (optional).",
+)
+@click.option(
+    "--project",
+    type=str,
+    default=None,
+    help="Project id sent to /process (optional).",
 )
 def main(
     url: str,
@@ -218,7 +229,8 @@ def main(
     recursive: bool,
     max_concurrent: int,
     output: Optional[pathlib.Path],
-    dataset: Optional[str],
+    tenant: Optional[str],
+    project: Optional[str],
 ):
     """Batch process files through the OntoCast API server.
 
@@ -234,9 +246,6 @@ def main(
 
         # Process all PDFs recursively with 5 concurrent requests
         batch_process.py --url http://localhost:8999 --path ./documents --pattern "*.pdf" --recursive --max-concurrent 5
-
-        # Process files into a specific dataset
-        batch_process.py --url http://localhost:8999 --path ./data --pattern "*.json" --dataset my_dataset
 
         # Process a single file
         batch_process.py --url http://localhost:8999 --path ./document.pdf
@@ -267,13 +276,15 @@ def main(
         click.echo(f"Pattern: {pattern}")
     if recursive:
         click.echo("Recursive search: enabled")
-    if dataset:
-        click.echo(f"Dataset: {dataset}")
+    if tenant is not None or project is not None:
+        click.echo(f"Tenancy: tenant={tenant!r} project={project!r}")
     click.echo(f"Max concurrent requests: {max_concurrent}")
     click.echo("")
 
     # Process files
-    results = asyncio.run(process_files_async(url, file_paths, max_concurrent, dataset))
+    results = asyncio.run(
+        process_files_async(url, file_paths, max_concurrent, tenant, project)
+    )
 
     # Print summary
     click.echo("")

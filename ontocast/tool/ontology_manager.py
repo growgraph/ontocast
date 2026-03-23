@@ -7,7 +7,7 @@ lineage using hash-based identifiers.
 
 import logging
 from copy import deepcopy
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
 
@@ -68,7 +68,9 @@ class OntologyManager(Tool):
                     return True
         return False
 
-    def add_ontology(self, ontology: Ontology) -> None:
+    def add_ontology(
+        self, ontology: Ontology, *, skip_vector_index: bool = False
+    ) -> None:
         """Add an ontology to the version tree for its IRI.
 
         If an ontology with the same hash already exists, it is not added again.
@@ -77,6 +79,8 @@ class OntologyManager(Tool):
 
         Args:
             ontology: The ontology to add.
+            skip_vector_index: If True, do not call the vector store (caller
+                already materialized embeddings, e.g. during ToolBox.initialize).
         """
         if not ontology.iri or ontology.iri == NULL_ONTOLOGY.iri:
             logger.warning(
@@ -104,7 +108,7 @@ class OntologyManager(Tool):
         existing_hashes = {o.hash for o in self.ontology_versions[ontology.iri]}
         if ontology.hash not in existing_hashes:
             self.ontology_versions[ontology.iri].append(ontology)
-            if self._patch_retriever is not None:
+            if self._patch_retriever is not None and not skip_vector_index:
                 self._patch_retriever.vector_store.reindex_ontology(ontology)
             # Update cache for this specific IRI (store hash only)
             freshest = self.get_freshest_terminal_ontology_by_iri(ontology.iri)
@@ -117,6 +121,11 @@ class OntologyManager(Tool):
             logger.debug(
                 f"Ontology {ontology.iri} with hash {ontology.hash[:8]}... already exists"
             )
+
+    def remove_ontology_by_iri(self, iri: str) -> None:
+        """Drop all tracked versions for an ontology IRI and clear caches."""
+        self.ontology_versions.pop(iri, None)
+        self._cached_ontologies.pop(iri, None)
 
     def register_vector_store(self, retriever: "OntologyPatchRetriever") -> None:
         """Register a patch retriever for vector context lookups."""
@@ -142,6 +151,22 @@ class OntologyManager(Tool):
         )
         return graph
 
+    async def aget_patch_context(
+        self,
+        query: str,
+        top_k: int = 10,
+        subgraph_depth: int = 1,
+        max_triples: int = 2000,
+    ) -> RDFGraph | None:
+        """Async variant of :meth:`get_patch_context`."""
+        graph, _ = await self.aget_patch_context_with_sources(
+            query=query,
+            top_k=top_k,
+            subgraph_depth=subgraph_depth,
+            max_triples=max_triples,
+        )
+        return graph
+
     def get_patch_context_with_sources(
         self,
         query: str,
@@ -151,6 +176,24 @@ class OntologyManager(Tool):
     ) -> tuple[RDFGraph | None, list[str]]:
         """Retrieve patch context and contributing ontology IRIs."""
         results = self.get_patch_contexts_with_sources(
+            queries=[query],
+            top_k=top_k,
+            subgraph_depth=subgraph_depth,
+            max_triples=max_triples,
+        )
+        if not results:
+            return None, []
+        return results[0]
+
+    async def aget_patch_context_with_sources(
+        self,
+        query: str,
+        top_k: int = 10,
+        subgraph_depth: int = 1,
+        max_triples: int = 2000,
+    ) -> tuple[RDFGraph | None, list[str]]:
+        """Async variant of :meth:`get_patch_context_with_sources`."""
+        results = await self.aget_patch_contexts_with_sources(
             queries=[query],
             top_k=top_k,
             subgraph_depth=subgraph_depth,
@@ -177,22 +220,53 @@ class OntologyManager(Tool):
                 subgraph_depth=subgraph_depth,
                 max_triples=max_triples,
             )
-            results: list[tuple[RDFGraph | None, list[str]]] = []
-            for patch_graph, atoms in patch_batches:
-                if len(patch_graph) > 0:
-                    sources = sorted(
-                        {atom.ontology_iri for atom in atoms if atom.ontology_iri}
-                    )
-                    results.append((patch_graph, sources))
-                else:
-                    results.append((RDFGraph(), []))
-            return results
+            return self._patch_batches_to_contexts(patch_batches)
 
         fallback = self.get_freshest_terminal_ontology_by_iri(None)
         if fallback is None:
             return [(None, []) for _ in queries]
         fallback_graph = deepcopy(fallback.graph)
         return [(deepcopy(fallback_graph), [fallback.iri]) for _ in queries]
+
+    async def aget_patch_contexts_with_sources(
+        self,
+        queries: list[str],
+        top_k: int = 10,
+        subgraph_depth: int = 1,
+        max_triples: int = 2000,
+    ) -> list[tuple[RDFGraph | None, list[str]]]:
+        """Async patch retrieval (vector + induced subgraph) for many queries."""
+        if not queries:
+            return []
+        if self._patch_retriever is not None:
+            patch_batches = await self._patch_retriever.aretrieve_many(
+                queries=queries,
+                top_k=top_k,
+                subgraph_depth=subgraph_depth,
+                max_triples=max_triples,
+            )
+            return self._patch_batches_to_contexts(patch_batches)
+
+        fallback = self.get_freshest_terminal_ontology_by_iri(None)
+        if fallback is None:
+            return [(None, []) for _ in queries]
+        fallback_graph = deepcopy(fallback.graph)
+        return [(deepcopy(fallback_graph), [fallback.iri]) for _ in queries]
+
+    @staticmethod
+    def _patch_batches_to_contexts(
+        patch_batches: list[tuple[RDFGraph, list[Any]]],
+    ) -> list[tuple[RDFGraph | None, list[str]]]:
+        results: list[tuple[RDFGraph | None, list[str]]] = []
+        for patch_graph, atoms in patch_batches:
+            if len(patch_graph) > 0:
+                sources = sorted(
+                    {atom.ontology_iri for atom in atoms if atom.ontology_iri}
+                )
+                results.append((patch_graph, sources))
+            else:
+                results.append((RDFGraph(), []))
+        return results
 
     def get_terminal_ontologies_by_iri(self, iri: str | None = None) -> list[Ontology]:
         """Get terminal (leaf) ontologies in the version graph.

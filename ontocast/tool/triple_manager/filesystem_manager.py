@@ -127,25 +127,15 @@ class FilesystemTripleStoreManager(TripleStoreManager):
 
         self.serialize_graph(graph=graph, fname=fname)
 
-    async def clean(self, dataset: str | None = None) -> None:
+    async def clean(self) -> None:
         """Clean/flush all data from the filesystem triple store.
 
         This method deletes all Turtle (.ttl) files from both the working
         directory and the ontology directory.
-
-        Args:
-            dataset: Optional dataset parameter (ignored for Filesystem, which doesn't
-                support datasets). Included for interface compatibility.
 
         Warning: This operation is irreversible and will delete all data.
 
         Raises:
             Exception: If the cleanup operation fails.
         """
-        if dataset is not None:
-            logger.warning(
-                f"Dataset parameter '{dataset}' ignored for Filesystem (datasets not supported)"
-            )
-            logger.warning(
-                "clean method not implemented for FilesystemTripleStoreManager"
-            )
+        logger.warning("clean method not implemented for FilesystemTripleStoreManager")

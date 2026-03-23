@@ -169,9 +169,13 @@ class AgentState(BasePydanticModel):
         default="",
     )
 
-    dataset: str | None = Field(
-        description="Fuseki dataset name for this request (optional)",
+    tenant: str | None = Field(
         default=None,
+        description="Tenant id when request selected tenancy via query/CLI.",
+    )
+    project: str | None = Field(
+        default=None,
+        description="Project id when request selected tenancy via query/CLI.",
     )
 
     graph_uri_override: str | None = Field(default=None)

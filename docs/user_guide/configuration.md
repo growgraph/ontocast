@@ -65,7 +65,7 @@ CHUNK_MAX_SIZE=12000
 
 ```bash
 # Fuseki
-FUSEKI_URI=http://localhost:3030/test
+FUSEKI_URI=http://localhost:3030
 FUSEKI_AUTH=admin/admin
 FUSEKI_DATASET=dataset_name
 FUSEKI_ONTOLOGIES_DATASET=ontologies

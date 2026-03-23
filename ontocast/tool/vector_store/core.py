@@ -116,3 +116,13 @@ class VectorStoreTool(Tool):
         ontology_hash: str | None = None,
     ) -> None:
         """Delete all indexed atoms for a specific ontology IRI."""
+
+    def supports_tenancy_partition(self) -> bool:
+        """True if :meth:`clean_tenancy` clears isolated collections for (tenant, project)."""
+        return False
+
+    async def clean_tenancy(self, tenant: str, project: str) -> None:
+        """Drop or empty vector collections derived from ``tenant`` / ``project``."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not isolate vectors by tenant/project"
+        )

@@ -24,8 +24,9 @@ We welcome contributions to Suthing! This document provides guidelines and instr
 
 2. Make your changes and ensure tests pass:
    ```bash
-   pytest test
+   bash -c 'set -a; source .env; set +a; uv run pytest test'
    ```
+   This exports variables from `.env` into the environment before pytest starts (so optional integration tests can read `QDRANT_URI`, `FUSEKI_URI`, and similar). Omit the `source .env` part if you rely only on defaults and tests that do not need external services.
 
 3. Commit your changes with a descriptive message:
    ```bash

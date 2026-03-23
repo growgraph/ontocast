@@ -82,26 +82,17 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
             # Create constraints and indexes
             self._create_constraints_and_indexes(session)
 
-    async def clean(self, dataset: str | None = None) -> None:
+    async def clean(self) -> None:
         """Clean/flush all data from the Neo4j database.
 
         This method deletes all nodes and relationships from the Neo4j database,
         effectively clearing all stored data.
-
-        Args:
-            dataset: Optional dataset parameter (ignored for Neo4j, which doesn't
-                support datasets). Included for interface compatibility.
 
         Warning: This operation is irreversible and will delete all data.
 
         Raises:
             Exception: If the cleanup operation fails.
         """
-        if dataset is not None:
-            logger.warning(
-                f"Dataset parameter '{dataset}' ignored for Neo4j (datasets not supported)"
-            )
-
         if self._driver is None:
             raise ValueError("Neo4j driver is not initialized")
 

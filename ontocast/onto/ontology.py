@@ -131,13 +131,18 @@ class OntologyPropertiesWithLineage(OntologyProperties):
             >>> ont2.versioned_iri
             'http://example.org/ontology#v1.0.0'
         """
+        base = self.iri
         if self.hash:
             # Use hash-based fragment for git-style versioning
-            return f"{self.iri}#{self.hash}"
-        elif self.version:
+            if base.endswith("#"):
+                return f"{base}{self.hash}"
+            return f"{base}#{self.hash}"
+        if self.version:
             # Fall back to semantic version fragment for backward compatibility
-            return f"{self.iri}#v{self.version}"
-        return self.iri
+            if base.endswith("#"):
+                return f"{base}v{self.version}"
+            return f"{base}#v{self.version}"
+        return base
 
 
 class Ontology(OntologyPropertiesWithLineage):

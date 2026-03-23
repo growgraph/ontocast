@@ -27,7 +27,9 @@ Configure your triple store connection using environment variables in your `.env
 
 ```bash
 # Fuseki Configuration (Preferred)
-FUSEKI_URI=http://localhost:3032/test
+# FUSEKI_URI = HTTP service root only (SPARQL at {FUSEKI_URI}/{dataset}/sparql).
+# The UI URL http://localhost:3032/#/dataset/foo uses the same foo as FUSEKI_DATASET.
+FUSEKI_URI=http://localhost:3032
 FUSEKI_AUTH=admin:password
 FUSEKI_DATASET=dataset_name
 
@@ -104,8 +106,8 @@ docker compose stop test.fuseki
 **4. Configure OntoCast for Fuseki:**
 
 ```bash
-# In your .env file
-FUSEKI_URI=http://localhost:3032/test
+# In your .env file (URI = server root; same name as in #/dataset/<name> in the UI)
+FUSEKI_URI=http://localhost:3032
 FUSEKI_AUTH=admin:abc123-qwe
 FUSEKI_DATASET=dataset_name
 ```

@@ -4,12 +4,14 @@ This module provides functionality for executing SPARQL operations on RDF graphs
 enabling incremental updates instead of full graph replacement.
 """
 
+import asyncio
 import logging
 
 from rdflib import BNode, Literal, URIRef
 from rdflib.plugins.sparql import prepareQuery
 
 from ontocast.onto.enum import SPARQLOperationType
+from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import SPARQLOperationModel
 from ontocast.tool.triple_manager.core import TripleStoreManager
@@ -260,26 +262,19 @@ class SPARQLTool:
         """Clear the operation history."""
         self.operation_history.clear()
 
-    def get_induced_subgraph(
-        self,
+    @staticmethod
+    def _build_induced_subgraph(
+        ontologies: list[Ontology],
         entity_uris: list[str],
-        ontology_iris: list[str] | None = None,
-        depth: int = 1,
-        max_triples: int = 2000,
-        ontology_version_filters: dict[str, set[str]] | None = None,
-        ontology_hash_filters: dict[str, set[str]] | None = None,
+        ontology_iris: list[str] | None,
+        depth: int,
+        max_triples: int,
+        ontology_version_filters: dict[str, set[str]] | None,
+        ontology_hash_filters: dict[str, set[str]] | None,
     ) -> RDFGraph:
-        """Fetch a deterministic induced subgraph around selected entities."""
-        if self.triple_store_manager is None:
-            return RDFGraph()
-        if depth < 0:
-            raise ValueError("depth must be >= 0")
-        if max_triples <= 0:
-            return RDFGraph()
-
-        ontologies = self.triple_store_manager.fetch_ontologies()
+        """Merge filtered ontology graphs; expand a bounded neighborhood."""
         ontology_filter = set(ontology_iris or [])
-        relevant_graphs = []
+        relevant_graphs: list[RDFGraph] = []
         for ontology in ontologies:
             if ontology_filter and ontology.iri not in ontology_filter:
                 continue
@@ -347,6 +342,70 @@ class SPARQLTool:
                         next_frontier.add(obj)
             frontier = next_frontier
         return result
+
+    def get_induced_subgraph(
+        self,
+        entity_uris: list[str],
+        ontology_iris: list[str] | None = None,
+        depth: int = 1,
+        max_triples: int = 2000,
+        ontology_version_filters: dict[str, set[str]] | None = None,
+        ontology_hash_filters: dict[str, set[str]] | None = None,
+    ) -> RDFGraph:
+        """Fetch a deterministic induced subgraph around selected entities."""
+        if self.triple_store_manager is None:
+            return RDFGraph()
+        if depth < 0:
+            raise ValueError("depth must be >= 0")
+        if max_triples <= 0:
+            return RDFGraph()
+
+        ontologies = self.triple_store_manager.fetch_ontologies()
+        return self._build_induced_subgraph(
+            ontologies,
+            entity_uris,
+            ontology_iris,
+            depth,
+            max_triples,
+            ontology_version_filters,
+            ontology_hash_filters,
+        )
+
+    async def aget_induced_subgraph(
+        self,
+        entity_uris: list[str],
+        ontology_iris: list[str] | None = None,
+        depth: int = 1,
+        max_triples: int = 2000,
+        ontology_version_filters: dict[str, set[str]] | None = None,
+        ontology_hash_filters: dict[str, set[str]] | None = None,
+    ) -> RDFGraph:
+        """Like ``get_induced_subgraph`` but uses ``afetch_ontologies`` for I/O."""
+        if self.triple_store_manager is None:
+            return self.get_induced_subgraph(
+                entity_uris=entity_uris,
+                ontology_iris=ontology_iris,
+                depth=depth,
+                max_triples=max_triples,
+                ontology_version_filters=ontology_version_filters,
+                ontology_hash_filters=ontology_hash_filters,
+            )
+        if depth < 0:
+            raise ValueError("depth must be >= 0")
+        if max_triples <= 0:
+            return RDFGraph()
+
+        ontologies = await self.triple_store_manager.afetch_ontologies()
+        return await asyncio.to_thread(
+            SPARQLTool._build_induced_subgraph,
+            ontologies,
+            entity_uris,
+            ontology_iris,
+            depth,
+            max_triples,
+            ontology_version_filters,
+            ontology_hash_filters,
+        )
 
     def create_insert_operation(
         self, query: str, description: str = ""

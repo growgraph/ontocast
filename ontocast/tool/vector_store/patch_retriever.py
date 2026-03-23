@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from pydantic import Field
@@ -27,16 +28,21 @@ class OntologyPatchRetriever(Tool):
         max_triples: int = 2000,
     ) -> tuple[RDFGraph, list[OntologyAtom]]:
         """Retrieve top-k atoms and expand graph via triple-store/SPARQL lookup."""
-        batched_results = self.retrieve_many(
-            queries=[query],
-            top_k=top_k,
-            expand_sparql=expand_sparql,
-            subgraph_depth=subgraph_depth,
-            max_triples=max_triples,
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(
+                self.aretrieve(
+                    query=query,
+                    top_k=top_k,
+                    expand_sparql=expand_sparql,
+                    subgraph_depth=subgraph_depth,
+                    max_triples=max_triples,
+                )
+            )
+        raise RuntimeError(
+            "retrieve() cannot be called from async code; use await aretrieve()"
         )
-        if not batched_results:
-            return RDFGraph(), []
-        return batched_results[0]
 
     def retrieve_many(
         self,
@@ -47,16 +53,61 @@ class OntologyPatchRetriever(Tool):
         max_triples: int = 2000,
     ) -> list[tuple[RDFGraph, list[OntologyAtom]]]:
         """Batch retrieve graph patches for many proposition queries."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(
+                self.aretrieve_many(
+                    queries=queries,
+                    top_k=top_k,
+                    expand_sparql=expand_sparql,
+                    subgraph_depth=subgraph_depth,
+                    max_triples=max_triples,
+                )
+            )
+        raise RuntimeError(
+            "retrieve_many() is not allowed inside async code; use aretrieve_many()"
+        )
+
+    async def aretrieve(
+        self,
+        query: str,
+        top_k: int = 10,
+        expand_sparql: bool = True,
+        subgraph_depth: int = 1,
+        max_triples: int = 2000,
+    ) -> tuple[RDFGraph, list[OntologyAtom]]:
+        """Async retrieve: top-k atoms plus optional induced subgraph expansion."""
+        batched_results = await self.aretrieve_many(
+            queries=[query],
+            top_k=top_k,
+            expand_sparql=expand_sparql,
+            subgraph_depth=subgraph_depth,
+            max_triples=max_triples,
+        )
+        if not batched_results:
+            return RDFGraph(), []
+        return batched_results[0]
+
+    async def aretrieve_many(
+        self,
+        queries: list[str],
+        top_k: int = 10,
+        expand_sparql: bool = True,
+        subgraph_depth: int = 1,
+        max_triples: int = 2000,
+    ) -> list[tuple[RDFGraph, list[OntologyAtom]]]:
+        """Async batch retrieve graph patches for many proposition queries."""
         if not queries:
             return []
         if not expand_sparql or self.sparql_tool is None:
-            hits_by_query = self.vector_store.search_patch_hits_many(
+            hits_by_query = await self.vector_store.asearch_patch_hits_many(
                 queries=queries,
                 top_k=top_k,
             )
             return [(RDFGraph(), [hit.atom for hit in hits]) for hits in hits_by_query]
 
-        hits_by_query = self.vector_store.search_patch_hits_many(
+        hits_by_query = await self.vector_store.asearch_patch_hits_many(
             queries=queries,
             top_k=top_k,
         )
@@ -82,7 +133,7 @@ class OntologyPatchRetriever(Tool):
                         atom.ontology_hash
                     )
 
-            graph = self.sparql_tool.get_induced_subgraph(
+            graph = await self.sparql_tool.aget_induced_subgraph(
                 entity_uris=entity_uris,
                 ontology_iris=ontology_iris,
                 depth=subgraph_depth,

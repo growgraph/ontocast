@@ -1,56 +1,14 @@
-"""Smoke test for Qdrant ontology atom indexing and retrieval."""
+"""Smoke test for Qdrant via ToolBox: ingest TTL, index atoms, retrieve patches."""
 
 from __future__ import annotations
 
 import asyncio
-import os
-import uuid
 
-import httpx
-import pytest
-
-from ontocast.config import EmbeddingConfig, QdrantConfig
+from ontocast.config import Config, EmbeddingConfig, LLMConfig, PathConfig, ToolConfig
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.tool.vector_store import (
-    EmbeddingTool,
-    OntologyPatchRetriever,
-    QdrantVectorStore,
-)
-from ontocast.util import render_text_hash
-
-
-class DeterministicEmbeddingTool(EmbeddingTool):
-    """Lightweight deterministic embedding for smoke/integration tests."""
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        vectors: list[list[float]] = []
-        for text in texts:
-            digest = render_text_hash(text, digits=None)
-            seed = int(digest[:16], 16)
-            vector = [
-                (((seed + i * 97) % 2000) / 1000.0) - 1.0
-                for i in range(self.config.dimension)
-            ]
-            vectors.append(vector)
-        return vectors
-
-
-def _qdrant_available(uri: str, api_key: str | None) -> bool:
-    candidates = [api_key] if api_key else [None, "abc123-qwe"]
-    for candidate in candidates:
-        headers = {"api-key": candidate} if candidate else None
-        try:
-            response = httpx.get(
-                f"{uri.rstrip('/')}/collections",
-                headers=headers,
-                timeout=2.0,
-            )
-            if response.status_code == 200:
-                return True
-        except Exception:
-            continue
-    return False
+from ontocast.toolbox import ToolBox
+from test.qdrant_util import DeterministicEmbeddingTool, QdrantSessionTestContext
 
 
 def _build_smoke_ontology() -> Ontology:
@@ -86,61 +44,72 @@ def _build_smoke_ontology() -> Ontology:
     return Ontology(graph=graph)
 
 
-def test_qdrant_vector_store_smoke() -> None:
-    """Initialize Qdrant, index ontology atoms, and retrieve patch context."""
-    uri = os.getenv("QDRANT_URI", "http://localhost:6333")
-    api_key = os.getenv("QDRANT_API_KEY", "abc123-qwe")
-    if not _qdrant_available(uri=uri, api_key=api_key):
-        pytest.skip(f"Qdrant is not reachable at {uri}")
-
-    collection_name = f"ontocast_smoke_{uuid.uuid4().hex[:8]}"
-    embedding_config = EmbeddingConfig(dimension=8)
-    embedding_tool = DeterministicEmbeddingTool(config=embedding_config)
-    vector_store = QdrantVectorStore(
-        config=QdrantConfig(
-            uri=uri,
-            api_key=api_key,
-            collection=collection_name,
-            vector_size=embedding_config.dimension,
+def _build_toolbox(ctx: QdrantSessionTestContext) -> ToolBox:
+    embedding_config = EmbeddingConfig(dimension=8, model_name="pytest-smoke")
+    tool_config = ToolConfig(
+        llm_config=LLMConfig(),
+        path_config=PathConfig(
+            working_directory=ctx.working_directory,
+            ontology_directory=ctx.ontology_directory,
         ),
-        embedding=embedding_tool,
+        embedding=embedding_config,
+        qdrant=ctx.qdrant_config,
     )
+    return ToolBox(Config(tool_config=tool_config))
+
+
+def test_qdrant_vector_store_smoke(
+    qdrant_session_test_context: QdrantSessionTestContext,
+) -> None:
+    """Ingest ontology via ToolBox; Qdrant indexing and patch retrieval."""
+    ctx = qdrant_session_test_context
+    embedding_config = EmbeddingConfig(dimension=8, model_name="pytest-smoke")
+    tools = _build_toolbox(ctx)
+
+    assert tools.vector_store is not None
+    assert tools.patch_retriever is not None
+    deterministic = DeterministicEmbeddingTool(config=embedding_config)
+    tools.embedding_tool = deterministic
+    tools.vector_store.embedding = deterministic
 
     ontology = _build_smoke_ontology()
+    ttl_bytes = ontology.graph.serialize(format="turtle").encode("utf-8")
 
-    try:
-        asyncio.run(vector_store.initialize())
-        indexed = vector_store.index_ontology(ontology=ontology)
-        assert indexed > 0
+    async def _run() -> Ontology:
+        if tools.vector_store is not None:
+            await tools.vector_store.initialize()
+        return await tools.ingest_ontology_ttl(ttl_bytes)
 
-        hits = vector_store.search_patches(query="alpha concept relation", top_k=5)
-        assert len(hits) > 0
-        assert any(hit.ontology_iri == ontology.iri for hit in hits)
-        assert all(hit.ontology_version == ontology.version for hit in hits)
-        assert all(hit.core_representation for hit in hits)
-        assert all(hit.neighborhood_representation for hit in hits)
+    ingested = asyncio.run(_run())
 
-        filtered_version_hits = vector_store.search_patches(
-            query="alpha concept relation",
-            top_k=5,
-            filter_version=ontology.version,
-        )
-        assert len(filtered_version_hits) > 0
-        assert all(
-            hit.ontology_version == ontology.version for hit in filtered_version_hits
-        )
+    vector_store = tools.vector_store
+    indexed_iri = ingested.iri
 
-        retriever = OntologyPatchRetriever(vector_store=vector_store, sparql_tool=None)
-        patch_graph, atoms = retriever.retrieve(query="beta concept", top_k=3)
-        assert len(atoms) > 0
-        assert len(patch_graph) == 0
+    hits = vector_store.search_patches(query="alpha concept relation", top_k=5)
+    assert len(hits) > 0
+    assert any(hit.ontology_iri == indexed_iri for hit in hits)
+    assert all(hit.ontology_version == ingested.version for hit in hits)
+    assert all(hit.core_representation for hit in hits)
+    assert all(hit.neighborhood_representation for hit in hits)
 
-        vector_store.delete_ontology(ontology.iri)
-        filtered_hits = vector_store.search_patches(
-            query="alpha concept relation",
-            top_k=5,
-            filter_iri=ontology.iri,
-        )
-        assert filtered_hits == []
-    finally:
-        vector_store.client.delete_collection(collection_name=collection_name)
+    filtered_version_hits = vector_store.search_patches(
+        query="alpha concept relation",
+        top_k=5,
+        filter_version=ingested.version,
+    )
+    assert len(filtered_version_hits) > 0
+    assert all(
+        hit.ontology_version == ingested.version for hit in filtered_version_hits
+    )
+
+    patch_graph, atoms = tools.patch_retriever.retrieve(query="beta concept", top_k=3)
+    assert len(atoms) > 0
+    assert len(patch_graph) > 0
+
+    vector_store.delete_ontology(indexed_iri)
+    filtered_hits = vector_store.search_patches(
+        query="alpha concept relation",
+        top_k=5,
+        filter_iri=indexed_iri,
+    )
+    assert filtered_hits == []

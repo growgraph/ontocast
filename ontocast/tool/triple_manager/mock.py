@@ -151,12 +151,8 @@ class MockTripleStoreManager(TripleStoreManager):
         self.ontologies.clear()
         self.graphs.clear()
 
-    async def clean(self, dataset: str | None = None) -> None:
-        """Clean/flush data from the mock triple store.
-
-        Args:
-            dataset: Optional dataset name (ignored for mock, kept for interface compatibility).
-        """
+    async def clean(self) -> None:
+        """Clean/flush data from the mock triple store."""
         self.clear()
 
     def _create_rdf_graph_from_graph(self, graph: Graph) -> RDFGraph:
@@ -320,12 +316,15 @@ class MockFusekiTripleStoreManager(TripleStoreManagerWithAuth):
         self.ontologies.clear()
         self.graphs.clear()
 
-    async def clean(self, dataset: str | None = None) -> None:
-        """Clean/flush data from the mock Fuseki triple store.
+    async def clean(self) -> None:
+        """Clean/flush data from the mock Fuseki triple store."""
+        self.clear()
 
-        Args:
-            dataset: Optional dataset name (ignored for mock, kept for interface compatibility).
-        """
+    def supports_tenancy_partition(self) -> bool:
+        return True
+
+    async def clean_tenancy(self, tenant: str, project: str) -> None:
+        _ = tenant, project
         self.clear()
 
     def _create_rdf_graph_from_graph(self, graph: Graph) -> RDFGraph:
@@ -479,12 +478,8 @@ class MockNeo4jTripleStoreManager(TripleStoreManagerWithAuth):
         self.ontologies.clear()
         self.graphs.clear()
 
-    async def clean(self, dataset: str | None = None) -> None:
-        """Clean/flush data from the mock Neo4j triple store.
-
-        Args:
-            dataset: Optional dataset name (ignored for Neo4j mock, kept for interface compatibility).
-        """
+    async def clean(self) -> None:
+        """Clean/flush data from the mock Neo4j triple store."""
         self.clear()
 
     def _create_rdf_graph_from_graph(self, graph: Graph) -> RDFGraph:

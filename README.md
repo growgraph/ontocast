@@ -91,7 +91,7 @@ ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontologies
 ONTOCAST_CACHE_DIR=/path/to/cache
 
 # Optional: Triple Store Configuration
-FUSEKI_URI=http://localhost:3032/test
+FUSEKI_URI=http://localhost:3032
 FUSEKI_AUTH=admin:password
 FUSEKI_DATASET=ontocast
 
@@ -232,7 +232,7 @@ OntoCast uses a hierarchical configuration system built on Pydantic BaseSettings
 
 ```bash
 # Fuseki (Preferred)
-FUSEKI_URI=http://localhost:3032/test
+FUSEKI_URI=http://localhost:3032
 FUSEKI_AUTH=admin:password
 FUSEKI_DATASET=dataset_name
 
@@ -369,6 +369,18 @@ ontocast \
     --skip-ontology-critique \
     --head-chunks 10
 ```
+
+---
+
+## Running tests
+
+Tests load settings from the process environment. To run the suite with variables from a project `.env` file:
+
+```bash
+bash -c 'set -a; source .env; set +a; uv run pytest test'
+```
+
+Integration tests (for example Qdrant) read optional variables such as `QDRANT_URI` and `QDRANT_API_KEY` from that environment; they skip automatically when the service is unreachable.
 
 ---
 

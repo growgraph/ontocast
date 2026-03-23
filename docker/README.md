@@ -25,7 +25,7 @@ Configure your triple store connection using environment variables in your main 
 
 ```bash
 # Fuseki Configuration (Preferred)
-FUSEKI_URI=http://localhost:3032/test
+FUSEKI_URI=http://localhost:3032
 FUSEKI_AUTH=admin/abc123-qwe
 
 # Neo4j Configuration (Alternative)

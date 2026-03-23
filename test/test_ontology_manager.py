@@ -9,6 +9,7 @@ This test suite ensures that:
 """
 
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -657,3 +658,31 @@ class TestRecreateFromRDFGraph:
         # Verify created_at was preserved
         assert recreated_ontology.created_at is not None
         assert recreated_ontology.created_at == original_time
+
+
+class TestOntologyManagerVectorAndRemoval:
+    """Vector indexing flags and IRI removal."""
+
+    def test_add_ontology_skip_vector_index_skips_reindex(
+        self, ontology_manager, sample_ontology
+    ):
+        patch_retriever = MagicMock()
+        patch_retriever.vector_store = MagicMock()
+        ontology_manager.register_vector_store(patch_retriever)
+        ontology_manager.add_ontology(sample_ontology, skip_vector_index=True)
+        patch_retriever.vector_store.reindex_ontology.assert_not_called()
+
+    def test_add_ontology_reindexes_by_default(self, ontology_manager, sample_ontology):
+        patch_retriever = MagicMock()
+        patch_retriever.vector_store = MagicMock()
+        ontology_manager.register_vector_store(patch_retriever)
+        ontology_manager.add_ontology(sample_ontology)
+        patch_retriever.vector_store.reindex_ontology.assert_called_once()
+
+    def test_remove_ontology_by_iri_clears_versions(
+        self, ontology_manager, sample_ontology
+    ):
+        ontology_manager.add_ontology(sample_ontology)
+        ontology_manager.remove_ontology_by_iri(sample_ontology.iri)
+        assert sample_ontology.iri not in ontology_manager.ontology_versions
+        assert sample_ontology.iri not in ontology_manager._cached_ontologies

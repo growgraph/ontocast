@@ -136,7 +136,7 @@ async def select_ontology(state: AgentState, tools: ToolBox) -> AgentState:
         stitched_sources: set[str] = set()
         if proposition_windows:
             top_k = max(1, qdrant_config.top_k // max(1, len(proposition_windows)))
-            patch_batches = om_tool.get_patch_contexts_with_sources(
+            patch_batches = await om_tool.aget_patch_contexts_with_sources(
                 queries=proposition_windows,
                 top_k=top_k,
                 subgraph_depth=qdrant_config.induced_subgraph_depth,

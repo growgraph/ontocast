@@ -4,15 +4,23 @@ This module provides hierarchical configuration classes that map to the
 environment variables and usage patterns in the OntoCast system.
 """
 
+from __future__ import annotations
+
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from qdrant_client.http.models import Distance as QdrantDistance
 
-from ontocast.onto.constants import DEFAULT_DATASET, DEFAULT_ONTOLOGIES_DATASET
 from ontocast.onto.enum import OntologyContextMode, RenderMode
+from ontocast.onto.tenancy import (
+    DEFAULT_PROJECT,
+    DEFAULT_TENANT,
+    tenant_project_facts_name,
+    tenant_project_ontologies_name,
+)
 
 
 class LLMProvider(StrEnum):
@@ -198,18 +206,43 @@ class Neo4jConfig(BaseSettings):
 class FusekiConfig(BaseSettings):
     """Fuseki triple store configuration."""
 
-    uri: str | None = Field(default=None, description="Fuseki URI")
+    uri: str | None = Field(
+        default=None,
+        description=(
+            "Fuseki HTTP server root (e.g. http://localhost:3030), not a dataset "
+            "path or #/dataset/... UI URL; use FUSEKI_DATASET for the dataset name."
+        ),
+    )
     auth: str | None = Field(default=None, description="Fuseki authentication")
-    dataset: str = Field(default=DEFAULT_DATASET, description="Fuseki dataset name")
-    ontologies_dataset: str = Field(
-        default=DEFAULT_ONTOLOGIES_DATASET,
-        description="Fuseki dataset name for ontologies",
+    dataset: str | None = Field(
+        default=None,
+        description=(
+            "Facts dataset name; if unset, derived from built-in default "
+            f"tenant/project ({DEFAULT_TENANT!r}/{DEFAULT_PROJECT!r})."
+        ),
+    )
+    ontologies_dataset: str | None = Field(
+        default=None,
+        description=(
+            "Ontologies dataset; if unset, derived from the same default tenant/project "
+            "as dataset (not read from the environment)."
+        ),
     )
 
     model_config = SettingsConfigDict(
         env_prefix="FUSEKI_",
         case_sensitive=False,
     )
+
+    @model_validator(mode="after")
+    def _resolve_fuseki_datasets(self) -> FusekiConfig:
+        if self.dataset is None:
+            self.dataset = tenant_project_facts_name(DEFAULT_TENANT, DEFAULT_PROJECT)
+        if self.ontologies_dataset is None:
+            self.ontologies_dataset = tenant_project_ontologies_name(
+                DEFAULT_TENANT, DEFAULT_PROJECT
+            )
+        return self
 
 
 class DomainConfig(BaseSettings):
@@ -405,15 +438,32 @@ class QdrantConfig(BaseSettings):
 
     uri: str | None = Field(default=None, description="Qdrant HTTP endpoint URI.")
     api_key: str | None = Field(default=None, description="Qdrant API key.")
-    collection: str = Field(
-        default="ontology_atoms", description="Qdrant collection name."
+    ontology_collection: str | None = Field(
+        default=None,
+        description="Qdrant collection for ontology atom vectors; derived when unset.",
+    )
+    facts_collection: str | None = Field(
+        default=None,
+        description=(
+            "Qdrant collection reserved for future fact vectors; created on init."
+        ),
     )
     grpc_port: int = Field(default=6334, description="Qdrant gRPC port.")
     use_grpc: bool = Field(default=False, description="Use gRPC client transport.")
     vector_size: int | None = Field(
         default=None,
         ge=1,
-        description="Vector size override. Defaults to EMBEDDING_DIMENSION when unset.",
+        description=(
+            "Vector size override. When set, must equal EmbeddingConfig.dimension; "
+            "when unset, the embedding dimension is used."
+        ),
+    )
+    distance: QdrantDistance = Field(
+        default=QdrantDistance.COSINE,
+        description=(
+            "Qdrant vector distance when creating collections "
+            "(Cosine, Dot, Euclid, Manhattan; same as qdrant_client Distance)."
+        ),
     )
     top_k: int = Field(default=10, ge=1, description="Default patch retrieval size.")
     induced_subgraph_depth: int = Field(
@@ -474,6 +524,18 @@ class QdrantConfig(BaseSettings):
         env_prefix="QDRANT_",
         case_sensitive=False,
     )
+
+    @model_validator(mode="after")
+    def _resolve_qdrant_collections(self) -> QdrantConfig:
+        if self.ontology_collection is None:
+            self.ontology_collection = tenant_project_ontologies_name(
+                DEFAULT_TENANT, DEFAULT_PROJECT
+            )
+        if self.facts_collection is None:
+            self.facts_collection = tenant_project_facts_name(
+                DEFAULT_TENANT, DEFAULT_PROJECT
+            )
+        return self
 
 
 class ToolConfig(BaseSettings):

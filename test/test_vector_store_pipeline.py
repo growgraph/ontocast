@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+import pytest
 from pydantic import PrivateAttr
 
 from ontocast.config import EmbeddingConfig, QdrantConfig
@@ -84,6 +85,22 @@ class StubVectorStore(QdrantVectorStore):
     ) -> list[list[OntologySearchHit]]:
         del filter_iri, filter_version, filter_hash
         return [self.search_patch_hits(query=query, top_k=top_k) for query in queries]
+
+    async def asearch_patch_hits_many(
+        self,
+        queries: list[str],
+        top_k: int = 10,
+        filter_iri: str | None = None,
+        filter_version: str | None = None,
+        filter_hash: str | None = None,
+    ) -> list[list[OntologySearchHit]]:
+        return self.search_patch_hits_many(
+            queries=queries,
+            top_k=top_k,
+            filter_iri=filter_iri,
+            filter_version=filter_version,
+            filter_hash=filter_hash,
+        )
 
 
 class StubSPARQLTool(SPARQLTool):
@@ -245,6 +262,59 @@ def test_retriever_expands_graph_via_sparql_tool() -> None:
         vector_store=vector_store, sparql_tool=sparql_tool
     )
     graph, returned_atoms = retriever.retrieve(
+        query="alpha", top_k=2, expand_sparql=True
+    )
+
+    assert len(returned_atoms) == 2
+    assert len(graph) > 0
+    assert sparql_tool.last_entity_uris == sorted({atom.iri for atom in atoms})
+    assert sparql_tool.last_ontology_iris == ["https://example.org/smoke"]
+    assert sparql_tool.last_ontology_version_filters == {
+        "https://example.org/smoke": {"1.0.0"}
+    }
+    assert sparql_tool.last_ontology_hash_filters == {
+        "https://example.org/smoke": {"hash1"}
+    }
+
+
+@pytest.mark.anyio
+async def test_retriever_aretrieve_expands_graph_via_sparql_tool() -> None:
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    vector_store = StubVectorStore(
+        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        embedding=embedding,
+    )
+    atoms = [
+        OntologyAtom(
+            atom_id="a1",
+            ontology_iri="https://example.org/smoke",
+            ontology_id="smoke",
+            ontology_hash="hash1",
+            ontology_version="1.0.0",
+            iri="https://example.org/smoke#Alpha",
+            entity_role="resource",
+            core_representation="alpha concept",
+            neighborhood_representation="alpha related to beta",
+        ),
+        OntologyAtom(
+            atom_id="a2",
+            ontology_iri="https://example.org/smoke",
+            ontology_id="smoke",
+            ontology_hash="hash1",
+            ontology_version="1.0.0",
+            iri="https://example.org/smoke#relatedTo",
+            entity_role="predicate",
+            core_representation="related to predicate",
+            neighborhood_representation="predicate related to links alpha and beta",
+        ),
+    ]
+    vector_store.set_atoms(atoms)
+
+    sparql_tool = StubSPARQLTool(triple_store_manager=None)
+    retriever = OntologyPatchRetriever(
+        vector_store=vector_store, sparql_tool=sparql_tool
+    )
+    graph, returned_atoms = await retriever.aretrieve(
         query="alpha", top_k=2, expand_sparql=True
     )
 

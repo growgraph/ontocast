@@ -1,12 +1,21 @@
 from rdflib import Namespace, URIRef
 
+from ontocast.onto.tenancy import (
+    DEFAULT_PROJECT,
+    DEFAULT_TENANT,
+    tenant_project_facts_name,
+    tenant_project_ontologies_name,
+)
+
 DEFAULT_DOMAIN = "https://growgraph.dev"
 ONTOLOGY_NULL_ID = "__null__"
 ONTOLOGY_NULL_IRI = f"{DEFAULT_DOMAIN}/{ONTOLOGY_NULL_ID}"
 DEFAULT_IRI = f"{DEFAULT_DOMAIN}/facts"
 CHUNK_NULL_IRI = f"{DEFAULT_DOMAIN}/__null__"
-DEFAULT_DATASET = "dataset0"
-DEFAULT_ONTOLOGIES_DATASET = "ontologies"
+DEFAULT_DATASET = tenant_project_facts_name(DEFAULT_TENANT, DEFAULT_PROJECT)
+DEFAULT_ONTOLOGIES_DATASET = tenant_project_ontologies_name(
+    DEFAULT_TENANT, DEFAULT_PROJECT
+)
 COMMON_PREFIXES = {
     "xsd": "<http://www.w3.org/2001/XMLSchema#>",
     "rdf": "<http://www.w3.org/1999/02/22-rdf-syntax-ns#>",

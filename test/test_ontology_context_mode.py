@@ -59,6 +59,20 @@ class _StubOntologyManager:
             )
         return results
 
+    async def aget_patch_contexts_with_sources(
+        self,
+        queries: list[str],
+        top_k: int = 10,
+        subgraph_depth: int = 1,
+        max_triples: int = 2000,
+    ) -> list[tuple[RDFGraph | None, list[str]]]:
+        return self.get_patch_contexts_with_sources(
+            queries=queries,
+            top_k=top_k,
+            subgraph_depth=subgraph_depth,
+            max_triples=max_triples,
+        )
+
     def get_freshest_terminal_ontology_by_iri(self, iri: str | None) -> None:
         del iri
         return None

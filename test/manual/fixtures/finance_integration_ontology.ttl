@@ -1,0 +1,72 @@
+@prefix fin: <https://ontocast.manual.test/ontology/fin-test#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<https://ontocast.manual.test/ontology/fin-test> a owl:Ontology ;
+    rdfs:label "Manual finance integration ontology" ;
+    rdfs:comment "Synthetic credit-facility vocabulary for triple-store + vector-store manual tests." .
+
+fin:RevolvingCreditFacility a owl:Class ;
+    rdfs:label "revolving credit facility" ;
+    rdfs:comment "Committed revolving loan under a syndicated credit agreement that may be drawn, repaid, and re-borrowed within the availability period." .
+
+fin:TermLoanTranche a owl:Class ;
+    rdfs:label "term loan tranche" ;
+    rdfs:subClassOf fin:SeniorSecuredDebt ;
+    rdfs:comment "A discrete installment of term debt with its own margin, amortization schedule, and maturity date." .
+
+fin:SeniorSecuredDebt a owl:Class ;
+    rdfs:label "senior secured debt" ;
+    rdfs:comment "Debt that ranks ahead of subordinated creditors and is supported by collateral under a security package." .
+
+fin:FinancialCovenant a owl:Class ;
+    rdfs:label "financial covenant" ;
+    rdfs:comment "Ongoing ratio or level test (e.g., leverage, interest cover) in the credit agreement." .
+
+fin:CovenantBreach a owl:Class ;
+    rdfs:label "covenant breach" ;
+    rdfs:comment "Failure to comply with a financial or affirmative covenant, typically triggering a default if uncured." .
+
+fin:CovenantWaiver a owl:Class ;
+    rdfs:label "covenant waiver" ;
+    rdfs:comment "Lender consent to waive or amend a covenant breach or test, often in exchange for fees or pricing changes." .
+
+fin:ApplicableMargin a owl:Class ;
+    rdfs:label "applicable margin" ;
+    rdfs:comment "Spread over a floating benchmark (e.g., Term SOFR) determined by leverage grid or rating category." .
+
+fin:InterestRateHedge a owl:Class ;
+    rdfs:label "interest rate hedge" ;
+    rdfs:comment "Derivative (e.g., interest rate swap) used to fix or cap floating-rate exposure on borrowings." .
+
+fin:CommitmentFee a owl:Class ;
+    rdfs:label "commitment fee" ;
+    rdfs:comment "Fee payable on undrawn revolving commitments under the facility." .
+
+fin:CashSweep a owl:Class ;
+    rdfs:label "mandatory cash sweep" ;
+    rdfs:comment "Contractual requirement to apply excess cash flow to prepay term loans, reducing outstanding principal." .
+
+fin:MaterialAdverseEffect a owl:Class ;
+    rdfs:label "material adverse effect" ;
+    rdfs:comment "MAC/MAE style threshold describing a material impairment to business, assets, or prospects as defined in the agreement." .
+
+fin:hasFinancialCovenant a owl:ObjectProperty ;
+    rdfs:label "facility subject to financial covenant" ;
+    rdfs:domain fin:RevolvingCreditFacility ;
+    rdfs:range fin:FinancialCovenant .
+
+fin:triggersCovenantBreach a owl:ObjectProperty ;
+    rdfs:label "triggers covenant breach" ;
+    rdfs:domain fin:FinancialCovenant ;
+    rdfs:range fin:CovenantBreach .
+
+fin:resolvedBy a owl:ObjectProperty ;
+    rdfs:label "resolved by waiver or amendment" ;
+    rdfs:domain fin:CovenantBreach ;
+    rdfs:range fin:CovenantWaiver .
+
+fin:applicableMarginFor a owl:ObjectProperty ;
+    rdfs:label "applicable margin for facility tranche" ;
+    rdfs:domain fin:ApplicableMargin ;
+    rdfs:range fin:TermLoanTranche .

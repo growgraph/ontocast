@@ -9,7 +9,7 @@ import asyncio
 import logging
 import re
 from collections import defaultdict
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, urlunparse
 
 import httpx
 from pydantic import Field
@@ -19,9 +19,42 @@ from rdflib.namespace import OWL, RDF
 from ontocast.onto.constants import DEFAULT_DATASET, DEFAULT_ONTOLOGIES_DATASET
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.tenancy import (
+    TENANCY_SEP,
+    tenant_project_facts_name,
+    tenant_project_ontologies_name,
+)
 from ontocast.tool.triple_manager.core import TripleStoreManagerWithAuth
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_fuseki_server_uri(raw: str | None) -> str | None:
+    """Normalize ``FUSEKI_URI`` to the Fuseki HTTP service root.
+
+    SPARQL and Graph Store HTTP endpoints are ``{base}/{dataset}/sparql``,
+    ``{base}/{dataset}/update``, and so on. The Fuseki web UI links look like
+    ``http://host:port/#/dataset/dataset_name``; the fragment is client-side only
+    and must not be sent with API requests. Trailing slashes on the base URL are
+    removed so ``{base}`` and ``{dataset}`` concatenate to correct paths.
+
+    Args:
+        raw: Connection URI (e.g. from ``FUSEKI_URI``).
+
+    Returns:
+        Normalized base URL, or ``None`` if ``raw`` is ``None``. Malformed values
+        without scheme/netloc are returned unchanged (after ``strip``).
+    """
+    if raw is None:
+        return None
+    text = raw.strip()
+    parsed = urlparse(text)
+    if not parsed.scheme or not parsed.netloc:
+        return text
+    path = (parsed.path or "").rstrip("/")
+    return urlunparse(
+        (parsed.scheme, parsed.netloc, path, parsed.params, parsed.query, "")
+    )
 
 
 def deterministic_turtle_serialization(graph: Graph) -> str:
@@ -101,6 +134,14 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
     using Apache Fuseki. It stores ontologies as named graphs using their
     URIs as graph names, and supports dataset creation and cleanup.
 
+    **URI shape:** ``uri`` must be the Fuseki **HTTP server root** (e.g.
+    ``http://localhost:3032``), not a dataset path or UI URL. Dataset names are
+    ``dataset`` / ``ontologies_dataset``; the client calls
+    ``{uri}/{dataset_name}/sparql`` and similar. The UI route
+    ``/#/dataset/dataset_name`` is only for the browser; paste the origin (and
+    optional non-dataset path prefix) into ``FUSEKI_URI``, and set
+    ``FUSEKI_DATASET`` to ``dataset_name``.
+
     The manager uses Fuseki's REST API for all operations, including:
     - Dataset creation and management
     - Named graph operations for ontologies
@@ -108,8 +149,8 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
     - Graph-level data operations
 
     Attributes:
-        dataset: The Fuseki dataset name to use for storage.
-        clean: Whether to clean the dataset on initialization.
+        dataset: Facts dataset name (first path segment in Fuseki HTTP API).
+        ontologies_dataset: Ontologies dataset name.
     """
 
     dataset: str | None = Field(default=None, description="Fuseki dataset name")
@@ -132,34 +173,35 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         if it doesn't exist. The dataset is NOT cleaned on initialization.
 
         Args:
-            uri: Fuseki server URI (e.g., "http://localhost:3030").
+            uri: Fuseki HTTP service root (e.g. ``http://localhost:3030``), not
+                ``.../dataset/name`` and not a ``#/dataset/...`` UI link.
             auth: Authentication tuple (username, password) or string in "user/password" format.
-            dataset: Dataset name to use for storage.
-            ontologies_dataset: Dataset name for ontologies (defaults to separate dataset).
+            dataset: Facts dataset name (Fuseki API path segment).
+            ontologies_dataset: Ontologies dataset name (separate Fuseki dataset).
             **kwargs: Additional keyword arguments passed to the parent class.
-
-        Raises:
-            ValueError: If dataset is not specified in URI or as argument.
 
         Example:
             >>> manager = FusekiTripleStoreManager(
             ...     uri="http://localhost:3030",
-            ...     dataset="test"
+            ...     dataset="acme--demo--facts",
+            ...     ontologies_dataset="acme--demo--ontologies",
             ... )
-            >>> # To clean the dataset, use the clean() method explicitly:
             >>> await manager.clean()
         """
         super().__init__(
             uri=uri, auth=auth, env_uri="FUSEKI_URI", env_auth="FUSEKI_AUTH", **kwargs
         )
+        self.uri = normalize_fuseki_server_uri(self.uri)
         if dataset is None:
             self.dataset = DEFAULT_DATASET
         else:
             self.dataset = dataset
         self.ontologies_dataset = ontologies_dataset or DEFAULT_ONTOLOGIES_DATASET
 
-        # Initialize httpx client for async operations
+        # Initialize httpx client for async operations (recreated per event loop;
+        # httpx.AsyncClient is bound to the loop it was created on).
         self._client: httpx.AsyncClient | None = None
+        self._client_loop: asyncio.AbstractEventLoop | None = None
 
         # Initialize datasets synchronously (for backward compatibility)
         # In async contexts, use async_init() instead
@@ -206,10 +248,17 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         return None
 
     async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create the httpx async client."""
-        if self._client is None:
-            auth = self._prepare_auth()
-            self._client = httpx.AsyncClient(auth=auth, timeout=30.0)
+        """Get or create the httpx async client for the current running event loop."""
+        loop = asyncio.get_running_loop()
+        if self._client is not None and self._client_loop is loop:
+            return self._client
+        # Client from a prior asyncio.run() is bound to a closed loop; do not await
+        # aclose() on it (that schedules callbacks on the dead loop).
+        self._client = None
+        self._client_loop = None
+        auth = self._prepare_auth()
+        self._client = httpx.AsyncClient(auth=auth, timeout=30.0)
+        self._client_loop = loop
         return self._client
 
     async def close(self):
@@ -217,62 +266,67 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+        self._client_loop = None
 
-    async def update_dataset(self, new_dataset: str) -> None:
-        """Update the dataset name for this manager.
+    def supports_tenancy_partition(self) -> bool:
+        return True
 
-        This method allows changing the dataset without recreating the entire
-        manager, which is useful for API requests that specify different datasets.
-
-        Args:
-            new_dataset: The new dataset name to use.
-        """
-        if not new_dataset:
-            raise ValueError("Dataset name cannot be empty")
-
-        self.dataset = new_dataset
+    async def update_tenancy(
+        self,
+        tenant: str,
+        project: str,
+        *,
+        sep: str = TENANCY_SEP,
+    ) -> None:
+        """Switch facts and ontologies Fuseki datasets for ``tenant`` / ``project``."""
+        facts = tenant_project_facts_name(tenant, project, sep=sep)
+        ontos = tenant_project_ontologies_name(tenant, project, sep=sep)
+        self.dataset = facts
+        self.ontologies_dataset = ontos
         await self.init_dataset(self.dataset)
-        logger.info(f"Updated Fuseki dataset to: {self.dataset}")
+        if self.ontologies_dataset != self.dataset:
+            await self.init_dataset(self.ontologies_dataset)
+        logger.info(
+            "Fuseki tenancy set to tenant=%r project=%r (facts=%s ontologies=%s)",
+            tenant,
+            project,
+            self.dataset,
+            self.ontologies_dataset,
+        )
 
-    async def clean(self, dataset: str | None = None) -> None:
-        """Clean/flush data from Fuseki dataset(s).
+    async def clean(self) -> None:
+        """Clear the configured facts dataset and ontologies dataset (when distinct)."""
+        assert self.dataset is not None, "Dataset should never be None"
+        await self._clean_dataset_by_name(self.dataset)
+        logger.info("Fuseki dataset '%s' cleaned (all data deleted)", self.dataset)
 
-        This method removes all named graphs and clears the default graph
-        from the specified dataset, or all datasets if no dataset is specified.
+        if self.ontologies_dataset != self.dataset:
+            await self._clean_dataset_by_name(self.ontologies_dataset)
+            logger.info(
+                "Fuseki ontologies dataset '%s' cleaned (all data deleted)",
+                self.ontologies_dataset,
+            )
 
-        Args:
-            dataset: Optional dataset name to clean. If None, cleans both the main
-                dataset and the ontologies dataset. If specified, cleans only that dataset.
-
-        Warning: This operation is irreversible and will delete all data
-        from the specified dataset(s).
-
-        The method handles errors gracefully and logs the results of
-        each cleanup operation.
-
-        Example:
-            >>> # Clean all datasets
-            >>> await manager.clean()
-            >>> # Clean specific dataset
-            >>> await manager.clean(dataset="my_dataset")
-        """
-        if dataset is None:
-            # Clean all datasets (main and ontologies)
-            # self.dataset is guaranteed to be a string (set to DEFAULT_DATASET if None in __init__)
-            assert self.dataset is not None, "Dataset should never be None"
-            await self._clean_dataset_by_name(self.dataset)
-            logger.info(f"Fuseki dataset '{self.dataset}' cleaned (all data deleted)")
-
-            # Also clean the ontologies dataset if it's different
-            if self.ontologies_dataset != self.dataset:
-                await self._clean_dataset_by_name(self.ontologies_dataset)
-                logger.info(
-                    f"Fuseki ontologies dataset '{self.ontologies_dataset}' cleaned (all data deleted)"
-                )
-        else:
-            # Clean only the specified dataset
-            await self._clean_dataset_by_name(dataset)
-            logger.info(f"Fuseki dataset '{dataset}' cleaned (all data deleted)")
+    async def clean_tenancy(
+        self,
+        tenant: str,
+        project: str,
+        *,
+        sep: str = TENANCY_SEP,
+    ) -> None:
+        """Flush facts and ontologies datasets for ``tenant`` / ``project`` (by derived names)."""
+        facts = tenant_project_facts_name(tenant, project, sep=sep)
+        ontos = tenant_project_ontologies_name(tenant, project, sep=sep)
+        await self._clean_dataset_by_name(facts)
+        if ontos != facts:
+            await self._clean_dataset_by_name(ontos)
+        logger.info(
+            "Fuseki tenancy flush tenant=%r project=%r (facts=%s ontologies=%s)",
+            tenant,
+            project,
+            facts,
+            ontos,
+        )
 
     async def _clean_dataset_by_name(self, dataset_name: str) -> None:
         """Clean a specific dataset by name.
@@ -409,6 +463,64 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             str: The complete URL for the ontologies dataset endpoint.
         """
         return f"{self.uri}/{self.ontologies_dataset}"
+
+    async def adrop_named_graph(
+        self, graph_uri: str, *, use_ontologies_dataset: bool = True
+    ) -> None:
+        """Drop a single named graph in the ontologies or main dataset."""
+        dataset_url = (
+            self._get_ontologies_dataset_url()
+            if use_ontologies_dataset
+            else self._get_dataset_url()
+        )
+        update_url = f"{dataset_url}/update"
+        drop_query = f"DROP GRAPH <{graph_uri}>"
+        async with httpx.AsyncClient(auth=self._prepare_auth(), timeout=30.0) as client:
+            response = await client.post(update_url, data={"update": drop_query})
+            if response.status_code not in (200, 204):
+                logger.warning(
+                    "Fuseki DROP GRAPH failed for %s: %s %s",
+                    graph_uri,
+                    response.status_code,
+                    response.text,
+                )
+
+    async def adrop_all_ontology_graphs_for_iri(self, ontology_iri: str) -> None:
+        """Remove named graphs for ``ontology_iri`` (base and ``iri#...`` versioned)."""
+        prefix = f"{ontology_iri}#"
+        async with httpx.AsyncClient(auth=self._prepare_auth(), timeout=30.0) as client:
+            sparql_url = f"{self._get_ontologies_dataset_url()}/sparql"
+            list_query = """
+            SELECT DISTINCT ?g WHERE {
+              GRAPH ?g { ?s ?p ?o }
+            }
+            """
+            response = await client.post(
+                sparql_url,
+                data={"query": list_query, "format": "application/sparql-results+json"},
+            )
+            if response.status_code != 200:
+                logger.error(
+                    "Failed to list graphs from Fuseki ontologies dataset: %s",
+                    response.text,
+                )
+                return
+            to_drop: list[str] = []
+            for binding in response.json().get("results", {}).get("bindings", []):
+                g = binding["g"]["value"]
+                if g == ontology_iri or g.startswith(prefix):
+                    to_drop.append(g)
+            update_url = f"{self._get_ontologies_dataset_url()}/update"
+            for graph_uri in to_drop:
+                drop_query = f"DROP GRAPH <{graph_uri}>"
+                dr = await client.post(update_url, data={"update": drop_query})
+                if dr.status_code not in (200, 204):
+                    logger.warning(
+                        "Failed to drop graph %s: %s %s",
+                        graph_uri,
+                        dr.status_code,
+                        dr.text,
+                    )
 
     def fetch_ontologies(self) -> list[Ontology]:
         """Synchronous wrapper for fetch_ontologies.

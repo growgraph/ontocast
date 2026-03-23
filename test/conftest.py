@@ -4,9 +4,10 @@ import importlib
 import json
 import logging
 import os
+import uuid
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Generator, Optional
 
 import pytest
 from suthing import FileHandle
@@ -20,6 +21,7 @@ from ontocast.config import (
     LLMProvider,
     OpenAIModel,
     PathConfig,
+    QdrantConfig,
     ToolConfig,
 )
 from ontocast.onto.constants import DEFAULT_DOMAIN
@@ -35,8 +37,53 @@ from ontocast.tool.triple_manager.mock import (
     MockNeo4jTripleStoreManager,
 )
 from ontocast.toolbox import ToolBox
+from test.qdrant_util import QdrantSessionTestContext, qdrant_reachable
 
 logger = logging.getLogger(__name__)
+
+
+@pytest.fixture(scope="session")
+def qdrant_session_test_context(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Generator[QdrantSessionTestContext, Any, None]:
+    """Unique Qdrant collections for the pytest session; deleted in finalizer."""
+    from qdrant_client import QdrantClient
+
+    base = QdrantConfig()
+    if base.uri is None:
+        pytest.skip("QDRANT_URI not configured")
+    if not qdrant_reachable(uri=base.uri, api_key=base.api_key):
+        pytest.skip(f"Qdrant not reachable at {base.uri}")
+
+    run_id = uuid.uuid4().hex[:8]
+    qcfg = base.model_copy(
+        update={
+            "ontology_collection": f"ontocast_pytest_{run_id}_ontologies",
+            "facts_collection": f"ontocast_pytest_{run_id}_facts",
+        }
+    )
+    workspace = tmp_path_factory.mktemp("qdrant_smoke_workspace")
+    ontology_dir = workspace / "ontologies"
+    ontology_dir.mkdir()
+
+    ctx = QdrantSessionTestContext(
+        qdrant_config=qcfg,
+        working_directory=workspace,
+        ontology_directory=ontology_dir,
+    )
+
+    yield ctx
+
+    client = QdrantClient(
+        url=qcfg.uri,
+        api_key=qcfg.api_key,
+        grpc_port=qcfg.grpc_port,
+        prefer_grpc=qcfg.use_grpc,
+    )
+    for name in (qcfg.ontology_collection, qcfg.facts_collection):
+        if name and client.collection_exists(collection_name=name):
+            client.delete_collection(collection_name=name)
+
 
 # Suppress deprecation warnings from third-party libraries that we cannot control
 # Note: We adapt to new conventions where possible (e.g., using pyld directly for JSON-LD
@@ -288,7 +335,7 @@ def neo4j_triple_store_manager(neo4j_uri, neo4j_auth):
 @pytest.fixture(scope="session")
 def fuseki_triple_store_manager():
     """Mock Fuseki triple store manager for testing."""
-    uri = os.environ.get("FUSEKI_URI", "http://localhost:3030/test")
+    uri = os.environ.get("FUSEKI_URI", "http://localhost:3030")
     auth = os.environ.get("FUSEKI_AUTH", None)
     if auth and "/" in auth:
         auth = tuple(auth.split("/", 1))

@@ -103,12 +103,12 @@ PARALLEL_ONTOLOGY_RETRIES=3
 ENABLE_ONTOLOGY_CONSOLIDATION=false
 
 # Backend Configuration (auto-detected)
-FUSEKI_URI=http://localhost:3032/test
+FUSEKI_URI=http://localhost:3032
 FUSEKI_AUTH=admin:password
 ONTOCAST_WORKING_DIRECTORY=/path/to/working
 
 # Optional: Triple Store Configuration (Fuseki preferred over Neo4j)
-FUSEKI_URI=http://localhost:3032/test
+FUSEKI_URI=http://localhost:3032
 FUSEKI_AUTH=admin/abc123-qwe
 FUSEKI_DATASET=dataset_name
 FUSEKI_ONTOLOGIES_DATASET=ontologies
