@@ -1,16 +1,23 @@
-"""Ontology atomization into neighborhood patches for vector indexing."""
+"""Graph atomization into neighborhood patches for vector indexing.
+
+This module atomizes both ontologies and extracted facts graphs into
+embedding-ready neighborhood representations.
+"""
 
 from __future__ import annotations
 
 import math
 from collections import deque
 from datetime import datetime, timezone
-from typing import cast
+from typing import Protocol, cast
 
 from rdflib import DCTERMS, RDF, RDFS, SKOS, BNode, Literal, URIRef
 from rdflib.term import Node
 
-from ontocast.onto.ontology import Ontology
+from ontocast.onto.embedding_policy import (
+    strip_provenance_triples_for_embedding,
+)
+from ontocast.onto.facts import Facts
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.onto import Tool
 from ontocast.tool.representation_text import (
@@ -25,22 +32,33 @@ from ontocast.util import render_text_hash
 
 
 class GraphAtomizer(Tool):
-    """Extract natural-language atoms around ontology entities and predicates."""
+    """Extract natural-language atoms around graph focal entities."""
 
-    def atomize(self, ontology: Ontology, depth: int = 1) -> list[GraphAtom]:
-        """Generate deterministic ontology atoms from local graph neighborhoods."""
+    class _VectorizationSource(Protocol):
+        graph: RDFGraph
+        iri: str
+        ontology_id: str | None
+        hash: str | None
+        version: str | None
+
+    def atomize(self, source: _VectorizationSource, depth: int = 1) -> list[GraphAtom]:
+        """Generate deterministic atoms from local graph neighborhoods."""
         if depth < 0:
             raise ValueError("Atomizer depth must be >= 0")
 
-        graph = ontology.graph
-        entities = self._collect_focal_entities(graph)
+        raw_graph = source.graph
+        embedding_graph = strip_provenance_triples_for_embedding(raw_graph)
+        focal_namespace = source.facts_namespace if isinstance(source, Facts) else None
+        entities = self._collect_focal_entities(
+            graph=embedding_graph, focal_namespace=focal_namespace
+        )
         generated_at = datetime.now(timezone.utc)
 
         atoms_by_id: dict[str, GraphAtom] = {}
         for entity in entities:
-            role = self._detect_entity_role(entity=entity, graph=graph)
+            role = self._detect_entity_role(entity=entity, graph=embedding_graph)
             patch_graph = self._build_neighborhood_graph(
-                graph=graph, root=entity, depth=depth
+                graph=embedding_graph, root=entity, depth=depth
             )
             if len(patch_graph) == 0:
                 continue
@@ -58,7 +76,7 @@ class GraphAtomizer(Tool):
                 neighborhood_variants
             ):
                 atom_key = (
-                    f"{ontology.iri}|{ontology.hash}|{ontology.version}|{entity}|"
+                    f"{source.iri}|{source.hash}|{source.version}|{entity}|"
                     f"{variant_index}|{core_representation}|{neighborhood_representation}"
                 )
                 atom_id = render_text_hash(atom_key, digits=None)
@@ -66,10 +84,10 @@ class GraphAtomizer(Tool):
                     continue
                 atoms_by_id[atom_id] = GraphAtom(
                     atom_id=atom_id,
-                    ontology_iri=ontology.iri,
-                    ontology_id=ontology.ontology_id,
-                    ontology_hash=ontology.hash,
-                    ontology_version=ontology.version,
+                    ontology_iri=source.iri,
+                    ontology_id=source.ontology_id,
+                    ontology_hash=source.hash,
+                    ontology_version=source.version,
                     iri=str(entity),
                     entity_role=role,
                     core_representation=core_representation,
@@ -114,7 +132,9 @@ class GraphAtomizer(Tool):
             if prefix:
                 result.bind(prefix, namespace)
 
-    def _collect_focal_entities(self, graph: RDFGraph) -> list[URIRef]:
+    def _collect_focal_entities(
+        self, graph: RDFGraph, focal_namespace: str | None = None
+    ) -> list[URIRef]:
         entities: set[URIRef] = set()
         for subj, pred, obj in graph:
             if isinstance(subj, URIRef):
@@ -123,6 +143,11 @@ class GraphAtomizer(Tool):
                 entities.add(pred)
             if isinstance(obj, URIRef):
                 entities.add(obj)
+
+        if focal_namespace is not None:
+            ns = focal_namespace.rstrip("/")
+            entities = {e for e in entities if str(e).startswith(ns)}
+
         return cast(
             list[URIRef],
             sorted(entities, key=lambda entity: str(entity)),
@@ -152,11 +177,17 @@ class GraphAtomizer(Tool):
             for _, _, obj in graph.triples((entity, RDF.type, None))
             if isinstance(obj, URIRef)
         ][:3]
-        parts = [f"entity {self._normalize_uri(entity)}", f"role {role}"]
-        parts.extend(f"label {label}" for label in labels)
-        parts.extend(f"description {description}" for description in descriptions)
-        parts.extend(f"type {entity_type}" for entity_type in types)
-        return ". ".join(parts)
+        # Prefer grammatical text over schema-like field labels to improve
+        # embedding alignment with natural-language queries.
+        entity_name = self._normalize_uri(entity)
+        sentences: list[str] = [entity_name, f"It is used as a {role}"]
+        if labels:
+            sentences.append(f"It is labeled {', '.join(labels)}")
+        if descriptions:
+            sentences.append(f"It is described as {', '.join(descriptions)}")
+        if types:
+            sentences.append(f"It has type {', '.join(types)}")
+        return ". ".join(sentences)
 
     def _build_neighborhood_variants(
         self, entity: URIRef, graph: RDFGraph

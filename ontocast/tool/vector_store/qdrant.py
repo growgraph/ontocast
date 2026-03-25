@@ -258,7 +258,7 @@ class QdrantVectorStore(VectorStoreTool):
 
     def index_ontology(self, ontology: Ontology) -> int:
         """Atomize + embed + upsert ontology neighborhoods."""
-        atoms = self.atomizer.atomize(ontology=ontology, depth=1)
+        atoms = self.atomizer.atomize(source=ontology, depth=1)
         if not atoms:
             return 0
         core_vectors = self._embed_texts_batched(

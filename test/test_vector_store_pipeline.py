@@ -186,7 +186,7 @@ def _build_smoke_ontology() -> Ontology:
 def test_atomizer_generates_representation_atoms_for_predicates() -> None:
     ontology = _build_smoke_ontology()
     atomizer = GraphAtomizer()
-    atoms = atomizer.atomize(ontology=ontology, depth=1)
+    atoms = atomizer.atomize(source=ontology, depth=1)
 
     assert atoms
     assert any(atom.entity_role == "predicate" for atom in atoms)
