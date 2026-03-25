@@ -333,11 +333,11 @@ def make_merge_facts_node(tools: ToolBox):
     return merge_facts
 
 
-def make_structural_prepass_node(tools: ToolBox):
+def make_structural_check_node(tools: ToolBox):
     del tools
 
-    def structural_prepass(state: AgentState) -> AgentState:
-        """Run lightweight structural checks over stitched graphs before final critic."""
+    def structural_check(state: AgentState) -> AgentState:
+        """Run lightweight structural checks over the stitched ontology before the final critic."""
         if (
             not state.current_ontology.is_null()
             and len(state.current_ontology.graph) > 0
@@ -350,29 +350,17 @@ def make_structural_prepass_node(tools: ToolBox):
             )
             if not ontology_validation.is_fully_connected:
                 state.improvements_suggestions.append(
-                    "Structural pre-pass: ontology has disconnected components; "
+                    "Structural check: ontology has disconnected components; "
                     "prefer linking classes/properties explicitly."
                 )
             if ontology_validation.missing_labels:
                 state.improvements_suggestions.append(
-                    "Structural pre-pass: ontology predicates missing labels were detected."
-                )
-
-        if len(state.aggregated_facts) > 0:
-            facts_validation = RDFGraphConnectivityValidator(
-                state.aggregated_facts
-            ).validate_connectivity()
-            state.retrieval_metrics["structural_facts_components"] = (
-                facts_validation.num_components
-            )
-            if not facts_validation.is_fully_connected:
-                state.improvements_suggestions.append(
-                    "Structural pre-pass: facts graph has disconnected components."
+                    "Structural check: ontology predicates missing labels were detected."
                 )
         state.status = Status.SUCCESS
         return state
 
-    return structural_prepass
+    return structural_check
 
 
 def _extract_consistency_queries(graph: RDFGraph, max_terms: int = 8) -> list[str]:

@@ -1,4 +1,5 @@
 import importlib
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
@@ -6,6 +7,14 @@ import pytest
 from rdflib import OWL, RDF, BNode, Literal, URIRef
 
 from ontocast.agent.normalize_ontology import normalize_ontology_units
+from ontocast.config import (
+    Config,
+    LLMConfig,
+    LLMProvider,
+    OllamaModel,
+    PathConfig,
+    ToolConfig,
+)
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI, PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.enum import RenderMode, Status, WorkflowNode
@@ -21,8 +30,12 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GenericSparqlQuery, GraphUpdate
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
+from ontocast.stategraph import create_agent_graph
 from ontocast.stategraph.node_factories import make_normalize_ontology_node
-from ontocast.stategraph.routing import route_after_ontology_consolidation
+from ontocast.stategraph.routing import (
+    route_after_ontology_consolidation,
+    route_after_ontology_selection,
+)
 from ontocast.tool.aggregate import EmbeddingBasedAggregator
 from ontocast.tool.atomic import AtomicToolBox, SearchHit
 from ontocast.toolbox import ToolBox
@@ -609,14 +622,47 @@ def test_route_after_ontology_consolidation_respects_ontology_only_mode() -> Non
     ontology_only = AgentState(render_mode=RenderMode.ONTOLOGY)
     assert (
         route_after_ontology_consolidation(ontology_only)
-        == WorkflowNode.STRUCTURAL_PREPASS
+        == WorkflowNode.STRUCTURAL_CHECK
     )
 
     ontology_and_facts = AgentState(render_mode=RenderMode.ONTOLOGY_AND_FACTS)
     assert (
         route_after_ontology_consolidation(ontology_and_facts)
-        == WorkflowNode.RENDER_FACTS
+        == WorkflowNode.STRUCTURAL_CHECK
     )
+
+
+def test_agent_graph_structural_check_not_reached_from_facts_edges() -> None:
+    # Use a minimal config that enables the filesystem triple-store backend.
+    # This keeps the graph build lightweight and avoids external services.
+    config = Config(
+        tool_config=ToolConfig(
+            path_config=PathConfig(working_directory=Path("/tmp")),
+            llm_config=LLMConfig(
+                provider=LLMProvider.OLLAMA,
+                model_name=OllamaModel.LLAMA3_1,
+                base_url="http://localhost:11434",
+            ),
+        ),
+    )
+    toolbox = ToolBox(config)
+    app = create_agent_graph(toolbox)
+    graph = app.get_graph()
+
+    structural_check = WorkflowNode.STRUCTURAL_CHECK
+    facts_sources = {WorkflowNode.RENDER_FACTS, WorkflowNode.MERGE_FACTS}
+
+    incoming_from_facts = [
+        (start, end)
+        for start, end, _data, _conditional in graph.edges
+        if end == structural_check and start in facts_sources
+    ]
+    assert incoming_from_facts == []
+
+
+def test_route_after_ontology_selection_facts_only_skips_ontology() -> None:
+    facts_only = AgentState(render_mode=RenderMode.FACTS)
+    assert route_after_ontology_selection(facts_only) == WorkflowNode.RENDER_FACTS
 
 
 def test_toolbox_serialize_skips_facts_in_ontology_only_mode() -> None:

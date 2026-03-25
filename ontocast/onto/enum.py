@@ -82,7 +82,7 @@ class WorkflowNode(StrEnum):
     MERGE_FACTS = "Merge Facts"
     PLAN_EXTERNAL_EVIDENCE = "Plan External Evidence"
     FETCH_EXTERNAL_EVIDENCE = "Fetch External Evidence"
-    STRUCTURAL_PREPASS = "Structural Pre-pass"
+    STRUCTURAL_CHECK = "Structural Check"
     CONSISTENCY_CRITIC = "Consistency Critic"
 
 

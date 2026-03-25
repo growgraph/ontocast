@@ -12,7 +12,5 @@ def route_after_ontology_selection(state: AgentState) -> str:
 
 
 def route_after_ontology_consolidation(state: AgentState) -> str:
-    """Route after ontology stage: facts map if needed, else serialize."""
-    if state.render_facts:
-        return WorkflowNode.RENDER_FACTS
-    return WorkflowNode.STRUCTURAL_PREPASS
+    """Route after ontology stage to the ontology-only structural check."""
+    return WorkflowNode.STRUCTURAL_CHECK
