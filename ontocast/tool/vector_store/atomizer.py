@@ -20,14 +20,14 @@ from ontocast.tool.representation_text import (
     role_from_predicate_usage,
     stable_sorted_triples,
 )
-from ontocast.tool.vector_store.core import OntologyAtom
+from ontocast.tool.vector_store.core import GraphAtom
 from ontocast.util import render_text_hash
 
 
-class OntologyAtomizer(Tool):
+class GraphAtomizer(Tool):
     """Extract natural-language atoms around ontology entities and predicates."""
 
-    def atomize(self, ontology: Ontology, depth: int = 1) -> list[OntologyAtom]:
+    def atomize(self, ontology: Ontology, depth: int = 1) -> list[GraphAtom]:
         """Generate deterministic ontology atoms from local graph neighborhoods."""
         if depth < 0:
             raise ValueError("Atomizer depth must be >= 0")
@@ -36,7 +36,7 @@ class OntologyAtomizer(Tool):
         entities = self._collect_focal_entities(graph)
         generated_at = datetime.now(timezone.utc)
 
-        atoms_by_id: dict[str, OntologyAtom] = {}
+        atoms_by_id: dict[str, GraphAtom] = {}
         for entity in entities:
             role = self._detect_entity_role(entity=entity, graph=graph)
             patch_graph = self._build_neighborhood_graph(
@@ -64,7 +64,7 @@ class OntologyAtomizer(Tool):
                 atom_id = render_text_hash(atom_key, digits=None)
                 if atom_id in atoms_by_id:
                     continue
-                atoms_by_id[atom_id] = OntologyAtom(
+                atoms_by_id[atom_id] = GraphAtom(
                     atom_id=atom_id,
                     ontology_iri=ontology.iri,
                     ontology_id=ontology.ontology_id,

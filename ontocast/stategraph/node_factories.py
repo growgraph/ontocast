@@ -248,7 +248,7 @@ def make_render_facts_node(tools: ToolBox):
 
     async def render_facts(state: AgentState) -> AgentState:
         if not state.content_units:
-            state.parallel_facts_units = []
+            state.facts_units = []
             state.status = Status.SUCCESS
             return state
 
@@ -296,7 +296,7 @@ def make_render_facts_node(tools: ToolBox):
                 f"{salvaged_failed_count}/{len(state.content_units)} unit(s)"
             )
 
-        state.parallel_facts_units = facts_units
+        state.facts_units = facts_units
         state.status = Status.SUCCESS
         return state
 
@@ -305,15 +305,15 @@ def make_render_facts_node(tools: ToolBox):
 
 def make_merge_facts_node(tools: ToolBox):
     def merge_facts(state: AgentState) -> AgentState:
-        if not state.parallel_facts_units:
+        if not state.facts_units:
             state.aggregated_facts = RDFGraph()
             state.status = Status.SUCCESS
             return state
 
-        for unit in state.parallel_facts_units:
+        for unit in state.facts_units:
             unit.sanitize()
         state.aggregated_facts = tools.aggregator.aggregate_graphs(
-            units=state.parallel_facts_units,
+            units=state.facts_units,
             ontology_graph=state.current_ontology.graph
             if not state.current_ontology.is_null()
             else None,
@@ -321,7 +321,7 @@ def make_merge_facts_node(tools: ToolBox):
         if len(state.aggregated_facts) == 0:
             logger.warning(
                 "Facts aggregation produced an empty graph from "
-                f"{len(state.parallel_facts_units)} successful unit(s)."
+                f"{len(state.facts_units)} successful unit(s)."
             )
         if state.source_url and state.doc_namespace:
             state.aggregated_facts.add(

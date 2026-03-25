@@ -20,9 +20,9 @@ from ontocast.onto.tenancy import (
     tenant_project_facts_name,
     tenant_project_ontologies_name,
 )
-from ontocast.tool.vector_store.atomizer import OntologyAtomizer
+from ontocast.tool.vector_store.atomizer import GraphAtomizer
 from ontocast.tool.vector_store.core import (
-    OntologyAtom,
+    GraphAtom,
     OntologySearchHit,
     VectorStoreTool,
     canonicalize_entity_role,
@@ -45,7 +45,7 @@ class QdrantVectorStore(VectorStoreTool):
 
     config: QdrantConfig = Field(default_factory=QdrantConfig)
     embedding: EmbeddingTool = Field(exclude=True)
-    atomizer: OntologyAtomizer = Field(default_factory=OntologyAtomizer, exclude=True)
+    atomizer: GraphAtomizer = Field(default_factory=GraphAtomizer, exclude=True)
     _client: QdrantClient | None = PrivateAttr(default=None)
 
     @property
@@ -298,7 +298,7 @@ class QdrantVectorStore(VectorStoreTool):
         filter_iri: str | None = None,
         filter_version: str | None = None,
         filter_hash: str | None = None,
-    ) -> list[OntologyAtom]:
+    ) -> list[GraphAtom]:
         """Search ontology atoms by text query using weighted dual-vector fusion."""
         core_query_vector = self.embedding.embed_one(query)
         neighborhood_query_vector = self.embedding.embed_one(query)
@@ -408,7 +408,7 @@ class QdrantVectorStore(VectorStoreTool):
         filter_iri: str | None = None,
         filter_version: str | None = None,
         filter_hash: str | None = None,
-    ) -> list[OntologyAtom]:
+    ) -> list[GraphAtom]:
         """Search ontology atoms with weighted fusion over named vectors."""
         hits = self.search_hits_by_vector(
             core_vector=core_vector,
@@ -539,11 +539,11 @@ class QdrantVectorStore(VectorStoreTool):
             return None
         return qdrant_models.Filter(must=conditions)
 
-    def _point_to_atom(self, point: Any) -> OntologyAtom:
+    def _point_to_atom(self, point: Any) -> GraphAtom:
         payload = point.payload or {}
         created_at_raw = payload.get("created_at")
         created_at = self._parse_created_at(created_at_raw)
-        return OntologyAtom(
+        return GraphAtom(
             atom_id=str(payload.get("atom_id", point.id)),
             ontology_iri=str(payload.get("ontology_iri", "")),
             ontology_id=payload.get("ontology_id"),
@@ -559,7 +559,7 @@ class QdrantVectorStore(VectorStoreTool):
             score=float(point.score) if point.score is not None else None,
         )
 
-    def _atom_payload(self, atom: OntologyAtom) -> dict[str, Any]:
+    def _atom_payload(self, atom: GraphAtom) -> dict[str, Any]:
         return {
             "atom_id": atom.atom_id,
             "ontology_iri": atom.ontology_iri,

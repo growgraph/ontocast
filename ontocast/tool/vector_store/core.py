@@ -30,7 +30,7 @@ def canonicalize_entity_role(role: str | None) -> str | None:
     return None
 
 
-class OntologyAtom(BasePydanticModel):
+class GraphAtom(BasePydanticModel):
     """Embedding-ready ontology entity atom."""
 
     atom_id: str = Field(
@@ -82,7 +82,7 @@ class OntologyAtom(BasePydanticModel):
 class OntologySearchHit(BasePydanticModel):
     """Typed retrieval result that separates atom payload from ranking metadata."""
 
-    atom: OntologyAtom
+    atom: GraphAtom
     score: float = Field(description="Fused retrieval score.")
 
 
@@ -105,7 +105,7 @@ class VectorStoreTool(Tool):
         filter_iri: str | None = None,
         filter_version: str | None = None,
         filter_hash: str | None = None,
-    ) -> list[OntologyAtom]:
+    ) -> list[GraphAtom]:
         """Search ontology patches by query text."""
 
     @abc.abstractmethod

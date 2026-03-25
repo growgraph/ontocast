@@ -11,9 +11,9 @@ from ontocast.config import EmbeddingConfig, QdrantConfig
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.sparql import SPARQLTool
-from ontocast.tool.vector_store.atomizer import OntologyAtomizer
+from ontocast.tool.vector_store.atomizer import GraphAtomizer
 from ontocast.tool.vector_store.core import (
-    OntologyAtom,
+    GraphAtom,
     OntologySearchHit,
     canonicalize_entity_role,
 )
@@ -48,9 +48,9 @@ class CountingEmbeddingTool(EmbeddingTool):
 class StubVectorStore(QdrantVectorStore):
     """Vector store stub for retriever unit tests."""
 
-    _atoms: list[OntologyAtom] = PrivateAttr(default_factory=list)
+    _atoms: list[GraphAtom] = PrivateAttr(default_factory=list)
 
-    def set_atoms(self, atoms: Iterable[OntologyAtom]) -> None:
+    def set_atoms(self, atoms: Iterable[GraphAtom]) -> None:
         self._atoms = list(atoms)
 
     def search_patches(
@@ -60,7 +60,7 @@ class StubVectorStore(QdrantVectorStore):
         filter_iri: str | None = None,
         filter_version: str | None = None,
         filter_hash: str | None = None,
-    ) -> list[OntologyAtom]:
+    ) -> list[GraphAtom]:
         del query, filter_iri, filter_version, filter_hash
         return self._atoms[:top_k]
 
@@ -185,7 +185,7 @@ def _build_smoke_ontology() -> Ontology:
 
 def test_atomizer_generates_representation_atoms_for_predicates() -> None:
     ontology = _build_smoke_ontology()
-    atomizer = OntologyAtomizer()
+    atomizer = GraphAtomizer()
     atoms = atomizer.atomize(ontology=ontology, depth=1)
 
     assert atoms
@@ -193,7 +193,7 @@ def test_atomizer_generates_representation_atoms_for_predicates() -> None:
     assert all(atom.core_representation.strip() for atom in atoms)
     assert all(atom.neighborhood_representation.strip() for atom in atoms)
     assert all(atom.ontology_version == ontology.version for atom in atoms)
-    assert "turtle" not in OntologyAtom.model_fields
+    assert "turtle" not in GraphAtom.model_fields
 
 
 def test_embed_texts_batched_respects_batch_size() -> None:
@@ -232,7 +232,7 @@ def test_retriever_expands_graph_via_sparql_tool() -> None:
         embedding=embedding,
     )
     atoms = [
-        OntologyAtom(
+        GraphAtom(
             atom_id="a1",
             ontology_iri="https://example.org/smoke",
             ontology_id="smoke",
@@ -243,7 +243,7 @@ def test_retriever_expands_graph_via_sparql_tool() -> None:
             core_representation="alpha concept",
             neighborhood_representation="alpha related to beta",
         ),
-        OntologyAtom(
+        GraphAtom(
             atom_id="a2",
             ontology_iri="https://example.org/smoke",
             ontology_id="smoke",
@@ -285,7 +285,7 @@ async def test_retriever_aretrieve_expands_graph_via_sparql_tool() -> None:
         embedding=embedding,
     )
     atoms = [
-        OntologyAtom(
+        GraphAtom(
             atom_id="a1",
             ontology_iri="https://example.org/smoke",
             ontology_id="smoke",
@@ -296,7 +296,7 @@ async def test_retriever_aretrieve_expands_graph_via_sparql_tool() -> None:
             core_representation="alpha concept",
             neighborhood_representation="alpha related to beta",
         ),
-        OntologyAtom(
+        GraphAtom(
             atom_id="a2",
             ontology_iri="https://example.org/smoke",
             ontology_id="smoke",
@@ -340,7 +340,7 @@ def test_canonicalize_entity_role_maps_synonyms() -> None:
 
 
 def test_ontology_atom_contract_iri_and_combined_representation() -> None:
-    atom = OntologyAtom(
+    atom = GraphAtom(
         atom_id="a",
         ontology_iri="https://example.org/o",
         iri="https://example.org/o#A",
@@ -375,7 +375,7 @@ def test_search_hits_by_vector_returns_typed_scores() -> None:
             return [_Point("p1", 0.5, "neighbor"), _Point("p2", 0.2, "neighbor")]
 
         def _point_to_atom(self, point):
-            return OntologyAtom(
+            return GraphAtom(
                 atom_id=str(point.id),
                 ontology_iri="https://example.org/o",
                 iri=f"https://example.org/o#{point.id}",

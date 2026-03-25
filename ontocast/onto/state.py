@@ -205,7 +205,7 @@ class AgentState(BasePydanticModel):
         description="A list of graph update that improve the current graph of facts (applied)",
     )
 
-    parallel_facts_units: list[ContentUnit] = Field(
+    facts_units: list[ContentUnit] = Field(
         default_factory=list,
         description="Successful per-unit facts outputs collected during parallel map phase",
     )

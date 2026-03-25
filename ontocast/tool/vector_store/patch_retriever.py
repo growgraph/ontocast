@@ -9,7 +9,7 @@ from pydantic import Field
 
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.onto import Tool
-from ontocast.tool.vector_store.core import OntologyAtom
+from ontocast.tool.vector_store.core import GraphAtom
 from ontocast.tool.vector_store.qdrant import QdrantVectorStore
 
 
@@ -26,7 +26,7 @@ class OntologyPatchRetriever(Tool):
         expand_sparql: bool = True,
         subgraph_depth: int = 1,
         max_triples: int = 2000,
-    ) -> tuple[RDFGraph, list[OntologyAtom]]:
+    ) -> tuple[RDFGraph, list[GraphAtom]]:
         """Retrieve top-k atoms and expand graph via triple-store/SPARQL lookup."""
         try:
             asyncio.get_running_loop()
@@ -51,7 +51,7 @@ class OntologyPatchRetriever(Tool):
         expand_sparql: bool = True,
         subgraph_depth: int = 1,
         max_triples: int = 2000,
-    ) -> list[tuple[RDFGraph, list[OntologyAtom]]]:
+    ) -> list[tuple[RDFGraph, list[GraphAtom]]]:
         """Batch retrieve graph patches for many proposition queries."""
         try:
             asyncio.get_running_loop()
@@ -76,7 +76,7 @@ class OntologyPatchRetriever(Tool):
         expand_sparql: bool = True,
         subgraph_depth: int = 1,
         max_triples: int = 2000,
-    ) -> tuple[RDFGraph, list[OntologyAtom]]:
+    ) -> tuple[RDFGraph, list[GraphAtom]]:
         """Async retrieve: top-k atoms plus optional induced subgraph expansion."""
         batched_results = await self.aretrieve_many(
             queries=[query],
@@ -96,7 +96,7 @@ class OntologyPatchRetriever(Tool):
         expand_sparql: bool = True,
         subgraph_depth: int = 1,
         max_triples: int = 2000,
-    ) -> list[tuple[RDFGraph, list[OntologyAtom]]]:
+    ) -> list[tuple[RDFGraph, list[GraphAtom]]]:
         """Async batch retrieve graph patches for many proposition queries."""
         if not queries:
             return []
@@ -111,7 +111,7 @@ class OntologyPatchRetriever(Tool):
             queries=queries,
             top_k=top_k,
         )
-        results: list[tuple[RDFGraph, list[OntologyAtom]]] = []
+        results: list[tuple[RDFGraph, list[GraphAtom]]] = []
         for hits in hits_by_query:
             atoms = [hit.atom for hit in hits]
             if not atoms:

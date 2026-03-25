@@ -800,34 +800,3 @@ class EmbeddingBasedAggregator:
 
         logger.info("Aggregation with metadata complete")
         return merged_graph
-
-
-# Convenience function for backward compatibility
-def aggregate_content_unit_graphs(
-    units: list[ContentUnit],
-    similarity_threshold: float = 0.80,
-) -> RDFGraph:
-    """Convenience function to aggregate content unit graphs.
-
-    Args:
-        units: List of content units to aggregate.
-        similarity_threshold: Cosine similarity threshold for clustering.
-
-    Returns:
-        Aggregated RDF graph.
-    """
-    aggregator = EmbeddingBasedAggregator(
-        similarity_threshold=similarity_threshold,
-    )
-    return aggregator.aggregate_graphs(units)
-
-
-def aggregate_chunk_graphs(
-    units: list[ContentUnit],
-    similarity_threshold: float = 0.80,
-) -> RDFGraph:
-    """Backward-compatible alias for :func:`aggregate_content_unit_graphs`."""
-    return aggregate_content_unit_graphs(
-        units=units,
-        similarity_threshold=similarity_threshold,
-    )
