@@ -19,23 +19,23 @@ and aggregation.
 
 Example:
     # With Fuseki backend (auto-detected from FUSEKI_URI and FUSEKI_AUTH)
-    ontocast --env-path .env
+    ontocast
 
     # Process specific file
-    ontocast --env-path .env --input-path ./document.pdf
+    ontocast --input-path ./document.pdf
 
     # Process with chunk limit
-    ontocast --env-path .env --head-chunks 5
+    ontocast --head-chunks 5
 """
 
 import asyncio
 import logging
 import logging.config
 import pathlib
+from importlib import metadata
 
 import click
 import uvicorn
-from dotenv import load_dotenv
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 from langchain_core.runnables import RunnableConfig
@@ -98,7 +98,7 @@ def create_app(
 ) -> FastAPI:
     """Build the FastAPI application (routes + workflow)."""
 
-    app = FastAPI(title="ontocast", version="0.1.1")
+    app = FastAPI(title="ontocast", version=metadata.version("ontocast"))
     app.include_router(build_ontology_router(tools))
 
     workflow: CompiledStateGraph = create_agent_graph(tools)
@@ -152,7 +152,9 @@ def create_app(
                         error="LLM not initialized"
                     ).model_dump(),
                 )
-            return HealthOkResponse(llm_provider=tools.llm_provider)
+            return HealthOkResponse(
+                llm_provider=tools.llm_provider, version=metadata.version("ontocast")
+            )
         except Exception as e:
             logger.error("Health check failed: %s", e)
             return JSONResponse(
@@ -162,7 +164,7 @@ def create_app(
 
     @app.get("/info", response_model=InfoResponse)
     async def info():
-        return InfoResponse()
+        return InfoResponse(version=metadata.version("ontocast"))
 
     @app.post("/flush")
     async def flush(
@@ -377,13 +379,6 @@ def create_app(
 
 
 @click.command()
-@click.option(
-    "--env-file",
-    type=click.Path(path_type=pathlib.Path),
-    required=True,
-    default=".env",
-    help="Path to .env file containing backend and configuration settings",
-)
 @click.option("--input-path", type=click.Path(path_type=pathlib.Path), default=None)
 @click.option("--head-chunks", type=int, default=None)
 @click.option(
@@ -405,7 +400,6 @@ def create_app(
     ),
 )
 def run(
-    env_file: pathlib.Path,
     input_path: pathlib.Path | None,
     head_chunks: int | None,
     tenant: str | None,
@@ -424,7 +418,6 @@ def run(
 
     """
 
-    _ = load_dotenv(dotenv_path=env_file.expanduser())
     # Global configuration instance
     config = Config()
 
