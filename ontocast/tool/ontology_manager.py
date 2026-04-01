@@ -7,7 +7,7 @@ lineage using hash-based identifiers.
 
 import logging
 from copy import deepcopy
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic import Field
 
@@ -131,10 +131,17 @@ class OntologyManager(Tool):
         """Register a patch retriever for vector context lookups."""
         self._patch_retriever = retriever
 
+    def _effective_patch_top_k(self, top_k: int | None) -> int:
+        if top_k is not None:
+            return top_k
+        if self._patch_retriever is not None:
+            return self._patch_retriever.vector_store.config.top_k
+        return 10
+
     def get_patch_context(
         self,
         query: str,
-        top_k: int = 10,
+        top_k: int | None = None,
         subgraph_depth: int = 1,
         max_triples: int = 2000,
     ) -> RDFGraph | None:
@@ -154,7 +161,7 @@ class OntologyManager(Tool):
     async def aget_patch_context(
         self,
         query: str,
-        top_k: int = 10,
+        top_k: int | None = None,
         subgraph_depth: int = 1,
         max_triples: int = 2000,
     ) -> RDFGraph | None:
@@ -170,7 +177,7 @@ class OntologyManager(Tool):
     def get_patch_context_with_sources(
         self,
         query: str,
-        top_k: int = 10,
+        top_k: int | None = None,
         subgraph_depth: int = 1,
         max_triples: int = 2000,
     ) -> tuple[RDFGraph | None, list[str]]:
@@ -188,7 +195,7 @@ class OntologyManager(Tool):
     async def aget_patch_context_with_sources(
         self,
         query: str,
-        top_k: int = 10,
+        top_k: int | None = None,
         subgraph_depth: int = 1,
         max_triples: int = 2000,
     ) -> tuple[RDFGraph | None, list[str]]:
@@ -206,21 +213,25 @@ class OntologyManager(Tool):
     def get_patch_contexts_with_sources(
         self,
         queries: list[str],
-        top_k: int = 10,
+        top_k: int | None = None,
         subgraph_depth: int = 1,
         max_triples: int = 2000,
     ) -> list[tuple[RDFGraph | None, list[str]]]:
-        """Retrieve patch contexts for many queries in a batched pass."""
+        """Retrieve patch contexts for many queries in a batched pass.
+
+        With a patch retriever, the list has length 1 (ensemble graph + sources).
+        Without it, length matches ``queries`` (fallback ontology per query).
+        """
         if not queries:
             return []
         if self._patch_retriever is not None:
-            patch_batches = self._patch_retriever.retrieve_many(
+            graph, sources = self._patch_retriever.retrieve_ensemble(
                 queries=queries,
-                top_k=top_k,
+                top_k=self._effective_patch_top_k(top_k),
                 subgraph_depth=subgraph_depth,
                 max_triples=max_triples,
             )
-            return self._patch_batches_to_contexts(patch_batches)
+            return [(graph, sources) if len(graph) > 0 else (RDFGraph(), sources)]
 
         fallback = self.get_freshest_terminal_ontology_by_iri(None)
         if fallback is None:
@@ -231,42 +242,31 @@ class OntologyManager(Tool):
     async def aget_patch_contexts_with_sources(
         self,
         queries: list[str],
-        top_k: int = 10,
+        top_k: int | None = None,
         subgraph_depth: int = 1,
         max_triples: int = 2000,
     ) -> list[tuple[RDFGraph | None, list[str]]]:
-        """Async patch retrieval (vector + induced subgraph) for many queries."""
+        """Async patch retrieval (vector + induced subgraph) for many queries.
+
+        With a patch retriever, returns a one-element list: a single induced graph for
+        the union of hits over ``queries``, plus contributing ontology IRIs.
+        """
         if not queries:
             return []
         if self._patch_retriever is not None:
-            patch_batches = await self._patch_retriever.aretrieve_many(
+            graph, sources = await self._patch_retriever.aretrieve_ensemble(
                 queries=queries,
-                top_k=top_k,
+                top_k=self._effective_patch_top_k(top_k),
                 subgraph_depth=subgraph_depth,
                 max_triples=max_triples,
             )
-            return self._patch_batches_to_contexts(patch_batches)
+            return [(graph, sources) if len(graph) > 0 else (RDFGraph(), sources)]
 
         fallback = self.get_freshest_terminal_ontology_by_iri(None)
         if fallback is None:
             return [(None, []) for _ in queries]
         fallback_graph = deepcopy(fallback.graph)
         return [(deepcopy(fallback_graph), [fallback.iri]) for _ in queries]
-
-    @staticmethod
-    def _patch_batches_to_contexts(
-        patch_batches: list[tuple[RDFGraph, list[Any]]],
-    ) -> list[tuple[RDFGraph | None, list[str]]]:
-        results: list[tuple[RDFGraph | None, list[str]]] = []
-        for patch_graph, atoms in patch_batches:
-            if len(patch_graph) > 0:
-                sources = sorted(
-                    {atom.ontology_iri for atom in atoms if atom.ontology_iri}
-                )
-                results.append((patch_graph, sources))
-            else:
-                results.append((RDFGraph(), []))
-        return results
 
     def get_terminal_ontologies_by_iri(self, iri: str | None = None) -> list[Ontology]:
         """Get terminal (leaf) ontologies in the version graph.

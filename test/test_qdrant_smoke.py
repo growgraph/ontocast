@@ -90,7 +90,10 @@ def test_qdrant_vector_store_smoke(
     assert any(hit.ontology_iri == indexed_iri for hit in hits)
     assert all(hit.ontology_version == ingested.version for hit in hits)
     assert all(hit.core_representation for hit in hits)
-    assert all(hit.neighborhood_representation for hit in hits)
+    assert any(hit.neighborhood_representation for hit in hits)
+    predicate_hits = [h for h in hits if h.entity_role == "predicate"]
+    assert predicate_hits
+    assert all(h.neighborhood_representation for h in predicate_hits)
 
     filtered_version_hits = vector_store.search_patches(
         query="alpha concept relation",
@@ -102,8 +105,10 @@ def test_qdrant_vector_store_smoke(
         hit.ontology_version == ingested.version for hit in filtered_version_hits
     )
 
-    patch_graph, atoms = tools.patch_retriever.retrieve(query="beta concept", top_k=3)
-    assert len(atoms) > 0
+    patch_graph, source_iris = tools.patch_retriever.retrieve(
+        query="beta concept", top_k=3
+    )
+    assert len(source_iris) > 0
     assert len(patch_graph) > 0
 
     vector_store.delete_ontology(indexed_iri)

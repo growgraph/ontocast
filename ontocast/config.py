@@ -465,7 +465,15 @@ class QdrantConfig(BaseSettings):
             "(Cosine, Dot, Euclid, Manhattan; same as qdrant_client Distance)."
         ),
     )
-    top_k: int = Field(default=10, ge=1, description="Default patch retrieval size.")
+    top_k: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Default number of fused vector hits per query for ontology-patch retrieval "
+            "(QDRANT_TOP_K). Call sites may pass an explicit ``top_k`` to override this "
+            "for a single retrieval; when omitted, patch search uses this value."
+        ),
+    )
     induced_subgraph_depth: int = Field(
         default=1,
         ge=0,
@@ -519,6 +527,32 @@ class QdrantConfig(BaseSettings):
         le=1.0,
         description="Neighborhood vector score weight for dual-vector ranking fusion.",
     )
+    patch_per_query_score_ratio: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Patch retrieval: within each query, keep hits whose fused score is at least "
+            "this fraction of that query's best hit (fairness across mixed-strength queries)."
+        ),
+    )
+    patch_min_query_best_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "Patch retrieval: if > 0, queries whose top hit score is below this contribute "
+            "no atoms (drop irrelevant sub-queries). 0 disables."
+        ),
+    )
+    patch_min_merged_max_score: float = Field(
+        default=0.18,
+        ge=0.0,
+        description=(
+            "Patch retrieval: after merging hits across queries, if the highest retained "
+            "score is below this, return an empty patch (no relevant ontology). Set to 0 "
+            "to disable (fused cosine-style scores; tune with your embedding model)."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="QDRANT_",
@@ -563,7 +597,7 @@ class Config(BaseSettings):
     # Tool configuration (for ToolBox)
     tool_config: ToolConfig = Field(default_factory=ToolConfig)
 
-    # Server configuration (for serve.py)
+    # Server configuration (for server.py)
     server: ServerConfig = Field(default_factory=ServerConfig)
 
     # Additional settings

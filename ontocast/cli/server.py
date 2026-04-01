@@ -65,6 +65,22 @@ from ontocast.toolbox import ToolBox
 logger = logging.getLogger(__name__)
 
 
+def get_next_level(level: int) -> int:
+    levels = [
+        logging.DEBUG,
+        logging.INFO,
+        logging.WARNING,
+        logging.ERROR,
+        logging.CRITICAL,
+    ]
+
+    try:
+        idx = levels.index(level)
+        return levels[min(idx + 1, len(levels) - 1)]
+    except ValueError:
+        return level  # fallback
+
+
 def calculate_recursion_limit(
     head_chunks: int | None,
     server_config: ServerConfig,
@@ -426,9 +442,21 @@ def run(
 
     if config.logging_level is not None:
         try:
-            logger_conf = f"logging.{config.logging_level}.conf"
-            logging.config.fileConfig(logger_conf, disable_existing_loggers=False)
-            logger.debug("debug is on")
+            import logging
+
+            level = getattr(logging, config.logging_level.upper(), None)
+            if not isinstance(level, int):
+                raise ValueError(f"Invalid log level: {config.logging_level}")
+
+            # Compute global level (one level higher)
+            global_level = get_next_level(level)
+
+            # Configure root logger
+            logging.basicConfig(level=global_level, handlers=[logging.StreamHandler()])
+
+            # Configure module logger
+            logging.getLogger("ontocast").setLevel(level)
+
         except Exception as e:
             logger.error(f"could set logging level correctly {e}")
 

@@ -51,6 +51,10 @@ fin:MaterialAdverseEffect a owl:Class ;
     rdfs:label "material adverse effect" ;
     rdfs:comment "MAC/MAE style threshold describing a material impairment to business, assets, or prospects as defined in the agreement." .
 
+fin:OntoTestFinanceAnchor a owl:Class ;
+    rdfs:label "ontotest finance retrieval anchor violet crate" ;
+    rdfs:comment "Synthetic unique phrase for manual vector-hit tests; must not appear in the biomed fixture text." .
+
 fin:hasFinancialCovenant a owl:ObjectProperty ;
     rdfs:label "facility subject to financial covenant" ;
     rdfs:domain fin:RevolvingCreditFacility ;

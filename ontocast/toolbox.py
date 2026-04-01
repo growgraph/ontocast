@@ -307,6 +307,8 @@ class ToolBox:
         then fetches ontologies from the triple store and updates their properties
         using the LLM tool.
         """
+        if isinstance(self.triple_store_manager, FusekiTripleStoreManager):
+            await self.triple_store_manager.async_init()
 
         if self.vector_store is not None:
             await self.vector_store.initialize()

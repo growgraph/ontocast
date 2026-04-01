@@ -25,6 +25,8 @@ from ontocast.onto.enum import Status
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitFactsState
+from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
+from ontocast.tool.vector_store.core import OntologySearchHit
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,16 @@ pytestmark = [
 ]
 
 _FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
+
+FINANCE_ONTOLOGY_IRI = "https://ontocast.manual.test/ontology/fin-test"
+BIOMED_ONTOLOGY_IRI = "https://ontocast.manual.test/ontology/biomed-test"
+
+# Fixture-only classes whose labels match unique phrases in the source documents
+# (deterministic vector hits independent of loose domain similarity).
+FINANCE_ANCHOR_ENTITY_IRI = f"{FINANCE_ONTOLOGY_IRI}#OntoTestFinanceAnchor"
+BIOMED_ANCHOR_ENTITY_IRI = f"{BIOMED_ONTOLOGY_IRI}#OntoTestBiomedAnchor"
+FINANCE_ANCHOR_PHRASE = "ontotest finance retrieval anchor violet crate"
+BIOMED_ANCHOR_PHRASE = "ontotest biomed retrieval anchor cobalt lantern"
 
 
 @pytest.fixture
@@ -55,6 +67,20 @@ def finance_source_document_text() -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
+@pytest.fixture
+def biomed_ontology_ttl_text() -> str:
+    """Raw Turtle for the biomed integration ontology fixture."""
+    path = _FIXTURES_DIR / "biomed_integration_ontology.ttl"
+    return path.read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def biomed_source_document_text() -> str:
+    """Clinical-trial narrative; micro-chunks are sentences from this file."""
+    path = _FIXTURES_DIR / "biomed_source_document.txt"
+    return path.read_text(encoding="utf-8").strip()
+
+
 def _require_env(name: str) -> str:
     value = os.getenv(name)
     if value is None or value.strip() == "":
@@ -66,6 +92,73 @@ def _split_into_sentences(text: str) -> list[str]:
     """Split prose into sentence-sized micro-chunks (naive English punctuation split)."""
     chunks = re.split(r"(?<=[.!?])\s+", text.strip())
     return [c.strip() for c in chunks if c.strip()]
+
+
+def _hit_counts_by_ontology_iri(
+    hits_by_query: list[list[OntologySearchHit]],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for hits in hits_by_query:
+        for hit in hits:
+            iri = hit.atom.ontology_iri
+            if not iri:
+                continue
+            counts[iri] = counts.get(iri, 0) + 1
+    return counts
+
+
+def _majority_iri(counts: dict[str, int], candidates: frozenset[str]) -> str | None:
+    """Return the IRI among ``candidates`` with the highest count, or None if empty."""
+    sub = {k: counts[k] for k in candidates if k in counts}
+    if not sub:
+        return None
+    return max(sub.items(), key=lambda item: item[1])[0]
+
+
+def _focal_iris_from_hits(hits: list[OntologySearchHit]) -> list[str]:
+    return [h.atom.iri for h in hits if h.atom.iri]
+
+
+def _assert_expected_entity_in_hits_for_anchor_sentence(
+    chunks: list[str],
+    hits_by_query: list[list[OntologySearchHit]],
+    anchor_phrase: str,
+    expected_entity_iri: str,
+    *,
+    domain_label: str,
+) -> None:
+    """Require at least one top-k hit whose focal IRI matches the anchor class for that sentence."""
+    for chunk, hits in zip(chunks, hits_by_query, strict=True):
+        if anchor_phrase not in chunk:
+            continue
+        focal = _focal_iris_from_hits(hits)
+        assert expected_entity_iri in focal, (
+            f"{domain_label}: expected vector hit for focal entity {expected_entity_iri!r} "
+            f"when querying the sentence containing {anchor_phrase!r}. "
+            f"Top-k focal IRIs: {focal}"
+        )
+        return
+    pytest.fail(
+        f"{domain_label}: no sentence contained anchor phrase {anchor_phrase!r}"
+    )
+
+
+def _graph_mentions_entity_iri(graph: RDFGraph, entity_iri: str) -> bool:
+    node = URIRef(entity_iri)
+    return any(s == node or o == node for s, _, o in graph)
+
+
+async def _prepare_clean_integration_stores(tools: ToolBox) -> None:
+    """Empty Fuseki ontology/facts datasets and the Qdrant ontology collection."""
+    triple = tools.require_triple_store_manager()
+    if isinstance(triple, FusekiTripleStoreManager):
+        await triple.clean()
+    vs = tools.vector_store
+    if vs is not None:
+        col = vs.config.ontology_collection
+        if col and vs.client.collection_exists(collection_name=col):
+            vs.client.delete_collection(collection_name=col)
+        await vs.initialize()
 
 
 def _qdrant_reachable(uri: str, api_key: str | None) -> bool:
@@ -159,61 +252,106 @@ async def test_ingest_retrieve_micro_chunks_render_facts(
     integration_tools: ToolBox,
     finance_ontology_ttl_text: str,
     finance_source_document_text: str,
+    biomed_ontology_ttl_text: str,
+    biomed_source_document_text: str,
 ) -> None:
-    """Ingest fixture TTL to disk + Fuseki + Qdrant; sentence splits drive patch logging + render_facts."""
+    """Cross-domain manual test: clean stores, two ontologies, retrieval skew + render_facts."""
     tools = integration_tools
-    ttl = finance_ontology_ttl_text.encode("utf-8")
 
     if tools.vector_store is None:
         pytest.fail("ToolBox has no vector store (configure QDRANT_URI).")
     if tools.patch_retriever is None:
         pytest.fail("ToolBox has no OntologyPatchRetriever (Qdrant not configured).")
 
-    await tools.vector_store.initialize()
+    await _prepare_clean_integration_stores(tools)
 
     try:
-        ingested = await tools.ingest_ontology_ttl(ttl)
+        fin_onto = await tools.ingest_ontology_ttl(
+            finance_ontology_ttl_text.encode("utf-8")
+        )
+        bio_onto = await tools.ingest_ontology_ttl(
+            biomed_ontology_ttl_text.encode("utf-8")
+        )
     except Exception as exc:  # pragma: no cover - integration diagnostic
         pytest.fail(f"ingest_ontology_ttl failed: {exc}")
 
-    assert ingested.iri
-    assert ingested.hash
+    assert fin_onto.iri == FINANCE_ONTOLOGY_IRI
+    assert bio_onto.iri == BIOMED_ONTOLOGY_IRI
 
     remote_list = await tools.require_triple_store_manager().afetch_ontologies()
-    iris = {o.iri for o in remote_list}
-    assert ingested.iri in iris, "Ingested ontology IRI not visible via triple store"
+    remote_iris = {o.iri for o in remote_list}
+    assert FINANCE_ONTOLOGY_IRI in remote_iris
+    assert BIOMED_ONTOLOGY_IRI in remote_iris
 
-    document = finance_source_document_text
-    micro_chunks = _split_into_sentences(document)
+    q_top_k = tools.config.tool_config.qdrant.top_k
+    iris = frozenset({FINANCE_ONTOLOGY_IRI, BIOMED_ONTOLOGY_IRI})
+
+    fin_chunks = _split_into_sentences(finance_source_document_text)
+    bio_chunks = _split_into_sentences(biomed_source_document_text)
     logger.info(
-        "Document has %d sentence micro-chunks (chars=%d)",
-        len(micro_chunks),
-        len(document),
+        "Finance doc: %d sentences; biomed doc: %d sentences; patch top_k=%d (QdrantConfig)",
+        len(fin_chunks),
+        len(bio_chunks),
+        q_top_k,
     )
 
-    top_k = 8
+    fin_hits = await tools.vector_store.asearch_patch_hits_many(
+        queries=fin_chunks,
+        top_k=q_top_k,
+    )
+    fin_counts = _hit_counts_by_ontology_iri(fin_hits)
+    logger.info("Finance micro-chunks — hit counts by ontology_iri: %s", fin_counts)
+    dominant_fin = _majority_iri(fin_counts, iris)
+    assert dominant_fin == FINANCE_ONTOLOGY_IRI, (
+        "Expected most vector hits for finance sentences to come from the finance "
+        f"ontology (counts={fin_counts})"
+    )
+    assert fin_counts.get(FINANCE_ONTOLOGY_IRI, 0) > fin_counts.get(
+        BIOMED_ONTOLOGY_IRI, 0
+    )
+    _assert_expected_entity_in_hits_for_anchor_sentence(
+        fin_chunks,
+        fin_hits,
+        FINANCE_ANCHOR_PHRASE,
+        FINANCE_ANCHOR_ENTITY_IRI,
+        domain_label="Finance",
+    )
+
+    bio_hits = await tools.vector_store.asearch_patch_hits_many(
+        queries=bio_chunks,
+        top_k=q_top_k,
+    )
+    bio_counts = _hit_counts_by_ontology_iri(bio_hits)
+    logger.info("Biomed micro-chunks — hit counts by ontology_iri: %s", bio_counts)
+    dominant_bio = _majority_iri(bio_counts, iris)
+    assert dominant_bio == BIOMED_ONTOLOGY_IRI, (
+        "Expected most vector hits for biomed sentences to come from the biomed "
+        f"ontology (counts={bio_counts})"
+    )
+    assert bio_counts.get(BIOMED_ONTOLOGY_IRI, 0) > bio_counts.get(
+        FINANCE_ONTOLOGY_IRI, 0
+    )
+    _assert_expected_entity_in_hits_for_anchor_sentence(
+        bio_chunks,
+        bio_hits,
+        BIOMED_ANCHOR_PHRASE,
+        BIOMED_ANCHOR_ENTITY_IRI,
+        domain_label="Biomed",
+    )
+
+    document = finance_source_document_text
+    micro_chunks = fin_chunks
     subgraph_depth = 1
     max_triples = 500
-    batches = await tools.patch_retriever.aretrieve_many(
+    # Omit top_k → uses QdrantConfig.top_k (same as explicit q_top_k above).
+    stitched, source_iris = await tools.patch_retriever.aretrieve_ensemble(
         queries=micro_chunks,
-        top_k=top_k,
         expand_sparql=True,
         subgraph_depth=subgraph_depth,
         max_triples=max_triples,
     )
-    assert len(batches) == len(micro_chunks)
-
-    stitched = RDFGraph()
-    all_atom_ontology_iris: set[str] = set()
-    non_empty_induced = 0
 
     for idx, sentence in enumerate(micro_chunks):
-        patch_graph, atoms = batches[idx]
-        all_atom_ontology_iris.update(a.ontology_iri for a in atoms if a.ontology_iri)
-        if len(patch_graph) > 0:
-            non_empty_induced += 1
-        stitched += patch_graph
-
         logger.info(
             "--- micro_chunk[%d/%d] chars=%d text=%r",
             idx + 1,
@@ -221,58 +359,29 @@ async def test_ingest_retrieve_micro_chunks_render_facts(
             len(sentence),
             sentence,
         )
-        if not atoms:
-            logger.warning(
-                "    vector search returned no ontology atoms for this sentence"
-            )
-            continue
-
-        for rank, atom in enumerate(atoms):
-            preview = atom.core_representation.replace("\n", " ")
-            if len(preview) > 220:
-                preview = preview[:217] + "..."
-            logger.info(
-                "    vector_match[%d] score=%s entity_iri=%s role=%s\n        core=%r",
-                rank,
-                atom.score,
-                atom.iri,
-                atom.entity_role,
-                preview,
-            )
-            nh = atom.neighborhood_representation.replace("\n", " ")
-            if len(nh) > 180:
-                nh = nh[:177] + "..."
-            logger.info("        neighborhood=%r", nh)
-
-        logger.info(
-            "    induced_subgraph: triples=%d ontology_iris_from_atoms=%s",
-            len(patch_graph),
-            sorted({a.ontology_iri for a in atoms if a.ontology_iri}),
-        )
 
     logger.info(
-        "Stitch summary: sentences=%d non_empty_induced=%d stitched_triples=%d "
-        "distinct_atom_ontology_iris=%d",
+        "Ensemble summary: sentences=%d stitched_triples=%d source_ontology_iris=%s",
         len(micro_chunks),
-        non_empty_induced,
         len(stitched),
-        len(all_atom_ontology_iris),
+        source_iris,
     )
 
-    assert non_empty_induced > 0, (
-        "Expected at least one sentence to expand to a non-empty induced subgraph "
-        "(vector hit + Fuseki-backed subgraph)."
+    assert len(stitched) > 0, (
+        "Expected a non-empty induced subgraph (vector hits + Fuseki-backed subgraph)."
     )
-    assert ingested.iri in all_atom_ontology_iris, (
-        "Expected vector hits to include atoms from the ingested ontology IRI"
+    assert FINANCE_ONTOLOGY_IRI in source_iris
+    assert _graph_mentions_entity_iri(stitched, FINANCE_ANCHOR_ENTITY_IRI), (
+        "Ensemble retrieval should expand the finance anchor entity from Fuseki "
+        f"(missing triples mentioning {FINANCE_ANCHOR_ENTITY_IRI!r})."
     )
 
     snapshot = Ontology(
         ontology_id=None,
         title="Stitched patch context (manual finance test)",
-        description="Composite induced subgraph from vector-retrieved ontology atoms per sentence.",
+        description="Composite induced subgraph from vector-retrieved ontology atoms (ensemble over sentences).",
         graph=stitched,
-        iri=ingested.iri,
+        iri=fin_onto.iri,
         current_domain=tools.config.tool_config.domain.current_domain,
     )
 
@@ -299,7 +408,8 @@ async def test_ingest_retrieve_micro_chunks_render_facts(
     assert "ontocast.manual.test" in out_ttl
     assert len(result.content_unit.graph) > 0
 
-    try:
-        await tools.delete_ontology_by_iri(ingested.iri)
-    except Exception:
-        pass
+    for iri in (FINANCE_ONTOLOGY_IRI, BIOMED_ONTOLOGY_IRI):
+        try:
+            await tools.delete_ontology_by_iri(iri)
+        except Exception:
+            pass

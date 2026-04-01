@@ -1,0 +1,67 @@
+@prefix bio: <https://ontocast.manual.test/ontology/biomed-test#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<https://ontocast.manual.test/ontology/biomed-test> a owl:Ontology ;
+    rdfs:label "Manual biomed integration ontology" ;
+    rdfs:comment "Synthetic clinical-trial and biomarker vocabulary for cross-domain retrieval tests." .
+
+bio:ClinicalTrial a owl:Class ;
+    rdfs:label "clinical trial" ;
+    rdfs:comment "Interventional or observational study protocol that enrolls human participants under an investigational plan." .
+
+bio:RandomizedControlledTrial a owl:Class ;
+    rdfs:label "randomized controlled trial" ;
+    rdfs:subClassOf bio:ClinicalTrial ;
+    rdfs:comment "Trial where participants are assigned to arms using a randomization scheme to reduce allocation bias." .
+
+bio:InformedConsent a owl:Class ;
+    rdfs:label "informed consent" ;
+    rdfs:comment "Voluntary agreement to participate after disclosure of risks, benefits, and alternatives." .
+
+bio:AdverseEvent a owl:Class ;
+    rdfs:label "adverse event" ;
+    rdfs:comment "Any untoward medical occurrence in a participant, whether considered related to the intervention." .
+
+bio:Pharmacokinetics a owl:Class ;
+    rdfs:label "pharmacokinetics" ;
+    rdfs:comment "Time course of drug absorption, distribution, metabolism, and excretion in the body." .
+
+bio:Biomarker a owl:Class ;
+    rdfs:label "biomarker" ;
+    rdfs:comment "Measurable indicator of normal biology, disease, or response to therapy." .
+
+bio:SurrogateEndpoint a owl:Class ;
+    rdfs:label "surrogate endpoint" ;
+    rdfs:comment "Biomarker or intermediate outcome used as a substitute for a clinical endpoint under validation assumptions." .
+
+bio:DataMonitoringCommittee a owl:Class ;
+    rdfs:label "data monitoring committee" ;
+    rdfs:comment "Independent group that reviews accumulating safety and efficacy data during a trial." .
+
+bio:ProtocolAmendment a owl:Class ;
+    rdfs:label "protocol amendment" ;
+    rdfs:comment "Formal change to the study protocol after initial regulatory and ethics approval." .
+
+bio:PrimaryEndpoint a owl:Class ;
+    rdfs:label "primary endpoint" ;
+    rdfs:comment "Main outcome measure used to assess the trial hypothesis and sample size." .
+
+bio:hasPrimaryEndpoint a owl:ObjectProperty ;
+    rdfs:label "trial has primary endpoint" ;
+    rdfs:domain bio:ClinicalTrial ;
+    rdfs:range bio:PrimaryEndpoint .
+
+bio:monitoredBy a owl:ObjectProperty ;
+    rdfs:label "safety monitored by committee" ;
+    rdfs:domain bio:ClinicalTrial ;
+    rdfs:range bio:DataMonitoringCommittee .
+
+bio:reportsAdverseEvent a owl:ObjectProperty ;
+    rdfs:label "investigational arm reports adverse event" ;
+    rdfs:domain bio:RandomizedControlledTrial ;
+    rdfs:range bio:AdverseEvent .
+
+bio:OntoTestBiomedAnchor a owl:Class ;
+    rdfs:label "ontotest biomed retrieval anchor cobalt lantern" ;
+    rdfs:comment "Synthetic unique phrase for manual vector-hit tests; must not appear in the finance fixture text." .

@@ -101,12 +101,12 @@ class VectorStoreTool(Tool):
     def search_patches(
         self,
         query: str,
-        top_k: int = 10,
+        top_k: int | None = None,
         filter_iri: str | None = None,
         filter_version: str | None = None,
         filter_hash: str | None = None,
     ) -> list[GraphAtom]:
-        """Search ontology patches by query text."""
+        """Search ontology patches by query text (``top_k`` None → store default)."""
 
     @abc.abstractmethod
     def delete_ontology(

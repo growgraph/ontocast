@@ -8,6 +8,7 @@ import asyncio
 import logging
 
 from rdflib import BNode, Literal, URIRef
+from rdflib.namespace import RDFS, SKOS
 from rdflib.plugins.sparql import prepareQuery
 
 from ontocast.onto.enum import SPARQLOperationType
@@ -17,6 +18,19 @@ from ontocast.onto.sparql_models import SPARQLOperationModel
 from ontocast.tool.triple_manager.core import TripleStoreManager
 
 logger = logging.getLogger(__name__)
+
+# Predicates treated as human-facing descriptions for seed entities (always merged in first).
+_SEED_DESCRIPTION_PREDICATES: frozenset[URIRef] = frozenset(
+    {
+        RDFS.label,
+        RDFS.comment,
+        SKOS.prefLabel,
+        SKOS.altLabel,
+        SKOS.definition,
+        URIRef("http://purl.org/dc/terms/description"),
+        URIRef("http://purl.org/dc/elements/1.1/description"),
+    }
+)
 
 
 class SPARQLTool:
@@ -305,6 +319,23 @@ class SPARQLTool:
         for prefix, namespace in merged_graph.namespaces():
             if prefix:
                 result.bind(prefix, namespace)
+
+        for seed in seeds:
+            if len(result) >= max_triples:
+                return result
+            for pred in _SEED_DESCRIPTION_PREDICATES:
+                outgoing = sorted(
+                    merged_graph.triples((seed, pred, None)),
+                    key=lambda triple: str(triple),
+                )
+                incoming = sorted(
+                    merged_graph.triples((None, pred, seed)),
+                    key=lambda triple: str(triple),
+                )
+                for triple in outgoing + incoming:
+                    if len(result) >= max_triples:
+                        return result
+                    result.add(triple)
 
         frontier: set[URIRef] = set(seeds)
         visited: set[URIRef] = set()

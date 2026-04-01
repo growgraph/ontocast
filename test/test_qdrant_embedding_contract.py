@@ -52,7 +52,9 @@ def test_initialize_rejects_mismatched_embedding_dimension() -> None:
 
     try:
         asyncio.run(store_a.initialize())
-        with pytest.raises(ValueError, match="vector sizes do not match"):
+        with pytest.raises(
+            ValueError, match=r"vector sizes.*do not match configured size"
+        ):
             asyncio.run(store_b.initialize())
     finally:
         _delete_if_exist(client, (onto, facts))

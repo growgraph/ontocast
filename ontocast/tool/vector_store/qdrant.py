@@ -6,6 +6,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
@@ -33,6 +34,23 @@ logger = logging.getLogger(__name__)
 
 CORE_VECTOR_NAME = "core"
 NEIGHBORHOOD_VECTOR_NAME = "neighborhood"
+
+
+class EmbeddingContractMismatchError(ValueError):
+    """Embedding vectors or collection metadata disagree with the active embedding config.
+
+    Typical causes: switching ``EMBEDDING_MODEL_NAME`` without recreating the Qdrant
+    collection, or a provider returning an unexpected vector length.
+    """
+
+
+def _embedding_contract_help() -> str:
+    return (
+        "Align EmbeddingConfig (EMBEDDING_*) with the collection: use the same model "
+        "and dimension as when the collection was created, or drop the Qdrant "
+        "ontology collection and let initialize() recreate it."
+    )
+
 
 # Qdrant collection metadata (CollectionConfig.metadata).
 # Values must match EmbeddingConfig on every initialize().
@@ -174,10 +192,10 @@ class QdrantVectorStore(VectorStoreTool):
         dim_key = QDRANT_META_EMBEDDING_DIMENSION
         model_key = QDRANT_META_EMBEDDING_MODEL
         if dim_key not in meta or model_key not in meta:
-            raise ValueError(
+            raise EmbeddingContractMismatchError(
                 f"Qdrant collection '{collection}' is missing OntoCast "
                 f"embedding metadata ({dim_key!r}, {model_key!r}). "
-                "Drop and recreate the collection."
+                "Drop and recreate the collection. " + _embedding_contract_help()
             )
         stored_dim = self._coerce_metadata_int(
             meta[dim_key], field=dim_key, collection=collection
@@ -190,11 +208,11 @@ class QdrantVectorStore(VectorStoreTool):
             )
         expected_model = self._embedding_model_fingerprint()
         if stored_dim != vector_size or stored_model != expected_model:
-            raise ValueError(
+            raise EmbeddingContractMismatchError(
                 f"Qdrant collection '{collection}' embedding contract mismatch: "
                 f"collection has dimension={stored_dim}, model={stored_model!r}; "
                 f"current config expects dimension={vector_size}, "
-                f"model={expected_model!r}."
+                f"model={expected_model!r}. " + _embedding_contract_help()
             )
 
     def _ensure_named_vector_collection(
@@ -237,9 +255,10 @@ class QdrantVectorStore(VectorStoreTool):
                 core_size = vectors_config[CORE_VECTOR_NAME].size
                 neighborhood_size = vectors_config[NEIGHBORHOOD_VECTOR_NAME].size
                 if core_size != vector_size or neighborhood_size != vector_size:
-                    raise ValueError(
-                        f"Qdrant collection '{collection}' vector sizes do not match "
-                        f"configured size {vector_size}"
+                    raise EmbeddingContractMismatchError(
+                        f"Qdrant collection '{collection}' vector sizes "
+                        f"({core_size=}, {neighborhood_size=}) do not match "
+                        f"configured size {vector_size}. " + _embedding_contract_help()
                     )
                 for vec_name in (CORE_VECTOR_NAME, NEIGHBORHOOD_VECTOR_NAME):
                     actual_dist = vectors_config[vec_name].distance
@@ -294,17 +313,16 @@ class QdrantVectorStore(VectorStoreTool):
     def search_patches(
         self,
         query: str,
-        top_k: int = 10,
+        top_k: int | None = None,
         filter_iri: str | None = None,
         filter_version: str | None = None,
         filter_hash: str | None = None,
     ) -> list[GraphAtom]:
         """Search ontology atoms by text query using weighted dual-vector fusion."""
-        core_query_vector = self.embedding.embed_one(query)
-        neighborhood_query_vector = self.embedding.embed_one(query)
+        query_vector = self.embedding.embed_one(query)
         return self.search_by_vector(
-            core_vector=core_query_vector,
-            neighborhood_vector=neighborhood_query_vector,
+            core_vector=query_vector,
+            neighborhood_vector=query_vector,
             top_k=top_k,
             filter_iri=filter_iri,
             filter_version=filter_version,
@@ -314,27 +332,52 @@ class QdrantVectorStore(VectorStoreTool):
     def search_patch_hits(
         self,
         query: str,
-        top_k: int = 10,
+        top_k: int | None = None,
         filter_iri: str | None = None,
         filter_version: str | None = None,
         filter_hash: str | None = None,
     ) -> list[OntologySearchHit]:
         """Search ontology atoms and return explicit scored hit objects."""
-        core_query_vector = self.embedding.embed_one(query)
-        neighborhood_query_vector = self.embedding.embed_one(query)
+        query_vector = self.embedding.embed_one(query)
         return self.search_hits_by_vector(
-            core_vector=core_query_vector,
-            neighborhood_vector=neighborhood_query_vector,
+            core_vector=query_vector,
+            neighborhood_vector=query_vector,
             top_k=top_k,
             filter_iri=filter_iri,
             filter_version=filter_version,
             filter_hash=filter_hash,
         )
 
+    def _search_patch_hits_for_query_vectors(
+        self,
+        query_vectors: list[list[float]],
+        top_k: int,
+        filter_iri: str | None,
+        filter_version: str | None,
+        filter_hash: str | None,
+    ) -> list[list[OntologySearchHit]]:
+        """Run dual-vector fusion search per query vector (parallel in threads)."""
+        if not query_vectors:
+            return []
+
+        def search_one(query_vector: list[float]) -> list[OntologySearchHit]:
+            return self.search_hits_by_vector(
+                core_vector=query_vector,
+                neighborhood_vector=query_vector,
+                top_k=top_k,
+                filter_iri=filter_iri,
+                filter_version=filter_version,
+                filter_hash=filter_hash,
+            )
+
+        workers = min(32, len(query_vectors))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return list(pool.map(search_one, query_vectors))
+
     def _search_patch_hits_many_impl(
         self,
         queries: list[str],
-        top_k: int,
+        top_k: int | None,
         filter_iri: str | None,
         filter_version: str | None,
         filter_hash: str | None,
@@ -342,33 +385,26 @@ class QdrantVectorStore(VectorStoreTool):
         if not queries:
             return []
 
-        core_vectors = self.embedding.embed(queries)
-        neighborhood_vectors = self.embedding.embed(queries)
-        if len(core_vectors) != len(queries) or len(neighborhood_vectors) != len(
-            queries
-        ):
+        eff_top_k = self._effective_top_k(top_k)
+        query_vectors = self.embedding.embed(queries)
+        if len(query_vectors) != len(queries):
             raise ValueError(
                 "Embedding provider returned mismatched vectors for queries"
             )
-
-        results: list[list[OntologySearchHit]] = []
-        for core_vector, neighborhood_vector in zip(core_vectors, neighborhood_vectors):
-            results.append(
-                self.search_hits_by_vector(
-                    core_vector=core_vector,
-                    neighborhood_vector=neighborhood_vector,
-                    top_k=top_k,
-                    filter_iri=filter_iri,
-                    filter_version=filter_version,
-                    filter_hash=filter_hash,
-                )
-            )
-        return results
+        for i, vec in enumerate(query_vectors):
+            self._require_embedding_vector_length(vec, role=f"Query embedding[{i}]")
+        return self._search_patch_hits_for_query_vectors(
+            query_vectors,
+            eff_top_k,
+            filter_iri,
+            filter_version,
+            filter_hash,
+        )
 
     def search_patch_hits_many(
         self,
         queries: list[str],
-        top_k: int = 10,
+        top_k: int | None = None,
         filter_iri: str | None = None,
         filter_version: str | None = None,
         filter_hash: str | None = None,
@@ -385,26 +421,41 @@ class QdrantVectorStore(VectorStoreTool):
     async def asearch_patch_hits_many(
         self,
         queries: list[str],
-        top_k: int = 10,
+        top_k: int | None = None,
         filter_iri: str | None = None,
         filter_version: str | None = None,
         filter_hash: str | None = None,
     ) -> list[list[OntologySearchHit]]:
-        """Async variant: runs embedding + Qdrant queries in a worker thread."""
-        return await asyncio.to_thread(
-            self._search_patch_hits_many_impl,
-            queries,
-            top_k,
-            filter_iri,
-            filter_version,
-            filter_hash,
-        )
+        """Async variant: one batched embed, then parallel Qdrant searches."""
+        if not queries:
+            return []
+        eff_top_k = self._effective_top_k(top_k)
+        query_vectors = await asyncio.to_thread(self.embedding.embed, queries)
+        if len(query_vectors) != len(queries):
+            raise ValueError(
+                "Embedding provider returned mismatched vectors for queries"
+            )
+        for i, vec in enumerate(query_vectors):
+            self._require_embedding_vector_length(vec, role=f"Query embedding[{i}]")
+        tasks = [
+            asyncio.to_thread(
+                self.search_hits_by_vector,
+                query_vector,
+                query_vector,
+                eff_top_k,
+                filter_iri,
+                filter_version,
+                filter_hash,
+            )
+            for query_vector in query_vectors
+        ]
+        return await asyncio.gather(*tasks)
 
     def search_by_vector(
         self,
         core_vector: list[float],
         neighborhood_vector: list[float],
-        top_k: int = 10,
+        top_k: int | None = None,
         filter_iri: str | None = None,
         filter_version: str | None = None,
         filter_hash: str | None = None,
@@ -424,28 +475,32 @@ class QdrantVectorStore(VectorStoreTool):
         self,
         core_vector: list[float],
         neighborhood_vector: list[float],
-        top_k: int = 10,
+        top_k: int | None = None,
         filter_iri: str | None = None,
         filter_version: str | None = None,
         filter_hash: str | None = None,
     ) -> list[OntologySearchHit]:
         """Search ontology atoms with weighted fusion and explicit score wrapper."""
+        eff_top_k = self._effective_top_k(top_k)
+        self._require_embedding_vector_length(core_vector, role="Query core vector")
+        self._require_embedding_vector_length(
+            neighborhood_vector, role="Query neighborhood vector"
+        )
         search_filter = self._build_filter(
             filter_iri=filter_iri,
             filter_version=filter_version,
             filter_hash=filter_hash,
         )
-        fetch_limit = max(top_k, self.config.top_k) * 2
         core_hits = self._query_named_vector(
             vector_name=CORE_VECTOR_NAME,
             vector=core_vector,
-            limit=fetch_limit,
+            limit=eff_top_k,
             search_filter=search_filter,
         )
         neighborhood_hits = self._query_named_vector(
             vector_name=NEIGHBORHOOD_VECTOR_NAME,
             vector=neighborhood_vector,
-            limit=fetch_limit,
+            limit=eff_top_k,
             search_filter=search_filter,
         )
         fused_hits: dict[str, tuple[Any, float]] = {}
@@ -478,7 +533,7 @@ class QdrantVectorStore(VectorStoreTool):
 
         ranked_points = sorted(
             fused_hits.values(), key=lambda item: item[1], reverse=True
-        )[:top_k]
+        )[:eff_top_k]
         hits: list[OntologySearchHit] = []
         for point, fused_score in ranked_points:
             atom = self._point_to_atom(point)
@@ -586,6 +641,26 @@ class QdrantVectorStore(VectorStoreTool):
     def _vector_size(self) -> int:
         return self.config.vector_size or self.embedding.config.dimension
 
+    def _effective_top_k(self, top_k: int | None) -> int:
+        """Resolve retrieval depth: explicit ``top_k`` overrides :attr:`QdrantConfig.top_k`."""
+        if top_k is not None:
+            return top_k
+        return self.config.top_k
+
+    def _require_embedding_vector_length(
+        self,
+        vector: list[float],
+        *,
+        role: str,
+    ) -> None:
+        expected = self._vector_size()
+        if len(vector) != expected:
+            raise EmbeddingContractMismatchError(
+                f"{role} vector length {len(vector)} does not match the configured "
+                f"collection embedding dimension {expected}. "
+                + _embedding_contract_help()
+            )
+
     def _point_id(self, atom_id: str) -> str:
         """Return a Qdrant-compatible point id (UUID string)."""
         try:
@@ -619,6 +694,11 @@ class QdrantVectorStore(VectorStoreTool):
             if len(batch_vectors) != len(batch):
                 raise ValueError(
                     "Embedding provider returned mismatched vectors for batch"
+                )
+            for j, vec in enumerate(batch_vectors):
+                self._require_embedding_vector_length(
+                    vec,
+                    role=f"Index embedding batch offset {len(vectors) + j}",
                 )
             vectors.extend(batch_vectors)
         return vectors

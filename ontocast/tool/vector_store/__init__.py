@@ -9,7 +9,7 @@ from .embedding import (
     OpenAIEmbeddingTool,
 )
 from .patch_retriever import OntologyPatchRetriever
-from .qdrant import QdrantVectorStore
+from .qdrant import EmbeddingContractMismatchError, QdrantVectorStore
 
 __all__ = [
     "EmbeddingTool",
@@ -20,6 +20,7 @@ __all__ = [
     "OntologySearchHit",
     "GraphAtomizer",
     "OntologyPatchRetriever",
+    "EmbeddingContractMismatchError",
     "QdrantVectorStore",
     "VectorStoreTool",
 ]

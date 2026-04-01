@@ -72,6 +72,8 @@ def test_initialize_materializes_then_adds_with_skip_vector(monkeypatch, test_on
 
     class Stub:
         vector_store = None
+        triple_store_manager = None
+        filesystem_manager = None
         llm = MagicMock()
         ontology_manager: MagicMock
 

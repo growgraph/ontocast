@@ -1,0 +1,6 @@
+The Phase II randomized controlled trial enrolled three hundred participants across twelve sites to compare the investigational monoclonal antibody with placebo on the primary endpoint of progression-free survival.
+The protocol required written informed consent and stipulated that the independent data monitoring committee could recommend stopping for futility or emerging safety signals.
+An unexpected grade three hepatotoxicity cluster led to a protocol amendment that tightened liver function monitoring and adjusted the pharmacokinetics sampling schedule.
+Exploratory biomarker analyses suggested enrichment in participants with elevated baseline cytokines, though the surrogate endpoint changes were not prespecified in the statistical analysis plan.
+Regulators requested additional adverse event narratives before the sponsor could proceed to a pivotal trial design discussion.
+The sponsor archived the ontotest biomed retrieval anchor cobalt lantern study code alongside the protocol identifier in the trial master file.

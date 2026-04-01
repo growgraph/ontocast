@@ -203,16 +203,14 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         self._client: httpx.AsyncClient | None = None
         self._client_loop: asyncio.AbstractEventLoop | None = None
 
-        # Initialize datasets synchronously (for backward compatibility)
-        # In async contexts, use async_init() instead
-        asyncio.run(self._async_init_with_cleanup())
+    async def async_init(self) -> None:
+        """Initialize configured Fuseki datasets explicitly.
 
-    async def _async_init_with_cleanup(self):
-        """Wrapper for async_init that ensures proper cleanup when using asyncio.run().
-
-        This method creates a temporary client and ensures it's properly closed
-        before returning, preventing "Event loop is closed" errors.
+        Constructors stay side-effect free so callers can resolve tenancy first
+        and then create datasets for the final dataset names.
         """
+        # Use a temporary client to keep initialization independent from any
+        # loop-bound long-lived client state.
         async with httpx.AsyncClient(
             auth=self._prepare_auth(), timeout=30.0
         ) as temp_client:
@@ -220,13 +218,13 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             original_client = self._client
             self._client = temp_client
             try:
-                await self._async_init()
+                await self._initialize_datasets()
             finally:
                 # Restore original client
                 self._client = original_client
 
-    async def _async_init(self):
-        """Async initialization of datasets."""
+    async def _initialize_datasets(self) -> None:
+        """Create configured facts/ontologies datasets when missing."""
         await self.init_dataset(self.dataset)
         if self.ontologies_dataset != self.dataset:
             await self.init_dataset(self.ontologies_dataset)
