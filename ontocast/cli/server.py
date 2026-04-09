@@ -60,9 +60,31 @@ from ontocast.onto.enum import OntologyContextMode, RenderMode
 from ontocast.onto.state import AgentState
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.stategraph import create_agent_graph
+from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
+
+
+def _stores_use_tenancy_partitions(tools: ToolBox) -> bool:
+    """True when Fuseki and/or Qdrant should be retargeted for tenant/project."""
+    if tools.vector_store is not None:
+        return True
+    return isinstance(tools.triple_store_manager, FusekiTripleStoreManager)
+
+
+def _resolve_tenant_project(tenant: str | None, project: str | None) -> tuple[str, str]:
+    t = (tenant or DEFAULT_TENANT).strip()
+    p = (project or DEFAULT_PROJECT).strip()
+    if not t or not p:
+        raise ValueError("tenant and project must be non-empty after resolution")
+    return t, p
+
+
+async def _flush_triple_configured_scope(tools: ToolBox) -> None:
+    """Match POST /flush without tenant/project: triple store only, current scope."""
+    if tools.triple_store_manager is not None:
+        await tools.triple_store_manager.clean()
 
 
 def get_next_level(level: int) -> int:
@@ -111,8 +133,16 @@ def create_app(
     tools: ToolBox,
     server_config: ServerConfig,
     head_chunks: int | None = None,
+    *,
+    active_tenant: str,
+    active_project: str,
 ) -> FastAPI:
-    """Build the FastAPI application (routes + workflow)."""
+    """Build the FastAPI application (routes + workflow).
+
+    ``active_tenant`` / ``active_project`` match the Fuseki/Qdrant partition set at
+    server startup; ``/process`` uses them when the request omits ``tenant`` /
+    ``project`` query parameters.
+    """
 
     app = FastAPI(title="ontocast", version=metadata.version("ontocast"))
     app.include_router(build_ontology_router(tools))
@@ -282,12 +312,17 @@ def create_app(
                     ).model_dump(),
                 )
 
-            resolved_tenant: str | None = None
-            resolved_project: str | None = None
             if has_tenancy_qs:
-                resolved_tenant = (request_tenant or DEFAULT_TENANT).strip()
-                resolved_project = (request_project or DEFAULT_PROJECT).strip()
-                await tools.update_tenancy(resolved_tenant, resolved_project)
+                resolved_tenant, resolved_project = _resolve_tenant_project(
+                    request_tenant, request_project
+                )
+                if _stores_use_tenancy_partitions(tools):
+                    await tools.update_tenancy(resolved_tenant, resolved_project)
+            else:
+                resolved_tenant, resolved_project = (
+                    active_tenant,
+                    active_project,
+                )
 
             render_mode_value: RenderMode = parse_render_mode_param(
                 render_mode,
@@ -426,11 +461,12 @@ def run(
 
     Backend selection is automatically inferred from available configuration:
     - Fuseki: If FUSEKI_URI and FUSEKI_AUTH are provided (preferred)
-    - Neo4j: If NEO4J_URI and NEO4J_AUTH are provided (fallback)
-    - Filesystem Triple Store: If ONTOCAST_WORKING_DIRECTORY and ONTOCAST_ONTOLOGY_DIRECTORY are provided
-    - Filesystem Manager: If ONTOCAST_WORKING_DIRECTORY is provided (can be combined with other backends)
+    - Filesystem Triple Store: If ONTOCAST_WORKING_DIRECTORY and
+      ONTOCAST_ONTOLOGY_DIRECTORY are provided
+    - Filesystem Manager: If ONTOCAST_WORKING_DIRECTORY is provided
+      (can be combined with other backends)
 
-    No explicit backend configuration flags are needed - backends are automatically detected.
+    No explicit backend configuration flags are needed; backends are inferred.
 
     """
 
@@ -469,7 +505,8 @@ def run(
         )
     else:
         raise ValueError(
-            "Working directory must be provided via CLI argument or WORKING_DIRECTORY config"
+            "Working directory must be provided via CLI argument or "
+            "WORKING_DIRECTORY config"
         )
 
     if config.tool_config.path_config.ontology_directory is not None:
@@ -479,10 +516,13 @@ def run(
 
     # Create ToolBox with config
     tools: ToolBox = ToolBox(config)
-    if tenant is not None or project is not None:
-        t_res = (tenant or DEFAULT_TENANT).strip()
-        p_res = (project or DEFAULT_PROJECT).strip()
+    t_res, p_res = _resolve_tenant_project(tenant, project)
+    if _stores_use_tenancy_partitions(tools):
         asyncio.run(tools.update_tenancy(t_res, p_res))
+
+    if input_path is not None and config.clean:
+        asyncio.run(_flush_triple_configured_scope(tools))
+
     asyncio.run(tools.initialize())
 
     workflow: CompiledStateGraph = create_agent_graph(tools)
@@ -502,9 +542,6 @@ def run(
             config.server,
         )
 
-        t_state = (tenant or DEFAULT_TENANT).strip()
-        p_state = (project or DEFAULT_PROJECT).strip()
-
         async def process_files():
             for file_path in files:
                 try:
@@ -514,8 +551,8 @@ def run(
                         max_chunks=head_chunks,
                         render_mode=config.server.render_mode,
                         ontology_context_mode=config.server.ontology_context_mode,
-                        tenant=t_state,
-                        project=p_state,
+                        tenant=t_res,
+                        project=p_res,
                     )
                     async for _ in workflow.astream(
                         state,
@@ -533,6 +570,8 @@ def run(
             tools=tools,
             server_config=config.server,
             head_chunks=head_chunks,
+            active_tenant=t_res,
+            active_project=p_res,
         )
         logger.info("Starting Ontocast server on port %s", config.server.port)
         uvicorn.run(

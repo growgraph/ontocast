@@ -602,6 +602,13 @@ class Config(BaseSettings):
 
     # Additional settings
     logging_level: str | None = Field(default=None, description="Logging level")
+    clean: bool = Field(
+        default=False,
+        description=(
+            "When true, ``--input-path`` batch mode flushes the triple store "
+            "(configured datasets) before loading ontologies."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         case_sensitive=False,
