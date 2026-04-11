@@ -15,6 +15,10 @@ from langchain_core.prompts import PromptTemplate
 from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import GraphUpdateRenderReport, OntologyRenderReport
+from ontocast.onto.ontology_access import (
+    UnitOntologyAccess,
+    ontology_access_for_unit_ontology,
+)
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitOntologyState
 from ontocast.prompt.common import (
@@ -37,9 +41,9 @@ from ontocast.tool.atomic import AtomicToolBox
 logger = logging.getLogger(__name__)
 
 
-def _extract_known_prefixes(state: UnitOntologyState) -> dict[str, str]:
+def _extract_known_prefixes(access: UnitOntologyAccess) -> dict[str, str]:
     """Extract ontology prefixes used to patch missing declarations in LLM TTL output."""
-    current = state.current_ontology or state.ontology_snapshot
+    current = access.ontology_for_prefixes()
     known_prefixes: dict[str, str] = {}
 
     if current and current.graph:
@@ -73,9 +77,10 @@ async def render_ontology(
     logger.info(
         f"Ontology Renderer for {progress_info}: visit {state.node_visits[WorkflowNode.TEXT_TO_ONTOLOGY]}/{state.max_visits_per_node}"
     )
-    current = state.current_ontology or state.ontology_snapshot
+    access = ontology_access_for_unit_ontology(state)
+    current = access.effective_ontology_for_prompt()
     # Guardrail for map/reduce flow: if a non-null snapshot exists, stay in update mode.
-    has_seed_ontology = not state.ontology_snapshot.is_null()
+    has_seed_ontology = access.has_non_null_seed_snapshot()
     has_no_seed_ontology = current.is_null() and not has_seed_ontology
 
     if has_no_seed_ontology:
@@ -197,7 +202,8 @@ async def render_ontology_update(
     """
 
     parser = PydanticOutputParser(pydantic_object=GraphUpdateRenderReport)
-    current = state.current_ontology or state.ontology_snapshot
+    access = ontology_access_for_unit_ontology(state)
+    current = access.effective_ontology_for_prompt()
     ontology_iri = current.iri
     ontology_desc = current.describe()
     multi_source_note = ""
@@ -245,7 +251,7 @@ async def render_ontology_update(
             "format_instructions",
         ],
     )
-    known_prefixes = _extract_known_prefixes(state)
+    known_prefixes = _extract_known_prefixes(access)
 
     try:
         llm_tool = await tools.get_llm_tool(state.budget_tracker)

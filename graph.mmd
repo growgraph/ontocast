@@ -18,8 +18,6 @@ graph TD;
 	__start__([<p>__start__</p>]):::first
 	Convert\20to\20Markdown(Convert to Markdown)
 	Chunk\20Text(Chunk Text)
-	Select\20Ontology(Select Ontology)
-	Bootstrap\20Ontology(Bootstrap Ontology)
 	Update\20Ontology(Update Ontology)
 	Normalize\20Ontology\20Updates(Normalize Ontology Updates)
 	Consolidate\20Ontology(Consolidate Ontology)
@@ -29,8 +27,8 @@ graph TD;
 	Consistency\20Critic(Consistency Critic)
 	Serialize(Serialize)
 	__end__([<p>__end__</p>]):::last
-	Bootstrap\20Ontology --> Update\20Ontology;
-	Chunk\20Text --> Select\20Ontology;
+	Chunk\20Text -.-> Render\20Facts;
+	Chunk\20Text -.-> Update\20Ontology;
 	Consistency\20Critic -.-> Render\20Facts;
 	Consistency\20Critic -.-> Serialize;
 	Consolidate\20Ontology --> Structural\20Check;
@@ -38,9 +36,6 @@ graph TD;
 	Merge\20Facts --> Serialize;
 	Normalize\20Ontology\20Updates --> Consolidate\20Ontology;
 	Render\20Facts --> Merge\20Facts;
-	Select\20Ontology -.-> Bootstrap\20Ontology;
-	Select\20Ontology -.-> Render\20Facts;
-	Select\20Ontology -.-> Update\20Ontology;
 	Structural\20Check --> Consistency\20Critic;
 	Update\20Ontology --> Normalize\20Ontology\20Updates;
 	__start__ --> Convert\20to\20Markdown;

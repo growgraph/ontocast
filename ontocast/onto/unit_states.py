@@ -7,7 +7,7 @@ from pydantic import Field
 
 from ontocast.onto.constants import DEFAULT_DOMAIN
 from ontocast.onto.content_unit import ContentUnit, SourceUnit
-from ontocast.onto.enum import FailureStage, Status, WorkflowNode
+from ontocast.onto.enum import FailureStage, OntologyAssemblyMode, Status, WorkflowNode
 from ontocast.onto.model import (
     BasePydanticModel,
     ExternalEvidenceCacheEntry,
@@ -142,6 +142,14 @@ class UnitFactsState(UnitState):
     content_unit: ContentUnit = Field(description="Unit under processing (mutable)")
     facts_user_instruction: str = Field(default="")
     facts_updates: list[GraphUpdate] = Field(default_factory=list)
+    assembly_anchor_iri: str = Field(
+        default="",
+        description="Anchor IRI from context assembly (or merged document primary).",
+    )
+    assembly_mode_used: OntologyAssemblyMode = Field(
+        default=OntologyAssemblyMode.PRIMARY_WITHOUT_RETRIEVAL,
+        description="How ontology_snapshot was assembled for this unit.",
+    )
 
     def get_content_unit_progress_string(self) -> str:
         """Progress string for logging with content unit index."""
@@ -162,6 +170,14 @@ class UnitOntologyState(UnitState):
     """Independent per-unit state for ontology improvement loop."""
 
     content_unit: SourceUnit = Field(description="Unit under processing")
+    assembly_anchor_iri: str = Field(
+        default="",
+        description="Anchor IRI from resolve_unit_ontology_context prelude.",
+    )
+    assembly_mode_used: OntologyAssemblyMode = Field(
+        default=OntologyAssemblyMode.PRIMARY_WITHOUT_RETRIEVAL,
+        description="Ontology assembly mode from the context prelude.",
+    )
     ontology_user_instruction: str = Field(default="")
     current_ontology: Ontology = Field(
         default_factory=Ontology, description="Current ontology under refinement"

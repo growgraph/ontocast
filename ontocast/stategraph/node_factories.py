@@ -1,18 +1,23 @@
 import asyncio
 import logging
+from collections import defaultdict
 
 from rdflib import DCTERMS, RDFS, Literal, URIRef
 
 from ontocast.agent.normalize_ontology import normalize_ontology_units
 from ontocast.agent.render_ontology import render_ontology_update
 from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
-from ontocast.onto.enum import OntologyContextMode, Status
+from ontocast.onto.enum import OntologyAssemblyMode, OntologyContextMode, Status
+from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.atomic import facts_loop, ontology_loop
+from ontocast.stategraph.context_resolver import aggregate_anchor_metrics
 from ontocast.stategraph.helpers import (
+    all_unit_patch_source_iris,
     build_document_excerpt,
     build_ontology_delta_graph,
 )
@@ -22,63 +27,7 @@ from ontocast.toolbox import ToolBox
 logger = logging.getLogger(__name__)
 
 
-def make_bootstrap_ontology_node(tools: ToolBox):
-    atomic_tools = tools.get_atomic_tools()
-
-    async def bootstrap_ontology(state: AgentState) -> AgentState:
-        """Create one seed ontology for null-selection flow."""
-        if not state.render_ontology or not state.current_ontology.is_null():
-            state.status = Status.SUCCESS
-            return state
-        if not state.content_units:
-            state.status = Status.SUCCESS
-            return state
-
-        excerpt = build_document_excerpt(state).strip()
-        if not excerpt:
-            logger.warning(
-                "Skipping ontology bootstrap: no usable excerpt was produced from content units."
-            )
-            state.status = Status.SUCCESS
-            return state
-
-        bootstrap_unit = SourceUnit(
-            text=excerpt,
-            index=0,
-            doc_iri=URIRef(state.doc_iri),
-            type=OutputType.ONTOLOGIES,
-        )
-        bootstrap_state = UnitOntologyState(
-            content_unit=bootstrap_unit,
-            ontology_snapshot=Ontology(),
-            ontology_patch_sources=state.ontology_patch_sources,
-            ontology_user_instruction=state.ontology_user_instruction,
-            budget_tracker=state.budget_tracker,
-            max_visits_per_node=tools.config.server.max_visits_per_node,
-            current_domain=state.current_domain,
-            ontology_max_triples=tools.config.server.ontology_max_triples,
-        )
-        result = await ontology_loop(bootstrap_state, atomic_tools)
-        if result.status == Status.SUCCESS and not result.current_ontology.is_null():
-            state.current_ontology = result.current_ontology
-            logger.info(
-                f"Bootstrapped ontology anchor: {state.current_ontology.iri} "
-                f"({len(state.current_ontology.graph)} triples)"
-            )
-        else:
-            logger.warning(
-                "Ontology bootstrap did not yield a usable seed ontology; "
-                "continuing with fallback normalization behavior."
-            )
-        state.status = Status.SUCCESS
-        return state
-
-    return bootstrap_ontology
-
-
 def make_render_ontology_node(tools: ToolBox):
-    atomic_tools = tools.get_atomic_tools()
-
     async def render_ontology_updates(state: AgentState) -> AgentState:
         if not state.content_units:
             state.ontology_units = []
@@ -88,21 +37,29 @@ def make_render_ontology_node(tools: ToolBox):
         worker_limit = max(1, tools.config.server.parallel_workers)
         semaphore = asyncio.Semaphore(worker_limit)
 
-        async def process_unit(unit_index: int) -> tuple[int, UnitOntologyState]:
+        async def process_unit(
+            unit_index: int,
+        ) -> tuple[int, UnitOntologyState, str, list[str], OntologyAssemblyMode]:
             async with semaphore:
                 base_state = state.model_copy(deep=True)
                 ontology_state = UnitOntologyState(
                     content_unit=state.content_units[unit_index],
-                    ontology_snapshot=state.current_ontology,
-                    ontology_patch_sources=state.ontology_patch_sources,
+                    ontology_snapshot=NULL_ONTOLOGY,
+                    ontology_patch_sources=[],
                     ontology_user_instruction=state.ontology_user_instruction,
                     budget_tracker=base_state.budget_tracker,
                     max_visits_per_node=tools.config.server.max_visits_per_node,
                     current_domain=state.current_domain,
                     ontology_max_triples=tools.config.server.ontology_max_triples,
                 )
-                result = await ontology_loop(ontology_state, atomic_tools)
-                return unit_index, result
+                result = await ontology_loop(ontology_state, tools, base_state)
+                return (
+                    unit_index,
+                    result,
+                    result.assembly_anchor_iri,
+                    list(result.ontology_patch_sources),
+                    result.assembly_mode_used,
+                )
 
         tasks = [process_unit(i) for i, _ in enumerate(state.content_units)]
         raw_results = await asyncio.gather(*tasks)
@@ -111,7 +68,16 @@ def make_render_ontology_node(tools: ToolBox):
         ontology_units: list[ContentUnit] = []
         failed_without_output_count = 0
         salvaged_failed_count = 0
-        for _, result in ordered_results:
+        unit_contexts: dict[int, tuple[str, list[str], OntologyAssemblyMode]] = {}
+        anchor_delta_graphs: dict[str, RDFGraph] = defaultdict(RDFGraph)
+        for (
+            unit_index,
+            result,
+            anchor_iri,
+            patch_sources,
+            assembly_mode,
+        ) in ordered_results:
+            unit_contexts[unit_index] = (anchor_iri, patch_sources, assembly_mode)
             has_output = bool(result.all_updates) or (
                 result.current_ontology.hash != result.ontology_snapshot.hash
             )
@@ -121,6 +87,7 @@ def make_render_ontology_node(tools: ToolBox):
 
             content_unit = result.content_unit
             delta_graph = build_ontology_delta_graph(result)
+            anchor_delta_graphs[anchor_iri] += delta_graph
             ontology_units.append(
                 ContentUnit(
                     text=content_unit.text,
@@ -133,6 +100,23 @@ def make_render_ontology_node(tools: ToolBox):
             if result.status != Status.SUCCESS:
                 salvaged_failed_count += 1
 
+        artifacts: list[Ontology] = []
+        for anchor_iri, graph in anchor_delta_graphs.items():
+            if len(graph) == 0:
+                continue
+            artifacts.append(
+                Ontology(
+                    ontology_id=None,
+                    title=f"Anchor artifact {anchor_iri}",
+                    description=(
+                        "Per-anchor ontology artifact produced from unit-level map updates."
+                    ),
+                    graph=graph,
+                    iri=anchor_iri,
+                    current_domain=state.current_domain,
+                )
+            )
+
         if failed_without_output_count:
             logger.warning(
                 "Parallel ontology map failed without usable output for "
@@ -144,6 +128,18 @@ def make_render_ontology_node(tools: ToolBox):
                 f"{salvaged_failed_count}/{len(state.content_units)} unit(s)"
             )
 
+        (
+            state.unit_anchor_assignment,
+            state.unit_patch_sources,
+            state.unit_context_mode_used,
+            anchor_counts,
+        ) = aggregate_anchor_metrics(unit_contexts)
+        state.candidate_anchor_iris = sorted(anchor_counts.keys())
+        state.retrieval_metrics["ontology_anchor_count"] = len(anchor_counts)
+        state.retrieval_metrics["ontology_anchor_units"] = sum(anchor_counts.values())
+        state.ontology_artifacts = artifacts
+        if artifacts:
+            state.current_ontology = artifacts[0]
         state.ontology_units = ontology_units
         state.status = Status.SUCCESS
         return state
@@ -158,12 +154,12 @@ def make_normalize_ontology_node(tools: ToolBox):
             state.status = Status.SUCCESS
             return state
 
+        doc_onto = document_ontology_access(state)
+        primary = doc_onto.primary_ontology()
         ontology, applied_updates, provenance_artifact = normalize_ontology_units(
             units=state.ontology_units,
             tools=tools,
-            base_ontology=state.current_ontology
-            if not state.current_ontology.is_null()
-            else None,
+            base_ontology=primary if not doc_onto.is_primary_null() else None,
             require_base=True,
         )
         state.current_ontology = ontology
@@ -186,7 +182,8 @@ def make_consolidate_ontology_node(tools: ToolBox):
             )
             state.status = Status.SUCCESS
             return state
-        if not state.render_ontology or state.current_ontology.is_null():
+        doc_onto = document_ontology_access(state)
+        if not state.render_ontology or doc_onto.is_primary_null():
             logger.info(
                 "Skipping ontology consolidation: no rendered ontology snapshot available"
             )
@@ -217,8 +214,8 @@ def make_consolidate_ontology_node(tools: ToolBox):
         )
         consolidation_state = UnitOntologyState(
             content_unit=consolidation_unit,
-            ontology_snapshot=state.current_ontology,
-            ontology_patch_sources=state.ontology_patch_sources,
+            ontology_snapshot=doc_onto.primary_ontology(),
+            ontology_patch_sources=all_unit_patch_source_iris(state),
             ontology_user_instruction=ontology_user_instruction,
             budget_tracker=state.budget_tracker,
             max_visits_per_node=1,
@@ -244,8 +241,6 @@ def make_consolidate_ontology_node(tools: ToolBox):
 
 
 def make_render_facts_node(tools: ToolBox):
-    atomic_tools = tools.get_atomic_tools()
-
     async def render_facts(state: AgentState) -> AgentState:
         if not state.content_units:
             state.facts_units = []
@@ -255,18 +250,27 @@ def make_render_facts_node(tools: ToolBox):
         worker_limit = max(1, tools.config.server.parallel_workers)
         semaphore = asyncio.Semaphore(worker_limit)
 
-        async def process_unit(unit_index: int) -> tuple[int, UnitFactsState]:
+        async def process_unit(
+            unit_index: int,
+        ) -> tuple[int, UnitFactsState, str, list[str], OntologyAssemblyMode]:
             async with semaphore:
                 base_state = state.model_copy(deep=True)
                 facts_state = UnitFactsState(
                     content_unit=state.content_units[unit_index],
-                    ontology_snapshot=state.current_ontology,
+                    ontology_snapshot=NULL_ONTOLOGY,
+                    ontology_patch_sources=[],
                     facts_user_instruction=state.facts_user_instruction,
                     budget_tracker=base_state.budget_tracker,
                     max_visits_per_node=tools.config.server.max_visits_per_node,
                 )
-                result = await facts_loop(facts_state, atomic_tools)
-                return unit_index, result
+                result = await facts_loop(facts_state, tools, base_state)
+                return (
+                    unit_index,
+                    result,
+                    result.assembly_anchor_iri,
+                    list(result.ontology_patch_sources),
+                    result.assembly_mode_used,
+                )
 
         tasks = [process_unit(i) for i, _ in enumerate(state.content_units)]
         raw_results = await asyncio.gather(*tasks)
@@ -275,7 +279,15 @@ def make_render_facts_node(tools: ToolBox):
         facts_units: list[ContentUnit] = []
         failed_without_output_count = 0
         salvaged_failed_count = 0
-        for _, result in ordered_results:
+        unit_contexts: dict[int, tuple[str, list[str], OntologyAssemblyMode]] = {}
+        for (
+            unit_index,
+            result,
+            anchor_iri,
+            patch_sources,
+            assembly_mode,
+        ) in ordered_results:
+            unit_contexts[unit_index] = (anchor_iri, patch_sources, assembly_mode)
             has_output = len(result.content_unit.graph) > 0
             if not has_output:
                 failed_without_output_count += 1
@@ -296,6 +308,15 @@ def make_render_facts_node(tools: ToolBox):
                 f"{salvaged_failed_count}/{len(state.content_units)} unit(s)"
             )
 
+        (
+            state.unit_anchor_assignment,
+            state.unit_patch_sources,
+            state.unit_context_mode_used,
+            anchor_counts,
+        ) = aggregate_anchor_metrics(unit_contexts)
+        state.candidate_anchor_iris = sorted(anchor_counts.keys())
+        state.retrieval_metrics["facts_anchor_count"] = len(anchor_counts)
+        state.retrieval_metrics["facts_anchor_units"] = sum(anchor_counts.values())
         state.facts_units = facts_units
         state.status = Status.SUCCESS
         return state
@@ -312,11 +333,11 @@ def make_merge_facts_node(tools: ToolBox):
 
         for unit in state.facts_units:
             unit.sanitize()
+        doc_onto = document_ontology_access(state)
+        primary = doc_onto.primary_ontology()
         state.aggregated_facts = tools.aggregator.aggregate_graphs(
             units=state.facts_units,
-            ontology_graph=state.current_ontology.graph
-            if not state.current_ontology.is_null()
-            else None,
+            ontology_graph=primary.graph if not doc_onto.is_primary_null() else None,
         )
         if len(state.aggregated_facts) == 0:
             logger.warning(
@@ -338,12 +359,11 @@ def make_structural_check_node(tools: ToolBox):
 
     def structural_check(state: AgentState) -> AgentState:
         """Run lightweight structural checks over the stitched ontology before the final critic."""
-        if (
-            not state.current_ontology.is_null()
-            and len(state.current_ontology.graph) > 0
-        ):
+        doc_onto = document_ontology_access(state)
+        primary = doc_onto.primary_ontology()
+        if not doc_onto.is_primary_null() and len(primary.graph) > 0:
             ontology_validation = RDFGraphConnectivityValidator(
-                state.current_ontology.graph
+                primary.graph
             ).validate_connectivity()
             state.retrieval_metrics["structural_ontology_components"] = (
                 ontology_validation.num_components
@@ -383,23 +403,25 @@ def _extract_consistency_queries(graph: RDFGraph, max_terms: int = 8) -> list[st
 def make_consistency_critic_node(tools: ToolBox):
     def consistency_critic(state: AgentState) -> AgentState:
         """Global consistency critic over candidate ontology atoms using vector re-query."""
+        doc_onto = document_ontology_access(state)
+        primary = doc_onto.primary_ontology()
         if (
             state.ontology_context_mode != OntologyContextMode.RETRIEVED_INDUCED_GRAPH
             or tools.vector_store is None
-            or state.current_ontology.is_null()
-            or len(state.current_ontology.graph) == 0
+            or doc_onto.is_primary_null()
+            or len(primary.graph) == 0
         ):
             state.status = Status.SUCCESS
             return state
 
-        query_terms = _extract_consistency_queries(state.current_ontology.graph)
+        query_terms = _extract_consistency_queries(primary.graph)
         if not query_terms:
             state.status = Status.SUCCESS
             return state
 
-        allowed_sources = set(state.ontology_patch_sources)
-        if state.current_ontology.iri:
-            allowed_sources.add(state.current_ontology.iri)
+        allowed_sources = set(all_unit_patch_source_iris(state))
+        if primary.iri:
+            allowed_sources.add(primary.iri)
         threshold = (
             tools.config.tool_config.qdrant.consistency_critic_similarity_threshold
         )

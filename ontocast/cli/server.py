@@ -56,7 +56,7 @@ from ontocast.api.schemas import (
 )
 from ontocast.cli.util import crawl_directories
 from ontocast.config import Config, ServerConfig
-from ontocast.onto.enum import OntologyContextMode, RenderMode
+from ontocast.onto.enum import OntologyContextMode, RenderMode, UnitContextStrategy
 from ontocast.onto.state import AgentState
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.stategraph import create_agent_graph
@@ -188,6 +188,26 @@ def create_app(
                 )
         return default
 
+    def parse_unit_context_strategy_param(
+        value: str | UnitContextStrategy | None,
+        default: UnitContextStrategy,
+    ) -> UnitContextStrategy:
+        if value is None:
+            return default
+        if isinstance(value, UnitContextStrategy):
+            return value
+        if isinstance(value, str):
+            normalized = value.lower().strip()
+            try:
+                return UnitContextStrategy(normalized)
+            except ValueError:
+                logger.warning(
+                    "Invalid unit_context_strategy '%s', using default '%s'",
+                    value,
+                    default.value,
+                )
+        return default
+
     @app.get("/health")
     async def health_check():
         try:
@@ -274,6 +294,9 @@ def create_app(
             ontology_context_mode = request.query_params.get(
                 "ontology_context_mode", None
             )
+            unit_context_strategy = request.query_params.get(
+                "unit_context_strategy", None
+            )
             ontology_user_instruction = request.query_params.get(
                 "ontology_user_instruction", ""
             )
@@ -334,6 +357,12 @@ def create_app(
                     server_config.ontology_context_mode,
                 )
             )
+            unit_context_strategy_value: UnitContextStrategy = (
+                parse_unit_context_strategy_param(
+                    unit_context_strategy,
+                    server_config.unit_context_strategy,
+                )
+            )
 
             initial_state = AgentState(
                 files=files_dict,
@@ -341,6 +370,7 @@ def create_app(
                 max_chunks=head_chunks,
                 render_mode=render_mode_value,
                 ontology_context_mode=ontology_context_mode_value,
+                unit_context_strategy=unit_context_strategy_value,
                 ontology_max_triples=server_config.ontology_max_triples,
                 tenant=resolved_tenant,
                 project=resolved_project,
@@ -395,6 +425,16 @@ def create_app(
                         if workflow_state.get("current_ontology")
                         else ""
                     ),
+                    ontology_artifacts=[
+                        {
+                            "iri": artifact.iri,
+                            "ontology_id": artifact.ontology_id,
+                            "title": artifact.title,
+                            "triples": len(artifact.graph),
+                            "ttl": artifact.graph.serialize(format="turtle"),
+                        }
+                        for artifact in workflow_state.get("ontology_artifacts", [])
+                    ],
                 ),
                 metadata=ProcessResultMetadata(
                     status=workflow_state["status"],
@@ -551,6 +591,7 @@ def run(
                         max_chunks=head_chunks,
                         render_mode=config.server.render_mode,
                         ontology_context_mode=config.server.ontology_context_mode,
+                        unit_context_strategy=config.server.unit_context_strategy,
                         tenant=t_res,
                         project=p_res,
                     )

@@ -41,6 +41,22 @@ class OntologyContextMode(StrEnum):
     RETRIEVED_INDUCED_GRAPH = "retrieved_induced_graph"
 
 
+class UnitContextStrategy(StrEnum):
+    """Enumeration of per-unit ontology context strategies."""
+
+    ENSEMBLE_FIRST = "ensemble_first"
+    VOTE_FIRST = "vote_first"
+    HYBRID_ADAPTIVE = "hybrid_adaptive"
+
+
+class OntologyAssemblyMode(StrEnum):
+    """How per-unit ontology context was assembled for prompts."""
+
+    ENSEMBLE_STITCHED = "ensemble_stitched"
+    VOTE_MAJORITY_ONTOLOGY = "vote_majority_ontology"
+    PRIMARY_WITHOUT_RETRIEVAL = "primary_without_retrieval"
+
+
 class FailureStage(StrEnum):
     """Enumeration of possible failure stages in the workflow."""
 
@@ -73,8 +89,6 @@ class WorkflowNode(StrEnum):
     AGGREGATE_FACTS = "Aggregate Facts"
     SERIALIZE = "Serialize"
     PARALLEL_MAP_UNITS = "Parallel Map Units"
-    SELECT_ONTOLOGY = "Select Ontology"
-    BOOTSTRAP_ONTOLOGY = "Bootstrap Ontology"
     RENDER_ONTOLOGY_UPDATE = "Update Ontology"
     RENDER_FACTS = "Render Facts"
     NORMALIZE_ONTOLOGY_UPDATES = "Normalize Ontology Updates"

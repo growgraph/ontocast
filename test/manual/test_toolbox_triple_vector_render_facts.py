@@ -24,6 +24,7 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import Status
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
 from ontocast.tool.vector_store.core import OntologySearchHit
@@ -200,6 +201,19 @@ def _fuseki_service_ok(base_uri: str, auth: str | None) -> bool:
         return False
 
 
+def _stores_use_tenancy_partitions(tools: ToolBox) -> bool:
+    if tools.vector_store is not None:
+        return True
+    return isinstance(tools.triple_store_manager, FusekiTripleStoreManager)
+
+
+async def _bootstrap_like_server_startup(tools: ToolBox) -> None:
+    """Mirror CLI startup: apply default tenancy, then initialize backends."""
+    if _stores_use_tenancy_partitions(tools):
+        await tools.update_tenancy(DEFAULT_TENANT, DEFAULT_PROJECT)
+    await tools.initialize()
+
+
 def _prepare_config() -> Config:
     _ = _require_env("LLM_PROVIDER")
     _ = _require_env("LLM_MODEL_NAME")
@@ -257,6 +271,9 @@ async def test_ingest_retrieve_micro_chunks_render_facts(
 ) -> None:
     """Cross-domain manual test: clean stores, two ontologies, retrieval skew + render_facts."""
     tools = integration_tools
+
+    # Match `ontocast/cli/server.py` initialization ordering.
+    await _bootstrap_like_server_startup(tools)
 
     if tools.vector_store is None:
         pytest.fail("ToolBox has no vector store (configure QDRANT_URI).")

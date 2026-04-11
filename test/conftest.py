@@ -283,7 +283,7 @@ def state_facts_success(state_facts_success_filename):
 
 
 @pytest.fixture
-def agent_state_select_ontology_null(state_onto_null_filename):
+def agent_state_ontology_null(state_onto_null_filename):
     return AgentState.load(state_onto_null_filename)
 
 

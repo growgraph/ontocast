@@ -6,6 +6,7 @@ This module provides functionality for serializing the knowledge graph
 
 import logging
 
+from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.toolbox import ToolBox
@@ -33,21 +34,23 @@ def serialize(state: AgentState, tools: ToolBox) -> AgentState:
         state.aggregated_facts = RDFGraph()
         logger.info("No facts to serialize (ontology-only render mode)")
 
-    # Ontology versioning: reduce_ontology sets ontology_updates_applied with the
-    # merged GraphUpdate when aggregating parallel ontology units.
-    if state.ontology_updates_applied:
+    # Ontology versioning now supports multiple per-anchor artifacts.
+    ontologies_for_versioning = document_ontology_access(state).serialization_targets()
+    if state.ontology_updates_applied and ontologies_for_versioning:
         logger.info(
-            f"Ontology was updated during processing ({len(state.ontology_updates_applied)} update operations). "
-            f"Analyzing changes to determine version increment..."
+            "Ontology updates produced %d operation(s); updating %d artifact(s).",
+            len(state.ontology_updates_applied),
+            len(ontologies_for_versioning),
         )
-        state.current_ontology.mark_as_updated(state.ontology_updates_applied)
-        state.current_ontology.sync_properties_to_graph()
+        for ontology in ontologies_for_versioning:
+            ontology.mark_as_updated(state.ontology_updates_applied)
+            ontology.sync_properties_to_graph()
     elif state.ontology_units:
-        logger.debug("Ontology from EmbeddingBasedAggregator; skipping version bump")
-    else:
         logger.debug(
-            f"Ontology unchanged during processing (version: {state.current_ontology.version})"
+            "Ontology units present without explicit updates; skipping version bump"
         )
+    else:
+        logger.debug("Ontology unchanged during processing")
 
     # Report LLM budget usage
     if state.budget_tracker:

@@ -1,8 +1,22 @@
 import logging
 
+from ontocast.onto.ontology_access import ontology_access_for_unit_ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitOntologyState
+
+
+def all_unit_patch_source_iris(state: AgentState) -> list[str]:
+    """Sorted unique ontology IRIs appearing in any unit's patch source list."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for sources in state.unit_patch_sources.values():
+        for iri in sources:
+            if iri not in seen:
+                seen.add(iri)
+                ordered.append(iri)
+    return sorted(ordered)
+
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +38,11 @@ def build_ontology_delta_graph(result: UnitOntologyState) -> RDFGraph:
                     delta_graph.bind(prefix, namespace_uri)
         return delta_graph
 
-    return result.current_ontology.graph.copy()
+    return (
+        ontology_access_for_unit_ontology(result)
+        .effective_ontology_for_prompt()
+        .graph.copy()
+    )
 
 
 def build_document_excerpt(state: AgentState) -> str:

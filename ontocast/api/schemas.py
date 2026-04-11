@@ -43,6 +43,7 @@ class StatusErrorBody(BaseModel):
 class ProcessResultData(BaseModel):
     facts: str
     ontology: str
+    ontology_artifacts: list[dict] = Field(default_factory=list)
 
 
 class ProcessResultMetadata(BaseModel):

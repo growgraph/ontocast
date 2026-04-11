@@ -12,7 +12,6 @@ from .criticise_facts import criticise_facts
 from .criticise_ontology import criticise_ontology
 from .render_facts import render_facts, render_facts_fresh
 from .render_ontology import render_ontology, render_ontology_fresh
-from .select_ontology import select_ontology
 from .serialize import serialize
 from .sublimate_ontology import sublimate_ontology
 
@@ -23,7 +22,6 @@ __all__ = [
     "criticise_ontology",
     "render_facts",
     "render_ontology",
-    "select_ontology",
     "serialize",
     "sublimate_ontology",
     "render_ontology_fresh",

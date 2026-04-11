@@ -8,6 +8,7 @@ from langchain_core.prompts import PromptTemplate
 from ontocast.config import Config, WebSearchProvider
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI
 from ontocast.onto.ontology import Ontology, OntologyProperties
+from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.tool import (
@@ -277,12 +278,16 @@ class ToolBox:
         return self.atomic_tools
 
     def serialize(self, state: AgentState) -> None:
-        # Add current ontology to ontology manager for version tracking
-        if state.current_ontology and state.current_ontology.hash:
-            self.ontology_manager.add_ontology(state.current_ontology)
+        ontologies_to_serialize = document_ontology_access(
+            state
+        ).serialization_targets()
+        for ontology in ontologies_to_serialize:
+            if ontology and ontology.hash:
+                self.ontology_manager.add_ontology(ontology)
 
         if self.filesystem_manager is not None:
-            self.filesystem_manager.serialize(state.current_ontology)
+            for ontology in ontologies_to_serialize:
+                self.filesystem_manager.serialize(ontology)
             if state.render_facts:
                 self.filesystem_manager.serialize(
                     state.aggregated_facts,
@@ -293,7 +298,8 @@ class ToolBox:
             and self.triple_store_manager != self.filesystem_manager
         ):
             # Store ontology in main dataset for reasoning
-            self.triple_store_manager.serialize(state.current_ontology)
+            for ontology in ontologies_to_serialize:
+                self.triple_store_manager.serialize(ontology)
             if state.render_facts:
                 self.triple_store_manager.serialize(
                     state.aggregated_facts,

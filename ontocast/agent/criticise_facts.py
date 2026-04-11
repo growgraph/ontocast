@@ -12,6 +12,7 @@ from langchain_core.prompts import PromptTemplate
 from ontocast.agent.common import call_llm_with_retry
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import FactsCritiqueReport, Suggestions
+from ontocast.onto.ontology_access import ontology_access_for_unit_facts
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.prompt.common import (
     facts_template,
@@ -56,7 +57,8 @@ async def criticise_facts(
     llm_tool = await tools.get_llm_tool(state.budget_tracker)
     parser = PydanticOutputParser(pydantic_object=FactsCritiqueReport)
 
-    ontology_ttl = state.ontology_snapshot.graph.serialize(format="turtle")
+    ctx = ontology_access_for_unit_facts(state).effective_ontology_for_prompt()
+    ontology_ttl = ctx.graph.serialize(format="turtle")
 
     ontology_chapter = ontology_template.format(
         ontology_ttl=ontology_ttl,

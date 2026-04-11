@@ -10,9 +10,11 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.context import AgentContext, AgentType, ContextManager
 from ontocast.onto.enum import (
     FailureStage,
+    OntologyAssemblyMode,
     OntologyContextMode,
     RenderMode,
     Status,
+    UnitContextStrategy,
     WorkflowNode,
 )
 from ontocast.onto.model import BasePydanticModel, Suggestions
@@ -150,6 +152,26 @@ class AgentState(BasePydanticModel):
         default_factory=list,
         description="Ontology IRIs that contributed to a retrieved multi-source patch context.",
     )
+    ontology_artifacts: list[Ontology] = Field(
+        default_factory=list,
+        description="Final per-anchor ontology artifacts produced for this document.",
+    )
+    candidate_anchor_iris: list[str] = Field(
+        default_factory=list,
+        description="Candidate ontology IRIs discovered during multi-anchor preselection.",
+    )
+    unit_anchor_assignment: dict[int, str] = Field(
+        default_factory=dict,
+        description="Assigned anchor ontology IRI per content unit index.",
+    )
+    unit_patch_sources: dict[int, list[str]] = Field(
+        default_factory=dict,
+        description="Retrieved ontology source IRIs per content unit index.",
+    )
+    unit_context_mode_used: dict[int, OntologyAssemblyMode] = Field(
+        default_factory=dict,
+        description="Per-unit ontology assembly mode (ensemble / vote majority / primary).",
+    )
     retrieval_metrics: dict[str, int | float | str] = Field(
         default_factory=dict,
         description="Runtime retrieval/evaluation metrics for observability.",
@@ -261,6 +283,13 @@ class AgentState(BasePydanticModel):
         default=OntologyContextMode.FULL_TTL,
         description=(
             "Ontology prompt context strategy: full_ttl or retrieved_induced_graph."
+        ),
+    )
+    unit_context_strategy: UnitContextStrategy = Field(
+        default=UnitContextStrategy.ENSEMBLE_FIRST,
+        description=(
+            "Per-unit ontology context strategy for map nodes (ensemble_first, "
+            "vote_first, or hybrid_adaptive)."
         ),
     )
     ontology_max_triples: int | None = Field(

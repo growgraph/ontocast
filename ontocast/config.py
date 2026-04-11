@@ -14,7 +14,7 @@ from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from qdrant_client.http.models import Distance as QdrantDistance
 
-from ontocast.onto.enum import OntologyContextMode, RenderMode
+from ontocast.onto.enum import OntologyContextMode, RenderMode, UnitContextStrategy
 from ontocast.onto.tenancy import (
     DEFAULT_PROJECT,
     DEFAULT_TENANT,
@@ -159,6 +159,14 @@ class ServerConfig(BaseSettings):
         description=(
             "Ontology prompt context mode: full_ttl uses the complete selected ontology, "
             "retrieved_induced_graph builds context from vector-retrieved induced subgraphs."
+        ),
+    )
+    unit_context_strategy: UnitContextStrategy = Field(
+        default=UnitContextStrategy.ENSEMBLE_FIRST,
+        description=(
+            "Per-unit ontology context strategy: ensemble_first stitches retrieved "
+            "patches, vote_first picks a dominant ontology and uses full TTL, "
+            "hybrid_adaptive attempts ensemble then falls back to vote."
         ),
     )
     ontology_max_triples: int | None = Field(

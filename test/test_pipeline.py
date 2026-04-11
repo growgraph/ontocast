@@ -17,7 +17,13 @@ from ontocast.config import (
 )
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI, PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType
-from ontocast.onto.enum import RenderMode, Status, WorkflowNode
+from ontocast.onto.enum import (
+    OntologyAssemblyMode,
+    OntologyContextMode,
+    RenderMode,
+    Status,
+    WorkflowNode,
+)
 from ontocast.onto.model import (
     ExternalEvidenceCacheEntry,
     ExternalEvidencePlan,
@@ -31,10 +37,11 @@ from ontocast.onto.sparql_models import GenericSparqlQuery, GraphUpdate
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph import create_agent_graph
+from ontocast.stategraph.context_resolver import UnitOntologyContext
 from ontocast.stategraph.node_factories import make_normalize_ontology_node
 from ontocast.stategraph.routing import (
+    route_after_chunk,
     route_after_ontology_consolidation,
-    route_after_ontology_selection,
 )
 from ontocast.tool.aggregate import EmbeddingBasedAggregator
 from ontocast.tool.atomic import AtomicToolBox, SearchHit
@@ -42,7 +49,6 @@ from ontocast.toolbox import ToolBox
 
 render_ontology_module = importlib.import_module("ontocast.agent.render_ontology")
 criticise_ontology_module = importlib.import_module("ontocast.agent.criticise_ontology")
-select_ontology_module = importlib.import_module("ontocast.agent.select_ontology")
 unit_loops = importlib.import_module("ontocast.stategraph.atomic")
 external_evidence_module = importlib.import_module("ontocast.agent.external_evidence")
 
@@ -90,14 +96,28 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
         state.status = Status.SUCCESS
         return state
 
+    async def fake_resolve(_state, _tools, _unit):
+        return UnitOntologyContext(
+            anchor_iri="https://example.org/o",
+            ontology_snapshot=_build_ontology(),
+            patch_sources=[],
+            assembly_mode=OntologyAssemblyMode.PRIMARY_WITHOUT_RETRIEVAL,
+            confidence=1.0,
+        )
+
     monkeypatch.setattr(unit_loops, "render_facts", fake_render)
     monkeypatch.setattr(unit_loops, "criticise_facts", fake_critic)
+    monkeypatch.setattr(unit_loops, "resolve_unit_ontology_context", fake_resolve)
 
     state = UnitFactsState(
         content_unit=_build_content_unit(), ontology_snapshot=_build_ontology()
     )
-    tools = cast(AtomicToolBox, object())
-    result = await unit_loops.facts_loop(state, tools=tools)
+    toolbox = cast(
+        ToolBox,
+        SimpleNamespace(get_atomic_tools=lambda: cast(AtomicToolBox, object())),
+    )
+    document_state = AgentState(render_mode=RenderMode.FACTS)
+    result = await unit_loops.facts_loop(state, toolbox, document_state)
 
     assert result.status == Status.SUCCESS
     assert result.content_unit.hid == state.content_unit.hid
@@ -117,15 +137,29 @@ async def test_run_unit_ontology_loop_emits_updates(monkeypatch) -> None:
         state.status = Status.SUCCESS
         return state
 
+    async def fake_resolve(_state, _tools, _unit):
+        return UnitOntologyContext(
+            anchor_iri="https://example.com/onto",
+            ontology_snapshot=Ontology(iri=ONTOLOGY_NULL_IRI),
+            patch_sources=[],
+            assembly_mode=OntologyAssemblyMode.PRIMARY_WITHOUT_RETRIEVAL,
+            confidence=1.0,
+        )
+
     monkeypatch.setattr(unit_loops, "render_ontology", fake_render)
     monkeypatch.setattr(unit_loops, "criticise_ontology", fake_critic)
+    monkeypatch.setattr(unit_loops, "resolve_unit_ontology_context", fake_resolve)
 
     state = UnitOntologyState(
         content_unit=_build_content_unit(),
         ontology_snapshot=Ontology(iri=ONTOLOGY_NULL_IRI),
     )
-    tools = cast(AtomicToolBox, object())
-    result = await unit_loops.ontology_loop(state, tools=tools)
+    toolbox = cast(
+        ToolBox,
+        SimpleNamespace(get_atomic_tools=lambda: cast(AtomicToolBox, object())),
+    )
+    document_state = AgentState(ontology_context_mode=OntologyContextMode.FULL_TTL)
+    result = await unit_loops.ontology_loop(state, toolbox, document_state)
 
     assert result.status == Status.SUCCESS
     assert len(result.all_updates) == 1
@@ -266,33 +300,6 @@ def test_normalize_ontology_node_feeds_clean_graph_to_consolidation() -> None:
     assert f"{doc_iri}/chunk-1" not in ontology_ttl
     assert "owl:sameAs" not in ontology_ttl
     assert len(updated.ontology_provenance_artifact) > 0
-
-
-@pytest.mark.anyio
-async def test_select_ontology_none_keeps_success_status(monkeypatch) -> None:
-    class SelectorResult:
-        answer_index = 0
-
-    async def fake_call_llm_with_retry(**kwargs):
-        return SelectorResult()
-
-    monkeypatch.setattr(
-        select_ontology_module, "call_llm_with_retry", fake_call_llm_with_retry
-    )
-
-    state = AgentState()
-    state.content_units = [_build_content_unit()]
-    tools = SimpleNamespace(
-        llm=object(),
-        ontology_manager=SimpleNamespace(
-            has_ontologies=True, ontologies=[_build_ontology()]
-        ),
-        config=SimpleNamespace(tool_config=SimpleNamespace(qdrant=SimpleNamespace())),
-    )
-    result = await select_ontology_module.select_ontology(state, tools)  # type: ignore[arg-type]
-
-    assert result.status == Status.SUCCESS
-    assert result.current_ontology.is_null()
 
 
 @pytest.mark.anyio
@@ -528,17 +535,31 @@ async def test_ontology_loop_runs_external_evidence_nodes(monkeypatch) -> None:
         state.status = Status.SUCCESS
         return state
 
+    async def fake_resolve(_state, _tools, _unit):
+        return UnitOntologyContext(
+            anchor_iri="https://example.com/onto",
+            ontology_snapshot=Ontology(iri=ONTOLOGY_NULL_IRI),
+            patch_sources=[],
+            assembly_mode=OntologyAssemblyMode.PRIMARY_WITHOUT_RETRIEVAL,
+            confidence=1.0,
+        )
+
     monkeypatch.setattr(unit_loops, "plan_external_evidence_for_node", fake_plan)
     monkeypatch.setattr(unit_loops, "fetch_external_evidence_for_node", fake_fetch)
     monkeypatch.setattr(unit_loops, "render_ontology", fake_render)
     monkeypatch.setattr(unit_loops, "criticise_ontology", fake_critic)
+    monkeypatch.setattr(unit_loops, "resolve_unit_ontology_context", fake_resolve)
 
     state = UnitOntologyState(
         content_unit=_build_content_unit(),
         ontology_snapshot=Ontology(iri=ONTOLOGY_NULL_IRI),
     )
-    tools = cast(AtomicToolBox, object())
-    result = await unit_loops.ontology_loop(state, tools=tools)
+    toolbox = cast(
+        ToolBox,
+        SimpleNamespace(get_atomic_tools=lambda: cast(AtomicToolBox, object())),
+    )
+    document_state = AgentState(ontology_context_mode=OntologyContextMode.FULL_TTL)
+    result = await unit_loops.ontology_loop(state, toolbox, document_state)
 
     assert result.status == Status.SUCCESS
     assert called_nodes == []
@@ -582,17 +603,31 @@ async def test_ontology_loop_plans_search_when_critic_requests_it(monkeypatch) -
         state.status = Status.SUCCESS
         return state
 
+    async def fake_resolve(_state, _tools, _unit):
+        return UnitOntologyContext(
+            anchor_iri="https://example.com/onto",
+            ontology_snapshot=Ontology(iri=ONTOLOGY_NULL_IRI),
+            patch_sources=[],
+            assembly_mode=OntologyAssemblyMode.PRIMARY_WITHOUT_RETRIEVAL,
+            confidence=1.0,
+        )
+
     monkeypatch.setattr(unit_loops, "plan_external_evidence_for_node", fake_plan)
     monkeypatch.setattr(unit_loops, "fetch_external_evidence_for_node", fake_fetch)
     monkeypatch.setattr(unit_loops, "render_ontology", fake_render)
     monkeypatch.setattr(unit_loops, "criticise_ontology", fake_critic)
+    monkeypatch.setattr(unit_loops, "resolve_unit_ontology_context", fake_resolve)
 
     state = UnitOntologyState(
         content_unit=_build_content_unit(),
         ontology_snapshot=Ontology(iri=ONTOLOGY_NULL_IRI),
     )
-    tools = cast(AtomicToolBox, object())
-    result = await unit_loops.ontology_loop(state, tools=tools)
+    toolbox = cast(
+        ToolBox,
+        SimpleNamespace(get_atomic_tools=lambda: cast(AtomicToolBox, object())),
+    )
+    document_state = AgentState(ontology_context_mode=OntologyContextMode.FULL_TTL)
+    result = await unit_loops.ontology_loop(state, toolbox, document_state)
 
     assert result.status == Status.SUCCESS
     assert called_nodes == [
@@ -660,9 +695,9 @@ def test_agent_graph_structural_check_not_reached_from_facts_edges() -> None:
     assert incoming_from_facts == []
 
 
-def test_route_after_ontology_selection_facts_only_skips_ontology() -> None:
+def test_route_after_chunk_facts_only_skips_ontology() -> None:
     facts_only = AgentState(render_mode=RenderMode.FACTS)
-    assert route_after_ontology_selection(facts_only) == WorkflowNode.RENDER_FACTS
+    assert route_after_chunk(facts_only) == WorkflowNode.RENDER_FACTS
 
 
 def test_toolbox_serialize_skips_facts_in_ontology_only_mode() -> None:
@@ -723,6 +758,39 @@ def test_toolbox_serialize_includes_facts_when_render_facts_enabled() -> None:
     assert isinstance(store.calls[0][0], Ontology)
     assert isinstance(store.calls[1][0], RDFGraph)
     assert store.calls[1][1] == state.graph_uri
+
+
+def test_toolbox_serialize_persists_all_ontology_artifacts() -> None:
+    class RecordingOntologyManager:
+        def __init__(self) -> None:
+            self.added = 0
+
+        def add_ontology(self, ontology: Ontology) -> None:
+            _ = ontology
+            self.added += 1
+
+    class RecordingStore:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, str | None]] = []
+
+        def serialize(self, payload: object, graph_uri: str | None = None) -> None:
+            self.calls.append((payload, graph_uri))
+
+    state = AgentState(render_mode=RenderMode.ONTOLOGY)
+    state.ontology_artifacts = [_build_ontology(), _build_ontology()]
+    store = RecordingStore()
+    manager = RecordingOntologyManager()
+    toolbox = SimpleNamespace(
+        ontology_manager=manager,
+        filesystem_manager=store,
+        triple_store_manager=None,
+    )
+
+    ToolBox.serialize(cast(ToolBox, toolbox), state)
+
+    assert manager.added == 2
+    assert len(store.calls) == 2
+    assert all(isinstance(payload, Ontology) for payload, _ in store.calls)
 
 
 def test_render_updated_graph_splits_compound_sparql_insert_updates() -> None:

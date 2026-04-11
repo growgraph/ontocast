@@ -11,6 +11,7 @@ from langchain_core.prompts import PromptTemplate
 from ontocast.agent.common import call_llm_with_retry
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import OntologyCritiqueReport, Suggestions
+from ontocast.onto.ontology_access import ontology_access_for_unit_ontology
 from ontocast.onto.unit_states import UnitOntologyState
 from ontocast.prompt.common import ontology_template, text_template
 from ontocast.prompt.common import system_preamble_ontology as system_preamble
@@ -50,7 +51,8 @@ async def criticise_ontology(
         state.status = Status.FAILED
         return state
 
-    current = state.current_ontology or state.ontology_snapshot
+    access = ontology_access_for_unit_ontology(state)
+    current = access.effective_ontology_for_prompt()
     if current.is_null():
         raise ValueError(
             f"Null ontology cannot be criticised: {current.iri} is not a valid ontology"

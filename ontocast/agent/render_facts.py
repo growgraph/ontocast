@@ -14,6 +14,10 @@ from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import FactsRenderReport, GraphUpdateRenderReport
+from ontocast.onto.ontology_access import (
+    UnitFactsOntologyAccess,
+    ontology_access_for_unit_facts,
+)
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.prompt.common import (
@@ -34,20 +38,19 @@ from ontocast.tool.atomic import AtomicToolBox
 logger = logging.getLogger(__name__)
 
 
-def _extract_known_prefixes(state: UnitFactsState) -> dict[str, str]:
+def _extract_known_prefixes(access: UnitFactsOntologyAccess) -> dict[str, str]:
     """Extract ontology prefixes used to patch missing declarations in LLM TTL output."""
     known_prefixes: dict[str, str] = {}
+    snap = access.ontology_for_prefixes()
 
-    if state.ontology_snapshot and state.ontology_snapshot.graph:
-        for prefix, namespace_uri in state.ontology_snapshot.graph.namespaces():
+    if snap and snap.graph:
+        for prefix, namespace_uri in snap.graph.namespaces():
             if prefix:  # Skip empty prefixes
                 known_prefixes[prefix] = str(namespace_uri)
 
     # Also add the ontology prefix explicitly if available.
-    if state.ontology_snapshot.prefix and state.ontology_snapshot.namespace:
-        known_prefixes[state.ontology_snapshot.prefix] = (
-            state.ontology_snapshot.namespace
-        )
+    if snap.prefix and snap.namespace:
+        known_prefixes[snap.prefix] = snap.namespace
 
     return known_prefixes
 
@@ -79,22 +82,26 @@ async def render_facts(state: UnitFactsState, tools: AtomicToolBox) -> UnitFacts
         return await render_facts_update(state, tools)
 
 
-def _prepare_prompt_data(state: UnitFactsState) -> dict[str, str]:
+def _prepare_prompt_data(
+    state: UnitFactsState, access: UnitFactsOntologyAccess
+) -> dict[str, str]:
     """Prepare common prompt data for both fresh and update rendering.
 
     Args:
         state: The current unit facts state
+        access: Read-only ontology context (facts prompts use snapshot only).
 
     Returns:
         Dictionary containing formatted prompt components
     """
+    ctx = access.effective_ontology_for_prompt()
     ontology_chapter = ontology_template.format(
-        ontology_ttl=state.ontology_snapshot.graph.serialize(format="turtle")
+        ontology_ttl=ctx.graph.serialize(format="turtle")
     )
 
     facts_instruction_str = facts_instruction_template.format(
-        ontology_namespace=state.ontology_snapshot.namespace,
-        ontology_prefix=state.ontology_snapshot.prefix,
+        ontology_namespace=ctx.namespace,
+        ontology_prefix=ctx.prefix,
         facts_namespace=DEFAULT_IRI,
     )
 
@@ -173,9 +180,10 @@ async def render_facts_fresh(
     llm_tool = await tools.get_llm_tool(state.budget_tracker)
     parser = PydanticOutputParser(pydantic_object=FactsRenderReport)
 
-    known_prefixes = _extract_known_prefixes(state)
+    access = ontology_access_for_unit_facts(state)
+    known_prefixes = _extract_known_prefixes(access)
 
-    prompt_data = _prepare_prompt_data(state)
+    prompt_data = _prepare_prompt_data(state, access)
     prompt_data_fresh = {
         "preamble": preamble,
         "improvement_instruction": "",
@@ -237,7 +245,8 @@ async def render_facts_update(
     llm_tool = await tools.get_llm_tool(state.budget_tracker)
     parser = PydanticOutputParser(pydantic_object=GraphUpdateRenderReport)
 
-    prompt_data = _prepare_prompt_data(state)
+    access = ontology_access_for_unit_facts(state)
+    prompt_data = _prepare_prompt_data(state, access)
     prompt_data_update = {
         "preamble": preamble,
         "improvement_instruction": render_suggestions_prompt(
@@ -250,7 +259,7 @@ async def render_facts_update(
     }
     prompt_data.update(prompt_data_update)
     prompt = _create_prompt_template()
-    known_prefixes = _extract_known_prefixes(state)
+    known_prefixes = _extract_known_prefixes(access)
 
     try:
         # Set known prefixes in context before parsing
