@@ -42,7 +42,10 @@ class StatusErrorBody(BaseModel):
 
 class ProcessResultData(BaseModel):
     facts: str
-    ontology: str
+    ontology: str | None = Field(
+        default=None,
+        description="Deprecated singular ontology payload; use ontology_artifacts.",
+    )
     ontology_artifacts: list[dict] = Field(default_factory=list)
 
 

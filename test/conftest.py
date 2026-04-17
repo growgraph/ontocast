@@ -268,11 +268,6 @@ def state_rendered_facts(state_rendered_facts_filename):
 
 
 @pytest.fixture
-def state_sublimated(state_sublimated_filename):
-    return AgentState.load(state_sublimated_filename)
-
-
-@pytest.fixture
 def state_facts_failed(state_facts_failed_filename):
     return AgentState.load(state_facts_failed_filename)
 

@@ -49,12 +49,22 @@ class UnitContextStrategy(StrEnum):
     HYBRID_ADAPTIVE = "hybrid_adaptive"
 
 
+class OntologySelectionPolicy(StrEnum):
+    """Runtime policy for per-unit ontology source selection."""
+
+    STRICT_RETRIEVAL = "strict_retrieval"
+    RETRIEVAL_WITH_LLM_FALLBACK = "retrieval_with_llm_fallback"
+    LLM_SELECTOR_ONLY = "llm_selector_only"
+
+
 class OntologyAssemblyMode(StrEnum):
     """How per-unit ontology context was assembled for prompts."""
 
     ENSEMBLE_STITCHED = "ensemble_stitched"
     VOTE_MAJORITY_ONTOLOGY = "vote_majority_ontology"
     PRIMARY_WITHOUT_RETRIEVAL = "primary_without_retrieval"
+    LLM_SELECTED_FULL_ONTOLOGY = "llm_selected_full_ontology"
+    STRICT_RETRIEVAL_UNAVAILABLE = "strict_retrieval_unavailable"
 
 
 class FailureStage(StrEnum):
@@ -71,10 +81,6 @@ class FailureStage(StrEnum):
     )
     GENERATE_TTL_FOR_FACTS = "Failed to generate semantic triples (turtle) for facts"
     GENERATE_SPARQL_UPDATE_FOR_FACTS = "Failed to generate SPARQL update for ontology"
-    SUBLIMATE_ONTOLOGY = (
-        "The produced semantic could not be validated "
-        "or separated into ontology and facts (technical issue)."
-    )
 
 
 class WorkflowNode(StrEnum):

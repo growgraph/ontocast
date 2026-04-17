@@ -34,12 +34,17 @@ def compare_states(states: list[tuple[pathlib.Path, AgentState]]) -> None:
     )
 
     for fp, state in sorted_rows:
+        facts_graph_len = len(state.facts_units[0].graph) if state.facts_units else 0
+        artifacts = (
+            state.reduced_ontology_artifacts
+            if state.reduced_ontology_artifacts
+            else state.ontology_artifacts
+        )
+        ontology_graph_len = sum(len(artifact.graph) for artifact in artifacts)
         table.add_row(
             str(fp.stem),
-            str(len(state.current_content_unit.graph)),
-            str(len(state.current_ontology.graph))
-            if state.current_ontology is not None
-            else "",
+            str(facts_graph_len),
+            str(ontology_graph_len),
             str(len(state.ontology_addendum.graph)),
             str(state.success_score),
         )

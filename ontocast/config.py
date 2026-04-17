@@ -14,7 +14,12 @@ from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from qdrant_client.http.models import Distance as QdrantDistance
 
-from ontocast.onto.enum import OntologyContextMode, RenderMode, UnitContextStrategy
+from ontocast.onto.enum import (
+    OntologyContextMode,
+    OntologySelectionPolicy,
+    RenderMode,
+    UnitContextStrategy,
+)
 from ontocast.onto.tenancy import (
     DEFAULT_PROJECT,
     DEFAULT_TENANT,
@@ -167,6 +172,14 @@ class ServerConfig(BaseSettings):
             "Per-unit ontology context strategy: ensemble_first stitches retrieved "
             "patches, vote_first picks a dominant ontology and uses full TTL, "
             "hybrid_adaptive attempts ensemble then falls back to vote."
+        ),
+    )
+    ontology_selection_policy: OntologySelectionPolicy = Field(
+        default=OntologySelectionPolicy.RETRIEVAL_WITH_LLM_FALLBACK,
+        description=(
+            "Per-unit ontology selection policy: strict_retrieval forbids fallback, "
+            "retrieval_with_llm_fallback uses LLM/full-ontology fallback when vector "
+            "retrieval infra is unavailable, llm_selector_only always selects full ontology."
         ),
     )
     ontology_max_triples: int | None = Field(

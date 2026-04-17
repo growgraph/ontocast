@@ -13,7 +13,6 @@ from .criticise_ontology import criticise_ontology
 from .render_facts import render_facts, render_facts_fresh
 from .render_ontology import render_ontology, render_ontology_fresh
 from .serialize import serialize
-from .sublimate_ontology import sublimate_ontology
 
 __all__ = [
     "chunk_text",
@@ -23,7 +22,6 @@ __all__ = [
     "render_facts",
     "render_ontology",
     "serialize",
-    "sublimate_ontology",
     "render_ontology_fresh",
     "render_facts_fresh",
 ]

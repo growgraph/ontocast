@@ -11,6 +11,7 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import (
     OntologyAssemblyMode,
     OntologyContextMode,
+    OntologySelectionPolicy,
     UnitContextStrategy,
 )
 from ontocast.onto.ontology import Ontology
@@ -48,7 +49,9 @@ class _StubOntologyManager:
 
     def get_freshest_terminal_ontology_by_iri(self, iri: str | None) -> Ontology | None:
         if iri is None:
-            return None
+            if not self._ontologies:
+                return None
+            return next(iter(self._ontologies.values()))
         return self._ontologies.get(iri)
 
     def get_ontology(self, ontology_iri: str | None = None, **kwargs) -> Ontology:
@@ -150,7 +153,7 @@ def test_resolver_vote_first_selects_majority_ontology() -> None:
 
 
 def test_resolver_full_ttl_skips_retrieval_uses_primary() -> None:
-    """FULL_TTL uses document primary only (no vector or ensemble retrieval)."""
+    """FULL_TTL uses per-unit full ontology selection without retrieval."""
     finance_iri = "https://example.org/finance"
     finance_ontology = Ontology(
         iri=finance_iri,
@@ -168,7 +171,6 @@ def test_resolver_full_ttl_skips_retrieval_uses_primary() -> None:
     state = AgentState(
         unit_context_strategy=UnitContextStrategy.VOTE_FIRST,
         ontology_context_mode=OntologyContextMode.FULL_TTL,
-        current_ontology=finance_ontology,
     )
 
     result = asyncio.run(resolve_unit_ontology_context(state, tools, _build_unit()))
@@ -176,3 +178,44 @@ def test_resolver_full_ttl_skips_retrieval_uses_primary() -> None:
     assert result.assembly_mode == OntologyAssemblyMode.PRIMARY_WITHOUT_RETRIEVAL
     assert result.anchor_iri == finance_iri
     assert result.ontology_snapshot.iri == finance_iri
+
+
+def test_resolver_strict_retrieval_returns_null_when_infra_unavailable() -> None:
+    state = AgentState(
+        ontology_context_mode=OntologyContextMode.RETRIEVED_INDUCED_GRAPH,
+        ontology_selection_policy=OntologySelectionPolicy.STRICT_RETRIEVAL,
+    )
+    tools = _build_tools(
+        patch_retriever=None,
+        vector_store=None,
+        ontology_manager=_StubOntologyManager({}),
+    )
+
+    result = asyncio.run(resolve_unit_ontology_context(state, tools, _build_unit()))
+
+    assert result.assembly_mode == OntologyAssemblyMode.STRICT_RETRIEVAL_UNAVAILABLE
+    assert result.ontology_snapshot.is_null()
+
+
+def test_resolver_llm_selector_only_uses_full_ontology_catalog() -> None:
+    finance_iri = "https://example.org/finance"
+    finance_ontology = Ontology(
+        iri=finance_iri,
+        graph=RDFGraph._from_turtle_str(
+            "@prefix ex: <https://example.org/f#> . ex:F ex:has ex:X ."
+        ),
+    )
+    state = AgentState(
+        ontology_context_mode=OntologyContextMode.RETRIEVED_INDUCED_GRAPH,
+        ontology_selection_policy=OntologySelectionPolicy.LLM_SELECTOR_ONLY,
+    )
+    tools = _build_tools(
+        patch_retriever=None,
+        vector_store=None,
+        ontology_manager=_StubOntologyManager({finance_iri: finance_ontology}),
+    )
+
+    result = asyncio.run(resolve_unit_ontology_context(state, tools, _build_unit()))
+
+    assert result.assembly_mode == OntologyAssemblyMode.LLM_SELECTED_FULL_ONTOLOGY
+    assert result.anchor_iri == finance_iri

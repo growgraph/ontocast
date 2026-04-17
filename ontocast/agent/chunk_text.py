@@ -30,6 +30,7 @@ def chunk_text(state: AgentState, tools: ToolBox) -> AgentState:
     """
     logger.info("Chunking the text")
     if state.input_text is not None:
+        state.content_units = []
         chunks_txt: list[str] = tools.chunker(state.input_text)
         logger.info(
             f"Created {len(chunks_txt)} chunks for processing: {[len(c) for c in chunks_txt]}"

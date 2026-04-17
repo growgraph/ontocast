@@ -133,6 +133,10 @@ def normalize_ontology_units(
             "continuing with merged aggregated ontology output."
         )
 
+    # Unit delta graphs contain insert-only triples produced by build_ontology_delta_graph.
+    # Delete operations are intentionally excluded at the map stage and are not
+    # represented here. This is a deliberate policy: parallel unit deletes cannot
+    # be safely reconciled without a consensus pass, which is not yet implemented.
     merged_update = GraphUpdate(
         triple_operations=[
             TripleOp(type="insert", graph=unit.graph)

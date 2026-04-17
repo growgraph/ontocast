@@ -42,6 +42,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
+from ontocast.agent.convert_document import convert_document
 from ontocast.api.ontologies import build_ontology_router
 from ontocast.api.schemas import (
     FlushOkResponse,
@@ -56,14 +57,120 @@ from ontocast.api.schemas import (
 )
 from ontocast.cli.util import crawl_directories
 from ontocast.config import Config, ServerConfig
-from ontocast.onto.enum import OntologyContextMode, RenderMode, UnitContextStrategy
+from ontocast.onto.enum import (
+    OntologyContextMode,
+    OntologySelectionPolicy,
+    RenderMode,
+    UnitContextStrategy,
+)
 from ontocast.onto.state import AgentState
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.stategraph import create_agent_graph
+from ontocast.stategraph.helpers import build_ontology_delta_graph
+from ontocast.stategraph.unit_pipeline import run_unit_pipeline
 from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
+
+
+def parse_render_mode_param(value, default: RenderMode) -> RenderMode:
+    if value is None:
+        return default
+    if isinstance(value, RenderMode):
+        return value
+    if isinstance(value, str):
+        normalized = value.lower().strip()
+        try:
+            return RenderMode(normalized)
+        except ValueError:
+            logger.warning(
+                "Invalid render_mode '%s', using default '%s'",
+                value,
+                default.value,
+            )
+    return default
+
+
+def parse_ontology_context_mode_param(
+    value: str | OntologyContextMode | None,
+    default: OntologyContextMode,
+) -> OntologyContextMode:
+    if value is None:
+        return default
+    if isinstance(value, OntologyContextMode):
+        return value
+    if isinstance(value, str):
+        normalized = value.lower().strip()
+        try:
+            return OntologyContextMode(normalized)
+        except ValueError:
+            logger.warning(
+                "Invalid ontology_context_mode '%s', using default '%s'",
+                value,
+                default.value,
+            )
+    return default
+
+
+def parse_unit_context_strategy_param(
+    value: str | UnitContextStrategy | None,
+    default: UnitContextStrategy,
+) -> UnitContextStrategy:
+    if value is None:
+        return default
+    if isinstance(value, UnitContextStrategy):
+        return value
+    if isinstance(value, str):
+        normalized = value.lower().strip()
+        try:
+            return UnitContextStrategy(normalized)
+        except ValueError:
+            logger.warning(
+                "Invalid unit_context_strategy '%s', using default '%s'",
+                value,
+                default.value,
+            )
+    return default
+
+
+def parse_ontology_selection_policy_param(
+    value: str | OntologySelectionPolicy | None,
+    default: OntologySelectionPolicy,
+) -> OntologySelectionPolicy:
+    if value is None:
+        return default
+    if isinstance(value, OntologySelectionPolicy):
+        return value
+    if isinstance(value, str):
+        normalized = value.lower().strip()
+        try:
+            return OntologySelectionPolicy(normalized)
+        except ValueError:
+            logger.warning(
+                "Invalid ontology_selection_policy '%s', using default '%s'",
+                value,
+                default.value,
+            )
+    return default
+
+
+def validate_ontology_context_mode(
+    ontology_context_mode: OntologyContextMode,
+    ontology_selection_policy: OntologySelectionPolicy,
+    vector_store: object | None,
+    patch_retriever: object | None,
+) -> None:
+    if (
+        ontology_context_mode == OntologyContextMode.RETRIEVED_INDUCED_GRAPH
+        and ontology_selection_policy == OntologySelectionPolicy.STRICT_RETRIEVAL
+        and (vector_store is None or patch_retriever is None)
+    ):
+        raise ValueError(
+            "ontology_context_mode='retrieved_induced_graph' with "
+            "ontology_selection_policy='strict_retrieval' requires configured "
+            "vector store and patch retriever"
+        )
 
 
 def _stores_use_tenancy_partitions(tools: ToolBox) -> bool:
@@ -152,61 +259,6 @@ def create_app(
         head_chunks,
         server_config,
     )
-
-    def parse_render_mode_param(value, default: RenderMode) -> RenderMode:
-        if value is None:
-            return default
-        if isinstance(value, RenderMode):
-            return value
-        if isinstance(value, str):
-            normalized = value.lower().strip()
-            try:
-                return RenderMode(normalized)
-            except ValueError:
-                logger.warning(
-                    f"Invalid render_mode '{value}', using default '{default.value}'"
-                )
-        return default
-
-    def parse_ontology_context_mode_param(
-        value: str | OntologyContextMode | None,
-        default: OntologyContextMode,
-    ) -> OntologyContextMode:
-        if value is None:
-            return default
-        if isinstance(value, OntologyContextMode):
-            return value
-        if isinstance(value, str):
-            normalized = value.lower().strip()
-            try:
-                return OntologyContextMode(normalized)
-            except ValueError:
-                logger.warning(
-                    "Invalid ontology_context_mode '%s', using default '%s'",
-                    value,
-                    default.value,
-                )
-        return default
-
-    def parse_unit_context_strategy_param(
-        value: str | UnitContextStrategy | None,
-        default: UnitContextStrategy,
-    ) -> UnitContextStrategy:
-        if value is None:
-            return default
-        if isinstance(value, UnitContextStrategy):
-            return value
-        if isinstance(value, str):
-            normalized = value.lower().strip()
-            try:
-                return UnitContextStrategy(normalized)
-            except ValueError:
-                logger.warning(
-                    "Invalid unit_context_strategy '%s', using default '%s'",
-                    value,
-                    default.value,
-                )
-        return default
 
     @app.get("/health")
     async def health_check():
@@ -297,6 +349,9 @@ def create_app(
             unit_context_strategy = request.query_params.get(
                 "unit_context_strategy", None
             )
+            ontology_selection_policy = request.query_params.get(
+                "ontology_selection_policy", None
+            )
             ontology_user_instruction = request.query_params.get(
                 "ontology_user_instruction", ""
             )
@@ -363,6 +418,18 @@ def create_app(
                     server_config.unit_context_strategy,
                 )
             )
+            ontology_selection_policy_value: OntologySelectionPolicy = (
+                parse_ontology_selection_policy_param(
+                    ontology_selection_policy,
+                    server_config.ontology_selection_policy,
+                )
+            )
+            validate_ontology_context_mode(
+                ontology_context_mode_value,
+                ontology_selection_policy_value,
+                tools.vector_store,
+                tools.patch_retriever,
+            )
 
             initial_state = AgentState(
                 files=files_dict,
@@ -371,6 +438,7 @@ def create_app(
                 render_mode=render_mode_value,
                 ontology_context_mode=ontology_context_mode_value,
                 unit_context_strategy=unit_context_strategy_value,
+                ontology_selection_policy=ontology_selection_policy_value,
                 ontology_max_triples=server_config.ontology_max_triples,
                 tenant=resolved_tenant,
                 project=resolved_project,
@@ -410,6 +478,9 @@ def create_app(
             else:
                 processed_content_units = total_content_units
             chunks_remaining = max(total_content_units - processed_content_units, 0)
+            ontology_artifacts = workflow_state.get("reduced_ontology_artifacts") or (
+                workflow_state.get("ontology_artifacts", [])
+            )
 
             return ProcessOkResponse(
                 data=ProcessResultData(
@@ -418,13 +489,7 @@ def create_app(
                         if workflow_state.get("aggregated_facts")
                         else ""
                     ),
-                    ontology=(
-                        workflow_state["current_ontology"].graph.serialize(
-                            format="turtle"
-                        )
-                        if workflow_state.get("current_ontology")
-                        else ""
-                    ),
+                    ontology=None,
                     ontology_artifacts=[
                         {
                             "iri": artifact.iri,
@@ -433,7 +498,7 @@ def create_app(
                             "triples": len(artifact.graph),
                             "ttl": artifact.graph.serialize(format="turtle"),
                         }
-                        for artifact in workflow_state.get("ontology_artifacts", [])
+                        for artifact in ontology_artifacts
                     ],
                 ),
                 metadata=ProcessResultMetadata(
@@ -463,6 +528,197 @@ def create_app(
                     error=str(e),
                     error_type=type(e).__name__,
                     error_details=error_details,
+                ).model_dump(),
+            )
+
+    @app.post("/process_unit")
+    async def process_unit(request: Request):
+        """Process a single small document or text without chunking or normalization.
+
+        Runs ontology_loop and facts_loop sequentially for the entire input as
+        one unit.  The ontology loop's output is fed directly into the facts
+        loop so that fact extraction immediately uses the freshly-generated
+        ontology.  Accepts the same content types and query parameters as
+        ``/process``.
+        """
+        try:
+            content_type = request.headers.get("content-type") or ""
+            logger.debug("process_unit Content-Type: %s", content_type)
+
+            request_tenant = request.query_params.get("tenant", None)
+            request_project = request.query_params.get("project", None)
+            has_tenancy_qs = (
+                "tenant" in request.query_params or "project" in request.query_params
+            )
+            render_mode = request.query_params.get("render_mode", None)
+            ontology_context_mode = request.query_params.get(
+                "ontology_context_mode", None
+            )
+            unit_context_strategy = request.query_params.get(
+                "unit_context_strategy", None
+            )
+            ontology_selection_policy = request.query_params.get(
+                "ontology_selection_policy", None
+            )
+            ontology_user_instruction = request.query_params.get(
+                "ontology_user_instruction", ""
+            )
+            facts_user_instruction = request.query_params.get(
+                "facts_user_instruction", ""
+            )
+
+            if content_type.startswith("application/json"):
+                bytes_data = await request.body()
+                logger.debug("process_unit JSON body length: %s", len(bytes_data))
+                files_dict: dict[str, bytes] = {"input.json": bytes_data}
+            elif content_type.startswith("multipart/form-data"):
+                form = await request.form()
+                files_dict = {}
+                for key, value in form.multi_items():
+                    if isinstance(value, StarletteUploadFile):
+                        files_dict[key] = await value.read()
+                    elif key == "ontology_user_instruction" and value:
+                        ontology_user_instruction = str(value)
+                    elif key == "facts_user_instruction" and value:
+                        facts_user_instruction = str(value)
+                if not files_dict:
+                    return JSONResponse(
+                        status_code=400,
+                        content=StatusErrorBody(
+                            error="No file provided",
+                            error_type="ValidationError",
+                        ).model_dump(),
+                    )
+            else:
+                return JSONResponse(
+                    status_code=400,
+                    content=StatusErrorBody(
+                        error=f"Unsupported content type: {content_type}",
+                        error_type="ValidationError",
+                    ).model_dump(),
+                )
+
+            if has_tenancy_qs:
+                resolved_tenant, resolved_project = _resolve_tenant_project(
+                    request_tenant, request_project
+                )
+                if _stores_use_tenancy_partitions(tools):
+                    await tools.update_tenancy(resolved_tenant, resolved_project)
+            else:
+                resolved_tenant, resolved_project = (
+                    active_tenant,
+                    active_project,
+                )
+
+            render_mode_value: RenderMode = parse_render_mode_param(
+                render_mode,
+                server_config.render_mode,
+            )
+            ontology_context_mode_value: OntologyContextMode = (
+                parse_ontology_context_mode_param(
+                    ontology_context_mode,
+                    server_config.ontology_context_mode,
+                )
+            )
+            unit_context_strategy_value: UnitContextStrategy = (
+                parse_unit_context_strategy_param(
+                    unit_context_strategy,
+                    server_config.unit_context_strategy,
+                )
+            )
+            ontology_selection_policy_value: OntologySelectionPolicy = (
+                parse_ontology_selection_policy_param(
+                    ontology_selection_policy,
+                    server_config.ontology_selection_policy,
+                )
+            )
+            validate_ontology_context_mode(
+                ontology_context_mode_value,
+                ontology_selection_policy_value,
+                tools.vector_store,
+                tools.patch_retriever,
+            )
+
+            initial_state = AgentState(
+                files=files_dict,
+                max_visits=server_config.max_visits_per_node,
+                max_chunks=1,
+                render_mode=render_mode_value,
+                ontology_context_mode=ontology_context_mode_value,
+                unit_context_strategy=unit_context_strategy_value,
+                ontology_selection_policy=ontology_selection_policy_value,
+                ontology_max_triples=server_config.ontology_max_triples,
+                tenant=resolved_tenant,
+                project=resolved_project,
+                ontology_user_instruction=ontology_user_instruction,
+                facts_user_instruction=facts_user_instruction,
+            )
+
+            initial_state = convert_document(initial_state, tools)
+            if initial_state.failure_stage is not None:
+                return JSONResponse(
+                    status_code=422,
+                    content=ProcessErrorResponse(
+                        error=initial_state.failure_reason
+                        or "Document conversion failed",
+                        error_type="ConversionError",
+                        error_details={"stage": str(initial_state.failure_stage)},
+                    ).model_dump(),
+                )
+
+            onto_result, facts_result = await run_unit_pipeline(initial_state, tools)
+
+            budget_tracker_data: dict = initial_state.budget_tracker.model_dump()
+
+            ontology_artifacts: list[dict] = []
+            if onto_result is not None:
+                delta_graph = build_ontology_delta_graph(onto_result)
+                if len(delta_graph) > 0:
+                    ontology_artifacts = [
+                        {
+                            "iri": onto_result.assembly_anchor_iri or "",
+                            "ontology_id": None,
+                            "title": "Unit ontology artifact",
+                            "triples": len(delta_graph),
+                            "ttl": delta_graph.serialize(format="turtle"),
+                        }
+                    ]
+
+            facts_ttl = ""
+            if facts_result is not None:
+                facts_ttl = facts_result.content_unit.graph.serialize(format="turtle")
+
+            last_status = None
+            if facts_result is not None:
+                last_status = facts_result.status
+            elif onto_result is not None:
+                last_status = onto_result.status
+
+            return ProcessOkResponse(
+                data=ProcessResultData(
+                    facts=facts_ttl,
+                    ontology=None,
+                    ontology_artifacts=ontology_artifacts,
+                ),
+                metadata=ProcessResultMetadata(
+                    status=str(last_status) if last_status is not None else None,
+                    chunks_processed=1,
+                    chunks_remaining=0,
+                    budget=budget_tracker_data,
+                    retrieval_metrics=initial_state.retrieval_metrics,
+                ),
+            )
+
+        except Exception as e:
+            logger.error("Error in process_unit: %s", e)
+            logger.error("Error type: %s", type(e))
+            logger.error("Error traceback:", exc_info=True)
+            return JSONResponse(
+                status_code=500,
+                content=ProcessErrorResponse(
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    error_details=None,
                 ).model_dump(),
             )
 
@@ -560,6 +816,15 @@ def run(
     if _stores_use_tenancy_partitions(tools):
         asyncio.run(tools.update_tenancy(t_res, p_res))
 
+    ontology_context_mode_value = config.server.ontology_context_mode
+    ontology_selection_policy_value = config.server.ontology_selection_policy
+    validate_ontology_context_mode(
+        ontology_context_mode_value,
+        ontology_selection_policy_value,
+        tools.vector_store,
+        tools.patch_retriever,
+    )
+
     if input_path is not None and config.clean:
         asyncio.run(_flush_triple_configured_scope(tools))
 
@@ -590,8 +855,9 @@ def run(
                         max_visits=config.server.max_visits_per_node,
                         max_chunks=head_chunks,
                         render_mode=config.server.render_mode,
-                        ontology_context_mode=config.server.ontology_context_mode,
+                        ontology_context_mode=ontology_context_mode_value,
                         unit_context_strategy=config.server.unit_context_strategy,
+                        ontology_selection_policy=ontology_selection_policy_value,
                         tenant=t_res,
                         project=p_res,
                     )

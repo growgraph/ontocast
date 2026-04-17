@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import unicodedata
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from contextvars import ContextVar
@@ -20,6 +21,9 @@ logger = logging.getLogger(__name__)
 PREFIX_PATTERN = re.compile(r"@prefix\s+(\w+):\s+<[^>]+>\s+\.")
 # Pattern to match prefix usage: prefix:something (not in @prefix declarations)
 PREFIX_USAGE_PATTERN = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]*):[^\s]")
+INTEGER_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:integer')
+DECIMAL_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:decimal')
+DOUBLE_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:double')
 
 # Context variable to store known prefixes during parsing
 _known_prefixes_context: ContextVar[dict[str, str] | None] = ContextVar[
@@ -257,25 +261,87 @@ class RDFGraph(Graph):
         Returns:
             RDFGraph: A new RDFGraph instance.
         """
-        turtle_str = bytes(turtle_str, "utf-8").decode("unicode_escape")
-        patched_turtle = cls._ensure_prefixes(turtle_str)
+        normalized_turtle = cls._normalize_turtle_input(turtle_str)
+        patched_turtle = cls._coerce_invalid_numeric_typed_literals(
+            cls._ensure_prefixes(normalized_turtle)
+        )
         g = cls()
         try:
             g.parse(data=patched_turtle, format="turtle")
             return g
         except Exception as parse_error:
-            # Typical LLM truncation: dangling ';' or ',' at EOF in property list.
-            if "EOF found when expected verb in property list" not in str(parse_error):
-                raise
-            repaired_turtle = cls._repair_truncated_turtle(patched_turtle)
+            repaired_turtle = cls._repair_common_turtle_issues(
+                patched_turtle, parse_error_message=str(parse_error)
+            )
             if repaired_turtle == patched_turtle:
                 raise
             logger.warning(
-                "Recovering truncated Turtle by closing dangling property list punctuation."
+                "Recovering malformed Turtle after parse failure: %s",
+                str(parse_error),
             )
             repaired_graph = cls()
             repaired_graph.parse(data=repaired_turtle, format="turtle")
             return repaired_graph
+
+    @staticmethod
+    def _normalize_turtle_input(turtle_str: str) -> str:
+        """Normalize Turtle text from LLM output before RDF parsing."""
+        normalized = unicodedata.normalize("NFKC", turtle_str)
+        normalized = normalized.replace("\ufeff", "")
+        normalized = normalized.replace("\u200b", "")
+        normalized = normalized.replace("\u200c", "")
+        normalized = normalized.replace("\u200d", "")
+        normalized = normalized.replace("\u2060", "")
+        normalized = normalized.replace("\xa0", " ")
+
+        cleaned_chars = []
+        for ch in normalized:
+            if ch in ("\n", "\r", "\t"):
+                cleaned_chars.append(ch)
+                continue
+            if unicodedata.category(ch).startswith("C"):
+                continue
+            cleaned_chars.append(ch)
+        return "".join(cleaned_chars)
+
+    @classmethod
+    def _coerce_invalid_numeric_typed_literals(cls, turtle_str: str) -> str:
+        """Drop numeric datatype when lexical form is invalid for that datatype."""
+
+        def replace_integer(match: re.Match[str]) -> str:
+            lexical = match.group(1)
+            try:
+                int(lexical)
+                return match.group(0)
+            except ValueError:
+                return f'"{lexical}"'
+
+        def replace_decimal(match: re.Match[str]) -> str:
+            lexical = match.group(1)
+            try:
+                float(lexical)
+                return match.group(0)
+            except ValueError:
+                return f'"{lexical}"'
+
+        coerced = INTEGER_TYPED_LITERAL_PATTERN.sub(replace_integer, turtle_str)
+        coerced = DECIMAL_TYPED_LITERAL_PATTERN.sub(replace_decimal, coerced)
+        coerced = DOUBLE_TYPED_LITERAL_PATTERN.sub(replace_decimal, coerced)
+        return coerced
+
+    @classmethod
+    def _repair_common_turtle_issues(
+        cls, turtle_str: str, parse_error_message: str
+    ) -> str:
+        """Apply minimal repairs for common malformed Turtle patterns."""
+        repaired = turtle_str
+
+        # Typical LLM truncation: dangling ';' or ',' at EOF in property list.
+        if "EOF found when expected verb in property list" in parse_error_message:
+            repaired = cls._repair_truncated_turtle(repaired)
+
+        repaired = cls._repair_missing_object_before_dot(repaired)
+        return repaired
 
     @staticmethod
     def _repair_truncated_turtle(turtle_str: str) -> str:
@@ -290,6 +356,44 @@ class RDFGraph(Graph):
         if stripped.endswith(";") or stripped.endswith(","):
             return f"{stripped[:-1].rstrip()} .\n"
         return turtle_str
+
+    @staticmethod
+    def _repair_missing_object_before_dot(turtle_str: str) -> str:
+        """Remove malformed lines that end after predicate with no object."""
+        repaired_lines: list[str] = []
+        previous_meaningful_line: str | None = None
+        for line in turtle_str.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("@prefix"):
+                repaired_lines.append(line)
+                continue
+            if stripped.endswith(" ."):
+                body = stripped[:-2].strip()
+                token_count = len(body.split())
+                previous_continues_property_list = (
+                    previous_meaningful_line is not None
+                    and (
+                        previous_meaningful_line.endswith(";")
+                        or previous_meaningful_line.endswith(",")
+                    )
+                )
+                # Keep valid predicate-object continuation lines in property lists
+                # (e.g. "ex:appealsTo ex:Cassation ."), but drop malformed
+                # predicate-only lines and standalone subject-predicate lines.
+                if token_count < 2 or (
+                    token_count == 2 and not previous_continues_property_list
+                ):
+                    logger.debug(
+                        "Dropping malformed Turtle line with missing object: %s",
+                        stripped,
+                    )
+                    continue
+            repaired_lines.append(line)
+            previous_meaningful_line = stripped
+        repaired = "\n".join(repaired_lines)
+        if turtle_str.endswith("\n"):
+            repaired += "\n"
+        return repaired
 
     @classmethod
     def set_known_prefixes(cls, prefixes: dict[str, str] | None) -> None:

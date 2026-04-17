@@ -40,28 +40,47 @@ def _real_ontology(iri: str = "https://example.org/o") -> Ontology:
 
 
 def test_document_serialization_targets_prefers_artifacts() -> None:
-    primary = _real_ontology("https://example.org/primary")
     a1 = _real_ontology("https://example.org/a1")
     a2 = _real_ontology("https://example.org/a2")
-    state = AgentState(current_ontology=primary, ontology_artifacts=[a1, a2])
+    state = AgentState(ontology_artifacts=[a1, a2])
     access = document_ontology_access(state)
     targets = access.serialization_targets()
     assert targets == [a1, a2]
-    assert access.primary_ontology() is primary
-    assert not access.is_primary_null()
+    assert access.ontology_by_anchor(a2.iri) is a2
 
 
-def test_document_serialization_targets_fallback_to_primary() -> None:
-    primary = _real_ontology()
-    state = AgentState(current_ontology=primary, ontology_artifacts=[])
+def test_document_serialization_targets_returns_empty_without_artifacts() -> None:
+    state = AgentState()
+    access = DocumentOntologyAccess(state)
+    assert access.serialization_targets() == []
+
+
+def test_document_serialization_targets_with_single_reduced_artifact() -> None:
+    primary = _real_ontology("https://example.org/reduced")
+    state = AgentState(reduced_ontology_artifacts=[primary], ontology_artifacts=[])
     access = DocumentOntologyAccess(state)
     assert access.serialization_targets() == [primary]
 
 
-def test_document_primary_null() -> None:
+def test_document_no_artifacts_flags() -> None:
     state = AgentState()
     access = document_ontology_access(state)
-    assert access.is_primary_null()
+    assert not access.has_any_artifacts()
+    assert not access.has_non_null_artifacts()
+
+
+def test_document_artifact_presence_helpers() -> None:
+    state = AgentState(ontology_artifacts=[_real_ontology("https://example.org/a1")])
+    access = document_ontology_access(state)
+    assert access.has_any_artifacts()
+    assert access.has_non_null_artifacts()
+
+
+def test_agent_state_ontology_ids_exposes_all_artifact_ids() -> None:
+    a1 = _real_ontology("https://example.org/a1")
+    a2 = _real_ontology("https://example.org/a2")
+    state = AgentState(ontology_artifacts=[a1, a2])
+    assert len(state.ontology_ids) == 2
 
 
 def test_unit_ontology_access_seed_and_effective() -> None:

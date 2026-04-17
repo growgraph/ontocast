@@ -5,13 +5,14 @@ from typing import Any
 from pydantic import ConfigDict, Field
 from rdflib import URIRef
 
-from ontocast.onto.constants import CHUNK_NULL_IRI, DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI
+from ontocast.onto.constants import DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.context import AgentContext, AgentType, ContextManager
 from ontocast.onto.enum import (
     FailureStage,
     OntologyAssemblyMode,
     OntologyContextMode,
+    OntologySelectionPolicy,
     RenderMode,
     Status,
     UnitContextStrategy,
@@ -101,7 +102,6 @@ class AgentState(BasePydanticModel):
         current_domain: IRI used for forming document namespace.
         doc_hid: An almost unique hash/id for the parent document.
         files: Files to process.
-        current_ontology: Current ontology object.
         ontology_addendum: Additional ontology content.
         failure_stage: Stage where failure occurred.
         failure_reason: Reason for failure.
@@ -127,27 +127,6 @@ class AgentState(BasePydanticModel):
         default_factory=list,
         description="Pending content units to process.",
     )
-    current_content_unit: ContentUnit = Field(
-        default_factory=lambda: ContentUnit(
-            text="",
-            index=0,
-            doc_iri=URIRef(CHUNK_NULL_IRI),
-        ),
-        alias="current_chunk",
-        description="Current content unit under processing.",
-    )
-    current_ontology: Ontology = Field(
-        default_factory=lambda: Ontology(
-            ontology_id=None,
-            title=None,
-            description=None,
-            graph=RDFGraph(),
-            iri=ONTOLOGY_NULL_IRI,
-        ),
-        description="Ontology object that contain the semantic graph "
-        "as well as the description, name, short name, version, "
-        "and IRI of the ontology",
-    )
     ontology_patch_sources: list[str] = Field(
         default_factory=list,
         description="Ontology IRIs that contributed to a retrieved multi-source patch context.",
@@ -155,6 +134,22 @@ class AgentState(BasePydanticModel):
     ontology_artifacts: list[Ontology] = Field(
         default_factory=list,
         description="Final per-anchor ontology artifacts produced for this document.",
+    )
+    reduced_ontology_artifacts: list[Ontology] = Field(
+        default_factory=list,
+        description="Reduced ontology artifacts after explicit ontology reduce step.",
+    )
+    reduced_ontology_by_anchor: dict[str, Ontology] = Field(
+        default_factory=dict,
+        description="Reduced ontology artifacts indexed by anchor IRI.",
+    )
+    ontology_reduce_metrics: dict[str, int | float | str] = Field(
+        default_factory=dict,
+        description="Metrics emitted by ontology reduce stage.",
+    )
+    ontology_reduce_provenance: RDFGraph = Field(
+        default_factory=RDFGraph,
+        description="Optional provenance graph emitted by ontology reduce stage.",
     )
     candidate_anchor_iris: list[str] = Field(
         default_factory=list,
@@ -292,6 +287,13 @@ class AgentState(BasePydanticModel):
             "vote_first, or hybrid_adaptive)."
         ),
     )
+    ontology_selection_policy: OntologySelectionPolicy = Field(
+        default=OntologySelectionPolicy.RETRIEVAL_WITH_LLM_FALLBACK,
+        description=(
+            "Per-unit ontology selection policy controlling retrieval strictness "
+            "and LLM/full-ontology fallback behavior."
+        ),
+    )
     ontology_max_triples: int | None = Field(
         default=50000,
         description="Maximum number of triples allowed in ontology graph. "
@@ -348,11 +350,8 @@ class AgentState(BasePydanticModel):
 
     def get_content_unit_progress_info(self) -> tuple[int, int]:
         """Get current content unit number and total content units."""
-        from ontocast.onto.constants import CHUNK_NULL_IRI
-
-        has_current_content_unit = CHUNK_NULL_IRI not in self.current_content_unit.iri
-        current_content_unit_number = 1 if has_current_content_unit else 0
         total_content_units = len(self.content_units)
+        current_content_unit_number = 1 if total_content_units > 0 else 0
         return current_content_unit_number, total_content_units
 
     def get_content_unit_progress_string(self) -> str:
@@ -509,105 +508,6 @@ class AgentState(BasePydanticModel):
             )
         return rebuilt
 
-    def render_uptodate_ontology(self) -> Ontology:
-        """Create a copy of the current ontology with all GraphUpdate objects applied.
-
-        This method:
-        1. Creates a copy of the current ontology
-        2. Generates SPARQL queries from all GraphUpdate objects
-        3. Executes the queries on the copied ontology graph
-        4. Checks if the updated graph exceeds max_triples limit
-        5. Sets the current hash as parent_hash in the updated ontology
-        6. Computes a new hash for the updated ontology
-        7. Syncs properties to ensure object fields are updated
-        8. Returns the updated ontology copy, or original if limit exceeded
-
-        Returns:
-            Ontology: A copy of the current ontology with all updates applied and
-            a new hash generated, with the previous hash set as parent.
-            Returns original ontology if update would exceed max_triples limit.
-        """
-        if not self.ontology_updates:
-            return self.current_ontology
-
-        # Use the generalized function to update the graph
-        updated_graph, was_applied = self.render_updated_graph(
-            self.current_ontology.graph,
-            self.ontology_updates,
-            max_triples=self.ontology_max_triples,
-        )
-
-        # If graph wasn't updated (limit exceeded), return original ontology
-        if not was_applied:
-            return self.current_ontology
-
-        return self.current_ontology.derive_updated_version(updated_graph)
-
-    def update_ontology(self) -> None:
-        """Update the current ontology with all GraphUpdate objects and clear the updates list.
-
-        This method:
-        1. Uses render_uptodate_ontology() to get an updated copy
-        2. Replaces the current ontology with the updated copy
-        3. Clears the ontology_updates list
-
-        Note: Version update is deferred to aggregate_serialize() to update only once at the end.
-        """
-        if not self.ontology_updates:
-            return
-
-        # Get the updated ontology copy
-        updated_ontology = self.render_uptodate_ontology()
-
-        # Replace the current ontology with the updated copy
-        self.current_ontology = updated_ontology
-
-        # Clear the updates list
-        self.ontology_updates_applied += self.ontology_updates
-        self.ontology_updates = []
-
-    def render_uptodate_facts(self) -> RDFGraph:
-        """Create a copy of the current content unit graph with facts updates applied.
-
-        This method:
-        1. Creates a copy of the current content unit's graph
-        2. Generates SPARQL queries from all facts GraphUpdate objects
-        3. Executes the queries on the copied graph
-        4. Returns the updated graph copy
-
-        Returns:
-            RDFGraph: A copy of the current chunk's graph with all facts updates applied
-        """
-        if not self.facts_updates:
-            return self.current_content_unit.graph
-
-        # Use the generalized function to update the graph
-        updated_graph, _ = self.render_updated_graph(
-            self.current_content_unit.graph, self.facts_updates, max_triples=None
-        )
-        return updated_graph
-
-    def update_facts(self) -> None:
-        """Update current content unit graph with facts updates and clear the updates list.
-
-        This method:
-        1. Uses render_uptodate_facts() to get an updated copy
-        2. Replaces the current content unit graph with the updated copy
-        3. Clears the facts_updates list
-        """
-        if not self.facts_updates:
-            return
-
-        # Get the updated graph copy
-        updated_graph = self.render_uptodate_facts()
-
-        # Replace the current chunk's graph with the updated copy
-        self.current_content_unit.graph = updated_graph
-
-        # Clear the updates list
-        self.facts_updates_applied += self.facts_updates
-        self.facts_updates = []
-
     def generate_ontology_updates_markdown(self) -> str:
         """Generate a markdown string representing the chain of ontology updates.
 
@@ -688,13 +588,14 @@ class AgentState(BasePydanticModel):
         return self.doc_namespace
 
     @property
-    def ontology_id(self):
-        """Get the document namespace.
-
-        Returns:
-            str: The document namespace.
-        """
-        return self.current_ontology.ontology_id
+    def ontology_ids(self) -> list[str]:
+        """Ontology ids for all current ontology artifacts."""
+        artifacts = (
+            self.reduced_ontology_artifacts
+            if self.reduced_ontology_artifacts
+            else self.ontology_artifacts
+        )
+        return [ontology.ontology_id for ontology in artifacts if ontology.ontology_id]
 
     def get_context_for_agent(self, agent_type: AgentType) -> AgentContext:
         """Get or create context for a specific agent.

@@ -6,11 +6,11 @@ from ontocast.onto.content_unit import SourceUnit
 from ontocast.onto.enum import (
     OntologyAssemblyMode,
     OntologyContextMode,
+    OntologySelectionPolicy,
     UnitContextStrategy,
 )
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
-from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.state import AgentState
 from ontocast.tool.chunk.util import split_proposition_windows
 from ontocast.toolbox import ToolBox
@@ -24,9 +24,53 @@ class UnitOntologyContext(BaseModel):
     confidence: float = 0.0
 
 
-def _primary_document_context(state: AgentState) -> UnitOntologyContext:
-    """Use the document primary ontology with no vector or ensemble retrieval."""
-    primary = document_ontology_access(state).primary_ontology()
+def _strict_retrieval_unavailable_context() -> UnitOntologyContext:
+    return UnitOntologyContext(
+        anchor_iri=NULL_ONTOLOGY.iri,
+        ontology_snapshot=NULL_ONTOLOGY,
+        patch_sources=[],
+        assembly_mode=OntologyAssemblyMode.STRICT_RETRIEVAL_UNAVAILABLE,
+        confidence=0.0,
+    )
+
+
+def _resolve_catalog_full_context(
+    state: AgentState,
+    tools: ToolBox,
+    *,
+    assembly_mode: OntologyAssemblyMode = OntologyAssemblyMode.LLM_SELECTED_FULL_ONTOLOGY,
+) -> UnitOntologyContext:
+    """Select full ontology context from catalog as per-unit fallback."""
+    ontology_manager = getattr(tools, "ontology_manager", None)
+    if ontology_manager is None:
+        selected = None
+    else:
+        selected = ontology_manager.get_freshest_terminal_ontology_by_iri(None)
+    if selected is None or selected.is_null():
+        return UnitOntologyContext(
+            anchor_iri=NULL_ONTOLOGY.iri,
+            ontology_snapshot=NULL_ONTOLOGY,
+            patch_sources=[],
+            assembly_mode=assembly_mode,
+            confidence=0.0,
+        )
+    return UnitOntologyContext(
+        anchor_iri=selected.iri,
+        ontology_snapshot=selected,
+        patch_sources=[selected.iri],
+        assembly_mode=assembly_mode,
+        confidence=0.5,
+    )
+
+
+def _primary_document_context(state: AgentState, tools: ToolBox) -> UnitOntologyContext:
+    """FULL_TTL map-time context is selected per-unit from ontology catalog."""
+    _ = state
+    primary = _resolve_catalog_full_context(
+        state,
+        tools,
+        assembly_mode=OntologyAssemblyMode.PRIMARY_WITHOUT_RETRIEVAL,
+    ).ontology_snapshot
     return UnitOntologyContext(
         anchor_iri=primary.iri,
         ontology_snapshot=primary,
@@ -67,7 +111,7 @@ async def _resolve_vote_majority_context(
     """Majority vote over vector patch hits; otherwise document primary."""
     queries = _unit_queries(unit, tools)
     if not queries or tools.vector_store is None:
-        return _primary_document_context(state)
+        return _resolve_catalog_full_context(state, tools)
 
     qcfg = tools.config.tool_config.qdrant
     hits_by_query = await tools.vector_store.asearch_patch_hits_many(
@@ -96,7 +140,7 @@ async def _resolve_vote_majority_context(
                 confidence=confidence,
             )
 
-    return _primary_document_context(state)
+    return _resolve_catalog_full_context(state, tools)
 
 
 async def _resolve_ensemble_context(
@@ -142,8 +186,23 @@ async def resolve_unit_ontology_context(
     tools: ToolBox,
     unit: SourceUnit,
 ) -> UnitOntologyContext:
+    policy = state.ontology_selection_policy
+    state.retrieval_metrics["ontology_selection_policy"] = policy.value
+    retrieval_available = (
+        getattr(tools, "patch_retriever", None) is not None
+        or getattr(tools, "vector_store", None) is not None
+    )
+    if policy == OntologySelectionPolicy.LLM_SELECTOR_ONLY:
+        return _resolve_catalog_full_context(state, tools)
     if state.ontology_context_mode == OntologyContextMode.FULL_TTL:
-        return _primary_document_context(state)
+        return _primary_document_context(state, tools)
+    if (
+        state.ontology_context_mode == OntologyContextMode.RETRIEVED_INDUCED_GRAPH
+        and not retrieval_available
+    ):
+        if policy == OntologySelectionPolicy.STRICT_RETRIEVAL:
+            return _strict_retrieval_unavailable_context()
+        return _resolve_catalog_full_context(state, tools)
     strategy = state.unit_context_strategy
     if strategy == UnitContextStrategy.VOTE_FIRST:
         return await _resolve_vote_majority_context(state, tools, unit)

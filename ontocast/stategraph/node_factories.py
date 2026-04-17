@@ -27,6 +27,10 @@ from ontocast.toolbox import ToolBox
 logger = logging.getLogger(__name__)
 
 
+def _index_ontologies_by_anchor(artifacts: list[Ontology]) -> dict[str, Ontology]:
+    return {ontology.iri: ontology for ontology in artifacts if ontology.iri}
+
+
 def make_render_ontology_node(tools: ToolBox):
     async def render_ontology_updates(state: AgentState) -> AgentState:
         if not state.content_units:
@@ -138,8 +142,9 @@ def make_render_ontology_node(tools: ToolBox):
         state.retrieval_metrics["ontology_anchor_count"] = len(anchor_counts)
         state.retrieval_metrics["ontology_anchor_units"] = sum(anchor_counts.values())
         state.ontology_artifacts = artifacts
-        if artifacts:
-            state.current_ontology = artifacts[0]
+        state.reduced_ontology_artifacts = list(artifacts)
+        state.reduced_ontology_by_anchor = _index_ontologies_by_anchor(artifacts)
+        state.ontology_reduce_metrics["reduced_artifact_count"] = len(artifacts)
         state.ontology_units = ontology_units
         state.status = Status.SUCCESS
         return state
@@ -148,6 +153,26 @@ def make_render_ontology_node(tools: ToolBox):
 
 
 def make_normalize_ontology_node(tools: ToolBox):
+    # Design note — two-stage merge responsibility:
+    #
+    # Stage A (make_render_ontology_node, above):
+    #   Each unit's delta graph is aggregated per anchor into a lightweight
+    #   Ontology artifact (insert-only, no base ontology applied yet).  This
+    #   keeps the map phase stateless and parallelisable.
+    #
+    # Stage B (this node — normalize):
+    #   For single-anchor documents the unit deltas are re-merged from
+    #   state.ontology_units and applied *on top of* the pre-existing base
+    #   ontology (from OntologyManager), producing a versioned Ontology with
+    #   correct parent_hashes lineage.  Provenance/alignment triples are then
+    #   stripped to a side artifact.  This stage is intentionally skipped for
+    #   multi-anchor documents because each anchor's ontology evolves
+    #   independently and cross-anchor collapse is not yet implemented.
+    #
+    # The apparent "double merge" is therefore not redundant: Stage A produces
+    # a delta artifact; Stage B produces the final versioned ontology with base
+    # lineage and provenance separation.  Removing either stage would break
+    # version tracking or provenance isolation.
     def normalize_ontology_updates(state: AgentState) -> AgentState:
         if not state.ontology_units:
             state.ontology_provenance_artifact = RDFGraph()
@@ -155,16 +180,39 @@ def make_normalize_ontology_node(tools: ToolBox):
             return state
 
         doc_onto = document_ontology_access(state)
-        primary = doc_onto.primary_ontology()
+        artifacts = doc_onto.reduced_artifacts()
+        # Multi-anchor documents evolve ontologies independently; cross-anchor
+        # collapse is not yet implemented, so we skip global normalization and
+        # leave each anchor's artifact unchanged.
+        if len(artifacts) != 1:
+            logger.warning(
+                "normalize_ontology_updates: skipping global normalization — "
+                "%d anchor artifact(s) found (expected exactly 1). "
+                "Per-anchor provenance stripping and base-ontology versioning "
+                "will not be applied for this document.",
+                len(artifacts),
+            )
+            state.ontology_provenance_artifact = RDFGraph()
+            state.ontology_reduce_provenance = RDFGraph()
+            state.ontology_reduce_metrics["normalized_ontology_updates"] = 0
+            state.status = Status.SUCCESS
+            return state
+        primary = artifacts[0]
         ontology, applied_updates, provenance_artifact = normalize_ontology_units(
             units=state.ontology_units,
             tools=tools,
-            base_ontology=primary if not doc_onto.is_primary_null() else None,
+            base_ontology=primary if not primary.is_null() else None,
             require_base=True,
         )
-        state.current_ontology = ontology
+        state.reduced_ontology_artifacts = [ontology]
+        state.reduced_ontology_by_anchor = _index_ontologies_by_anchor([ontology])
+        state.ontology_artifacts = [ontology]
         state.ontology_updates_applied = applied_updates
         state.ontology_provenance_artifact = provenance_artifact
+        state.ontology_reduce_provenance = provenance_artifact
+        state.ontology_reduce_metrics["normalized_ontology_updates"] = len(
+            applied_updates
+        )
         state.status = Status.SUCCESS
         return state
 
@@ -183,9 +231,10 @@ def make_consolidate_ontology_node(tools: ToolBox):
             state.status = Status.SUCCESS
             return state
         doc_onto = document_ontology_access(state)
-        if not state.render_ontology or doc_onto.is_primary_null():
+        artifacts = doc_onto.reduced_artifacts()
+        if not state.render_ontology or len(artifacts) != 1 or artifacts[0].is_null():
             logger.info(
-                "Skipping ontology consolidation: no rendered ontology snapshot available"
+                "Skipping ontology consolidation: requires exactly one rendered ontology artifact"
             )
             state.status = Status.SUCCESS
             return state
@@ -214,7 +263,7 @@ def make_consolidate_ontology_node(tools: ToolBox):
         )
         consolidation_state = UnitOntologyState(
             content_unit=consolidation_unit,
-            ontology_snapshot=doc_onto.primary_ontology(),
+            ontology_snapshot=artifacts[0],
             ontology_patch_sources=all_unit_patch_source_iris(state),
             ontology_user_instruction=ontology_user_instruction,
             budget_tracker=state.budget_tracker,
@@ -224,7 +273,11 @@ def make_consolidate_ontology_node(tools: ToolBox):
         )
         result = await render_ontology_update(consolidation_state, atomic_tools)
         if result.status == Status.SUCCESS and not result.current_ontology.is_null():
-            state.current_ontology = result.current_ontology
+            state.reduced_ontology_artifacts = [result.current_ontology]
+            state.reduced_ontology_by_anchor = _index_ontologies_by_anchor(
+                [result.current_ontology]
+            )
+            state.ontology_artifacts = [result.current_ontology]
             state.ontology_updates_applied.extend(result.ontology_updates_applied)
             logger.info(
                 f"Ontology consolidation applied {len(result.ontology_updates_applied)} "
@@ -334,10 +387,20 @@ def make_merge_facts_node(tools: ToolBox):
         for unit in state.facts_units:
             unit.sanitize()
         doc_onto = document_ontology_access(state)
-        primary = doc_onto.primary_ontology()
+        ontology_graph = None
+        artifacts = [
+            ontology
+            for ontology in doc_onto.reduced_artifacts()
+            if not ontology.is_null() and len(ontology.graph) > 0
+        ]
+        if artifacts:
+            merged_ontology = RDFGraph()
+            for ontology in artifacts:
+                merged_ontology += ontology.graph
+            ontology_graph = merged_ontology
         state.aggregated_facts = tools.aggregator.aggregate_graphs(
             units=state.facts_units,
-            ontology_graph=primary.graph if not doc_onto.is_primary_null() else None,
+            ontology_graph=ontology_graph,
         )
         if len(state.aggregated_facts) == 0:
             logger.warning(
@@ -360,22 +423,28 @@ def make_structural_check_node(tools: ToolBox):
     def structural_check(state: AgentState) -> AgentState:
         """Run lightweight structural checks over the stitched ontology before the final critic."""
         doc_onto = document_ontology_access(state)
-        primary = doc_onto.primary_ontology()
-        if not doc_onto.is_primary_null() and len(primary.graph) > 0:
-            ontology_validation = RDFGraphConnectivityValidator(
-                primary.graph
-            ).validate_connectivity()
-            state.retrieval_metrics["structural_ontology_components"] = (
-                ontology_validation.num_components
-            )
-            if not ontology_validation.is_fully_connected:
-                state.improvements_suggestions.append(
-                    "Structural check: ontology has disconnected components; "
-                    "prefer linking classes/properties explicitly."
-                )
-            if ontology_validation.missing_labels:
-                state.improvements_suggestions.append(
-                    "Structural check: ontology predicates missing labels were detected."
+        artifacts = doc_onto.reduced_artifacts()
+        if artifacts:
+            component_counts: list[int] = []
+            for ontology in artifacts:
+                if ontology.is_null() or len(ontology.graph) == 0:
+                    continue
+                ontology_validation = RDFGraphConnectivityValidator(
+                    ontology.graph
+                ).validate_connectivity()
+                component_counts.append(ontology_validation.num_components)
+                if not ontology_validation.is_fully_connected:
+                    state.improvements_suggestions.append(
+                        f"Structural check ({ontology.iri}): ontology has disconnected components; "
+                        "prefer linking classes/properties explicitly."
+                    )
+                if ontology_validation.missing_labels:
+                    state.improvements_suggestions.append(
+                        f"Structural check ({ontology.iri}): ontology predicates missing labels were detected."
+                    )
+            if component_counts:
+                state.retrieval_metrics["structural_ontology_components_max"] = max(
+                    component_counts
                 )
         state.status = Status.SUCCESS
         return state
@@ -404,24 +473,31 @@ def make_consistency_critic_node(tools: ToolBox):
     def consistency_critic(state: AgentState) -> AgentState:
         """Global consistency critic over candidate ontology atoms using vector re-query."""
         doc_onto = document_ontology_access(state)
-        primary = doc_onto.primary_ontology()
+        artifacts = [
+            ontology
+            for ontology in doc_onto.reduced_artifacts()
+            if not ontology.is_null() and len(ontology.graph) > 0
+        ]
         if (
             state.ontology_context_mode != OntologyContextMode.RETRIEVED_INDUCED_GRAPH
             or tools.vector_store is None
-            or doc_onto.is_primary_null()
-            or len(primary.graph) == 0
+            or not artifacts
         ):
             state.status = Status.SUCCESS
             return state
 
-        query_terms = _extract_consistency_queries(primary.graph)
+        merged_graph = RDFGraph()
+        for ontology in artifacts:
+            merged_graph += ontology.graph
+        query_terms = _extract_consistency_queries(merged_graph)
         if not query_terms:
             state.status = Status.SUCCESS
             return state
 
         allowed_sources = set(all_unit_patch_source_iris(state))
-        if primary.iri:
-            allowed_sources.add(primary.iri)
+        for ontology in artifacts:
+            if ontology.iri:
+                allowed_sources.add(ontology.iri)
         threshold = (
             tools.config.tool_config.qdrant.consistency_critic_similarity_threshold
         )

@@ -1,4 +1,5 @@
 import importlib
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -6,6 +7,7 @@ from typing import cast
 import pytest
 from rdflib import OWL, RDF, BNode, Literal, URIRef
 
+from ontocast.agent.chunk_text import chunk_text as _chunk_text
 from ontocast.agent.normalize_ontology import normalize_ontology_units
 from ontocast.config import (
     Config,
@@ -16,7 +18,7 @@ from ontocast.config import (
     ToolConfig,
 )
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI, PROV, RDF_REIFIES, SCHEMA
-from ontocast.onto.content_unit import ContentUnit, OutputType
+from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
 from ontocast.onto.enum import (
     OntologyAssemblyMode,
     OntologyContextMode,
@@ -33,11 +35,12 @@ from ontocast.onto.model import (
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.sparql_models import GenericSparqlQuery, GraphUpdate
+from ontocast.onto.sparql_models import GenericSparqlQuery, GraphUpdate, TripleOp
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph import create_agent_graph
 from ontocast.stategraph.context_resolver import UnitOntologyContext
+from ontocast.stategraph.helpers import build_ontology_delta_graph
 from ontocast.stategraph.node_factories import make_normalize_ontology_node
 from ontocast.stategraph.routing import (
     route_after_chunk,
@@ -282,7 +285,8 @@ def test_normalize_ontology_node_feeds_clean_graph_to_consolidation() -> None:
     graph.add((class_uri, OWL.sameAs, URIRef("https://growgraph.dev/fcaont#Judgment")))
 
     state = AgentState(render_mode=RenderMode.ONTOLOGY)
-    state.current_ontology = _build_ontology()
+    state.reduced_ontology_artifacts = [_build_ontology()]
+    state.ontology_artifacts = list(state.reduced_ontology_artifacts)
     state.ontology_units = [
         ContentUnit(
             text="Ontology delta",
@@ -294,12 +298,58 @@ def test_normalize_ontology_node_feeds_clean_graph_to_consolidation() -> None:
     ]
 
     updated = normalize_node(state)
-    ontology_ttl = updated.current_ontology.graph.serialize(format="turtle")
+    ontology_ttl = updated.reduced_ontology_artifacts[0].graph.serialize(
+        format="turtle"
+    )
 
     assert "rdf:reifies" not in ontology_ttl
     assert f"{doc_iri}/chunk-1" not in ontology_ttl
     assert "owl:sameAs" not in ontology_ttl
     assert len(updated.ontology_provenance_artifact) > 0
+
+
+def test_normalize_ontology_node_skips_global_reduce_for_multi_anchor_artifacts(
+    caplog,
+) -> None:
+    """Multi-anchor documents skip global normalization by design.
+
+    When more than one anchor artifact is present the normalize node returns
+    early without applying base-ontology versioning or provenance stripping.
+    This is an intentional short-circuit: cross-anchor reconciliation is not
+    yet implemented.  A WARNING must be emitted so operators can observe
+    that normalization was bypassed.
+    """
+
+    class DummyTools:
+        aggregator = EmbeddingBasedAggregator()
+
+    normalize_node = make_normalize_ontology_node(cast(ToolBox, DummyTools()))
+    a1 = _build_ontology()
+    a2 = _build_ontology()
+    state = AgentState(render_mode=RenderMode.ONTOLOGY)
+    state.reduced_ontology_artifacts = [a1, a2]
+    state.ontology_artifacts = [a1, a2]
+    state.ontology_units = [
+        ContentUnit(
+            text="Ontology delta",
+            index=0,
+            doc_iri=URIRef("https://growgraph.dev/doc/test-node"),
+            graph=RDFGraph(),
+            type=OutputType.ONTOLOGIES,
+        )
+    ]
+
+    with caplog.at_level(logging.WARNING, logger="ontocast.stategraph.node_factories"):
+        updated = normalize_node(state)
+
+    assert updated.reduced_ontology_artifacts == [a1, a2]
+    assert updated.ontology_artifacts == [a1, a2]
+    assert len(updated.ontology_provenance_artifact) == 0
+    assert updated.ontology_reduce_metrics["normalized_ontology_updates"] == 0
+    assert any(
+        "normalization" in record.message.lower() or "anchor" in record.message.lower()
+        for record in caplog.records
+    ), "Expected a warning log about skipped normalization for multi-anchor documents"
 
 
 @pytest.mark.anyio
@@ -716,7 +766,8 @@ def test_toolbox_serialize_skips_facts_in_ontology_only_mode() -> None:
             self.calls.append((payload, graph_uri))
 
     state = AgentState(render_mode=RenderMode.ONTOLOGY)
-    state.current_ontology = _build_ontology()
+    state.reduced_ontology_artifacts = [_build_ontology()]
+    state.ontology_artifacts = list(state.reduced_ontology_artifacts)
     store = RecordingStore()
     toolbox = SimpleNamespace(
         ontology_manager=RecordingOntologyManager(),
@@ -744,7 +795,8 @@ def test_toolbox_serialize_includes_facts_when_render_facts_enabled() -> None:
             self.calls.append((payload, graph_uri))
 
     state = AgentState(render_mode=RenderMode.ONTOLOGY_AND_FACTS)
-    state.current_ontology = _build_ontology()
+    state.reduced_ontology_artifacts = [_build_ontology()]
+    state.ontology_artifacts = list(state.reduced_ontology_artifacts)
     store = RecordingStore()
     toolbox = SimpleNamespace(
         ontology_manager=RecordingOntologyManager(),
@@ -827,3 +879,96 @@ def test_render_updated_graph_splits_compound_sparql_insert_updates() -> None:
         URIRef("http://example.org/status"),
         URIRef("http://example.org/Active"),
     ) in updated_graph
+
+
+def test_build_ontology_delta_graph_warns_and_drops_delete_operations(
+    caplog,
+) -> None:
+    """Delete triples in unit GraphUpdates must be warned about and discarded.
+
+    Policy: the ontology map-reduce stage is insert-only. Delete operations
+    produced by a unit loop cannot be safely applied across parallel results
+    and are intentionally dropped with a warning log.
+    """
+    base_graph = RDFGraph()
+    base_graph.parse(
+        data="""
+        @prefix ex: <https://example.com/onto#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        ex:Thing a owl:Class .
+        ex:obsolete a owl:Class .
+        """,
+        format="turtle",
+    )
+    delete_op = GraphUpdate(
+        triple_operations=[
+            TripleOp(
+                type="delete",
+                graph=base_graph,
+            )
+        ]
+    )
+    insert_graph = RDFGraph()
+    insert_graph.parse(
+        data="""
+        @prefix ex: <https://example.com/onto#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        ex:NewThing a owl:Class .
+        """,
+        format="turtle",
+    )
+    insert_op = GraphUpdate(
+        triple_operations=[TripleOp(type="insert", graph=insert_graph)]
+    )
+
+    onto = _build_ontology()
+    onto.graph = base_graph
+    state = UnitOntologyState(
+        content_unit=SourceUnit(
+            text="test",
+            index=0,
+            doc_iri=URIRef("https://example.com/doc/d1"),
+        ),
+        ontology_snapshot=onto,
+        ontology_updates_applied=[delete_op],
+        ontology_updates=[insert_op],
+    )
+
+    with caplog.at_level(logging.WARNING, logger="ontocast.stategraph.helpers"):
+        delta = build_ontology_delta_graph(state)
+
+    assert any("delete" in record.message.lower() for record in caplog.records), (
+        "Expected a warning about dropped delete triples"
+    )
+    ex_new = URIRef("https://example.com/onto#NewThing")
+    ex_obsolete = URIRef("https://example.com/onto#obsolete")
+    assert (ex_new, RDF.type, URIRef("http://www.w3.org/2002/07/owl#Class")) in delta
+    assert (
+        ex_obsolete,
+        RDF.type,
+        URIRef("http://www.w3.org/2002/07/owl#Class"),
+    ) not in delta
+
+
+def test_chunk_text_resets_content_units_on_each_call() -> None:
+    """chunk_text must clear state.content_units before appending new chunks.
+
+    Without this reset a reused AgentState accumulates stale units from
+    previous invocations, leading to duplicate processing.
+    """
+
+    class FakeChunker:
+        def __call__(self, text: str) -> list[str]:
+            return [text]
+
+    tools = SimpleNamespace(chunker=FakeChunker())
+    state = AgentState(render_mode=RenderMode.ONTOLOGY)
+    state.set_text("first invocation text")
+    _chunk_text(state, cast(ToolBox, tools))
+    assert len(state.content_units) == 1
+
+    state.set_text("second invocation text")
+    _chunk_text(state, cast(ToolBox, tools))
+    assert len(state.content_units) == 1, (
+        "content_units should be reset per call, not accumulated across calls"
+    )

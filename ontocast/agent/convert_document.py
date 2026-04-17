@@ -32,6 +32,12 @@ def convert_document(state: AgentState, tools: ToolBox) -> AgentState:
 
     state.status = Status.SUCCESS
     files = state.files
+    if len(files) > 1:
+        logger.warning(
+            "convert_document received %d files but only the last file's text is "
+            "retained in state (last-file-wins). Pass a single file per invocation.",
+            len(files),
+        )
     for filename, file_content in files.items():
         file_extension = pathlib.Path(filename).suffix.lower()
 

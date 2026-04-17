@@ -1,8 +1,8 @@
 """Read-only accessors for ontology context on document vs unit workflow state.
 
 Centralizes prompt-effective ontology resolution and serialization target lists
-so agents and stategraph code do not duplicate ``current_ontology`` /
-``ontology_snapshot`` / ``ontology_artifacts`` branching.
+so agents and stategraph code do not duplicate ``ontology_snapshot`` /
+``ontology_artifacts`` branching.
 """
 
 from typing import Protocol
@@ -72,18 +72,33 @@ class DocumentOntologyAccess:
     def __init__(self, state: AgentState) -> None:
         self._state = state
 
-    def primary_ontology(self) -> Ontology:
-        """Working ontology for merge, consolidation, and single-graph consumers."""
-        return self._state.current_ontology
+    def reduced_artifacts(self) -> list[Ontology]:
+        if self._state.reduced_ontology_artifacts:
+            return list(self._state.reduced_ontology_artifacts)
+        return list(self._state.ontology_artifacts)
 
-    def is_primary_null(self) -> bool:
-        return self._state.current_ontology.is_null()
+    def has_any_artifacts(self) -> bool:
+        return bool(
+            self._state.reduced_ontology_artifacts or self._state.ontology_artifacts
+        )
+
+    def has_non_null_artifacts(self) -> bool:
+        return any(not ontology.is_null() for ontology in self.reduced_artifacts())
+
+    def ontology_by_anchor(self, anchor_iri: str) -> Ontology | None:
+        if anchor_iri in self._state.reduced_ontology_by_anchor:
+            return self._state.reduced_ontology_by_anchor[anchor_iri]
+        for ontology in self.reduced_artifacts():
+            if ontology.iri == anchor_iri:
+                return ontology
+        return None
 
     def serialization_targets(self) -> list[Ontology]:
-        """Ontologies to version and persist (per-anchor artifacts or primary)."""
-        if self._state.ontology_artifacts:
-            return list(self._state.ontology_artifacts)
-        return [self._state.current_ontology]
+        """Ontologies to version and persist (per-anchor artifacts)."""
+        artifacts = self.reduced_artifacts()
+        if artifacts:
+            return artifacts
+        return []
 
 
 def ontology_access_for_unit_ontology(state: UnitOntologyState) -> UnitOntologyAccess:

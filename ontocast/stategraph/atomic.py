@@ -5,11 +5,8 @@ is processed independently. They deep-copy the incoming unit state, then run
 render -> critic until success or retry exhaustion.
 
 Ontology context assembly (``resolve_unit_ontology_context``) runs at the
-start of ``ontology_loop``. For ``facts_loop``, when the document run is
-``RenderMode.ONTOLOGY_AND_FACTS`` and a merged document ontology exists, facts
-use that whole-document ontology and optional per-unit patch IRIs from the
-ontology map phase (assembly mode ``PRIMARY_WITHOUT_RETRIEVAL``); otherwise
-the resolver supplies context per ``OntologyContextMode`` / strategy.
+start of both ``ontology_loop`` and ``facts_loop`` so each unit chooses its
+own ontology context according to mode/policy.
 """
 
 import logging
@@ -23,9 +20,9 @@ from ontocast.agent.external_evidence import (
 )
 from ontocast.agent.render_facts import render_facts
 from ontocast.agent.render_ontology import render_ontology
-from ontocast.onto.enum import OntologyAssemblyMode, RenderMode, Status, WorkflowNode
+from ontocast.onto.enum import Status, WorkflowNode
 from ontocast.onto.model import ExternalEvidenceCacheEntry, ExternalEvidenceRequest
-from ontocast.onto.ontology_access import document_ontology_access
+from ontocast.onto.ontology import Ontology
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.context_resolver import resolve_unit_ontology_context
 from ontocast.toolbox import ToolBox
@@ -53,26 +50,11 @@ async def _apply_facts_ontology_context(
     document_state,
     tools: ToolBox,
 ) -> UnitFactsState:
-    """Set ontology_snapshot for facts from merged document ontology or resolver."""
+    """Set ontology_snapshot for facts from per-unit context resolver."""
     from ontocast.onto.state import AgentState
 
     ds = document_state
     assert isinstance(ds, AgentState)
-    use_merged = ds.render_mode == RenderMode.ONTOLOGY_AND_FACTS
-    if use_merged:
-        doc_onto = document_ontology_access(ds)
-        primary = doc_onto.primary_ontology()
-        if not primary.is_null():
-            unit_state.ontology_snapshot = deepcopy(primary)
-            ui = unit_state.content_unit.index
-            ps = ds.unit_patch_sources.get(ui)
-            if ps is not None:
-                unit_state.ontology_patch_sources = list(ps)
-            unit_state.assembly_anchor_iri = primary.iri
-            unit_state.assembly_mode_used = (
-                OntologyAssemblyMode.PRIMARY_WITHOUT_RETRIEVAL
-            )
-            return unit_state
     ctx = await resolve_unit_ontology_context(ds, tools, unit_state.content_unit)
     unit_state.ontology_snapshot = deepcopy(ctx.ontology_snapshot)
     unit_state.ontology_patch_sources = list(ctx.patch_sources)
@@ -86,20 +68,27 @@ async def facts_loop(
     tools: ToolBox,
     document_state,
     max_visits_per_node: int | None = None,
+    pre_resolved_ontology: Ontology | None = None,
 ) -> UnitFactsState:
     """Run facts render/critic loop for one content unit.
 
-    When ``document_state`` is ``ONTOLOGY_AND_FACTS`` and a non-null merged
-    ontology exists on document state, ``ontology_snapshot`` is taken from that
-    whole-document ontology (and per-unit patch IRIs from the ontology map).
-    Otherwise context is resolved per unit.
+    Ontology context is resolved per unit before rendering unless
+    ``pre_resolved_ontology`` is provided, in which case it is used directly
+    and the store-based context resolution is skipped. This is intended for
+    sequential unit-level pipelines where the ontology loop has already run
+    and its output should feed directly into fact extraction.
     """
     from ontocast.onto.state import AgentState
 
     assert isinstance(document_state, AgentState)
     atomic = tools.get_atomic_tools()
     unit_state = state.model_copy(deep=True)
-    unit_state = await _apply_facts_ontology_context(unit_state, document_state, tools)
+    if pre_resolved_ontology is not None:
+        unit_state.ontology_snapshot = deepcopy(pre_resolved_ontology)
+    else:
+        unit_state = await _apply_facts_ontology_context(
+            unit_state, document_state, tools
+        )
     max_visits = _resolve_max_visits_limit(
         unit_state.max_visits_per_node, max_visits_per_node
     )
