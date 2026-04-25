@@ -9,7 +9,9 @@ import logging
 import pathlib
 
 from rdflib import Graph
+from rdflib.namespace import RDF
 
+from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.triple_manager.core import TripleStoreManager
@@ -37,6 +39,12 @@ class FilesystemTripleStoreManager(TripleStoreManager):
 
     working_directory: pathlib.Path | None
     ontology_path: pathlib.Path | None
+    _PROVENANCE_METADATA_PREDICATES = {
+        RDF.type,
+        PROV.generatedAtTime,
+        SCHEMA.position,
+        SCHEMA.identifier,
+    }
 
     def __init__(self, **kwargs):
         """Initialize the filesystem triple store manager.
@@ -106,14 +114,67 @@ class FilesystemTripleStoreManager(TripleStoreManager):
             return
 
         fname: str = kwargs.pop("fname")
+        dump_clean_graph: bool = kwargs.pop("dump_clean_graph", False)
         output_path = self.working_directory / fname
-        graph.serialize(format="turtle", destination=output_path)
+        self._write_turtle(graph, output_path)
         logger.info(f"Graph saved to {output_path}")
+
+        if dump_clean_graph:
+            clean_graph = self._strip_provenance(graph)
+            clean_output_path = self.working_directory / self._with_suffix(
+                fname, "clean"
+            )
+            self._write_turtle(clean_graph, clean_output_path)
+            logger.info(f"Graph without provenance saved to {clean_output_path}")
+
+    @staticmethod
+    def _with_suffix(fname: str, suffix: str) -> str:
+        path = pathlib.Path(fname)
+        return f"{path.stem}_{suffix}{path.suffix}"
+
+    @staticmethod
+    def _write_turtle(graph: Graph, output_path: pathlib.Path) -> None:
+        # Use longturtle where available (non-oxigraph) for easier local inspection.
+        is_oxigraph = (
+            isinstance(graph, RDFGraph)
+            and type(graph.store).__name__ == "OxigraphStore"
+        )
+        serialization_format = "turtle" if is_oxigraph else "longturtle"
+        graph.serialize(format=serialization_format, destination=output_path)
+
+    @classmethod
+    def _strip_provenance(cls, graph: Graph) -> RDFGraph:
+        clean = RDFGraph()
+        for prefix, namespace in graph.namespaces():
+            clean.bind(prefix, namespace)
+
+        reifier_nodes = set(graph.subjects(RDF_REIFIES, None))
+        source_nodes = set(graph.objects(None, PROV.wasDerivedFrom))
+        triples_to_skip = {
+            (None, RDF_REIFIES, None),
+            (None, PROV.wasDerivedFrom, None),
+        }
+
+        for s, p, o in graph:
+            if any(
+                (ps is None or ps == s)
+                and (pp is None or pp == p)
+                and (po is None or po == o)
+                for ps, pp, po in triples_to_skip
+            ):
+                continue
+            if s in reifier_nodes:
+                continue
+            if s in source_nodes and p in cls._PROVENANCE_METADATA_PREDICATES:
+                continue
+            clean.add((s, p, o))
+        return clean
 
     def serialize(self, o: Ontology | RDFGraph, graph_uri: str | None = None):  # type: ignore[override]
         if isinstance(o, Ontology):
             graph = o.graph
             fname = f"ontology_{o.ontology_id}_{o.version}.ttl"
+            dump_clean_graph = False
         elif isinstance(o, RDFGraph):
             graph = o
             if graph_uri:
@@ -122,10 +183,15 @@ class FilesystemTripleStoreManager(TripleStoreManager):
                 fname = f"facts_{s}.ttl"
             else:
                 fname = "facts_default.ttl"
+            dump_clean_graph = True
         else:
             raise TypeError(f"unsupported obj of type {type(o)} received")
 
-        self.serialize_graph(graph=graph, fname=fname)
+        self.serialize_graph(
+            graph=graph,
+            fname=fname,
+            dump_clean_graph=dump_clean_graph,
+        )
 
     async def clean(self) -> None:
         """Clean/flush all data from the filesystem triple store.

@@ -4,39 +4,45 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 from rdflib import URIRef
 
 from ontocast.config import QdrantConfig
 from ontocast.onto.content_unit import ContentUnit
-from ontocast.onto.enum import (
-    OntologyAssemblyMode,
-    OntologyContextMode,
-    UnitContextStrategy,
-)
+from ontocast.onto.enum import OntologyAssemblyMode, OntologyContextMode
+from ontocast.onto.ontology import Ontology
+from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import context_resolver as cr
+from ontocast.stategraph.context_resolver import resolve_unit_ontology_context
 from ontocast.tool.chunk.util import split_proposition_windows
 from ontocast.toolbox import ToolBox
 
 
 @pytest.mark.anyio
-async def test_full_ttl_does_not_invoke_retrieval_paths(monkeypatch) -> None:
-    """FULL_TTL must not call ensemble or vote-majority retrieval."""
+async def test_full_ttl_does_not_invoke_ensemble_path(monkeypatch) -> None:
+    """Full-TTL path should not run ensemble retrieval."""
 
     async def fail_ensemble(*args, **kwargs):
         raise AssertionError("ensemble path should not run for FULL_TTL")
 
-    async def fail_vote(*args, **kwargs):
-        raise AssertionError("vote-majority path should not run for FULL_TTL")
+    finance_iri = "https://example.org/finance"
+    finance_ontology = Ontology(
+        iri=finance_iri,
+        graph=RDFGraph._from_turtle_str(
+            "@prefix ex: <https://example.org/f#> . ex:F ex:has ex:X ."
+        ),
+    )
+
+    async def _select(*_a, **_k) -> Ontology:
+        return finance_ontology
 
     monkeypatch.setattr(cr, "_resolve_ensemble_context", fail_ensemble)
-    monkeypatch.setattr(cr, "_resolve_vote_majority_context", fail_vote)
-
+    monkeypatch.setattr(cr, "select_catalog_ontology_for_excerpt", _select)
     state = AgentState(
         ontology_context_mode=OntologyContextMode.FULL_TTL,
-        unit_context_strategy=UnitContextStrategy.ENSEMBLE_FIRST,
         content_units=[
             ContentUnit(
                 text="Hello world.",
@@ -45,10 +51,19 @@ async def test_full_ttl_does_not_invoke_retrieval_paths(monkeypatch) -> None:
             )
         ],
     )
-    tools = cast(ToolBox, SimpleNamespace())
+    qdrant = QdrantConfig()
+    tools = cast(
+        ToolBox,
+        SimpleNamespace(
+            ontology_manager=SimpleNamespace(),
+            llm=AsyncMock(),
+            config=SimpleNamespace(tool_config=SimpleNamespace(qdrant=qdrant)),
+        ),
+    )
     unit = state.content_units[0]
-    result = await cr.resolve_unit_ontology_context(state, tools, unit)
-    assert result.assembly_mode == OntologyAssemblyMode.PRIMARY_WITHOUT_RETRIEVAL
+    result = await resolve_unit_ontology_context(state, tools, unit)
+    assert result.assembly_mode == OntologyAssemblyMode.LLM_SELECTED_UNIT_ONTOLOGY
+    assert result.ontology_snapshot.iri == finance_iri
 
 
 def test_split_proposition_windows_is_sentence_bounded() -> None:

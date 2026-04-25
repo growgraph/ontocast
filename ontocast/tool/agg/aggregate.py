@@ -14,6 +14,7 @@ Pipeline:
 """
 
 import logging
+import re
 from difflib import SequenceMatcher
 from enum import StrEnum
 from itertools import combinations
@@ -26,6 +27,7 @@ from rdflib.namespace import OWL, RDF, RDFS, XSD
 from ontocast.onto.constants import DEFAULT_IRI, PROV, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.tool.representation_text import normalize_uri_local_name
 
 from .clustering import ClusterRepresentativeSelector, EntityClusterer
 from .normalizer import EntityNormalizer, EntityRepresentation
@@ -33,6 +35,7 @@ from .rewriter import GraphRewriter
 from .uri_builder import EntityRole, URIBuilder
 
 logger = logging.getLogger(__name__)
+_INSTANCE_LOCAL_NAME_RE = re.compile(r"^(?P<stem>.+?)(?P<index>\d+)$")
 
 
 class EntityClassification(StrEnum):
@@ -179,6 +182,19 @@ class EmbeddingBasedAggregator:
         union = left | right
         return len(left & right) / len(union)
 
+    @staticmethod
+    def _instance_like_local_name(entity: URIRef) -> str | None:
+        """Return normalized local name when URI ends with numeric suffix."""
+        local_name = normalize_uri_local_name(entity).replace(" ", "")
+        if not local_name:
+            return None
+        match = _INSTANCE_LOCAL_NAME_RE.match(local_name)
+        if match is None:
+            return None
+        if len(match.group("stem")) < 3:
+            return None
+        return local_name
+
     def _are_roles_compatible(
         self,
         left: URIRef,
@@ -218,6 +234,15 @@ class EmbeddingBasedAggregator:
         if left_rep is None or right_rep is None:
             return False
         if left_rep.normal_form == right_rep.normal_form:
+            return True
+
+        left_instance_name = self._instance_like_local_name(left)
+        right_instance_name = self._instance_like_local_name(right)
+        if (
+            left_instance_name is not None
+            and right_instance_name is not None
+            and left_instance_name == right_instance_name
+        ):
             return True
 
         left_label_tokens = {
@@ -750,8 +775,29 @@ class EmbeddingBasedAggregator:
                     identity_mapping[fact_entity] = fact_entity
 
             elif tentative_entities_in_cluster:
-                for tentative_entity in tentative_entities_in_cluster:
-                    identity_mapping[tentative_entity] = tentative_entity
+                # In mixed FACT + TENTATIVE clusters with no known ontology
+                # entity, prefer the FACT side when symbolic identity checks
+                # agree (e.g. hallucinated ontology prefix on an instance).
+                if fact_entities_in_cluster:
+                    canonical_fact = self.selector.select_representative(
+                        fact_entities_in_cluster,
+                        representations,
+                    )
+                    for fact_entity in fact_entities_in_cluster:
+                        identity_mapping[fact_entity] = canonical_fact
+                    for tentative_entity in tentative_entities_in_cluster:
+                        if self._can_merge_as_identity(
+                            tentative_entity,
+                            canonical_fact,
+                            representations,
+                        ):
+                            identity_mapping[tentative_entity] = canonical_fact
+                            suppress_sameas_origins.add(tentative_entity)
+                        else:
+                            identity_mapping[tentative_entity] = tentative_entity
+                else:
+                    for tentative_entity in tentative_entities_in_cluster:
+                        identity_mapping[tentative_entity] = tentative_entity
 
             if len(known_ontology_entities_in_cluster) > 1:
                 canonical = self.selector.select_representative(

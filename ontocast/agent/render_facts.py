@@ -28,6 +28,10 @@ from ontocast.prompt.common import (
     text_template,
     user_template,
 )
+from ontocast.prompt.ontology_context import (
+    format_ontologies_clause,
+    format_prefix_clause,
+)
 from ontocast.prompt.render_facts import (
     facts_instruction_template,
     preamble,
@@ -95,13 +99,14 @@ def _prepare_prompt_data(
         Dictionary containing formatted prompt components
     """
     ctx = access.effective_ontology_for_prompt()
+    domain_pairs = access.domain_prefix_pairs()
     ontology_chapter = ontology_template.format(
         ontology_ttl=ctx.graph.serialize(format="turtle")
     )
 
     facts_instruction_str = facts_instruction_template.format(
-        ontology_namespace=ctx.namespace,
-        ontology_prefix=ctx.prefix,
+        domain_ontologies_clause=format_ontologies_clause(domain_pairs),
+        domain_prefix_clause=format_prefix_clause(domain_pairs),
         facts_namespace=DEFAULT_IRI,
     )
 

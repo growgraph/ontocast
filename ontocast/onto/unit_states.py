@@ -147,7 +147,7 @@ class UnitFactsState(UnitState):
         description="Anchor IRI from context assembly (or merged document primary).",
     )
     assembly_mode_used: OntologyAssemblyMode = Field(
-        default=OntologyAssemblyMode.PRIMARY_WITHOUT_RETRIEVAL,
+        default=OntologyAssemblyMode.LLM_SELECTED_UNIT_ONTOLOGY,
         description="How ontology_snapshot was assembled for this unit.",
     )
 
@@ -175,7 +175,7 @@ class UnitOntologyState(UnitState):
         description="Anchor IRI from resolve_unit_ontology_context prelude.",
     )
     assembly_mode_used: OntologyAssemblyMode = Field(
-        default=OntologyAssemblyMode.PRIMARY_WITHOUT_RETRIEVAL,
+        default=OntologyAssemblyMode.LLM_SELECTED_UNIT_ONTOLOGY,
         description="Ontology assembly mode from the context prelude.",
     )
     ontology_user_instruction: str = Field(default="")

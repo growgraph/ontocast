@@ -29,9 +29,9 @@ facts_instruction_template = """\n\n
 # OPERATIONAL GUIDELINES
 
 1. Facts MUST use the fixed namespace `{facts_namespace}` with the prefix `cd:` (declare exactly: `@prefix cd: <{facts_namespace}> .`).
-2. Use the provided domain ontology <{ontology_namespace}> (below) and standard ontologies (RDFS, OWL, schema.org, etc.) to identify/infer entities, classes, types, and relationships
-3. Thoroughly Extract and Link: extract all possible text mentions that correspond to entities, classes, types, or relationships defined in the domain ontology <{ontology_namespace}>. When referring to the domain ontology, use the prefix `{ontology_prefix}:`
-4. Enforce typing: all `cd:` entities (facts) must be linked (e.g. using rdf:type) to entities from either the DOMAIN ONTOLOGY <{ontology_namespace}> or basic ontologies (RDFS, OWL, etc), e.g. rdfs:Class, rdf:Property, schema:Person, schema:Organization, etc.
+2. Use the provided {domain_ontologies_clause} (below) and standard ontologies (RDFS, OWL, schema.org, etc.) to identify/infer entities, classes, types, and relationships
+3. Thoroughly Extract and Link: extract all possible text mentions that correspond to entities, classes, types, or relationships defined in {domain_ontologies_clause}. When referring to domain ontology entities, use {domain_prefix_clause}
+4. Enforce typing: all `cd:` entities (facts) must be linked (e.g. using rdf:type) to entities from either {domain_ontologies_clause} or basic ontologies (RDFS, OWL, etc), e.g. rdfs:Class, rdf:Property, schema:Person, schema:Organization, etc.
 5. Define all prefixes for all namespaces used rdf, rdfs, owl, schema, etc
 6. CRITICAL - Entity Matching Protocol:
    - BEFORE creating any `cd:` entity, you MUST search the domain ontology for existing entities that match the concept semantically
@@ -39,7 +39,7 @@ facts_instruction_template = """\n\n
    - Check all language variants of `rdfs:label` and alternative names
    - If a matching entity exists in the domain ontology, use its IRI directly - DO NOT create a duplicate in the `cd:` namespace
    - Only create `cd:` entities for NEW facts not already defined in the ontology
-   - NEVER mint new entities under the ontology prefix (`{ontology_prefix}:`) unless that exact IRI already exists in the provided ontology
+   - NEVER mint new entities under {domain_prefix_clause} unless that exact IRI already exists in the provided ontology
    - Preserve canonical ontology IRIs exactly as given (character-for-character): no translation, no transliteration, no snake_case/camelCase changes, no suffix/prefix changes
    - Cross-lingual mentions (e.g. French/English variants) MUST be linked to the existing canonical ontology IRI when semantically equivalent
    - If no ontology entity can be verified, create a `cd:` entity instead of inventing a new ontology-prefixed IRI

@@ -28,12 +28,11 @@ from ontocast.prompt.common import (
     text_template,
 )
 from ontocast.prompt.common import system_preamble_ontology as system_preamble
+from ontocast.prompt.ontology_context import format_prefix_clause
 from ontocast.prompt.render_ontology import (
     general_ontology_instruction,
     intro_instruction_fresh,
     intro_instruction_update,
-    prefix_instruction,
-    prefix_instruction_fresh,
     template_prompt,
 )
 from ontocast.tool.atomic import AtomicToolBox
@@ -114,8 +113,10 @@ async def render_ontology_fresh(
     output_instruction = output_instruction_ttl
     ontology_ttl = ""
     improvement_instruction_str = ""
+    access = ontology_access_for_unit_ontology(state)
+    domain_pairs = access.domain_prefix_pairs()
     general_ontology_instruction_str = general_ontology_instruction.format(
-        prefix_instruction=prefix_instruction_fresh
+        domain_prefix_clause=format_prefix_clause(domain_pairs)
     )
 
     text_chapter = text_template.format(text=state.content_unit.text)
@@ -227,9 +228,9 @@ async def render_ontology_update(
         state.suggestions, WorkflowNode.TEXT_TO_ONTOLOGY
     )
 
+    domain_pairs = access.domain_prefix_pairs()
     general_ontology_instruction_str = general_ontology_instruction.format(
-        prefix_instruction=prefix_instruction.format(ontology_prefix=current.prefix),
-        ontology_prefix=current.prefix,
+        domain_prefix_clause=format_prefix_clause(domain_pairs)
     )
     text_chapter = text_template.format(text=state.content_unit.text)
     external_evidence = state.external_evidence_text

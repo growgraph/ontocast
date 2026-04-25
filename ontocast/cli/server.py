@@ -57,11 +57,10 @@ from ontocast.api.schemas import (
 )
 from ontocast.cli.util import crawl_directories
 from ontocast.config import Config, ServerConfig
-from ontocast.onto.enum import (
-    OntologyContextMode,
-    OntologySelectionPolicy,
-    RenderMode,
-    UnitContextStrategy,
+from ontocast.onto.enum import OntologyContextMode, RenderMode
+from ontocast.onto.retrieval_capabilities import (
+    OntologyContextConfigError,
+    require_vector_retrieval,
 )
 from ontocast.onto.state import AgentState
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
@@ -113,64 +112,12 @@ def parse_ontology_context_mode_param(
     return default
 
 
-def parse_unit_context_strategy_param(
-    value: str | UnitContextStrategy | None,
-    default: UnitContextStrategy,
-) -> UnitContextStrategy:
-    if value is None:
-        return default
-    if isinstance(value, UnitContextStrategy):
-        return value
-    if isinstance(value, str):
-        normalized = value.lower().strip()
-        try:
-            return UnitContextStrategy(normalized)
-        except ValueError:
-            logger.warning(
-                "Invalid unit_context_strategy '%s', using default '%s'",
-                value,
-                default.value,
-            )
-    return default
-
-
-def parse_ontology_selection_policy_param(
-    value: str | OntologySelectionPolicy | None,
-    default: OntologySelectionPolicy,
-) -> OntologySelectionPolicy:
-    if value is None:
-        return default
-    if isinstance(value, OntologySelectionPolicy):
-        return value
-    if isinstance(value, str):
-        normalized = value.lower().strip()
-        try:
-            return OntologySelectionPolicy(normalized)
-        except ValueError:
-            logger.warning(
-                "Invalid ontology_selection_policy '%s', using default '%s'",
-                value,
-                default.value,
-            )
-    return default
-
-
 def validate_ontology_context_mode(
     ontology_context_mode: OntologyContextMode,
-    ontology_selection_policy: OntologySelectionPolicy,
-    vector_store: object | None,
-    patch_retriever: object | None,
+    tools: ToolBox,
 ) -> None:
-    if (
-        ontology_context_mode == OntologyContextMode.RETRIEVED_INDUCED_GRAPH
-        and ontology_selection_policy == OntologySelectionPolicy.STRICT_RETRIEVAL
-        and (vector_store is None or patch_retriever is None)
-    ):
-        raise ValueError(
-            "ontology_context_mode='retrieved_induced_graph' with "
-            "ontology_selection_policy='strict_retrieval' requires configured "
-            "vector store and patch retriever"
-        )
+    if ontology_context_mode == OntologyContextMode.VECTOR_RETRIEVAL:
+        require_vector_retrieval(tools)
 
 
 def _stores_use_tenancy_partitions(tools: ToolBox) -> bool:
@@ -346,12 +293,6 @@ def create_app(
             ontology_context_mode = request.query_params.get(
                 "ontology_context_mode", None
             )
-            unit_context_strategy = request.query_params.get(
-                "unit_context_strategy", None
-            )
-            ontology_selection_policy = request.query_params.get(
-                "ontology_selection_policy", None
-            )
             ontology_user_instruction = request.query_params.get(
                 "ontology_user_instruction", ""
             )
@@ -412,24 +353,16 @@ def create_app(
                     server_config.ontology_context_mode,
                 )
             )
-            unit_context_strategy_value: UnitContextStrategy = (
-                parse_unit_context_strategy_param(
-                    unit_context_strategy,
-                    server_config.unit_context_strategy,
+            try:
+                validate_ontology_context_mode(ontology_context_mode_value, tools)
+            except OntologyContextConfigError as e:
+                return JSONResponse(
+                    status_code=400,
+                    content=StatusErrorBody(
+                        error=str(e),
+                        error_type=type(e).__name__,
+                    ).model_dump(),
                 )
-            )
-            ontology_selection_policy_value: OntologySelectionPolicy = (
-                parse_ontology_selection_policy_param(
-                    ontology_selection_policy,
-                    server_config.ontology_selection_policy,
-                )
-            )
-            validate_ontology_context_mode(
-                ontology_context_mode_value,
-                ontology_selection_policy_value,
-                tools.vector_store,
-                tools.patch_retriever,
-            )
 
             initial_state = AgentState(
                 files=files_dict,
@@ -437,8 +370,6 @@ def create_app(
                 max_chunks=head_chunks,
                 render_mode=render_mode_value,
                 ontology_context_mode=ontology_context_mode_value,
-                unit_context_strategy=unit_context_strategy_value,
-                ontology_selection_policy=ontology_selection_policy_value,
                 ontology_max_triples=server_config.ontology_max_triples,
                 tenant=resolved_tenant,
                 project=resolved_project,
@@ -554,12 +485,6 @@ def create_app(
             ontology_context_mode = request.query_params.get(
                 "ontology_context_mode", None
             )
-            unit_context_strategy = request.query_params.get(
-                "unit_context_strategy", None
-            )
-            ontology_selection_policy = request.query_params.get(
-                "ontology_selection_policy", None
-            )
             ontology_user_instruction = request.query_params.get(
                 "ontology_user_instruction", ""
             )
@@ -620,24 +545,16 @@ def create_app(
                     server_config.ontology_context_mode,
                 )
             )
-            unit_context_strategy_value: UnitContextStrategy = (
-                parse_unit_context_strategy_param(
-                    unit_context_strategy,
-                    server_config.unit_context_strategy,
+            try:
+                validate_ontology_context_mode(ontology_context_mode_value, tools)
+            except OntologyContextConfigError as e:
+                return JSONResponse(
+                    status_code=400,
+                    content=StatusErrorBody(
+                        error=str(e),
+                        error_type=type(e).__name__,
+                    ).model_dump(),
                 )
-            )
-            ontology_selection_policy_value: OntologySelectionPolicy = (
-                parse_ontology_selection_policy_param(
-                    ontology_selection_policy,
-                    server_config.ontology_selection_policy,
-                )
-            )
-            validate_ontology_context_mode(
-                ontology_context_mode_value,
-                ontology_selection_policy_value,
-                tools.vector_store,
-                tools.patch_retriever,
-            )
 
             initial_state = AgentState(
                 files=files_dict,
@@ -645,8 +562,6 @@ def create_app(
                 max_chunks=1,
                 render_mode=render_mode_value,
                 ontology_context_mode=ontology_context_mode_value,
-                unit_context_strategy=unit_context_strategy_value,
-                ontology_selection_policy=ontology_selection_policy_value,
                 ontology_max_triples=server_config.ontology_max_triples,
                 tenant=resolved_tenant,
                 project=resolved_project,
@@ -729,6 +644,14 @@ def create_app(
 @click.option("--input-path", type=click.Path(path_type=pathlib.Path), default=None)
 @click.option("--head-chunks", type=int, default=None)
 @click.option(
+    "--use-unit-pipeline/--no-use-unit-pipeline",
+    default=False,
+    help=(
+        "When processing files with --input-path, run convert_document + "
+        "run_unit_pipeline instead of the full workflow graph."
+    ),
+)
+@click.option(
     "--tenant",
     type=str,
     default=None,
@@ -749,6 +672,7 @@ def create_app(
 def run(
     input_path: pathlib.Path | None,
     head_chunks: int | None,
+    use_unit_pipeline: bool,
     tenant: str | None,
     project: str | None,
 ):
@@ -817,13 +741,7 @@ def run(
         asyncio.run(tools.update_tenancy(t_res, p_res))
 
     ontology_context_mode_value = config.server.ontology_context_mode
-    ontology_selection_policy_value = config.server.ontology_selection_policy
-    validate_ontology_context_mode(
-        ontology_context_mode_value,
-        ontology_selection_policy_value,
-        tools.vector_store,
-        tools.patch_retriever,
-    )
+    validate_ontology_context_mode(ontology_context_mode_value, tools)
 
     if input_path is not None and config.clean:
         asyncio.run(_flush_triple_configured_scope(tools))
@@ -842,10 +760,7 @@ def run(
             )
         )
 
-        recursion_limit = calculate_recursion_limit(
-            head_chunks,
-            config.server,
-        )
+        recursion_limit = calculate_recursion_limit(head_chunks, config.server)
 
         async def process_files():
             for file_path in files:
@@ -856,17 +771,26 @@ def run(
                         max_chunks=head_chunks,
                         render_mode=config.server.render_mode,
                         ontology_context_mode=ontology_context_mode_value,
-                        unit_context_strategy=config.server.unit_context_strategy,
-                        ontology_selection_policy=ontology_selection_policy_value,
                         tenant=t_res,
                         project=p_res,
                     )
-                    async for _ in workflow.astream(
-                        state,
-                        stream_mode="values",
-                        config=RunnableConfig(recursion_limit=recursion_limit),
-                    ):
-                        pass
+                    if use_unit_pipeline:
+                        state = convert_document(state, tools)
+                        if state.failure_stage is not None:
+                            logger.error(
+                                "Error processing %s: %s",
+                                file_path,
+                                state.failure_reason or "Document conversion failed",
+                            )
+                            continue
+                        await run_unit_pipeline(state, tools)
+                    else:
+                        async for _ in workflow.astream(
+                            state,
+                            stream_mode="values",
+                            config=RunnableConfig(recursion_limit=recursion_limit),
+                        ):
+                            pass
 
                 except Exception as e:
                     logger.error(f"Error processing {file_path}: {str(e)}")

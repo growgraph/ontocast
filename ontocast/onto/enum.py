@@ -35,36 +35,17 @@ class RenderMode(StrEnum):
 
 
 class OntologyContextMode(StrEnum):
-    """Enumeration of ontology context selection strategies."""
+    """Per-unit ontology context: full catalog TTL (LLM-picked) vs vector ensemble."""
 
     FULL_TTL = "full_ttl"
-    RETRIEVED_INDUCED_GRAPH = "retrieved_induced_graph"
-
-
-class UnitContextStrategy(StrEnum):
-    """Enumeration of per-unit ontology context strategies."""
-
-    ENSEMBLE_FIRST = "ensemble_first"
-    VOTE_FIRST = "vote_first"
-    HYBRID_ADAPTIVE = "hybrid_adaptive"
-
-
-class OntologySelectionPolicy(StrEnum):
-    """Runtime policy for per-unit ontology source selection."""
-
-    STRICT_RETRIEVAL = "strict_retrieval"
-    RETRIEVAL_WITH_LLM_FALLBACK = "retrieval_with_llm_fallback"
-    LLM_SELECTOR_ONLY = "llm_selector_only"
+    VECTOR_RETRIEVAL = "vector_retrieval"
 
 
 class OntologyAssemblyMode(StrEnum):
     """How per-unit ontology context was assembled for prompts."""
 
+    LLM_SELECTED_UNIT_ONTOLOGY = "llm_selected_unit_ontology"
     ENSEMBLE_STITCHED = "ensemble_stitched"
-    VOTE_MAJORITY_ONTOLOGY = "vote_majority_ontology"
-    PRIMARY_WITHOUT_RETRIEVAL = "primary_without_retrieval"
-    LLM_SELECTED_FULL_ONTOLOGY = "llm_selected_full_ontology"
-    STRICT_RETRIEVAL_UNAVAILABLE = "strict_retrieval_unavailable"
 
 
 class FailureStage(StrEnum):

@@ -12,10 +12,8 @@ from ontocast.onto.enum import (
     FailureStage,
     OntologyAssemblyMode,
     OntologyContextMode,
-    OntologySelectionPolicy,
     RenderMode,
     Status,
-    UnitContextStrategy,
     WorkflowNode,
 )
 from ontocast.onto.model import BasePydanticModel, Suggestions
@@ -277,21 +275,8 @@ class AgentState(BasePydanticModel):
     ontology_context_mode: OntologyContextMode = Field(
         default=OntologyContextMode.FULL_TTL,
         description=(
-            "Ontology prompt context strategy: full_ttl or retrieved_induced_graph."
-        ),
-    )
-    unit_context_strategy: UnitContextStrategy = Field(
-        default=UnitContextStrategy.ENSEMBLE_FIRST,
-        description=(
-            "Per-unit ontology context strategy for map nodes (ensemble_first, "
-            "vote_first, or hybrid_adaptive)."
-        ),
-    )
-    ontology_selection_policy: OntologySelectionPolicy = Field(
-        default=OntologySelectionPolicy.RETRIEVAL_WITH_LLM_FALLBACK,
-        description=(
-            "Per-unit ontology selection policy controlling retrieval strictness "
-            "and LLM/full-ontology fallback behavior."
+            "Per-unit ontology context: full_ttl (LLM-picked catalog TTL) or "
+            "vector_retrieval (stitched ensemble from Qdrant)."
         ),
     )
     ontology_max_triples: int | None = Field(

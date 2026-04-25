@@ -572,6 +572,115 @@ def test_tentative_alias_merged_without_sameas_leak(monkeypatch) -> None:
     assert (known_conviction, OWL.sameAs, tentative_alias) not in result
 
 
+def test_hallucinated_ontology_prefixed_instance_maps_to_fact_entity(
+    monkeypatch,
+) -> None:
+    doc_iri = "https://example.org/docs/case-50"
+    fact_imprisonment = URIRef("https://growgraph.dev/factsImprisonment1")
+    hallucinated_imprisonment = URIRef("https://growgraph.dev/fcaont#Imprisonment1")
+    has_punishment = URIRef("https://growgraph.dev/fcaont#hasPunishment")
+    judgement = URIRef("https://growgraph.dev/fcaont#Judgement")
+
+    ttl = f"""
+    @prefix doc: <{doc_iri}/> .
+    @prefix cd: <https://growgraph.dev/facts> .
+    @prefix fcaont: <https://growgraph.dev/fcaont#> .
+    @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+    cd:Judgment1 a fcaont:Judgement ;
+        fcaont:hasPunishment cd:Imprisonment1 .
+    fcaont:Imprisonment1 a fcaont:Judgement .
+    """
+    unit = make_fact_unit("Prefix hallucination on fact instance.", 0, doc_iri, ttl)
+    aggregator = EmbeddingBasedAggregator()
+
+    def force_fact_and_hallucinated_together(representations):
+        entities = set(representations.keys())
+        if fact_imprisonment in entities and hallucinated_imprisonment in entities:
+            remaining = [
+                entity
+                for entity in entities
+                if entity not in {fact_imprisonment, hallucinated_imprisonment}
+            ]
+            return [
+                [fact_imprisonment, hallucinated_imprisonment],
+                *[[entity] for entity in remaining],
+            ], {}
+        return [list(entities)], {}
+
+    monkeypatch.setattr(
+        aggregator.clusterer,
+        "cluster_entities",
+        force_fact_and_hallucinated_together,
+    )
+
+    result = aggregator.aggregate_graphs([unit])
+    punishment_targets = {
+        obj for obj in result.objects(None, has_punishment) if isinstance(obj, URIRef)
+    }
+
+    assert punishment_targets
+    assert all(str(target).startswith(doc_iri) for target in punishment_targets)
+    assert len(punishment_targets) == 1
+    assert hallucinated_imprisonment not in punishment_targets
+
+    judgement_entities = {
+        entity
+        for entity in result.subjects(RDF.type, judgement)
+        if isinstance(entity, URIRef)
+    }
+    assert len(judgement_entities) == 2
+
+
+def test_known_ontology_class_not_rewritten_as_fact(monkeypatch) -> None:
+    doc_iri = "https://example.org/docs/case-51"
+    known_imprisonment_class = URIRef("https://growgraph.dev/fcaont#Imprisonment")
+    fact_imprisonment = URIRef("https://growgraph.dev/factsImprisonment1")
+    associated_with = URIRef("https://growgraph.dev/fcaont#isAssociatedWith")
+    class_type = URIRef("http://www.w3.org/2000/01/rdf-schema#Class")
+
+    ttl = f"""
+    @prefix doc: <{doc_iri}/> .
+    @prefix cd: <https://growgraph.dev/facts> .
+    @prefix fcaont: <https://growgraph.dev/fcaont#> .
+    @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+    doc:Judgment1 fcaont:isAssociatedWith cd:Imprisonment1 .
+    cd:Imprisonment1 rdf:type fcaont:Imprisonment .
+    """
+    unit = make_fact_unit("Known class and fact instance.", 0, doc_iri, ttl)
+    aggregator = EmbeddingBasedAggregator()
+    ontology_graph = RDFGraph()
+    ontology_graph.add((known_imprisonment_class, RDF.type, class_type))
+
+    def force_known_class_and_fact_instance_together(representations):
+        entities = set(representations.keys())
+        if known_imprisonment_class in entities and fact_imprisonment in entities:
+            remaining = [
+                entity
+                for entity in entities
+                if entity not in {known_imprisonment_class, fact_imprisonment}
+            ]
+            return [
+                [known_imprisonment_class, fact_imprisonment],
+                *[[entity] for entity in remaining],
+            ], {}
+        return [list(entities)], {}
+
+    monkeypatch.setattr(
+        aggregator.clusterer,
+        "cluster_entities",
+        force_known_class_and_fact_instance_together,
+    )
+
+    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
+    associated_targets = {
+        obj for obj in result.objects(None, associated_with) if isinstance(obj, URIRef)
+    }
+
+    assert associated_targets
+    assert all(str(target).startswith(doc_iri) for target in associated_targets)
+    assert known_imprisonment_class not in associated_targets
+
+
 def test_non_alias_ontology_terms_do_not_emit_sameas(monkeypatch) -> None:
     doc_iri = "https://example.org/docs/case-48"
     appeal = URIRef("https://growgraph.dev/fcaont#Appeal")

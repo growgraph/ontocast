@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Any, TypeVar
 
 from langchain_core.output_parsers import BaseOutputParser
@@ -21,6 +22,24 @@ from ontocast.tool import LLMTool
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+_JSON_COMMENT_RE = re.compile(r'"(?:[^"\\]|\\.)*"|//[^\n]*')
+
+
+def strip_json_comments(text: str) -> str:
+    """Remove single-line // comments from JSON-like text while preserving string literals.
+
+    The LLM occasionally emits JavaScript-style // comments inside JSON output,
+    which are not valid JSON.  This function strips them by scanning the text
+    token by token: JSON string literals (which may contain '//') are kept
+    intact, while bare // … sequences are dropped.
+    """
+
+    def _replace(m: re.Match) -> str:
+        matched = m.group()
+        return matched if matched.startswith('"') else ""
+
+    return _JSON_COMMENT_RE.sub(_replace, text)
 
 
 def render_suggestions_prompt(suggestions: Suggestions, stage: WorkflowNode) -> str:
@@ -125,7 +144,8 @@ async def call_llm_with_retry(
 
             # Call LLM
             response = await llm_tool(prompt.format_prompt(**attempt_kwargs))
-            content_to_parse = response.content
+            content_to_parse = strip_json_comments(response.content)
+            last_sanitized_content = content_to_parse
 
             parsed = parser.parse(content_to_parse)
             logger.debug(

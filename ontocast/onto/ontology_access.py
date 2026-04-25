@@ -10,6 +10,7 @@ from typing import Protocol
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
+from ontocast.prompt.ontology_context import extract_domain_prefix_pairs
 
 
 class OntologyPromptSource(Protocol):
@@ -25,6 +26,10 @@ class OntologyPromptSource(Protocol):
 
     def has_non_null_seed_snapshot(self) -> bool:
         """Whether the immutable snapshot anchor is a real ontology (vs null IRI)."""
+        ...
+
+    def domain_prefix_pairs(self) -> list[tuple[str, str]]:
+        """Domain ontology prefix/namespace pairs used for prompt instructions."""
         ...
 
 
@@ -45,6 +50,9 @@ class UnitOntologyAccess:
     def has_non_null_seed_snapshot(self) -> bool:
         return not self._state.ontology_snapshot.is_null()
 
+    def domain_prefix_pairs(self) -> list[tuple[str, str]]:
+        return extract_domain_prefix_pairs(self.effective_ontology_for_prompt())
+
 
 class UnitFactsOntologyAccess:
     """Accessor for :class:`UnitFactsState`; facts prompts use snapshot context only."""
@@ -62,6 +70,9 @@ class UnitFactsOntologyAccess:
 
     def has_non_null_seed_snapshot(self) -> bool:
         return not self._state.ontology_snapshot.is_null()
+
+    def domain_prefix_pairs(self) -> list[tuple[str, str]]:
+        return extract_domain_prefix_pairs(self.effective_ontology_for_prompt())
 
 
 class DocumentOntologyAccess:

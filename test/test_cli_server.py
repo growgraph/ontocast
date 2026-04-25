@@ -1,59 +1,56 @@
+from types import SimpleNamespace
+from typing import cast
+
 import pytest
 
 from ontocast.api.schemas import ProcessResultData
 from ontocast.cli.server import (
     parse_ontology_context_mode_param,
-    parse_ontology_selection_policy_param,
     validate_ontology_context_mode,
 )
-from ontocast.onto.enum import OntologyContextMode, OntologySelectionPolicy
+from ontocast.onto.enum import OntologyContextMode
+from ontocast.onto.retrieval_capabilities import OntologyContextConfigError
+from ontocast.toolbox import ToolBox
 
 
 def test_parse_ontology_context_mode_param_accepts_request_override() -> None:
     result = parse_ontology_context_mode_param(
-        "retrieved_induced_graph",
+        "vector_retrieval",
         OntologyContextMode.FULL_TTL,
     )
+    assert result == OntologyContextMode.VECTOR_RETRIEVAL
 
-    assert result == OntologyContextMode.RETRIEVED_INDUCED_GRAPH
+
+def _tools(vector_store: object | None, patch_retriever: object | None) -> ToolBox:
+    return cast(
+        ToolBox,
+        SimpleNamespace(
+            vector_store=vector_store,
+            patch_retriever=patch_retriever,
+        ),
+    )
 
 
-def test_validate_ontology_context_mode_rejects_missing_vector_store() -> None:
-    with pytest.raises(ValueError, match="requires configured vector store"):
+def test_validate_ontology_context_mode_rejects_vector_without_qdrant() -> None:
+    with pytest.raises(OntologyContextConfigError, match="vector_retrieval"):
         validate_ontology_context_mode(
-            OntologyContextMode.RETRIEVED_INDUCED_GRAPH,
-            OntologySelectionPolicy.STRICT_RETRIEVAL,
-            None,
-            None,
+            OntologyContextMode.VECTOR_RETRIEVAL,
+            _tools(None, None),
         )
 
 
 def test_validate_ontology_context_mode_allows_full_ttl_without_vector_store() -> None:
     validate_ontology_context_mode(
         OntologyContextMode.FULL_TTL,
-        OntologySelectionPolicy.STRICT_RETRIEVAL,
-        None,
-        None,
+        _tools(None, None),
     )
 
 
-def test_validate_ontology_context_mode_allows_fallback_policy_without_vector_store() -> (
-    None
-):
+def test_validate_ontology_context_mode_allows_vector_when_both_set() -> None:
     validate_ontology_context_mode(
-        OntologyContextMode.RETRIEVED_INDUCED_GRAPH,
-        OntologySelectionPolicy.RETRIEVAL_WITH_LLM_FALLBACK,
-        None,
-        None,
+        OntologyContextMode.VECTOR_RETRIEVAL,
+        _tools(object(), object()),
     )
-
-
-def test_parse_ontology_selection_policy_param_accepts_override() -> None:
-    result = parse_ontology_selection_policy_param(
-        "llm_selector_only",
-        OntologySelectionPolicy.RETRIEVAL_WITH_LLM_FALLBACK,
-    )
-    assert result == OntologySelectionPolicy.LLM_SELECTOR_ONLY
 
 
 def test_process_result_data_uses_artifacts_and_deprecates_singular_ontology() -> None:

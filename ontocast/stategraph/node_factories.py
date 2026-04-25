@@ -479,7 +479,7 @@ def make_consistency_critic_node(tools: ToolBox):
             if not ontology.is_null() and len(ontology.graph) > 0
         ]
         if (
-            state.ontology_context_mode != OntologyContextMode.RETRIEVED_INDUCED_GRAPH
+            state.ontology_context_mode != OntologyContextMode.VECTOR_RETRIEVAL
             or tools.vector_store is None
             or not artifacts
         ):

@@ -75,4 +75,9 @@ Include `external_evidence_request` in your structured response:
   that blocks a confident critique.
 - Keep `initiate_search=false` when the source text + ontology are sufficient.
 - When true, provide concise `rationale` and optional focused `query_hints`.
+
+# OUTPUT FORMAT CONSTRAINTS
+
+- Respond with valid JSON only. Do NOT include `//` comments or any other non-JSON syntax inside the JSON block.
+- Use the `explanation` field to convey any reasoning that you would otherwise put in a comment.
 """

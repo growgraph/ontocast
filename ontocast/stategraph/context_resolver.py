@@ -2,15 +2,13 @@ from collections import Counter
 
 from pydantic import BaseModel, Field
 
+from ontocast.agent.ontology_catalog_select import select_catalog_ontology_for_excerpt
 from ontocast.onto.content_unit import SourceUnit
-from ontocast.onto.enum import (
-    OntologyAssemblyMode,
-    OntologyContextMode,
-    OntologySelectionPolicy,
-    UnitContextStrategy,
-)
+from ontocast.onto.enum import OntologyAssemblyMode, OntologyContextMode
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.retrieval_capabilities import require_vector_retrieval
 from ontocast.onto.state import AgentState
 from ontocast.tool.chunk.util import split_proposition_windows
 from ontocast.toolbox import ToolBox
@@ -22,62 +20,6 @@ class UnitOntologyContext(BaseModel):
     patch_sources: list[str] = Field(default_factory=list)
     assembly_mode: OntologyAssemblyMode
     confidence: float = 0.0
-
-
-def _strict_retrieval_unavailable_context() -> UnitOntologyContext:
-    return UnitOntologyContext(
-        anchor_iri=NULL_ONTOLOGY.iri,
-        ontology_snapshot=NULL_ONTOLOGY,
-        patch_sources=[],
-        assembly_mode=OntologyAssemblyMode.STRICT_RETRIEVAL_UNAVAILABLE,
-        confidence=0.0,
-    )
-
-
-def _resolve_catalog_full_context(
-    state: AgentState,
-    tools: ToolBox,
-    *,
-    assembly_mode: OntologyAssemblyMode = OntologyAssemblyMode.LLM_SELECTED_FULL_ONTOLOGY,
-) -> UnitOntologyContext:
-    """Select full ontology context from catalog as per-unit fallback."""
-    ontology_manager = getattr(tools, "ontology_manager", None)
-    if ontology_manager is None:
-        selected = None
-    else:
-        selected = ontology_manager.get_freshest_terminal_ontology_by_iri(None)
-    if selected is None or selected.is_null():
-        return UnitOntologyContext(
-            anchor_iri=NULL_ONTOLOGY.iri,
-            ontology_snapshot=NULL_ONTOLOGY,
-            patch_sources=[],
-            assembly_mode=assembly_mode,
-            confidence=0.0,
-        )
-    return UnitOntologyContext(
-        anchor_iri=selected.iri,
-        ontology_snapshot=selected,
-        patch_sources=[selected.iri],
-        assembly_mode=assembly_mode,
-        confidence=0.5,
-    )
-
-
-def _primary_document_context(state: AgentState, tools: ToolBox) -> UnitOntologyContext:
-    """FULL_TTL map-time context is selected per-unit from ontology catalog."""
-    _ = state
-    primary = _resolve_catalog_full_context(
-        state,
-        tools,
-        assembly_mode=OntologyAssemblyMode.PRIMARY_WITHOUT_RETRIEVAL,
-    ).ontology_snapshot
-    return UnitOntologyContext(
-        anchor_iri=primary.iri,
-        ontology_snapshot=primary,
-        patch_sources=[],
-        assembly_mode=OntologyAssemblyMode.PRIMARY_WITHOUT_RETRIEVAL,
-        confidence=0.0,
-    )
 
 
 def _unit_queries(unit: SourceUnit, tools: ToolBox) -> list[str]:
@@ -94,53 +36,30 @@ def _unit_queries(unit: SourceUnit, tools: ToolBox) -> list[str]:
     )
 
 
-def _majority_iri(counts: Counter[str]) -> tuple[str | None, float]:
-    if not counts:
-        return None, 0.0
-    dominant_iri, dominant_count = counts.most_common(1)[0]
-    total = sum(counts.values())
-    confidence = (dominant_count / total) if total > 0 else 0.0
-    return dominant_iri, confidence
-
-
-async def _resolve_vote_majority_context(
+async def _resolve_full_ttl_llm_context(
     state: AgentState,
     tools: ToolBox,
     unit: SourceUnit,
 ) -> UnitOntologyContext:
-    """Majority vote over vector patch hits; otherwise document primary."""
-    queries = _unit_queries(unit, tools)
-    if not queries or tools.vector_store is None:
-        return _resolve_catalog_full_context(state, tools)
-
-    qcfg = tools.config.tool_config.qdrant
-    hits_by_query = await tools.vector_store.asearch_patch_hits_many(
-        queries=queries,
-        top_k=qcfg.top_k,
+    """One catalog ontology chosen by the LLM from the unit text."""
+    selected = await select_catalog_ontology_for_excerpt(
+        tools.ontology_manager, tools.llm, unit.text
     )
-    counts: Counter[str] = Counter()
-    for hits in hits_by_query:
-        for hit in hits:
-            if hit.atom.ontology_iri:
-                counts[hit.atom.ontology_iri] += 1
-
-    dominant_iri, confidence = _majority_iri(counts)
-    if dominant_iri:
-        ontology = tools.ontology_manager.get_freshest_terminal_ontology_by_iri(
-            dominant_iri
+    if selected.is_null():
+        return UnitOntologyContext(
+            anchor_iri=NULL_ONTOLOGY.iri,
+            ontology_snapshot=NULL_ONTOLOGY,
+            patch_sources=[],
+            assembly_mode=OntologyAssemblyMode.LLM_SELECTED_UNIT_ONTOLOGY,
+            confidence=0.0,
         )
-        if ontology is None:
-            ontology = tools.ontology_manager.get_ontology(ontology_iri=dominant_iri)
-        if not ontology.is_null():
-            return UnitOntologyContext(
-                anchor_iri=ontology.iri,
-                ontology_snapshot=ontology,
-                patch_sources=[ontology.iri],
-                assembly_mode=OntologyAssemblyMode.VOTE_MAJORITY_ONTOLOGY,
-                confidence=confidence,
-            )
-
-    return _resolve_catalog_full_context(state, tools)
+    return UnitOntologyContext(
+        anchor_iri=selected.iri,
+        ontology_snapshot=selected,
+        patch_sources=[selected.iri],
+        assembly_mode=OntologyAssemblyMode.LLM_SELECTED_UNIT_ONTOLOGY,
+        confidence=0.5,
+    )
 
 
 async def _resolve_ensemble_context(
@@ -148,21 +67,34 @@ async def _resolve_ensemble_context(
     tools: ToolBox,
     unit: SourceUnit,
 ) -> UnitOntologyContext:
+    """Stitched induced subgraphs from vector retrieval; always ``ENSEMBLE_STITCHED``."""
     queries = _unit_queries(unit, tools)
-    if not queries or tools.patch_retriever is None:
-        return await _resolve_vote_majority_context(state, tools, unit)
-
+    if not queries:
+        empty = Ontology(
+            ontology_id=None,
+            title="Empty unit (no text queries for retrieval)",
+            description="No proposition queries; ensemble graph is empty.",
+            graph=RDFGraph(),
+            iri=NULL_ONTOLOGY.iri,
+            current_domain=state.current_domain,
+        )
+        return UnitOntologyContext(
+            anchor_iri=NULL_ONTOLOGY.iri,
+            ontology_snapshot=empty,
+            patch_sources=[],
+            assembly_mode=OntologyAssemblyMode.ENSEMBLE_STITCHED,
+            confidence=0.0,
+        )
+    retriever = tools.patch_retriever
+    assert retriever is not None
     qcfg = tools.config.tool_config.qdrant
-    patch_graph, source_iris = await tools.patch_retriever.aretrieve_ensemble(
+    patch_graph, source_iris = await retriever.aretrieve_ensemble(
         queries=queries,
         top_k=qcfg.top_k,
         expand_sparql=True,
         subgraph_depth=qcfg.induced_subgraph_depth,
         max_triples=qcfg.induced_subgraph_max_triples,
     )
-    if len(patch_graph) == 0:
-        return await _resolve_vote_majority_context(state, tools, unit)
-
     anchor_iri = source_iris[0] if source_iris else NULL_ONTOLOGY.iri
     ontology_snapshot = Ontology(
         ontology_id=None,
@@ -186,32 +118,14 @@ async def resolve_unit_ontology_context(
     tools: ToolBox,
     unit: SourceUnit,
 ) -> UnitOntologyContext:
-    policy = state.ontology_selection_policy
-    state.retrieval_metrics["ontology_selection_policy"] = policy.value
-    retrieval_available = (
-        getattr(tools, "patch_retriever", None) is not None
-        or getattr(tools, "vector_store", None) is not None
-    )
-    if policy == OntologySelectionPolicy.LLM_SELECTOR_ONLY:
-        return _resolve_catalog_full_context(state, tools)
-    if state.ontology_context_mode == OntologyContextMode.FULL_TTL:
-        return _primary_document_context(state, tools)
-    if (
-        state.ontology_context_mode == OntologyContextMode.RETRIEVED_INDUCED_GRAPH
-        and not retrieval_available
-    ):
-        if policy == OntologySelectionPolicy.STRICT_RETRIEVAL:
-            return _strict_retrieval_unavailable_context()
-        return _resolve_catalog_full_context(state, tools)
-    strategy = state.unit_context_strategy
-    if strategy == UnitContextStrategy.VOTE_FIRST:
-        return await _resolve_vote_majority_context(state, tools, unit)
-    if strategy == UnitContextStrategy.HYBRID_ADAPTIVE:
-        ensemble = await _resolve_ensemble_context(state, tools, unit)
-        if len(ensemble.ontology_snapshot.graph) > 0:
-            return ensemble
-        return await _resolve_vote_majority_context(state, tools, unit)
-    return await _resolve_ensemble_context(state, tools, unit)
+    mode = state.ontology_context_mode
+    state.retrieval_metrics["ontology_context_mode"] = mode.value
+    if mode == OntologyContextMode.FULL_TTL:
+        return await _resolve_full_ttl_llm_context(state, tools, unit)
+    if mode == OntologyContextMode.VECTOR_RETRIEVAL:
+        require_vector_retrieval(tools)
+        return await _resolve_ensemble_context(state, tools, unit)
+    raise ValueError(f"Unknown ontology_context_mode: {mode!r}")
 
 
 def aggregate_anchor_metrics(

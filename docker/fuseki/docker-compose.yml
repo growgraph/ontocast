@@ -1,16 +1,33 @@
 services:
+    fix-perms:
+        image: alpine
+        user: "0:0"
+        volumes:
+        -   fuseki_data:/fuseki
+        command: chown -R 10000:10000 /fuseki
+
     fuseki:
         image: ${IMAGE_VERSION}
-        user: "${UID}:${GID}"
-        restart: "no"
+        user: "10000:10000"
+        restart: "unless-stopped"
+        depends_on:
+            fix-perms:
+                condition: service_completed_successfully
         profiles: ["${CONTAINER_NAME}"]
         ports:
         -   "${TS_PORT}:3030"
         container_name: ${CONTAINER_NAME}
         volumes:
         -   fuseki_data:/fuseki
+        -   ./shiro.ini:/fuseki/shiro.ini.template:ro
         environment:
-        -   ADMIN_PASSWORD=${TS_PASSWORD}
+        -   TS_USERNAME=${TS_USERNAME}
+        -   TS_PASSWORD=${TS_PASSWORD}
+        entrypoint: >
+            /bin/sh -c "
+            sed \"s/TS_USER_PLACEHOLDER/$$TS_USERNAME/g; s/TS_PASS_PLACEHOLDER/$$TS_PASSWORD/g\"  /fuseki/shiro.ini.template > /fuseki/run/shiro.ini &&
+            ./entrypoint.sh
+            "
 volumes:
     fuseki_data:
         driver: local

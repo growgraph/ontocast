@@ -38,7 +38,7 @@ Feel free to update the description of the ontology to make it more accurate and
 {multi_source_note}
 """
 
-prefix_instruction = """Use prefix `{ontology_prefix}` for entities/properties placed in the current domain ontology. DECLARE the prefix in preamble!"""
+prefix_instruction = """Use {domain_prefix_clause} for entities/properties placed in the domain ontologies. DECLARE all prefixes in preamble!"""
 prefix_instruction_fresh = """Define a new prefix for the current domain ontology. DECLARE the prefix in preamble!"""
 
 
