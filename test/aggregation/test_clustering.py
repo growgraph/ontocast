@@ -87,3 +87,27 @@ def test_create_mapping_maps_all_cluster_members(
 
     assert mapping[e1] == mapping[e2]
     assert mapping[e3] == e3
+
+
+def test_select_representative_prefers_explicit_known_ontology_map(
+    cluster_representative_selector: ClusterRepresentativeSelector,
+) -> None:
+    known_ontology = URIRef("http://example.org/onto#Conviction")
+    tentative_ontology = URIRef("http://example.org/onto#Conviction1")
+    reps = cast(
+        dict[URIRef, EntityRepresentation],
+        {
+            known_ontology: Mock(is_ontology_entity=False),
+            tentative_ontology: Mock(is_ontology_entity=True),
+        },
+    )
+
+    selected = cluster_representative_selector.select_representative(
+        [known_ontology, tentative_ontology],
+        reps,
+        entity_is_known_ontology={
+            known_ontology: True,
+            tentative_ontology: False,
+        },
+    )
+    assert selected == known_ontology

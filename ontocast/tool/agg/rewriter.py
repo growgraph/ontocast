@@ -400,6 +400,7 @@ class GraphRewriter:
         mapping: dict[URIRef, URIRef],
         extra_sameas_links: dict[URIRef, set[URIRef]] | None = None,
         suppress_sameas_origins: set[URIRef] | None = None,
+        suppress_fact_subject_sources: set[URIRef] | None = None,
     ) -> RDFGraph:
         """Merge multiple chunk graphs with per-triple provenance tracking.
 
@@ -463,6 +464,7 @@ class GraphRewriter:
         # Merged-entity tracking for owl:sameAs
         merged_entities: dict[URIRef, set[URIRef]] = defaultdict(set)
         suppressed_origins = suppress_sameas_origins or set()
+        suppressed_fact_subject_sources = suppress_fact_subject_sources or set()
         for original, mapped in mapping.items():
             if original != mapped:
                 if original in suppressed_origins:
@@ -478,6 +480,8 @@ class GraphRewriter:
 
             # 2. Merge triples with provenance
             for s, p, o in unit.graph:
+                if isinstance(s, URIRef) and s in suppressed_fact_subject_sources:
+                    continue
                 new_s, new_p, new_o = self.apply_mapping_to_triple(
                     s,
                     p,

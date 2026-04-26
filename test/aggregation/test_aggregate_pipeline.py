@@ -244,11 +244,8 @@ def test_aggregate_graphs_preserves_ontology_uris_and_provenance(monkeypatch) ->
 
     assert (canonical, RDFS.label, Literal("Person")) in result
     assert (typo, RDFS.label, Literal("Person")) in result
-    assert (canonical, OWL.sameAs, typo) in result or (
-        typo,
-        OWL.sameAs,
-        canonical,
-    ) in result
+    assert (canonical, OWL.sameAs, typo) not in result
+    assert (typo, OWL.sameAs, canonical) not in result
     assert str(canonical).startswith("http://example.org/onto#")
 
     statement_nodes = list(result.subjects(RDF_REIFIES, None))
@@ -259,7 +256,7 @@ def test_aggregate_graphs_preserves_ontology_uris_and_provenance(monkeypatch) ->
     )
 
 
-def test_facts_doc_entity_does_not_replace_ontology_entity(monkeypatch) -> None:
+def test_facts_doc_entity_can_merge_into_matching_ontology_entity(monkeypatch) -> None:
     doc_iri = "https://example.org/docs/case-42"
     ontology_court = URIRef("https://growgraph.dev/fcaont#CourAppelRouen")
     doc_court = URIRef(f"{doc_iri}/CourAppelRouen")
@@ -296,13 +293,12 @@ def test_facts_doc_entity_does_not_replace_ontology_entity(monkeypatch) -> None:
     result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
 
     assert (ontology_court, RDF.type, court_type) in result
-    assert (doc_court, RDF.type, court_type) in result
     assert (ontology_court, OWL.sameAs, doc_court) not in result
     assert (doc_court, OWL.sameAs, ontology_court) not in result
 
     heard_at_targets = set(result.objects(None, heard_at))
     assert ontology_court in heard_at_targets
-    assert doc_court in heard_at_targets
+    assert doc_court not in heard_at_targets
 
 
 def test_ontology_entities_in_same_cluster_keep_original_iris(monkeypatch) -> None:
@@ -354,11 +350,224 @@ def test_ontology_entities_in_same_cluster_keep_original_iris(monkeypatch) -> No
     assert court_fr in heard_at_targets
     assert court_en in heard_at_targets
 
-    assert (court_fr, same_as, court_en) in result or (
-        court_en,
-        same_as,
-        court_fr,
-    ) in result
+    assert (court_fr, same_as, court_en) not in result
+    assert (court_en, same_as, court_fr) not in result
+
+
+def test_directly_related_entities_do_not_merge_even_if_lexically_similar(
+    monkeypatch,
+) -> None:
+    doc_iri = "https://example.org/docs/case-direct-relation"
+    fact_trial = URIRef(f"{DEFAULT_IRI}/tribunal_correctionnel_1")
+    fact_court = URIRef(f"{DEFAULT_IRI}/tribunal_correctionnel")
+    heard_at = URIRef("https://growgraph.dev/fcaont#heardAt")
+
+    ttl = f"""
+    @prefix doc: <{doc_iri}/> .
+    @prefix facts: <{DEFAULT_IRI}/> .
+    @prefix fcaont: <https://growgraph.dev/fcaont#> .
+    doc:Case1 fcaont:heardAt facts:tribunal_correctionnel .
+    facts:tribunal_correctionnel_1 fcaont:heardAt facts:tribunal_correctionnel .
+    """
+    unit = make_fact_unit("Direct relation pair", 0, doc_iri, ttl)
+    aggregator = EmbeddingBasedAggregator()
+
+    def force_cluster(representations):
+        entities = set(representations.keys())
+        if fact_trial in entities and fact_court in entities:
+            remaining = [
+                entity for entity in entities if entity not in {fact_trial, fact_court}
+            ]
+            return [[fact_trial, fact_court], *[[entity] for entity in remaining]], {}
+        return [list(entities)], {}
+
+    monkeypatch.setattr(aggregator.clusterer, "cluster_entities", force_cluster)
+    result = aggregator.aggregate_graphs([unit], ontology_graph=RDFGraph())
+
+    heard_at_subjects = {
+        subject
+        for subject in result.subjects(heard_at, None)
+        if isinstance(subject, URIRef)
+    }
+    heard_at_targets = {
+        obj for obj in result.objects(None, heard_at) if isinstance(obj, URIRef)
+    }
+    assert any(
+        str(subject).endswith("/tribunal_correctionnel_1")
+        for subject in heard_at_subjects
+    )
+    assert any(
+        str(target).endswith("/tribunalCorrectionnel") for target in heard_at_targets
+    )
+
+
+def test_fact_merged_into_known_ontology_suppresses_fact_subject_assertions(
+    monkeypatch,
+) -> None:
+    doc_iri = "https://example.org/docs/case-annotation-suppress"
+    known_court = URIRef("https://growgraph.dev/fcaont#CourAppelRouen")
+    fact_court = URIRef(f"{DEFAULT_IRI}/CourAppelRouen")
+    heard_at = URIRef("https://growgraph.dev/fcaont#heardAt")
+    court_code = URIRef("https://growgraph.dev/fcaont#courtCode")
+    court_type = URIRef("https://growgraph.dev/fcaont#AppealCourt")
+
+    ttl = f"""
+    @prefix doc: <{doc_iri}/> .
+    @prefix facts: <{DEFAULT_IRI}/> .
+    @prefix fcaont: <https://growgraph.dev/fcaont#> .
+    @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    doc:Case1 fcaont:heardAt facts:CourAppelRouen .
+    facts:CourAppelRouen rdf:type fcaont:AppealCourt .
+    facts:CourAppelRouen rdfs:label "Rouen Court of Appeal" .
+    facts:CourAppelRouen fcaont:courtCode "RCA" .
+    """
+    unit = make_fact_unit("Fact court alias", 0, doc_iri, ttl)
+    ontology_graph = RDFGraph()
+    ontology_graph.add((known_court, RDF.type, court_type))
+    ontology_graph.add((known_court, RDFS.label, Literal("Official Label")))
+    aggregator = EmbeddingBasedAggregator()
+
+    def force_cluster(representations):
+        entities = set(representations.keys())
+        if known_court in entities and fact_court in entities:
+            remaining = [
+                entity for entity in entities if entity not in {known_court, fact_court}
+            ]
+            return [[known_court, fact_court], *[[entity] for entity in remaining]], {}
+        return [list(entities)], {}
+
+    monkeypatch.setattr(aggregator.clusterer, "cluster_entities", force_cluster)
+    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
+
+    assert known_court in set(result.objects(None, heard_at))
+    assert (known_court, RDFS.label, Literal("Rouen Court of Appeal")) not in result
+    assert (known_court, court_code, Literal("RCA")) not in result
+
+
+def test_uri_builder_uses_instance_lowercamel_and_structured_snakecase() -> None:
+    doc_iri = "https://example.org/docs/case-uri-style"
+    ttl = f"""
+    @prefix facts: <{DEFAULT_IRI}/> .
+    @prefix fcaont: <https://growgraph.dev/fcaont#> .
+    @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+    facts:RouenCourtOfAppeal rdf:type fcaont:AppealCourt .
+    facts:tribunal_correctionnel_1 rdf:type fcaont:Trial .
+    """
+    unit = make_fact_unit("URI style", 0, doc_iri, ttl)
+    result = EmbeddingBasedAggregator().aggregate_graphs(
+        [unit], ontology_graph=RDFGraph()
+    )
+
+    uri_nodes = {
+        str(node)
+        for triple in result
+        for node in (triple[0], triple[2])
+        if isinstance(node, URIRef) and str(node).startswith(doc_iri)
+    }
+    assert any(node.endswith("/rouenCourtOfAppeal") for node in uri_nodes)
+    assert any(node.endswith("/tribunal_correctionnel_1") for node in uri_nodes)
+
+
+def test_prefix_extension_ontology_properties_do_not_merge(monkeypatch) -> None:
+    doc_iri = "https://example.org/docs/case-prefix-guard"
+    has_judgment = URIRef("https://growgraph.dev/fcaont#hasJudgment")
+    has_judgment_date = URIRef("https://growgraph.dev/fcaont#hasJudgmentDate")
+    property_type = RDF.Property
+
+    ttl = f"""
+    @prefix doc: <{doc_iri}/> .
+    @prefix fcaont: <https://growgraph.dev/fcaont#> .
+    @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+    fcaont:hasJudgment rdf:type rdf:Property .
+    fcaont:hasJudgmentDate rdf:type rdf:Property .
+    """
+    unit = make_fact_unit("Property references", 0, doc_iri, ttl)
+    ontology_graph = RDFGraph()
+    ontology_graph.add((has_judgment, RDF.type, property_type))
+    ontology_graph.add((has_judgment_date, RDF.type, property_type))
+    aggregator = EmbeddingBasedAggregator()
+
+    def force_cluster(representations):
+        entities = set(representations.keys())
+        if has_judgment in entities and has_judgment_date in entities:
+            remaining = [
+                entity
+                for entity in entities
+                if entity not in {has_judgment, has_judgment_date}
+            ]
+            return [
+                [has_judgment, has_judgment_date],
+                *[[entity] for entity in remaining],
+            ], {}
+        return [list(entities)], {}
+
+    monkeypatch.setattr(aggregator.clusterer, "cluster_entities", force_cluster)
+    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
+
+    assert (has_judgment, OWL.sameAs, has_judgment_date) not in result
+    assert (has_judgment_date, OWL.sameAs, has_judgment) not in result
+
+
+def test_collect_all_entities_exposes_direct_relation_pairs() -> None:
+    doc_iri = "https://example.org/docs/case-direct-pairs"
+    left = URIRef(f"{DEFAULT_IRI}/LeftEntity")
+    right = URIRef(f"{DEFAULT_IRI}/RightEntity")
+    ttl = f"""
+    @prefix doc: <{doc_iri}/> .
+    @prefix facts: <{DEFAULT_IRI}/> .
+    @prefix fcaont: <https://growgraph.dev/fcaont#> .
+    facts:LeftEntity fcaont:relatedTo facts:RightEntity .
+    """
+    unit = make_fact_unit("Direct pair", 0, doc_iri, ttl)
+    aggregator = EmbeddingBasedAggregator()
+    (
+        _entities,
+        _source_entities,
+        _entity_graphs,
+        _entity_doc_iris,
+        _entity_classification,
+        direct_relation_pairs,
+    ) = aggregator._collect_all_entities([unit], known_ontology_entities=set())
+
+    assert frozenset((left, right)) in direct_relation_pairs
+    assert frozenset((right, left)) in direct_relation_pairs
+
+
+def test_aggregate_passes_explicit_known_ontology_map_to_selector(monkeypatch) -> None:
+    doc_iri = "https://example.org/docs/case-selector-map"
+    known_court = URIRef("https://growgraph.dev/fcaont#CourAppelRouen")
+    heard_at = URIRef("https://growgraph.dev/fcaont#heardAt")
+    class_type = URIRef("http://www.w3.org/2000/01/rdf-schema#Class")
+    ttl = f"""
+    @prefix doc: <{doc_iri}/> .
+    @prefix fcaont: <https://growgraph.dev/fcaont#> .
+    doc:Case1 fcaont:heardAt fcaont:CourAppelRouenAlias .
+    """
+    unit = make_fact_unit("Selector map check", 0, doc_iri, ttl)
+    ontology_graph = RDFGraph()
+    ontology_graph.add((known_court, RDF.type, class_type))
+    aggregator = EmbeddingBasedAggregator()
+    captured: dict[str, dict[URIRef, bool] | None] = {"map": None}
+
+    original_create_mapping = aggregator.selector.create_mapping
+
+    def capture_create_mapping(
+        clusters, representations, entity_is_known_ontology=None
+    ):
+        captured["map"] = entity_is_known_ontology
+        return original_create_mapping(
+            clusters,
+            representations,
+            entity_is_known_ontology=entity_is_known_ontology,
+        )
+
+    monkeypatch.setattr(aggregator.selector, "create_mapping", capture_create_mapping)
+    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
+
+    assert captured["map"] is not None
+    assert captured["map"].get(known_court) is True
+    assert any(isinstance(obj, URIRef) for obj in result.objects(None, heard_at))
 
 
 def test_tentative_ontology_like_alias_maps_to_known_ontology(monkeypatch) -> None:
@@ -568,7 +777,7 @@ def test_tentative_with_incompatible_type_does_not_merge_to_known_ontology(
     assert (known_conviction, OWL.sameAs, tentative_person) not in result
 
 
-def test_tentative_alias_merged_without_sameas_leak(monkeypatch) -> None:
+def test_tentative_prefix_extension_alias_is_not_merged(monkeypatch) -> None:
     doc_iri = "https://example.org/docs/case-47b"
     known_conviction = URIRef("https://growgraph.dev/fcaont#Conviction")
     tentative_alias = URIRef("https://growgraph.dev/fcaont#Conviction1")
@@ -609,8 +818,8 @@ def test_tentative_alias_merged_without_sameas_leak(monkeypatch) -> None:
 
     result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
 
-    assert known_conviction in set(result.objects(None, associated_with))
-    assert tentative_alias not in set(result.objects(None, associated_with))
+    assert known_conviction not in set(result.objects(None, associated_with))
+    assert tentative_alias in set(result.objects(None, associated_with))
     assert (known_conviction, OWL.sameAs, tentative_alias) not in result
 
 

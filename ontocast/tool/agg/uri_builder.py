@@ -4,8 +4,8 @@ Builds final URIs for entity representatives following
 RDF/Semantic Web naming conventions (see README.md):
 - Classes (entities / types): PascalCase (e.g., JudicialDecision)
 - Properties (predicates): lowerCamelCase (e.g., hasDecision)
-- Instances with natural names: PascalCase (e.g., FrenchCourtOfCassation)
-- Instances with structured/external IDs: preserve structure (e.g., Case_2023_456)
+- Instances with natural names: lowerCamelCase (e.g., frenchCourtOfCassation)
+- Instances with structured/external IDs: preserve structure (e.g., case_2023_456)
 
 Underscores are avoided in ontology terms (classes, properties).
 Underscores are acceptable for instances derived from external IDs.
@@ -160,8 +160,7 @@ def has_structured_id(entity: URIRef) -> bool:
 def format_structured_id(entity: URIRef) -> str:
     """Format a structured identifier preserving underscores and digits.
 
-    The leading word segment is capitalised so that the result starts
-    with an uppercase letter (e.g. ``Case_2023_456``).
+    Structured IDs stay lowercase/snake-like after sanitization.
 
     Args:
         entity: Original entity URI.
@@ -174,10 +173,7 @@ def format_structured_id(entity: URIRef) -> str:
     cleaned = re.sub(r"_+", "_", cleaned).strip("_")
     if not cleaned:
         return "Entity"
-    # Capitalise first segment for readability
-    parts = cleaned.split("_", 1)
-    parts[0] = parts[0].capitalize()
-    return "_".join(parts)
+    return cleaned
 
 
 def normalize_local_name(
@@ -196,11 +192,14 @@ def normalize_local_name(
     if role == EntityRole.PROPERTY:
         return to_lower_camel_case(representation.normal_form)
 
+    if role == EntityRole.CLASS:
+        return to_pascal_case(representation.normal_form)
+
     if role == EntityRole.INSTANCE and has_structured_id(representation.iri):
         return format_structured_id(representation.iri)
 
-    # Classes and instances with natural names → PascalCase
-    return to_pascal_case(representation.normal_form)
+    # Instances with natural names → lowerCamelCase
+    return to_lower_camel_case(representation.normal_form)
 
 
 class URIBuilder:

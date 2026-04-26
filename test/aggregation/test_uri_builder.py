@@ -38,7 +38,7 @@ def test_structured_id_helpers() -> None:
     assert has_structured_id(URIRef("http://ex.org/Case_2023_456")) is True
     assert has_structured_id(URIRef("http://ex.org/Person")) is False
     assert (
-        format_structured_id(URIRef("http://ex.org/case_2023_456")) == "Case_2023_456"
+        format_structured_id(URIRef("http://ex.org/case_2023_456")) == "case_2023_456"
     )
 
 

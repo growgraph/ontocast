@@ -222,7 +222,10 @@ class ClusterRepresentativeSelector:
         return score
 
     def select_representative(
-        self, cluster: list[URIRef], representations: dict[URIRef, EntityRepresentation]
+        self,
+        cluster: list[URIRef],
+        representations: dict[URIRef, EntityRepresentation],
+        entity_is_known_ontology: dict[URIRef, bool] | None = None,
     ) -> URIRef:
         """Select the best representative entity from a cluster.
 
@@ -240,12 +243,18 @@ class ClusterRepresentativeSelector:
         if len(cluster) == 1:
             return cluster[0]
 
+        known_ontology_map = entity_is_known_ontology or {}
+
         # Separate ontology entities from fact entities
         ontology_entities = [
-            e for e in cluster if representations[e].is_ontology_entity
+            e
+            for e in cluster
+            if known_ontology_map.get(e, representations[e].is_ontology_entity)
         ]
         fact_entities = [
-            e for e in cluster if not representations[e].is_ontology_entity
+            e
+            for e in cluster
+            if not known_ontology_map.get(e, representations[e].is_ontology_entity)
         ]
 
         # Prefer ontology entities
@@ -265,6 +274,7 @@ class ClusterRepresentativeSelector:
         self,
         clusters: list[list[URIRef]],
         representations: dict[URIRef, EntityRepresentation],
+        entity_is_known_ontology: dict[URIRef, bool] | None = None,
     ) -> dict[URIRef, URIRef]:
         """Create mapping from all entities to their cluster representatives.
 
@@ -278,7 +288,11 @@ class ClusterRepresentativeSelector:
         mapping = {}
 
         for cluster in clusters:
-            representative = self.select_representative(cluster, representations)
+            representative = self.select_representative(
+                cluster,
+                representations,
+                entity_is_known_ontology=entity_is_known_ontology,
+            )
 
             for entity in cluster:
                 mapping[entity] = representative
