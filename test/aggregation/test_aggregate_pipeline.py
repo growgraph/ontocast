@@ -6,7 +6,7 @@ from rdflib import OWL, RDF, RDFS, Literal, URIRef
 from ontocast.onto.constants import DEFAULT_IRI, PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.tool.agg.aggregate import EmbeddingBasedAggregator
+from ontocast.tool import EmbeddingBasedAggregator
 from ontocast.util import render_text_hash
 
 

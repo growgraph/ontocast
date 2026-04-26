@@ -10,7 +10,7 @@ from typing import Any
 from pydantic import Field
 from rdflib import Namespace
 
-from ontocast.config import PatchRetrievalConfig
+from ontocast.config import PatchRetrievalConfig, QdrantConfig
 from ontocast.onto.constants import COMMON_PREFIXES
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.onto import Tool
@@ -53,24 +53,52 @@ def _filter_hits_by_relative_floor(
     return [hit for hit in hits if hit.score >= floor]
 
 
+def _normalized_fusion_weights_triple(
+    qc: QdrantConfig,
+) -> tuple[float, float, float]:
+    cw, nw, bw = (
+        qc.fusion_core_weight,
+        qc.fusion_neighborhood_weight,
+        qc.fusion_bm25_weight,
+    )
+    total = cw + nw + bw
+    if total <= 0.0:
+        return (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
+    return (cw / total, nw / total, bw / total)
+
+
 def _rank_fuse_hits(
     core_hits: list[OntologySearchHit],
     neighborhood_hits: list[OntologySearchHit],
+    bm25_hits: list[OntologySearchHit],
+    *,
+    core_weight: float,
+    neighborhood_weight: float,
+    bm25_weight: float,
 ) -> list[OntologySearchHit]:
-    """Rank-fuse two hit lists for a single query by reciprocal rank."""
+    """Rank-fuse core, neighborhood, and optional BM25 hit lists by weighted reciprocal rank."""
     best_by_id: dict[str, OntologySearchHit] = {}
     rank_score_by_id: dict[str, float] = {}
 
     for rank, hit in enumerate(core_hits, start=1):
         aid = hit.atom.atom_id
-        rank_score_by_id[aid] = rank_score_by_id.get(aid, 0.0) + (1.0 / rank)
+        rank_score_by_id[aid] = rank_score_by_id.get(aid, 0.0) + (core_weight / rank)
         prev = best_by_id.get(aid)
         if prev is None or hit.score > prev.score:
             best_by_id[aid] = hit
 
     for rank, hit in enumerate(neighborhood_hits, start=1):
         aid = hit.atom.atom_id
-        rank_score_by_id[aid] = rank_score_by_id.get(aid, 0.0) + (1.0 / rank)
+        rank_score_by_id[aid] = rank_score_by_id.get(aid, 0.0) + (
+            neighborhood_weight / rank
+        )
+        prev = best_by_id.get(aid)
+        if prev is None or hit.score > prev.score:
+            best_by_id[aid] = hit
+
+    for rank, hit in enumerate(bm25_hits, start=1):
+        aid = hit.atom.atom_id
+        rank_score_by_id[aid] = rank_score_by_id.get(aid, 0.0) + (bm25_weight / rank)
         prev = best_by_id.get(aid)
         if prev is None or hit.score > prev.score:
             best_by_id[aid] = hit
@@ -91,13 +119,17 @@ def _rank_fuse_hits(
 def _filter_and_merge_patch_hits(
     hits_by_query: list[OntologySearchHitsByChannel],
     *,
+    qdrant_config: QdrantConfig,
     per_query_core_score_ratio: float,
     per_query_neighborhood_score_ratio: float,
+    per_query_bm25_score_ratio: float,
     min_core_query_best_score: float,
     min_neighborhood_query_best_score: float,
+    min_bm25_query_best_score: float,
     min_merged_max_score: float,
 ) -> list[GraphAtom]:
     """Filter each channel per query, then rank-fuse per query and across queries."""
+    cw, nw, bw = _normalized_fusion_weights_triple(qdrant_config)
     collected: list[OntologySearchHit] = []
     for query_hits in hits_by_query:
         filtered_core = _filter_hits_by_relative_floor(
@@ -110,12 +142,33 @@ def _filter_and_merge_patch_hits(
             score_ratio=per_query_neighborhood_score_ratio,
             min_query_best_score=min_neighborhood_query_best_score,
         )
-        collected.extend(_rank_fuse_hits(filtered_core, filtered_neighborhood))
+        filtered_bm25 = _filter_hits_by_relative_floor(
+            query_hits.bm25_hits,
+            score_ratio=per_query_bm25_score_ratio,
+            min_query_best_score=min_bm25_query_best_score,
+        )
+        collected.extend(
+            _rank_fuse_hits(
+                filtered_core,
+                filtered_neighborhood,
+                filtered_bm25,
+                core_weight=cw,
+                neighborhood_weight=nw,
+                bm25_weight=bw,
+            )
+        )
 
     if not collected:
         return []
 
-    merged_hits = _rank_fuse_hits(collected, [])
+    merged_hits = _rank_fuse_hits(
+        collected,
+        [],
+        [],
+        core_weight=1.0,
+        neighborhood_weight=0.0,
+        bm25_weight=0.0,
+    )
     merged_max = merged_hits[0].score
     if min_merged_max_score > 0.0 and merged_max < min_merged_max_score:
         return []
@@ -303,11 +356,11 @@ class OntologyPatchRetriever(Tool):
         """Vector search over all ``queries`` once, score-filter, dedupe, single subgraph expansion.
 
         Hits are filtered per query and per channel relative to each channel's best
-        score (see ``PatchRetrievalConfig.per_query_core_score_ratio`` and
-        ``PatchRetrievalConfig.per_query_neighborhood_score_ratio``), then merged by
-        rank fusion so channels with different score distributions both contribute.
-        Optional per-channel min-best filters and ``min_merged_max_score`` reject
-        weak or irrelevant candidates.
+        score (see ``PatchRetrievalConfig`` per-query ratio fields for core,
+        neighborhood, and BM25), then merged by rank fusion so channels with
+        different score distributions all contribute. Optional per-channel
+        min-best filters and ``min_merged_max_score`` reject weak or irrelevant
+        candidates.
 
         Returns the merged RDF graph (possibly disconnected across ontologies) and sorted
         distinct ontology IRIs that contributed vector hits.
@@ -323,10 +376,13 @@ class OntologyPatchRetriever(Tool):
         pc = self.patch
         merged = _filter_and_merge_patch_hits(
             hits_by_query,
+            qdrant_config=qc,
             per_query_core_score_ratio=pc.per_query_core_score_ratio,
             per_query_neighborhood_score_ratio=pc.per_query_neighborhood_score_ratio,
+            per_query_bm25_score_ratio=pc.per_query_bm25_score_ratio,
             min_core_query_best_score=pc.min_core_query_best_score,
             min_neighborhood_query_best_score=pc.min_neighborhood_query_best_score,
+            min_bm25_query_best_score=pc.min_bm25_query_best_score,
             min_merged_max_score=pc.min_merged_max_score,
         )
         if merged and pc.merged_score_ratio > 0.0:

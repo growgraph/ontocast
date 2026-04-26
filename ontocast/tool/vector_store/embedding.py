@@ -11,6 +11,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain_openai import OpenAIEmbeddings
 from pydantic import Field, PrivateAttr, SecretStr
+from qdrant_client.http import models as qdrant_models
 
 from ontocast.config import EmbeddingConfig, EmbeddingProvider
 from ontocast.tool.onto import Tool
@@ -143,3 +144,54 @@ class OllamaEmbeddingTool(_LangChainEmbeddingTool):
                     )
                 vectors.append(vector)
         return vectors
+
+
+class FastembedBm25SparseTool(Tool):
+    """BM25-style sparse text embeddings via fastembed (Qdrant-compatible)."""
+
+    config: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    _embedder: Any = PrivateAttr(default=None)
+
+    def _get_embedder(self) -> Any:
+        if self._embedder is not None:
+            return self._embedder
+        try:
+            fastembed_mod = importlib.import_module("fastembed")
+        except ImportError as error:
+            raise ImportError(
+                "BM25 sparse embeddings require fastembed. "
+                "Install it with: uv add 'fastembed[all]'"
+            ) from error
+        sparse_cls = getattr(fastembed_mod, "SparseTextEmbedding", None)
+        if sparse_cls is None:
+            raise ImportError("fastembed.SparseTextEmbedding is not available")
+        self._embedder = sparse_cls(model_name=self.config.bm25_model_name)
+        return self._embedder
+
+    def embed_sparse(self, texts: list[str]) -> list[qdrant_models.SparseVector]:
+        """Return Qdrant sparse vectors for all given texts."""
+        if not texts:
+            return []
+        model = self._get_embedder()
+        out: list[qdrant_models.SparseVector] = []
+        for sparse_emb in model.embed(texts):
+            payload = sparse_emb.as_object()
+            indices_raw = payload["indices"]
+            values_raw = payload["values"]
+            indices_list = indices_raw.tolist()
+            values_list = values_raw.tolist()
+            out.append(
+                qdrant_models.SparseVector(
+                    indices=[int(i) for i in indices_list],
+                    values=[float(v) for v in values_list],
+                )
+            )
+        if len(out) != len(texts):
+            raise ValueError("BM25 embedder returned mismatched sparse vector count")
+        return out
+
+    def embed_one_sparse(self, text: str) -> qdrant_models.SparseVector:
+        vectors = self.embed_sparse([text])
+        if not vectors:
+            raise ValueError("BM25 embedder returned no sparse vector for query text")
+        return vectors[0]

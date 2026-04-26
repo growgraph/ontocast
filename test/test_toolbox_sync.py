@@ -106,3 +106,18 @@ def test_toolbox_rejects_mismatched_qdrant_vector_size_and_embedding_dim() -> No
         )
         with pytest.raises(ValueError, match="vector_size must match"):
             ToolBox(Config(tool_config=tool_config))
+
+
+def test_toolbox_always_wires_bm25_when_vector_search_enabled() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        wd = Path(tmp)
+        od = wd / "ontologies"
+        od.mkdir()
+        tool_config = ToolConfig(
+            path_config=PathConfig(working_directory=wd, ontology_directory=od),
+            embedding=EmbeddingConfig(dimension=384),
+            qdrant=QdrantConfig(uri="http://localhost:6333"),
+        )
+        toolbox = ToolBox(Config(tool_config=tool_config))
+        assert toolbox.vector_store is not None
+        assert toolbox.vector_store.sparse_embedding is not None

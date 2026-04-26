@@ -25,6 +25,7 @@ Example:
 
 from ontocast.tool.chunk.chunker import ChunkerTool
 
+from .agg.aggregate import EmbeddingBasedAggregator
 from .atomic import AtomicToolBox, SearchHit
 from .converter import ConverterTool
 from .llm import LLMTool
@@ -53,4 +54,5 @@ __all__ = [
     "EmbeddingTool",
     "QdrantVectorStore",
     "OntologyPatchRetriever",
+    "EmbeddingBasedAggregator",
 ]

@@ -46,7 +46,7 @@ from ontocast.stategraph.routing import (
     route_after_chunk,
     route_after_ontology_consolidation,
 )
-from ontocast.tool.agg.aggregate import EmbeddingBasedAggregator
+from ontocast.tool import EmbeddingBasedAggregator
 from ontocast.tool.atomic import AtomicToolBox, SearchHit
 from ontocast.toolbox import ToolBox
 

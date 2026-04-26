@@ -54,6 +54,13 @@ class GraphAtom(BasePydanticModel):
     core_representation: str = Field(
         description="High-precision natural language text (labels, types, descriptions)."
     )
+    minimal_representation: str = Field(
+        default="",
+        description=(
+            "IRI local name with camelCase/PascalCase split into space-separated terms; "
+            "used for BM25 (keyword) indexing."
+        ),
+    )
     neighborhood_representation: str = Field(
         description="Neighborhood relation text for disambiguation context."
     )
@@ -87,15 +94,19 @@ class OntologySearchHit(BasePydanticModel):
 
 
 class OntologySearchHitsByChannel(BasePydanticModel):
-    """Per-query retrieval hits split by vector channel."""
+    """Per-query retrieval hits split by vector channel (dense core/neighborhood + optional BM25)."""
 
     core_hits: list[OntologySearchHit] = Field(
         default_factory=list,
-        description="Top hits from the core vector channel.",
+        description="Top hits from the dense core vector channel.",
     )
     neighborhood_hits: list[OntologySearchHit] = Field(
         default_factory=list,
-        description="Top hits from the neighborhood vector channel.",
+        description="Top hits from the dense neighborhood vector channel.",
+    )
+    bm25_hits: list[OntologySearchHit] = Field(
+        default_factory=list,
+        description="Top hits from the sparse BM25 lane (minimal IRI text).",
     )
 
 
@@ -143,3 +154,4 @@ class VectorStoreTool(Tool):
 
 CORE_VECTOR_NAME = "core"
 NEIGHBORHOOD_VECTOR_NAME = "neighborhood"
+BM25_VECTOR_NAME = "bm25"

@@ -87,6 +87,7 @@ def test_qdrant_vector_store_smoke(
 
     hits = vector_store.search_patches(query="alpha concept relation", top_k=5)
     assert len(hits) > 0
+    assert len({hit.iri for hit in hits}) == len(hits)
     assert any(hit.ontology_iri == indexed_iri for hit in hits)
     assert all(hit.ontology_version == ingested.version for hit in hits)
     assert all(hit.core_representation for hit in hits)

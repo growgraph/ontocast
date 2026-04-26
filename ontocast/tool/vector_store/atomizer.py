@@ -6,7 +6,6 @@ embedding-ready neighborhood representations.
 
 from __future__ import annotations
 
-import math
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Protocol, cast
@@ -164,6 +163,7 @@ class GraphAtomizer(Tool):
         generated_at = datetime.now(timezone.utc)
 
         atoms_by_id: dict[str, GraphAtom] = {}
+        seen_payload_keys: set[tuple[str, str, str, str | None, str | None]] = set()
         for entity in entities:
             role = role_from_predicate_usage(is_predicate=entity in predicate_uris)
             patch_graph = self._build_neighborhood_graph(
@@ -175,15 +175,28 @@ class GraphAtomizer(Tool):
             core_representation = self._build_core_representation(
                 entity=entity, graph=patch_graph, role=role
             )
+            minimal_representation = self._build_minimal_representation(entity)
             neighborhood_variants = self._build_neighborhood_variants(
                 entity=entity, graph=patch_graph, entity_role=role
             )
             if not neighborhood_variants:
                 neighborhood_variants = [""]
+            # Keep first occurrence while removing repeated textual variants.
+            neighborhood_variants = list(dict.fromkeys(neighborhood_variants))
 
             for variant_index, neighborhood_representation in enumerate(
                 neighborhood_variants
             ):
+                payload_key = (
+                    source.iri,
+                    str(entity),
+                    core_representation,
+                    neighborhood_representation,
+                    role,
+                )
+                if payload_key in seen_payload_keys:
+                    continue
+                seen_payload_keys.add(payload_key)
                 atom_key = (
                     f"{source.iri}|{source.hash}|{source.version}|{entity}|"
                     f"{variant_index}|{core_representation}|{neighborhood_representation}"
@@ -200,6 +213,7 @@ class GraphAtomizer(Tool):
                     iri=str(entity),
                     entity_role=role,
                     core_representation=core_representation,
+                    minimal_representation=minimal_representation,
                     neighborhood_representation=neighborhood_representation,
                     created_at=generated_at,
                 )
@@ -414,6 +428,14 @@ class GraphAtomizer(Tool):
                 clues.append(f"{d_label} {prop_verb} it")
             self._append_inverse_of_clues_for_property(prop_ref, graph, clues)
 
+    def _build_minimal_representation(self, entity: URIRef) -> str:
+        """IRI local name as keyword-oriented tokens: split camelCase/PascalCase, etc.
+
+        Compact text for sparse BM25 (no labels or gloss); only the focal entity IRI
+        is tokenized (see ``normalize_uri_local_name``).
+        """
+        return normalize_uri_local_name(entity)
+
     def _build_core_representation(
         self, entity: URIRef, graph: RDFGraph, role: str
     ) -> str:
@@ -602,20 +624,8 @@ class GraphAtomizer(Tool):
         )
         if not clues:
             return []
-
-        role_cap = 3
-        max_variants = min(
-            3,
-            max(1, math.ceil(len(clues) / role_cap)),
-        )
-
-        variants: list[str] = []
-        for variant_index in range(max_variants):
-            start = variant_index * role_cap
-            chunk = clues[start : start + role_cap]
-            if chunk:
-                variants.append(". ".join(chunk))
-        return variants
+        # Temporary simplification: emit a single deterministic neighborhood view.
+        return [". ".join(clues)]
 
     def _collect_literals(
         self, graph: RDFGraph, subject: URIRef, predicates: list[URIRef], max_items: int

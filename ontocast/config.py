@@ -74,6 +74,13 @@ class EmbeddingProvider(StrEnum):
     OLLAMA = "ollama"
 
 
+class QdrantDedupMode(StrEnum):
+    """How Qdrant point identity is derived during upsert."""
+
+    ATOM_ID = "atom_id"
+    IRI = "iri"
+
+
 class LLMConfig(BaseSettings):
     """LLM configuration settings."""
 
@@ -424,7 +431,11 @@ class EmbeddingConfig(BaseSettings):
     dimension: int = Field(
         default=384,
         ge=1,
-        description="Expected embedding vector size.",
+        description="Expected dense embedding vector size for core and neighborhood vectors.",
+    )
+    bm25_model_name: str = Field(
+        default="Qdrant/bm25",
+        description="fastembed SparseTextEmbedding model id for the BM25 sparse lane.",
     )
 
     model_config = SettingsConfigDict(
@@ -469,6 +480,22 @@ class PatchRetrievalConfig(BaseSettings):
             "neighborhood hits."
         ),
     )
+    per_query_bm25_score_ratio: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Within each query, keep BM25 hits whose score is at least this fraction "
+            "of that query's best BM25 score."
+        ),
+    )
+    min_bm25_query_best_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "If > 0, queries whose top BM25 score is below this contribute no BM25 hits."
+        ),
+    )
     min_merged_max_score: float = Field(
         default=0.18,
         ge=0.0,
@@ -492,7 +519,8 @@ class PatchRetrievalConfig(BaseSettings):
         ge=0.0,
         le=1.0,
         description=(
-            "MMR trade-off: 1.0 keeps pure relevance ranking, 0.0 maximizes diversity."
+            "MMR trade-off over dense core+neighborhood vectors: 1.0 keeps pure relevance, "
+            "0.0 maximizes diversity."
         ),
     )
     max_atoms: int = Field(
@@ -600,6 +628,43 @@ class QdrantConfig(BaseSettings):
         ge=0.0,
         le=1.0,
         description="Neighborhood vector score weight for dual-vector ranking fusion.",
+    )
+    fusion_bm25_weight: float = Field(
+        default=0.2,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "BM25 sparse-lane weight for rank fusion (normalized with core and "
+            "neighborhood weights when BM25 retrieval is enabled)."
+        ),
+    )
+    dedup_mode: QdrantDedupMode = Field(
+        default=QdrantDedupMode.IRI,
+        description=(
+            "Point identity policy for ontology vectors: 'iri' stores one logical point "
+            "per entity key, while 'atom_id' keeps every atom variant as a separate point."
+        ),
+    )
+    dedup_include_version: bool = Field(
+        default=True,
+        description=(
+            "When dedup_mode='iri', include ontology_version in the identity key so "
+            "different ontology versions remain isolated."
+        ),
+    )
+    dedup_include_hash: bool = Field(
+        default=True,
+        description=(
+            "When dedup_mode='iri', include ontology_hash in the identity key so "
+            "different ontology snapshots remain isolated."
+        ),
+    )
+    dedup_query_hits_by_iri: bool = Field(
+        default=True,
+        description=(
+            "Drop duplicate retrieval hits sharing the same logical IRI key and keep "
+            "the best-scoring one."
+        ),
     )
 
     model_config = SettingsConfigDict(

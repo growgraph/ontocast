@@ -9,8 +9,32 @@ import pytest
 from qdrant_client import QdrantClient
 
 from ontocast.config import EmbeddingConfig, QdrantConfig
-from ontocast.tool.vector_store.qdrant import QdrantVectorStore
+from ontocast.tool.vector_store.embedding import FastembedBm25SparseTool
+from ontocast.tool.vector_store.qdrant import (
+    EmbeddingContractMismatchError,
+    QdrantVectorStore,
+)
 from test.qdrant_util import DeterministicEmbeddingTool, qdrant_reachable
+
+
+def test_embedding_model_fingerprint_includes_dense_and_bm25() -> None:
+    emb = DeterministicEmbeddingTool(
+        config=EmbeddingConfig(
+            dimension=8,
+            model_name="contract-a",
+            bm25_model_name="Qdrant/bm25",
+        )
+    )
+    sparse = FastembedBm25SparseTool(config=emb.config)
+    store = QdrantVectorStore(
+        config=QdrantConfig(),
+        embedding=emb,
+        sparse_embedding=sparse,
+    )
+    fp = store._embedding_model_fingerprint()
+    assert store._embedding_fingerprint_matches(fp)
+    assert fp.startswith("dense:")
+    assert "|bm25=Qdrant/bm25" in fp
 
 
 def _require_live_qdrant() -> QdrantConfig:
@@ -53,7 +77,8 @@ def test_initialize_rejects_mismatched_embedding_dimension() -> None:
     try:
         asyncio.run(store_a.initialize())
         with pytest.raises(
-            ValueError, match=r"vector sizes.*do not match configured size"
+            EmbeddingContractMismatchError,
+            match=r"vector 'core' size 8 does not match configured dense size 16",
         ):
             asyncio.run(store_b.initialize())
     finally:

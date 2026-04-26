@@ -4,6 +4,7 @@ from .atomizer import GraphAtomizer
 from .core import GraphAtom, OntologySearchHit, VectorStoreTool
 from .embedding import (
     EmbeddingTool,
+    FastembedBm25SparseTool,
     HuggingFaceEmbeddingTool,
     OllamaEmbeddingTool,
     OpenAIEmbeddingTool,
@@ -13,6 +14,7 @@ from .qdrant import EmbeddingContractMismatchError, QdrantVectorStore
 
 __all__ = [
     "EmbeddingTool",
+    "FastembedBm25SparseTool",
     "HuggingFaceEmbeddingTool",
     "OllamaEmbeddingTool",
     "OpenAIEmbeddingTool",

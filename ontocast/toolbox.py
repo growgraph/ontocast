@@ -15,11 +15,11 @@ from ontocast.tool import (
     AtomicToolBox,
     ChunkerTool,
     ConverterTool,
+    EmbeddingBasedAggregator,
     FilesystemTripleStoreManager,
     FusekiTripleStoreManager,
     Neo4jTripleStoreManager,
 )
-from ontocast.tool.agg.aggregate import EmbeddingBasedAggregator
 from ontocast.tool.cache import Cacher
 from ontocast.tool.graph_diff import DiffTool
 from ontocast.tool.graph_version_manager import GraphVersionManager
@@ -29,6 +29,7 @@ from ontocast.tool.sparql import SPARQLTool
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.tool.vector_store import (
     EmbeddingTool,
+    FastembedBm25SparseTool,
     OntologyPatchRetriever,
     QdrantVectorStore,
 )
@@ -194,9 +195,12 @@ class ToolBox:
                     f"(got vector_size={q_vs}, embedding.dimension={emb_dim})"
                 )
             self.embedding_tool = EmbeddingTool.create(tool_config.embedding)
+            # BM25 is always enabled whenever vector search is enabled.
+            sparse_embedding = FastembedBm25SparseTool(config=tool_config.embedding)
             self.vector_store = QdrantVectorStore(
                 config=tool_config.qdrant,
                 embedding=self.embedding_tool,
+                sparse_embedding=sparse_embedding,
             )
             self.patch_retriever = OntologyPatchRetriever(
                 vector_store=self.vector_store,

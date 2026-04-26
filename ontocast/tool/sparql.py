@@ -8,7 +8,7 @@ import asyncio
 import logging
 
 from rdflib import BNode, Literal, URIRef
-from rdflib.namespace import RDFS, SKOS
+from rdflib.namespace import RDF, RDFS, SKOS
 from rdflib.plugins.sparql import prepareQuery
 
 from ontocast.onto.enum import SPARQLOperationType
@@ -31,6 +31,10 @@ _SEED_DESCRIPTION_PREDICATES: frozenset[URIRef] = frozenset(
         URIRef("http://purl.org/dc/elements/1.1/description"),
     }
 )
+
+# RDF list expansion (`rdf:first`/`rdf:rest`) tends to introduce many low-value
+# blank-node triples that are disconnected from business entities.
+_NOISY_EXPANSION_PREDICATES: frozenset[URIRef] = frozenset({RDF.first, RDF.rest})
 
 
 class SPARQLTool:
@@ -287,6 +291,20 @@ class SPARQLTool:
         ontology_hash_filters: dict[str, set[str]] | None,
     ) -> RDFGraph:
         """Merge filtered ontology graphs; expand a bounded neighborhood."""
+
+        def should_include_expansion_triple(
+            subj: object,
+            pred: object,
+            obj: object,
+        ) -> bool:
+            if not isinstance(pred, URIRef):
+                return False
+            if pred in _NOISY_EXPANSION_PREDICATES:
+                return False
+            if isinstance(subj, BNode) and isinstance(obj, BNode):
+                return False
+            return True
+
         ontology_filter = set(ontology_iris or [])
         relevant_graphs: list[RDFGraph] = []
         for ontology in ontologies:
@@ -356,19 +374,15 @@ class SPARQLTool:
                     merged_graph.triples((None, None, node)),
                     key=lambda triple: str(triple),
                 )
-                predicate_hits = sorted(
-                    merged_graph.triples((None, node, None)),
-                    key=lambda triple: str(triple),
-                )
-                for triple in outgoing + incoming + predicate_hits:
+                for triple in outgoing + incoming:
+                    subj, pred, obj = triple
+                    if not should_include_expansion_triple(subj, pred, obj):
+                        continue
                     if len(result) >= max_triples:
                         return result
                     result.add(triple)
-                    subj, pred, obj = triple
                     if isinstance(subj, URIRef) and subj not in visited:
                         next_frontier.add(subj)
-                    if isinstance(pred, URIRef) and pred not in visited:
-                        next_frontier.add(pred)
                     if isinstance(obj, URIRef) and obj not in visited:
                         next_frontier.add(obj)
             frontier = next_frontier

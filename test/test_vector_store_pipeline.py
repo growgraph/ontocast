@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
 import pytest
 from pydantic import PrivateAttr
 
-from ontocast.config import EmbeddingConfig, PatchRetrievalConfig, QdrantConfig
+from ontocast.config import (
+    EmbeddingConfig,
+    PatchRetrievalConfig,
+    QdrantConfig,
+    QdrantDedupMode,
+)
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.sparql import SPARQLTool
@@ -16,12 +22,13 @@ from ontocast.tool.vector_store.atomizer import (
     GraphAtomizer,
 )
 from ontocast.tool.vector_store.core import (
+    BM25_VECTOR_NAME,
     GraphAtom,
     OntologySearchHit,
     OntologySearchHitsByChannel,
     canonicalize_entity_role,
 )
-from ontocast.tool.vector_store.embedding import EmbeddingTool
+from ontocast.tool.vector_store.embedding import EmbeddingTool, FastembedBm25SparseTool
 from ontocast.tool.vector_store.patch_retriever import (
     OntologyPatchRetriever,
     _mmr_rerank,
@@ -115,6 +122,7 @@ class StubVectorStore(QdrantVectorStore):
             OntologySearchHitsByChannel(
                 core_hits=self.search_patch_hits(query=query, top_k=top_k),
                 neighborhood_hits=[],
+                bm25_hits=[],
             )
             for query in queries
         ]
@@ -422,6 +430,38 @@ def test_atomizer_hierarchy_clues_include_parent_label_gloss() -> None:
     assert "parent relation label" in nh_prop
 
 
+def test_atomizer_minimal_representation_splits_iri_local_name() -> None:
+    graph = RDFGraph._from_turtle_str(
+        """
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix ex: <https://example.org/min#> .
+        ex: a owl:Ontology .
+        ex:MyVeryCoolClass a rdfs:Class ; rdfs:label "A label" .
+        """
+    )
+    ontology = Ontology(graph=graph)
+    atoms = GraphAtomizer().atomize(source=ontology, depth=1)
+    cool = next(a for a in atoms if a.iri.endswith("MyVeryCoolClass"))
+    assert cool.core_representation.lower().startswith("a label")
+    assert cool.minimal_representation == "my very cool class"
+
+
+def test_embedding_config_default_bm25_model() -> None:
+    cfg = EmbeddingConfig()
+    assert cfg.bm25_model_name == "Qdrant/bm25"
+
+
+def test_fastembed_bm25_sparse_tool_returns_qdrant_sparse_vectors() -> None:
+    cfg = EmbeddingConfig()
+    tool = FastembedBm25SparseTool(config=cfg)
+    vectors = tool.embed_sparse(["alpha beta", "gamma delta"])
+    assert len(vectors) == 2
+    assert all(len(v.indices) == len(v.values) for v in vectors)
+    assert all(len(v.indices) > 0 for v in vectors)
+
+
 def test_embed_texts_batched_respects_batch_size() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     store = QdrantVectorStore(
@@ -449,6 +489,19 @@ def test_embed_texts_batched_raises_on_mismatch() -> None:
         assert "mismatched vectors" in str(error)
     else:
         raise AssertionError("Expected ValueError for embedding/vector count mismatch")
+
+
+def test_bm25_sparse_vector_uses_dot_product_modifier_none() -> None:
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    store = QdrantVectorStore(
+        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        embedding=embedding,
+        sparse_embedding=FastembedBm25SparseTool(config=embedding.config),
+    )
+    _, sparse_cfg = store._vectors_and_sparse_for_create()
+    assert sparse_cfg is not None
+    assert BM25_VECTOR_NAME in sparse_cfg
+    assert sparse_cfg[BM25_VECTOR_NAME].modifier is None
 
 
 def test_retriever_expands_graph_via_sparql_tool() -> None:
@@ -620,10 +673,12 @@ def _scored_atom(atom_id: str, iri_local: str, score: float) -> OntologySearchHi
 def _channel_hits(
     core_hits: list[OntologySearchHit],
     neighborhood_hits: list[OntologySearchHit] | None = None,
+    bm25_hits: list[OntologySearchHit] | None = None,
 ) -> OntologySearchHitsByChannel:
     return OntologySearchHitsByChannel(
         core_hits=core_hits,
         neighborhood_hits=neighborhood_hits or [],
+        bm25_hits=bm25_hits or [],
     )
 
 
@@ -784,7 +839,7 @@ def test_search_hits_by_vector_returns_per_channel_typed_scores() -> None:
         def _query_named_vector(
             self,
             vector_name: str,
-            vector: list[float],
+            vector: Any,
             limit: int,
             search_filter,
         ):
@@ -826,6 +881,124 @@ def test_search_hits_by_vector_returns_per_channel_typed_scores() -> None:
         >= hits_by_channel.neighborhood_hits[1].score
     )
     assert hits_by_channel.core_hits[0].atom.score == hits_by_channel.core_hits[0].score
+
+
+def test_search_hits_by_vector_dedupes_duplicate_iri_hits() -> None:
+    class _Point:
+        def __init__(
+            self,
+            point_id: str,
+            score: float,
+            iri: str,
+            neighborhood: str = "neighbor",
+        ) -> None:
+            self.id = point_id
+            self.score = score
+            self.payload = {"neighborhood_representation": neighborhood, "iri": iri}
+
+    class _Store(QdrantVectorStore):
+        def _query_named_vector(
+            self,
+            vector_name: str,
+            vector: Any,
+            limit: int,
+            search_filter,
+        ):
+            del vector, limit, search_filter
+            if vector_name == "core":
+                return [
+                    _Point("v1", 0.91, "https://example.org/o#Same"),
+                    _Point("v2", 0.86, "https://example.org/o#Same"),
+                    _Point("v3", 0.80, "https://example.org/o#Other"),
+                ]
+            return [
+                _Point("v4", 0.78, "https://example.org/o#Same"),
+                _Point("v5", 0.74, "https://example.org/o#Other"),
+            ]
+
+        def _point_to_atom(self, point):
+            return GraphAtom(
+                atom_id=str(point.id),
+                ontology_iri="https://example.org/o",
+                iri=str(point.payload.get("iri", "")),
+                entity_role="resource",
+                core_representation="core",
+                neighborhood_representation="neighbor",
+            )
+
+    store = _Store(
+        config=QdrantConfig(
+            embedding_batch_size=2,
+            upsert_batch_size=2,
+            dedup_mode=QdrantDedupMode.IRI,
+            dedup_query_hits_by_iri=True,
+        ),
+        embedding=CountingEmbeddingTool(config=EmbeddingConfig(dimension=8)),
+    )
+    hits_by_channel = store.search_hits_by_vector(
+        core_vector=[0.0] * 8,
+        neighborhood_vector=[0.0] * 8,
+        top_k=3,
+    )
+    assert [h.atom.iri for h in hits_by_channel.core_hits] == [
+        "https://example.org/o#Same",
+        "https://example.org/o#Other",
+    ]
+    assert [h.atom.iri for h in hits_by_channel.neighborhood_hits] == [
+        "https://example.org/o#Same",
+        "https://example.org/o#Other",
+    ]
+
+
+def test_point_id_for_atom_respects_dedup_mode() -> None:
+    atom_a = GraphAtom(
+        atom_id="atom-a",
+        ontology_iri="https://example.org/o",
+        ontology_version="1.0.0",
+        ontology_hash="hash1",
+        iri="https://example.org/o#Same",
+        entity_role="resource",
+        core_representation="core",
+        neighborhood_representation="neighbor",
+    )
+    atom_b = GraphAtom(
+        atom_id="atom-b",
+        ontology_iri="https://example.org/o",
+        ontology_version="1.0.0",
+        ontology_hash="hash1",
+        iri="https://example.org/o#Same",
+        entity_role="resource",
+        core_representation="core",
+        neighborhood_representation="neighbor",
+    )
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+
+    strict_store = QdrantVectorStore(
+        config=QdrantConfig(
+            embedding_batch_size=2,
+            upsert_batch_size=2,
+            dedup_mode=QdrantDedupMode.IRI,
+            dedup_include_version=True,
+            dedup_include_hash=True,
+        ),
+        embedding=embedding,
+    )
+    relaxed_store = QdrantVectorStore(
+        config=QdrantConfig(
+            embedding_batch_size=2,
+            upsert_batch_size=2,
+            dedup_mode=QdrantDedupMode.ATOM_ID,
+        ),
+        embedding=embedding,
+    )
+
+    strict_id_a = strict_store._point_id_for_atom(atom_a)
+    strict_id_b = strict_store._point_id_for_atom(atom_b)
+    relaxed_id_a = relaxed_store._point_id_for_atom(atom_a)
+    relaxed_id_b = relaxed_store._point_id_for_atom(atom_b)
+
+    assert strict_id_a == strict_id_b
+    assert relaxed_id_a != relaxed_id_b
 
 
 def test_mmr_rerank_lambda_one_is_pure_relevance() -> None:
@@ -897,7 +1070,13 @@ async def test_aretrieve_ensemble_mmr_promotes_diverse_candidates() -> None:
 async def test_aretrieve_ensemble_rank_fusion_uses_rank_not_score() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
-        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        config=QdrantConfig(
+            embedding_batch_size=2,
+            upsert_batch_size=2,
+            fusion_core_weight=0.5,
+            fusion_neighborhood_weight=0.5,
+            fusion_bm25_weight=0.0,
+        ),
         embedding=embedding,
     )
     vector_store.set_hits_by_query(

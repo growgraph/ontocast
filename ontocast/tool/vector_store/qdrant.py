@@ -8,13 +8,13 @@ import uuid
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Any, cast
+from typing import Any, TypeAlias, cast
 
 from pydantic import Field, PrivateAttr
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
 
-from ontocast.config import QdrantConfig
+from ontocast.config import EmbeddingConfig, QdrantConfig, QdrantDedupMode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.tenancy import (
     TENANCY_SEP,
@@ -23,6 +23,7 @@ from ontocast.onto.tenancy import (
 )
 from ontocast.tool.vector_store.atomizer import GraphAtomizer
 from ontocast.tool.vector_store.core import (
+    BM25_VECTOR_NAME,
     CORE_VECTOR_NAME,
     NEIGHBORHOOD_VECTOR_NAME,
     GraphAtom,
@@ -31,9 +32,15 @@ from ontocast.tool.vector_store.core import (
     VectorStoreTool,
     canonicalize_entity_role,
 )
-from ontocast.tool.vector_store.embedding import EmbeddingTool
+from ontocast.tool.vector_store.embedding import (
+    EmbeddingTool,
+    FastembedBm25SparseTool,
+)
 
 logger = logging.getLogger(__name__)
+
+# Per-channel query or stored vector: dense list or Qdrant sparse vector.
+ChannelVector: TypeAlias = list[float] | qdrant_models.SparseVector
 
 
 class EmbeddingContractMismatchError(ValueError):
@@ -62,9 +69,58 @@ class QdrantVectorStore(VectorStoreTool):
     """Stores ontology atoms in Qdrant and supports similarity lookup."""
 
     config: QdrantConfig = Field(default_factory=QdrantConfig)
-    embedding: EmbeddingTool = Field(exclude=True)
+    embedding: EmbeddingTool = Field(..., exclude=True)
+    sparse_embedding: FastembedBm25SparseTool | None = Field(default=None, exclude=True)
     atomizer: GraphAtomizer = Field(default_factory=GraphAtomizer, exclude=True)
     _client: QdrantClient | None = PrivateAttr(default=None)
+
+    @property
+    def embedding_config(self) -> EmbeddingConfig:
+        return self.embedding.config
+
+    def _require_sparse_embedding_tool(self) -> FastembedBm25SparseTool:
+        if self.sparse_embedding is None:
+            raise ValueError(
+                "BM25 sparse embedding is required for vector search but "
+                "sparse_embedding was not wired"
+            )
+        return self.sparse_embedding
+
+    def _encode_single_query_vectors(
+        self, query: str
+    ) -> tuple[list[float], list[float], qdrant_models.SparseVector]:
+        triples = self._encode_query_vectors_batch([query])
+        return triples[0]
+
+    def _encode_query_vectors_batch(
+        self, queries: list[str]
+    ) -> list[tuple[list[float], list[float], qdrant_models.SparseVector]]:
+        n = len(queries)
+        if n == 0:
+            return []
+        dense_vecs = self.embedding.embed(queries)
+        if len(dense_vecs) != n:
+            raise ValueError(
+                "Embedding provider returned mismatched vectors for queries"
+            )
+        for i, vec in enumerate(dense_vecs):
+            self._require_embedding_vector_length(vec, role=f"Query embedding[{i}]")
+        sparse_vecs = self._require_sparse_embedding_tool().embed_sparse(queries)
+        if len(sparse_vecs) != n:
+            raise ValueError(
+                "BM25 embedder returned mismatched sparse vectors for queries"
+            )
+        return [(dense_vecs[i], dense_vecs[i], sparse_vecs[i]) for i in range(n)]
+
+    def _normalized_fusion_weights(self) -> tuple[float, float, float]:
+        """Weights for core / neighborhood / BM25 reciprocal-rank fusion (sum to 1)."""
+        cw = self.config.fusion_core_weight
+        nw = self.config.fusion_neighborhood_weight
+        bw = self.config.fusion_bm25_weight
+        total = cw + nw + bw
+        if total <= 0.0:
+            return (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
+        return (cw / total, nw / total, bw / total)
 
     @property
     def client(self) -> QdrantClient:
@@ -95,13 +151,12 @@ class QdrantVectorStore(VectorStoreTool):
 
     async def initialize(self) -> None:
         """Create ontology/facts collections and payload indexes if missing."""
-        vector_size = self._vector_size()
         ontology_col = self.config.ontology_collection
         facts_col = self.config.facts_collection
         assert ontology_col is not None
         assert facts_col is not None
-        self._ensure_named_vector_collection(ontology_col, vector_size)
-        self._ensure_named_vector_collection(facts_col, vector_size)
+        self._ensure_named_vector_collection(ontology_col)
+        self._ensure_named_vector_collection(facts_col)
 
         self._ensure_payload_index(
             collection_name=ontology_col, field_name="ontology_iri"
@@ -112,6 +167,7 @@ class QdrantVectorStore(VectorStoreTool):
         self._ensure_payload_index(
             collection_name=ontology_col, field_name="ontology_hash"
         )
+        self._ensure_payload_index(collection_name=ontology_col, field_name="iri")
 
     async def clean_tenancy(
         self,
@@ -145,13 +201,25 @@ class QdrantVectorStore(VectorStoreTool):
         self.config.ontology_collection = tenant_project_ontologies_name(t, p, sep=sep)
         self.config.facts_collection = tenant_project_facts_name(t, p, sep=sep)
 
-    def _embedding_model_fingerprint(self) -> str:
-        ec = self.embedding.config
-        return f"{ec.provider.value}:{ec.model_name}"
+    def _dense_dimension(self) -> int:
+        """Dense vector length for ``VectorParams`` and dense query validation."""
+        return self.config.vector_size or self.embedding_config.dimension
 
-    def _collection_embedding_metadata(self, vector_size: int) -> dict[str, Any]:
+    def _metadata_embedding_dimension(self) -> int:
+        """Dense dimension stored in collection metadata."""
+        return self._dense_dimension()
+
+    def _embedding_model_fingerprint(self) -> str:
+        ec = self.embedding_config
+        dense_part = f"dense:{ec.provider.value}:{ec.model_name}"
+        return f"{dense_part}|bm25={ec.bm25_model_name}"
+
+    def _embedding_fingerprint_matches(self, stored: str) -> bool:
+        return stored == self._embedding_model_fingerprint()
+
+    def _collection_embedding_metadata(self, metadata_dim: int) -> dict[str, Any]:
         return {
-            QDRANT_META_EMBEDDING_DIMENSION: vector_size,
+            QDRANT_META_EMBEDDING_DIMENSION: metadata_dim,
             QDRANT_META_EMBEDDING_MODEL: self._embedding_model_fingerprint(),
         }
 
@@ -177,7 +245,7 @@ class QdrantVectorStore(VectorStoreTool):
         )
 
     def _validate_existing_embedding_contract(
-        self, collection: str, vector_size: int, info: qdrant_models.CollectionInfo
+        self, collection: str, info: qdrant_models.CollectionInfo
     ) -> None:
         raw = info.config.metadata
         if raw is None:
@@ -206,102 +274,146 @@ class QdrantVectorStore(VectorStoreTool):
                 f"Qdrant collection '{collection}' metadata {model_key!r} "
                 "must be a string"
             )
-        expected_model = self._embedding_model_fingerprint()
-        if stored_dim != vector_size or stored_model != expected_model:
+        expected_meta_dim = self._metadata_embedding_dimension()
+        if stored_dim != expected_meta_dim or not self._embedding_fingerprint_matches(
+            stored_model
+        ):
             raise EmbeddingContractMismatchError(
                 f"Qdrant collection '{collection}' embedding contract mismatch: "
                 f"collection has dimension={stored_dim}, model={stored_model!r}; "
-                f"current config expects dimension={vector_size}, "
-                f"model={expected_model!r}. " + _embedding_contract_help()
+                f"current config expects dimension={expected_meta_dim}, "
+                f"model={self._embedding_model_fingerprint()!r}. "
+                + _embedding_contract_help()
             )
 
-    def _ensure_named_vector_collection(
-        self, collection: str, vector_size: int
-    ) -> None:
-        embedding_meta = self._collection_embedding_metadata(vector_size)
+    def _vectors_and_sparse_for_create(
+        self,
+    ) -> tuple[
+        dict[str, qdrant_models.VectorParams],
+        dict[str, qdrant_models.SparseVectorParams],
+    ]:
         distance = self.config.distance
+        dense_dim = self._dense_dimension()
+        vectors: dict[str, qdrant_models.VectorParams] = {
+            CORE_VECTOR_NAME: qdrant_models.VectorParams(
+                size=dense_dim, distance=distance
+            ),
+            NEIGHBORHOOD_VECTOR_NAME: qdrant_models.VectorParams(
+                size=dense_dim, distance=distance
+            ),
+        }
+        # BM25 sparse scoring on plain dot product (no sparse modifier).
+        sparse: dict[str, qdrant_models.SparseVectorParams] = {
+            BM25_VECTOR_NAME: qdrant_models.SparseVectorParams(modifier=None)
+        }
+        return (vectors, sparse)
+
+    def _validate_collection_vector_layout(
+        self, collection: str, info: qdrant_models.CollectionInfo
+    ) -> None:
+        distance = self.config.distance
+        dense_dim = self._dense_dimension()
+        params = info.config.params
+        raw_vectors = params.vectors
+        vectors_map: dict[str, qdrant_models.VectorParams] = (
+            dict(raw_vectors) if isinstance(raw_vectors, dict) else {}
+        )
+        raw_sparse = params.sparse_vectors
+        sparse_map: dict[str, qdrant_models.SparseVectorParams] = (
+            dict(raw_sparse) if isinstance(raw_sparse, dict) else {}
+        )
+
+        def _require_dense(name: str) -> None:
+            if name not in vectors_map:
+                raise ValueError(
+                    f"Qdrant collection '{collection}' missing dense vector {name!r}; "
+                    f"have dense keys {set(vectors_map.keys())}"
+                )
+            cfg = vectors_map[name]
+            if cfg.size != dense_dim:
+                raise EmbeddingContractMismatchError(
+                    f"Qdrant collection '{collection}' vector {name!r} size "
+                    f"{cfg.size} does not match configured dense size {dense_dim}. "
+                    + _embedding_contract_help()
+                )
+            if cfg.distance != distance:
+                raise ValueError(
+                    f"Qdrant collection '{collection}' vector {name!r} "
+                    f"uses distance {cfg.distance!r}; config expects {distance!r}."
+                )
+
+        _require_dense(CORE_VECTOR_NAME)
+        _require_dense(NEIGHBORHOOD_VECTOR_NAME)
+
+        bm25_cfg = sparse_map.get(BM25_VECTOR_NAME)
+        if bm25_cfg is None:
+            raise ValueError(
+                f"Qdrant collection '{collection}' missing sparse vector "
+                f"{BM25_VECTOR_NAME!r}; have sparse keys {set(sparse_map.keys())}"
+            )
+        if bm25_cfg.modifier is not None:
+            raise ValueError(
+                f"Qdrant collection '{collection}' sparse vector {BM25_VECTOR_NAME!r} "
+                f"uses modifier {bm25_cfg.modifier!r}; expected no modifier "
+                "(dot-product sparse scoring). Recreate the collection."
+            )
+
+    def _ensure_named_vector_collection(self, collection: str) -> None:
+        metadata_dim = self._metadata_embedding_dimension()
+        embedding_meta = self._collection_embedding_metadata(metadata_dim)
+        vectors_cfg, sparse_cfg = self._vectors_and_sparse_for_create()
         if not self.client.collection_exists(collection_name=collection):
             self.client.create_collection(
                 collection_name=collection,
-                vectors_config={
-                    CORE_VECTOR_NAME: qdrant_models.VectorParams(
-                        size=vector_size, distance=distance
-                    ),
-                    NEIGHBORHOOD_VECTOR_NAME: qdrant_models.VectorParams(
-                        size=vector_size, distance=distance
-                    ),
-                },
+                vectors_config=vectors_cfg,
+                sparse_vectors_config=sparse_cfg,
                 metadata=embedding_meta,
             )
             logger.info(
-                "Created Qdrant collection '%s' with vector size %s, distance %s, "
-                "and embedding model %s",
+                "Created Qdrant collection '%s' metadata_dim=%s distance=%s model=%s",
                 collection,
-                vector_size,
+                metadata_dim,
                 self.config.distance.value,
                 embedding_meta[QDRANT_META_EMBEDDING_MODEL],
             )
         else:
             info = self.client.get_collection(collection_name=collection)
-            vectors_config = info.config.params.vectors
-            if isinstance(vectors_config, dict):
-                expected_names = {CORE_VECTOR_NAME, NEIGHBORHOOD_VECTOR_NAME}
-                existing_names = set(vectors_config.keys())
-                if not expected_names.issubset(existing_names):
-                    raise ValueError(
-                        f"Qdrant collection '{collection}' vectors {existing_names} "
-                        f"do not include required vectors {expected_names}"
-                    )
-                core_size = vectors_config[CORE_VECTOR_NAME].size
-                neighborhood_size = vectors_config[NEIGHBORHOOD_VECTOR_NAME].size
-                if core_size != vector_size or neighborhood_size != vector_size:
-                    raise EmbeddingContractMismatchError(
-                        f"Qdrant collection '{collection}' vector sizes "
-                        f"({core_size=}, {neighborhood_size=}) do not match "
-                        f"configured size {vector_size}. " + _embedding_contract_help()
-                    )
-                for vec_name in (CORE_VECTOR_NAME, NEIGHBORHOOD_VECTOR_NAME):
-                    actual_dist = vectors_config[vec_name].distance
-                    if actual_dist != distance:
-                        raise ValueError(
-                            f"Qdrant collection '{collection}' vector {vec_name!r} "
-                            f"uses distance {actual_dist!r}; config expects "
-                            f"{distance!r}."
-                        )
-            else:
-                raise ValueError(
-                    f"Qdrant collection '{collection}' must use named vectors "
-                    f"'{CORE_VECTOR_NAME}' and '{NEIGHBORHOOD_VECTOR_NAME}'"
-                )
-            self._validate_existing_embedding_contract(collection, vector_size, info)
+            self._validate_collection_vector_layout(collection, info)
+            self._validate_existing_embedding_contract(collection, info)
 
     def index_ontology(self, ontology: Ontology) -> int:
         """Atomize + embed + upsert ontology neighborhoods."""
         atoms = self.atomizer.atomize(source=ontology, depth=1)
         if not atoms:
             return 0
-        core_vectors = self._embed_texts_batched(
-            [atom.core_representation for atom in atoms]
-        )
-        neighborhood_vectors = self._embed_texts_batched(
-            [atom.neighborhood_representation for atom in atoms]
-        )
+        core_texts = [atom.core_representation for atom in atoms]
+        neighborhood_texts = [atom.neighborhood_representation for atom in atoms]
+        minimal_texts = [atom.minimal_representation for atom in atoms]
+
+        core_vectors = self._embed_texts_batched(core_texts)
+        neighborhood_vectors = self._embed_texts_batched(neighborhood_texts)
+        bm25_vectors = self._embed_texts_batched_sparse(minimal_texts)
+
         if len(core_vectors) != len(atoms) or len(neighborhood_vectors) != len(atoms):
             raise ValueError(
                 "Embedding provider returned mismatched vector counts for atoms"
             )
+        if len(bm25_vectors) != len(atoms):
+            raise ValueError(
+                "BM25 embedder returned mismatched sparse vector counts for atoms"
+            )
 
         points: list[qdrant_models.PointStruct] = []
-        for atom, core_vector, neighborhood_vector in zip(
-            atoms, core_vectors, neighborhood_vectors
-        ):
+        for i, atom in enumerate(atoms):
+            vec_map: dict[str, Any] = {
+                CORE_VECTOR_NAME: core_vectors[i],
+                NEIGHBORHOOD_VECTOR_NAME: neighborhood_vectors[i],
+                BM25_VECTOR_NAME: bm25_vectors[i],
+            }
             points.append(
                 qdrant_models.PointStruct(
-                    id=self._point_id(atom.atom_id),
-                    vector={
-                        CORE_VECTOR_NAME: core_vector,
-                        NEIGHBORHOOD_VECTOR_NAME: neighborhood_vector,
-                    },
+                    id=self._point_id_for_atom(atom),
+                    vector=vec_map,
                     payload=self._atom_payload(atom),
                 )
             )
@@ -318,11 +430,12 @@ class QdrantVectorStore(VectorStoreTool):
         filter_version: str | None = None,
         filter_hash: str | None = None,
     ) -> list[GraphAtom]:
-        """Search ontology atoms by text query using weighted dual-vector fusion."""
-        query_vector = self.embedding.embed_one(query)
+        """Search ontology atoms by text query using weighted multi-vector fusion."""
+        core_q, neigh_q, bm25_q = self._encode_single_query_vectors(query)
         return self.search_by_vector(
-            core_vector=query_vector,
-            neighborhood_vector=query_vector,
+            core_vector=core_q,
+            neighborhood_vector=neigh_q,
+            bm25_query_vector=bm25_q,
             top_k=top_k,
             filter_iri=filter_iri,
             filter_version=filter_version,
@@ -338,10 +451,11 @@ class QdrantVectorStore(VectorStoreTool):
         filter_hash: str | None = None,
     ) -> list[OntologySearchHit]:
         """Search ontology atoms and return rank-fused scored hit objects."""
-        query_vector = self.embedding.embed_one(query)
+        core_q, neigh_q, bm25_q = self._encode_single_query_vectors(query)
         channel_hits = self.search_hits_by_vector(
-            core_vector=query_vector,
-            neighborhood_vector=query_vector,
+            core_vector=core_q,
+            neighborhood_vector=neigh_q,
+            bm25_query_vector=bm25_q,
             top_k=top_k,
             filter_iri=filter_iri,
             filter_version=filter_version,
@@ -351,34 +465,39 @@ class QdrantVectorStore(VectorStoreTool):
         return self._rank_fuse_channel_hits(
             channel_hits.core_hits,
             channel_hits.neighborhood_hits,
+            channel_hits.bm25_hits,
             limit=eff_top_k,
         )
 
-    def _search_patch_hits_for_query_vectors(
+    def _search_patch_hits_for_query_triples(
         self,
-        query_vectors: list[list[float]],
+        triples: list[tuple[list[float], list[float], qdrant_models.SparseVector]],
         top_k: int,
         filter_iri: str | None,
         filter_version: str | None,
         filter_hash: str | None,
     ) -> list[OntologySearchHitsByChannel]:
-        """Run split-channel search per query vector (parallel in threads)."""
-        if not query_vectors:
+        """Run split-channel search per query (dense core/neighborhood + BM25)."""
+        if not triples:
             return []
 
-        def search_one(query_vector: list[float]) -> OntologySearchHitsByChannel:
+        def search_one(
+            t: tuple[list[float], list[float], qdrant_models.SparseVector],
+        ) -> OntologySearchHitsByChannel:
+            core_v, neigh_v, bm25_v = t
             return self.search_hits_by_vector(
-                core_vector=query_vector,
-                neighborhood_vector=query_vector,
+                core_vector=core_v,
+                neighborhood_vector=neigh_v,
+                bm25_query_vector=bm25_v,
                 top_k=top_k,
                 filter_iri=filter_iri,
                 filter_version=filter_version,
                 filter_hash=filter_hash,
             )
 
-        workers = min(32, len(query_vectors))
+        workers = min(32, len(triples))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            return list(pool.map(search_one, query_vectors))
+            return list(pool.map(search_one, triples))
 
     def _search_patch_hits_many_impl(
         self,
@@ -392,15 +511,9 @@ class QdrantVectorStore(VectorStoreTool):
             return []
 
         eff_top_k = self._effective_top_k(top_k)
-        query_vectors = self.embedding.embed(queries)
-        if len(query_vectors) != len(queries):
-            raise ValueError(
-                "Embedding provider returned mismatched vectors for queries"
-            )
-        for i, vec in enumerate(query_vectors):
-            self._require_embedding_vector_length(vec, role=f"Query embedding[{i}]")
-        return self._search_patch_hits_for_query_vectors(
-            query_vectors,
+        triples = self._encode_query_vectors_batch(queries)
+        return self._search_patch_hits_for_query_triples(
+            triples,
             eff_top_k,
             filter_iri,
             filter_version,
@@ -436,32 +549,34 @@ class QdrantVectorStore(VectorStoreTool):
         if not queries:
             return []
         eff_top_k = self._effective_top_k(top_k)
-        query_vectors = await asyncio.to_thread(self.embedding.embed, queries)
-        if len(query_vectors) != len(queries):
-            raise ValueError(
-                "Embedding provider returned mismatched vectors for queries"
-            )
-        for i, vec in enumerate(query_vectors):
-            self._require_embedding_vector_length(vec, role=f"Query embedding[{i}]")
+        triples = await asyncio.to_thread(self._encode_query_vectors_batch, queries)
         tasks = [
             asyncio.to_thread(
                 self.search_hits_by_vector,
-                query_vector,
-                query_vector,
+                core_v,
+                neigh_v,
+                bm25_v,
                 eff_top_k,
                 filter_iri,
                 filter_version,
                 filter_hash,
             )
-            for query_vector in query_vectors
+            for core_v, neigh_v, bm25_v in triples
         ]
         return await asyncio.gather(*tasks)
+
+    def _parse_dense_vector(self, raw: Any) -> list[float] | None:
+        if isinstance(raw, list):
+            if not raw or not all(isinstance(v, int | float) for v in raw):
+                return None
+            return [float(v) for v in cast(list[int | float], raw)]
+        return None
 
     def fetch_vectors(
         self,
         atom_ids: list[str],
     ) -> dict[str, tuple[list[float], list[float]]]:
-        """Batch-fetch stored core/neighborhood vectors keyed by atom_id."""
+        """Batch-fetch dense core/neighborhood vectors for MMR (BM25 not used)."""
         if not atom_ids:
             return {}
         point_id_to_atom_id = {self._point_id(atom_id): atom_id for atom_id in atom_ids}
@@ -481,14 +596,10 @@ class QdrantVectorStore(VectorStoreTool):
                 continue
             core_raw = point_vector.get(CORE_VECTOR_NAME)
             neighborhood_raw = point_vector.get(NEIGHBORHOOD_VECTOR_NAME)
-            if not isinstance(core_raw, list) or not isinstance(neighborhood_raw, list):
+            core = self._parse_dense_vector(core_raw)
+            neighborhood = self._parse_dense_vector(neighborhood_raw)
+            if core is None or neighborhood is None:
                 continue
-            if not all(isinstance(v, int | float) for v in core_raw):
-                continue
-            if not all(isinstance(v, int | float) for v in neighborhood_raw):
-                continue
-            core = [float(v) for v in cast(list[int | float], core_raw)]
-            neighborhood = [float(v) for v in cast(list[int | float], neighborhood_raw)]
             out[atom_id] = (core, neighborhood)
         return out
 
@@ -503,6 +614,7 @@ class QdrantVectorStore(VectorStoreTool):
         self,
         core_vector: list[float],
         neighborhood_vector: list[float],
+        bm25_query_vector: qdrant_models.SparseVector | None = None,
         top_k: int | None = None,
         filter_iri: str | None = None,
         filter_version: str | None = None,
@@ -512,6 +624,7 @@ class QdrantVectorStore(VectorStoreTool):
         channel_hits = self.search_hits_by_vector(
             core_vector=core_vector,
             neighborhood_vector=neighborhood_vector,
+            bm25_query_vector=bm25_query_vector,
             top_k=top_k,
             filter_iri=filter_iri,
             filter_version=filter_version,
@@ -521,6 +634,7 @@ class QdrantVectorStore(VectorStoreTool):
         fused_hits = self._rank_fuse_channel_hits(
             channel_hits.core_hits,
             channel_hits.neighborhood_hits,
+            channel_hits.bm25_hits,
             limit=eff_top_k,
         )
         return [hit.atom for hit in fused_hits]
@@ -529,6 +643,7 @@ class QdrantVectorStore(VectorStoreTool):
         self,
         core_vector: list[float],
         neighborhood_vector: list[float],
+        bm25_query_vector: qdrant_models.SparseVector | None = None,
         top_k: int | None = None,
         filter_iri: str | None = None,
         filter_version: str | None = None,
@@ -557,11 +672,29 @@ class QdrantVectorStore(VectorStoreTool):
             limit=eff_top_k,
             search_filter=search_filter,
         )
+        bm25_hits_raw: list[Any] = []
+        if bm25_query_vector is not None:
+            bm25_hits_raw = self._query_named_vector(
+                vector_name=BM25_VECTOR_NAME,
+                vector=bm25_query_vector,
+                limit=eff_top_k,
+                search_filter=search_filter,
+            )
+        core_typed_hits = self._points_to_hits(core_hits)
+        neighborhood_typed_hits = self._points_to_hits(
+            neighborhood_hits, apply_neighborhood_empty_penalty=True
+        )
+        bm25_typed_hits = self._points_to_hits(bm25_hits_raw)
+        if self.config.dedup_query_hits_by_iri:
+            core_typed_hits = self._dedupe_hits_by_identity(core_typed_hits)
+            neighborhood_typed_hits = self._dedupe_hits_by_identity(
+                neighborhood_typed_hits
+            )
+            bm25_typed_hits = self._dedupe_hits_by_identity(bm25_typed_hits)
         return OntologySearchHitsByChannel(
-            core_hits=self._points_to_hits(core_hits),
-            neighborhood_hits=self._points_to_hits(
-                neighborhood_hits, apply_neighborhood_empty_penalty=True
-            ),
+            core_hits=core_typed_hits,
+            neighborhood_hits=neighborhood_typed_hits,
+            bm25_hits=bm25_typed_hits,
         )
 
     def _points_to_hits(
@@ -590,14 +723,16 @@ class QdrantVectorStore(VectorStoreTool):
         self,
         core_hits: list[OntologySearchHit],
         neighborhood_hits: list[OntologySearchHit],
+        bm25_hits: list[OntologySearchHit],
         *,
         limit: int,
     ) -> list[OntologySearchHit]:
         rank_scores: dict[str, float] = {}
         best_hit_by_id: dict[str, OntologySearchHit] = {}
 
-        core_weight = self.config.fusion_core_weight
-        neighborhood_weight = self.config.fusion_neighborhood_weight
+        core_weight, neighborhood_weight, bm25_weight = (
+            self._normalized_fusion_weights()
+        )
         for rank, hit in enumerate(core_hits, start=1):
             atom_id = hit.atom.atom_id
             rank_scores[atom_id] = rank_scores.get(atom_id, 0.0) + (core_weight / rank)
@@ -609,6 +744,12 @@ class QdrantVectorStore(VectorStoreTool):
             rank_scores[atom_id] = rank_scores.get(atom_id, 0.0) + (
                 neighborhood_weight / rank
             )
+            prev = best_hit_by_id.get(atom_id)
+            if prev is None or hit.score > prev.score:
+                best_hit_by_id[atom_id] = hit
+        for rank, hit in enumerate(bm25_hits, start=1):
+            atom_id = hit.atom.atom_id
+            rank_scores[atom_id] = rank_scores.get(atom_id, 0.0) + (bm25_weight / rank)
             prev = best_hit_by_id.get(atom_id)
             if prev is None or hit.score > prev.score:
                 best_hit_by_id[atom_id] = hit
@@ -695,6 +836,7 @@ class QdrantVectorStore(VectorStoreTool):
             iri=str(payload.get("iri", "")),
             entity_role=canonicalize_entity_role(payload.get("entity_role")),
             core_representation=str(payload.get("core_representation", "")),
+            minimal_representation=str(payload.get("minimal_representation", "")),
             neighborhood_representation=str(
                 payload.get("neighborhood_representation", "")
             ),
@@ -712,6 +854,7 @@ class QdrantVectorStore(VectorStoreTool):
             "iri": atom.iri,
             "entity_role": canonicalize_entity_role(atom.entity_role),
             "core_representation": atom.core_representation,
+            "minimal_representation": atom.minimal_representation,
             "neighborhood_representation": atom.neighborhood_representation,
             "created_at": atom.created_at.isoformat(),
         }
@@ -726,9 +869,6 @@ class QdrantVectorStore(VectorStoreTool):
                 pass
         return datetime.now(timezone.utc)
 
-    def _vector_size(self) -> int:
-        return self.config.vector_size or self.embedding.config.dimension
-
     def _effective_top_k(self, top_k: int | None) -> int:
         """Resolve retrieval depth: explicit ``top_k`` overrides :attr:`QdrantConfig.top_k`."""
         if top_k is not None:
@@ -741,7 +881,7 @@ class QdrantVectorStore(VectorStoreTool):
         *,
         role: str,
     ) -> None:
-        expected = self._vector_size()
+        expected = self._dense_dimension()
         if len(vector) != expected:
             raise EmbeddingContractMismatchError(
                 f"{role} vector length {len(vector)} does not match the configured "
@@ -756,10 +896,91 @@ class QdrantVectorStore(VectorStoreTool):
         except ValueError:
             return str(uuid.uuid5(uuid.NAMESPACE_URL, atom_id))
 
+    def _point_id_for_atom(self, atom: GraphAtom) -> str:
+        if self.config.dedup_mode == QdrantDedupMode.ATOM_ID:
+            return self._point_id(atom.atom_id)
+        return self._point_id(self._identity_key_for_atom(atom))
+
+    def _identity_key_for_atom(self, atom: GraphAtom) -> str:
+        if self.config.dedup_mode == QdrantDedupMode.ATOM_ID:
+            return atom.atom_id
+        parts: list[str] = [
+            atom.ontology_iri or "",
+            atom.iri or "",
+        ]
+        if self.config.dedup_include_version:
+            parts.append(atom.ontology_version or "")
+        if self.config.dedup_include_hash:
+            parts.append(atom.ontology_hash or "")
+        return "|".join(parts)
+
+    def _dedupe_hits_by_identity(
+        self, hits: list[OntologySearchHit]
+    ) -> list[OntologySearchHit]:
+        if not hits:
+            return []
+        best_by_key: dict[str, OntologySearchHit] = {}
+        order_index: dict[str, int] = {}
+        for index, hit in enumerate(hits):
+            key = self._identity_key_for_atom(hit.atom)
+            previous = best_by_key.get(key)
+            if previous is None:
+                best_by_key[key] = hit
+                order_index[key] = index
+                continue
+            if float(hit.score) > float(previous.score):
+                best_by_key[key] = hit
+        deduped = list(best_by_key.values())
+        deduped.sort(
+            key=lambda h: (
+                -float(h.score),
+                order_index[self._identity_key_for_atom(h.atom)],
+            )
+        )
+        return deduped
+
+    def delete_duplicate_iri_points(self, *, batch_size: int = 512) -> int:
+        """Delete duplicate points sharing the same configured identity key.
+
+        Keeps the first point for each key encountered in collection order.
+        Intended as a one-off cleanup for collections created before strict dedup mode.
+        """
+        collection_name = self._ontology_collection_name()
+        seen_by_key: dict[str, qdrant_models.ExtendedPointId] = {}
+        duplicate_ids: list[qdrant_models.ExtendedPointId] = []
+        offset: Any = None
+        while True:
+            points, next_offset = self.client.scroll(
+                collection_name=collection_name,
+                with_payload=True,
+                with_vectors=False,
+                offset=offset,
+                limit=batch_size,
+            )
+            if not points:
+                break
+            for point in points:
+                atom = self._point_to_atom(point)
+                key = self._identity_key_for_atom(atom)
+                if key in seen_by_key:
+                    duplicate_ids.append(point.id)
+                else:
+                    seen_by_key[key] = point.id
+            if next_offset is None:
+                break
+            offset = next_offset
+        if not duplicate_ids:
+            return 0
+        self.client.delete(
+            collection_name=collection_name,
+            points_selector=qdrant_models.PointIdsList(points=duplicate_ids),
+        )
+        return len(duplicate_ids)
+
     def _query_named_vector(
         self,
         vector_name: str,
-        vector: list[float],
+        vector: ChannelVector,
         limit: int,
         search_filter: qdrant_models.Filter | None,
     ) -> list[Any]:
@@ -790,6 +1011,22 @@ class QdrantVectorStore(VectorStoreTool):
                 )
             vectors.extend(batch_vectors)
         return vectors
+
+    def _embed_texts_batched_sparse(
+        self, texts: list[str]
+    ) -> list[qdrant_models.SparseVector]:
+        if not texts:
+            return []
+        out: list[qdrant_models.SparseVector] = []
+        sparse_tool = self._require_sparse_embedding_tool()
+        for batch in self._iter_batches(texts, self.config.embedding_batch_size):
+            batch_vectors = sparse_tool.embed_sparse(batch)
+            if len(batch_vectors) != len(batch):
+                raise ValueError(
+                    "BM25 embedder returned mismatched sparse vectors for batch"
+                )
+            out.extend(batch_vectors)
+        return out
 
     def _iter_batches(self, items: list[Any], batch_size: int) -> list[list[Any]]:
         batches: list[list[Any]] = []

@@ -103,7 +103,7 @@ def _hit_counts_by_ontology_iri(
 ) -> dict[str, int]:
     counts: dict[str, int] = {}
     for hits in hits_by_query:
-        for hit in [*hits.core_hits, *hits.neighborhood_hits]:
+        for hit in [*hits.core_hits, *hits.neighborhood_hits, *hits.bm25_hits]:
             iri = hit.atom.ontology_iri
             if not iri:
                 continue
@@ -135,7 +135,9 @@ def _assert_expected_entity_in_hits_for_anchor_sentence(
     for chunk, hits in zip(chunks, hits_by_query, strict=True):
         if anchor_phrase not in chunk:
             continue
-        focal = _focal_iris_from_hits([*hits.core_hits, *hits.neighborhood_hits])
+        focal = _focal_iris_from_hits(
+            [*hits.core_hits, *hits.neighborhood_hits, *hits.bm25_hits]
+        )
         assert expected_entity_iri in focal, (
             f"{domain_label}: expected vector hit for focal entity {expected_entity_iri!r} "
             f"when querying the sentence containing {anchor_phrase!r}. "
