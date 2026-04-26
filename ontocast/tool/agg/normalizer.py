@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from rdflib import RDF, RDFS, Literal, URIRef
 from rdflib.term import Node
 
-from ontocast.onto.constants import DEFAULT_IRI
+from ontocast.onto.constants import DEFAULT_IRI, ensure_namespace_iri_suffix
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.representation_contract import combine_embedding_text
 from ontocast.tool.representation_text import (
@@ -78,7 +78,7 @@ class EntityNormalizer:
             facts_iri: Base IRI for fact entities. Entities under this namespace
                 are facts; all other entities are considered ontology entities.
         """
-        self.facts_iri = facts_iri.rstrip("/") + "/"
+        self.facts_iri = ensure_namespace_iri_suffix(facts_iri)
 
     def normalize_string(self, text: str) -> str:
         """Normalize a string: lowercase, remove diacritics, clean special chars.

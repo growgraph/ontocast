@@ -7,6 +7,7 @@ ontologies and facts as Turtle files.
 
 import logging
 import pathlib
+from typing import ClassVar
 
 from rdflib import Graph
 from rdflib.namespace import RDF
@@ -39,7 +40,7 @@ class FilesystemTripleStoreManager(TripleStoreManager):
 
     working_directory: pathlib.Path | None
     ontology_path: pathlib.Path | None
-    _PROVENANCE_METADATA_PREDICATES = {
+    _PROVENANCE_METADATA_PREDICATES: ClassVar[set] = {
         RDF.type,
         PROV.generatedAtTime,
         SCHEMA.position,

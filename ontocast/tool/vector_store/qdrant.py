@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 from pydantic import Field, PrivateAttr
 from qdrant_client import QdrantClient
@@ -23,17 +23,17 @@ from ontocast.onto.tenancy import (
 )
 from ontocast.tool.vector_store.atomizer import GraphAtomizer
 from ontocast.tool.vector_store.core import (
+    CORE_VECTOR_NAME,
+    NEIGHBORHOOD_VECTOR_NAME,
     GraphAtom,
     OntologySearchHit,
+    OntologySearchHitsByChannel,
     VectorStoreTool,
     canonicalize_entity_role,
 )
 from ontocast.tool.vector_store.embedding import EmbeddingTool
 
 logger = logging.getLogger(__name__)
-
-CORE_VECTOR_NAME = "core"
-NEIGHBORHOOD_VECTOR_NAME = "neighborhood"
 
 
 class EmbeddingContractMismatchError(ValueError):
@@ -337,15 +337,21 @@ class QdrantVectorStore(VectorStoreTool):
         filter_version: str | None = None,
         filter_hash: str | None = None,
     ) -> list[OntologySearchHit]:
-        """Search ontology atoms and return explicit scored hit objects."""
+        """Search ontology atoms and return rank-fused scored hit objects."""
         query_vector = self.embedding.embed_one(query)
-        return self.search_hits_by_vector(
+        channel_hits = self.search_hits_by_vector(
             core_vector=query_vector,
             neighborhood_vector=query_vector,
             top_k=top_k,
             filter_iri=filter_iri,
             filter_version=filter_version,
             filter_hash=filter_hash,
+        )
+        eff_top_k = self._effective_top_k(top_k)
+        return self._rank_fuse_channel_hits(
+            channel_hits.core_hits,
+            channel_hits.neighborhood_hits,
+            limit=eff_top_k,
         )
 
     def _search_patch_hits_for_query_vectors(
@@ -355,12 +361,12 @@ class QdrantVectorStore(VectorStoreTool):
         filter_iri: str | None,
         filter_version: str | None,
         filter_hash: str | None,
-    ) -> list[list[OntologySearchHit]]:
-        """Run dual-vector fusion search per query vector (parallel in threads)."""
+    ) -> list[OntologySearchHitsByChannel]:
+        """Run split-channel search per query vector (parallel in threads)."""
         if not query_vectors:
             return []
 
-        def search_one(query_vector: list[float]) -> list[OntologySearchHit]:
+        def search_one(query_vector: list[float]) -> OntologySearchHitsByChannel:
             return self.search_hits_by_vector(
                 core_vector=query_vector,
                 neighborhood_vector=query_vector,
@@ -381,7 +387,7 @@ class QdrantVectorStore(VectorStoreTool):
         filter_iri: str | None,
         filter_version: str | None,
         filter_hash: str | None,
-    ) -> list[list[OntologySearchHit]]:
+    ) -> list[OntologySearchHitsByChannel]:
         if not queries:
             return []
 
@@ -408,8 +414,8 @@ class QdrantVectorStore(VectorStoreTool):
         filter_iri: str | None = None,
         filter_version: str | None = None,
         filter_hash: str | None = None,
-    ) -> list[list[OntologySearchHit]]:
-        """Search ontology atoms for many queries with batched embedding calls."""
+    ) -> list[OntologySearchHitsByChannel]:
+        """Search ontology atoms for many queries with split-channel outputs."""
         return self._search_patch_hits_many_impl(
             queries,
             top_k,
@@ -425,8 +431,8 @@ class QdrantVectorStore(VectorStoreTool):
         filter_iri: str | None = None,
         filter_version: str | None = None,
         filter_hash: str | None = None,
-    ) -> list[list[OntologySearchHit]]:
-        """Async variant: one batched embed, then parallel Qdrant searches."""
+    ) -> list[OntologySearchHitsByChannel]:
+        """Async variant: one batched embed, then parallel split-channel searches."""
         if not queries:
             return []
         eff_top_k = self._effective_top_k(top_k)
@@ -451,6 +457,48 @@ class QdrantVectorStore(VectorStoreTool):
         ]
         return await asyncio.gather(*tasks)
 
+    def fetch_vectors(
+        self,
+        atom_ids: list[str],
+    ) -> dict[str, tuple[list[float], list[float]]]:
+        """Batch-fetch stored core/neighborhood vectors keyed by atom_id."""
+        if not atom_ids:
+            return {}
+        point_id_to_atom_id = {self._point_id(atom_id): atom_id for atom_id in atom_ids}
+        points = self.client.retrieve(
+            collection_name=self._ontology_collection_name(),
+            ids=list(point_id_to_atom_id.keys()),
+            with_vectors=True,
+            with_payload=False,
+        )
+        out: dict[str, tuple[list[float], list[float]]] = {}
+        for point in points:
+            atom_id = point_id_to_atom_id.get(str(point.id))
+            if atom_id is None:
+                continue
+            point_vector = point.vector
+            if not isinstance(point_vector, dict):
+                continue
+            core_raw = point_vector.get(CORE_VECTOR_NAME)
+            neighborhood_raw = point_vector.get(NEIGHBORHOOD_VECTOR_NAME)
+            if not isinstance(core_raw, list) or not isinstance(neighborhood_raw, list):
+                continue
+            if not all(isinstance(v, int | float) for v in core_raw):
+                continue
+            if not all(isinstance(v, int | float) for v in neighborhood_raw):
+                continue
+            core = [float(v) for v in cast(list[int | float], core_raw)]
+            neighborhood = [float(v) for v in cast(list[int | float], neighborhood_raw)]
+            out[atom_id] = (core, neighborhood)
+        return out
+
+    async def afetch_vectors(
+        self,
+        atom_ids: list[str],
+    ) -> dict[str, tuple[list[float], list[float]]]:
+        """Async wrapper around :meth:`fetch_vectors`."""
+        return await asyncio.to_thread(self.fetch_vectors, atom_ids)
+
     def search_by_vector(
         self,
         core_vector: list[float],
@@ -460,8 +508,8 @@ class QdrantVectorStore(VectorStoreTool):
         filter_version: str | None = None,
         filter_hash: str | None = None,
     ) -> list[GraphAtom]:
-        """Search ontology atoms with weighted fusion over named vectors."""
-        hits = self.search_hits_by_vector(
+        """Search ontology atoms with rank fusion over named vectors."""
+        channel_hits = self.search_hits_by_vector(
             core_vector=core_vector,
             neighborhood_vector=neighborhood_vector,
             top_k=top_k,
@@ -469,7 +517,13 @@ class QdrantVectorStore(VectorStoreTool):
             filter_version=filter_version,
             filter_hash=filter_hash,
         )
-        return [hit.atom for hit in hits]
+        eff_top_k = self._effective_top_k(top_k)
+        fused_hits = self._rank_fuse_channel_hits(
+            channel_hits.core_hits,
+            channel_hits.neighborhood_hits,
+            limit=eff_top_k,
+        )
+        return [hit.atom for hit in fused_hits]
 
     def search_hits_by_vector(
         self,
@@ -479,8 +533,8 @@ class QdrantVectorStore(VectorStoreTool):
         filter_iri: str | None = None,
         filter_version: str | None = None,
         filter_hash: str | None = None,
-    ) -> list[OntologySearchHit]:
-        """Search ontology atoms with weighted fusion and explicit score wrapper."""
+    ) -> OntologySearchHitsByChannel:
+        """Search ontology atoms and return channel-separated scored hit objects."""
         eff_top_k = self._effective_top_k(top_k)
         self._require_embedding_vector_length(core_vector, role="Query core vector")
         self._require_embedding_vector_length(
@@ -503,43 +557,77 @@ class QdrantVectorStore(VectorStoreTool):
             limit=eff_top_k,
             search_filter=search_filter,
         )
-        fused_hits: dict[str, tuple[Any, float]] = {}
+        return OntologySearchHitsByChannel(
+            core_hits=self._points_to_hits(core_hits),
+            neighborhood_hits=self._points_to_hits(
+                neighborhood_hits, apply_neighborhood_empty_penalty=True
+            ),
+        )
+
+    def _points_to_hits(
+        self,
+        points: list[Any],
+        *,
+        apply_neighborhood_empty_penalty: bool = False,
+    ) -> list[OntologySearchHit]:
+        hits: list[OntologySearchHit] = []
+        for point in points:
+            score = float(point.score) if point.score is not None else 0.0
+            if apply_neighborhood_empty_penalty:
+                payload = point.payload or {}
+                neighborhood_text = str(payload.get("neighborhood_representation", ""))
+                if (
+                    neighborhood_text.strip().lower()
+                    == "no neighborhood facts available"
+                ):
+                    score = 0.0
+            atom = self._point_to_atom(point)
+            atom.score = score
+            hits.append(OntologySearchHit(atom=atom, score=score))
+        return hits
+
+    def _rank_fuse_channel_hits(
+        self,
+        core_hits: list[OntologySearchHit],
+        neighborhood_hits: list[OntologySearchHit],
+        *,
+        limit: int,
+    ) -> list[OntologySearchHit]:
+        rank_scores: dict[str, float] = {}
+        best_hit_by_id: dict[str, OntologySearchHit] = {}
+
         core_weight = self.config.fusion_core_weight
         neighborhood_weight = self.config.fusion_neighborhood_weight
-
-        for point in core_hits:
-            point_id = str(point.id)
-            score = float(point.score) if point.score is not None else 0.0
-            weighted = core_weight * score
-            fused_hits[point_id] = (point, weighted)
-
-        for point in neighborhood_hits:
-            point_id = str(point.id)
-            score = float(point.score) if point.score is not None else 0.0
-            payload = point.payload or {}
-            neighborhood_text = str(payload.get("neighborhood_representation", ""))
-            effective_weight = (
-                0.0
-                if neighborhood_text.strip().lower()
-                == "no neighborhood facts available"
-                else neighborhood_weight
+        for rank, hit in enumerate(core_hits, start=1):
+            atom_id = hit.atom.atom_id
+            rank_scores[atom_id] = rank_scores.get(atom_id, 0.0) + (core_weight / rank)
+            prev = best_hit_by_id.get(atom_id)
+            if prev is None or hit.score > prev.score:
+                best_hit_by_id[atom_id] = hit
+        for rank, hit in enumerate(neighborhood_hits, start=1):
+            atom_id = hit.atom.atom_id
+            rank_scores[atom_id] = rank_scores.get(atom_id, 0.0) + (
+                neighborhood_weight / rank
             )
-            weighted = effective_weight * score
-            if point_id in fused_hits:
-                existing_point, existing_score = fused_hits[point_id]
-                fused_hits[point_id] = (existing_point, existing_score + weighted)
-            else:
-                fused_hits[point_id] = (point, weighted)
+            prev = best_hit_by_id.get(atom_id)
+            if prev is None or hit.score > prev.score:
+                best_hit_by_id[atom_id] = hit
 
-        ranked_points = sorted(
-            fused_hits.values(), key=lambda item: item[1], reverse=True
-        )[:eff_top_k]
-        hits: list[OntologySearchHit] = []
-        for point, fused_score in ranked_points:
-            atom = self._point_to_atom(point)
-            atom.score = fused_score
-            hits.append(OntologySearchHit(atom=atom, score=fused_score))
-        return hits
+        ranked_atom_ids = sorted(
+            rank_scores.keys(),
+            key=lambda atom_id: (
+                rank_scores[atom_id],
+                float(best_hit_by_id[atom_id].score),
+                atom_id,
+            ),
+            reverse=True,
+        )[:limit]
+        out: list[OntologySearchHit] = []
+        for atom_id in ranked_atom_ids:
+            source_hit = best_hit_by_id[atom_id]
+            atom = source_hit.atom.model_copy(update={"score": rank_scores[atom_id]})
+            out.append(OntologySearchHit(atom=atom, score=rank_scores[atom_id]))
+        return out
 
     def delete_ontology(
         self,

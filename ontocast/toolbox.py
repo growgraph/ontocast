@@ -201,6 +201,7 @@ class ToolBox:
             self.patch_retriever = OntologyPatchRetriever(
                 vector_store=self.vector_store,
                 sparql_tool=self.sparql_tool,
+                patch=tool_config.patch_retrieval,
             )
             self.ontology_manager.register_vector_store(self.patch_retriever)
 
@@ -369,10 +370,8 @@ class ToolBox:
                     f"Syncing ontology from filesystem to triple store: {fs_onto.iri} "
                     f"(version: {fs_onto.version})"
                 )
-                # Store the filesystem ontology to triple store with its version
-                if self.triple_store_manager is not None:
-                    await self.triple_store_manager.aserialize(fs_onto)
-                # Add to triple_store_ontologies list
+                # Upload happens once in ``_materialize_ontology`` (called from ``initialize``);
+                # avoid duplicate ``aserialize`` here.
                 triple_store_ontologies.append(fs_onto)
 
         return triple_store_ontologies

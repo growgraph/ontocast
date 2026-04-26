@@ -27,7 +27,10 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
-from ontocast.tool.vector_store.core import OntologySearchHit
+from ontocast.tool.vector_store.core import (
+    OntologySearchHit,
+    OntologySearchHitsByChannel,
+)
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -96,11 +99,11 @@ def _split_into_sentences(text: str) -> list[str]:
 
 
 def _hit_counts_by_ontology_iri(
-    hits_by_query: list[list[OntologySearchHit]],
+    hits_by_query: list[OntologySearchHitsByChannel],
 ) -> dict[str, int]:
     counts: dict[str, int] = {}
     for hits in hits_by_query:
-        for hit in hits:
+        for hit in [*hits.core_hits, *hits.neighborhood_hits]:
             iri = hit.atom.ontology_iri
             if not iri:
                 continue
@@ -122,7 +125,7 @@ def _focal_iris_from_hits(hits: list[OntologySearchHit]) -> list[str]:
 
 def _assert_expected_entity_in_hits_for_anchor_sentence(
     chunks: list[str],
-    hits_by_query: list[list[OntologySearchHit]],
+    hits_by_query: list[OntologySearchHitsByChannel],
     anchor_phrase: str,
     expected_entity_iri: str,
     *,
@@ -132,7 +135,7 @@ def _assert_expected_entity_in_hits_for_anchor_sentence(
     for chunk, hits in zip(chunks, hits_by_query, strict=True):
         if anchor_phrase not in chunk:
             continue
-        focal = _focal_iris_from_hits(hits)
+        focal = _focal_iris_from_hits([*hits.core_hits, *hits.neighborhood_hits])
         assert expected_entity_iri in focal, (
             f"{domain_label}: expected vector hit for focal entity {expected_entity_iri!r} "
             f"when querying the sentence containing {anchor_phrase!r}. "

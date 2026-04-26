@@ -7,7 +7,7 @@ from collections.abc import Iterable
 import pytest
 from pydantic import PrivateAttr
 
-from ontocast.config import EmbeddingConfig, QdrantConfig
+from ontocast.config import EmbeddingConfig, PatchRetrievalConfig, QdrantConfig
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.sparql import SPARQLTool
@@ -18,10 +18,14 @@ from ontocast.tool.vector_store.atomizer import (
 from ontocast.tool.vector_store.core import (
     GraphAtom,
     OntologySearchHit,
+    OntologySearchHitsByChannel,
     canonicalize_entity_role,
 )
 from ontocast.tool.vector_store.embedding import EmbeddingTool
-from ontocast.tool.vector_store.patch_retriever import OntologyPatchRetriever
+from ontocast.tool.vector_store.patch_retriever import (
+    OntologyPatchRetriever,
+    _mmr_rerank,
+)
 from ontocast.tool.vector_store.qdrant import QdrantVectorStore
 from ontocast.util import render_text_hash
 
@@ -52,16 +56,27 @@ class StubVectorStore(QdrantVectorStore):
     """Vector store stub for retriever unit tests."""
 
     _atoms: list[GraphAtom] = PrivateAttr(default_factory=list)
-    _override_hits_by_query: list[list[OntologySearchHit]] | None = PrivateAttr(
+    _override_hits_by_query: list[OntologySearchHitsByChannel] | None = PrivateAttr(
         default=None
     )
+    _vectors: dict[str, tuple[list[float], list[float]]] = PrivateAttr(
+        default_factory=dict
+    )
+    _afetch_vectors_calls: int = PrivateAttr(default=0)
 
     def set_atoms(self, atoms: Iterable[GraphAtom]) -> None:
         self._atoms = list(atoms)
 
-    def set_hits_by_query(self, rows: list[list[OntologySearchHit]]) -> None:
+    def set_hits_by_query(self, rows: list[OntologySearchHitsByChannel]) -> None:
         """Fixed scored hits per query (bypasses ``set_atoms`` ordering for ensemble tests)."""
         self._override_hits_by_query = rows
+
+    def set_vectors(self, vectors: dict[str, tuple[list[float], list[float]]]) -> None:
+        self._vectors = vectors
+
+    @property
+    def afetch_vectors_calls(self) -> int:
+        return self._afetch_vectors_calls
 
     def search_patches(
         self,
@@ -94,9 +109,15 @@ class StubVectorStore(QdrantVectorStore):
         filter_iri: str | None = None,
         filter_version: str | None = None,
         filter_hash: str | None = None,
-    ) -> list[list[OntologySearchHit]]:
+    ) -> list[OntologySearchHitsByChannel]:
         del filter_iri, filter_version, filter_hash
-        return [self.search_patch_hits(query=query, top_k=top_k) for query in queries]
+        return [
+            OntologySearchHitsByChannel(
+                core_hits=self.search_patch_hits(query=query, top_k=top_k),
+                neighborhood_hits=[],
+            )
+            for query in queries
+        ]
 
     async def asearch_patch_hits_many(
         self,
@@ -105,7 +126,7 @@ class StubVectorStore(QdrantVectorStore):
         filter_iri: str | None = None,
         filter_version: str | None = None,
         filter_hash: str | None = None,
-    ) -> list[list[OntologySearchHit]]:
+    ) -> list[OntologySearchHitsByChannel]:
         if self._override_hits_by_query is not None:
             return self._override_hits_by_query
         return self.search_patch_hits_many(
@@ -115,6 +136,16 @@ class StubVectorStore(QdrantVectorStore):
             filter_version=filter_version,
             filter_hash=filter_hash,
         )
+
+    async def afetch_vectors(
+        self, atom_ids: list[str]
+    ) -> dict[str, tuple[list[float], list[float]]]:
+        self._afetch_vectors_calls += 1
+        return {
+            atom_id: self._vectors[atom_id]
+            for atom_id in atom_ids
+            if atom_id in self._vectors
+        }
 
 
 class StubSPARQLTool(SPARQLTool):
@@ -586,36 +617,52 @@ def _scored_atom(atom_id: str, iri_local: str, score: float) -> OntologySearchHi
     return OntologySearchHit(atom=atom, score=score)
 
 
+def _channel_hits(
+    core_hits: list[OntologySearchHit],
+    neighborhood_hits: list[OntologySearchHit] | None = None,
+) -> OntologySearchHitsByChannel:
+    return OntologySearchHitsByChannel(
+        core_hits=core_hits,
+        neighborhood_hits=neighborhood_hits or [],
+    )
+
+
 @pytest.mark.anyio
 async def test_aretrieve_ensemble_per_query_ratio_keeps_weak_query_hits() -> None:
     """Weak-query hits survive vs a strong query because the cutoff is per-query relative."""
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
-        config=QdrantConfig(
-            embedding_batch_size=2,
-            upsert_batch_size=2,
-            patch_per_query_score_ratio=0.85,
-            patch_min_merged_max_score=0.0,
-            patch_min_query_best_score=0.0,
-        ),
+        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
         embedding=embedding,
     )
     vector_store.set_hits_by_query(
         [
-            [
-                _scored_atom("s1", "StrongTop", 0.95),
-                _scored_atom("s2", "StrongTail", 0.50),
-            ],
-            [
-                _scored_atom("w1", "WeakTop", 0.40),
-                _scored_atom("w2", "WeakMid", 0.35),
-            ],
+            _channel_hits(
+                core_hits=[
+                    _scored_atom("s1", "StrongTop", 0.95),
+                    _scored_atom("s2", "StrongTail", 0.50),
+                ]
+            ),
+            _channel_hits(
+                core_hits=[
+                    _scored_atom("w1", "WeakTop", 0.40),
+                    _scored_atom("w2", "WeakMid", 0.35),
+                ]
+            ),
         ]
     )
 
     sparql_tool = StubSPARQLTool(triple_store_manager=None)
     retriever = OntologyPatchRetriever(
-        vector_store=vector_store, sparql_tool=sparql_tool
+        vector_store=vector_store,
+        sparql_tool=sparql_tool,
+        patch=PatchRetrievalConfig(
+            per_query_core_score_ratio=0.85,
+            per_query_neighborhood_score_ratio=0.85,
+            min_merged_max_score=0.0,
+            min_core_query_best_score=0.0,
+            min_neighborhood_query_best_score=0.0,
+        ),
     )
     await retriever.aretrieve_ensemble(
         queries=["q1", "q2"],
@@ -636,24 +683,26 @@ async def test_aretrieve_ensemble_per_query_ratio_keeps_weak_query_hits() -> Non
 async def test_aretrieve_ensemble_empty_when_merged_scores_below_floor() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
-        config=QdrantConfig(
-            embedding_batch_size=2,
-            upsert_batch_size=2,
-            patch_per_query_score_ratio=1.0,
-            patch_min_merged_max_score=0.50,
-            patch_min_query_best_score=0.0,
-        ),
+        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
         embedding=embedding,
     )
     vector_store.set_hits_by_query(
         [
-            [_scored_atom("a1", "A", 0.12)],
-            [_scored_atom("a2", "B", 0.11)],
+            _channel_hits(core_hits=[_scored_atom("a1", "A", 0.12)]),
+            _channel_hits(core_hits=[_scored_atom("a2", "B", 0.11)]),
         ]
     )
     sparql_tool = StubSPARQLTool(triple_store_manager=None)
     retriever = OntologyPatchRetriever(
-        vector_store=vector_store, sparql_tool=sparql_tool
+        vector_store=vector_store,
+        sparql_tool=sparql_tool,
+        patch=PatchRetrievalConfig(
+            per_query_core_score_ratio=1.0,
+            per_query_neighborhood_score_ratio=1.0,
+            min_merged_max_score=2.0,
+            min_core_query_best_score=0.0,
+            min_neighborhood_query_best_score=0.0,
+        ),
     )
     graph, source_iris = await retriever.aretrieve_ensemble(
         queries=["q1", "q2"],
@@ -671,24 +720,26 @@ async def test_aretrieve_ensemble_drops_subquery_when_top_below_min_query_best()
 ):
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
-        config=QdrantConfig(
-            embedding_batch_size=2,
-            upsert_batch_size=2,
-            patch_per_query_score_ratio=1.0,
-            patch_min_merged_max_score=0.0,
-            patch_min_query_best_score=0.1,
-        ),
+        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
         embedding=embedding,
     )
     vector_store.set_hits_by_query(
         [
-            [_scored_atom("low", "LowEnt", 0.05)],
-            [_scored_atom("ok", "OkEnt", 0.80)],
+            _channel_hits(core_hits=[_scored_atom("low", "LowEnt", 0.05)]),
+            _channel_hits(core_hits=[_scored_atom("ok", "OkEnt", 0.80)]),
         ]
     )
     sparql_tool = StubSPARQLTool(triple_store_manager=None)
     retriever = OntologyPatchRetriever(
-        vector_store=vector_store, sparql_tool=sparql_tool
+        vector_store=vector_store,
+        sparql_tool=sparql_tool,
+        patch=PatchRetrievalConfig(
+            per_query_core_score_ratio=1.0,
+            per_query_neighborhood_score_ratio=1.0,
+            min_merged_max_score=0.0,
+            min_core_query_best_score=0.1,
+            min_neighborhood_query_best_score=0.1,
+        ),
     )
     await retriever.aretrieve_ensemble(
         queries=["q1", "q2"],
@@ -722,7 +773,7 @@ def test_ontology_atom_contract_iri_and_combined_representation() -> None:
     assert atom.representation == "core text. neighbor text"
 
 
-def test_search_hits_by_vector_returns_typed_scores() -> None:
+def test_search_hits_by_vector_returns_per_channel_typed_scores() -> None:
     class _Point:
         def __init__(self, point_id: str, score: float, neighborhood: str) -> None:
             self.id = point_id
@@ -761,12 +812,263 @@ def test_search_hits_by_vector_returns_typed_scores() -> None:
         ),
         embedding=CountingEmbeddingTool(config=EmbeddingConfig(dimension=8)),
     )
-    hits = store.search_hits_by_vector(
+    hits_by_channel = store.search_hits_by_vector(
         core_vector=[0.0] * 8,
         neighborhood_vector=[0.0] * 8,
         top_k=2,
     )
 
-    assert len(hits) == 2
-    assert hits[0].score >= hits[1].score
-    assert hits[0].atom.score == hits[0].score
+    assert len(hits_by_channel.core_hits) == 2
+    assert len(hits_by_channel.neighborhood_hits) == 2
+    assert hits_by_channel.core_hits[0].score >= hits_by_channel.core_hits[1].score
+    assert (
+        hits_by_channel.neighborhood_hits[0].score
+        >= hits_by_channel.neighborhood_hits[1].score
+    )
+    assert hits_by_channel.core_hits[0].atom.score == hits_by_channel.core_hits[0].score
+
+
+def test_mmr_rerank_lambda_one_is_pure_relevance() -> None:
+    atoms = [
+        _scored_atom("a", "A", 0.91).atom,
+        _scored_atom("b", "B", 0.83).atom,
+        _scored_atom("c", "C", 0.74).atom,
+    ]
+    ranked = _mmr_rerank(
+        atoms,
+        vectors={},
+        mmr_lambda=1.0,
+        max_atoms=0,
+        core_weight=0.7,
+        neighborhood_weight=0.3,
+    )
+    assert [a.atom_id for a in ranked] == ["a", "b", "c"]
+
+
+@pytest.mark.anyio
+async def test_aretrieve_ensemble_mmr_promotes_diverse_candidates() -> None:
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    vector_store = StubVectorStore(
+        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        embedding=embedding,
+    )
+    vector_store.set_hits_by_query(
+        [
+            _channel_hits(
+                core_hits=[
+                    _scored_atom("a", "A", 0.95),
+                    _scored_atom("b", "B", 0.93),
+                    _scored_atom("c", "C", 0.90),
+                ]
+            )
+        ]
+    )
+    vector_store.set_vectors(
+        {
+            "a": ([1.0, 0.0], [1.0, 0.0]),
+            "b": ([0.98, 0.02], [0.98, 0.02]),
+            "c": ([0.0, 1.0], [0.0, 1.0]),
+        }
+    )
+    sparql_tool = StubSPARQLTool(triple_store_manager=None)
+    retriever = OntologyPatchRetriever(
+        vector_store=vector_store,
+        sparql_tool=sparql_tool,
+        patch=PatchRetrievalConfig(
+            per_query_core_score_ratio=0.0,
+            per_query_neighborhood_score_ratio=0.0,
+            min_merged_max_score=0.0,
+            mmr_lambda=0.5,
+            max_atoms=2,
+        ),
+    )
+    await retriever.aretrieve_ensemble(
+        queries=["q1"],
+        top_k=3,
+        expand_sparql=True,
+    )
+    assert set(sparql_tool.last_entity_uris) == {
+        "https://example.org/smoke#A",
+        "https://example.org/smoke#C",
+    }
+
+
+@pytest.mark.anyio
+async def test_aretrieve_ensemble_rank_fusion_uses_rank_not_score() -> None:
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    vector_store = StubVectorStore(
+        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        embedding=embedding,
+    )
+    vector_store.set_hits_by_query(
+        [
+            _channel_hits(
+                core_hits=[
+                    _scored_atom("a", "A", 0.95),
+                    _scored_atom("b", "B", 0.90),
+                ],
+                neighborhood_hits=[
+                    _scored_atom("c", "C", 0.10),
+                    _scored_atom("a", "A", 0.09),
+                ],
+            )
+        ]
+    )
+    sparql_tool = StubSPARQLTool(triple_store_manager=None)
+    retriever = OntologyPatchRetriever(
+        vector_store=vector_store,
+        sparql_tool=sparql_tool,
+        patch=PatchRetrievalConfig(
+            per_query_core_score_ratio=0.0,
+            per_query_neighborhood_score_ratio=0.0,
+            min_merged_max_score=0.0,
+            mmr_lambda=1.0,
+            max_atoms=2,
+        ),
+    )
+    await retriever.aretrieve_ensemble(
+        queries=["q1"],
+        top_k=2,
+        expand_sparql=True,
+    )
+    assert set(sparql_tool.last_entity_uris) == {
+        "https://example.org/smoke#A",
+        "https://example.org/smoke#C",
+    }
+
+
+@pytest.mark.anyio
+async def test_aretrieve_ensemble_lambda_one_skips_vector_fetch() -> None:
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    vector_store = StubVectorStore(
+        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        embedding=embedding,
+    )
+    vector_store.set_hits_by_query(
+        [
+            _channel_hits(
+                core_hits=[
+                    _scored_atom("a", "A", 0.95),
+                    _scored_atom("b", "B", 0.90),
+                ]
+            )
+        ]
+    )
+    sparql_tool = StubSPARQLTool(triple_store_manager=None)
+    retriever = OntologyPatchRetriever(
+        vector_store=vector_store,
+        sparql_tool=sparql_tool,
+        patch=PatchRetrievalConfig(
+            per_query_core_score_ratio=0.0,
+            per_query_neighborhood_score_ratio=0.0,
+            min_merged_max_score=0.0,
+            mmr_lambda=1.0,
+            max_atoms=2,
+        ),
+    )
+    await retriever.aretrieve_ensemble(
+        queries=["q1"],
+        top_k=2,
+        expand_sparql=True,
+    )
+    assert vector_store.afetch_vectors_calls == 0
+    assert set(sparql_tool.last_entity_uris) == {
+        "https://example.org/smoke#A",
+        "https://example.org/smoke#B",
+    }
+
+
+@pytest.mark.anyio
+async def test_aretrieve_ensemble_merged_score_ratio_trims_below_floor() -> None:
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    vector_store = StubVectorStore(
+        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        embedding=embedding,
+    )
+    vector_store.set_hits_by_query(
+        [
+            _channel_hits(
+                core_hits=[
+                    _scored_atom("a", "A", 0.95),
+                    _scored_atom("b", "B", 0.84),
+                ]
+            )
+        ]
+    )
+    sparql_tool = StubSPARQLTool(triple_store_manager=None)
+    retriever = OntologyPatchRetriever(
+        vector_store=vector_store,
+        sparql_tool=sparql_tool,
+        patch=PatchRetrievalConfig(
+            per_query_core_score_ratio=0.0,
+            per_query_neighborhood_score_ratio=0.0,
+            min_merged_max_score=0.0,
+            merged_score_ratio=0.9,
+            mmr_lambda=1.0,
+        ),
+    )
+    await retriever.aretrieve_ensemble(
+        queries=["q1"],
+        top_k=2,
+        expand_sparql=True,
+    )
+    assert sparql_tool.last_entity_uris == ["https://example.org/smoke#A"]
+
+
+@pytest.mark.anyio
+async def test_aretrieve_ensemble_patch_max_atoms_caps_output() -> None:
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    vector_store = StubVectorStore(
+        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        embedding=embedding,
+    )
+    vector_store.set_hits_by_query(
+        [
+            _channel_hits(
+                core_hits=[
+                    _scored_atom("a", "A", 0.95),
+                    _scored_atom("b", "B", 0.93),
+                    _scored_atom("c", "C", 0.92),
+                ]
+            )
+        ]
+    )
+    sparql_tool = StubSPARQLTool(triple_store_manager=None)
+    retriever = OntologyPatchRetriever(
+        vector_store=vector_store,
+        sparql_tool=sparql_tool,
+        patch=PatchRetrievalConfig(
+            per_query_core_score_ratio=0.0,
+            per_query_neighborhood_score_ratio=0.0,
+            min_merged_max_score=0.0,
+            mmr_lambda=1.0,
+            max_atoms=2,
+        ),
+    )
+    await retriever.aretrieve_ensemble(
+        queries=["q1"],
+        top_k=3,
+        expand_sparql=True,
+    )
+    assert len(sparql_tool.last_entity_uris) == 2
+
+
+def test_mmr_rerank_atoms_missing_vectors_fallback() -> None:
+    atoms = [
+        _scored_atom("a", "A", 0.95).atom,
+        _scored_atom("b", "B", 0.90).atom,
+        _scored_atom("c", "C", 0.89).atom,
+    ]
+    ranked = _mmr_rerank(
+        atoms,
+        vectors={
+            "a": ([1.0, 0.0], [1.0, 0.0]),
+            "c": ([0.99, 0.01], [0.99, 0.01]),
+        },
+        mmr_lambda=0.4,
+        max_atoms=2,
+        core_weight=0.7,
+        neighborhood_weight=0.3,
+    )
+    # "b" has no vector, so it should rely on relevance and remain competitive.
+    assert [a.atom_id for a in ranked] == ["a", "b"]

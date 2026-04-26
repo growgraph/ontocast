@@ -433,6 +433,80 @@ class EmbeddingConfig(BaseSettings):
     )
 
 
+class PatchRetrievalConfig(BaseSettings):
+    """Scoring, filtering, and capping of ontology atoms after vector search (backend-agnostic)."""
+
+    per_query_core_score_ratio: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Within each query, keep core hits whose score is at least this fraction "
+            "of that query's best core score."
+        ),
+    )
+    per_query_neighborhood_score_ratio: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Within each query, keep neighborhood hits whose score is at least this "
+            "fraction of that query's best neighborhood score."
+        ),
+    )
+    min_core_query_best_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "If > 0, queries whose top core score is below this contribute no core hits."
+        ),
+    )
+    min_neighborhood_query_best_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "If > 0, queries whose top neighborhood score is below this contribute no "
+            "neighborhood hits."
+        ),
+    )
+    min_merged_max_score: float = Field(
+        default=0.18,
+        ge=0.0,
+        description=(
+            "After merging hits across queries, if the highest retained score is below this, "
+            "return an empty patch (no relevant ontology). Set to 0 to disable (fused "
+            "cosine-style scores; tune with your embedding model)."
+        ),
+    )
+    merged_score_ratio: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "After merging hits across queries, keep atoms whose score is at least this "
+            "fraction of the merged top score. 0 disables."
+        ),
+    )
+    mmr_lambda: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "MMR trade-off: 1.0 keeps pure relevance ranking, 0.0 maximizes diversity."
+        ),
+    )
+    max_atoms: int = Field(
+        default=0,
+        ge=0,
+        description="Hard cap for retained atoms after filtering / MMR (0 means unlimited).",
+    )
+
+    model_config = SettingsConfigDict(
+        env_prefix="ONTOLOGY_PATCH_",
+        case_sensitive=False,
+    )
+
+
 class QdrantConfig(BaseSettings):
     """Qdrant vector store settings."""
 
@@ -527,32 +601,6 @@ class QdrantConfig(BaseSettings):
         le=1.0,
         description="Neighborhood vector score weight for dual-vector ranking fusion.",
     )
-    patch_per_query_score_ratio: float = Field(
-        default=0.85,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Patch retrieval: within each query, keep hits whose fused score is at least "
-            "this fraction of that query's best hit (fairness across mixed-strength queries)."
-        ),
-    )
-    patch_min_query_best_score: float = Field(
-        default=0.0,
-        ge=0.0,
-        description=(
-            "Patch retrieval: if > 0, queries whose top hit score is below this contribute "
-            "no atoms (drop irrelevant sub-queries). 0 disables."
-        ),
-    )
-    patch_min_merged_max_score: float = Field(
-        default=0.18,
-        ge=0.0,
-        description=(
-            "Patch retrieval: after merging hits across queries, if the highest retained "
-            "score is below this, return an empty patch (no relevant ontology). Set to 0 "
-            "to disable (fused cosine-style scores; tune with your embedding model)."
-        ),
-    )
 
     model_config = SettingsConfigDict(
         env_prefix="QDRANT_",
@@ -584,6 +632,10 @@ class ToolConfig(BaseSettings):
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
     aggregation: AggregationConfig = Field(default_factory=AggregationConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    patch_retrieval: PatchRetrievalConfig = Field(
+        default_factory=PatchRetrievalConfig,
+        description="Ontology patch retrieval: post-vector scoring, MMR, and limits.",
+    )
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
 
 

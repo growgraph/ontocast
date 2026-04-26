@@ -384,8 +384,6 @@ def make_merge_facts_node(tools: ToolBox):
             state.status = Status.SUCCESS
             return state
 
-        for unit in state.facts_units:
-            unit.sanitize()
         doc_onto = document_ontology_access(state)
         ontology_graph = None
         artifacts = [
@@ -398,7 +396,7 @@ def make_merge_facts_node(tools: ToolBox):
             for ontology in artifacts:
                 merged_ontology += ontology.graph
             ontology_graph = merged_ontology
-        state.aggregated_facts = tools.aggregator.aggregate_graphs(
+        state.aggregated_facts = tools.aggregator.postprocess_facts_units(
             units=state.facts_units,
             ontology_graph=ontology_graph,
         )

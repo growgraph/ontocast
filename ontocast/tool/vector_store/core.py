@@ -83,7 +83,20 @@ class OntologySearchHit(BasePydanticModel):
     """Typed retrieval result that separates atom payload from ranking metadata."""
 
     atom: GraphAtom
-    score: float = Field(description="Fused retrieval score.")
+    score: float = Field(description="Channel-specific retrieval score.")
+
+
+class OntologySearchHitsByChannel(BasePydanticModel):
+    """Per-query retrieval hits split by vector channel."""
+
+    core_hits: list[OntologySearchHit] = Field(
+        default_factory=list,
+        description="Top hits from the core vector channel.",
+    )
+    neighborhood_hits: list[OntologySearchHit] = Field(
+        default_factory=list,
+        description="Top hits from the neighborhood vector channel.",
+    )
 
 
 class VectorStoreTool(Tool):
@@ -126,3 +139,7 @@ class VectorStoreTool(Tool):
         raise NotImplementedError(
             f"{type(self).__name__} does not isolate vectors by tenant/project"
         )
+
+
+CORE_VECTOR_NAME = "core"
+NEIGHBORHOOD_VECTOR_NAME = "neighborhood"

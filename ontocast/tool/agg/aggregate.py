@@ -846,3 +846,18 @@ class EmbeddingBasedAggregator:
 
         logger.info("Aggregation with metadata complete")
         return merged_graph
+
+    def postprocess_facts_units(
+        self,
+        units: list[ContentUnit],
+        ontology_graph: RDFGraph | None = None,
+    ) -> RDFGraph:
+        """Sanitize facts units, then run aggregation/normalization.
+
+        This method is intentionally safe for both single-unit and multi-unit
+        inputs so unit-pipeline and graph-pipeline paths share the same
+        post-processing behavior.
+        """
+        for unit in units:
+            unit.sanitize()
+        return self.aggregate_graphs(units=units, ontology_graph=ontology_graph)

@@ -9,7 +9,7 @@ import re
 
 from rdflib import URIRef
 
-from ontocast.onto.constants import DEFAULT_IRI
+from ontocast.onto.constants import DEFAULT_IRI, ensure_namespace_iri_suffix
 
 from .normalizer import EntityRepresentation
 
@@ -38,14 +38,10 @@ class URIPromoter:
                 namespace are facts; all other entities are ontology
                 entities and preserved as-is.
         """
-        self.doc_namespace = self._normalize_namespace(doc_namespace)
+        self.doc_namespace = ensure_namespace_iri_suffix(doc_namespace)
         self.chunk_namespaces = chunk_namespaces
-        self.facts_iri = facts_iri.rstrip("/") + "/"
+        self.facts_iri = ensure_namespace_iri_suffix(facts_iri)
         self._used_uris: set[str] = set()
-
-    def _normalize_namespace(self, namespace: str) -> str:
-        """Ensure namespace ends with appropriate separator."""
-        return namespace if namespace.endswith(("/", "#")) else namespace + "/"
 
     def _clean_local_name(self, name: str) -> str:
         """Clean a name for use as URI local part.

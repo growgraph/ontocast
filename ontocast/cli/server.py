@@ -43,6 +43,7 @@ from langgraph.graph.state import CompiledStateGraph
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from ontocast.agent.convert_document import convert_document
+from ontocast.agent.serialize import serialize as serialize_agent_state
 from ontocast.api.ontologies import build_ontology_router
 from ontocast.api.schemas import (
     FlushOkResponse,
@@ -181,6 +182,132 @@ def calculate_recursion_limit(
             server_config.base_recursion_limit,
             server_config.max_visits_per_node * server_config.estimated_chunks * 10,
         )
+
+
+def _configure_logging(config: Config) -> None:
+    """Configure root and module loggers from config."""
+    if config.logging_level is None:
+        return
+
+    try:
+        level = getattr(logging, config.logging_level.upper(), None)
+        if not isinstance(level, int):
+            raise ValueError(f"Invalid log level: {config.logging_level}")
+        global_level = get_next_level(level)
+        logging.basicConfig(level=global_level, handlers=[logging.StreamHandler()])
+        logging.getLogger("ontocast").setLevel(level)
+    except Exception as e:
+        logger.error("could set logging level correctly %s", e)
+
+
+def _prepare_path_config(config: Config) -> None:
+    """Expand configured directories and ensure working directory exists."""
+    if config.tool_config.path_config.working_directory is not None:
+        config.tool_config.path_config.working_directory = pathlib.Path(
+            config.tool_config.path_config.working_directory
+        ).expanduser()
+        config.tool_config.path_config.working_directory.mkdir(
+            parents=True, exist_ok=True
+        )
+    else:
+        raise ValueError(
+            "Working directory must be provided via CLI argument or "
+            "WORKING_DIRECTORY config"
+        )
+
+    if config.tool_config.path_config.ontology_directory is not None:
+        config.tool_config.path_config.ontology_directory = pathlib.Path(
+            config.tool_config.path_config.ontology_directory
+        ).expanduser()
+
+
+def _build_file_state(
+    file_path: pathlib.Path,
+    *,
+    config: Config,
+    head_chunks: int | None,
+    ontology_context_mode_value: OntologyContextMode,
+    tenant: str | None,
+    project: str | None,
+) -> AgentState:
+    return AgentState(
+        files={file_path.as_posix(): file_path.read_bytes()},
+        max_visits=config.server.max_visits_per_node,
+        max_chunks=head_chunks,
+        render_mode=config.server.render_mode,
+        ontology_context_mode=ontology_context_mode_value,
+        tenant=tenant,
+        project=project,
+    )
+
+
+async def _persist_unit_pipeline_outputs(
+    state: AgentState,
+    onto_result,
+    facts_result,
+    tools: ToolBox,
+) -> None:
+    """Serialize unit-pipeline outputs using the standard document serializer."""
+    if onto_result is not None and not onto_result.current_ontology.is_null():
+        state.reduced_ontology_artifacts = [onto_result.current_ontology]
+    if facts_result is not None:
+        ontology_graph = None
+        if onto_result is not None and not onto_result.current_ontology.is_null():
+            if len(onto_result.current_ontology.graph) > 0:
+                ontology_graph = onto_result.current_ontology.graph
+        state.aggregated_facts = tools.aggregator.postprocess_facts_units(
+            units=[facts_result.content_unit],
+            ontology_graph=ontology_graph,
+        )
+    # Run synchronous serialization off the active event loop.
+    await asyncio.to_thread(serialize_agent_state, state, tools)
+
+
+async def _process_files_input(
+    files: list[pathlib.Path],
+    *,
+    config: Config,
+    head_chunks: int | None,
+    use_unit_pipeline: bool,
+    tools: ToolBox,
+    workflow: CompiledStateGraph,
+    ontology_context_mode_value: OntologyContextMode,
+    tenant: str | None,
+    project: str | None,
+) -> None:
+    recursion_limit = calculate_recursion_limit(head_chunks, config.server)
+    for file_path in files:
+        try:
+            state = _build_file_state(
+                file_path,
+                config=config,
+                head_chunks=head_chunks,
+                ontology_context_mode_value=ontology_context_mode_value,
+                tenant=tenant,
+                project=project,
+            )
+            if use_unit_pipeline:
+                state = convert_document(state, tools)
+                if state.failure_stage is not None:
+                    logger.error(
+                        "Error processing %s: %s",
+                        file_path,
+                        state.failure_reason or "Document conversion failed",
+                    )
+                    continue
+                onto_result, facts_result = await run_unit_pipeline(state, tools)
+                await _persist_unit_pipeline_outputs(
+                    state, onto_result, facts_result, tools
+                )
+            else:
+                async for _ in workflow.astream(
+                    state,
+                    stream_mode="values",
+                    config=RunnableConfig(recursion_limit=recursion_limit),
+                ):
+                    pass
+        except Exception:
+            logger.exception("Error processing %s", file_path)
 
 
 def create_app(
@@ -601,7 +728,18 @@ def create_app(
 
             facts_ttl = ""
             if facts_result is not None:
-                facts_ttl = facts_result.content_unit.graph.serialize(format="turtle")
+                ontology_graph = None
+                if (
+                    onto_result is not None
+                    and not onto_result.current_ontology.is_null()
+                ):
+                    if len(onto_result.current_ontology.graph) > 0:
+                        ontology_graph = onto_result.current_ontology.graph
+                postprocessed_facts = tools.aggregator.postprocess_facts_units(
+                    units=[facts_result.content_unit],
+                    ontology_graph=ontology_graph,
+                )
+                facts_ttl = postprocessed_facts.serialize(format="turtle")
 
             last_status = None
             if facts_result is not None:
@@ -690,49 +828,10 @@ def run(
 
     """
 
-    # Global configuration instance
     config = Config()
-
-    # Validate LLM configuration
     config.validate_llm_config()
-
-    if config.logging_level is not None:
-        try:
-            import logging
-
-            level = getattr(logging, config.logging_level.upper(), None)
-            if not isinstance(level, int):
-                raise ValueError(f"Invalid log level: {config.logging_level}")
-
-            # Compute global level (one level higher)
-            global_level = get_next_level(level)
-
-            # Configure root logger
-            logging.basicConfig(level=global_level, handlers=[logging.StreamHandler()])
-
-            # Configure module logger
-            logging.getLogger("ontocast").setLevel(level)
-
-        except Exception as e:
-            logger.error(f"could set logging level correctly {e}")
-
-    if config.tool_config.path_config.working_directory is not None:
-        config.tool_config.path_config.working_directory = pathlib.Path(
-            config.tool_config.path_config.working_directory
-        ).expanduser()
-        config.tool_config.path_config.working_directory.mkdir(
-            parents=True, exist_ok=True
-        )
-    else:
-        raise ValueError(
-            "Working directory must be provided via CLI argument or "
-            "WORKING_DIRECTORY config"
-        )
-
-    if config.tool_config.path_config.ontology_directory is not None:
-        config.tool_config.path_config.ontology_directory = pathlib.Path(
-            config.tool_config.path_config.ontology_directory
-        ).expanduser()
+    _configure_logging(config)
+    _prepare_path_config(config)
 
     # Create ToolBox with config
     tools: ToolBox = ToolBox(config)
@@ -750,52 +849,27 @@ def run(
 
     workflow: CompiledStateGraph = create_agent_graph(tools)
 
-    if input_path:
+    if input_path is not None:
         input_path = input_path.expanduser()
-
         files = sorted(
             crawl_directories(
                 input_path,
                 suffixes=tuple([".json"] + list(tools.converter.supported_extensions)),
             )
         )
-
-        recursion_limit = calculate_recursion_limit(head_chunks, config.server)
-
-        async def process_files():
-            for file_path in files:
-                try:
-                    state = AgentState(
-                        files={file_path.as_posix(): file_path.read_bytes()},
-                        max_visits=config.server.max_visits_per_node,
-                        max_chunks=head_chunks,
-                        render_mode=config.server.render_mode,
-                        ontology_context_mode=ontology_context_mode_value,
-                        tenant=t_res,
-                        project=p_res,
-                    )
-                    if use_unit_pipeline:
-                        state = convert_document(state, tools)
-                        if state.failure_stage is not None:
-                            logger.error(
-                                "Error processing %s: %s",
-                                file_path,
-                                state.failure_reason or "Document conversion failed",
-                            )
-                            continue
-                        await run_unit_pipeline(state, tools)
-                    else:
-                        async for _ in workflow.astream(
-                            state,
-                            stream_mode="values",
-                            config=RunnableConfig(recursion_limit=recursion_limit),
-                        ):
-                            pass
-
-                except Exception as e:
-                    logger.error(f"Error processing {file_path}: {str(e)}")
-
-        asyncio.run(process_files())
+        asyncio.run(
+            _process_files_input(
+                files,
+                config=config,
+                head_chunks=head_chunks,
+                use_unit_pipeline=use_unit_pipeline,
+                tools=tools,
+                workflow=workflow,
+                ontology_context_mode_value=ontology_context_mode_value,
+                tenant=t_res,
+                project=p_res,
+            )
+        )
     else:
         app = create_app(
             tools=tools,

@@ -13,7 +13,7 @@ from pyld import jsonld
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import NamespaceManager
 
-from ontocast.onto.constants import COMMON_PREFIXES
+from ontocast.onto.constants import COMMON_PREFIXES, ensure_namespace_iri_suffix
 from ontocast.util import render_text_hash
 
 logger = logging.getLogger(__name__)
@@ -658,7 +658,8 @@ class RDFGraph(Graph):
         # Group URIs by their string representation to find duplicates
         uri_to_prefixes = defaultdict(list)
         for prefix, uri in current_prefixes.items():
-            uri_to_prefixes[str(uri)].append((prefix, uri))
+            uri_norm = ensure_namespace_iri_suffix(str(uri))
+            uri_to_prefixes[uri_norm].append((prefix, uri))
 
         # Find the "canonical" namespace objects for each URI
         # (the actual Namespace objects that might be registered)
@@ -739,6 +740,8 @@ class RDFGraph(Graph):
         """
         Unbinds namespace prefixes that point to URIs containing a chunk pattern.
         Returns a new graph with chunk namespaces dereferenced (expanded to full URIs).
+        Prefix target IRIs are normalized to end with ``#`` or ``/`` (``/`` appended
+        when missing) before chunk detection and rebinding.
 
         Args:
             chunk_pattern (str): The pattern to look for in URIs (default: "/chunk/")
@@ -748,10 +751,15 @@ class RDFGraph(Graph):
         """
         current_prefixes = dict(self.namespace_manager.namespaces())
 
+        # Normalize prefix target IRIs so chunk detection and rebinding agree on boundaries
+        prefix_to_normalized: dict[str, str] = {
+            prefix: ensure_namespace_iri_suffix(str(uri))
+            for prefix, uri in current_prefixes.items()
+        }
+
         # Find prefixes that point to URIs containing the chunk pattern
         chunk_prefixes = []
-        for prefix, uri in current_prefixes.items():
-            uri_str = str(uri)
+        for prefix, uri_str in prefix_to_normalized.items():
             if chunk_pattern in uri_str:
                 chunk_prefixes.append((prefix, uri_str))
 
@@ -763,10 +771,9 @@ class RDFGraph(Graph):
             new_graph.add(triple)
 
         # Bind only non-chunk namespace prefixes to the new graph
-        for prefix, uri in current_prefixes.items():
-            uri_str = str(uri)
+        for prefix, uri_str in prefix_to_normalized.items():
             if chunk_pattern not in uri_str:
-                new_graph.bind(prefix, uri)
+                new_graph.bind(prefix, Namespace(uri_str))
 
         # Log what was removed
         if chunk_prefixes:
