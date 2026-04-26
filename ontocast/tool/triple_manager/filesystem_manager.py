@@ -7,12 +7,9 @@ ontologies and facts as Turtle files.
 
 import logging
 import pathlib
-from typing import ClassVar
 
 from rdflib import Graph
-from rdflib.namespace import RDF
 
-from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.triple_manager.core import TripleStoreManager
@@ -40,12 +37,6 @@ class FilesystemTripleStoreManager(TripleStoreManager):
 
     working_directory: pathlib.Path | None
     ontology_path: pathlib.Path | None
-    _PROVENANCE_METADATA_PREDICATES: ClassVar[set] = {
-        RDF.type,
-        PROV.generatedAtTime,
-        SCHEMA.position,
-        SCHEMA.identifier,
-    }
 
     def __init__(self, **kwargs):
         """Initialize the filesystem triple store manager.
@@ -121,11 +112,15 @@ class FilesystemTripleStoreManager(TripleStoreManager):
         logger.info(f"Graph saved to {output_path}")
 
         if dump_clean_graph:
-            clean_graph = self._strip_provenance(graph)
+            clean_graph = self.strip_provenance(graph)
             clean_output_path = self.working_directory / self._with_suffix(
                 fname, "clean"
             )
-            self._write_turtle(clean_graph, clean_output_path)
+            self._write_turtle(
+                clean_graph,
+                clean_output_path,
+                serialization_format="turtle",
+            )
             logger.info(f"Graph without provenance saved to {clean_output_path}")
 
     @staticmethod
@@ -134,42 +129,20 @@ class FilesystemTripleStoreManager(TripleStoreManager):
         return f"{path.stem}_{suffix}{path.suffix}"
 
     @staticmethod
-    def _write_turtle(graph: Graph, output_path: pathlib.Path) -> None:
+    def _write_turtle(
+        graph: Graph,
+        output_path: pathlib.Path,
+        *,
+        serialization_format: str | None = None,
+    ) -> None:
         # Use longturtle where available (non-oxigraph) for easier local inspection.
-        is_oxigraph = (
-            isinstance(graph, RDFGraph)
-            and type(graph.store).__name__ == "OxigraphStore"
-        )
-        serialization_format = "turtle" if is_oxigraph else "longturtle"
+        if serialization_format is None:
+            is_oxigraph = (
+                isinstance(graph, RDFGraph)
+                and type(graph.store).__name__ == "OxigraphStore"
+            )
+            serialization_format = "turtle" if is_oxigraph else "longturtle"
         graph.serialize(format=serialization_format, destination=output_path)
-
-    @classmethod
-    def _strip_provenance(cls, graph: Graph) -> RDFGraph:
-        clean = RDFGraph()
-        for prefix, namespace in graph.namespaces():
-            clean.bind(prefix, namespace)
-
-        reifier_nodes = set(graph.subjects(RDF_REIFIES, None))
-        source_nodes = set(graph.objects(None, PROV.wasDerivedFrom))
-        triples_to_skip = {
-            (None, RDF_REIFIES, None),
-            (None, PROV.wasDerivedFrom, None),
-        }
-
-        for s, p, o in graph:
-            if any(
-                (ps is None or ps == s)
-                and (pp is None or pp == p)
-                and (po is None or po == o)
-                for ps, pp, po in triples_to_skip
-            ):
-                continue
-            if s in reifier_nodes:
-                continue
-            if s in source_nodes and p in cls._PROVENANCE_METADATA_PREDICATES:
-                continue
-            clean.add((s, p, o))
-        return clean
 
     def serialize(self, o: Ontology | RDFGraph, graph_uri: str | None = None):  # type: ignore[override]
         if isinstance(o, Ontology):

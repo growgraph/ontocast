@@ -28,7 +28,7 @@ Generate semantic triples representing facts (not abstract entities) based on pr
 facts_instruction_template = """\n\n
 # OPERATIONAL GUIDELINES
 
-1. Facts MUST use the fixed namespace `{facts_namespace}` with the prefix `cd:` (declare exactly: `@prefix cd: <{facts_namespace}> .`).
+1. Facts MUST use the fixed namespace `{facts_namespace}` with the prefix `cd:` (declare exactly: `@prefix cd: <{facts_namespace}> .`). Local names for facts should not be capitalized.
 2. Use the provided {domain_ontologies_clause} (below) and standard ontologies (RDFS, OWL, schema.org, etc.) to identify/infer entities, classes, types, and relationships
 3. Thoroughly Extract and Link: extract all possible text mentions that correspond to entities, classes, types, or relationships defined in {domain_ontologies_clause}. When referring to domain ontology entities, use {domain_prefix_clause}
 4. Enforce typing: all `cd:` entities (facts) must be linked (e.g. using rdf:type) to entities from either {domain_ontologies_clause} or basic ontologies (RDFS, OWL, etc), e.g. rdfs:Class, rdf:Property, schema:Person, schema:Organization, etc.

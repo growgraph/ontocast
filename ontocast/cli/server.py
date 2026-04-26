@@ -242,6 +242,25 @@ def _build_file_state(
     )
 
 
+def _select_unit_facts_ontology_graph(onto_result, facts_result) -> RDFGraph:
+    """Return ontology graph for facts post-processing in unit pipeline flows.
+
+    Priority:
+    1. facts_result.ontology_snapshot.graph (context that actually drove facts render)
+    2. onto_result.current_ontology.graph (fallback when facts result is unavailable)
+    3. empty graph
+    """
+    if facts_result is not None:
+        return facts_result.ontology_snapshot.graph
+    if (
+        onto_result is not None
+        and not onto_result.current_ontology.is_null()
+        and len(onto_result.current_ontology.graph) > 0
+    ):
+        return onto_result.current_ontology.graph
+    return RDFGraph()
+
+
 async def _persist_unit_pipeline_outputs(
     state: AgentState,
     onto_result,
@@ -252,10 +271,7 @@ async def _persist_unit_pipeline_outputs(
     if onto_result is not None and not onto_result.current_ontology.is_null():
         state.reduced_ontology_artifacts = [onto_result.current_ontology]
     if facts_result is not None:
-        ontology_graph = RDFGraph()
-        if onto_result is not None and not onto_result.current_ontology.is_null():
-            if len(onto_result.current_ontology.graph) > 0:
-                ontology_graph = onto_result.current_ontology.graph
+        ontology_graph = _select_unit_facts_ontology_graph(onto_result, facts_result)
         state.aggregated_facts = tools.aggregator.postprocess_facts_units(
             units=[facts_result.content_unit],
             ontology_graph=ontology_graph,
@@ -750,9 +766,9 @@ def create_app(
 
             facts_ttl = ""
             if facts_result is not None:
-                ontology_graph = RDFGraph()
-                if len(facts_result.ontology_snapshot.graph) > 0:
-                    ontology_graph = facts_result.ontology_snapshot.graph
+                ontology_graph = _select_unit_facts_ontology_graph(
+                    onto_result, facts_result
+                )
                 postprocessed_facts = tools.aggregator.postprocess_facts_units(
                     units=[facts_result.content_unit],
                     ontology_graph=ontology_graph,

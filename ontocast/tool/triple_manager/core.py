@@ -7,16 +7,25 @@ abstract interfaces and concrete implementations for different triple store back
 import abc
 import asyncio
 import os
+from typing import ClassVar
 
 from pydantic import Field
 from rdflib import Graph
+from rdflib.namespace import RDF
 
+from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool import Tool
 
 
 class TripleStoreManager(Tool):
+    _PROVENANCE_METADATA_PREDICATES: ClassVar[set] = {
+        PROV.generatedAtTime,
+        SCHEMA.position,
+        SCHEMA.identifier,
+    }
+
     """Base class for managing RDF triple stores.
 
     This class defines the interface for triple store management operations,
@@ -88,6 +97,30 @@ class TripleStoreManager(Tool):
     async def aserialize(self, o: Ontology | RDFGraph, **kwargs) -> bool | None:
         """Async serialize helper for backends without native async I/O."""
         return await asyncio.to_thread(self.serialize, o, **kwargs)
+
+    @classmethod
+    def strip_provenance(cls, graph: Graph) -> RDFGraph:
+        """Return a graph without reification/provenance scaffolding triples."""
+        clean = RDFGraph()
+        for prefix, namespace in graph.namespaces():
+            clean.bind(prefix, namespace)
+
+        reifier_nodes = set(graph.subjects(RDF_REIFIES, None))
+        source_nodes = set(graph.objects(None, PROV.wasDerivedFrom))
+
+        for subject, predicate, object_ in graph:
+            if predicate in {RDF_REIFIES, PROV.wasDerivedFrom}:
+                continue
+            if subject in reifier_nodes:
+                continue
+            if subject in source_nodes:
+                if predicate in cls._PROVENANCE_METADATA_PREDICATES:
+                    continue
+                if predicate == RDF.type and object_ == PROV.Entity:
+                    continue
+            clean.add((subject, predicate, object_))
+
+        return clean
 
     @abc.abstractmethod
     async def clean(self) -> None:

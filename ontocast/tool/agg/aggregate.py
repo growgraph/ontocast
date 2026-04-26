@@ -21,6 +21,7 @@ from itertools import combinations
 from typing import cast
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict, Field
 from rdflib import URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
 
@@ -45,6 +46,21 @@ class EntityClassification(StrEnum):
     FACT = "fact"
     KNOWN_ONTOLOGY = "known_ontology"
     TENTATIVE_ONTOLOGY = "tentative_ontology"
+
+
+class _EntityCollectionState(BaseModel):
+    """Mutable state for entity collection across content units."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    known_entities: set[URIRef]
+    entities: set[URIRef] = Field(default_factory=set)
+    source_entities: set[URIRef] = Field(default_factory=set)
+    entity_graphs: dict[URIRef, RDFGraph] = Field(default_factory=dict)
+    entity_doc_iris: dict[URIRef, URIRef] = Field(default_factory=dict)
+    entity_classification: dict[URIRef, EntityClassification] = Field(
+        default_factory=dict
+    )
 
 
 _STANDARD_NAMESPACES = (
@@ -515,24 +531,19 @@ class EmbeddingBasedAggregator:
         *,
         entity: URIRef,
         unit: ContentUnit,
-        known_entities: set[URIRef],
-        entities: set[URIRef],
-        source_entities: set[URIRef],
-        entity_graphs: dict[URIRef, RDFGraph],
-        entity_doc_iris: dict[URIRef, URIRef],
-        entity_classification: dict[URIRef, EntityClassification],
+        state: _EntityCollectionState,
     ) -> None:
         """Register one URI entity with merged context and stable classification."""
-        entities.add(entity)
-        source_entities.add(entity)
-        if entity not in entity_graphs:
-            entity_graphs[entity] = unit.graph.copy()
+        state.entities.add(entity)
+        state.source_entities.add(entity)
+        if entity not in state.entity_graphs:
+            state.entity_graphs[entity] = unit.graph.copy()
         else:
-            self._merge_into_context_graph(entity_graphs[entity], unit.graph)
-        entity_doc_iris.setdefault(entity, unit.doc_iri)
-        current = entity_classification.get(entity, EntityClassification.FACT)
-        candidate = self._classify_entity_for_unit(entity, unit, known_entities)
-        entity_classification[entity] = (
+            self._merge_into_context_graph(state.entity_graphs[entity], unit.graph)
+        state.entity_doc_iris.setdefault(entity, unit.doc_iri)
+        current = state.entity_classification.get(entity, EntityClassification.FACT)
+        candidate = self._classify_entity_for_unit(entity, unit, state.known_entities)
+        state.entity_classification[entity] = (
             candidate
             if self._classification_priority(candidate)
             >= self._classification_priority(current)
@@ -569,12 +580,7 @@ class EmbeddingBasedAggregator:
                 entity_to_is_ontology,
             ).
         """
-        entities: set[URIRef] = set()
-        source_entities: set[URIRef] = set()
-        entity_graphs: dict[URIRef, RDFGraph] = {}
-        entity_doc_iris: dict[URIRef, URIRef] = {}
-        entity_classification: dict[URIRef, EntityClassification] = {}
-        known_entities = known_ontology_entities or set()
+        state = _EntityCollectionState(known_entities=known_ontology_entities or set())
 
         for unit in units:
             if unit.graph is None:
@@ -584,46 +590,16 @@ class EmbeddingBasedAggregator:
             # (unit.graph). Using graph_absolute here causes mapping keys to miss
             # during rewrite, because unit.graph still contains the original terms.
             for s, p, o in unit.graph:
-                if isinstance(s, URIRef):
-                    self._register_entity(
-                        entity=s,
-                        unit=unit,
-                        known_entities=known_entities,
-                        entities=entities,
-                        source_entities=source_entities,
-                        entity_graphs=entity_graphs,
-                        entity_doc_iris=entity_doc_iris,
-                        entity_classification=entity_classification,
-                    )
-                if isinstance(p, URIRef):
-                    self._register_entity(
-                        entity=p,
-                        unit=unit,
-                        known_entities=known_entities,
-                        entities=entities,
-                        source_entities=source_entities,
-                        entity_graphs=entity_graphs,
-                        entity_doc_iris=entity_doc_iris,
-                        entity_classification=entity_classification,
-                    )
-                if isinstance(o, URIRef):
-                    self._register_entity(
-                        entity=o,
-                        unit=unit,
-                        known_entities=known_entities,
-                        entities=entities,
-                        source_entities=source_entities,
-                        entity_graphs=entity_graphs,
-                        entity_doc_iris=entity_doc_iris,
-                        entity_classification=entity_classification,
-                    )
+                for term in (s, p, o):
+                    if isinstance(term, URIRef):
+                        self._register_entity(entity=term, unit=unit, state=state)
 
         return (
-            list(entities),
-            source_entities,
-            entity_graphs,
-            entity_doc_iris,
-            entity_classification,
+            list(state.entities),
+            state.source_entities,
+            state.entity_graphs,
+            state.entity_doc_iris,
+            state.entity_classification,
         )
 
     def aggregate_graphs(

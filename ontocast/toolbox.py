@@ -19,7 +19,7 @@ from ontocast.tool import (
     FusekiTripleStoreManager,
     Neo4jTripleStoreManager,
 )
-from ontocast.tool.aggregate import EmbeddingBasedAggregator
+from ontocast.tool.agg.aggregate import EmbeddingBasedAggregator
 from ontocast.tool.cache import Cacher
 from ontocast.tool.graph_diff import DiffTool
 from ontocast.tool.graph_version_manager import GraphVersionManager

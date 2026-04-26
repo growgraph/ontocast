@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from rdflib import URIRef
+from rdflib import RDF, URIRef
 
-from ontocast.onto.constants import DEFAULT_IRI, PROV, RDF_REIFIES
+from ontocast.onto.constants import DEFAULT_IRI, PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.agg.rewriter import GraphRewriter
@@ -45,6 +45,35 @@ def test_filesystem_manager_serializes_clean_facts_graph(tmp_path: Path) -> None
 
     clean_graph = RDFGraph()
     clean_graph.parse(clean_path, format="turtle")
+    clean_ttl = clean_path.read_text()
     assert fact_triple in clean_graph
     assert not list(clean_graph.triples((None, RDF_REIFIES, None)))
     assert not list(clean_graph.triples((None, PROV.wasDerivedFrom, None)))
+    assert "@prefix" in clean_ttl
+
+
+def test_strip_provenance_keeps_non_provenance_types_on_source_nodes() -> None:
+    manager = FilesystemTripleStoreManager(
+        working_directory=Path("/tmp"),
+        ontology_path=Path("/tmp"),
+    )
+    graph = RDFGraph()
+    source_node = URIRef(f"{DEFAULT_IRI}/Appeal1")
+    domain_class = URIRef(f"{DEFAULT_IRI}/Appeal")
+    statement = URIRef(f"{DEFAULT_IRI}/stmt-1")
+
+    graph.add((statement, RDF_REIFIES, URIRef(f"{DEFAULT_IRI}/quoted")))
+    graph.add((statement, PROV.wasDerivedFrom, source_node))
+    graph.add((source_node, RDF.type, domain_class))
+    graph.add((source_node, RDF.type, PROV.Entity))
+    graph.add((source_node, SCHEMA.identifier, URIRef(f"{DEFAULT_IRI}/chunk-1")))
+
+    clean_graph = manager.strip_provenance(graph)
+
+    assert (source_node, RDF.type, domain_class) in clean_graph
+    assert (source_node, RDF.type, PROV.Entity) not in clean_graph
+    assert (
+        source_node,
+        SCHEMA.identifier,
+        URIRef(f"{DEFAULT_IRI}/chunk-1"),
+    ) not in clean_graph
