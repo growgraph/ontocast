@@ -581,10 +581,18 @@ class QdrantConfig(BaseSettings):
         ge=0,
         description="Neighborhood expansion depth for induced subgraph retrieval.",
     )
-    induced_subgraph_max_triples: int = Field(
-        default=2000,
+    induced_subgraph_max_total_triples: int = Field(
+        default=300,
         ge=1,
-        description="Maximum number of triples returned for induced subgraph retrieval.",
+        description="Hard cap on triples returned for induced subgraph retrieval.",
+    )
+    induced_subgraph_estimated_triples_per_query: int = Field(
+        default=24,
+        ge=1,
+        description=(
+            "Estimated triple budget per proposition/query used to shape per-entity "
+            "allocation in induced subgraph retrieval."
+        ),
     )
     proposition_window_sentences: int = Field(
         default=2,

@@ -134,7 +134,8 @@ async def _resolve_ensemble_context(
         top_k=qcfg.top_k,
         expand_sparql=True,
         subgraph_depth=qcfg.induced_subgraph_depth,
-        max_triples=qcfg.induced_subgraph_max_triples,
+        max_total_triples=qcfg.induced_subgraph_max_total_triples,
+        estimated_triples_per_query=qcfg.induced_subgraph_estimated_triples_per_query,
     )
     anchor_iri = source_iris[0] if source_iris else NULL_ONTOLOGY.iri
     ontology_snapshot = Ontology(

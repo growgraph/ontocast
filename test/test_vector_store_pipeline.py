@@ -162,9 +162,12 @@ class StubSPARQLTool(SPARQLTool):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._last_entity_uris: list[str] = []
+        self._last_entity_relevance: dict[str, float] | None = None
         self._last_ontology_iris: list[str] = []
         self._last_ontology_version_filters: dict[str, set[str]] | None = None
         self._last_ontology_hash_filters: dict[str, set[str]] | None = None
+        self._last_max_total_triples: int | None = None
+        self._last_estimated_triples_per_query: int | None = None
         self.induced_subgraph_calls: int = 0
 
     @property
@@ -174,6 +177,18 @@ class StubSPARQLTool(SPARQLTool):
     @property
     def last_ontology_iris(self) -> list[str]:
         return self._last_ontology_iris
+
+    @property
+    def last_entity_relevance(self) -> dict[str, float] | None:
+        return self._last_entity_relevance
+
+    @property
+    def last_max_total_triples(self) -> int | None:
+        return self._last_max_total_triples
+
+    @property
+    def last_estimated_triples_per_query(self) -> int | None:
+        return self._last_estimated_triples_per_query
 
     @property
     def last_ontology_version_filters(self) -> dict[str, set[str]] | None:
@@ -186,18 +201,23 @@ class StubSPARQLTool(SPARQLTool):
     def get_induced_subgraph(
         self,
         entity_uris: list[str],
+        entity_relevance: dict[str, float] | None = None,
         ontology_iris: list[str] | None = None,
         depth: int = 1,
-        max_triples: int = 2000,
+        max_total_triples: int = 300,
+        estimated_triples_per_query: int = 24,
         ontology_version_filters: dict[str, set[str]] | None = None,
         ontology_hash_filters: dict[str, set[str]] | None = None,
     ) -> RDFGraph:
-        del depth, max_triples
+        del depth
         self.induced_subgraph_calls += 1
         self._last_entity_uris = entity_uris
+        self._last_entity_relevance = entity_relevance
         self._last_ontology_iris = ontology_iris or []
         self._last_ontology_version_filters = ontology_version_filters
         self._last_ontology_hash_filters = ontology_hash_filters
+        self._last_max_total_triples = max_total_triples
+        self._last_estimated_triples_per_query = estimated_triples_per_query
         graph = RDFGraph._from_turtle_str(
             """
             @prefix ex: <https://example.org/smoke#> .
@@ -544,7 +564,7 @@ def test_retriever_expands_graph_via_sparql_tool() -> None:
 
     assert source_iris == ["https://example.org/smoke"]
     assert len(graph) > 0
-    assert sparql_tool.last_entity_uris == sorted({atom.iri for atom in atoms})
+    assert set(sparql_tool.last_entity_uris) == {atom.iri for atom in atoms}
     assert sparql_tool.last_ontology_iris == ["https://example.org/smoke"]
     assert sparql_tool.last_ontology_version_filters == {
         "https://example.org/smoke": {"1.0.0"}
@@ -597,7 +617,7 @@ async def test_retriever_aretrieve_expands_graph_via_sparql_tool() -> None:
 
     assert source_iris == ["https://example.org/smoke"]
     assert len(graph) > 0
-    assert sparql_tool.last_entity_uris == sorted({atom.iri for atom in atoms})
+    assert set(sparql_tool.last_entity_uris) == {atom.iri for atom in atoms}
     assert sparql_tool.last_ontology_iris == ["https://example.org/smoke"]
     assert sparql_tool.last_ontology_version_filters == {
         "https://example.org/smoke": {"1.0.0"}
@@ -1192,6 +1212,54 @@ async def test_aretrieve_ensemble_merged_score_ratio_trims_below_floor() -> None
         expand_sparql=True,
     )
     assert sparql_tool.last_entity_uris == ["https://example.org/smoke#A"]
+
+
+@pytest.mark.anyio
+async def test_aretrieve_ensemble_forwards_ranking_and_budget_controls() -> None:
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    vector_store = StubVectorStore(
+        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        embedding=embedding,
+    )
+    vector_store.set_hits_by_query(
+        [
+            _channel_hits(
+                core_hits=[
+                    _scored_atom("a", "A", 0.95),
+                    _scored_atom("b", "B", 0.82),
+                ]
+            )
+        ]
+    )
+    sparql_tool = StubSPARQLTool(triple_store_manager=None)
+    retriever = OntologyPatchRetriever(
+        vector_store=vector_store,
+        sparql_tool=sparql_tool,
+        patch=PatchRetrievalConfig(
+            per_query_core_score_ratio=0.0,
+            per_query_neighborhood_score_ratio=0.0,
+            min_merged_max_score=0.0,
+            mmr_lambda=1.0,
+        ),
+    )
+    await retriever.aretrieve_ensemble(
+        queries=["q1"],
+        top_k=2,
+        expand_sparql=True,
+        max_total_triples=77,
+        estimated_triples_per_query=9,
+    )
+
+    assert sparql_tool.last_entity_uris == [
+        "https://example.org/smoke#A",
+        "https://example.org/smoke#B",
+    ]
+    assert sparql_tool.last_entity_relevance == {
+        "https://example.org/smoke#A": pytest.approx(1.0),
+        "https://example.org/smoke#B": pytest.approx(0.5),
+    }
+    assert sparql_tool.last_max_total_triples == 77
+    assert sparql_tool.last_estimated_triples_per_query == 9
 
 
 @pytest.mark.anyio

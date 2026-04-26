@@ -370,7 +370,7 @@ async def test_ingest_retrieve_micro_chunks_render_facts(
         queries=micro_chunks,
         expand_sparql=True,
         subgraph_depth=subgraph_depth,
-        max_triples=max_triples,
+        max_total_triples=max_triples,
     )
 
     for idx, sentence in enumerate(micro_chunks):

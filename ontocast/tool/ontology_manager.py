@@ -143,7 +143,8 @@ class OntologyManager(Tool):
         query: str,
         top_k: int | None = None,
         subgraph_depth: int = 1,
-        max_triples: int = 2000,
+        max_total_triples: int = 300,
+        estimated_triples_per_query: int = 24,
     ) -> RDFGraph | None:
         """Retrieve multi-ontology patch context for a query.
 
@@ -154,7 +155,8 @@ class OntologyManager(Tool):
             query=query,
             top_k=top_k,
             subgraph_depth=subgraph_depth,
-            max_triples=max_triples,
+            max_total_triples=max_total_triples,
+            estimated_triples_per_query=estimated_triples_per_query,
         )
         return graph
 
@@ -163,14 +165,16 @@ class OntologyManager(Tool):
         query: str,
         top_k: int | None = None,
         subgraph_depth: int = 1,
-        max_triples: int = 2000,
+        max_total_triples: int = 300,
+        estimated_triples_per_query: int = 24,
     ) -> RDFGraph | None:
         """Async variant of :meth:`get_patch_context`."""
         graph, _ = await self.aget_patch_context_with_sources(
             query=query,
             top_k=top_k,
             subgraph_depth=subgraph_depth,
-            max_triples=max_triples,
+            max_total_triples=max_total_triples,
+            estimated_triples_per_query=estimated_triples_per_query,
         )
         return graph
 
@@ -179,14 +183,16 @@ class OntologyManager(Tool):
         query: str,
         top_k: int | None = None,
         subgraph_depth: int = 1,
-        max_triples: int = 2000,
+        max_total_triples: int = 300,
+        estimated_triples_per_query: int = 24,
     ) -> tuple[RDFGraph | None, list[str]]:
         """Retrieve patch context and contributing ontology IRIs."""
         results = self.get_patch_contexts_with_sources(
             queries=[query],
             top_k=top_k,
             subgraph_depth=subgraph_depth,
-            max_triples=max_triples,
+            max_total_triples=max_total_triples,
+            estimated_triples_per_query=estimated_triples_per_query,
         )
         if not results:
             return None, []
@@ -197,14 +203,16 @@ class OntologyManager(Tool):
         query: str,
         top_k: int | None = None,
         subgraph_depth: int = 1,
-        max_triples: int = 2000,
+        max_total_triples: int = 300,
+        estimated_triples_per_query: int = 24,
     ) -> tuple[RDFGraph | None, list[str]]:
         """Async variant of :meth:`get_patch_context_with_sources`."""
         results = await self.aget_patch_contexts_with_sources(
             queries=[query],
             top_k=top_k,
             subgraph_depth=subgraph_depth,
-            max_triples=max_triples,
+            max_total_triples=max_total_triples,
+            estimated_triples_per_query=estimated_triples_per_query,
         )
         if not results:
             return None, []
@@ -215,7 +223,8 @@ class OntologyManager(Tool):
         queries: list[str],
         top_k: int | None = None,
         subgraph_depth: int = 1,
-        max_triples: int = 2000,
+        max_total_triples: int = 300,
+        estimated_triples_per_query: int = 24,
     ) -> list[tuple[RDFGraph | None, list[str]]]:
         """Retrieve patch contexts for many queries in a batched pass.
 
@@ -229,7 +238,8 @@ class OntologyManager(Tool):
                 queries=queries,
                 top_k=self._effective_patch_top_k(top_k),
                 subgraph_depth=subgraph_depth,
-                max_triples=max_triples,
+                max_total_triples=max_total_triples,
+                estimated_triples_per_query=estimated_triples_per_query,
             )
             return [(graph, sources) if len(graph) > 0 else (RDFGraph(), sources)]
 
@@ -244,7 +254,8 @@ class OntologyManager(Tool):
         queries: list[str],
         top_k: int | None = None,
         subgraph_depth: int = 1,
-        max_triples: int = 2000,
+        max_total_triples: int = 300,
+        estimated_triples_per_query: int = 24,
     ) -> list[tuple[RDFGraph | None, list[str]]]:
         """Async patch retrieval (vector + induced subgraph) for many queries.
 
@@ -258,7 +269,8 @@ class OntologyManager(Tool):
                 queries=queries,
                 top_k=self._effective_patch_top_k(top_k),
                 subgraph_depth=subgraph_depth,
-                max_triples=max_triples,
+                max_total_triples=max_total_triples,
+                estimated_triples_per_query=estimated_triples_per_query,
             )
             return [(graph, sources) if len(graph) > 0 else (RDFGraph(), sources)]
 

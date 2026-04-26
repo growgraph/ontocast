@@ -35,6 +35,26 @@ def _source_iris_from_atoms(atoms: Iterable[GraphAtom]) -> list[str]:
     return sorted({atom.ontology_iri for atom in atoms if atom.ontology_iri})
 
 
+def _ranked_entity_weights(
+    atoms: list[GraphAtom],
+) -> tuple[list[str], dict[str, float]]:
+    """Collapse atom scores to entity-level ranking and relevance weights."""
+    best_score_by_iri: dict[str, float] = {}
+    for atom in atoms:
+        iri = atom.iri
+        if not iri:
+            continue
+        score = float(atom.score or 0.0)
+        previous = best_score_by_iri.get(iri)
+        if previous is None or score > previous:
+            best_score_by_iri[iri] = score
+    ranked = sorted(
+        best_score_by_iri.keys(),
+        key=lambda iri: (-best_score_by_iri[iri], iri),
+    )
+    return ranked, best_score_by_iri
+
+
 def _filter_hits_by_relative_floor(
     hits: list[OntologySearchHit],
     *,
@@ -284,7 +304,8 @@ class OntologyPatchRetriever(Tool):
         top_k: int | None = None,
         expand_sparql: bool = True,
         subgraph_depth: int = 1,
-        max_triples: int = 2000,
+        max_total_triples: int = 300,
+        estimated_triples_per_query: int = 24,
     ) -> tuple[RDFGraph, list[str]]:
         """Retrieve top-k hits for one query and optional induced subgraph; returns source ontology IRIs."""
         try:
@@ -296,7 +317,8 @@ class OntologyPatchRetriever(Tool):
                     top_k=top_k,
                     expand_sparql=expand_sparql,
                     subgraph_depth=subgraph_depth,
-                    max_triples=max_triples,
+                    max_total_triples=max_total_triples,
+                    estimated_triples_per_query=estimated_triples_per_query,
                 )
             )
         raise RuntimeError(
@@ -309,7 +331,8 @@ class OntologyPatchRetriever(Tool):
         top_k: int | None = None,
         expand_sparql: bool = True,
         subgraph_depth: int = 1,
-        max_triples: int = 2000,
+        max_total_triples: int = 300,
+        estimated_triples_per_query: int = 24,
     ) -> tuple[RDFGraph, list[str]]:
         """Sync: one induced graph and source IRIs for the union of vector hits over ``queries``."""
         try:
@@ -321,7 +344,8 @@ class OntologyPatchRetriever(Tool):
                     top_k=top_k,
                     expand_sparql=expand_sparql,
                     subgraph_depth=subgraph_depth,
-                    max_triples=max_triples,
+                    max_total_triples=max_total_triples,
+                    estimated_triples_per_query=estimated_triples_per_query,
                 )
             )
         raise RuntimeError(
@@ -334,7 +358,8 @@ class OntologyPatchRetriever(Tool):
         top_k: int | None = None,
         expand_sparql: bool = True,
         subgraph_depth: int = 1,
-        max_triples: int = 2000,
+        max_total_triples: int = 300,
+        estimated_triples_per_query: int = 24,
     ) -> tuple[RDFGraph, list[str]]:
         """Async single-query variant of :meth:`aretrieve_ensemble`."""
         return await self.aretrieve_ensemble(
@@ -342,7 +367,8 @@ class OntologyPatchRetriever(Tool):
             top_k=top_k,
             expand_sparql=expand_sparql,
             subgraph_depth=subgraph_depth,
-            max_triples=max_triples,
+            max_total_triples=max_total_triples,
+            estimated_triples_per_query=estimated_triples_per_query,
         )
 
     async def aretrieve_ensemble(
@@ -351,7 +377,8 @@ class OntologyPatchRetriever(Tool):
         top_k: int | None = None,
         expand_sparql: bool = True,
         subgraph_depth: int = 1,
-        max_triples: int = 2000,
+        max_total_triples: int = 300,
+        estimated_triples_per_query: int = 24,
     ) -> tuple[RDFGraph, list[str]]:
         """Vector search over all ``queries`` once, score-filter, dedupe, single subgraph expansion.
 
@@ -413,7 +440,7 @@ class OntologyPatchRetriever(Tool):
         if not merged:
             return RDFGraph(), []
 
-        entity_uris = sorted({atom.iri for atom in merged if atom.iri})
+        entity_uris, entity_relevance = _ranked_entity_weights(merged)
         ontology_iris = sorted(
             {atom.ontology_iri for atom in merged if atom.ontology_iri}
         )
@@ -431,9 +458,11 @@ class OntologyPatchRetriever(Tool):
 
         graph = await self.sparql_tool.aget_induced_subgraph(
             entity_uris=entity_uris,
+            entity_relevance=entity_relevance,
             ontology_iris=ontology_iris,
             depth=subgraph_depth,
-            max_triples=max_triples,
+            max_total_triples=max_total_triples,
+            estimated_triples_per_query=estimated_triples_per_query,
             ontology_version_filters=ontology_version_filters or None,
             ontology_hash_filters=ontology_hash_filters or None,
         )

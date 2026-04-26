@@ -77,6 +77,25 @@ NEO4J_PORT=7476
 NEO4J_BOLT_PORT=7689
 ```
 
+### Qdrant Retrieval Budgets
+
+```bash
+QDRANT_URI=http://localhost:6333
+QDRANT_API_KEY=abc123-qwe
+QDRANT_TOP_K=10
+QDRANT_INDUCED_SUBGRAPH_DEPTH=1
+# Hard cap for total stitched context triples
+QDRANT_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=300
+# Estimated budget per query window used to distribute triples across ranked entities
+QDRANT_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
+```
+
+Budget behavior:
+
+- `QDRANT_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` is the global upper bound returned to the LLM.
+- `QDRANT_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` shapes per-entity allocation during retrieval.
+- Retrieval guarantees broad seed coverage when feasible, then allocates remaining budget by entity relevance.
+
 ### Paths and Domain
 
 ```bash
