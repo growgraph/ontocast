@@ -30,6 +30,7 @@ from rdflib.namespace import OWL, RDF, XSD
 
 from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit
+from ontocast.onto.iri_policy import is_in_namespace, normalize_namespace_iri
 from ontocast.onto.rdfgraph import RDFGraph
 
 logger = logging.getLogger(__name__)
@@ -63,14 +64,7 @@ class GraphRewriter:
 
     @staticmethod
     def _in_namespace(entity: URIRef, namespace: str) -> bool:
-        entity_str = str(entity)
-        if entity_str.startswith(namespace):
-            return True
-        slash_variant = namespace.rstrip("/") + "/"
-        hash_variant = namespace.rstrip("#") + "#"
-        return entity_str.startswith(slash_variant) or entity_str.startswith(
-            hash_variant
-        )
+        return is_in_namespace(str(entity), namespace, context="auto")
 
     def should_emit_sameas(self, original: URIRef, canonical: URIRef) -> bool:
         """Return whether a sameAs link is valid for emission."""
@@ -444,7 +438,7 @@ class GraphRewriter:
                 doc_iris.add(unit.doc_iri)
         for idx, doc_iri in enumerate(sorted(doc_iris)):
             prefix = f"doc{idx}" if len(doc_iris) > 1 else "doc"
-            merged.bind(prefix, doc_iri.rstrip("/") + "/")
+            merged.bind(prefix, normalize_namespace_iri(doc_iri, context="facts"))
 
         # Collect namespaces from all source graphs
         all_namespaces: dict[str, str] = {}

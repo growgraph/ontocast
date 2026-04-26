@@ -110,7 +110,9 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
 
     monkeypatch.setattr(unit_loops, "render_facts", fake_render)
     monkeypatch.setattr(unit_loops, "criticise_facts", fake_critic)
-    monkeypatch.setattr(unit_loops, "resolve_unit_ontology_context", fake_resolve)
+    monkeypatch.setattr(
+        unit_loops, "resolve_effective_facts_ontology_context", fake_resolve
+    )
 
     state = UnitFactsState(
         content_unit=_build_content_unit(), ontology_snapshot=_build_ontology()

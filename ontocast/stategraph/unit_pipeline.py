@@ -14,12 +14,9 @@ The loops run sequentially:
    :func:`~ontocast.stategraph.context_resolver.resolve_unit_ontology_context`
    call inside the loop.
 2. **Facts loop** (if ``render_mode`` includes facts): extracts facts from the
-   input text.  When the ontology loop ran first, its output
-   (``onto_result.current_ontology``) is injected directly as the facts
-   ontology snapshot so that fact extraction immediately benefits from the
-   freshly-generated ontology without a store round-trip.  When the ontology
-   loop is skipped, ``ontology_context_mode`` guides the normal context
-   resolution path inside :func:`~ontocast.stategraph.atomic.facts_loop`.
+   input text. Facts ontology context is always selected by
+   :func:`~ontocast.stategraph.atomic.facts_loop` so downstream aggregation can
+   use the same context that actually drove facts rendering.
 """
 
 import logging
@@ -100,15 +97,7 @@ async def run_unit_pipeline(
             max_visits_per_node=max_visits,
         )
         logger.info("run_unit_pipeline: starting facts loop")
-        if onto_result is not None:
-            facts_result = await facts_loop(
-                facts_state,
-                tools,
-                agent_state,
-                pre_resolved_ontology=onto_result.current_ontology,
-            )
-        else:
-            facts_result = await facts_loop(facts_state, tools, agent_state)
+        facts_result = await facts_loop(facts_state, tools, agent_state)
         logger.info(
             "run_unit_pipeline: facts loop finished (status=%s)", facts_result.status
         )

@@ -9,7 +9,13 @@ import re
 
 from rdflib import URIRef
 
-from ontocast.onto.constants import DEFAULT_IRI, ensure_namespace_iri_suffix
+from ontocast.onto.constants import DEFAULT_IRI
+from ontocast.onto.iri_policy import (
+    is_in_namespace,
+    join_namespace_local,
+    normalize_namespace_iri,
+    split_namespace_local,
+)
 
 from .normalizer import EntityRepresentation
 
@@ -38,9 +44,12 @@ class URIPromoter:
                 namespace are facts; all other entities are ontology
                 entities and preserved as-is.
         """
-        self.doc_namespace = ensure_namespace_iri_suffix(doc_namespace)
-        self.chunk_namespaces = chunk_namespaces
-        self.facts_iri = ensure_namespace_iri_suffix(facts_iri)
+        self.doc_namespace = normalize_namespace_iri(doc_namespace, context="facts")
+        self.chunk_namespaces = {
+            normalize_namespace_iri(namespace, context="facts")
+            for namespace in chunk_namespaces
+        }
+        self.facts_iri = normalize_namespace_iri(facts_iri, context="facts")
         self._used_uris: set[str] = set()
 
     def _clean_local_name(self, name: str) -> str:
@@ -79,17 +88,11 @@ class URIPromoter:
 
         while uri in self._used_uris:
             # Extract local name and add counter
-            if "#" in base_uri:
-                namespace, local = base_uri.rsplit("#", 1)
-                uri = f"{namespace}#{local}_{counter}"
-            else:
-                namespace = base_uri.rstrip("/").rsplit("/", 1)[0]
-                local = (
-                    base_uri.rstrip("/").rsplit("/", 1)[1]
-                    if "/" in base_uri.rstrip("/")
-                    else base_uri
-                )
-                uri = f"{namespace}/{local}_{counter}"
+            namespace, local = split_namespace_local(base_uri)
+            if namespace is None:
+                namespace = normalize_namespace_iri(base_uri, context="facts")
+                local = ""
+            uri = join_namespace_local(namespace, f"{local}_{counter}", context="auto")
             counter += 1
 
         self._used_uris.add(uri)
@@ -107,11 +110,14 @@ class URIPromoter:
         entity_str = str(entity)
 
         # Don't promote ontology entities (anything not under facts_iri)
-        if not entity_str.startswith(self.facts_iri):
+        if not is_in_namespace(entity_str, self.facts_iri, context="facts"):
             return False
 
         # Promote chunk entities
-        if any(entity_str.startswith(ns) for ns in self.chunk_namespaces):
+        if any(
+            is_in_namespace(entity_str, namespace, context="facts")
+            for namespace in self.chunk_namespaces
+        ):
             return True
 
         # Unknown namespace - be conservative, don't promote
@@ -138,7 +144,11 @@ class URIPromoter:
         local_name = self._clean_local_name(representation.normal_form)
 
         # Construct promoted URI
-        promoted_uri_str = f"{self.doc_namespace}{local_name}"
+        promoted_uri_str = join_namespace_local(
+            self.doc_namespace,
+            local_name,
+            context="facts",
+        )
 
         # Ensure uniqueness
         unique_uri_str = self._ensure_unique_uri(promoted_uri_str)

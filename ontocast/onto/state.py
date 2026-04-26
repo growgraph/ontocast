@@ -16,11 +16,12 @@ from ontocast.onto.enum import (
     Status,
     WorkflowNode,
 )
+from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.model import BasePydanticModel, Suggestions
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
-from ontocast.util import iri2namespace, render_text_hash
+from ontocast.util import render_text_hash
 
 
 class BudgetTracker(BasePydanticModel):
@@ -564,7 +565,7 @@ class AgentState(BasePydanticModel):
         Returns:
             str: The document namespace.
         """
-        return iri2namespace(self.doc_iri, ontology=False)
+        return normalize_namespace_iri(self.doc_iri, context="facts")
 
     @property
     def graph_uri(self):

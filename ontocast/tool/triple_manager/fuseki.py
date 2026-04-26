@@ -17,6 +17,7 @@ from rdflib import Graph
 from rdflib.namespace import OWL, RDF
 
 from ontocast.onto.constants import DEFAULT_DATASET, DEFAULT_ONTOLOGIES_DATASET
+from ontocast.onto.iri_policy import split_namespace_local
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.tenancy import (
@@ -637,7 +638,10 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                         # Extract base IRI if graph_uri is versioned
                         # Handle both hash fragments (#19193944...) and semantic versions (#v1.2.3)
                         if "#" in graph_uri:
-                            base_iri = graph_uri.split("#")[0]
+                            namespace, _ = split_namespace_local(graph_uri)
+                            base_iri = graph_uri
+                            if namespace is not None and namespace.endswith("#"):
+                                base_iri = namespace[:-1]
                             # Use base IRI from graph_uri (named graph identifier)
                             # The graph content should have simplified IRI, but use graph_uri as source of truth
                             onto_iri = base_iri

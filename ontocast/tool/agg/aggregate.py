@@ -26,6 +26,7 @@ from rdflib.namespace import OWL, RDF, RDFS, XSD
 
 from ontocast.onto.constants import DEFAULT_IRI, PROV, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType
+from ontocast.onto.iri_policy import is_in_namespace
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.representation_text import normalize_uri_local_name
 
@@ -113,20 +114,7 @@ class EmbeddingBasedAggregator:
         """Return True when *entity* is under the provided namespace."""
         if namespace is None:
             return False
-        entity_str = str(entity)
-        namespace_str = str(namespace)
-
-        # Accept exact prefix namespaces (e.g. ``.../facts`` used with Turtle
-        # ``@prefix cd: <.../facts>`` → ``.../factsConviction1``) and slash/hash
-        # namespace variants.
-        if entity_str.startswith(namespace_str):
-            return True
-
-        slash_variant = namespace_str.rstrip("/") + "/"
-        hash_variant = namespace_str.rstrip("#") + "#"
-        return entity_str.startswith(slash_variant) or entity_str.startswith(
-            hash_variant
-        )
+        return is_in_namespace(str(entity), str(namespace), context="auto")
 
     def _is_fact_entity_in_unit(self, entity: URIRef, unit: ContentUnit) -> bool:
         """Classify whether an entity should be treated as a fact in this unit.
@@ -591,6 +579,7 @@ class EmbeddingBasedAggregator:
         for unit in units:
             if unit.graph is None:
                 continue
+            unit.graph.sanitize_prefixes_namespaces()
             # Keep collection in the same URI space that rewrite/merge consumes
             # (unit.graph). Using graph_absolute here causes mapping keys to miss
             # during rewrite, because unit.graph still contains the original terms.
@@ -640,19 +629,21 @@ class EmbeddingBasedAggregator:
     def aggregate_graphs(
         self,
         units: list[ContentUnit],
-        ontology_graph: RDFGraph | None = None,
+        ontology_graph: RDFGraph,
     ) -> RDFGraph:
         """Aggregate multiple content unit graphs with embedding-based disambiguation.
 
         Args:
             units: List of ContentUnits to aggregate.
-            ontology_graph: Optional selected ontology graph used to distinguish
+            ontology_graph: Selected ontology graph used to distinguish
                 known ontology entities from tentative ontology-like aliases.
 
         Returns:
             Merged RDF graph with provenance annotations.
         """
         logger.info(f"Starting aggregation with metadata for {len(units)} units")
+        if ontology_graph is None:
+            raise ValueError("ontology_graph must not be None for facts aggregation")
 
         if not units:
             return RDFGraph()
@@ -681,7 +672,7 @@ class EmbeddingBasedAggregator:
             ontology_graph=ontology_graph,
             known_ontology_entities=known_ontology_entities,
         )
-        if anchor_candidates and ontology_graph is not None:
+        if anchor_candidates:
             for ontology_entity, anchor_doc_iri in anchor_candidates.items():
                 if ontology_entity in entity_graphs:
                     continue
@@ -700,6 +691,22 @@ class EmbeddingBasedAggregator:
             entity: classification == EntityClassification.KNOWN_ONTOLOGY
             for entity, classification in entity_classification.items()
         }
+        if logger.isEnabledFor(logging.INFO):
+            known_count = sum(
+                1 for is_known in entity_is_known_ontology.values() if is_known
+            )
+            fact_count = sum(
+                1
+                for classification in entity_classification.values()
+                if classification == EntityClassification.FACT
+            )
+            logger.info(
+                "Aggregation entity classification stats: fact=%d known_ontology=%d "
+                "tentative_ontology=%d",
+                fact_count,
+                known_count,
+                len(tentative_entities),
+            )
 
         # Representative selection should prefer known ontology entities only.
         for entity, is_known_ontology in entity_is_known_ontology.items():
@@ -850,7 +857,7 @@ class EmbeddingBasedAggregator:
     def postprocess_facts_units(
         self,
         units: list[ContentUnit],
-        ontology_graph: RDFGraph | None = None,
+        ontology_graph: RDFGraph,
     ) -> RDFGraph:
         """Sanitize facts units, then run aggregation/normalization.
 

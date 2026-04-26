@@ -18,6 +18,12 @@ from enum import StrEnum
 from rdflib import OWL, RDF, RDFS, URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI
+from ontocast.onto.iri_policy import (
+    is_in_namespace,
+    join_namespace_local,
+    normalize_namespace_iri,
+    split_namespace_local,
+)
 from ontocast.onto.rdfgraph import RDFGraph
 
 from .normalizer import EntityRepresentation
@@ -215,7 +221,7 @@ class URIBuilder:
                 Entities under this namespace are facts; everything else is
                 treated as an ontology entity.
         """
-        self.base_iri = base_iri.rstrip("/") + "/"
+        self.base_iri = normalize_namespace_iri(base_iri, context="facts")
         self._used_uris: set[URIRef] = set()
 
     # ------------------------------------------------------------------
@@ -224,7 +230,7 @@ class URIBuilder:
 
     def is_ontology_entity(self, entity: URIRef) -> bool:
         """Return True if *entity* does **not** belong to the facts namespace."""
-        return not str(entity).startswith(self.base_iri)
+        return not is_in_namespace(str(entity), self.base_iri, context="facts")
 
     @staticmethod
     def _extract_namespace(entity: URIRef) -> str:
@@ -233,24 +239,21 @@ class URIBuilder:
         For ``http://example.org/ns#Foo`` returns ``http://example.org/ns#``.
         For ``http://example.org/ns/Foo`` returns ``http://example.org/ns/``.
         """
-        uri_str = str(entity)
-        if "#" in uri_str:
-            return uri_str.rsplit("#", 1)[0] + "#"
-        trimmed = uri_str.rstrip("/")
-        if "/" in trimmed:
-            return trimmed.rsplit("/", 1)[0] + "/"
-        return uri_str
+        namespace, _ = split_namespace_local(str(entity))
+        return namespace or str(entity)
 
     def _ensure_unique_uri(self, base: str, local_name: str) -> URIRef:
         """Return a unique URI under *base* for *local_name*."""
-        candidate = URIRef(f"{base}{local_name}")
+        candidate = URIRef(join_namespace_local(base, local_name, context="auto"))
         if candidate not in self._used_uris:
             self._used_uris.add(candidate)
             return candidate
 
         counter = 1
         while True:
-            candidate = URIRef(f"{base}{local_name}_{counter}")
+            candidate = URIRef(
+                join_namespace_local(base, f"{local_name}_{counter}", context="auto")
+            )
             if candidate not in self._used_uris:
                 self._used_uris.add(candidate)
                 return candidate
@@ -298,7 +301,11 @@ class URIBuilder:
             return entity
 
         local_name = normalize_local_name(representation, role)
-        base = (str(target_iri).rstrip("/") + "/") if target_iri else self.base_iri
+        base = (
+            normalize_namespace_iri(str(target_iri), context="facts")
+            if target_iri
+            else self.base_iri
+        )
         return self._ensure_unique_uri(base=base, local_name=local_name)
 
     def create_entity_uri_mapping(
@@ -345,7 +352,11 @@ class URIBuilder:
                 continue
 
             doc_iri = entity_doc_iris.get(entity)
-            base = (str(doc_iri).rstrip("/") + "/") if doc_iri else self.base_iri
+            base = (
+                normalize_namespace_iri(str(doc_iri), context="facts")
+                if doc_iri
+                else self.base_iri
+            )
             cache_key = (canonical, base)
             if cache_key in canonical_cache:
                 mapping[entity] = canonical_cache[cache_key]

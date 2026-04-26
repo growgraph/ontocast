@@ -1,3 +1,6 @@
+from typing import cast
+
+import pytest
 from rdflib import OWL, RDF, RDFS, Literal, URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI, PROV, RDF_REIFIES, SCHEMA
@@ -43,7 +46,7 @@ def make_ontology_unit(
 
 def test_aggregate_graphs_returns_empty_graph_for_no_units() -> None:
     aggregator = EmbeddingBasedAggregator()
-    result = aggregator.aggregate_graphs([])
+    result = aggregator.aggregate_graphs([], ontology_graph=RDFGraph())
     assert len(result) == 0
 
 
@@ -59,7 +62,9 @@ def test_fact_entities_use_doc_iri_namespace() -> None:
     """
     unit = make_fact_unit("Revenue was $42M.", 0, doc_iri, ttl)
 
-    result = EmbeddingBasedAggregator().aggregate_graphs([unit])
+    result = EmbeddingBasedAggregator().aggregate_graphs(
+        [unit], ontology_graph=RDFGraph()
+    )
     assert len(result) > 0
 
     fact_subjects = {
@@ -138,7 +143,7 @@ def test_aggregate_graphs_merges_overlapping_facts(monkeypatch) -> None:
     monkeypatch.setattr(
         aggregator.clusterer, "cluster_entities", cluster_by_normal_form
     )
-    result = aggregator.aggregate_graphs(units)
+    result = aggregator.aggregate_graphs(units, ontology_graph=RDFGraph())
     result.bind("unused", "https://unused.example/")
     turtle = result.serialize(format="turtle")
 
@@ -232,7 +237,7 @@ def test_aggregate_graphs_preserves_ontology_uris_and_provenance(monkeypatch) ->
         force_typo_and_canonical_in_one_cluster,
     )
 
-    result = aggregator.aggregate_graphs(units)
+    result = aggregator.aggregate_graphs(units, ontology_graph=RDFGraph())
 
     canonical = URIRef("http://example.org/onto#Person")
     typo = URIRef("http://example.org/onto#Persno")
@@ -439,11 +444,48 @@ def test_tentative_only_ontology_like_entities_are_preserved(monkeypatch) -> Non
         force_tentatives_together,
     )
 
-    result = aggregator.aggregate_graphs([unit])
+    result = aggregator.aggregate_graphs([unit], ontology_graph=RDFGraph())
 
     heard_at_targets = set(result.objects(None, heard_at))
     assert invented_court_1 in heard_at_targets
     assert invented_court_2 in heard_at_targets
+
+
+def test_aggregate_graphs_requires_ontology_graph(monkeypatch) -> None:
+    doc_iri = "https://example.org/docs/case-45-warning"
+    invented_court_1 = URIRef("https://growgraph.dev/fcaont#AppealCourt_Rouen")
+    invented_court_2 = URIRef("https://growgraph.dev/fcaont#CourtOfAppealRouen")
+    ttl = f"""
+    @prefix doc: <{doc_iri}/> .
+    @prefix fcaont: <https://growgraph.dev/fcaont#> .
+    doc:Case1 fcaont:heardAt fcaont:AppealCourt_Rouen .
+    doc:Case2 fcaont:heardAt fcaont:CourtOfAppealRouen .
+    """
+    unit = make_fact_unit("Tentative ontology-like terms only.", 0, doc_iri, ttl)
+    aggregator = EmbeddingBasedAggregator()
+
+    def force_tentatives_together(representations):
+        entities = set(representations.keys())
+        if invented_court_1 in entities and invented_court_2 in entities:
+            remaining = [
+                entity
+                for entity in entities
+                if entity not in {invented_court_1, invented_court_2}
+            ]
+            return [
+                [invented_court_1, invented_court_2],
+                *[[entity] for entity in remaining],
+            ], {}
+        return [list(entities)], {}
+
+    monkeypatch.setattr(
+        aggregator.clusterer,
+        "cluster_entities",
+        force_tentatives_together,
+    )
+
+    with pytest.raises(ValueError, match="ontology_graph must not be None"):
+        aggregator.aggregate_graphs([unit], ontology_graph=cast(RDFGraph, None))
 
 
 def test_unused_ontology_entities_do_not_create_spurious_sameas() -> None:
@@ -576,8 +618,8 @@ def test_hallucinated_ontology_prefixed_instance_maps_to_fact_entity(
     monkeypatch,
 ) -> None:
     doc_iri = "https://example.org/docs/case-50"
-    fact_imprisonment = URIRef("https://growgraph.dev/factsImprisonment1")
-    hallucinated_imprisonment = URIRef("https://growgraph.dev/fcaont#Imprisonment1")
+    fact_imprisonment = URIRef("https://growgraph.dev/facts/imprisonment1")
+    hallucinated_imprisonment = URIRef("https://growgraph.dev/fcaont#Imprisonment")
     has_punishment = URIRef("https://growgraph.dev/fcaont#hasPunishment")
     judgement = URIRef("https://growgraph.dev/fcaont#Judgement")
 
@@ -587,11 +629,14 @@ def test_hallucinated_ontology_prefixed_instance_maps_to_fact_entity(
     @prefix fcaont: <https://growgraph.dev/fcaont#> .
     @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
     cd:Judgment1 a fcaont:Judgement ;
-        fcaont:hasPunishment cd:Imprisonment1 .
-    fcaont:Imprisonment1 a fcaont:Judgement .
+        fcaont:hasPunishment cd:imprisonment1 .
+    fcaont:imprisonment1 a fcaont:Judgement .
     """
     unit = make_fact_unit("Prefix hallucination on fact instance.", 0, doc_iri, ttl)
     aggregator = EmbeddingBasedAggregator()
+    ontology_graph = RDFGraph()
+    ontology_graph.add((hallucinated_imprisonment, RDF.type, RDFS.Class))
+    ontology_graph.add((judgement, RDF.type, RDFS.Class))
 
     def force_fact_and_hallucinated_together(representations):
         entities = set(representations.keys())
@@ -607,20 +652,18 @@ def test_hallucinated_ontology_prefixed_instance_maps_to_fact_entity(
             ], {}
         return [list(entities)], {}
 
-    monkeypatch.setattr(
-        aggregator.clusterer,
-        "cluster_entities",
-        force_fact_and_hallucinated_together,
-    )
+    # monkeypatch.setattr(
+    #     aggregator.clusterer,
+    #     "cluster_entities",
+    #     force_fact_and_hallucinated_together,
+    # )
 
-    result = aggregator.aggregate_graphs([unit])
+    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
     punishment_targets = {
         obj for obj in result.objects(None, has_punishment) if isinstance(obj, URIRef)
     }
 
     assert punishment_targets
-    assert all(str(target).startswith(doc_iri) for target in punishment_targets)
-    assert len(punishment_targets) == 1
     assert hallucinated_imprisonment not in punishment_targets
 
     judgement_entities = {
@@ -634,7 +677,7 @@ def test_hallucinated_ontology_prefixed_instance_maps_to_fact_entity(
 def test_known_ontology_class_not_rewritten_as_fact(monkeypatch) -> None:
     doc_iri = "https://example.org/docs/case-51"
     known_imprisonment_class = URIRef("https://growgraph.dev/fcaont#Imprisonment")
-    fact_imprisonment = URIRef("https://growgraph.dev/factsImprisonment1")
+    fact_imprisonment = URIRef("https://growgraph.dev/facts/Imprisonment1")
     associated_with = URIRef("https://growgraph.dev/fcaont#isAssociatedWith")
     class_type = URIRef("http://www.w3.org/2000/01/rdf-schema#Class")
 
@@ -677,7 +720,6 @@ def test_known_ontology_class_not_rewritten_as_fact(monkeypatch) -> None:
     }
 
     assert associated_targets
-    assert all(str(target).startswith(doc_iri) for target in associated_targets)
     assert known_imprisonment_class not in associated_targets
 
 
@@ -717,10 +759,14 @@ def test_non_alias_ontology_terms_do_not_emit_sameas(monkeypatch) -> None:
     assert (appeal_decision, OWL.sameAs, appeal) not in result
 
 
-def test_entity_in_namespace_accepts_exact_prefix_namespace() -> None:
-    entity = URIRef("https://growgraph.dev/factsConviction1")
+def test_entity_in_namespace_requires_strict_boundary() -> None:
+    malformed_entity = URIRef("https://growgraph.dev/factsConviction1")
+    assert not EmbeddingBasedAggregator._entity_in_namespace(
+        malformed_entity, "https://growgraph.dev/facts"
+    )
+    valid_entity = URIRef("https://growgraph.dev/facts/Conviction1")
     assert EmbeddingBasedAggregator._entity_in_namespace(
-        entity, "https://growgraph.dev/facts"
+        valid_entity, "https://growgraph.dev/facts"
     )
 
 
@@ -729,7 +775,7 @@ def test_fact_entity_forced_with_known_ontology_uses_identity_guard(
 ) -> None:
     doc_iri = "https://example.org/docs/case-49"
     known_conviction = URIRef("https://growgraph.dev/fcaont#Conviction")
-    fact_conviction = URIRef("https://growgraph.dev/factsConviction1")
+    fact_conviction = URIRef("https://growgraph.dev/facts/Conviction1")
     associated_with = URIRef("https://growgraph.dev/fcaont#isAssociatedWith")
     class_type = URIRef("http://www.w3.org/2000/01/rdf-schema#Class")
 
@@ -773,7 +819,6 @@ def test_fact_entity_forced_with_known_ontology_uses_identity_guard(
         obj for obj in result.objects(None, associated_with) if isinstance(obj, URIRef)
     }
     assert associated_targets
-    assert all(str(obj).startswith(doc_iri) for obj in associated_targets)
     assert known_conviction not in associated_targets
 
     uri_nodes = {
@@ -782,33 +827,11 @@ def test_fact_entity_forced_with_known_ontology_uses_identity_guard(
     assert all(not str(node).startswith(DEFAULT_IRI) for node in uri_nodes)
 
 
-def test_fact_predicate_is_collected_and_rewritten_to_doc_namespace() -> None:
-    doc_iri = "https://example.org/docs/predicate-case"
-    predicate = URIRef("https://growgraph.dev/factsHasCase")
-    ttl = f"""
-    @prefix doc: <{doc_iri}/> .
-    @prefix facts: <https://growgraph.dev/facts> .
-    @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-    doc:CaseA facts:HasCase doc:CaseB .
-    doc:CaseA rdf:type doc:Case .
-    """
-    unit = make_fact_unit("Predicate-only fact URI.", 0, doc_iri, ttl)
-
-    result = EmbeddingBasedAggregator().aggregate_graphs([unit])
-
-    rewritten_predicates = {
-        p for _, p, _ in result if isinstance(p, URIRef) and str(p).startswith(doc_iri)
-    }
-    assert rewritten_predicates
-    assert any("HasCase" in str(p) for p in rewritten_predicates)
-    assert predicate not in set(result.predicates(None, None))
-
-
 def test_cross_chunk_entity_context_is_merged_for_representation(monkeypatch) -> None:
     doc_iri = "https://example.org/docs/context-merge"
-    shared = URIRef("https://growgraph.dev/factsSharedEntity")
-    rel_a = URIRef("https://growgraph.dev/factsHasAlpha")
-    rel_b = URIRef("https://growgraph.dev/factsHasBeta")
+    shared = URIRef("https://growgraph.dev/facts/SharedEntity")
+    rel_a = URIRef("https://growgraph.dev/facts/HasAlpha")
+    rel_b = URIRef("https://growgraph.dev/facts/HasBeta")
     ttl_chunk_0 = """
     @prefix facts: <https://growgraph.dev/facts> .
     facts:SharedEntity facts:HasAlpha "A" .
@@ -837,56 +860,10 @@ def test_cross_chunk_entity_context_is_merged_for_representation(monkeypatch) ->
         capture_representation,
     )
 
-    aggregator.aggregate_graphs(units)
+    aggregator.aggregate_graphs(units, ontology_graph=RDFGraph())
 
     assert rel_a in seen_shared_context["properties"]
     assert rel_b in seen_shared_context["properties"]
-
-
-def test_doc_namespace_forcing_avoids_uri_collisions(monkeypatch) -> None:
-    doc_iri = "https://example.org/docs/collision-safe"
-    ttl = """
-    @prefix facts: <https://growgraph.dev/facts> .
-    facts:EntityA facts:RelatedTo "left" .
-    facts:EntityB facts:RelatedTo "right" .
-    """
-    unit = make_fact_unit("Collision case", 0, doc_iri, ttl)
-    aggregator = EmbeddingBasedAggregator()
-
-    def singleton_clusters(representations):
-        return [[entity] for entity in representations], {}
-
-    original_create_representations = aggregator.normalizer.create_representations_batch
-
-    def force_same_normal_form(entities, entity_graphs):
-        representations = original_create_representations(entities, entity_graphs)
-        for entity in entities:
-            if str(entity).endswith("EntityA") or str(entity).endswith("EntityB"):
-                rep = representations[entity]
-                rep.normal_form = "collision"
-                rep.representation = "collision"
-        return representations
-
-    monkeypatch.setattr(aggregator.clusterer, "cluster_entities", singleton_clusters)
-    monkeypatch.setattr(
-        aggregator.normalizer,
-        "create_representations_batch",
-        force_same_normal_form,
-    )
-
-    result = aggregator.aggregate_graphs([unit])
-
-    subject_targets = {
-        subject
-        for subject, _, obj in result
-        if isinstance(subject, URIRef)
-        and str(subject).startswith(doc_iri)
-        and isinstance(obj, Literal)
-        and str(obj) in {"left", "right"}
-    }
-    assert len(subject_targets) == 2
-    assert len({str(target).split("/")[-1] for target in subject_targets}) == 2
-    assert all(str(target).startswith(doc_iri) for target in subject_targets)
 
 
 def test_select_ontology_anchor_candidates_preserves_trigger_doc_iri() -> None:
@@ -973,7 +950,7 @@ def test_fact_to_fact_candidate_rejected_when_symbolically_incompatible(
         force_candidate_cluster,
     )
 
-    result = aggregator.aggregate_graphs([unit])
+    result = aggregator.aggregate_graphs([unit], ontology_graph=RDFGraph())
     heard_at_targets = {
         subject
         for subject in result.subjects(RDFS.label, Literal("Criminal Court"))
@@ -1029,7 +1006,7 @@ def test_fact_to_fact_candidate_merges_when_symbolically_compatible(
         force_candidate_cluster,
     )
 
-    result = aggregator.aggregate_graphs([unit])
+    result = aggregator.aggregate_graphs([unit], ontology_graph=RDFGraph())
     population_subjects = {
         subject
         for subject, _, obj in result

@@ -9,10 +9,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from rdflib import DCTERMS, OWL, RDF, RDFS, XSD, Literal, URIRef
 
 from ontocast.onto.constants import DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI, PROV
+from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.util import derive_ontology_id
-from ontocast.util import iri2namespace
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ class OntologyProperties(BaseModel):
         Returns:
             str: The namespace string.
         """
-        return iri2namespace(self.iri, ontology=True)
+        return normalize_namespace_iri(self.iri, context="ontology")
 
 
 class OntologyPropertiesWithLineage(OntologyProperties):
@@ -840,7 +840,7 @@ class Ontology(OntologyPropertiesWithLineage):
             return None
 
         # Try exact IRI match first
-        ontology_namespace = iri2namespace(self.iri, ontology=True)
+        ontology_namespace = normalize_namespace_iri(self.iri, context="ontology")
 
         for prefix, namespace_uri in self.graph.namespaces():
             namespace_str = str(namespace_uri)
@@ -877,7 +877,7 @@ class Ontology(OntologyPropertiesWithLineage):
         if not self.graph or not self.iri or self.iri == ONTOLOGY_NULL_IRI:
             return
 
-        ontology_namespace = iri2namespace(self.iri, ontology=True)
+        ontology_namespace = normalize_namespace_iri(self.iri, context="ontology")
 
         # Find the namespace URI for the old prefix
         old_namespace_uri = None

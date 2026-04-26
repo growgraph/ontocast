@@ -52,3 +52,19 @@ def test_from_turtle_drops_line_missing_object_after_predicate() -> None:
         URIRef("https://example.com/ns#predicate"),
         URIRef("https://example.com/ns#value"),
     ) in graph
+
+
+def test_from_turtle_sanitizes_prefix_without_terminal_delimiter() -> None:
+    ttl = """
+    @prefix cd: <https://growgraph.dev/facts> .
+    @prefix ex: <https://example.com/ns#> .
+    cd:imprisonment1 ex:relatedTo cd:imprisonment2 .
+    """
+
+    graph = RDFGraph._from_turtle_str(ttl)
+
+    assert (
+        URIRef("https://growgraph.dev/facts/imprisonment1"),
+        URIRef("https://example.com/ns#relatedTo"),
+        URIRef("https://growgraph.dev/facts/imprisonment2"),
+    ) in graph

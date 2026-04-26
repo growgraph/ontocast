@@ -4,20 +4,6 @@ from rdflib import Graph
 from rdflib.namespace import NamespaceManager
 
 
-def iri2namespace(iri: str, ontology: bool = False) -> str:
-    """Convert an IRI to a namespace string.
-
-    Args:
-        iri: The IRI to convert.
-        ontology: If True, append '#' for ontology namespace, otherwise '/'.
-
-    Returns:
-        str: The converted namespace string.
-    """
-    iri = iri.rstrip("#")
-    return f"{iri}#" if ontology else f"{iri}/"
-
-
 def get_rdflib_namespace_mappings() -> dict:
     g = Graph()
     ns_manager = NamespaceManager(g)

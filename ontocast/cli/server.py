@@ -58,7 +58,8 @@ from ontocast.api.schemas import (
 )
 from ontocast.cli.util import crawl_directories
 from ontocast.config import Config, ServerConfig
-from ontocast.onto.enum import OntologyContextMode, RenderMode
+from ontocast.onto.enum import OntologyContextMode, RenderMode, Status
+from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import (
     OntologyContextConfigError,
     require_vector_retrieval,
@@ -251,7 +252,7 @@ async def _persist_unit_pipeline_outputs(
     if onto_result is not None and not onto_result.current_ontology.is_null():
         state.reduced_ontology_artifacts = [onto_result.current_ontology]
     if facts_result is not None:
-        ontology_graph = None
+        ontology_graph = RDFGraph()
         if onto_result is not None and not onto_result.current_ontology.is_null():
             if len(onto_result.current_ontology.graph) > 0:
                 ontology_graph = onto_result.current_ontology.graph
@@ -709,6 +710,27 @@ def create_app(
                 )
 
             onto_result, facts_result = await run_unit_pipeline(initial_state, tools)
+            failed_unit_state = None
+            if onto_result is not None and onto_result.status == Status.FAILED:
+                failed_unit_state = onto_result
+            elif facts_result is not None and facts_result.status == Status.FAILED:
+                failed_unit_state = facts_result
+            if failed_unit_state is not None:
+                return JSONResponse(
+                    status_code=422,
+                    content=ProcessErrorResponse(
+                        error=failed_unit_state.failure_reason
+                        or "Unit processing failed",
+                        error_type="PipelineError",
+                        error_details={
+                            "stage": (
+                                str(failed_unit_state.failure_stage)
+                                if failed_unit_state.failure_stage is not None
+                                else None
+                            )
+                        },
+                    ).model_dump(),
+                )
 
             budget_tracker_data: dict = initial_state.budget_tracker.model_dump()
 
@@ -728,13 +750,9 @@ def create_app(
 
             facts_ttl = ""
             if facts_result is not None:
-                ontology_graph = None
-                if (
-                    onto_result is not None
-                    and not onto_result.current_ontology.is_null()
-                ):
-                    if len(onto_result.current_ontology.graph) > 0:
-                        ontology_graph = onto_result.current_ontology.graph
+                ontology_graph = RDFGraph()
+                if len(facts_result.ontology_snapshot.graph) > 0:
+                    ontology_graph = facts_result.ontology_snapshot.graph
                 postprocessed_facts = tools.aggregator.postprocess_facts_units(
                     units=[facts_result.content_unit],
                     ontology_graph=ontology_graph,

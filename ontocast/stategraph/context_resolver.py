@@ -7,6 +7,7 @@ from ontocast.onto.content_unit import SourceUnit
 from ontocast.onto.enum import OntologyAssemblyMode, OntologyContextMode
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import require_vector_retrieval
 from ontocast.onto.state import AgentState
@@ -33,6 +34,46 @@ def _unit_queries(unit: SourceUnit, tools: ToolBox) -> list[str]:
         text,
         max_sentences=qcfg.proposition_window_sentences,
         max_windows=qcfg.proposition_max_windows,
+    )
+
+
+def build_merged_document_ontology_context(
+    state: AgentState,
+) -> UnitOntologyContext | None:
+    """Build one deterministic merged ontology context from reduced document artifacts."""
+    artifacts = [
+        ontology
+        for ontology in document_ontology_access(state).reduced_artifacts()
+        if not ontology.is_null() and len(ontology.graph) > 0
+    ]
+    if not artifacts:
+        return None
+
+    sorted_artifacts = sorted(artifacts, key=lambda ontology: ontology.iri or "")
+    merged_graph = RDFGraph()
+    patch_sources: list[str] = []
+    for ontology in sorted_artifacts:
+        merged_graph += ontology.graph
+        if ontology.iri:
+            patch_sources.append(ontology.iri)
+
+    anchor_iri = patch_sources[0] if patch_sources else NULL_ONTOLOGY.iri
+    snapshot = Ontology(
+        ontology_id=None,
+        title="Merged document ontology context",
+        description=(
+            "Deterministic merge of reduced ontology artifacts used for facts context."
+        ),
+        graph=merged_graph,
+        iri=anchor_iri,
+        current_domain=state.current_domain,
+    )
+    return UnitOntologyContext(
+        anchor_iri=anchor_iri,
+        ontology_snapshot=snapshot,
+        patch_sources=patch_sources,
+        assembly_mode=OntologyAssemblyMode.ENSEMBLE_STITCHED,
+        confidence=1.0,
     )
 
 
@@ -126,6 +167,18 @@ async def resolve_unit_ontology_context(
         require_vector_retrieval(tools)
         return await _resolve_ensemble_context(state, tools, unit)
     raise ValueError(f"Unknown ontology_context_mode: {mode!r}")
+
+
+async def resolve_effective_facts_ontology_context(
+    state: AgentState,
+    tools: ToolBox,
+    unit: SourceUnit,
+) -> UnitOntologyContext:
+    """Resolve facts context preferring merged document artifacts when available."""
+    merged_context = build_merged_document_ontology_context(state)
+    if merged_context is not None:
+        return merged_context
+    return await resolve_unit_ontology_context(state, tools, unit)
 
 
 def aggregate_anchor_metrics(

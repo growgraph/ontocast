@@ -13,12 +13,14 @@ from pyld import jsonld
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import NamespaceManager
 
-from ontocast.onto.constants import COMMON_PREFIXES, ensure_namespace_iri_suffix
+from ontocast.onto.constants import COMMON_PREFIXES
+from ontocast.onto.iri_policy import normalize_namespace_iri, sanitize_prefix_map
 from ontocast.util import render_text_hash
 
 logger = logging.getLogger(__name__)
 
 PREFIX_PATTERN = re.compile(r"@prefix\s+(\w+):\s+<[^>]+>\s+\.")
+PREFIX_DECLARATION_PATTERN = re.compile(r"@prefix\s+(\w+):\s+<([^>]+)>\s+\.")
 # Pattern to match prefix usage: prefix:something (not in @prefix declarations)
 PREFIX_USAGE_PATTERN = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]*):[^\s]")
 INTEGER_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:integer')
@@ -268,6 +270,7 @@ class RDFGraph(Graph):
         g = cls()
         try:
             g.parse(data=patched_turtle, format="turtle")
+            g._sanitize_prefix_boundaries_from_turtle(normalized_turtle)
             return g
         except Exception as parse_error:
             repaired_turtle = cls._repair_common_turtle_issues(
@@ -281,7 +284,29 @@ class RDFGraph(Graph):
             )
             repaired_graph = cls()
             repaired_graph.parse(data=repaired_turtle, format="turtle")
+            repaired_graph._sanitize_prefix_boundaries_from_turtle(normalized_turtle)
             return repaired_graph
+
+    def _sanitize_prefix_boundaries_from_turtle(self, turtle_str: str) -> None:
+        declared_prefixes = {
+            match.group(1): match.group(2)
+            for match in PREFIX_DECLARATION_PATTERN.finditer(turtle_str)
+        }
+        if not declared_prefixes:
+            return
+        sanitized = sanitize_prefix_map(declared_prefixes, context="auto")
+        changed_namespaces = [
+            (original, sanitized[prefix])
+            for prefix, original in declared_prefixes.items()
+            if sanitized[prefix] != original
+        ]
+        for original_namespace, normalized_namespace in changed_namespaces:
+            self.remap_namespaces(
+                old_namespace=original_namespace,
+                new_namespace=normalized_namespace,
+            )
+        for prefix, namespace in sanitized.items():
+            self.bind(prefix, Namespace(namespace), override=True)
 
     @staticmethod
     def _normalize_turtle_input(turtle_str: str) -> str:
@@ -649,92 +674,36 @@ class RDFGraph(Graph):
         Returns:
            RDFGraph: The graph with corrected prefix-namespace mappings
         """
-        # Get the namespace manager
         ns_manager = self.namespace_manager
+        current_prefixes = {
+            prefix: str(uri) for prefix, uri in dict(ns_manager.namespaces()).items()
+        }
+        if not current_prefixes:
+            return self
 
-        # Collect all current prefix-URI mappings
-        current_prefixes = dict(ns_manager.namespaces())
-
-        # Group URIs by their string representation to find duplicates
-        uri_to_prefixes = defaultdict(list)
-        for prefix, uri in current_prefixes.items():
-            uri_norm = ensure_namespace_iri_suffix(str(uri))
-            uri_to_prefixes[uri_norm].append((prefix, uri))
-
-        # Find the "canonical" namespace objects for each URI
-        # (the actual Namespace objects that might be registered)
-        canonical_namespaces = {}
-
-        # Check if any of the URIs correspond to well-known namespaces
-        # by trying to create Namespace objects and seeing if they're already registered
-        for uri_str, prefix_uri_pairs in uri_to_prefixes.items():
-            # Try to find if there's already a proper Namespace object for this URI
-            namespace_candidates = []
-
-            for prefix, uri_obj in prefix_uri_pairs:
-                # Check if this is already a proper Namespace object
-                if isinstance(uri_obj, Namespace):
-                    namespace_candidates.append(uri_obj)
-                else:
-                    # Try to create a Namespace and see if it matches existing ones
-                    try:
-                        ns = Namespace(uri_str)
-                        namespace_candidates.append(ns)
-                    except:
-                        continue
-
-            # Use the first valid namespace candidate as canonical
-            if namespace_candidates:
-                canonical_namespaces[uri_str] = namespace_candidates[0]
-
-        # Now rebuild the namespace manager with corrected mappings
-        # Clear existing bindings first
-        new_ns_manager = NamespaceManager(self)
-
-        # Track which prefixes we want to keep/reassign
-        final_mappings = {}
-
-        for uri_str, prefix_uri_pairs in uri_to_prefixes.items():
-            if len(prefix_uri_pairs) == 1:
-                # No duplicates, keep as-is but ensure we use canonical namespace
-                prefix, _ = prefix_uri_pairs[0]
-                canonical_ns = canonical_namespaces.get(uri_str)
-                if canonical_ns:
-                    final_mappings[prefix] = canonical_ns
-                else:
-                    # Fallback to creating a new Namespace
-                    final_mappings[prefix] = Namespace(uri_str)
-            else:
-                # Multiple prefixes for same URI - need to decide which to keep
-                # Priority: 1) Proper Namespace objects,
-                #           2) Shorter prefixes,
-                #           3) Alphabetical
-                prefix_uri_pairs.sort(
-                    key=lambda x: (
-                        not isinstance(x[1], Namespace),  # Namespace objects first
-                        len(x[0]),  # Shorter prefixes next
-                        x[0],  # Alphabetical order
-                    )
+        sanitized = sanitize_prefix_map(current_prefixes, context="auto")
+        for prefix, original_namespace in current_prefixes.items():
+            normalized_namespace = sanitized[prefix]
+            if normalized_namespace != original_namespace:
+                self.remap_namespaces(
+                    old_namespace=original_namespace,
+                    new_namespace=normalized_namespace,
                 )
 
-                # Keep the best prefix, map others to it if needed
-                best_prefix, _ = prefix_uri_pairs[0]
-                canonical_ns = canonical_namespaces.get(uri_str, Namespace(uri_str))
-                final_mappings[best_prefix] = canonical_ns
+        new_ns_manager = NamespaceManager(self)
+        uri_to_prefixes = defaultdict(list)
+        for prefix, namespace in sanitized.items():
+            uri_to_prefixes[namespace].append(prefix)
 
-                other_prefixes = [p for p, _ in prefix_uri_pairs[1:]]
-                if other_prefixes:
-                    logger.debug(
-                        f"Consolidating prefixes {other_prefixes} "
-                        f"-> '{best_prefix}' for URI: {uri_str}"
-                    )
-
-        # Apply the final mappings
-        for prefix, namespace in final_mappings.items():
-            new_ns_manager.bind(prefix, namespace, override=True)
-
-        # Replace the graph's namespace manager
+        for namespace, prefixes in uri_to_prefixes.items():
+            best_prefix = sorted(prefixes, key=lambda p: (len(p), p))[0]
+            new_ns_manager.bind(
+                best_prefix,
+                Namespace(normalize_namespace_iri(namespace, context="auto")),
+                override=True,
+            )
         self.namespace_manager = new_ns_manager
+        return self
 
     def unbind_chunk_namespaces(self, chunk_pattern="/chunk/") -> "RDFGraph":
         """
@@ -753,7 +722,7 @@ class RDFGraph(Graph):
 
         # Normalize prefix target IRIs so chunk detection and rebinding agree on boundaries
         prefix_to_normalized: dict[str, str] = {
-            prefix: ensure_namespace_iri_suffix(str(uri))
+            prefix: normalize_namespace_iri(str(uri), context="auto")
             for prefix, uri in current_prefixes.items()
         }
 

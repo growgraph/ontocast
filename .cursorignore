@@ -35,3 +35,5 @@
 !Dockerfile
 
 !planning
+
+!.cursor/rules/*.mdc

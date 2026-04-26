@@ -12,8 +12,9 @@ from pydantic import (
 from rdflib import URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI
+from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.util import iri2namespace, render_text_hash
+from ontocast.util import render_text_hash
 
 
 class OutputType(StrEnum):
@@ -83,7 +84,7 @@ class SourceUnit(BaseModel):
         Returns:
             str: The unit namespace.
         """
-        return iri2namespace(self.iri, ontology=False)
+        return normalize_namespace_iri(self.iri, context="facts")
 
     def __len__(self):
         return len(self.text)

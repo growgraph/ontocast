@@ -8,6 +8,8 @@ import unicodedata
 from rdflib import BNode, Literal, URIRef
 from rdflib.term import Node
 
+from ontocast.onto.iri_policy import split_namespace_local
+
 ROLE_RESOURCE = "resource"
 ROLE_PREDICATE = "predicate"
 
@@ -32,12 +34,7 @@ def normalize_identifier(text: str) -> str:
 
 def normalize_uri_local_name(uri: URIRef) -> str:
     """Normalize the local part of a URI."""
-    value = str(uri)
-    if "#" in value:
-        local = value.rsplit("#", 1)[-1]
-    else:
-        stripped = value.rstrip("/")
-        local = stripped.rsplit("/", 1)[-1] if "/" in stripped else stripped
+    _, local = split_namespace_local(str(uri))
     return normalize_identifier(local)
 
 

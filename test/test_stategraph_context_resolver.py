@@ -16,7 +16,11 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import OntologyContextConfigError
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import context_resolver as cr
-from ontocast.stategraph.context_resolver import resolve_unit_ontology_context
+from ontocast.stategraph.context_resolver import (
+    build_merged_document_ontology_context,
+    resolve_effective_facts_ontology_context,
+    resolve_unit_ontology_context,
+)
 from ontocast.toolbox import ToolBox
 
 
@@ -116,3 +120,69 @@ def test_resolver_full_ttl_uses_mocked_llm_selection(monkeypatch) -> None:
     assert result.assembly_mode == OntologyAssemblyMode.LLM_SELECTED_UNIT_ONTOLOGY
     assert result.anchor_iri == finance_iri
     assert result.ontology_snapshot.iri == finance_iri
+
+
+def test_build_merged_document_ontology_context_merges_sorted_artifacts() -> None:
+    state = AgentState()
+    first = Ontology(
+        iri="https://example.org/onto/b",
+        graph=RDFGraph._from_turtle_str(
+            """
+            @prefix exb: <https://example.org/onto/b#> .
+            exb:ClassB exb:label exb:ValueB .
+            """
+        ),
+    )
+    second = Ontology(
+        iri="https://example.org/onto/a",
+        graph=RDFGraph._from_turtle_str(
+            """
+            @prefix exa: <https://example.org/onto/a#> .
+            exa:ClassA exa:label exa:ValueA .
+            """
+        ),
+    )
+    state.reduced_ontology_artifacts = [first, second]
+
+    context = build_merged_document_ontology_context(state)
+
+    assert context is not None
+    assert context.patch_sources == [
+        "https://example.org/onto/a",
+        "https://example.org/onto/b",
+    ]
+    assert context.anchor_iri == "https://example.org/onto/a"
+    assert len(context.ontology_snapshot.graph) >= 2
+
+
+@pytest.mark.anyio
+async def test_resolve_effective_facts_ontology_context_prefers_merged_artifacts(
+    monkeypatch,
+) -> None:
+    state = AgentState(ontology_context_mode=OntologyContextMode.FULL_TTL)
+    merged = Ontology(
+        iri="https://example.org/onto/merged",
+        graph=RDFGraph._from_turtle_str(
+            """
+            @prefix ex: <https://example.org/onto/merged#> .
+            ex:Class ex:label ex:Value .
+            """
+        ),
+    )
+    state.reduced_ontology_artifacts = [merged]
+
+    async def _should_not_run(*_args, **_kwargs):
+        raise AssertionError("fallback resolver should not run when artifacts exist")
+
+    monkeypatch.setattr(cr, "resolve_unit_ontology_context", _should_not_run)
+    tools = _build_tools(
+        patch_retriever=None,
+        vector_store=None,
+        ontology_manager=SimpleNamespace(),
+    )
+
+    result = await resolve_effective_facts_ontology_context(state, tools, _build_unit())
+
+    assert result.anchor_iri == merged.iri
+    assert result.patch_sources == [merged.iri]
+    assert len(result.ontology_snapshot.graph) >= 1

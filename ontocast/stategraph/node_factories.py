@@ -8,6 +8,7 @@ from ontocast.agent.normalize_ontology import normalize_ontology_units
 from ontocast.agent.render_ontology import render_ontology_update
 from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
 from ontocast.onto.enum import OntologyAssemblyMode, OntologyContextMode, Status
+from ontocast.onto.iri_policy import split_namespace_local
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import document_ontology_access
@@ -15,7 +16,10 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.atomic import facts_loop, ontology_loop
-from ontocast.stategraph.context_resolver import aggregate_anchor_metrics
+from ontocast.stategraph.context_resolver import (
+    aggregate_anchor_metrics,
+    build_merged_document_ontology_context,
+)
 from ontocast.stategraph.helpers import (
     all_unit_patch_source_iris,
     build_document_excerpt,
@@ -316,7 +320,11 @@ def make_render_facts_node(tools: ToolBox):
                     budget_tracker=base_state.budget_tracker,
                     max_visits_per_node=tools.config.server.max_visits_per_node,
                 )
-                result = await facts_loop(facts_state, tools, base_state)
+                result = await facts_loop(
+                    facts_state,
+                    tools,
+                    base_state,
+                )
                 return (
                     unit_index,
                     result,
@@ -384,18 +392,13 @@ def make_merge_facts_node(tools: ToolBox):
             state.status = Status.SUCCESS
             return state
 
-        doc_onto = document_ontology_access(state)
-        ontology_graph = None
-        artifacts = [
-            ontology
-            for ontology in doc_onto.reduced_artifacts()
-            if not ontology.is_null() and len(ontology.graph) > 0
-        ]
-        if artifacts:
-            merged_ontology = RDFGraph()
-            for ontology in artifacts:
-                merged_ontology += ontology.graph
-            ontology_graph = merged_ontology
+        ontology_graph = RDFGraph()
+        merged_context = build_merged_document_ontology_context(state)
+        if (
+            merged_context is not None
+            and len(merged_context.ontology_snapshot.graph) > 0
+        ):
+            ontology_graph = merged_context.ontology_snapshot.graph
         state.aggregated_facts = tools.aggregator.postprocess_facts_units(
             units=state.facts_units,
             ontology_graph=ontology_graph,
@@ -459,7 +462,7 @@ def _extract_consistency_queries(graph: RDFGraph, max_terms: int = 8) -> list[st
                 labels.append(value)
     for subject, _, _ in graph:
         if isinstance(subject, URIRef):
-            local_name = str(subject).rstrip("/").split("/")[-1].split("#")[-1]
+            _, local_name = split_namespace_local(str(subject))
             if local_name and local_name not in labels:
                 labels.append(local_name.replace("_", " "))
         if len(labels) >= max_terms:

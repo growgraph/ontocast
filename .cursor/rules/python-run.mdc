@@ -1,10 +1,6 @@
 ---
-description: "Use `uv run` for running Python code instead of raw python3"
-globs:
-  - "**/*.py"
 alwaysApply: true
 ---
-
 # Running Python code
 - **Do not** run `python3 -c` directly.
 - Always invoke Python code using `uv run python <script>` or `uv run <module>` when executing project scripts.

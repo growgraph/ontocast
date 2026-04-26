@@ -35,14 +35,3 @@ SCHEMA = Namespace("https://schema.org/")
 # RDF 1.2 term for linking a reification node to its quoted triple.
 # Not yet in rdflib's RDF namespace, so we define it manually.
 RDF_REIFIES = URIRef("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies")
-
-
-def ensure_namespace_iri_suffix(namespace_iri: str) -> str:
-    """Return *namespace_iri* with a terminal ``#`` or ``/`` for stable prefix boundaries.
-
-    Appends ``/`` when neither is present. Existing ``#`` or ``/`` suffixes are kept
-    unchanged (including ``...#`` and ``.../``).
-    """
-    if namespace_iri.endswith("#") or namespace_iri.endswith("/"):
-        return namespace_iri
-    return namespace_iri + "/"

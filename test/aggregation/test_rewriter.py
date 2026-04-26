@@ -105,7 +105,7 @@ def test_rewriter_blocks_sameas_for_forbidden_namespace() -> None:
         blocked_sameas_namespaces=(base,),
     )
     graph = RDFGraph()
-    original_fact = URIRef("https://growgraph.dev/factsPersonA")
+    original_fact = URIRef("https://growgraph.dev/facts/PersonA")
     original_doc = URIRef("https://example.org/docs/case-1/PersonA")
     canonical_doc = URIRef("https://example.org/docs/case-1/PersonCanonical")
     relation = URIRef("https://example.org/relation")
