@@ -38,6 +38,7 @@ class StatusErrorBody(BaseModel):
     status: str = "error"
     error: str
     error_type: str | None = None
+    error_code: str | None = None
 
 
 class ProcessResultData(BaseModel):
@@ -67,6 +68,7 @@ class ProcessErrorResponse(BaseModel):
     status: str = "error"
     error: str
     error_type: str | None = None
+    error_code: str | None = None
     error_details: dict | None = None
 
 

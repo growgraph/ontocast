@@ -62,6 +62,7 @@ from ontocast.onto.enum import OntologyContextMode, RenderMode, Status
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import (
     OntologyContextConfigError,
+    VectorStoreUnavailableError,
     require_vector_retrieval,
 )
 from ontocast.onto.state import AgentState
@@ -120,6 +121,22 @@ def validate_ontology_context_mode(
 ) -> None:
     if ontology_context_mode == OntologyContextMode.VECTOR_RETRIEVAL:
         require_vector_retrieval(tools)
+
+
+def _ontology_context_error_response(error: OntologyContextConfigError) -> JSONResponse:
+    error_code = None
+    status_code = 400
+    if isinstance(error, VectorStoreUnavailableError):
+        error_code = error.error_code
+        status_code = 409
+    return JSONResponse(
+        status_code=status_code,
+        content=StatusErrorBody(
+            error=str(error),
+            error_type=type(error).__name__,
+            error_code=error_code,
+        ).model_dump(),
+    )
 
 
 def _stores_use_tenancy_partitions(tools: ToolBox) -> bool:
@@ -443,6 +460,12 @@ def create_app(
             facts_user_instruction = request.query_params.get(
                 "facts_user_instruction", ""
             )
+            ontology_context_mode_value: OntologyContextMode = (
+                parse_ontology_context_mode_param(
+                    ontology_context_mode,
+                    server_config.ontology_context_mode,
+                )
+            )
 
             if content_type.startswith("application/json"):
                 bytes_data = await request.body()
@@ -480,7 +503,15 @@ def create_app(
                     request_tenant, request_project
                 )
                 if _stores_use_tenancy_partitions(tools):
-                    await tools.update_tenancy(resolved_tenant, resolved_project)
+                    await tools.update_tenancy_with_vector_mode(
+                        resolved_tenant,
+                        resolved_project,
+                        initialize_vector_store=(
+                            ontology_context_mode_value
+                            == OntologyContextMode.VECTOR_RETRIEVAL
+                        ),
+                        fail_on_vector_store_error=False,
+                    )
             else:
                 resolved_tenant, resolved_project = (
                     active_tenant,
@@ -491,22 +522,10 @@ def create_app(
                 render_mode,
                 server_config.render_mode,
             )
-            ontology_context_mode_value: OntologyContextMode = (
-                parse_ontology_context_mode_param(
-                    ontology_context_mode,
-                    server_config.ontology_context_mode,
-                )
-            )
             try:
                 validate_ontology_context_mode(ontology_context_mode_value, tools)
             except OntologyContextConfigError as e:
-                return JSONResponse(
-                    status_code=400,
-                    content=StatusErrorBody(
-                        error=str(e),
-                        error_type=type(e).__name__,
-                    ).model_dump(),
-                )
+                return _ontology_context_error_response(e)
 
             initial_state = AgentState(
                 files=files_dict,
@@ -635,6 +654,12 @@ def create_app(
             facts_user_instruction = request.query_params.get(
                 "facts_user_instruction", ""
             )
+            ontology_context_mode_value: OntologyContextMode = (
+                parse_ontology_context_mode_param(
+                    ontology_context_mode,
+                    server_config.ontology_context_mode,
+                )
+            )
 
             if content_type.startswith("application/json"):
                 bytes_data = await request.body()
@@ -672,7 +697,15 @@ def create_app(
                     request_tenant, request_project
                 )
                 if _stores_use_tenancy_partitions(tools):
-                    await tools.update_tenancy(resolved_tenant, resolved_project)
+                    await tools.update_tenancy_with_vector_mode(
+                        resolved_tenant,
+                        resolved_project,
+                        initialize_vector_store=(
+                            ontology_context_mode_value
+                            == OntologyContextMode.VECTOR_RETRIEVAL
+                        ),
+                        fail_on_vector_store_error=False,
+                    )
             else:
                 resolved_tenant, resolved_project = (
                     active_tenant,
@@ -683,22 +716,10 @@ def create_app(
                 render_mode,
                 server_config.render_mode,
             )
-            ontology_context_mode_value: OntologyContextMode = (
-                parse_ontology_context_mode_param(
-                    ontology_context_mode,
-                    server_config.ontology_context_mode,
-                )
-            )
             try:
                 validate_ontology_context_mode(ontology_context_mode_value, tools)
             except OntologyContextConfigError as e:
-                return JSONResponse(
-                    status_code=400,
-                    content=StatusErrorBody(
-                        error=str(e),
-                        error_type=type(e).__name__,
-                    ).model_dump(),
-                )
+                return _ontology_context_error_response(e)
 
             initial_state = AgentState(
                 files=files_dict,
@@ -870,16 +891,30 @@ def run(
     # Create ToolBox with config
     tools: ToolBox = ToolBox(config)
     t_res, p_res = _resolve_tenant_project(tenant, project)
-    if _stores_use_tenancy_partitions(tools):
-        asyncio.run(tools.update_tenancy(t_res, p_res))
-
     ontology_context_mode_value = config.server.ontology_context_mode
-    validate_ontology_context_mode(ontology_context_mode_value, tools)
+    vector_mode_enabled = (
+        ontology_context_mode_value == OntologyContextMode.VECTOR_RETRIEVAL
+    )
+    if _stores_use_tenancy_partitions(tools):
+        asyncio.run(
+            tools.update_tenancy_with_vector_mode(
+                t_res,
+                p_res,
+                initialize_vector_store=vector_mode_enabled,
+                fail_on_vector_store_error=vector_mode_enabled,
+            )
+        )
 
     if input_path is not None and config.clean:
         asyncio.run(_flush_triple_configured_scope(tools))
 
-    asyncio.run(tools.initialize())
+    asyncio.run(
+        tools.initialize(
+            ontology_context_mode=ontology_context_mode_value,
+            fail_on_vector_store_error=vector_mode_enabled,
+        )
+    )
+    validate_ontology_context_mode(ontology_context_mode_value, tools)
 
     workflow: CompiledStateGraph = create_agent_graph(tools)
 

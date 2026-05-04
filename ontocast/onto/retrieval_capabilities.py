@@ -7,11 +7,18 @@ class OntologyContextConfigError(ValueError):
     """Raised when ``ontology_context_mode=vector_retrieval`` but the toolbox lacks Qdrant."""
 
 
+class VectorStoreUnavailableError(OntologyContextConfigError):
+    """Raised when vector retrieval is requested but vector infra is unavailable."""
+
+    error_code: str = "VECTOR_STORE_UNAVAILABLE"
+
+
 def vector_retrieval_available(tools: ToolBox) -> bool:
     """True when Qdrant vector store and patch retriever are both configured."""
     return (
-        getattr(tools, "vector_store", None) is not None
-        and getattr(tools, "patch_retriever", None) is not None
+        tools.vector_store is not None
+        and tools.patch_retriever is not None
+        and tools.is_vector_store_ready()
     )
 
 
@@ -19,8 +26,13 @@ def require_vector_retrieval(tools: ToolBox) -> None:
     """Raise a single canonical error if vector ensemble cannot run."""
     if vector_retrieval_available(tools):
         return
-    raise OntologyContextConfigError(
+    last_error = tools.vector_store_last_error
+    details = ""
+    if last_error is not None:
+        details = f" Last vector-store init error: {last_error}"
+    raise VectorStoreUnavailableError(
         "ontology_context_mode='vector_retrieval' requires a configured Qdrant "
         "vector store (set tool qdrant.uri, matching embedding dimension) so "
-        "vector_store and patch_retriever are available. See ToolBox initialization."
+        "vector_store and patch_retriever are available and initialized."
+        f"{details}"
     )

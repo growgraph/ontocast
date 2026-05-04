@@ -7,6 +7,7 @@ from langchain_core.prompts import PromptTemplate
 
 from ontocast.config import Config, WebSearchProvider
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI
+from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.ontology import Ontology, OntologyProperties
 from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.rdfgraph import RDFGraph
@@ -184,6 +185,8 @@ class ToolBox:
         self.embedding_tool: EmbeddingTool | None = None
         self.vector_store: QdrantVectorStore | None = None
         self.patch_retriever: OntologyPatchRetriever | None = None
+        self.vector_store_ready: bool = False
+        self.vector_store_last_error: Exception | None = None
 
         if tool_config.qdrant.uri:
             q_vs = tool_config.qdrant.vector_size
@@ -234,6 +237,22 @@ class ToolBox:
 
     async def update_tenancy(self, tenant: str, project: str) -> None:
         """Retarget Fuseki datasets and Qdrant collections for ``tenant`` / ``project``."""
+        await self.update_tenancy_with_vector_mode(
+            tenant,
+            project,
+            initialize_vector_store=True,
+            fail_on_vector_store_error=True,
+        )
+
+    async def update_tenancy_with_vector_mode(
+        self,
+        tenant: str,
+        project: str,
+        *,
+        initialize_vector_store: bool,
+        fail_on_vector_store_error: bool,
+    ) -> None:
+        """Retarget tenancy and optionally initialize vector store collections."""
         t, p = tenant.strip(), project.strip()
         if not t or not p:
             raise ValueError("tenant and project must be non-empty")
@@ -258,7 +277,20 @@ class ToolBox:
             qcfg = self.config.tool_config.qdrant
             qcfg.ontology_collection = self.vector_store.config.ontology_collection
             qcfg.facts_collection = self.vector_store.config.facts_collection
-            await self.vector_store.initialize()
+            if initialize_vector_store:
+                try:
+                    await self.vector_store.initialize()
+                    self.vector_store_ready = True
+                    self.vector_store_last_error = None
+                except Exception as exc:
+                    self.vector_store_ready = False
+                    self.vector_store_last_error = exc
+                    if fail_on_vector_store_error:
+                        raise
+                    logger.warning(
+                        "Vector store tenancy initialization failed; continuing without vector retrieval: %s",
+                        exc,
+                    )
 
     async def clean_tenancy_data(self, tenant: str, project: str) -> None:
         """Flush triple-store and vector-store partitions for ``tenant`` / ``project``."""
@@ -311,7 +343,23 @@ class ToolBox:
                     graph_uri=state.graph_uri,
                 )
 
-    async def initialize(self) -> None:
+    def should_initialize_vector_store(
+        self, ontology_context_mode: OntologyContextMode | None
+    ) -> bool:
+        return (
+            self.vector_store is not None
+            and ontology_context_mode == OntologyContextMode.VECTOR_RETRIEVAL
+        )
+
+    def is_vector_store_ready(self) -> bool:
+        return self.vector_store is not None and self.vector_store_ready
+
+    async def initialize(
+        self,
+        *,
+        ontology_context_mode: OntologyContextMode | None = None,
+        fail_on_vector_store_error: bool = True,
+    ) -> None:
         """Initialize the toolbox with ontologies and their properties.
 
         This method synchronizes ontologies between filesystem and triple store,
@@ -321,8 +369,32 @@ class ToolBox:
         if isinstance(self.triple_store_manager, FusekiTripleStoreManager):
             await self.triple_store_manager.async_init()
 
-        if self.vector_store is not None:
-            await self.vector_store.initialize()
+        if self.should_initialize_vector_store(ontology_context_mode):
+            vector_store = self.vector_store
+            if vector_store is None:
+                self.vector_store_ready = False
+                self.vector_store_last_error = RuntimeError(
+                    "Vector store is not configured"
+                )
+                if fail_on_vector_store_error:
+                    raise self.vector_store_last_error
+                logger.warning(
+                    "Vector store was requested for initialization but is not configured"
+                )
+            else:
+                try:
+                    await vector_store.initialize()
+                    self.vector_store_ready = True
+                    self.vector_store_last_error = None
+                except Exception as exc:
+                    self.vector_store_ready = False
+                    self.vector_store_last_error = exc
+                    if fail_on_vector_store_error:
+                        raise
+                    logger.warning(
+                        "Vector store initialization failed; continuing without vector retrieval: %s",
+                        exc,
+                    )
 
         # Synchronize ontologies, push to remote triple store + vector index, then register
         synchronized_ontologies = await self._synchronize_ontologies()
@@ -394,7 +466,7 @@ class ToolBox:
         ):
             await self.triple_store_manager.aserialize(ontology)
 
-        if self.vector_store is not None:
+        if self.is_vector_store_ready() and self.vector_store is not None:
             await asyncio.to_thread(self.vector_store.reindex_ontology, ontology)
 
     async def ingest_ontology_ttl(

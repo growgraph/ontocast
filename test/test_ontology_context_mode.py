@@ -14,6 +14,7 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import OntologyAssemblyMode, OntologyContextMode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.retrieval_capabilities import vector_retrieval_available
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import context_resolver as cr
 from ontocast.stategraph.context_resolver import resolve_unit_ontology_context
@@ -81,3 +82,15 @@ def test_split_proposition_windows_is_sentence_bounded() -> None:
 def test_qdrant_config_proposition_fields_exist() -> None:
     q = QdrantConfig()
     assert q.proposition_window_sentences >= 1
+
+
+def test_vector_retrieval_available_requires_ready_state() -> None:
+    tools = cast(
+        ToolBox,
+        SimpleNamespace(
+            vector_store=object(),
+            patch_retriever=object(),
+            is_vector_store_ready=lambda: False,
+        ),
+    )
+    assert vector_retrieval_available(tools) is False

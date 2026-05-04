@@ -45,6 +45,7 @@ BASE_RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
 MAX_VISITS=3                             # alias for max_visits_per_node
 RENDER_MODE=ontology_and_facts           # ontology | facts | ontology_and_facts
+ONTOLOGY_CONTEXT_MODE=full_ttl           # full_ttl | vector_retrieval
 ONTOLOGY_MAX_TRIPLES=50000               # empty/unset for unlimited
 PARALLEL_WORKERS=4
 PARALLEL_FACTS_RETRIES=3
@@ -138,6 +139,13 @@ WEB_SEARCH_SAFESEARCH=moderate
 ```
 
 Search is "search-later": nodes run without search first, and only request external evidence when needed.
+
+## Ontology Context Mode Behavior
+
+- `ONTOLOGY_CONTEXT_MODE=full_ttl` is the default and does not require Qdrant.
+- In `full_ttl`, server/file processing skips vector-store initialization and proceeds even if Qdrant is unavailable.
+- `ontology_context_mode=vector_retrieval` requires configured and initialized vector infrastructure (`QDRANT_URI` and compatible embedding settings).
+- If a request asks for `vector_retrieval` while vector store is unavailable, API returns `409` with `error_code: VECTOR_STORE_UNAVAILABLE`.
 
 ## Usage
 

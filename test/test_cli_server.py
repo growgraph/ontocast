@@ -7,6 +7,7 @@ from rdflib import RDF, URIRef
 
 from ontocast.api.schemas import ProcessResultData
 from ontocast.cli.server import (
+    _ontology_context_error_response,
     _persist_unit_pipeline_outputs,
     _select_unit_facts_ontology_graph,
     parse_ontology_context_mode_param,
@@ -16,7 +17,10 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.retrieval_capabilities import OntologyContextConfigError
+from ontocast.onto.retrieval_capabilities import (
+    OntologyContextConfigError,
+    VectorStoreUnavailableError,
+)
 from ontocast.onto.state import AgentState
 from ontocast.toolbox import ToolBox
 
@@ -30,11 +34,14 @@ def test_parse_ontology_context_mode_param_accepts_request_override() -> None:
 
 
 def _tools(vector_store: object | None, patch_retriever: object | None) -> ToolBox:
+    is_ready = vector_store is not None and patch_retriever is not None
     return cast(
         ToolBox,
         SimpleNamespace(
             vector_store=vector_store,
             patch_retriever=patch_retriever,
+            vector_store_last_error=None,
+            is_vector_store_ready=lambda: is_ready,
         ),
     )
 
@@ -59,6 +66,21 @@ def test_validate_ontology_context_mode_allows_vector_when_both_set() -> None:
         OntologyContextMode.VECTOR_RETRIEVAL,
         _tools(object(), object()),
     )
+
+
+def test_ontology_context_error_response_maps_vector_unavailable_to_409() -> None:
+    response = _ontology_context_error_response(
+        VectorStoreUnavailableError("vector store unavailable")
+    )
+    assert response.status_code == 409
+    assert b"VECTOR_STORE_UNAVAILABLE" in response.body
+
+
+def test_ontology_context_error_response_keeps_generic_config_error_as_400() -> None:
+    response = _ontology_context_error_response(
+        OntologyContextConfigError("generic context error")
+    )
+    assert response.status_code == 400
 
 
 def test_process_result_data_uses_artifacts_and_deprecates_singular_ontology() -> None:

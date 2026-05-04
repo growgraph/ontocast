@@ -3,6 +3,7 @@
 import asyncio
 import tempfile
 from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -14,6 +15,7 @@ from ontocast.config import (
     QdrantConfig,
     ToolConfig,
 )
+from ontocast.onto.enum import OntologyContextMode
 from ontocast.toolbox import ToolBox
 
 
@@ -34,6 +36,21 @@ def test_materialize_ontology_calls_vector_reindex(test_ontology):
 
     asyncio.run(main())
     assert reindexed == [test_ontology]
+
+
+def test_materialize_ontology_skips_vector_reindex_when_store_not_ready(test_ontology):
+    tb = MagicMock()
+    tb.triple_store_manager = None
+    tb.filesystem_manager = None
+    tb.vector_store = MagicMock()
+    tb.vector_store.reindex_ontology = MagicMock()
+    tb.is_vector_store_ready = MagicMock(return_value=False)
+
+    async def main():
+        await ToolBox._materialize_ontology(tb, test_ontology)
+
+    asyncio.run(main())
+    tb.vector_store.reindex_ontology.assert_not_called()
 
 
 def test_materialize_ontology_serializes_remote_triple_store(test_ontology):
@@ -79,6 +96,13 @@ def test_initialize_materializes_then_adds_with_skip_vector(monkeypatch, test_on
 
         def __init__(self) -> None:
             self.ontology_manager = MagicMock()
+            self.vector_store_ready = False
+            self.vector_store_last_error = None
+
+        def should_initialize_vector_store(self, ontology_context_mode):
+            return ToolBox.should_initialize_vector_store(
+                cast(ToolBox, self), ontology_context_mode
+            )
 
     st = Stub()
     st._synchronize_ontologies = fake_sync.__get__(st, Stub)  # type: ignore[method-assign]
@@ -121,3 +145,91 @@ def test_toolbox_always_wires_bm25_when_vector_search_enabled() -> None:
         toolbox = ToolBox(Config(tool_config=tool_config))
         assert toolbox.vector_store is not None
         assert toolbox.vector_store.sparse_embedding is not None
+
+
+def test_initialize_skips_vector_store_in_full_ttl_mode(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ontocast.toolbox.update_ontology_manager",
+        AsyncMock(),
+    )
+    synchronized: list = []
+
+    class Stub:
+        triple_store_manager = None
+        filesystem_manager = None
+        llm = MagicMock()
+        ontology_manager: MagicMock
+
+        def __init__(self) -> None:
+            self.vector_store = MagicMock()
+            self.vector_store.initialize = AsyncMock()
+            self.vector_store_ready = False
+            self.vector_store_last_error = None
+            self.ontology_manager = MagicMock()
+
+        async def _synchronize_ontologies(self):
+            return synchronized
+
+        async def _materialize_ontology(self, _):
+            return None
+
+        def should_initialize_vector_store(self, ontology_context_mode):
+            return ToolBox.should_initialize_vector_store(
+                cast(ToolBox, self), ontology_context_mode
+            )
+
+    st = Stub()
+    asyncio.run(
+        ToolBox.initialize(
+            st,  # type: ignore[arg-type]
+            ontology_context_mode=OntologyContextMode.FULL_TTL,
+            fail_on_vector_store_error=False,
+        )
+    )
+    st.vector_store.initialize.assert_not_awaited()
+
+
+def test_initialize_vector_store_failure_is_non_fatal_when_configured(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "ontocast.toolbox.update_ontology_manager",
+        AsyncMock(),
+    )
+
+    class Stub:
+        triple_store_manager = None
+        filesystem_manager = None
+        llm = MagicMock()
+        ontology_manager: MagicMock
+
+        def __init__(self) -> None:
+            self.vector_store = MagicMock()
+            self.vector_store.initialize = AsyncMock(
+                side_effect=RuntimeError("qdrant unavailable")
+            )
+            self.vector_store_ready = False
+            self.vector_store_last_error = None
+            self.ontology_manager = MagicMock()
+
+        async def _synchronize_ontologies(self):
+            return []
+
+        async def _materialize_ontology(self, _):
+            return None
+
+        def should_initialize_vector_store(self, ontology_context_mode):
+            return ToolBox.should_initialize_vector_store(
+                cast(ToolBox, self), ontology_context_mode
+            )
+
+    st = Stub()
+    asyncio.run(
+        ToolBox.initialize(
+            st,  # type: ignore[arg-type]
+            ontology_context_mode=OntologyContextMode.VECTOR_RETRIEVAL,
+            fail_on_vector_store_error=False,
+        )
+    )
+    assert st.vector_store_ready is False
+    assert st.vector_store_last_error is not None
