@@ -673,6 +673,8 @@ async def test_ontology_loop_plans_search_when_critic_requests_it(monkeypatch) -
     state = UnitOntologyState(
         content_unit=_build_content_unit(),
         ontology_snapshot=Ontology(iri=ONTOLOGY_NULL_IRI),
+        # Need a later render attempt possible so critic runs (final render skips critic).
+        max_visits_per_node=2,
     )
     toolbox = cast(
         ToolBox,

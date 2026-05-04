@@ -2,7 +2,9 @@
 
 These loops are designed for map/reduce execution where each content unit
 is processed independently. They deep-copy the incoming unit state, then run
-render -> critic until success or retry exhaustion.
+render -> critic until success or retry exhaustion. After the last allowed
+render succeeds, the critic is skipped: no further extract exists for feedback
+to inform.
 
 Ontology context assembly (``resolve_unit_ontology_context``) runs at the
 start of both ``ontology_loop`` and ``facts_loop`` so each unit chooses its
@@ -39,6 +41,11 @@ def _resolve_max_visits_limit(state_visits: int, override: int | None) -> int:
     """Return a safe visit limit while respecting explicit overrides."""
     visits = state_visits if override is None else override
     return max(1, visits)
+
+
+def _skip_critic_after_final_render(render_attempt: int, max_visits: int) -> bool:
+    """True when this render attempt is the last allowed; critic cannot drive a retry."""
+    return render_attempt == max_visits
 
 
 def _reset_node_evidence_context(
@@ -143,6 +150,15 @@ async def facts_loop(
                         max_visits,
                     )
                     continue
+
+            if _skip_critic_after_final_render(render_attempt, max_visits):
+                logger.info(
+                    "Unit facts loop finishing on final render attempt %s/%s "
+                    "(no further extract; skipping critic)",
+                    render_attempt,
+                    max_visits,
+                )
+                return unit_state
 
             for critic_attempt in range(1, max_visits + 1):
                 unit_state.node_visits[WorkflowNode.CRITICISE_FACTS] += 1
@@ -262,6 +278,15 @@ async def ontology_loop(
                         max_visits,
                     )
                     continue
+
+            if _skip_critic_after_final_render(render_attempt, max_visits):
+                logger.info(
+                    "Unit ontology loop finishing on final render attempt %s/%s "
+                    "(no further extract; skipping critic)",
+                    render_attempt,
+                    max_visits,
+                )
+                return unit_state
 
             for critic_attempt in range(1, max_visits + 1):
                 unit_state.node_visits[WorkflowNode.CRITICISE_ONTOLOGY] += 1

@@ -19,6 +19,7 @@ import pytest
 from rdflib import URIRef
 
 from ontocast.agent.render_facts import render_facts
+from ontocast.api.tenancy_resolution import stores_use_tenancy_partitions
 from ontocast.config import Config, LLMProvider
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import Status
@@ -206,15 +207,9 @@ def _fuseki_service_ok(base_uri: str, auth: str | None) -> bool:
         return False
 
 
-def _stores_use_tenancy_partitions(tools: ToolBox) -> bool:
-    if tools.vector_store is not None:
-        return True
-    return isinstance(tools.triple_store_manager, FusekiTripleStoreManager)
-
-
 async def _bootstrap_like_server_startup(tools: ToolBox) -> None:
     """Mirror CLI startup: apply default tenancy, then initialize backends."""
-    if _stores_use_tenancy_partitions(tools):
+    if stores_use_tenancy_partitions(tools):
         await tools.update_tenancy(DEFAULT_TENANT, DEFAULT_PROJECT)
     await tools.initialize()
 

@@ -8,6 +8,9 @@ The server supports:
 - Health check endpoint (/health)
 - Service information endpoint (/info)
 - Document processing endpoint (/process)
+- Unit processing endpoint (/process_unit)
+- Ontology upload, replace, and delete (``/ontologies``; optional ``tenant`` /
+  ``project`` query parameters, same semantics as ``/process``)
 - Triple store flush endpoint (/flush)
 - Multiple input formats (JSON, multipart/form-data)
 - Streaming workflow execution
@@ -56,6 +59,11 @@ from ontocast.api.schemas import (
     ProcessResultMetadata,
     StatusErrorBody,
 )
+from ontocast.api.tenancy_resolution import (
+    apply_request_tenancy,
+    resolve_tenant_project,
+    stores_use_tenancy_partitions,
+)
 from ontocast.cli.util import crawl_directories
 from ontocast.config import Config, ServerConfig
 from ontocast.onto.enum import OntologyContextMode, RenderMode, Status
@@ -70,7 +78,6 @@ from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.stategraph import create_agent_graph
 from ontocast.stategraph.helpers import build_ontology_delta_graph
 from ontocast.stategraph.unit_pipeline import run_unit_pipeline
-from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -137,21 +144,6 @@ def _ontology_context_error_response(error: OntologyContextConfigError) -> JSONR
             error_code=error_code,
         ).model_dump(),
     )
-
-
-def _stores_use_tenancy_partitions(tools: ToolBox) -> bool:
-    """True when Fuseki and/or Qdrant should be retargeted for tenant/project."""
-    if tools.vector_store is not None:
-        return True
-    return isinstance(tools.triple_store_manager, FusekiTripleStoreManager)
-
-
-def _resolve_tenant_project(tenant: str | None, project: str | None) -> tuple[str, str]:
-    t = (tenant or DEFAULT_TENANT).strip()
-    p = (project or DEFAULT_PROJECT).strip()
-    if not t or not p:
-        raise ValueError("tenant and project must be non-empty after resolution")
-    return t, p
 
 
 async def _flush_triple_configured_scope(tools: ToolBox) -> None:
@@ -355,12 +347,19 @@ def create_app(
     """Build the FastAPI application (routes + workflow).
 
     ``active_tenant`` / ``active_project`` match the Fuseki/Qdrant partition set at
-    server startup; ``/process`` uses them when the request omits ``tenant`` /
-    ``project`` query parameters.
+    server startup. ``/process``, ``/process_unit``, and ``/ontologies`` use them
+    when the request omits ``tenant`` / ``project`` query parameters.
     """
 
     app = FastAPI(title="ontocast", version=metadata.version("ontocast"))
-    app.include_router(build_ontology_router(tools))
+    app.include_router(
+        build_ontology_router(
+            tools,
+            active_tenant=active_tenant,
+            active_project=active_project,
+            server_config=server_config,
+        )
+    )
 
     workflow: CompiledStateGraph = create_agent_graph(tools)
     recursion_limit = calculate_recursion_limit(
@@ -445,11 +444,6 @@ def create_app(
             content_type = request.headers.get("content-type") or ""
             logger.debug("Content-Type: %s", content_type)
 
-            request_tenant = request.query_params.get("tenant", None)
-            request_project = request.query_params.get("project", None)
-            has_tenancy_qs = (
-                "tenant" in request.query_params or "project" in request.query_params
-            )
             render_mode = request.query_params.get("render_mode", None)
             ontology_context_mode = request.query_params.get(
                 "ontology_context_mode", None
@@ -498,25 +492,15 @@ def create_app(
                     ).model_dump(),
                 )
 
-            if has_tenancy_qs:
-                resolved_tenant, resolved_project = _resolve_tenant_project(
-                    request_tenant, request_project
-                )
-                if _stores_use_tenancy_partitions(tools):
-                    await tools.update_tenancy_with_vector_mode(
-                        resolved_tenant,
-                        resolved_project,
-                        initialize_vector_store=(
-                            ontology_context_mode_value
-                            == OntologyContextMode.VECTOR_RETRIEVAL
-                        ),
-                        fail_on_vector_store_error=False,
-                    )
-            else:
-                resolved_tenant, resolved_project = (
-                    active_tenant,
-                    active_project,
-                )
+            resolved_tenant, resolved_project = await apply_request_tenancy(
+                request,
+                tools,
+                active_tenant=active_tenant,
+                active_project=active_project,
+                initialize_vector_store=(
+                    ontology_context_mode_value == OntologyContextMode.VECTOR_RETRIEVAL
+                ),
+            )
 
             render_mode_value: RenderMode = parse_render_mode_param(
                 render_mode,
@@ -639,11 +623,6 @@ def create_app(
             content_type = request.headers.get("content-type") or ""
             logger.debug("process_unit Content-Type: %s", content_type)
 
-            request_tenant = request.query_params.get("tenant", None)
-            request_project = request.query_params.get("project", None)
-            has_tenancy_qs = (
-                "tenant" in request.query_params or "project" in request.query_params
-            )
             render_mode = request.query_params.get("render_mode", None)
             ontology_context_mode = request.query_params.get(
                 "ontology_context_mode", None
@@ -692,25 +671,15 @@ def create_app(
                     ).model_dump(),
                 )
 
-            if has_tenancy_qs:
-                resolved_tenant, resolved_project = _resolve_tenant_project(
-                    request_tenant, request_project
-                )
-                if _stores_use_tenancy_partitions(tools):
-                    await tools.update_tenancy_with_vector_mode(
-                        resolved_tenant,
-                        resolved_project,
-                        initialize_vector_store=(
-                            ontology_context_mode_value
-                            == OntologyContextMode.VECTOR_RETRIEVAL
-                        ),
-                        fail_on_vector_store_error=False,
-                    )
-            else:
-                resolved_tenant, resolved_project = (
-                    active_tenant,
-                    active_project,
-                )
+            resolved_tenant, resolved_project = await apply_request_tenancy(
+                request,
+                tools,
+                active_tenant=active_tenant,
+                active_project=active_project,
+                initialize_vector_store=(
+                    ontology_context_mode_value == OntologyContextMode.VECTOR_RETRIEVAL
+                ),
+            )
 
             render_mode_value: RenderMode = parse_render_mode_param(
                 render_mode,
@@ -890,12 +859,12 @@ def run(
 
     # Create ToolBox with config
     tools: ToolBox = ToolBox(config)
-    t_res, p_res = _resolve_tenant_project(tenant, project)
+    t_res, p_res = resolve_tenant_project(tenant, project)
     ontology_context_mode_value = config.server.ontology_context_mode
     vector_mode_enabled = (
         ontology_context_mode_value == OntologyContextMode.VECTOR_RETRIEVAL
     )
-    if _stores_use_tenancy_partitions(tools):
+    if stores_use_tenancy_partitions(tools):
         asyncio.run(
             tools.update_tenancy_with_vector_mode(
                 t_res,
