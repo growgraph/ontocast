@@ -66,6 +66,9 @@ async def _apply_facts_ontology_context(
     ctx = await resolve_effective_facts_ontology_context(
         document_state, tools, unit_state.content_unit
     )
+    logger.info(
+        f"Ontology selected for mode {document_state.ontology_context_mode}: {ctx.ontology_snapshot.iri}",
+    )
     unit_state.ontology_snapshot = deepcopy(ctx.ontology_snapshot)
     unit_state.ontology_patch_sources = list(ctx.patch_sources)
     unit_state.assembly_anchor_iri = ctx.anchor_iri

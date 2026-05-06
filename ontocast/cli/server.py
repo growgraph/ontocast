@@ -16,6 +16,11 @@ The server supports:
 - Streaming workflow execution
 - Comprehensive error handling and logging
 
+Optional query (or multipart) parameter ``strip_provenance`` on ``/process`` and
+``/process_unit``: when true (``1``, ``true``, ``yes``, ``on``), returned Turtle
+for facts and ontology artifacts omits reification/provenance scaffolding
+(:class:`~ontocast.tool.triple_manager.core.TripleStoreManager.strip_provenance`).
+
 The server integrates with the OntoCast workflow graph to process documents
 through the complete pipeline: chunking, ontology selection, fact extraction,
 and aggregation.
@@ -78,6 +83,7 @@ from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.stategraph import create_agent_graph
 from ontocast.stategraph.helpers import build_ontology_delta_graph
 from ontocast.stategraph.unit_pipeline import run_unit_pipeline
+from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -120,6 +126,30 @@ def parse_ontology_context_mode_param(
                 default.value,
             )
     return default
+
+
+def parse_strip_provenance_param(value: str | None) -> bool:
+    """Parse ``strip_provenance`` query/form value."""
+    if value is None:
+        return False
+    normalized = str(value).strip().lower()
+    if normalized in {"", "0", "false", "no", "off"}:
+        return False
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    logger.warning(
+        "Invalid strip_provenance %r, treating as false",
+        value,
+    )
+    return False
+
+
+def turtle_from_graph(graph: RDFGraph, *, strip_provenance: bool) -> str:
+    """Serialize ``graph`` to Turtle, optionally stripping reification/provenance."""
+    out: RDFGraph = (
+        TripleStoreManager.strip_provenance(graph) if strip_provenance else graph
+    )
+    return out.serialize(format="turtle")
 
 
 def validate_ontology_context_mode(
@@ -454,6 +484,9 @@ def create_app(
             facts_user_instruction = request.query_params.get(
                 "facts_user_instruction", ""
             )
+            strip_provenance = parse_strip_provenance_param(
+                request.query_params.get("strip_provenance")
+            )
             ontology_context_mode_value: OntologyContextMode = (
                 parse_ontology_context_mode_param(
                     ontology_context_mode,
@@ -475,6 +508,8 @@ def create_app(
                         ontology_user_instruction = str(value)
                     elif key == "facts_user_instruction" and value:
                         facts_user_instruction = str(value)
+                    elif key == "strip_provenance" and value:
+                        strip_provenance = parse_strip_provenance_param(str(value))
                 if not files_dict:
                     return JSONResponse(
                         status_code=400,
@@ -560,24 +595,35 @@ def create_app(
                 workflow_state.get("ontology_artifacts", [])
             )
 
+            ontology_artifact_payloads: list[dict] = []
+            for artifact in ontology_artifacts:
+                out_graph = (
+                    TripleStoreManager.strip_provenance(artifact.graph)
+                    if strip_provenance
+                    else artifact.graph
+                )
+                ontology_artifact_payloads.append(
+                    {
+                        "iri": artifact.iri,
+                        "ontology_id": artifact.ontology_id,
+                        "title": artifact.title,
+                        "triples": len(out_graph),
+                        "ttl": out_graph.serialize(format="turtle"),
+                    }
+                )
+
             return ProcessOkResponse(
                 data=ProcessResultData(
                     facts=(
-                        workflow_state["aggregated_facts"].serialize(format="turtle")
+                        turtle_from_graph(
+                            workflow_state["aggregated_facts"],
+                            strip_provenance=strip_provenance,
+                        )
                         if workflow_state.get("aggregated_facts")
                         else ""
                     ),
                     ontology=None,
-                    ontology_artifacts=[
-                        {
-                            "iri": artifact.iri,
-                            "ontology_id": artifact.ontology_id,
-                            "title": artifact.title,
-                            "triples": len(artifact.graph),
-                            "ttl": artifact.graph.serialize(format="turtle"),
-                        }
-                        for artifact in ontology_artifacts
-                    ],
+                    ontology_artifacts=ontology_artifact_payloads,
                 ),
                 metadata=ProcessResultMetadata(
                     status=workflow_state["status"],
@@ -617,7 +663,7 @@ def create_app(
         one unit.  The ontology loop's output is fed directly into the facts
         loop so that fact extraction immediately uses the freshly-generated
         ontology.  Accepts the same content types and query parameters as
-        ``/process``.
+        ``/process`` (including ``strip_provenance``).
         """
         try:
             content_type = request.headers.get("content-type") or ""
@@ -632,6 +678,9 @@ def create_app(
             )
             facts_user_instruction = request.query_params.get(
                 "facts_user_instruction", ""
+            )
+            strip_provenance = parse_strip_provenance_param(
+                request.query_params.get("strip_provenance")
             )
             ontology_context_mode_value: OntologyContextMode = (
                 parse_ontology_context_mode_param(
@@ -654,6 +703,8 @@ def create_app(
                         ontology_user_instruction = str(value)
                     elif key == "facts_user_instruction" and value:
                         facts_user_instruction = str(value)
+                    elif key == "strip_provenance" and value:
+                        strip_provenance = parse_strip_provenance_param(str(value))
                 if not files_dict:
                     return JSONResponse(
                         status_code=400,
@@ -744,13 +795,18 @@ def create_app(
             if onto_result is not None:
                 delta_graph = build_ontology_delta_graph(onto_result)
                 if len(delta_graph) > 0:
+                    out_graph = (
+                        TripleStoreManager.strip_provenance(delta_graph)
+                        if strip_provenance
+                        else delta_graph
+                    )
                     ontology_artifacts = [
                         {
                             "iri": onto_result.assembly_anchor_iri or "",
                             "ontology_id": None,
                             "title": "Unit ontology artifact",
-                            "triples": len(delta_graph),
-                            "ttl": delta_graph.serialize(format="turtle"),
+                            "triples": len(out_graph),
+                            "ttl": out_graph.serialize(format="turtle"),
                         }
                     ]
 
@@ -763,7 +819,10 @@ def create_app(
                     units=[facts_result.content_unit],
                     ontology_graph=ontology_graph,
                 )
-                facts_ttl = postprocessed_facts.serialize(format="turtle")
+                facts_ttl = turtle_from_graph(
+                    postprocessed_facts,
+                    strip_provenance=strip_provenance,
+                )
 
             last_status = None
             if facts_result is not None:

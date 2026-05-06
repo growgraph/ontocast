@@ -2,7 +2,7 @@ from collections import Counter
 
 from pydantic import BaseModel, Field
 
-from ontocast.agent.ontology_catalog_select import select_catalog_ontology_for_excerpt
+from ontocast.agent.select_ontology_catalog import select_catalog_ontology_for_excerpt
 from ontocast.onto.content_unit import SourceUnit
 from ontocast.onto.enum import OntologyAssemblyMode, OntologyContextMode
 from ontocast.onto.null import NULL_ONTOLOGY
