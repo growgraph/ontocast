@@ -55,6 +55,10 @@ def _build_tools(
         SimpleNamespace(
             patch_retriever=patch_retriever,
             vector_store=vector_store,
+            is_vector_store_ready=lambda: (
+                patch_retriever is not None and vector_store is not None
+            ),
+            vector_store_last_error=None,
             ontology_manager=ontology_manager,
             llm=llm,
             config=SimpleNamespace(tool_config=SimpleNamespace(qdrant=qdrant)),

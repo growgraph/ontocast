@@ -181,6 +181,14 @@ class AgentState(BasePydanticModel):
         default="",
     )
 
+    ontology_selection_user_instruction: str = Field(
+        description=(
+            "Specific user instructions for ontology selection, "
+            "e.g. `Prefer ontologies focused on finance`"
+        ),
+        default="",
+    )
+
     facts_user_instruction: str = Field(
         description="Specific user instructions for facts extraction, e.g. `Focus on extracting places`",
         default="",

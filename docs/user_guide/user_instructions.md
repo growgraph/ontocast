@@ -8,6 +8,7 @@ User instructions allow you to provide specific guidance to OntoCast about what 
 
 User instructions work by injecting custom instructions into the AI prompts used during:
 
+- **Ontology Selection**: When the system chooses the best catalog ontology for a text unit
 - **Ontology Extraction**: When the system extracts domain concepts and relationships
 - **Facts Extraction**: When the system extracts specific facts from your documents
 
@@ -26,7 +27,16 @@ Ontology user instructions guide the AI when extracting domain concepts and rela
 Focus on extracting geographical locations, organizations, and their relationships. Pay special attention to company mergers, acquisitions, and partnerships.
 ```
 
-### 2. Facts User Instructions
+### 2. Ontology Selection User Instructions
+
+Ontology selection user instructions guide the AI when choosing a catalog ontology for each text segment. These instructions help prioritize one ontology style or domain when several ontologies could match.
+
+**Example:**
+```
+Prefer ontologies focused on legal and compliance terminology. Avoid generic business ontologies unless no legal ontology applies.
+```
+
+### 3. Facts User Instructions
 
 Facts user instructions guide the AI when extracting specific facts and instances from your documents. These instructions help focus on particular types of facts or data points.
 
@@ -46,6 +56,7 @@ When sending JSON requests to the API, include user instructions in your payload
 ```json
 {
   "text": "Your document text here...",
+  "ontology_selection_user_instruction": "Prefer legal/compliance ontologies when multiple options are relevant",
   "ontology_user_instruction": "Focus on extracting geographical locations and organizations",
   "facts_user_instruction": "Extract financial data and numerical values with proper currency information"
 }
@@ -58,6 +69,7 @@ When using multipart form data, include user instructions as form fields:
 ```bash
 curl -X POST http://localhost:8999/process \
   -F "file=@document.pdf" \
+  -F "ontology_selection_user_instruction=Prefer legal/compliance ontologies when multiple options are relevant" \
   -F "ontology_user_instruction=Focus on extracting geographical locations and organizations" \
   -F "facts_user_instruction=Extract financial data and numerical values"
 ```
@@ -72,6 +84,7 @@ from ontocast.onto.state import AgentState
 # Create state with user instructions
 state = AgentState(
     input_text="Your document text...",
+    ontology_selection_user_instruction="Prefer legal/compliance ontologies when multiple options are relevant",
     ontology_user_instruction="Focus on extracting geographical locations and organizations",
     facts_user_instruction="Extract financial data and numerical values"
 )
@@ -190,6 +203,7 @@ Extract experimental data, measurements, statistical results, and research findi
 ```json
 {
   "text": "Your document text...",
+  "ontology_selection_user_instruction": "Prefer ontologies that model technology products and companies when there is overlap.",
   "ontology_user_instruction": "Extract both business and technical concepts. Focus on companies, products, technologies, and their relationships.",
   "facts_user_instruction": "Extract business metrics, technical specifications, and performance data. Include all numerical values with proper context."
 }
@@ -200,6 +214,7 @@ Extract experimental data, measurements, statistical results, and research findi
 ```json
 {
   "text": "Your document text...",
+  "ontology_selection_user_instruction": "Prefer ontologies with strong temporal/event modeling when available.",
   "ontology_user_instruction": "Focus on extracting entities and relationships that are time-sensitive or have temporal aspects.",
   "facts_user_instruction": "Extract all dates, time periods, and temporal relationships. Pay special attention to historical events and chronological data."
 }
@@ -210,6 +225,7 @@ Extract experimental data, measurements, statistical results, and research findi
 ```json
 {
   "text": "Your document text...",
+  "ontology_selection_user_instruction": "Prefer ontologies specialized in locations and geospatial entities.",
   "ontology_user_instruction": "Focus on extracting geographical entities, locations, and spatial relationships.",
   "facts_user_instruction": "Extract all geographical coordinates, addresses, and location-specific data. Include all spatial and geographical information."
 }
@@ -222,9 +238,10 @@ Extract experimental data, measurements, statistical results, and research findi
 User instructions are integrated into the OntoCast workflow at specific points:
 
 1. **Document Processing**: Instructions are extracted from JSON input during document conversion
-2. **Ontology Extraction**: Instructions guide the AI when extracting domain concepts
-3. **Facts Extraction**: Instructions guide the AI when extracting specific facts
-4. **Critique Phase**: Instructions are used during the critique and improvement phases
+2. **Ontology Selection**: Selection instructions guide catalog ontology choice per unit
+3. **Ontology Extraction**: Ontology instructions guide domain concept extraction
+4. **Facts Extraction**: Facts instructions guide specific fact extraction
+5. **Critique Phase**: Instructions are used during the critique and improvement phases
 
 ---
 
@@ -246,6 +263,7 @@ User instructions are integrated into the OntoCast workflow at specific points:
 
 ```
 DEBUG - Set ontology user instruction: Focus on extracting geographical locations and organizations
+DEBUG - Set ontology selection user instruction: Prefer legal/compliance ontologies when multiple options are relevant
 DEBUG - Set facts user instruction: Extract financial data and numerical values
 ```
 
@@ -258,6 +276,7 @@ DEBUG - Set facts user instruction: Extract financial data and numerical values
 ```json
 {
   "text": "string",
+  "ontology_selection_user_instruction": "string (optional)",
   "ontology_user_instruction": "string (optional)",
   "facts_user_instruction": "string (optional)"
 }
@@ -273,6 +292,7 @@ The response includes the extracted ontology and facts, with user instructions i
   "ontology": "...",
   "facts": "...",
   "metadata": {
+    "ontology_selection_user_instruction": "Prefer legal/compliance ontologies when multiple options are relevant",
     "ontology_user_instruction": "Focus on extracting geographical locations and organizations",
     "facts_user_instruction": "Extract financial data and numerical values"
   }

@@ -9,5 +9,8 @@ use indices 1..{num_ontologies} for a listed ontology).
 Here is the text excerpt:
 {excerpt}
 
+Additional user instruction for ontology selection:
+{ontology_selection_user_instruction}
+
 {format_instructions}
 """

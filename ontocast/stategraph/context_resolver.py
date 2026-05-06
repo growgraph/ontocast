@@ -85,7 +85,10 @@ async def _resolve_full_ttl_llm_context(
 ) -> UnitOntologyContext:
     """One catalog ontology chosen by the LLM from the unit text."""
     selected = await select_catalog_ontology_for_excerpt(
-        tools.ontology_manager, tools.llm, unit.text
+        tools.ontology_manager,
+        tools.llm,
+        unit.text,
+        state.ontology_selection_user_instruction,
     )
     if selected.is_null():
         return UnitOntologyContext(

@@ -20,6 +20,7 @@ async def select_catalog_ontology_for_excerpt(
     ontology_manager: OntologyManager,
     llm_tool: LLMTool,
     excerpt: str,
+    ontology_selection_user_instruction: str = "",
 ) -> Ontology:
     """Use the LLM to select one catalog ontology, or :data:`NULL_ONTOLOGY` if none fit.
 
@@ -50,6 +51,7 @@ async def select_catalog_ontology_for_excerpt(
             "ontologies_list",
             "num_ontologies",
             "none_index",
+            "ontology_selection_user_instruction",
             "format_instructions",
         ],
     )
@@ -63,6 +65,7 @@ async def select_catalog_ontology_for_excerpt(
             "ontologies_list": ontologies_list,
             "num_ontologies": num_ontologies,
             "none_index": none_index,
+            "ontology_selection_user_instruction": ontology_selection_user_instruction.strip(),
             "format_instructions": parser.get_format_instructions(),
         },
     )

@@ -45,11 +45,23 @@ def _extract_json_payload_text(
     }
 
     ontology_user_instruction = json_payload.get("ontology_user_instruction", "")
+    ontology_selection_user_instruction = json_payload.get(
+        "ontology_selection_user_instruction", ""
+    )
     facts_user_instruction = json_payload.get("facts_user_instruction", "")
 
     if isinstance(ontology_user_instruction, str) and ontology_user_instruction:
         state.ontology_user_instruction = ontology_user_instruction
         logger.debug(f"Set ontology user instruction: {ontology_user_instruction}")
+    if (
+        isinstance(ontology_selection_user_instruction, str)
+        and ontology_selection_user_instruction
+    ):
+        state.ontology_selection_user_instruction = ontology_selection_user_instruction
+        logger.debug(
+            "Set ontology selection user instruction: %s",
+            ontology_selection_user_instruction,
+        )
     if isinstance(facts_user_instruction, str) and facts_user_instruction:
         state.facts_user_instruction = facts_user_instruction
         logger.debug(f"Set facts user instruction: {facts_user_instruction}")

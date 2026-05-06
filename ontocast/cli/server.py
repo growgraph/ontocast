@@ -516,6 +516,9 @@ def create_app(
             ontology_user_instruction = request.query_params.get(
                 "ontology_user_instruction", ""
             )
+            ontology_selection_user_instruction = request.query_params.get(
+                "ontology_selection_user_instruction", ""
+            )
             facts_user_instruction = request.query_params.get(
                 "facts_user_instruction", ""
             )
@@ -541,6 +544,8 @@ def create_app(
                         files_dict[key] = await value.read()
                     elif key == "ontology_user_instruction" and value:
                         ontology_user_instruction = str(value)
+                    elif key == "ontology_selection_user_instruction" and value:
+                        ontology_selection_user_instruction = str(value)
                     elif key == "facts_user_instruction" and value:
                         facts_user_instruction = str(value)
                     elif key == "strip_provenance" and value:
@@ -591,6 +596,7 @@ def create_app(
                 tenant=resolved_tenant,
                 project=resolved_project,
                 ontology_user_instruction=ontology_user_instruction,
+                ontology_selection_user_instruction=ontology_selection_user_instruction,
                 facts_user_instruction=facts_user_instruction,
             )
 
@@ -711,6 +717,9 @@ def create_app(
             ontology_user_instruction = request.query_params.get(
                 "ontology_user_instruction", ""
             )
+            ontology_selection_user_instruction = request.query_params.get(
+                "ontology_selection_user_instruction", ""
+            )
             facts_user_instruction = request.query_params.get(
                 "facts_user_instruction", ""
             )
@@ -736,6 +745,8 @@ def create_app(
                         files_dict[key] = await value.read()
                     elif key == "ontology_user_instruction" and value:
                         ontology_user_instruction = str(value)
+                    elif key == "ontology_selection_user_instruction" and value:
+                        ontology_selection_user_instruction = str(value)
                     elif key == "facts_user_instruction" and value:
                         facts_user_instruction = str(value)
                     elif key == "strip_provenance" and value:
@@ -786,6 +797,7 @@ def create_app(
                 tenant=resolved_tenant,
                 project=resolved_project,
                 ontology_user_instruction=ontology_user_instruction,
+                ontology_selection_user_instruction=ontology_selection_user_instruction,
                 facts_user_instruction=facts_user_instruction,
             )
 
