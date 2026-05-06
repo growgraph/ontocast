@@ -56,6 +56,7 @@ def build_merged_document_ontology_context(
         merged_graph += ontology.graph
         if ontology.iri:
             patch_sources.append(ontology.iri)
+    merged_graph.sanitize_prefixes_namespaces()
 
     anchor_iri = patch_sources[0] if patch_sources else NULL_ONTOLOGY.iri
     snapshot = Ontology(

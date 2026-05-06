@@ -61,7 +61,7 @@ async def criticise_ontology(
     parser = PydanticOutputParser(pydantic_object=OntologyCritiqueReport)
     llm_tool: LLMTool = await tools.get_llm_tool(state.budget_tracker)
 
-    ontology_ttl = current.graph.serialize(format="turtle")
+    ontology_ttl = current.graph.serialize_canonical_turtle()
 
     ontology_chapter = ontology_template.format(
         ontology_ttl=ontology_ttl,

@@ -822,7 +822,15 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         default_graph_uri = kwargs.get("default_graph_uri")
         log_prefix = kwargs.get("log_prefix")
 
-        turtle_data = graph.serialize(format="turtle")
+        if isinstance(graph, RDFGraph):
+            turtle_data = graph.serialize_canonical_turtle()
+        else:
+            rdf_graph = RDFGraph()
+            for triple in graph:
+                rdf_graph.add(triple)
+            for prefix, namespace in graph.namespaces():
+                rdf_graph.bind(prefix, namespace)
+            turtle_data = rdf_graph.serialize_canonical_turtle()
         if graph_uri is None:
             graph_uri = default_graph_uri
 

@@ -58,13 +58,13 @@ async def criticise_facts(
     parser = PydanticOutputParser(pydantic_object=FactsCritiqueReport)
 
     ctx = ontology_access_for_unit_facts(state).effective_ontology_for_prompt()
-    ontology_ttl = ctx.graph.serialize(format="turtle")
+    ontology_ttl = ctx.graph.serialize_canonical_turtle()
 
     ontology_chapter = ontology_template.format(
         ontology_ttl=ontology_ttl,
     )
 
-    facts_ttl = state.content_unit.graph.serialize(format="turtle")
+    facts_ttl = state.content_unit.graph.serialize_canonical_turtle()
 
     facts_chapter = facts_template.format(
         facts_ttl=facts_ttl,

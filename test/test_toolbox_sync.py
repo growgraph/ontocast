@@ -16,6 +16,9 @@ from ontocast.config import (
     ToolConfig,
 )
 from ontocast.onto.enum import OntologyContextMode
+from ontocast.onto.ontology import Ontology
+from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.toolbox import ToolBox
 
 
@@ -233,3 +236,45 @@ def test_initialize_vector_store_failure_is_non_fatal_when_configured(
     )
     assert st.vector_store_ready is False
     assert st.vector_store_last_error is not None
+
+
+def test_ingest_ontology_ttl_rejects_identity_conflict_before_persisting() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        wd = Path(tmp)
+        od = wd / "ontologies"
+        od.mkdir()
+        tool_config = ToolConfig(
+            path_config=PathConfig(working_directory=wd, ontology_directory=od)
+        )
+        config = Config(tool_config=tool_config)
+        ontology_manager = OntologyManager()
+
+        existing = Ontology(
+            graph=RDFGraph._from_turtle_str(
+                """
+                @prefix owl: <http://www.w3.org/2002/07/owl#> .
+                <https://example.org/finance> a owl:Ontology .
+                """
+            ),
+            iri="https://example.org/finance",
+            ontology_id="finance",
+        )
+        ontology_manager.add_ontology(existing)
+
+        class Stub:
+            def __init__(self) -> None:
+                self.config = config
+                self.ontology_manager = ontology_manager
+                self._materialize_ontology = AsyncMock()
+
+        incoming_ttl = b"""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        <https://example.com/finance> a owl:Ontology .
+        """
+        stub = Stub()
+
+        with pytest.raises(ValueError, match="already bound to IRI"):
+            asyncio.run(ToolBox.ingest_ontology_ttl(stub, incoming_ttl))  # type: ignore[arg-type]
+
+        stub._materialize_ontology.assert_not_awaited()
+        assert list(od.glob("*.ttl")) == []

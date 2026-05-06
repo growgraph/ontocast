@@ -1,4 +1,6 @@
-from rdflib import Literal, URIRef
+from copy import deepcopy
+
+from rdflib import Graph, Literal, URIRef
 
 from ontocast.onto.rdfgraph import RDFGraph
 
@@ -17,6 +19,42 @@ def test_from_turtle_coerces_invalid_integer_typed_literal() -> None:
         URIRef("https://example.com/ns#item"),
         URIRef("https://example.com/ns#value"),
         Literal("10-15"),
+    )
+    assert triple in graph
+
+
+def test_from_turtle_coerces_year_date_literal_to_xsd_gyear() -> None:
+    ttl = """
+    @prefix ex: <https://example.com/ns#> .
+    @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+    ex:item ex:established "2001"^^xsd:date .
+    """
+
+    graph = RDFGraph._from_turtle_str(ttl)
+
+    assert len(graph) == 1
+    triple = (
+        URIRef("https://example.com/ns#item"),
+        URIRef("https://example.com/ns#established"),
+        Literal("2001", datatype=URIRef("http://www.w3.org/2001/XMLSchema#gYear")),
+    )
+    assert triple in graph
+
+
+def test_from_turtle_drops_invalid_date_datatype_for_non_iso_dates() -> None:
+    ttl = """
+    @prefix ex: <https://example.com/ns#> .
+    @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+    ex:item ex:established "2026/05/06"^^xsd:date .
+    """
+
+    graph = RDFGraph._from_turtle_str(ttl)
+
+    assert len(graph) == 1
+    triple = (
+        URIRef("https://example.com/ns#item"),
+        URIRef("https://example.com/ns#established"),
+        Literal("2026/05/06"),
     )
     assert triple in graph
 
@@ -68,3 +106,55 @@ def test_from_turtle_sanitizes_prefix_without_terminal_delimiter() -> None:
         URIRef("https://example.com/ns#relatedTo"),
         URIRef("https://growgraph.dev/facts/imprisonment2"),
     ) in graph
+
+
+def test_serialize_canonical_turtle_normalizes_namespace_delimiters() -> None:
+    graph = RDFGraph._from_turtle_str(
+        """
+        @prefix ex: <https://example.org/ns#> .
+        @prefix cd: <https://growgraph.dev/facts> .
+        cd:item ex:relatedTo cd:target .
+        """
+    )
+
+    turtle = graph.serialize_canonical_turtle()
+
+    assert "https://growgraph.dev/factsitem" not in turtle
+    assert "https://growgraph.dev/facts//item" in turtle
+
+
+def test_deepcopy_preserves_rdfgraph_type() -> None:
+    graph = RDFGraph._from_turtle_str(
+        """
+        @prefix ex: <https://example.com/ns#> .
+        ex:a ex:rel ex:b .
+        """
+    )
+
+    copied = deepcopy(graph)
+
+    assert isinstance(copied, RDFGraph)
+    assert len(copied) == len(graph)
+
+
+def test_content_unit_sanitize_coerces_plain_graph() -> None:
+    from ontocast.onto.content_unit import ContentUnit
+
+    plain = Graph()
+    plain.add(
+        (
+            URIRef("https://example.org/s"),
+            URIRef("https://example.org/p"),
+            Literal("o"),
+        )
+    )
+    unit = ContentUnit(
+        text="x",
+        index=0,
+        doc_iri=URIRef("https://example.org/doc/1"),
+    )
+    unit.graph = plain  # type: ignore[assignment]
+
+    unit.sanitize()
+
+    assert isinstance(unit.graph, RDFGraph)

@@ -15,74 +15,109 @@ from ontocast.toolbox import ToolBox
 logger = logging.getLogger(__name__)
 
 
-def convert_document(state: AgentState, tools: ToolBox) -> AgentState:
-    """Convert a document into structured data.
+def _get_json_text_field(result: dict[str, object]) -> str | None:
+    """Extract text from JSON payload using a tiny top-level heuristic."""
+    text_value = result.get("text")
+    if isinstance(text_value, str):
+        return text_value
 
-    This function takes a document and converts it into a structured format that
-    can be processed by the OntoCast system.
+    largest_text: str | None = None
+    for value in result.values():
+        if isinstance(value, str):
+            if largest_text is None or len(value) > len(largest_text):
+                largest_text = value
+
+    return largest_text
+
+
+def _extract_json_payload_text(
+    payload: object, state: AgentState, source_name: str
+) -> str | None:
+    """Apply JSON extraction logic and return resolved text."""
+    if not isinstance(payload, dict):
+        logger.error(
+            "Expected JSON object in %s, got %s", source_name, type(payload).__name__
+        )
+        return None
+
+    json_payload: dict[str, object] = {
+        str(key): value for key, value in payload.items()
+    }
+
+    ontology_user_instruction = json_payload.get("ontology_user_instruction", "")
+    facts_user_instruction = json_payload.get("facts_user_instruction", "")
+
+    if isinstance(ontology_user_instruction, str) and ontology_user_instruction:
+        state.ontology_user_instruction = ontology_user_instruction
+        logger.debug(f"Set ontology user instruction: {ontology_user_instruction}")
+    if isinstance(facts_user_instruction, str) and facts_user_instruction:
+        state.facts_user_instruction = facts_user_instruction
+        logger.debug(f"Set facts user instruction: {facts_user_instruction}")
+
+    source_url = json_payload.get("url")
+    if isinstance(source_url, str) and source_url:
+        state.source_url = source_url
+        logger.debug(f"Extracted source URL from JSON: {source_url}")
+
+    json_text = _get_json_text_field(json_payload)
+    if json_text is None:
+        logger.error(
+            "No string field found in JSON payload to use as text (%s)", source_name
+        )
+        return None
+    return json_text
+
+
+def convert_document(state: AgentState, tools: ToolBox) -> AgentState:
+    """Convert a single raw input payload on the state into text.
+
+    Strict 1-in / 1-out agent node: ``state.raw_input`` must contain exactly
+    one ``{filename: bytes}`` entry. Batch fan-out (e.g. JSONL) is the caller's
+    responsibility and must happen before this node is invoked.
 
     Args:
-        state: The current agent state containing the document to convert.
+        state: The current agent state with a single raw input payload.
         tools: The toolbox instance providing utility functions.
 
     Returns:
-        AgentState: Updated state with converted document data.
+        AgentState: Updated state with ``input_text`` populated, or with
+        ``status == Status.FAILED`` if conversion could not be performed.
     """
-    logger.debug("Converting documents. NB: processing only one file")
+    logger.debug("Converting document")
 
     state.status = Status.SUCCESS
-    files = state.files
-    if len(files) > 1:
-        logger.warning(
-            "convert_document received %d files but only the last file's text is "
-            "retained in state (last-file-wins). Pass a single file per invocation.",
-            len(files),
+    raw_input = state.raw_input
+
+    if len(raw_input) != 1:
+        logger.error(
+            "convert_document expects exactly one raw input entry, received %d",
+            len(raw_input),
         )
-    for filename, file_content in files.items():
-        file_extension = pathlib.Path(filename).suffix.lower()
+        state.status = Status.FAILED
+        return state
 
-        # if file_content is None:
-        #     try:
-        #         with open(filename, "rb") as f:
-        #             file_content = f.read()
-        #         if file_extension == ".json":
-        #             file_content = json.loads(file_content)
-        #     except Exception as e:
-        #         logger.error(f"Failed to load file {filename}: {str(e)}")
-        #         state.status = Status.FAILED
-        #         return state
-        logger.debug(f"file ext: {file_extension}, {filename}")
-        if file_extension in tools.converter.supported_extensions:
-            logger.debug("will apply convert :")
-            result = tools.converter(file_content)
-        elif file_extension == ".json":
-            result = json.loads(file_content.decode("utf-8"))
+    filename, file_content = next(iter(raw_input.items()))
+    file_extension = pathlib.Path(filename).suffix.lower()
+    logger.debug("Converting %s with extension %s", filename, file_extension)
 
-            # Extract user instructions from JSON if present
-            ontology_user_instruction = result.get("ontology_user_instruction", "")
-            facts_user_instruction = result.get("facts_user_instruction", "")
+    if file_extension in tools.converter.supported_extensions:
+        result = tools.converter(file_content)
+        state.set_text(result["text"])
+        return state
 
-            # Update state with user instructions
-            if ontology_user_instruction:
-                state.ontology_user_instruction = ontology_user_instruction
-                logger.debug(
-                    f"Set ontology user instruction: {ontology_user_instruction}"
-                )
-            if facts_user_instruction:
-                state.facts_user_instruction = facts_user_instruction
-                logger.debug(f"Set facts user instruction: {facts_user_instruction}")
-
-            # Extract source URL from JSON if present (for provenance tracking)
-            source_url = result.get("url", None)
-            if source_url:
-                state.source_url = source_url
-                logger.debug(f"Extracted source URL from JSON: {source_url}")
-
-        elif file_extension == ".txt":
-            result = {"text": json.loads(file_content.decode("utf-8"))}
-        else:
+    if file_extension == ".json":
+        result_json = json.loads(file_content.decode("utf-8"))
+        json_text = _extract_json_payload_text(result_json, state, filename)
+        if json_text is None:
             state.status = Status.FAILED
             return state
+        state.set_text(json_text)
+        return state
 
-        state.set_text(result["text"])
+    if file_extension == ".txt":
+        state.set_text(json.loads(file_content.decode("utf-8")))
+        return state
+
+    logger.error("Unsupported file extension %s for %s", file_extension, filename)
+    state.status = Status.FAILED
     return state

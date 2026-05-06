@@ -421,7 +421,7 @@ class Neo4jTripleStoreManager(TripleStoreManagerWithAuth):
                 rdf_graph.bind(prefix, namespace)
             graph = rdf_graph
 
-        turtle_data = graph.serialize(format="turtle")
+        turtle_data = graph.serialize_canonical_turtle()
 
         # Type assertion: we know _driver is not None after initialization
         assert self._driver is not None

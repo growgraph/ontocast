@@ -221,7 +221,7 @@ async def render_ontology_update(
         multi_source_note=multi_source_note,
     )
     ontology_chapter = ontology_template.format(
-        ontology_ttl=current.graph.serialize(format="turtle")
+        ontology_ttl=current.graph.serialize_canonical_turtle()
     )
     output_instruction = output_instruction_sparql
     improvement_instruction_str = render_suggestions_prompt(

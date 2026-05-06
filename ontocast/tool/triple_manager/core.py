@@ -11,7 +11,6 @@ from typing import ClassVar
 
 from pydantic import Field
 from rdflib import Graph
-from rdflib.namespace import RDF
 
 from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.ontology import Ontology
@@ -114,10 +113,7 @@ class TripleStoreManager(Tool):
             if subject in reifier_nodes:
                 continue
             if subject in source_nodes:
-                if predicate in cls._PROVENANCE_METADATA_PREDICATES:
-                    continue
-                if predicate == RDF.type and object_ == PROV.Entity:
-                    continue
+                continue
             clean.add((subject, predicate, object_))
 
         return clean

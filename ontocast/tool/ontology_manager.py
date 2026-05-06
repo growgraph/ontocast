@@ -48,6 +48,49 @@ class OntologyManager(Tool):
         # Updated incrementally when ontologies are added.
         self._cached_ontologies: dict[str, str] = {}
         self._patch_retriever: OntologyPatchRetriever | None = None
+        self._iri_to_identity: dict[str, str] = {}
+        self._identity_to_iri: dict[str, str] = {}
+
+    @staticmethod
+    def _build_identity_key(ontology: Ontology) -> str:
+        identity = (ontology.ontology_id or ontology.prefix or "").strip().lower()
+        if not identity:
+            raise ValueError(
+                "Ontology identity is missing: provide ontology_id or ontology prefix"
+            )
+        return identity
+
+    def validate_identity_uniqueness(self, ontology: Ontology) -> None:
+        """Validate ontology IRI<->identity bijection across the manager."""
+        iri = (ontology.iri or "").strip()
+        if not iri:
+            raise ValueError("Ontology IRI is missing")
+        if iri == NULL_ONTOLOGY.iri:
+            raise ValueError("Null ontology IRI cannot be registered")
+
+        identity = self._build_identity_key(ontology)
+
+        existing_identity = self._iri_to_identity.get(iri)
+        if existing_identity is not None and existing_identity != identity:
+            raise ValueError(
+                "Ontology identity conflict: IRI "
+                f"'{iri}' is already bound to identity '{existing_identity}', "
+                f"received '{identity}'"
+            )
+
+        existing_iri = self._identity_to_iri.get(identity)
+        if existing_iri is not None and existing_iri != iri:
+            raise ValueError(
+                "Ontology identity conflict: identity "
+                f"'{identity}' is already bound to IRI '{existing_iri}', "
+                f"received '{iri}'"
+            )
+
+    def _register_identity(self, ontology: Ontology) -> None:
+        iri = ontology.iri.strip()
+        identity = self._build_identity_key(ontology)
+        self._iri_to_identity[iri] = identity
+        self._identity_to_iri[identity] = iri
 
     def __contains__(self, item):
         """Check if an item (IRI or ontology_id) is in the ontology manager.
@@ -92,6 +135,9 @@ class OntologyManager(Tool):
             logger.warning(f"Cannot add ontology without hash (IRI: {ontology.iri})")
             return
 
+        self.validate_identity_uniqueness(ontology)
+        self._register_identity(ontology)
+
         # Ensure created_at is set
         if not ontology.created_at:
             from datetime import datetime, timezone
@@ -126,6 +172,9 @@ class OntologyManager(Tool):
         """Drop all tracked versions for an ontology IRI and clear caches."""
         self.ontology_versions.pop(iri, None)
         self._cached_ontologies.pop(iri, None)
+        removed_identity = self._iri_to_identity.pop(iri, None)
+        if removed_identity is not None:
+            self._identity_to_iri.pop(removed_identity, None)
 
     def register_vector_store(self, retriever: "OntologyPatchRetriever") -> None:
         """Register a patch retriever for vector context lookups."""

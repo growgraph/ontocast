@@ -492,6 +492,7 @@ class ToolBox:
             raise ValueError("Loaded turtle does not define a valid ontology IRI")
         if not o.hash:
             raise ValueError("Ontology hash could not be computed")
+        self.ontology_manager.validate_identity_uniqueness(o)
 
         if filename:
             safe_name = pathlib.Path(filename).name
@@ -652,7 +653,7 @@ def sample_ontology_graph(graph: RDFGraph, max_triples: int = 100) -> RDFGraph:
         RDFGraph: A sampled version of the ontology with representative triples
     """
     # Serialize to turtle
-    turtle_str = graph.serialize(format="turtle")
+    turtle_str = graph.serialize_canonical_turtle()
 
     # Split on blank lines (typical turtle format uses \n\n to separate blocks)
     sections = turtle_str.split("\n\n")

@@ -125,5 +125,12 @@ class ContentUnit(SourceUnit):
         return self.generated_at.isoformat()
 
     def sanitize(self):
+        if not isinstance(self.graph, RDFGraph):
+            normalized_graph = RDFGraph()
+            for triple in self.graph:
+                normalized_graph.add(triple)
+            for prefix, namespace in self.graph.namespaces():
+                normalized_graph.bind(prefix, namespace)
+            self.graph = normalized_graph
         self.graph = self.graph.unbind_chunk_namespaces()
         self.graph.sanitize_prefixes_namespaces()

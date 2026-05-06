@@ -100,7 +100,7 @@ class AgentState(BasePydanticModel):
         input_text: Input text to process.
         current_domain: IRI used for forming document namespace.
         doc_hid: An almost unique hash/id for the parent document.
-        files: Files to process.
+        raw_input: Single raw input payload as {filename: bytes}.
         ontology_addendum: Additional ontology content.
         failure_stage: Stage where failure occurred.
         failure_reason: Reason for failure.
@@ -119,8 +119,9 @@ class AgentState(BasePydanticModel):
         description="An almost unique hash / id for the parent document of the current unit",
         default="default_doc",
     )
-    files: dict[str, bytes] = Field(
-        default_factory=lambda: dict(), description="Files to process"
+    raw_input: dict[str, bytes] = Field(
+        default_factory=dict,
+        description="Single raw input payload: {filename: bytes}.",
     )
     content_units: list[ContentUnit] = Field(
         default_factory=list,

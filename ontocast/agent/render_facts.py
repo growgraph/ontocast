@@ -99,9 +99,16 @@ def _prepare_prompt_data(
         Dictionary containing formatted prompt components
     """
     ctx = access.effective_ontology_for_prompt()
+    if not isinstance(ctx.graph, RDFGraph):
+        normalized_graph = RDFGraph()
+        for triple in ctx.graph:
+            normalized_graph.add(triple)
+        for prefix, namespace_uri in ctx.graph.namespaces():
+            normalized_graph.bind(prefix, namespace_uri)
+        ctx.graph = normalized_graph
     domain_pairs = access.domain_prefix_pairs()
     ontology_chapter = ontology_template.format(
-        ontology_ttl=ctx.graph.serialize(format="turtle")
+        ontology_ttl=ctx.graph.serialize_canonical_turtle()
     )
 
     facts_instruction_str = facts_instruction_template.format(
@@ -259,7 +266,7 @@ async def render_facts_update(
         ),
         "output_instruction": output_instruction_sparql,
         "fact_chapter": facts_template.format(
-            facts_ttl=state.content_unit.graph.serialize(format="turtle")
+            facts_ttl=state.content_unit.graph.serialize_canonical_turtle()
         ),
     }
     prompt_data.update(prompt_data_update)

@@ -52,7 +52,7 @@ def test_filesystem_manager_serializes_clean_facts_graph(tmp_path: Path) -> None
     assert "@prefix" in clean_ttl
 
 
-def test_strip_provenance_keeps_non_provenance_types_on_source_nodes() -> None:
+def test_strip_provenance_removes_source_nodes() -> None:
     manager = FilesystemTripleStoreManager(
         working_directory=Path("/tmp"),
         ontology_path=Path("/tmp"),
@@ -70,7 +70,7 @@ def test_strip_provenance_keeps_non_provenance_types_on_source_nodes() -> None:
 
     clean_graph = manager.strip_provenance(graph)
 
-    assert (source_node, RDF.type, domain_class) in clean_graph
+    assert (source_node, RDF.type, domain_class) not in clean_graph
     assert (source_node, RDF.type, PROV.Entity) not in clean_graph
     assert (
         source_node,

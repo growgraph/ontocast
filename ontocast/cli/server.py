@@ -50,7 +50,6 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
-from ontocast.agent.convert_document import convert_document
 from ontocast.agent.serialize import serialize as serialize_agent_state
 from ontocast.api.ontologies import build_ontology_router
 from ontocast.api.schemas import (
@@ -82,11 +81,18 @@ from ontocast.onto.state import AgentState
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.stategraph import create_agent_graph
 from ontocast.stategraph.helpers import build_ontology_delta_graph
-from ontocast.stategraph.unit_pipeline import run_unit_pipeline
+from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
+
+
+def get_supported_input_extensions(tools: ToolBox) -> tuple[str, ...]:
+    """Return all input file suffixes handled by document conversion."""
+    built_in_suffixes = {".json", ".jsonl", ".txt"}
+    converter_suffixes = set(tools.converter.supported_extensions)
+    return tuple(sorted(built_in_suffixes | converter_suffixes))
 
 
 def parse_render_mode_param(value, default: RenderMode) -> RenderMode:
@@ -149,7 +155,7 @@ def turtle_from_graph(graph: RDFGraph, *, strip_provenance: bool) -> str:
     out: RDFGraph = (
         TripleStoreManager.strip_provenance(graph) if strip_provenance else graph
     )
-    return out.serialize(format="turtle")
+    return out.serialize_canonical_turtle()
 
 
 def validate_ontology_context_mode(
@@ -261,7 +267,7 @@ def _prepare_path_config(config: Config) -> None:
         ).expanduser()
 
 
-def _build_file_state(
+def expand_input_to_states(
     file_path: pathlib.Path,
     *,
     config: Config,
@@ -269,16 +275,46 @@ def _build_file_state(
     ontology_context_mode_value: OntologyContextMode,
     tenant: str | None,
     project: str | None,
-) -> AgentState:
-    return AgentState(
-        files={file_path.as_posix(): file_path.read_bytes()},
-        max_visits=config.server.max_visits_per_node,
-        max_chunks=head_chunks,
-        render_mode=config.server.render_mode,
-        ontology_context_mode=ontology_context_mode_value,
-        tenant=tenant,
-        project=project,
-    )
+) -> list[AgentState]:
+    """Expand a local input file into one ``AgentState`` per logical record.
+
+    Pre-processing step that lives outside the agent loop:
+    - ``.jsonl`` files are fanned out into N states, one per non-empty line.
+    - All other extensions produce exactly one state with the file bytes.
+    """
+    file_bytes = file_path.read_bytes()
+    base_state_kwargs = {
+        "max_visits": config.server.max_visits_per_node,
+        "max_chunks": head_chunks,
+        "render_mode": config.server.render_mode,
+        "ontology_context_mode": ontology_context_mode_value,
+        "tenant": tenant,
+        "project": project,
+    }
+
+    if file_path.suffix.lower() != ".jsonl":
+        return [
+            AgentState(
+                raw_input={file_path.as_posix(): file_bytes},
+                **base_state_kwargs,
+            )
+        ]
+
+    states: list[AgentState] = []
+    for line_number, line in enumerate(
+        file_bytes.decode("utf-8").splitlines(), start=1
+    ):
+        if not line.strip():
+            continue
+        # Treat each JSONL line as an independent JSON document/state.
+        virtual_path = f"{file_path.as_posix()}:{line_number}.json"
+        states.append(
+            AgentState(
+                raw_input={virtual_path: line.encode("utf-8")},
+                **base_state_kwargs,
+            )
+        )
+    return states
 
 
 def _select_unit_facts_ontology_graph(onto_result, facts_result) -> RDFGraph:
@@ -334,7 +370,7 @@ async def _process_files_input(
     recursion_limit = calculate_recursion_limit(head_chunks, config.server)
     for file_path in files:
         try:
-            state = _build_file_state(
+            states = expand_input_to_states(
                 file_path,
                 config=config,
                 head_chunks=head_chunks,
@@ -342,26 +378,25 @@ async def _process_files_input(
                 tenant=tenant,
                 project=project,
             )
-            if use_unit_pipeline:
-                state = convert_document(state, tools)
-                if state.failure_stage is not None:
-                    logger.error(
-                        "Error processing %s: %s",
-                        file_path,
-                        state.failure_reason or "Document conversion failed",
+            for state in states:
+                if use_unit_pipeline:
+                    try:
+                        onto_result, facts_result = await run_unit_pipeline(
+                            state, tools
+                        )
+                    except DocumentConversionError as exc:
+                        logger.error("Error processing %s: %s", file_path, exc)
+                        continue
+                    await _persist_unit_pipeline_outputs(
+                        state, onto_result, facts_result, tools
                     )
-                    continue
-                onto_result, facts_result = await run_unit_pipeline(state, tools)
-                await _persist_unit_pipeline_outputs(
-                    state, onto_result, facts_result, tools
-                )
-            else:
-                async for _ in workflow.astream(
-                    state,
-                    stream_mode="values",
-                    config=RunnableConfig(recursion_limit=recursion_limit),
-                ):
-                    pass
+                else:
+                    async for _ in workflow.astream(
+                        state,
+                        stream_mode="values",
+                        config=RunnableConfig(recursion_limit=recursion_limit),
+                    ):
+                        pass
         except Exception:
             logger.exception("Error processing %s", file_path)
 
@@ -547,7 +582,7 @@ def create_app(
                 return _ontology_context_error_response(e)
 
             initial_state = AgentState(
-                files=files_dict,
+                raw_input=files_dict,
                 max_visits=server_config.max_visits_per_node,
                 max_chunks=head_chunks,
                 render_mode=render_mode_value,
@@ -608,7 +643,7 @@ def create_app(
                         "ontology_id": artifact.ontology_id,
                         "title": artifact.title,
                         "triples": len(out_graph),
-                        "ttl": out_graph.serialize(format="turtle"),
+                        "ttl": out_graph.serialize_canonical_turtle(),
                     }
                 )
 
@@ -742,7 +777,7 @@ def create_app(
                 return _ontology_context_error_response(e)
 
             initial_state = AgentState(
-                files=files_dict,
+                raw_input=files_dict,
                 max_visits=server_config.max_visits_per_node,
                 max_chunks=1,
                 render_mode=render_mode_value,
@@ -754,19 +789,19 @@ def create_app(
                 facts_user_instruction=facts_user_instruction,
             )
 
-            initial_state = convert_document(initial_state, tools)
-            if initial_state.failure_stage is not None:
+            try:
+                onto_result, facts_result = await run_unit_pipeline(
+                    initial_state, tools
+                )
+            except DocumentConversionError as exc:
                 return JSONResponse(
                     status_code=422,
                     content=ProcessErrorResponse(
-                        error=initial_state.failure_reason
-                        or "Document conversion failed",
+                        error=str(exc),
                         error_type="ConversionError",
-                        error_details={"stage": str(initial_state.failure_stage)},
+                        error_details={"stage": exc.stage},
                     ).model_dump(),
                 )
-
-            onto_result, facts_result = await run_unit_pipeline(initial_state, tools)
             failed_unit_state = None
             if onto_result is not None and onto_result.status == Status.FAILED:
                 failed_unit_state = onto_result
@@ -806,7 +841,7 @@ def create_app(
                             "ontology_id": None,
                             "title": "Unit ontology artifact",
                             "triples": len(out_graph),
-                            "ttl": out_graph.serialize(format="turtle"),
+                            "ttl": out_graph.serialize_canonical_turtle(),
                         }
                     ]
 
@@ -951,7 +986,7 @@ def run(
         files = sorted(
             crawl_directories(
                 input_path,
-                suffixes=tuple([".json"] + list(tools.converter.supported_extensions)),
+                suffixes=get_supported_input_extensions(tools),
             )
         )
         asyncio.run(

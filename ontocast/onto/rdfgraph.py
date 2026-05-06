@@ -26,6 +26,7 @@ PREFIX_USAGE_PATTERN = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]*):[^\s]")
 INTEGER_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:integer')
 DECIMAL_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:decimal')
 DOUBLE_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:double')
+DATE_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:date')
 
 # Context variable to store known prefixes during parsing
 _known_prefixes_context: ContextVar[dict[str, str] | None] = ContextVar[
@@ -144,6 +145,16 @@ class RDFGraph(Graph):
             result.bind(prefix, uri)
 
         return result
+
+    def __copy__(self) -> "RDFGraph":
+        """Ensure shallow copies preserve RDFGraph type."""
+        return self.copy()
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> "RDFGraph":
+        """Ensure deep copies preserve RDFGraph type."""
+        copied = self.copy()
+        memo[id(self)] = copied
+        return copied
 
     @staticmethod
     def _ensure_prefixes(turtle_str: str) -> str:
@@ -352,7 +363,26 @@ class RDFGraph(Graph):
         coerced = INTEGER_TYPED_LITERAL_PATTERN.sub(replace_integer, turtle_str)
         coerced = DECIMAL_TYPED_LITERAL_PATTERN.sub(replace_decimal, coerced)
         coerced = DOUBLE_TYPED_LITERAL_PATTERN.sub(replace_decimal, coerced)
+        coerced = cls._coerce_invalid_date_typed_literals(coerced)
         return coerced
+
+    @staticmethod
+    def _coerce_invalid_date_typed_literals(turtle_str: str) -> str:
+        """Normalize date literals with invalid xsd:date lexical forms.
+
+        - `YYYY` is coerced to `xsd:gYear`
+        - invalid date values fall back to plain literals
+        """
+
+        def replace_date(match: re.Match[str]) -> str:
+            lexical = match.group(1)
+            if re.fullmatch(r"\d{4}", lexical):
+                return f'"{lexical}"^^xsd:gYear'
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", lexical):
+                return match.group(0)
+            return f'"{lexical}"'
+
+        return DATE_TYPED_LITERAL_PATTERN.sub(replace_date, turtle_str)
 
     @classmethod
     def _repair_common_turtle_issues(
@@ -595,6 +625,14 @@ class RDFGraph(Graph):
             prefixes=prefixes or None,
         )  # type: ignore[assignment]
         return raw.decode()
+
+    def serialize_canonical_turtle(self) -> str:
+        """Serialize to Turtle after canonical namespace/prefix sanitization."""
+        self.sanitize_prefixes_namespaces()
+        serialized = self.serialize(format="turtle")
+        if isinstance(serialized, bytes):
+            return serialized.decode("utf-8")
+        return str(serialized)
 
     def __new__(cls, *args, **kwargs):
         """Create a new RDFGraph instance."""
