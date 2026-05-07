@@ -37,6 +37,7 @@ Example:
 """
 
 import asyncio
+import json
 import logging
 import logging.config
 import pathlib
@@ -48,6 +49,7 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from ontocast.agent.serialize import serialize as serialize_agent_state
@@ -82,10 +84,30 @@ from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.stategraph import create_agent_graph
 from ontocast.stategraph.helpers import build_ontology_delta_graph
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
+from ontocast.tool.agg.matcher import GroundTruthSide, MatchRegime, TripleSetMatcher
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
+
+
+class MatchRequest(BaseModel):
+    """Payload for RDF triple-set matching."""
+
+    left_graph: RDFGraph
+    right_graph: RDFGraph
+    regime: MatchRegime = MatchRegime.ONTOLOGY_LOOSE
+    ground_truth_side: GroundTruthSide = GroundTruthSide.RIGHT
+    similarity_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
+    embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class MatchResponse(BaseModel):
+    """API response for RDF triple-set matching."""
+
+    data: dict
 
 
 def get_supported_input_extensions(tools: ToolBox) -> tuple[str, ...]:
@@ -134,6 +156,21 @@ def parse_ontology_context_mode_param(
     return default
 
 
+def resolve_ontology_context_mode(
+    requested_mode: OntologyContextMode,
+    fixed_ontology_id: str,
+) -> OntologyContextMode:
+    """Resolve effective ontology context mode for a request.
+
+    A non-empty ``ontology_context_fixed_ontology_id`` forces fixed catalog mode.
+    This allows clients to pick fixed ontology context per request even when the
+    server default mode differs.
+    """
+    if fixed_ontology_id.strip():
+        return OntologyContextMode.FIXED_SINGLE_ONTOLOGY
+    return requested_mode
+
+
 def parse_strip_provenance_param(value: str | None) -> bool:
     """Parse ``strip_provenance`` query/form value."""
     if value is None:
@@ -162,8 +199,22 @@ def validate_ontology_context_mode(
     ontology_context_mode: OntologyContextMode,
     tools: ToolBox,
 ) -> None:
-    if ontology_context_mode == OntologyContextMode.VECTOR_RETRIEVAL:
+    if ontology_context_mode == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY:
         require_vector_retrieval(tools)
+
+
+def _missing_fixed_catalog_ontology_id_response() -> JSONResponse:
+    """400 when ontology_context_mode is fixed_single_ontology but id is absent."""
+    return JSONResponse(
+        status_code=400,
+        content=StatusErrorBody(
+            error=(
+                "ontology_context_mode=fixed_single_ontology requires "
+                "non-empty ontology_context_fixed_ontology_id (query, form field, or JSON)."
+            ),
+            error_type="ValidationError",
+        ).model_dump(),
+    )
 
 
 def _ontology_context_error_response(error: OntologyContextConfigError) -> JSONResponse:
@@ -288,6 +339,9 @@ def expand_input_to_states(
         "max_chunks": head_chunks,
         "render_mode": config.server.render_mode,
         "ontology_context_mode": ontology_context_mode_value,
+        "ontology_context_fixed_ontology_id": (
+            config.server.ontology_context_fixed_ontology_id
+        ),
         "tenant": tenant,
         "project": project,
     }
@@ -456,6 +510,30 @@ def create_app(
     async def info():
         return InfoResponse(version=metadata.version("ontocast"))
 
+    @app.post("/match", response_model=MatchResponse)
+    async def match(request: MatchRequest):
+        try:
+            matcher = TripleSetMatcher(
+                embedding_model=request.embedding_model,
+                similarity_threshold=request.similarity_threshold,
+            )
+            result = matcher.match(
+                left_graph=request.left_graph,
+                right_graph=request.right_graph,
+                regime=request.regime,
+                ground_truth_side=request.ground_truth_side,
+            )
+            return MatchResponse(data=result.model_dump(mode="json"))
+        except Exception as e:
+            logger.error("Error matching RDF triple sets: %s", e)
+            return JSONResponse(
+                status_code=500,
+                content=StatusErrorBody(
+                    error=str(e),
+                    error_type=type(e).__name__,
+                ).model_dump(),
+            )
+
     @app.post("/flush")
     async def flush(
         tenant: str | None = Query(default=None),
@@ -522,6 +600,9 @@ def create_app(
             facts_user_instruction = request.query_params.get(
                 "facts_user_instruction", ""
             )
+            ontology_context_fixed_ontology_id = request.query_params.get(
+                "ontology_context_fixed_ontology_id", ""
+            ).strip()
             strip_provenance = parse_strip_provenance_param(
                 request.query_params.get("strip_provenance")
             )
@@ -535,7 +616,20 @@ def create_app(
             if content_type.startswith("application/json"):
                 bytes_data = await request.body()
                 logger.debug("JSON body length: %s", len(bytes_data))
-                files_dict: dict[str, bytes] = {"input.json": bytes_data}
+                files_dict = {"input.json": bytes_data}
+                try:
+                    parsed_obj = json.loads(bytes_data.decode("utf-8"))
+                    if isinstance(parsed_obj, dict):
+                        oid_raw = parsed_obj.get(
+                            "ontology_context_fixed_ontology_id", ""
+                        )
+                        if isinstance(oid_raw, str) and oid_raw.strip():
+                            ontology_context_fixed_ontology_id = oid_raw.strip()
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    logger.debug(
+                        "JSON body could not be decoded for ontology id preview; "
+                        "convert_document will validate"
+                    )
             elif content_type.startswith("multipart/form-data"):
                 form = await request.form()
                 files_dict = {}
@@ -548,6 +642,8 @@ def create_app(
                         ontology_selection_user_instruction = str(value)
                     elif key == "facts_user_instruction" and value:
                         facts_user_instruction = str(value)
+                    elif key == "ontology_context_fixed_ontology_id" and value:
+                        ontology_context_fixed_ontology_id = str(value).strip()
                     elif key == "strip_provenance" and value:
                         strip_provenance = parse_strip_provenance_param(str(value))
                 if not files_dict:
@@ -567,13 +663,24 @@ def create_app(
                     ).model_dump(),
                 )
 
+            ontology_context_mode_value = resolve_ontology_context_mode(
+                ontology_context_mode_value,
+                ontology_context_fixed_ontology_id,
+            )
+            if (
+                ontology_context_mode_value == OntologyContextMode.FIXED_SINGLE_ONTOLOGY
+                and not ontology_context_fixed_ontology_id
+            ):
+                return _missing_fixed_catalog_ontology_id_response()
+
             resolved_tenant, resolved_project = await apply_request_tenancy(
                 request,
                 tools,
                 active_tenant=active_tenant,
                 active_project=active_project,
                 initialize_vector_store=(
-                    ontology_context_mode_value == OntologyContextMode.VECTOR_RETRIEVAL
+                    ontology_context_mode_value
+                    == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
                 ),
             )
 
@@ -598,6 +705,7 @@ def create_app(
                 ontology_user_instruction=ontology_user_instruction,
                 ontology_selection_user_instruction=ontology_selection_user_instruction,
                 facts_user_instruction=facts_user_instruction,
+                ontology_context_fixed_ontology_id=ontology_context_fixed_ontology_id,
             )
 
             async for chunk in workflow.astream(
@@ -723,6 +831,9 @@ def create_app(
             facts_user_instruction = request.query_params.get(
                 "facts_user_instruction", ""
             )
+            ontology_context_fixed_ontology_id = request.query_params.get(
+                "ontology_context_fixed_ontology_id", ""
+            ).strip()
             strip_provenance = parse_strip_provenance_param(
                 request.query_params.get("strip_provenance")
             )
@@ -736,7 +847,19 @@ def create_app(
             if content_type.startswith("application/json"):
                 bytes_data = await request.body()
                 logger.debug("process_unit JSON body length: %s", len(bytes_data))
-                files_dict: dict[str, bytes] = {"input.json": bytes_data}
+                files_dict = {"input.json": bytes_data}
+                try:
+                    parsed_obj = json.loads(bytes_data.decode("utf-8"))
+                    if isinstance(parsed_obj, dict):
+                        oid_raw = parsed_obj.get(
+                            "ontology_context_fixed_ontology_id", ""
+                        )
+                        if isinstance(oid_raw, str) and oid_raw.strip():
+                            ontology_context_fixed_ontology_id = oid_raw.strip()
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    logger.debug(
+                        "JSON body could not be decoded for ontology id preview"
+                    )
             elif content_type.startswith("multipart/form-data"):
                 form = await request.form()
                 files_dict = {}
@@ -749,6 +872,8 @@ def create_app(
                         ontology_selection_user_instruction = str(value)
                     elif key == "facts_user_instruction" and value:
                         facts_user_instruction = str(value)
+                    elif key == "ontology_context_fixed_ontology_id" and value:
+                        ontology_context_fixed_ontology_id = str(value).strip()
                     elif key == "strip_provenance" and value:
                         strip_provenance = parse_strip_provenance_param(str(value))
                 if not files_dict:
@@ -768,13 +893,24 @@ def create_app(
                     ).model_dump(),
                 )
 
+            ontology_context_mode_value = resolve_ontology_context_mode(
+                ontology_context_mode_value,
+                ontology_context_fixed_ontology_id,
+            )
+            if (
+                ontology_context_mode_value == OntologyContextMode.FIXED_SINGLE_ONTOLOGY
+                and not ontology_context_fixed_ontology_id
+            ):
+                return _missing_fixed_catalog_ontology_id_response()
+
             resolved_tenant, resolved_project = await apply_request_tenancy(
                 request,
                 tools,
                 active_tenant=active_tenant,
                 active_project=active_project,
                 initialize_vector_store=(
-                    ontology_context_mode_value == OntologyContextMode.VECTOR_RETRIEVAL
+                    ontology_context_mode_value
+                    == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
                 ),
             )
 
@@ -799,6 +935,7 @@ def create_app(
                 ontology_user_instruction=ontology_user_instruction,
                 ontology_selection_user_instruction=ontology_selection_user_instruction,
                 facts_user_instruction=facts_user_instruction,
+                ontology_context_fixed_ontology_id=ontology_context_fixed_ontology_id,
             )
 
             try:
@@ -963,12 +1100,23 @@ def run(
     _configure_logging(config)
     _prepare_path_config(config)
 
+    if (
+        config.server.ontology_context_mode == OntologyContextMode.FIXED_SINGLE_ONTOLOGY
+        and not config.server.ontology_context_fixed_ontology_id.strip()
+    ):
+        raise ValueError(
+            "ontology_context_mode=fixed_single_ontology requires "
+            "ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID in the environment (or server "
+            "config field ontology_context_fixed_ontology_id)."
+        )
+
     # Create ToolBox with config
     tools: ToolBox = ToolBox(config)
     t_res, p_res = resolve_tenant_project(tenant, project)
     ontology_context_mode_value = config.server.ontology_context_mode
     vector_mode_enabled = (
-        ontology_context_mode_value == OntologyContextMode.VECTOR_RETRIEVAL
+        ontology_context_mode_value
+        == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
     )
     if stores_use_tenancy_partitions(tools):
         asyncio.run(

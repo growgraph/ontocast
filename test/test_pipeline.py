@@ -104,7 +104,7 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
             anchor_iri="https://example.org/o",
             ontology_snapshot=_build_ontology(),
             patch_sources=[],
-            assembly_mode=OntologyAssemblyMode.LLM_SELECTED_UNIT_ONTOLOGY,
+            assembly_mode=OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM,
             confidence=1.0,
         )
 
@@ -147,7 +147,7 @@ async def test_run_unit_ontology_loop_emits_updates(monkeypatch) -> None:
             anchor_iri="https://example.com/onto",
             ontology_snapshot=Ontology(iri=ONTOLOGY_NULL_IRI),
             patch_sources=[],
-            assembly_mode=OntologyAssemblyMode.LLM_SELECTED_UNIT_ONTOLOGY,
+            assembly_mode=OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM,
             confidence=1.0,
         )
 
@@ -163,7 +163,9 @@ async def test_run_unit_ontology_loop_emits_updates(monkeypatch) -> None:
         ToolBox,
         SimpleNamespace(get_atomic_tools=lambda: cast(AtomicToolBox, object())),
     )
-    document_state = AgentState(ontology_context_mode=OntologyContextMode.FULL_TTL)
+    document_state = AgentState(
+        ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY
+    )
     result = await unit_loops.ontology_loop(state, toolbox, document_state)
 
     assert result.status == Status.SUCCESS
@@ -592,7 +594,7 @@ async def test_ontology_loop_runs_external_evidence_nodes(monkeypatch) -> None:
             anchor_iri="https://example.com/onto",
             ontology_snapshot=Ontology(iri=ONTOLOGY_NULL_IRI),
             patch_sources=[],
-            assembly_mode=OntologyAssemblyMode.LLM_SELECTED_UNIT_ONTOLOGY,
+            assembly_mode=OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM,
             confidence=1.0,
         )
 
@@ -610,7 +612,9 @@ async def test_ontology_loop_runs_external_evidence_nodes(monkeypatch) -> None:
         ToolBox,
         SimpleNamespace(get_atomic_tools=lambda: cast(AtomicToolBox, object())),
     )
-    document_state = AgentState(ontology_context_mode=OntologyContextMode.FULL_TTL)
+    document_state = AgentState(
+        ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY
+    )
     result = await unit_loops.ontology_loop(state, toolbox, document_state)
 
     assert result.status == Status.SUCCESS
@@ -660,7 +664,7 @@ async def test_ontology_loop_plans_search_when_critic_requests_it(monkeypatch) -
             anchor_iri="https://example.com/onto",
             ontology_snapshot=Ontology(iri=ONTOLOGY_NULL_IRI),
             patch_sources=[],
-            assembly_mode=OntologyAssemblyMode.LLM_SELECTED_UNIT_ONTOLOGY,
+            assembly_mode=OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM,
             confidence=1.0,
         )
 
@@ -680,7 +684,9 @@ async def test_ontology_loop_plans_search_when_critic_requests_it(monkeypatch) -
         ToolBox,
         SimpleNamespace(get_atomic_tools=lambda: cast(AtomicToolBox, object())),
     )
-    document_state = AgentState(ontology_context_mode=OntologyContextMode.FULL_TTL)
+    document_state = AgentState(
+        ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY
+    )
     result = await unit_loops.ontology_loop(state, toolbox, document_state)
 
     assert result.status == Status.SUCCESS

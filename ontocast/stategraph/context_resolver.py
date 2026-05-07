@@ -1,3 +1,4 @@
+import logging
 from collections import Counter
 
 from pydantic import BaseModel, Field
@@ -13,6 +14,8 @@ from ontocast.onto.retrieval_capabilities import require_vector_retrieval
 from ontocast.onto.state import AgentState
 from ontocast.tool.chunk.util import split_proposition_windows
 from ontocast.toolbox import ToolBox
+
+logger = logging.getLogger(__name__)
 
 
 class UnitOntologyContext(BaseModel):
@@ -73,12 +76,12 @@ def build_merged_document_ontology_context(
         anchor_iri=anchor_iri,
         ontology_snapshot=snapshot,
         patch_sources=patch_sources,
-        assembly_mode=OntologyAssemblyMode.ENSEMBLE_STITCHED,
+        assembly_mode=OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED,
         confidence=1.0,
     )
 
 
-async def _resolve_full_ttl_llm_context(
+async def _resolve_selected_single_ontology_context(
     state: AgentState,
     tools: ToolBox,
     unit: SourceUnit,
@@ -95,15 +98,55 @@ async def _resolve_full_ttl_llm_context(
             anchor_iri=NULL_ONTOLOGY.iri,
             ontology_snapshot=NULL_ONTOLOGY,
             patch_sources=[],
-            assembly_mode=OntologyAssemblyMode.LLM_SELECTED_UNIT_ONTOLOGY,
+            assembly_mode=OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM,
             confidence=0.0,
         )
     return UnitOntologyContext(
         anchor_iri=selected.iri,
         ontology_snapshot=selected,
         patch_sources=[selected.iri],
-        assembly_mode=OntologyAssemblyMode.LLM_SELECTED_UNIT_ONTOLOGY,
+        assembly_mode=OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM,
         confidence=0.5,
+    )
+
+
+async def _resolve_fixed_single_ontology_context(
+    state: AgentState,
+    tools: ToolBox,
+    unit: SourceUnit,
+) -> UnitOntologyContext:
+    """Catalog ontology fixed by ontology_id (fresh terminal revision)."""
+    _ = unit
+    cleaned = state.ontology_context_fixed_ontology_id.strip()
+    if not cleaned:
+        return UnitOntologyContext(
+            anchor_iri=NULL_ONTOLOGY.iri,
+            ontology_snapshot=NULL_ONTOLOGY,
+            patch_sources=[],
+            assembly_mode=OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY,
+            confidence=0.0,
+        )
+    mgr = tools.ontology_manager
+    selected = mgr.get_freshest_terminal_ontology(ontology_id=cleaned)
+    if selected is None:
+        logger.warning(
+            "No catalog ontology match for ontology_context_fixed_ontology_id=%r; "
+            "using NULL_ONTOLOGY",
+            cleaned,
+        )
+        return UnitOntologyContext(
+            anchor_iri=NULL_ONTOLOGY.iri,
+            ontology_snapshot=NULL_ONTOLOGY,
+            patch_sources=[],
+            assembly_mode=OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY,
+            confidence=0.0,
+        )
+    return UnitOntologyContext(
+        anchor_iri=selected.iri,
+        ontology_snapshot=selected,
+        patch_sources=[selected.iri],
+        assembly_mode=OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY,
+        confidence=1.0,
     )
 
 
@@ -112,7 +155,7 @@ async def _resolve_ensemble_context(
     tools: ToolBox,
     unit: SourceUnit,
 ) -> UnitOntologyContext:
-    """Stitched induced subgraphs from vector retrieval; always ``ENSEMBLE_STITCHED``."""
+    """Stitched induced subgraphs from vector retrieval."""
     queries = _unit_queries(unit, tools)
     if not queries:
         empty = Ontology(
@@ -127,7 +170,7 @@ async def _resolve_ensemble_context(
             anchor_iri=NULL_ONTOLOGY.iri,
             ontology_snapshot=empty,
             patch_sources=[],
-            assembly_mode=OntologyAssemblyMode.ENSEMBLE_STITCHED,
+            assembly_mode=OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE,
             confidence=0.0,
         )
     retriever = tools.patch_retriever
@@ -154,7 +197,7 @@ async def _resolve_ensemble_context(
         anchor_iri=anchor_iri,
         ontology_snapshot=ontology_snapshot,
         patch_sources=source_iris,
-        assembly_mode=OntologyAssemblyMode.ENSEMBLE_STITCHED,
+        assembly_mode=OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE,
         confidence=1.0 if source_iris else 0.5,
     )
 
@@ -166,9 +209,11 @@ async def resolve_unit_ontology_context(
 ) -> UnitOntologyContext:
     mode = state.ontology_context_mode
     state.retrieval_metrics["ontology_context_mode"] = mode.value
-    if mode == OntologyContextMode.FULL_TTL:
-        return await _resolve_full_ttl_llm_context(state, tools, unit)
-    if mode == OntologyContextMode.VECTOR_RETRIEVAL:
+    if mode == OntologyContextMode.SELECTED_SINGLE_ONTOLOGY:
+        return await _resolve_selected_single_ontology_context(state, tools, unit)
+    if mode == OntologyContextMode.FIXED_SINGLE_ONTOLOGY:
+        return await _resolve_fixed_single_ontology_context(state, tools, unit)
+    if mode == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY:
         require_vector_retrieval(tools)
         return await _resolve_ensemble_context(state, tools, unit)
     raise ValueError(f"Unknown ontology_context_mode: {mode!r}")

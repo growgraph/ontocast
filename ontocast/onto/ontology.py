@@ -1100,7 +1100,9 @@ class Ontology(OntologyPropertiesWithLineage):
         """
         graph: RDFGraph = RDFGraph()
         graph.parse(file_path, format=format)
-        return cls(graph=graph, **kwargs)
+        ontology = cls(graph=graph, **kwargs)
+        ontology.graph.bind_implicit_namespaces(prefix_base=ontology.ontology_id)
+        return ontology
 
     def describe(self) -> str:
         """Get a human-readable description of the ontology.

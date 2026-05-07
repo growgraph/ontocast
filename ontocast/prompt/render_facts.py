@@ -43,6 +43,15 @@ facts_instruction_template = """\n\n
    - Preserve canonical ontology IRIs exactly as given (character-for-character): no translation, no transliteration, no snake_case/camelCase changes, no suffix/prefix changes
    - Cross-lingual mentions (e.g. French/English variants) MUST be linked to the existing canonical ontology IRI when semantically equivalent
    - If no ontology entity can be verified, create a `cd:` entity instead of inventing a new ontology-prefixed IRI
+6a. Opaque Identifier Ontologies (Wikidata-style Q/P codes, hashes, UUIDs):
+   - When ontology IRIs contain opaque local names (Q-numbers, P-numbers, hash strings, numeric IDs),
+     entity identity is determined EXCLUSIVELY by `rdfs:label` — not the IRI fragment
+   - Use the TERM INDEX (if provided below the ontology) to map text mentions to their canonical IRI
+   - NEVER construct an IRI by appending a label string to the ontology namespace
+     (e.g. `ont_10_culture_concepts:culture` is ALWAYS wrong — the correct IRI is whatever appears in the ontology with `rdfs:label "culture"`)
+   - NEVER invent or guess a Q/P code — only use codes that appear explicitly in the provided ontology
+   - For property domain/range chains: resolve referenced opaque IRIs to their labels before deciding
+     which subject/object types are valid for a given property
 7. Maximize atomicity: decompose complex facts and complex literals into simple subject-predicate-object statements (e.g. decompose person's  first name and last name).
 8. Literals Handling:
     - Use appropriate XSD datatypes: xsd:integer, xsd:decimal, xsd:float, xsd:date, xsd:dateTime

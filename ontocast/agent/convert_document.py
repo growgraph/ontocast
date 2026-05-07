@@ -8,7 +8,7 @@ import json
 import logging
 import pathlib
 
-from ontocast.onto.enum import Status
+from ontocast.onto.enum import OntologyContextMode, Status
 from ontocast.onto.state import AgentState
 from ontocast.toolbox import ToolBox
 
@@ -49,6 +49,7 @@ def _extract_json_payload_text(
         "ontology_selection_user_instruction", ""
     )
     facts_user_instruction = json_payload.get("facts_user_instruction", "")
+    fixed_oid_raw = json_payload.get("ontology_context_fixed_ontology_id", "")
 
     if isinstance(ontology_user_instruction, str) and ontology_user_instruction:
         state.ontology_user_instruction = ontology_user_instruction
@@ -65,6 +66,11 @@ def _extract_json_payload_text(
     if isinstance(facts_user_instruction, str) and facts_user_instruction:
         state.facts_user_instruction = facts_user_instruction
         logger.debug(f"Set facts user instruction: {facts_user_instruction}")
+    if isinstance(fixed_oid_raw, str) and fixed_oid_raw.strip():
+        state.ontology_context_fixed_ontology_id = fixed_oid_raw.strip()
+        logger.debug(
+            "Set ontology_context_fixed_ontology_id: %s", fixed_oid_raw.strip()
+        )
 
     source_url = json_payload.get("url")
     if isinstance(source_url, str) and source_url:
@@ -78,6 +84,23 @@ def _extract_json_payload_text(
         )
         return None
     return json_text
+
+
+def _fail_when_fixed_catalog_ontology_missing(state: AgentState) -> AgentState | None:
+    """If fixed catalog mode is active, require ontology_context_fixed_ontology_id."""
+    if state.ontology_context_mode != OntologyContextMode.FIXED_SINGLE_ONTOLOGY:
+        return None
+    if state.ontology_context_fixed_ontology_id.strip():
+        return None
+    logger.error(
+        "ontology_context_fixed_ontology_id required when ontology_context_mode is fixed_single_ontology"
+    )
+    state.status = Status.FAILED
+    state.failure_reason = (
+        "ontology_context_fixed_ontology_id is required when "
+        "ontology_context_mode is fixed_single_ontology"
+    )
+    return state
 
 
 def convert_document(state: AgentState, tools: ToolBox) -> AgentState:
@@ -115,7 +138,8 @@ def convert_document(state: AgentState, tools: ToolBox) -> AgentState:
     if file_extension in tools.converter.supported_extensions:
         result = tools.converter(file_content)
         state.set_text(result["text"])
-        return state
+        blocked = _fail_when_fixed_catalog_ontology_missing(state)
+        return blocked if blocked is not None else state
 
     if file_extension == ".json":
         result_json = json.loads(file_content.decode("utf-8"))
@@ -124,11 +148,13 @@ def convert_document(state: AgentState, tools: ToolBox) -> AgentState:
             state.status = Status.FAILED
             return state
         state.set_text(json_text)
-        return state
+        blocked = _fail_when_fixed_catalog_ontology_missing(state)
+        return blocked if blocked is not None else state
 
     if file_extension == ".txt":
         state.set_text(json.loads(file_content.decode("utf-8")))
-        return state
+        blocked = _fail_when_fixed_catalog_ontology_missing(state)
+        return blocked if blocked is not None else state
 
     logger.error("Unsupported file extension %s for %s", file_extension, filename)
     state.status = Status.FAILED

@@ -24,7 +24,8 @@ def build_ontology_router(
     router = APIRouter(prefix="/ontologies", tags=["ontologies"])
 
     init_vec = (
-        server_config.ontology_context_mode == OntologyContextMode.VECTOR_RETRIEVAL
+        server_config.ontology_context_mode
+        == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
     )
 
     async def apply_ontology_tenancy(request: Request) -> None:

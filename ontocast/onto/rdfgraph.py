@@ -27,6 +27,10 @@ INTEGER_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:i
 DECIMAL_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:decimal')
 DOUBLE_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:double')
 DATE_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:date')
+# Bare numeric value followed by ^^ datatype — missing surrounding quotes
+UNQUOTED_TYPED_LITERAL_PATTERN = re.compile(
+    r'(?<!")\b(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\^\^([\w:]+)'
+)
 
 # Context variable to store known prefixes during parsing
 _known_prefixes_context: ContextVar[dict[str, str] | None] = ContextVar[
@@ -276,7 +280,7 @@ class RDFGraph(Graph):
         """
         normalized_turtle = cls._normalize_turtle_input(turtle_str)
         patched_turtle = cls._coerce_invalid_numeric_typed_literals(
-            cls._ensure_prefixes(normalized_turtle)
+            cls._quote_unquoted_typed_literals(cls._ensure_prefixes(normalized_turtle))
         )
         g = cls()
         try:
@@ -340,6 +344,17 @@ class RDFGraph(Graph):
             cleaned_chars.append(ch)
         return "".join(cleaned_chars)
 
+    @staticmethod
+    def _quote_unquoted_typed_literals(turtle_str: str) -> str:
+        """Wrap bare numeric values that carry a ^^ datatype annotation in quotes.
+
+        The LLM sometimes emits ``1975^^xsd:integer`` instead of
+        ``"1975"^^xsd:integer``.  The unquoted form causes the Turtle parser to
+        treat ``^^`` as property-path operators, raising
+        "Bad syntax (EOF found in middle of path syntax)".
+        """
+        return UNQUOTED_TYPED_LITERAL_PATTERN.sub(r'"\1"^^\2', turtle_str)
+
     @classmethod
     def _coerce_invalid_numeric_typed_literals(cls, turtle_str: str) -> str:
         """Drop numeric datatype when lexical form is invalid for that datatype."""
@@ -393,6 +408,10 @@ class RDFGraph(Graph):
 
         # Typical LLM truncation: dangling ';' or ',' at EOF in property list.
         if "EOF found when expected verb in property list" in parse_error_message:
+            repaired = cls._repair_truncated_turtle(repaired)
+
+        # Unquoted ``^^`` literals can surface as path-syntax EOF errors.
+        if "EOF found in middle of path syntax" in parse_error_message:
             repaired = cls._repair_truncated_turtle(repaired)
 
         repaired = cls._repair_missing_object_before_dot(repaired)
@@ -742,6 +761,49 @@ class RDFGraph(Graph):
             )
         self.namespace_manager = new_ns_manager
         return self
+
+    def bind_implicit_namespaces(self, prefix_base: str | None = None) -> None:
+        """Bind namespace prefixes for IRI stems used in the graph but not declared.
+
+        Scans all URIRef terms in the graph, extracts their namespace stems
+        (the IRI up to and including the last ``#`` or ``/``), and auto-binds
+        any stem that appears in at least two IRIs but has no declared prefix.
+
+        This is particularly useful for ontologies that use sub-namespaces
+        (e.g. ``/concepts#`` and ``/relations#``) without explicit ``@prefix``
+        declarations.  Without declared prefixes the LLM invents shortcuts like
+        ``ont_10_culture:relations#P571`` which are syntactically invalid Turtle.
+
+        Args:
+            prefix_base: Optional string prepended to generated prefix names,
+                typically the ``ontology_id``.  Produces prefixes of the form
+                ``{prefix_base}_{slug}``; without it just ``{slug}`` is used.
+        """
+        declared_namespaces = {str(ns) for _, ns in self.namespaces()}
+        standard_namespaces = {uri.strip("<>") for uri in COMMON_PREFIXES.values()}
+
+        stem_counts: dict[str, int] = {}
+        for s, p, o in self:
+            for term in (s, p, o):
+                if not isinstance(term, URIRef):
+                    continue
+                iri = str(term)
+                if any(iri.startswith(std) for std in standard_namespaces):
+                    continue
+                for sep in ("#", "/"):
+                    idx = iri.rfind(sep)
+                    if idx > 0:
+                        stem = iri[: idx + 1]
+                        if stem not in declared_namespaces:
+                            stem_counts[stem] = stem_counts.get(stem, 0) + 1
+                        break
+
+        for stem, count in stem_counts.items():
+            if count < 2:
+                continue
+            slug = stem.rstrip("#/").rsplit("/", 1)[-1].replace("-", "_")
+            prefix = f"{prefix_base}_{slug}" if prefix_base else slug
+            self.bind(prefix, Namespace(stem), override=False)
 
     def unbind_chunk_namespaces(self, chunk_pattern="/chunk/") -> "RDFGraph":
         """

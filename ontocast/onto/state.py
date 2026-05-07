@@ -194,6 +194,14 @@ class AgentState(BasePydanticModel):
         default="",
     )
 
+    ontology_context_fixed_ontology_id: str = Field(
+        description=(
+            "Catalog ontology id when ontology_context_mode is fixed_single_ontology "
+            "(resolved via OntologyManager)."
+        ),
+        default="",
+    )
+
     tenant: str | None = Field(
         default=None,
         description="Tenant id when request selected tenancy via query/CLI.",
@@ -283,10 +291,11 @@ class AgentState(BasePydanticModel):
         description=("Rendering mode: ontology, facts, or ontology_and_facts."),
     )
     ontology_context_mode: OntologyContextMode = Field(
-        default=OntologyContextMode.FULL_TTL,
+        default=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
         description=(
-            "Per-unit ontology context: full_ttl (LLM-picked catalog TTL) or "
-            "vector_retrieval (stitched ensemble from Qdrant)."
+            "Per-unit ontology context: selected_single_ontology (LLM-picked catalog), "
+            "selected_vector_search_ontology (Qdrant ensemble), or "
+            "fixed_single_ontology (catalog ontology_id via ontology_context_fixed_ontology_id)."
         ),
     )
     ontology_max_triples: int | None = Field(

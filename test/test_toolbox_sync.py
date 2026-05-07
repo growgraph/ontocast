@@ -185,7 +185,7 @@ def test_initialize_skips_vector_store_in_full_ttl_mode(monkeypatch) -> None:
     asyncio.run(
         ToolBox.initialize(
             st,  # type: ignore[arg-type]
-            ontology_context_mode=OntologyContextMode.FULL_TTL,
+            ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
             fail_on_vector_store_error=False,
         )
     )
@@ -230,7 +230,7 @@ def test_initialize_vector_store_failure_is_non_fatal_when_configured(
     asyncio.run(
         ToolBox.initialize(
             st,  # type: ignore[arg-type]
-            ontology_context_mode=OntologyContextMode.VECTOR_RETRIEVAL,
+            ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY,
             fail_on_vector_store_error=False,
         )
     )

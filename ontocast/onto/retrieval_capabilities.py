@@ -1,10 +1,10 @@
-"""Vector retrieval prerequisites for per-unit ``vector_retrieval`` context mode."""
+"""Vector retrieval prerequisites for ``selected_vector_search_ontology`` context mode."""
 
 from ontocast.toolbox import ToolBox
 
 
 class OntologyContextConfigError(ValueError):
-    """Raised when ``ontology_context_mode=vector_retrieval`` but the toolbox lacks Qdrant."""
+    """Raised when vector-search ontology context mode is requested but Qdrant is missing."""
 
 
 class VectorStoreUnavailableError(OntologyContextConfigError):
@@ -31,7 +31,7 @@ def require_vector_retrieval(tools: ToolBox) -> None:
     if last_error is not None:
         details = f" Last vector-store init error: {last_error}"
     raise VectorStoreUnavailableError(
-        "ontology_context_mode='vector_retrieval' requires a configured Qdrant "
+        "ontology_context_mode='selected_vector_search_ontology' requires a configured Qdrant "
         "vector store (set tool qdrant.uri, matching embedding dimension) so "
         "vector_store and patch_retriever are available and initialized."
         f"{details}"

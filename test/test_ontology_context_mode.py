@@ -27,7 +27,9 @@ async def test_full_ttl_does_not_invoke_ensemble_path(monkeypatch) -> None:
     """Full-TTL path should not run ensemble retrieval."""
 
     async def fail_ensemble(*args, **kwargs):
-        raise AssertionError("ensemble path should not run for FULL_TTL")
+        raise AssertionError(
+            "ensemble path should not run for selected_single_ontology"
+        )
 
     finance_iri = "https://example.org/finance"
     finance_ontology = Ontology(
@@ -43,7 +45,7 @@ async def test_full_ttl_does_not_invoke_ensemble_path(monkeypatch) -> None:
     monkeypatch.setattr(cr, "_resolve_ensemble_context", fail_ensemble)
     monkeypatch.setattr(cr, "select_catalog_ontology_for_excerpt", _select)
     state = AgentState(
-        ontology_context_mode=OntologyContextMode.FULL_TTL,
+        ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
         content_units=[
             ContentUnit(
                 text="Hello world.",
@@ -63,7 +65,7 @@ async def test_full_ttl_does_not_invoke_ensemble_path(monkeypatch) -> None:
     )
     unit = state.content_units[0]
     result = await resolve_unit_ontology_context(state, tools, unit)
-    assert result.assembly_mode == OntologyAssemblyMode.LLM_SELECTED_UNIT_ONTOLOGY
+    assert result.assembly_mode == OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM
     assert result.ontology_snapshot.iri == finance_iri
 
 

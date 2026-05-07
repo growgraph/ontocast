@@ -53,6 +53,13 @@ evaluation_instruction = f"""\n\n
    - Fix: REMOVE invented entities or REPLACE with semantically similar existing entities from available ontologies
    - Treat morphology/casing variants of ontology terms as likely mistakes (e.g. `AppealCourt_Rouen` vs `AppealCourtRouen`) unless the variant exists explicitly in ontology
    - For multilingual variants, prefer the exact canonical ontology IRI that exists in ontology; do not allow translated/reformatted ontology-prefixed IRIs as new entities
+6a. Opaque Identifier Ontologies (Wikidata-style Q/P codes, hashes, UUIDs):
+   - When the domain ontology uses opaque local IRI names (Q-numbers, P-numbers, hash IDs, numeric codes),
+     the ONLY valid way to identify an entity is via its `rdfs:label` — NEVER by appending a human-readable label to the namespace
+   - Flag as error any entity IRI of the form `<namespace>:<human-readable-label>` when the ontology uses opaque identifiers
+     (e.g. `ont_10_culture_concepts:culture` is an invented IRI if the ontology only defines `ont_10_culture_concepts:Q11042` with `rdfs:label "culture"`)
+   - Do NOT flag correct Q/P code IRIs as invented — verify against the provided ontology, not against intuition about what the IRI "should" look like
+   - When checking property domain/range triples: resolve the referenced opaque IRI to its label before deciding whether the subject/object type is appropriate
 
 # VERIFICATION CHECKLIST
 

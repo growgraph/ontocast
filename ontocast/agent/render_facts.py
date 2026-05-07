@@ -29,6 +29,7 @@ from ontocast.prompt.common import (
     user_template,
 )
 from ontocast.prompt.ontology_context import (
+    build_ontology_index,
     format_ontologies_clause,
     format_prefix_clause,
 )
@@ -107,8 +108,10 @@ def _prepare_prompt_data(
             normalized_graph.bind(prefix, namespace_uri)
         ctx.graph = normalized_graph
     domain_pairs = access.domain_prefix_pairs()
-    ontology_chapter = ontology_template.format(
-        ontology_ttl=ctx.graph.serialize_canonical_turtle()
+    ontology_index = build_ontology_index(ctx.graph)
+    ontology_chapter = (
+        ontology_template.format(ontology_ttl=ctx.graph.serialize_canonical_turtle())
+        + ontology_index
     )
 
     facts_instruction_str = facts_instruction_template.format(

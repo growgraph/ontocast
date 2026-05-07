@@ -348,7 +348,8 @@ class ToolBox:
     ) -> bool:
         return (
             self.vector_store is not None
-            and ontology_context_mode == OntologyContextMode.VECTOR_RETRIEVAL
+            and ontology_context_mode
+            == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
         )
 
     def is_vector_store_ready(self) -> bool:

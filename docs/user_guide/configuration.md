@@ -45,7 +45,8 @@ BASE_RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
 MAX_VISITS=3                             # alias for max_visits_per_node
 RENDER_MODE=ontology_and_facts           # ontology | facts | ontology_and_facts
-ONTOLOGY_CONTEXT_MODE=full_ttl           # full_ttl | vector_retrieval
+ONTOLOGY_CONTEXT_MODE=selected_single_ontology   # selected_single_ontology | selected_vector_search_ontology | fixed_single_ontology
+#ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID=catalog_id  # required for fixed_single_ontology
 ONTOLOGY_MAX_TRIPLES=50000               # empty/unset for unlimited
 PARALLEL_WORKERS=4
 PARALLEL_FACTS_RETRIES=3
@@ -142,10 +143,11 @@ Search is "search-later": nodes run without search first, and only request exter
 
 ## Ontology Context Mode Behavior
 
-- `ONTOLOGY_CONTEXT_MODE=full_ttl` is the default and does not require Qdrant.
-- In `full_ttl`, server/file processing skips vector-store initialization and proceeds even if Qdrant is unavailable.
-- `ontology_context_mode=vector_retrieval` requires configured and initialized vector infrastructure (`QDRANT_URI` and compatible embedding settings).
-- If a request asks for `vector_retrieval` while vector store is unavailable, API returns `409` with `error_code: VECTOR_STORE_UNAVAILABLE`.
+- `ONTOLOGY_CONTEXT_MODE=selected_single_ontology` is the default (LLM-chosen catalog TTL per unit); it does not require Qdrant.
+- `selected_single_ontology` skips vector-store initialization when running the server or file batch processing unless you select vector mode.
+- `ontology_context_mode=selected_vector_search_ontology` requires configured and initialized vector infrastructure (`QDRANT_URI` and compatible embedding settings).
+- If a request asks for `selected_vector_search_ontology` while vector store is unavailable, API returns `409` with `error_code: VECTOR_STORE_UNAVAILABLE`.
+- `fixed_single_ontology` uses the catalog ontology whose `ontology_id` is `ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID` (or per-request `ontology_context_fixed_ontology_id` query/form/JSON field). Omitting the id when mode is fixed returns HTTP 400 from the API.
 
 ## Usage
 
@@ -160,6 +162,44 @@ print(config.server.max_visits_per_node)
 print(tool_config.llm_config.provider)
 print(tool_config.path_config.cache_dir)
 ```
+
+## RDF Triple Matching
+
+The server exposes `POST /match` to align entities between two RDF triple sets and
+compute precision/recall/F1.
+
+- `regime=ontology_loose`: semantic + symbolic checks
+- `regime=ontology_strict`: loose checks + shared type namespace requirement
+- `ground_truth_side`: choose `left` or `right` to define recall denominator
+
+### API payload example
+
+```json
+{
+  "left_graph": "@prefix ex: <https://left.example/> . ex:a <https://p/relatedTo> ex:b .",
+  "right_graph": "@prefix ex: <https://right.example/> . ex:a <https://p/relatedTo> ex:b .",
+  "regime": "ontology_loose",
+  "ground_truth_side": "right",
+  "similarity_threshold": 0.8
+}
+```
+
+### Standalone CLI
+
+```bash
+match-graphs \
+  --left ./left.ttl \
+  --right ./right.ttl \
+  --regime ontology_strict \
+  --ground-truth-side right \
+  --similarity-threshold 0.8 \
+  --json-output
+```
+
+Metric interpretation:
+- high precision + low recall means conservative matching
+- high recall + low precision means permissive matching
+- F1 summarizes precision/recall balance
 
 ## Validation Notes
 

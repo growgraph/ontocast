@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from typing import cast
 
 import pytest
 from rdflib import URIRef
@@ -21,15 +20,28 @@ from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.toolbox import ToolBox
 
 
+class _FakeOntologyManager(OntologyManager):
+    def __init__(self, ontologies: list[Ontology]) -> None:
+        super().__init__()
+        self._ontologies = ontologies
+
+    @property
+    def has_ontologies(self) -> bool:
+        return bool(self._ontologies)
+
+    @property
+    def ontologies(self) -> list[Ontology]:
+        return self._ontologies
+
+
 def test_convert_document_sets_ontology_selection_user_instruction_from_json() -> None:
     payload = {
         "text": "Hello world",
         "ontology_selection_user_instruction": "Prefer legal ontologies",
     }
     state = AgentState(raw_input={"input.json": json.dumps(payload).encode("utf-8")})
-    tools = cast(
-        ToolBox, SimpleNamespace(converter=SimpleNamespace(supported_extensions=()))
-    )
+    tools = ToolBox.__new__(ToolBox)
+    tools.converter = SimpleNamespace(supported_extensions=())
 
     out = convert_document(state, tools)
 
@@ -58,10 +70,8 @@ async def test_selector_passes_selection_instruction_into_prompt_kwargs(
         "ontocast.agent.select_ontology_catalog.call_llm_with_retry",
         _fake_call_llm_with_retry,
     )
-    manager = cast(
-        OntologyManager, SimpleNamespace(has_ontologies=True, ontologies=[selected])
-    )
-    llm_tool = cast(LLMTool, SimpleNamespace())
+    manager = _FakeOntologyManager([selected])
+    llm_tool = LLMTool.__new__(LLMTool)
 
     result = await select_catalog_ontology_for_excerpt(
         ontology_manager=manager,
@@ -93,13 +103,12 @@ async def test_context_resolver_forwards_selection_instruction(monkeypatch) -> N
 
     monkeypatch.setattr(cr, "select_catalog_ontology_for_excerpt", _select)
     state = AgentState(
-        ontology_context_mode=OntologyContextMode.FULL_TTL,
+        ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
         ontology_selection_user_instruction="Prefer healthcare ontologies",
     )
-    tools = cast(
-        ToolBox,
-        SimpleNamespace(ontology_manager=SimpleNamespace(), llm=SimpleNamespace()),
-    )
+    tools = ToolBox.__new__(ToolBox)
+    tools.ontology_manager = OntologyManager.__new__(OntologyManager)
+    tools.llm = LLMTool.__new__(LLMTool)
     unit = ContentUnit(
         text="Alpha is a concept",
         index=0,

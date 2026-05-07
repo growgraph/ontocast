@@ -162,10 +162,18 @@ class ServerConfig(BaseSettings):
         description="Rendering mode: ontology, facts, or ontology_and_facts.",
     )
     ontology_context_mode: OntologyContextMode = Field(
-        default=OntologyContextMode.FULL_TTL,
+        default=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
         description=(
-            "Per-unit ontology context: full_ttl (LLM-picked catalog TTL) or "
-            "vector_retrieval (Qdrant stitched ensemble only; requires qdrant.uri)."
+            "Per-unit ontology context: selected_single_ontology (LLM-picked catalog), "
+            "selected_vector_search_ontology (Qdrant stitched ensemble), or "
+            "fixed_single_ontology (catalog ontology_id; requires ontology_context_fixed_ontology_id)."
+        ),
+    )
+    ontology_context_fixed_ontology_id: str = Field(
+        default="",
+        description=(
+            "Catalog ontology id when ontology_context_mode is fixed_single_ontology "
+            "(batch/server default from env)."
         ),
     )
     ontology_max_triples: int | None = Field(

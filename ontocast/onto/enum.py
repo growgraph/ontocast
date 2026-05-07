@@ -35,17 +35,20 @@ class RenderMode(StrEnum):
 
 
 class OntologyContextMode(StrEnum):
-    """Per-unit ontology context: full catalog TTL (LLM-picked) vs vector ensemble."""
+    """How per-unit ontology context is sourced before ontology/facts rendering."""
 
-    FULL_TTL = "full_ttl"
-    VECTOR_RETRIEVAL = "vector_retrieval"
+    SELECTED_SINGLE_ONTOLOGY = "selected_single_ontology"
+    SELECTED_VECTOR_SEARCH_ONTOLOGY = "selected_vector_search_ontology"
+    FIXED_SINGLE_ONTOLOGY = "fixed_single_ontology"
 
 
 class OntologyAssemblyMode(StrEnum):
     """How per-unit ontology context was assembled for prompts."""
 
-    LLM_SELECTED_UNIT_ONTOLOGY = "llm_selected_unit_ontology"
-    ENSEMBLE_STITCHED = "ensemble_stitched"
+    SELECTED_SINGLE_ONTOLOGY_LLM = "selected_single_ontology_llm"
+    SELECTED_VECTOR_SEARCH_ENSEMBLE = "selected_vector_search_ensemble"
+    FIXED_SINGLE_ONTOLOGY = "fixed_single_ontology"
+    DOCUMENT_MERGED_REDUCED = "document_merged_reduced"
 
 
 class FailureStage(StrEnum):

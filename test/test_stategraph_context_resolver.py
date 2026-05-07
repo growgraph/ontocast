@@ -76,17 +76,21 @@ def test_resolver_vector_retrieval_prefers_ensemble() -> None:
         vector_store=object(),
         ontology_manager=SimpleNamespace(),
     )
-    state = AgentState(ontology_context_mode=OntologyContextMode.VECTOR_RETRIEVAL)
+    state = AgentState(
+        ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+    )
 
     result = asyncio.run(resolve_unit_ontology_context(state, tools, _build_unit()))
 
     assert result.anchor_iri == ontology_iri
     assert len(result.ontology_snapshot.graph) > 0
-    assert result.assembly_mode == OntologyAssemblyMode.ENSEMBLE_STITCHED
+    assert result.assembly_mode == OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE
 
 
 def test_resolver_vector_retrieval_raises_when_vector_stack_missing() -> None:
-    state = AgentState(ontology_context_mode=OntologyContextMode.VECTOR_RETRIEVAL)
+    state = AgentState(
+        ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+    )
     tools = _build_tools(
         patch_retriever=None,
         vector_store=None,
@@ -96,7 +100,9 @@ def test_resolver_vector_retrieval_raises_when_vector_stack_missing() -> None:
         asyncio.run(resolve_unit_ontology_context(state, tools, _build_unit()))
 
 
-def test_resolver_full_ttl_uses_mocked_llm_selection(monkeypatch) -> None:
+def test_resolver_selected_single_ontology_uses_mocked_llm_selection(
+    monkeypatch,
+) -> None:
     finance_iri = "https://example.org/finance"
     finance_ontology = Ontology(
         iri=finance_iri,
@@ -119,9 +125,11 @@ def test_resolver_full_ttl_uses_mocked_llm_selection(monkeypatch) -> None:
         ontology_manager=SimpleNamespace(),
         llm=AsyncMock(),
     )
-    state = AgentState(ontology_context_mode=OntologyContextMode.FULL_TTL)
+    state = AgentState(
+        ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY
+    )
     result = asyncio.run(resolve_unit_ontology_context(state, tools, _build_unit()))
-    assert result.assembly_mode == OntologyAssemblyMode.LLM_SELECTED_UNIT_ONTOLOGY
+    assert result.assembly_mode == OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM
     assert result.anchor_iri == finance_iri
     assert result.ontology_snapshot.iri == finance_iri
 
@@ -157,13 +165,16 @@ def test_build_merged_document_ontology_context_merges_sorted_artifacts() -> Non
     ]
     assert context.anchor_iri == "https://example.org/onto/a"
     assert len(context.ontology_snapshot.graph) >= 2
+    assert context.assembly_mode == OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED
 
 
 @pytest.mark.anyio
 async def test_resolve_effective_facts_ontology_context_prefers_merged_artifacts(
     monkeypatch,
 ) -> None:
-    state = AgentState(ontology_context_mode=OntologyContextMode.FULL_TTL)
+    state = AgentState(
+        ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY
+    )
     merged = Ontology(
         iri="https://example.org/onto/merged",
         graph=RDFGraph._from_turtle_str(
@@ -190,3 +201,36 @@ async def test_resolve_effective_facts_ontology_context_prefers_merged_artifacts
     assert result.anchor_iri == merged.iri
     assert result.patch_sources == [merged.iri]
     assert len(result.ontology_snapshot.graph) >= 1
+    assert result.assembly_mode == OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED
+
+
+def test_resolver_fixed_single_ontology_resolves_from_manager() -> None:
+    finance_iri = "https://example.org/finance"
+    finance_ontology = Ontology(
+        ontology_id="finance",
+        iri=finance_iri,
+        graph=RDFGraph._from_turtle_str(
+            "@prefix ex: <https://example.org/f#> . ex:F ex:has ex:X ."
+        ),
+    )
+
+    class _StubOntologyManager:
+        def get_freshest_terminal_ontology(
+            self, ontology_id: str | None = None
+        ) -> Ontology | None:
+            if ontology_id == "finance":
+                return finance_ontology
+            return None
+
+    tools = _build_tools(
+        patch_retriever=None,
+        vector_store=None,
+        ontology_manager=_StubOntologyManager(),
+    )
+    state = AgentState(
+        ontology_context_mode=OntologyContextMode.FIXED_SINGLE_ONTOLOGY,
+        ontology_context_fixed_ontology_id="finance",
+    )
+    result = asyncio.run(resolve_unit_ontology_context(state, tools, _build_unit()))
+    assert result.assembly_mode == OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY
+    assert result.anchor_iri == finance_iri
