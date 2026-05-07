@@ -1,3 +1,4 @@
+import importlib
 import logging
 import re
 import textwrap
@@ -195,7 +196,8 @@ def main() -> None:
         f.write(mmd_data)
 
     try:
-        import pygraphviz as pgv_module
+        # import pygraphviz as pgv_module
+        pgv_module = importlib.import_module("pygraphviz")
 
         draw_graphviz(
             pgv_module, graph, "docs/assets/graph", ("svg", "png"), rankdir="TB"
