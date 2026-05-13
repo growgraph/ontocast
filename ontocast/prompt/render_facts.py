@@ -29,19 +29,29 @@ facts_instruction_template = """\n\n
 # OPERATIONAL GUIDELINES
 
 1. Facts MUST use the fixed namespace `{facts_namespace}` with the prefix `cd:` (declare exactly: `@prefix cd: <{facts_namespace}> .`). Local names for facts should not be capitalized.
+
+1a. TWO-NAMESPACE CONTRACT (most important rule):
+    - {domain_ontologies_clause}: schema elements only — classes (as `rdf:type` objects), predicates, and named individuals that exist verbatim in the ontology
+    - `cd:`: ALL new instances extracted from the text, even if typed by an ontology class
+
+    CORRECT: `cd:trial_1 a onto:Trial ; onto:hasJudgment cd:judgment_1 .`
+    WRONG:   `onto:Trial_1 a onto:Trial .`  — new instance under ontology prefix, FORBIDDEN
+
 2. Use the provided {domain_ontologies_clause} (below) and standard ontologies (RDFS, OWL, schema.org, etc.) to identify/infer entities, classes, types, and relationships
-3. Thoroughly Extract and Link: extract all possible text mentions that correspond to entities, classes, types, or relationships defined in {domain_ontologies_clause}. When referring to domain ontology entities, use {domain_prefix_clause}
+3. Thoroughly Extract and Link: extract all possible text mentions that correspond to entities, classes, types, or relationships defined in {domain_ontologies_clause}
 4. Enforce typing: all `cd:` entities (facts) must be linked (e.g. using rdf:type) to entities from either {domain_ontologies_clause} or basic ontologies (RDFS, OWL, etc), e.g. rdfs:Class, rdf:Property, schema:Person, schema:Organization, etc.
 5. Define all prefixes for all namespaces used rdf, rdfs, owl, schema, etc
 6. CRITICAL - Entity Matching Protocol:
-   - BEFORE creating any `cd:` entity, you MUST search the domain ontology for existing entities that match the concept semantically
-   - Match by meaning, not just exact label matching
-   - Check all language variants of `rdfs:label` and alternative names
-   - If a matching entity exists in the domain ontology, use its IRI directly - DO NOT create a duplicate in the `cd:` namespace
-   - Only create `cd:` entities for NEW facts not already defined in the ontology
-   - NEVER mint new entities under {domain_prefix_clause} unless that exact IRI already exists in the provided ontology
-   - Preserve canonical ontology IRIs exactly as given (character-for-character): no translation, no transliteration, no snake_case/camelCase changes, no suffix/prefix changes
-   - Cross-lingual mentions (e.g. French/English variants) MUST be linked to the existing canonical ontology IRI when semantically equivalent
+   - BEFORE creating any `cd:` entity, search the domain ontology for existing entities that match the concept semantically
+   - A "matching entity" means a resource that EXISTS VERBATIM in the provided ontology as a named individual
+     (declared with owl:NamedIndividual or explicitly typed) — NOT simply a class whose name resembles the entity.
+     A class existing in the ontology does NOT mean an instance of that class also exists: create a new `cd:` instance typed by that class.
+   - Match by meaning, not just exact label; check all `rdfs:label` language variants
+   - If a matching named individual exists in the domain ontology, use its IRI directly — do NOT duplicate it in `cd:`
+   - Only create `cd:` entities for NEW facts not already defined in the ontology as named individuals
+   - NEVER mint new IRIs in the domain ontology namespace(s) unless that exact IRI already exists in the provided ontology as a named individual
+   - Preserve canonical ontology IRIs exactly as given (character-for-character): no translation, no transliteration, no casing changes
+   - Cross-lingual mentions MUST be linked to the existing canonical ontology IRI when semantically equivalent
    - If no ontology entity can be verified, create a `cd:` entity instead of inventing a new ontology-prefixed IRI
 6a. Opaque Identifier Ontologies (Wikidata-style Q/P codes, hashes, UUIDs):
    - When ontology IRIs contain opaque local names (Q-numbers, P-numbers, hash strings, numeric IDs),

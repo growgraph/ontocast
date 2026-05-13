@@ -102,6 +102,7 @@ async def run_unit_pipeline(
             max_visits_per_node=max_visits,
             current_domain=agent_state.current_domain,
             ontology_max_triples=tools.config.server.ontology_max_triples,
+            llm_graph_format=agent_state.llm_graph_format,
         )
         logger.info("run_unit_pipeline: starting ontology loop")
         onto_result = await ontology_loop(ontology_state, tools, agent_state)
@@ -118,6 +119,7 @@ async def run_unit_pipeline(
             facts_user_instruction=agent_state.facts_user_instruction,
             budget_tracker=deepcopy(agent_state.budget_tracker),
             max_visits_per_node=max_visits,
+            llm_graph_format=agent_state.llm_graph_format,
         )
         logger.info("run_unit_pipeline: starting facts loop")
         facts_result = await facts_loop(facts_state, tools, agent_state)

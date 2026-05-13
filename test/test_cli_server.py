@@ -13,6 +13,7 @@ from ontocast.cli.server import (
     _persist_unit_pipeline_outputs,
     _select_unit_facts_ontology_graph,
     create_app,
+    parse_max_visits_param,
     parse_ontology_context_mode_param,
     resolve_ontology_context_mode,
     validate_ontology_context_mode,
@@ -52,6 +53,26 @@ def test_resolve_ontology_context_mode_keeps_requested_mode_when_id_missing() ->
         "   ",
     )
     assert result == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+
+
+def test_parse_max_visits_param_accepts_positive_integer_override() -> None:
+    assert parse_max_visits_param("3", default=1) == 3
+
+
+def test_parse_max_visits_param_uses_default_when_missing() -> None:
+    assert parse_max_visits_param(None, default=2) == 2
+
+
+def test_parse_max_visits_param_rejects_zero_or_negative_values() -> None:
+    with pytest.raises(ValueError, match="max_visits must be an integer >= 1"):
+        parse_max_visits_param("0", default=1)
+    with pytest.raises(ValueError, match="max_visits must be an integer >= 1"):
+        parse_max_visits_param("-2", default=1)
+
+
+def test_parse_max_visits_param_rejects_non_numeric_values() -> None:
+    with pytest.raises(ValueError, match="max_visits must be an integer >= 1"):
+        parse_max_visits_param("abc", default=1)
 
 
 def _tools(vector_store: object | None, patch_retriever: object | None) -> ToolBox:

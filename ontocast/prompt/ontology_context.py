@@ -35,23 +35,17 @@ def extract_domain_prefix_pairs(ontology: Ontology) -> list[tuple[str, str]]:
 
 
 def format_ontologies_clause(pairs: list[tuple[str, str]]) -> str:
-    """Format a human-readable ontology namespace clause for prompts."""
-    namespaces = [f"<{namespace}>" for _, namespace in pairs]
-    if not namespaces:
+    """Format a human-readable ontology clause including prefix and namespace for prompts.
+
+    Produces e.g. "domain ontology `fcaont:` (<https://example.org/fcaont/>)" so a
+    single variable conveys both which prefix to use and which namespace it maps to.
+    """
+    if not pairs:
         return "domain ontology namespaces declared in the provided ontology graph"
-    if len(namespaces) == 1:
-        return f"domain ontology {namespaces[0]}"
-    return f"domain ontologies {', '.join(namespaces)}"
-
-
-def format_prefix_clause(pairs: list[tuple[str, str]]) -> str:
-    """Format a human-readable prefix clause for prompts."""
-    prefixes = [f"`{prefix}:`" for prefix, _ in pairs]
-    if not prefixes:
-        return "the declared domain ontology prefixes in the provided ontology graph"
-    if len(prefixes) == 1:
-        return f"the prefix {prefixes[0]}"
-    return f"their respective prefixes {', '.join(prefixes)}"
+    items = [f"`{prefix}:` (<{namespace}>)" for prefix, namespace in pairs]
+    if len(items) == 1:
+        return f"domain ontology {items[0]}"
+    return f"domain ontologies {', '.join(items)}"
 
 
 def _is_opaque_local_name(local: str) -> bool:

@@ -156,8 +156,10 @@ class Ontology(OntologyPropertiesWithLineage):
 
     graph: RDFGraph = Field(
         default_factory=RDFGraph,
-        description="RDF triples that define an ontology "
-        "in turtle format: use prefixes for namespaces, do NOT add comments.",
+        description="RDF triples that define an ontology. "
+        "Provide as a Turtle string OR a compact JSON-LD object, "
+        "as specified by the OUTPUT INSTRUCTION. "
+        "Use prefixes for namespaces, do NOT add comments.",
     )
 
     current_domain: str = Field(

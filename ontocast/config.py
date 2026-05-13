@@ -14,7 +14,7 @@ from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from qdrant_client.http.models import Distance as QdrantDistance
 
-from ontocast.onto.enum import OntologyContextMode, RenderMode
+from ontocast.onto.enum import LLMGraphFormat, OntologyContextMode, RenderMode
 from ontocast.onto.tenancy import (
     DEFAULT_PROJECT,
     DEFAULT_TENANT,
@@ -160,6 +160,13 @@ class ServerConfig(BaseSettings):
     render_mode: RenderMode = Field(
         default=RenderMode.ONTOLOGY_AND_FACTS,
         description="Rendering mode: ontology, facts, or ontology_and_facts.",
+    )
+    llm_graph_format: LLMGraphFormat = Field(
+        default=LLMGraphFormat.TURTLE,
+        description=(
+            "Format used by the LLM when emitting RDF graph payloads: "
+            "'turtle' (legacy, Turtle strings) or 'jsonld' (compact JSON-LD objects)."
+        ),
     )
     ontology_context_mode: OntologyContextMode = Field(
         default=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,

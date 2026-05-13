@@ -7,7 +7,13 @@ from pydantic import Field
 
 from ontocast.onto.constants import DEFAULT_DOMAIN
 from ontocast.onto.content_unit import ContentUnit, SourceUnit
-from ontocast.onto.enum import FailureStage, OntologyAssemblyMode, Status, WorkflowNode
+from ontocast.onto.enum import (
+    FailureStage,
+    LLMGraphFormat,
+    OntologyAssemblyMode,
+    Status,
+    WorkflowNode,
+)
 from ontocast.onto.model import (
     BasePydanticModel,
     ExternalEvidenceCacheEntry,
@@ -40,6 +46,13 @@ class UnitState(BasePydanticModel):
     suggestions: Suggestions = Field(default_factory=Suggestions)
     budget_tracker: BudgetTracker = Field(default_factory=BudgetTracker)
     max_visits_per_node: int = Field(default=1, ge=1)
+    llm_graph_format: LLMGraphFormat = Field(
+        default=LLMGraphFormat.TURTLE,
+        description=(
+            "Format used by the LLM for emitting RDF graph payloads: "
+            "'turtle' or 'jsonld'."
+        ),
+    )
 
     status: Status = Field(default=Status.NOT_VISITED)
     failure_stage: FailureStage | None = Field(default=None)

@@ -111,6 +111,10 @@ async def criticise_facts(
         state.set_external_evidence_request(
             WorkflowNode.CRITICISE_FACTS, critique.external_evidence_request
         )
+
+        # //***//
+        logger.info(f"Parsed critique report: {critique}")
+
         logger.debug(
             f"Parsed critique report - success: {critique.success}, "
             f"score: {critique.score}"

@@ -72,7 +72,12 @@ from ontocast.api.tenancy_resolution import (
 )
 from ontocast.cli.util import crawl_directories
 from ontocast.config import Config, ServerConfig
-from ontocast.onto.enum import OntologyContextMode, RenderMode, Status
+from ontocast.onto.enum import (
+    LLMGraphFormat,
+    OntologyContextMode,
+    RenderMode,
+    Status,
+)
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import (
     OntologyContextConfigError,
@@ -135,6 +140,28 @@ def parse_render_mode_param(value, default: RenderMode) -> RenderMode:
     return default
 
 
+def parse_llm_graph_format_param(
+    value: str | LLMGraphFormat | None,
+    default: LLMGraphFormat,
+) -> LLMGraphFormat:
+    """Parse optional ``llm_graph_format`` override from request params."""
+    if value is None:
+        return default
+    if isinstance(value, LLMGraphFormat):
+        return value
+    if isinstance(value, str):
+        normalized = value.lower().strip()
+        try:
+            return LLMGraphFormat(normalized)
+        except ValueError:
+            logger.warning(
+                "Invalid llm_graph_format '%s', using default '%s'",
+                value,
+                default.value,
+            )
+    return default
+
+
 def parse_ontology_context_mode_param(
     value: str | OntologyContextMode | None,
     default: OntologyContextMode,
@@ -185,6 +212,29 @@ def parse_strip_provenance_param(value: str | None) -> bool:
         value,
     )
     return False
+
+
+def parse_max_visits_param(value: str | int | None, default: int) -> int:
+    """Parse optional ``max_visits`` override from query/form/json metadata."""
+    if value is None:
+        return default
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError("max_visits must be an integer >= 1") from exc
+    if parsed < 1:
+        raise ValueError("max_visits must be an integer >= 1")
+    return parsed
+
+
+def _invalid_max_visits_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content=StatusErrorBody(
+            error="max_visits must be an integer >= 1",
+            error_type="ValidationError",
+        ).model_dump(),
+    )
 
 
 def turtle_from_graph(graph: RDFGraph, *, strip_provenance: bool) -> str:
@@ -338,6 +388,7 @@ def expand_input_to_states(
         "max_visits": config.server.max_visits_per_node,
         "max_chunks": head_chunks,
         "render_mode": config.server.render_mode,
+        "llm_graph_format": config.server.llm_graph_format,
         "ontology_context_mode": ontology_context_mode_value,
         "ontology_context_fixed_ontology_id": (
             config.server.ontology_context_fixed_ontology_id
@@ -588,6 +639,7 @@ def create_app(
             logger.debug("Content-Type: %s", content_type)
 
             render_mode = request.query_params.get("render_mode", None)
+            llm_graph_format = request.query_params.get("llm_graph_format", None)
             ontology_context_mode = request.query_params.get(
                 "ontology_context_mode", None
             )
@@ -605,6 +657,10 @@ def create_app(
             ).strip()
             strip_provenance = parse_strip_provenance_param(
                 request.query_params.get("strip_provenance")
+            )
+            max_visits = parse_max_visits_param(
+                request.query_params.get("max_visits"),
+                server_config.max_visits_per_node,
             )
             ontology_context_mode_value: OntologyContextMode = (
                 parse_ontology_context_mode_param(
@@ -625,6 +681,13 @@ def create_app(
                         )
                         if isinstance(oid_raw, str) and oid_raw.strip():
                             ontology_context_fixed_ontology_id = oid_raw.strip()
+                        max_visits = parse_max_visits_param(
+                            parsed_obj.get("max_visits"),
+                            max_visits,
+                        )
+                        body_format = parsed_obj.get("llm_graph_format")
+                        if body_format is not None:
+                            llm_graph_format = body_format
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     logger.debug(
                         "JSON body could not be decoded for ontology id preview; "
@@ -646,6 +709,10 @@ def create_app(
                         ontology_context_fixed_ontology_id = str(value).strip()
                     elif key == "strip_provenance" and value:
                         strip_provenance = parse_strip_provenance_param(str(value))
+                    elif key == "max_visits" and value:
+                        max_visits = parse_max_visits_param(str(value), max_visits)
+                    elif key == "llm_graph_format" and value:
+                        llm_graph_format = str(value)
                 if not files_dict:
                     return JSONResponse(
                         status_code=400,
@@ -688,6 +755,10 @@ def create_app(
                 render_mode,
                 server_config.render_mode,
             )
+            llm_graph_format_value: LLMGraphFormat = parse_llm_graph_format_param(
+                llm_graph_format,
+                server_config.llm_graph_format,
+            )
             try:
                 validate_ontology_context_mode(ontology_context_mode_value, tools)
             except OntologyContextConfigError as e:
@@ -695,9 +766,10 @@ def create_app(
 
             initial_state = AgentState(
                 raw_input=files_dict,
-                max_visits=server_config.max_visits_per_node,
+                max_visits=max_visits,
                 max_chunks=head_chunks,
                 render_mode=render_mode_value,
+                llm_graph_format=llm_graph_format_value,
                 ontology_context_mode=ontology_context_mode_value,
                 ontology_max_triples=server_config.ontology_max_triples,
                 tenant=resolved_tenant,
@@ -784,6 +856,11 @@ def create_app(
             )
 
         except Exception as e:
+            if (
+                isinstance(e, ValueError)
+                and str(e) == "max_visits must be an integer >= 1"
+            ):
+                return _invalid_max_visits_response()
             logger.error("Error processing document: %s", e)
             logger.error("Error type: %s", type(e))
             logger.error("Error traceback:", exc_info=True)
@@ -819,6 +896,7 @@ def create_app(
             logger.debug("process_unit Content-Type: %s", content_type)
 
             render_mode = request.query_params.get("render_mode", None)
+            llm_graph_format = request.query_params.get("llm_graph_format", None)
             ontology_context_mode = request.query_params.get(
                 "ontology_context_mode", None
             )
@@ -836,6 +914,10 @@ def create_app(
             ).strip()
             strip_provenance = parse_strip_provenance_param(
                 request.query_params.get("strip_provenance")
+            )
+            max_visits = parse_max_visits_param(
+                request.query_params.get("max_visits"),
+                server_config.max_visits_per_node,
             )
             ontology_context_mode_value: OntologyContextMode = (
                 parse_ontology_context_mode_param(
@@ -856,6 +938,13 @@ def create_app(
                         )
                         if isinstance(oid_raw, str) and oid_raw.strip():
                             ontology_context_fixed_ontology_id = oid_raw.strip()
+                        max_visits = parse_max_visits_param(
+                            parsed_obj.get("max_visits"),
+                            max_visits,
+                        )
+                        body_format = parsed_obj.get("llm_graph_format")
+                        if body_format is not None:
+                            llm_graph_format = body_format
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     logger.debug(
                         "JSON body could not be decoded for ontology id preview"
@@ -876,6 +965,10 @@ def create_app(
                         ontology_context_fixed_ontology_id = str(value).strip()
                     elif key == "strip_provenance" and value:
                         strip_provenance = parse_strip_provenance_param(str(value))
+                    elif key == "max_visits" and value:
+                        max_visits = parse_max_visits_param(str(value), max_visits)
+                    elif key == "llm_graph_format" and value:
+                        llm_graph_format = str(value)
                 if not files_dict:
                     return JSONResponse(
                         status_code=400,
@@ -918,6 +1011,10 @@ def create_app(
                 render_mode,
                 server_config.render_mode,
             )
+            llm_graph_format_value: LLMGraphFormat = parse_llm_graph_format_param(
+                llm_graph_format,
+                server_config.llm_graph_format,
+            )
             try:
                 validate_ontology_context_mode(ontology_context_mode_value, tools)
             except OntologyContextConfigError as e:
@@ -925,9 +1022,10 @@ def create_app(
 
             initial_state = AgentState(
                 raw_input=files_dict,
-                max_visits=server_config.max_visits_per_node,
+                max_visits=max_visits,
                 max_chunks=1,
                 render_mode=render_mode_value,
+                llm_graph_format=llm_graph_format_value,
                 ontology_context_mode=ontology_context_mode_value,
                 ontology_max_triples=server_config.ontology_max_triples,
                 tenant=resolved_tenant,
@@ -1030,6 +1128,11 @@ def create_app(
             )
 
         except Exception as e:
+            if (
+                isinstance(e, ValueError)
+                and str(e) == "max_visits must be an integer >= 1"
+            ):
+                return _invalid_max_visits_response()
             logger.error("Error in process_unit: %s", e)
             logger.error("Error type: %s", type(e))
             logger.error("Error traceback:", exc_info=True)

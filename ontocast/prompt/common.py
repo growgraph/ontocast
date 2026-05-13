@@ -61,6 +61,42 @@ Generate SPARQL operations that modify the existing ontology, not replace it ent
 Follow the Pydantic schema definitions exactly - they fully specify the output structure.
 """
 
+output_instruction_jsonld = """\n\n
+# OUTPUT INSTRUCTION
+
+Provide each RDF graph field as a compact JSON-LD **object** (not a string) with:
+
+1. "@context": a map of every prefix alias used to its full namespace IRI. Always declare
+   rdf, rdfs, owl, xsd, schema, the facts prefix (e.g. cd), and any domain ontology prefixes.
+2. "@graph": an array of subject nodes. Each node MUST have "@id" (compact IRI) and SHOULD
+   include "@type" plus all predicate-value pairs for that subject grouped in one object.
+3. Use compact IRIs (`prefix:local`) throughout - never expand to full URIs in the body.
+4. Typed literals MUST use the value/type form: {"@value": "2024-01-15", "@type": "xsd:date"}.
+   Language-tagged literals use {"@value": "...", "@language": "en"}.
+5. Multi-valued predicates use a JSON array of objects/values.
+6. Object references use {"@id": "prefix:local"} (or a plain compact IRI string when unambiguous).
+7. No comments, no trailing prose - output strictly valid JSON.
+"""
+
+output_instruction_sparql_jsonld = """\n\n
+# OUTPUT INSTRUCTION
+
+Generate SPARQL operations that modify the existing graph, not replace it entirely.
+Follow the Pydantic schema definitions exactly - they fully specify the output structure.
+
+For each `TripleOp.graph` field, provide a compact JSON-LD **object** (not a string) with:
+
+1. "@context": a map of every prefix alias used to its full namespace IRI.
+   Always declare rdf, rdfs, owl, xsd, schema, the facts prefix (e.g. cd), and any
+   domain ontology prefixes referenced by the operation.
+2. "@graph": an array of subject nodes. Each node MUST have "@id" (compact IRI) and SHOULD
+   include "@type" plus all predicate-value pairs for that subject grouped in one object.
+3. Use compact IRIs (`prefix:local`) throughout - never expand to full URIs in the body.
+4. Typed literals MUST use the value/type form: {"@value": "...", "@type": "xsd:date"}.
+   Language-tagged literals use {"@value": "...", "@language": "en"}.
+5. No comments, no trailing prose - output strictly valid JSON.
+"""
+
 user_template = """\n\n
 # USER INSTRUCTION
 

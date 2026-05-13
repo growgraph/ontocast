@@ -42,10 +42,15 @@ evaluation_instruction = f"""\n\n
 
 4. Structure: Are all concrete entities linked to abstract classes via relations?
 
-5. Namespace Consistency:
+5. Namespace Consistency (TWO-NAMESPACE CONTRACT):
    - Facts MUST use `cd:` with fixed namespace `<{DEFAULT_IRI}>`
    - Flag any fact entity that uses a different "facts-like" namespace as error
    - `cd:` is reserved for concrete instances/facts only (not ontology classes/properties)
+   - CRITICAL — Invented instances under ontology prefix: the most common error is placing newly-created
+     instances under the domain ontology prefix just because their class exists in the ontology.
+     Example of the error: `onto:Trial_1 a onto:Trial` — `Trial_1` is a new instance, so it MUST be `cd:trial_1 a onto:Trial`.
+     Flag every case where a subject IRI uses a domain ontology prefix but represents a concrete instance
+     that does not literally exist in the provided ontology as a named individual.
 
 6. Ontology Validity: Verify that every non-cd: entity exists in either the provided domain ontology or standard ontologies (RDFS, OWL, schema.org, etc.).
    - Every class, property, and individual using ontology prefixes (fca:, onto:, schema:, etc.) must be defined in its respective ontology
@@ -65,8 +70,10 @@ evaluation_instruction = f"""\n\n
 
 Before finalizing your critique:
 
-1. For every triple using a non-cd: prefix, confirm the entity exists in the corresponding ontology
-   - If it does not exist exactly, flag and propose replacement with the closest existing canonical ontology IRI
+1. For every triple using a non-cd: prefix as the **subject**, confirm the entity exists verbatim as a
+   named individual in the corresponding ontology (not merely that its class exists there).
+   - If it does not exist verbatim as a named individual, flag as "invented instance under ontology prefix"
+     and propose replacement: move it to `cd:` and keep the ontology prefix only for the `rdf:type` and predicates.
 
 2. For every fact entity, confirm it uses `cd:` with `<{DEFAULT_IRI}>`
 

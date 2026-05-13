@@ -76,8 +76,12 @@ def test_qdrant_vector_store_smoke(
     ttl_bytes = ontology.graph.serialize(format="turtle").encode("utf-8")
 
     async def _run() -> Ontology:
+        # _materialize_ontology indexes only when vector_store_ready; initialize() on
+        # the store alone does not set it (update_tenancy would but would change collection names).
         if tools.vector_store is not None:
             await tools.vector_store.initialize()
+            tools.vector_store_ready = True
+            tools.vector_store_last_error = None
         return await tools.ingest_ontology_ttl(ttl_bytes)
 
     ingested = asyncio.run(_run())

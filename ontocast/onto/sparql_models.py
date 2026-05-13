@@ -256,13 +256,16 @@ class TripleOp(BaseModel):
     graph: Annotated[
         RDFGraph,
         BeforeValidator(
-            lambda v: RDFGraph._from_turtle_str(v) if isinstance(v, str) else v
+            lambda v: RDFGraph._from_any(v) if not isinstance(v, RDFGraph) else v
         ),
     ] = Field(
         default_factory=RDFGraph,
         description="RDF graph containing triples to insert or delete. "
-        "Must be provided as a Turtle format string or RDFGraph instance. "
-        'Example Turtle: "@prefix ex: <http://example.org/> . ex:John a ex:Person ; rdfs:label "John Doe" ."',
+        "Provide either a Turtle string or a compact JSON-LD object "
+        "(per the OUTPUT INSTRUCTION). "
+        'Example Turtle: "@prefix ex: <http://example.org/> . ex:John a ex:Person ; rdfs:label "John Doe" ." '
+        'Example JSON-LD: {"@context": {"ex": "http://example.org/", "rdfs": "http://www.w3.org/2000/01/rdf-schema#"}, '
+        '"@graph": [{"@id": "ex:John", "@type": "ex:Person", "rdfs:label": "John Doe"}]}',
     )
     prefixes: dict[str, str] = Field(
         default_factory=dict,
@@ -301,8 +304,9 @@ class GraphUpdate(BaseModel):
     triple_operations: list[TripleOp] = Field(
         default_factory=list,
         description="List of graph update operations in execution order. "
-        "Each operation should be a TripleOp (for insert/delete) with RDFGraph containing triples in Turtle format."
-        "Example: [TripleOp(type='insert', graph='@prefix ex: <http://example.org/> . ex:John a ex:Person .', prefixes={'ex': 'http://example.org/'})]",
+        "Each operation should be a TripleOp (for insert/delete) with an RDF graph "
+        "given either as a Turtle string or as a compact JSON-LD object "
+        "(per the OUTPUT INSTRUCTION).",
     )
 
     sparql_operations: list[GenericSparqlQuery] = Field(

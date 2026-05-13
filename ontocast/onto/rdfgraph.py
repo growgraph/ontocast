@@ -38,6 +38,54 @@ _known_prefixes_context: ContextVar[dict[str, str] | None] = ContextVar[
 ]("known_prefixes", default=None)
 
 
+def extract_known_prefixes(
+    graph: "RDFGraph",
+    extra_prefix: str | None = None,
+    extra_namespace: str | None = None,
+) -> dict[str, str]:
+    """Collect all namespace prefixes from *graph* for use in LLM Turtle output repair.
+
+    Reads both the graph's NamespaceManager bindings and the ``@prefix``
+    declarations emitted by ``serialize_canonical_turtle``.  The serializer
+    step is necessary because rdflib auto-generates ephemeral names
+    (``ns1:``, ``ns2:``, …) for namespaces that have no explicit binding;
+    these names appear in the Turtle sent to the LLM but are never stored
+    back in the NamespaceManager, so they would be invisible to
+    ``_ensure_prefixes`` when repairing the LLM's response.
+
+    Args:
+        graph: The RDFGraph to extract prefixes from (typically an ontology
+            or facts graph).
+        extra_prefix: Optional extra prefix name to register explicitly,
+            e.g. from ``Ontology.prefix``.
+        extra_namespace: Namespace URI paired with ``extra_prefix``.
+
+    Returns:
+        Mapping from prefix names to namespace URI strings.
+    """
+    known: dict[str, str] = {}
+
+    for prefix, namespace_uri in graph.namespaces():
+        if prefix:
+            known[prefix] = str(namespace_uri)
+
+    # Serialize to Turtle and capture any additional @prefix declarations,
+    # including the ephemeral nsN: names rdflib emits for unbound namespaces.
+    try:
+        turtle_str = graph.serialize_canonical_turtle()
+        for match in PREFIX_DECLARATION_PATTERN.finditer(turtle_str):
+            p = match.group(1)
+            if p not in known:
+                known[p] = match.group(2)
+    except Exception:
+        pass
+
+    if extra_prefix and extra_namespace:
+        known[extra_prefix] = extra_namespace
+
+    return known
+
+
 class RDFGraph(Graph):
     """Subclass of rdflib.Graph with Pydantic schema support.
 
@@ -54,8 +102,10 @@ class RDFGraph(Graph):
             handler: The core schema handler.
 
         Returns:
-            A union schema that handles both Graph instances and string conversion.
-            Supports both Turtle and JSON-LD string formats.
+            A union schema accepting:
+            - existing ``RDFGraph`` instances,
+            - Turtle / JSON-LD strings (parsed via ``_from_str``),
+            - JSON-LD ``dict`` / ``list`` objects (parsed via ``_from_jsonld_obj``).
         """
         return core_schema.union_schema(
             [
@@ -66,6 +116,7 @@ class RDFGraph(Graph):
                         core_schema.no_info_plain_validator_function(cls._from_str),
                     ]
                 ),
+                core_schema.no_info_plain_validator_function(cls._from_any),
             ],
             serialization=core_schema.plain_serializer_function_ser_schema(
                 cls._to_turtle_str,
@@ -266,6 +317,40 @@ class RDFGraph(Graph):
             return cls._from_turtle_str(data_str)
 
     @classmethod
+    def _from_jsonld_obj(cls, jsonld_obj: dict | list) -> "RDFGraph":
+        """Create an RDFGraph from a JSON-LD ``dict`` or ``list`` object.
+
+        Used when LLMs emit JSON-LD as a native JSON object in a structured
+        response field instead of as an embedded string.
+
+        Args:
+            jsonld_obj: Parsed JSON-LD value (object or array of objects).
+
+        Returns:
+            RDFGraph: A new RDFGraph instance.
+        """
+        return cls._from_jsonld_str(json.dumps(jsonld_obj))
+
+    @classmethod
+    def _from_any(cls, value: Any) -> "RDFGraph":
+        """Dispatch RDFGraph creation from arbitrary structured input.
+
+        Accepts dicts/lists (treated as JSON-LD), strings (Turtle or JSON-LD),
+        and existing RDFGraph instances. Used as the catch-all branch in
+        the Pydantic schema for graph fields that may receive JSON-LD objects
+        from LLM structured output.
+        """
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, (dict, list)):
+            return cls._from_jsonld_obj(value)
+        if isinstance(value, str):
+            return cls._from_str(value)
+        raise TypeError(
+            f"Cannot construct RDFGraph from value of type {type(value).__name__}"
+        )
+
+    @classmethod
     def _from_turtle_str(cls, turtle_str: str) -> "RDFGraph":
         """Create an RDFGraph instance from a Turtle string.
 
@@ -414,6 +499,10 @@ class RDFGraph(Graph):
         if "EOF found in middle of path syntax" in parse_error_message:
             repaired = cls._repair_truncated_turtle(repaired)
 
+        # LLM repeats the subject on lines that follow a ';' continuation.
+        if "expected '.' or '}' or ']' at end of statement" in parse_error_message:
+            repaired = cls._repair_repeated_subject_after_semicolon(repaired)
+
         repaired = cls._repair_missing_object_before_dot(repaired)
         return repaired
 
@@ -430,6 +519,80 @@ class RDFGraph(Graph):
         if stripped.endswith(";") or stripped.endswith(","):
             return f"{stripped[:-1].rstrip()} .\n"
         return turtle_str
+
+    @staticmethod
+    def _looks_like_subject_token(token: str) -> bool:
+        """Return True if *token* could be a Turtle subject IRI or prefixed name.
+
+        Keywords that are only valid as predicates (``a``) or literals
+        (``true``, ``false``) return False so that legitimate short-form
+        predicate-object continuations are never mis-identified as repeated
+        subjects.
+        """
+        if token in ("a", "true", "false"):
+            return False
+        if token.startswith("@") or token.startswith("#") or token.startswith('"'):
+            return False
+        if token.startswith("<") and ">" in token:
+            return True
+        if token.startswith("_:"):
+            return True
+        if ":" in token:
+            colon_idx = token.index(":")
+            prefix = token[:colon_idx]
+            local = token[colon_idx + 1 :]
+            return bool(prefix) and bool(local)
+        return False
+
+    @classmethod
+    def _repair_repeated_subject_after_semicolon(cls, turtle_str: str) -> str:
+        """Repair Turtle where a new full triple appears on a line following a ``;``.
+
+        The LLM sometimes emits::
+
+            cd:foo ns1:P1 ns2:Q1 ;
+            cd:foo ns1:P2 ns2:Q2 .
+
+        After a ``;`` the Turtle parser expects only a predicate–object pair
+        (the subject is implied), but the LLM restates the subject, which
+        triggers "expected '.' or '}' or ']' at end of statement".
+
+        Repair strategy: when a line that ends with ``;`` is immediately
+        followed by a non-blank line whose first token looks like a subject
+        (prefixed name / IRI, not the ``a`` keyword), replace the trailing
+        ``;`` with ``.`` so that each subject block is properly terminated and
+        the next line starts a fresh triple.
+        """
+        lines = turtle_str.splitlines(keepends=True)
+        result: list[str] = []
+
+        for line in lines:
+            content = line.rstrip("\r\n")
+            stripped = content.strip()
+
+            if (
+                result
+                and stripped
+                and not stripped.startswith("@prefix")
+                and not stripped.startswith("#")
+            ):
+                prev_raw = result[-1]
+                prev_content = prev_raw.rstrip("\r\n").strip()
+                if prev_content.endswith(";"):
+                    tokens = stripped.split()
+                    if len(tokens) >= 3 and cls._looks_like_subject_token(tokens[0]):
+                        # Current line is a complete triple (s p o …) right after a ';'.
+                        # Terminate the previous statement with '.' instead of ';'.
+                        prev_body = prev_raw.rstrip("\r\n").rstrip()
+                        eol = prev_raw[len(prev_raw.rstrip("\r\n")) :]
+                        result[-1] = prev_body[:-1] + "." + eol
+                        logger.debug(
+                            "Repaired repeated subject after ';': %s", stripped
+                        )
+
+            result.append(line)
+
+        return "".join(result)
 
     @staticmethod
     def _repair_missing_object_before_dot(turtle_str: str) -> str:

@@ -12,26 +12,27 @@ from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.onto.constants import DEFAULT_IRI
-from ontocast.onto.enum import FailureStage, Status, WorkflowNode
+from ontocast.onto.enum import FailureStage, LLMGraphFormat, Status, WorkflowNode
 from ontocast.onto.model import FactsRenderReport, GraphUpdateRenderReport
 from ontocast.onto.ontology_access import (
     UnitFactsOntologyAccess,
     ontology_access_for_unit_facts,
 )
-from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.rdfgraph import RDFGraph, extract_known_prefixes
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.prompt.common import (
     facts_template,
     ontology_template,
     output_instruction_empty,
+    output_instruction_jsonld,
     output_instruction_sparql,
+    output_instruction_sparql_jsonld,
     text_template,
     user_template,
 )
 from ontocast.prompt.ontology_context import (
     build_ontology_index,
     format_ontologies_clause,
-    format_prefix_clause,
 )
 from ontocast.prompt.render_facts import (
     facts_instruction_template,
@@ -45,19 +46,12 @@ logger = logging.getLogger(__name__)
 
 def _extract_known_prefixes(access: UnitFactsOntologyAccess) -> dict[str, str]:
     """Extract ontology prefixes used to patch missing declarations in LLM TTL output."""
-    known_prefixes: dict[str, str] = {}
     snap = access.ontology_for_prefixes()
-
-    if snap and snap.graph:
-        for prefix, namespace_uri in snap.graph.namespaces():
-            if prefix:  # Skip empty prefixes
-                known_prefixes[prefix] = str(namespace_uri)
-
-    # Also add the ontology prefix explicitly if available.
-    if snap.prefix and snap.namespace:
-        known_prefixes[snap.prefix] = snap.namespace
-
-    return known_prefixes
+    return extract_known_prefixes(
+        snap.graph,
+        extra_prefix=snap.prefix or None,
+        extra_namespace=snap.namespace or None,
+    )
 
 
 async def render_facts(state: UnitFactsState, tools: AtomicToolBox) -> UnitFactsState:
@@ -116,7 +110,6 @@ def _prepare_prompt_data(
 
     facts_instruction_str = facts_instruction_template.format(
         domain_ontologies_clause=format_ontologies_clause(domain_pairs),
-        domain_prefix_clause=format_prefix_clause(domain_pairs),
         facts_namespace=DEFAULT_IRI,
     )
 
@@ -196,13 +189,19 @@ async def render_facts_fresh(
     parser = PydanticOutputParser(pydantic_object=FactsRenderReport)
 
     access = ontology_access_for_unit_facts(state)
+
     known_prefixes = _extract_known_prefixes(access)
 
     prompt_data = _prepare_prompt_data(state, access)
+    fresh_output_instruction = (
+        output_instruction_jsonld
+        if state.llm_graph_format == LLMGraphFormat.JSONLD
+        else output_instruction_empty
+    )
     prompt_data_fresh = {
         "preamble": preamble,
         "improvement_instruction": "",
-        "output_instruction": output_instruction_empty,
+        "output_instruction": fresh_output_instruction,
     }
     prompt_data.update(prompt_data_fresh)
 
@@ -262,12 +261,17 @@ async def render_facts_update(
 
     access = ontology_access_for_unit_facts(state)
     prompt_data = _prepare_prompt_data(state, access)
+    update_output_instruction = (
+        output_instruction_sparql_jsonld
+        if state.llm_graph_format == LLMGraphFormat.JSONLD
+        else output_instruction_sparql
+    )
     prompt_data_update = {
         "preamble": preamble,
         "improvement_instruction": render_suggestions_prompt(
             state.suggestions, WorkflowNode.TEXT_TO_FACTS
         ),
-        "output_instruction": output_instruction_sparql,
+        "output_instruction": update_output_instruction,
         "fact_chapter": facts_template.format(
             facts_ttl=state.content_unit.graph.serialize_canonical_turtle()
         ),

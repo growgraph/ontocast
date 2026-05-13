@@ -59,6 +59,7 @@ def make_render_ontology_node(tools: ToolBox):
                     max_visits_per_node=tools.config.server.max_visits_per_node,
                     current_domain=state.current_domain,
                     ontology_max_triples=tools.config.server.ontology_max_triples,
+                    llm_graph_format=state.llm_graph_format,
                 )
                 result = await ontology_loop(ontology_state, tools, base_state)
                 return (
@@ -274,6 +275,7 @@ def make_consolidate_ontology_node(tools: ToolBox):
             max_visits_per_node=1,
             current_domain=state.current_domain,
             ontology_max_triples=tools.config.server.ontology_max_triples,
+            llm_graph_format=state.llm_graph_format,
         )
         result = await render_ontology_update(consolidation_state, atomic_tools)
         if result.status == Status.SUCCESS and not result.current_ontology.is_null():
@@ -319,6 +321,7 @@ def make_render_facts_node(tools: ToolBox):
                     facts_user_instruction=state.facts_user_instruction,
                     budget_tracker=base_state.budget_tracker,
                     max_visits_per_node=tools.config.server.max_visits_per_node,
+                    llm_graph_format=state.llm_graph_format,
                 )
                 result = await facts_loop(
                     facts_state,

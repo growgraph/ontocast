@@ -10,6 +10,7 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.context import AgentContext, AgentType, ContextManager
 from ontocast.onto.enum import (
     FailureStage,
+    LLMGraphFormat,
     OntologyAssemblyMode,
     OntologyContextMode,
     RenderMode,
@@ -289,6 +290,14 @@ class AgentState(BasePydanticModel):
     render_mode: RenderMode = Field(
         default=RenderMode.ONTOLOGY_AND_FACTS,
         description=("Rendering mode: ontology, facts, or ontology_and_facts."),
+    )
+    llm_graph_format: LLMGraphFormat = Field(
+        default=LLMGraphFormat.TURTLE,
+        description=(
+            "Format used by the LLM for emitting RDF graph payloads: "
+            "'turtle' (legacy) or 'jsonld' (compact JSON-LD objects embedded "
+            "directly in the structured response)."
+        ),
     )
     ontology_context_mode: OntologyContextMode = Field(
         default=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,

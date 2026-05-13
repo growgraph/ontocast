@@ -34,6 +34,18 @@ class RenderMode(StrEnum):
     ONTOLOGY_AND_FACTS = "ontology_and_facts"
 
 
+class LLMGraphFormat(StrEnum):
+    """Format used by the LLM when emitting RDF graph payloads.
+
+    - ``turtle``: graph fields are Turtle strings (legacy behavior).
+    - ``jsonld``: graph fields are compact JSON-LD objects embedded directly
+      in the structured LLM response. Internally parsed back into ``RDFGraph``.
+    """
+
+    TURTLE = "turtle"
+    JSONLD = "jsonld"
+
+
 class OntologyContextMode(StrEnum):
     """How per-unit ontology context is sourced before ontology/facts rendering."""
 

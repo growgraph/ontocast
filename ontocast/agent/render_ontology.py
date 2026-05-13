@@ -13,22 +13,24 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
-from ontocast.onto.enum import FailureStage, Status, WorkflowNode
+from ontocast.onto.enum import FailureStage, LLMGraphFormat, Status, WorkflowNode
 from ontocast.onto.model import GraphUpdateRenderReport, OntologyRenderReport
 from ontocast.onto.ontology_access import (
     UnitOntologyAccess,
     ontology_access_for_unit_ontology,
 )
-from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.rdfgraph import RDFGraph, extract_known_prefixes
 from ontocast.onto.unit_states import UnitOntologyState
 from ontocast.prompt.common import (
     ontology_template,
+    output_instruction_jsonld,
     output_instruction_sparql,
+    output_instruction_sparql_jsonld,
     output_instruction_ttl,
     text_template,
 )
 from ontocast.prompt.common import system_preamble_ontology as system_preamble
-from ontocast.prompt.ontology_context import format_prefix_clause
+from ontocast.prompt.ontology_context import format_ontologies_clause
 from ontocast.prompt.render_ontology import (
     general_ontology_instruction,
     intro_instruction_fresh,
@@ -43,17 +45,11 @@ logger = logging.getLogger(__name__)
 def _extract_known_prefixes(access: UnitOntologyAccess) -> dict[str, str]:
     """Extract ontology prefixes used to patch missing declarations in LLM TTL output."""
     current = access.ontology_for_prefixes()
-    known_prefixes: dict[str, str] = {}
-
-    if current and current.graph:
-        for prefix, namespace_uri in current.graph.namespaces():
-            if prefix:  # Skip empty prefixes
-                known_prefixes[prefix] = str(namespace_uri)
-
-    if current.prefix and current.namespace:
-        known_prefixes[current.prefix] = current.namespace
-
-    return known_prefixes
+    return extract_known_prefixes(
+        current.graph,
+        extra_prefix=current.prefix or None,
+        extra_namespace=current.namespace or None,
+    )
 
 
 async def render_ontology(
@@ -110,13 +106,17 @@ async def render_ontology_fresh(
     intro_instruction = intro_instruction_fresh.format(
         current_domain=state.current_domain
     )
-    output_instruction = output_instruction_ttl
+    output_instruction = (
+        output_instruction_jsonld
+        if state.llm_graph_format == LLMGraphFormat.JSONLD
+        else output_instruction_ttl
+    )
     ontology_ttl = ""
     improvement_instruction_str = ""
     access = ontology_access_for_unit_ontology(state)
     domain_pairs = access.domain_prefix_pairs()
     general_ontology_instruction_str = general_ontology_instruction.format(
-        domain_prefix_clause=format_prefix_clause(domain_pairs)
+        domain_ontologies_clause=format_ontologies_clause(domain_pairs)
     )
 
     text_chapter = text_template.format(text=state.content_unit.text)
@@ -223,14 +223,18 @@ async def render_ontology_update(
     ontology_chapter = ontology_template.format(
         ontology_ttl=current.graph.serialize_canonical_turtle()
     )
-    output_instruction = output_instruction_sparql
+    output_instruction = (
+        output_instruction_sparql_jsonld
+        if state.llm_graph_format == LLMGraphFormat.JSONLD
+        else output_instruction_sparql
+    )
     improvement_instruction_str = render_suggestions_prompt(
         state.suggestions, WorkflowNode.TEXT_TO_ONTOLOGY
     )
 
     domain_pairs = access.domain_prefix_pairs()
     general_ontology_instruction_str = general_ontology_instruction.format(
-        domain_prefix_clause=format_prefix_clause(domain_pairs)
+        domain_ontologies_clause=format_ontologies_clause(domain_pairs)
     )
     text_chapter = text_template.format(text=state.content_unit.text)
     external_evidence = state.external_evidence_text

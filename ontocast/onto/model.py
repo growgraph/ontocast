@@ -112,8 +112,10 @@ class SemanticTriplesFactsReport(BaseModel):
 
     semantic_graph: RDFGraph = Field(
         default_factory=RDFGraph,
-        description="Semantic triples (facts) representing the document "
-        "in turtle format: use prefixes for namespaces, do NOT add comments",
+        description="Semantic triples (facts) representing the document. "
+        "Provide as a Turtle string OR a compact JSON-LD object, "
+        "as specified by the OUTPUT INSTRUCTION. "
+        "Use prefixes for namespaces, do NOT add comments.",
     )
     ontology_relevance_score: float | None = Field(
         ge=0,
