@@ -8,15 +8,16 @@ from starlette.testclient import TestClient
 
 from ontocast.api.schemas import ProcessResultData
 from ontocast.cli import server as server_module
-from ontocast.cli.server import (
-    _ontology_context_error_response,
-    _persist_unit_pipeline_outputs,
-    _select_unit_facts_ontology_graph,
-    create_app,
+from ontocast.cli.http_parse import (
     parse_max_visits_param,
     parse_ontology_context_mode_param,
     resolve_ontology_context_mode,
-    validate_ontology_context_mode,
+)
+from ontocast.cli.http_responses import ontology_context_config_error_response
+from ontocast.cli.server import (
+    _persist_unit_pipeline_outputs,
+    _select_unit_facts_ontology_graph,
+    create_app,
 )
 from ontocast.config import ServerConfig
 from ontocast.onto.content_unit import ContentUnit
@@ -26,6 +27,7 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import (
     OntologyContextConfigError,
     VectorStoreUnavailableError,
+    validate_ontology_context_mode,
 )
 from ontocast.onto.state import AgentState
 from ontocast.toolbox import ToolBox
@@ -116,7 +118,7 @@ def test_validate_ontology_context_mode_allows_vector_when_both_set() -> None:
 
 
 def test_ontology_context_error_response_maps_vector_unavailable_to_409() -> None:
-    response = _ontology_context_error_response(
+    response = ontology_context_config_error_response(
         VectorStoreUnavailableError("vector store unavailable")
     )
     assert response.status_code == 409
@@ -124,7 +126,7 @@ def test_ontology_context_error_response_maps_vector_unavailable_to_409() -> Non
 
 
 def test_ontology_context_error_response_keeps_generic_config_error_as_400() -> None:
-    response = _ontology_context_error_response(
+    response = ontology_context_config_error_response(
         OntologyContextConfigError("generic context error")
     )
     assert response.status_code == 400

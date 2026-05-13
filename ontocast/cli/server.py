@@ -37,7 +37,6 @@ Example:
 """
 
 import asyncio
-import json
 import logging
 import logging.config
 import pathlib
@@ -50,7 +49,6 @@ from fastapi.responses import JSONResponse
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, ConfigDict, Field
-from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from ontocast.agent.serialize import serialize as serialize_agent_state
 from ontocast.api.ontologies import build_ontology_router
@@ -70,10 +68,17 @@ from ontocast.api.tenancy_resolution import (
     resolve_tenant_project,
     stores_use_tenancy_partitions,
 )
+from ontocast.cli.http_responses import (
+    invalid_max_visits_response,
+    ontology_context_config_error_response,
+)
+from ontocast.cli.process_request import (
+    build_agent_state_from_parsed,
+    load_parsed_process_request,
+)
 from ontocast.cli.util import crawl_directories
 from ontocast.config import Config, ServerConfig
 from ontocast.onto.enum import (
-    LLMGraphFormat,
     OntologyContextMode,
     RenderMode,
     Status,
@@ -81,8 +86,7 @@ from ontocast.onto.enum import (
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import (
     OntologyContextConfigError,
-    VectorStoreUnavailableError,
-    require_vector_retrieval,
+    validate_ontology_context_mode,
 )
 from ontocast.onto.state import AgentState
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
@@ -122,165 +126,12 @@ def get_supported_input_extensions(tools: ToolBox) -> tuple[str, ...]:
     return tuple(sorted(built_in_suffixes | converter_suffixes))
 
 
-def parse_render_mode_param(value, default: RenderMode) -> RenderMode:
-    if value is None:
-        return default
-    if isinstance(value, RenderMode):
-        return value
-    if isinstance(value, str):
-        normalized = value.lower().strip()
-        try:
-            return RenderMode(normalized)
-        except ValueError:
-            logger.warning(
-                "Invalid render_mode '%s', using default '%s'",
-                value,
-                default.value,
-            )
-    return default
-
-
-def parse_llm_graph_format_param(
-    value: str | LLMGraphFormat | None,
-    default: LLMGraphFormat,
-) -> LLMGraphFormat:
-    """Parse optional ``llm_graph_format`` override from request params."""
-    if value is None:
-        return default
-    if isinstance(value, LLMGraphFormat):
-        return value
-    if isinstance(value, str):
-        normalized = value.lower().strip()
-        try:
-            return LLMGraphFormat(normalized)
-        except ValueError:
-            logger.warning(
-                "Invalid llm_graph_format '%s', using default '%s'",
-                value,
-                default.value,
-            )
-    return default
-
-
-def parse_ontology_context_mode_param(
-    value: str | OntologyContextMode | None,
-    default: OntologyContextMode,
-) -> OntologyContextMode:
-    if value is None:
-        return default
-    if isinstance(value, OntologyContextMode):
-        return value
-    if isinstance(value, str):
-        normalized = value.lower().strip()
-        try:
-            return OntologyContextMode(normalized)
-        except ValueError:
-            logger.warning(
-                "Invalid ontology_context_mode '%s', using default '%s'",
-                value,
-                default.value,
-            )
-    return default
-
-
-def resolve_ontology_context_mode(
-    requested_mode: OntologyContextMode,
-    fixed_ontology_id: str,
-) -> OntologyContextMode:
-    """Resolve effective ontology context mode for a request.
-
-    A non-empty ``ontology_context_fixed_ontology_id`` forces fixed catalog mode.
-    This allows clients to pick fixed ontology context per request even when the
-    server default mode differs.
-    """
-    if fixed_ontology_id.strip():
-        return OntologyContextMode.FIXED_SINGLE_ONTOLOGY
-    return requested_mode
-
-
-def parse_strip_provenance_param(value: str | None) -> bool:
-    """Parse ``strip_provenance`` query/form value."""
-    if value is None:
-        return False
-    normalized = str(value).strip().lower()
-    if normalized in {"", "0", "false", "no", "off"}:
-        return False
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    logger.warning(
-        "Invalid strip_provenance %r, treating as false",
-        value,
-    )
-    return False
-
-
-def parse_max_visits_param(value: str | int | None, default: int) -> int:
-    """Parse optional ``max_visits`` override from query/form/json metadata."""
-    if value is None:
-        return default
-    try:
-        parsed = int(str(value).strip())
-    except (TypeError, ValueError) as exc:
-        raise ValueError("max_visits must be an integer >= 1") from exc
-    if parsed < 1:
-        raise ValueError("max_visits must be an integer >= 1")
-    return parsed
-
-
-def _invalid_max_visits_response() -> JSONResponse:
-    return JSONResponse(
-        status_code=400,
-        content=StatusErrorBody(
-            error="max_visits must be an integer >= 1",
-            error_type="ValidationError",
-        ).model_dump(),
-    )
-
-
 def turtle_from_graph(graph: RDFGraph, *, strip_provenance: bool) -> str:
     """Serialize ``graph`` to Turtle, optionally stripping reification/provenance."""
     out: RDFGraph = (
         TripleStoreManager.strip_provenance(graph) if strip_provenance else graph
     )
     return out.serialize_canonical_turtle()
-
-
-def validate_ontology_context_mode(
-    ontology_context_mode: OntologyContextMode,
-    tools: ToolBox,
-) -> None:
-    if ontology_context_mode == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY:
-        require_vector_retrieval(tools)
-
-
-def _missing_fixed_catalog_ontology_id_response() -> JSONResponse:
-    """400 when ontology_context_mode is fixed_single_ontology but id is absent."""
-    return JSONResponse(
-        status_code=400,
-        content=StatusErrorBody(
-            error=(
-                "ontology_context_mode=fixed_single_ontology requires "
-                "non-empty ontology_context_fixed_ontology_id (query, form field, or JSON)."
-            ),
-            error_type="ValidationError",
-        ).model_dump(),
-    )
-
-
-def _ontology_context_error_response(error: OntologyContextConfigError) -> JSONResponse:
-    error_code = None
-    status_code = 400
-    if isinstance(error, VectorStoreUnavailableError):
-        error_code = error.error_code
-        status_code = 409
-    return JSONResponse(
-        status_code=status_code,
-        content=StatusErrorBody(
-            error=str(error),
-            error_type=type(error).__name__,
-            error_code=error_code,
-        ).model_dump(),
-    )
 
 
 async def _flush_triple_configured_scope(tools: ToolBox) -> None:
@@ -635,110 +486,11 @@ def create_app(
     async def process(request: Request):
         workflow_state: dict | None = None
         try:
-            content_type = request.headers.get("content-type") or ""
-            logger.debug("Content-Type: %s", content_type)
-
-            render_mode = request.query_params.get("render_mode", None)
-            llm_graph_format = request.query_params.get("llm_graph_format", None)
-            ontology_context_mode = request.query_params.get(
-                "ontology_context_mode", None
+            loaded = await load_parsed_process_request(
+                request, server_config, log_label="process"
             )
-            ontology_user_instruction = request.query_params.get(
-                "ontology_user_instruction", ""
-            )
-            ontology_selection_user_instruction = request.query_params.get(
-                "ontology_selection_user_instruction", ""
-            )
-            facts_user_instruction = request.query_params.get(
-                "facts_user_instruction", ""
-            )
-            ontology_context_fixed_ontology_id = request.query_params.get(
-                "ontology_context_fixed_ontology_id", ""
-            ).strip()
-            strip_provenance = parse_strip_provenance_param(
-                request.query_params.get("strip_provenance")
-            )
-            max_visits = parse_max_visits_param(
-                request.query_params.get("max_visits"),
-                server_config.max_visits_per_node,
-            )
-            ontology_context_mode_value: OntologyContextMode = (
-                parse_ontology_context_mode_param(
-                    ontology_context_mode,
-                    server_config.ontology_context_mode,
-                )
-            )
-
-            if content_type.startswith("application/json"):
-                bytes_data = await request.body()
-                logger.debug("JSON body length: %s", len(bytes_data))
-                files_dict = {"input.json": bytes_data}
-                try:
-                    parsed_obj = json.loads(bytes_data.decode("utf-8"))
-                    if isinstance(parsed_obj, dict):
-                        oid_raw = parsed_obj.get(
-                            "ontology_context_fixed_ontology_id", ""
-                        )
-                        if isinstance(oid_raw, str) and oid_raw.strip():
-                            ontology_context_fixed_ontology_id = oid_raw.strip()
-                        max_visits = parse_max_visits_param(
-                            parsed_obj.get("max_visits"),
-                            max_visits,
-                        )
-                        body_format = parsed_obj.get("llm_graph_format")
-                        if body_format is not None:
-                            llm_graph_format = body_format
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    logger.debug(
-                        "JSON body could not be decoded for ontology id preview; "
-                        "convert_document will validate"
-                    )
-            elif content_type.startswith("multipart/form-data"):
-                form = await request.form()
-                files_dict = {}
-                for key, value in form.multi_items():
-                    if isinstance(value, StarletteUploadFile):
-                        files_dict[key] = await value.read()
-                    elif key == "ontology_user_instruction" and value:
-                        ontology_user_instruction = str(value)
-                    elif key == "ontology_selection_user_instruction" and value:
-                        ontology_selection_user_instruction = str(value)
-                    elif key == "facts_user_instruction" and value:
-                        facts_user_instruction = str(value)
-                    elif key == "ontology_context_fixed_ontology_id" and value:
-                        ontology_context_fixed_ontology_id = str(value).strip()
-                    elif key == "strip_provenance" and value:
-                        strip_provenance = parse_strip_provenance_param(str(value))
-                    elif key == "max_visits" and value:
-                        max_visits = parse_max_visits_param(str(value), max_visits)
-                    elif key == "llm_graph_format" and value:
-                        llm_graph_format = str(value)
-                if not files_dict:
-                    return JSONResponse(
-                        status_code=400,
-                        content=StatusErrorBody(
-                            error="No file provided",
-                            error_type="ValidationError",
-                        ).model_dump(),
-                    )
-            else:
-                return JSONResponse(
-                    status_code=400,
-                    content=StatusErrorBody(
-                        error=f"Unsupported content type: {content_type}",
-                        error_type="ValidationError",
-                    ).model_dump(),
-                )
-
-            ontology_context_mode_value = resolve_ontology_context_mode(
-                ontology_context_mode_value,
-                ontology_context_fixed_ontology_id,
-            )
-            if (
-                ontology_context_mode_value == OntologyContextMode.FIXED_SINGLE_ONTOLOGY
-                and not ontology_context_fixed_ontology_id
-            ):
-                return _missing_fixed_catalog_ontology_id_response()
+            if isinstance(loaded, JSONResponse):
+                return loaded
 
             resolved_tenant, resolved_project = await apply_request_tenancy(
                 request,
@@ -746,38 +498,24 @@ def create_app(
                 active_tenant=active_tenant,
                 active_project=active_project,
                 initialize_vector_store=(
-                    ontology_context_mode_value
+                    loaded.ontology_context_mode_value
                     == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
                 ),
             )
 
-            render_mode_value: RenderMode = parse_render_mode_param(
-                render_mode,
-                server_config.render_mode,
-            )
-            llm_graph_format_value: LLMGraphFormat = parse_llm_graph_format_param(
-                llm_graph_format,
-                server_config.llm_graph_format,
-            )
             try:
-                validate_ontology_context_mode(ontology_context_mode_value, tools)
+                validate_ontology_context_mode(
+                    loaded.ontology_context_mode_value, tools
+                )
             except OntologyContextConfigError as e:
-                return _ontology_context_error_response(e)
+                return ontology_context_config_error_response(e)
 
-            initial_state = AgentState(
-                raw_input=files_dict,
-                max_visits=max_visits,
+            initial_state = build_agent_state_from_parsed(
+                loaded,
+                server_config=server_config,
+                resolved_tenant=resolved_tenant,
+                resolved_project=resolved_project,
                 max_chunks=head_chunks,
-                render_mode=render_mode_value,
-                llm_graph_format=llm_graph_format_value,
-                ontology_context_mode=ontology_context_mode_value,
-                ontology_max_triples=server_config.ontology_max_triples,
-                tenant=resolved_tenant,
-                project=resolved_project,
-                ontology_user_instruction=ontology_user_instruction,
-                ontology_selection_user_instruction=ontology_selection_user_instruction,
-                facts_user_instruction=facts_user_instruction,
-                ontology_context_fixed_ontology_id=ontology_context_fixed_ontology_id,
             )
 
             async for chunk in workflow.astream(
@@ -820,7 +558,7 @@ def create_app(
             for artifact in ontology_artifacts:
                 out_graph = (
                     TripleStoreManager.strip_provenance(artifact.graph)
-                    if strip_provenance
+                    if loaded.strip_provenance
                     else artifact.graph
                 )
                 ontology_artifact_payloads.append(
@@ -838,7 +576,7 @@ def create_app(
                     facts=(
                         turtle_from_graph(
                             workflow_state["aggregated_facts"],
-                            strip_provenance=strip_provenance,
+                            strip_provenance=loaded.strip_provenance,
                         )
                         if workflow_state.get("aggregated_facts")
                         else ""
@@ -860,7 +598,7 @@ def create_app(
                 isinstance(e, ValueError)
                 and str(e) == "max_visits must be an integer >= 1"
             ):
-                return _invalid_max_visits_response()
+                return invalid_max_visits_response()
             logger.error("Error processing document: %s", e)
             logger.error("Error type: %s", type(e))
             logger.error("Error traceback:", exc_info=True)
@@ -892,109 +630,11 @@ def create_app(
         ``/process`` (including ``strip_provenance``).
         """
         try:
-            content_type = request.headers.get("content-type") or ""
-            logger.debug("process_unit Content-Type: %s", content_type)
-
-            render_mode = request.query_params.get("render_mode", None)
-            llm_graph_format = request.query_params.get("llm_graph_format", None)
-            ontology_context_mode = request.query_params.get(
-                "ontology_context_mode", None
+            loaded = await load_parsed_process_request(
+                request, server_config, log_label="process_unit"
             )
-            ontology_user_instruction = request.query_params.get(
-                "ontology_user_instruction", ""
-            )
-            ontology_selection_user_instruction = request.query_params.get(
-                "ontology_selection_user_instruction", ""
-            )
-            facts_user_instruction = request.query_params.get(
-                "facts_user_instruction", ""
-            )
-            ontology_context_fixed_ontology_id = request.query_params.get(
-                "ontology_context_fixed_ontology_id", ""
-            ).strip()
-            strip_provenance = parse_strip_provenance_param(
-                request.query_params.get("strip_provenance")
-            )
-            max_visits = parse_max_visits_param(
-                request.query_params.get("max_visits"),
-                server_config.max_visits_per_node,
-            )
-            ontology_context_mode_value: OntologyContextMode = (
-                parse_ontology_context_mode_param(
-                    ontology_context_mode,
-                    server_config.ontology_context_mode,
-                )
-            )
-
-            if content_type.startswith("application/json"):
-                bytes_data = await request.body()
-                logger.debug("process_unit JSON body length: %s", len(bytes_data))
-                files_dict = {"input.json": bytes_data}
-                try:
-                    parsed_obj = json.loads(bytes_data.decode("utf-8"))
-                    if isinstance(parsed_obj, dict):
-                        oid_raw = parsed_obj.get(
-                            "ontology_context_fixed_ontology_id", ""
-                        )
-                        if isinstance(oid_raw, str) and oid_raw.strip():
-                            ontology_context_fixed_ontology_id = oid_raw.strip()
-                        max_visits = parse_max_visits_param(
-                            parsed_obj.get("max_visits"),
-                            max_visits,
-                        )
-                        body_format = parsed_obj.get("llm_graph_format")
-                        if body_format is not None:
-                            llm_graph_format = body_format
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    logger.debug(
-                        "JSON body could not be decoded for ontology id preview"
-                    )
-            elif content_type.startswith("multipart/form-data"):
-                form = await request.form()
-                files_dict = {}
-                for key, value in form.multi_items():
-                    if isinstance(value, StarletteUploadFile):
-                        files_dict[key] = await value.read()
-                    elif key == "ontology_user_instruction" and value:
-                        ontology_user_instruction = str(value)
-                    elif key == "ontology_selection_user_instruction" and value:
-                        ontology_selection_user_instruction = str(value)
-                    elif key == "facts_user_instruction" and value:
-                        facts_user_instruction = str(value)
-                    elif key == "ontology_context_fixed_ontology_id" and value:
-                        ontology_context_fixed_ontology_id = str(value).strip()
-                    elif key == "strip_provenance" and value:
-                        strip_provenance = parse_strip_provenance_param(str(value))
-                    elif key == "max_visits" and value:
-                        max_visits = parse_max_visits_param(str(value), max_visits)
-                    elif key == "llm_graph_format" and value:
-                        llm_graph_format = str(value)
-                if not files_dict:
-                    return JSONResponse(
-                        status_code=400,
-                        content=StatusErrorBody(
-                            error="No file provided",
-                            error_type="ValidationError",
-                        ).model_dump(),
-                    )
-            else:
-                return JSONResponse(
-                    status_code=400,
-                    content=StatusErrorBody(
-                        error=f"Unsupported content type: {content_type}",
-                        error_type="ValidationError",
-                    ).model_dump(),
-                )
-
-            ontology_context_mode_value = resolve_ontology_context_mode(
-                ontology_context_mode_value,
-                ontology_context_fixed_ontology_id,
-            )
-            if (
-                ontology_context_mode_value == OntologyContextMode.FIXED_SINGLE_ONTOLOGY
-                and not ontology_context_fixed_ontology_id
-            ):
-                return _missing_fixed_catalog_ontology_id_response()
+            if isinstance(loaded, JSONResponse):
+                return loaded
 
             resolved_tenant, resolved_project = await apply_request_tenancy(
                 request,
@@ -1002,38 +642,24 @@ def create_app(
                 active_tenant=active_tenant,
                 active_project=active_project,
                 initialize_vector_store=(
-                    ontology_context_mode_value
+                    loaded.ontology_context_mode_value
                     == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
                 ),
             )
 
-            render_mode_value: RenderMode = parse_render_mode_param(
-                render_mode,
-                server_config.render_mode,
-            )
-            llm_graph_format_value: LLMGraphFormat = parse_llm_graph_format_param(
-                llm_graph_format,
-                server_config.llm_graph_format,
-            )
             try:
-                validate_ontology_context_mode(ontology_context_mode_value, tools)
+                validate_ontology_context_mode(
+                    loaded.ontology_context_mode_value, tools
+                )
             except OntologyContextConfigError as e:
-                return _ontology_context_error_response(e)
+                return ontology_context_config_error_response(e)
 
-            initial_state = AgentState(
-                raw_input=files_dict,
-                max_visits=max_visits,
+            initial_state = build_agent_state_from_parsed(
+                loaded,
+                server_config=server_config,
+                resolved_tenant=resolved_tenant,
+                resolved_project=resolved_project,
                 max_chunks=1,
-                render_mode=render_mode_value,
-                llm_graph_format=llm_graph_format_value,
-                ontology_context_mode=ontology_context_mode_value,
-                ontology_max_triples=server_config.ontology_max_triples,
-                tenant=resolved_tenant,
-                project=resolved_project,
-                ontology_user_instruction=ontology_user_instruction,
-                ontology_selection_user_instruction=ontology_selection_user_instruction,
-                facts_user_instruction=facts_user_instruction,
-                ontology_context_fixed_ontology_id=ontology_context_fixed_ontology_id,
             )
 
             try:
@@ -1079,7 +705,7 @@ def create_app(
                 if len(delta_graph) > 0:
                     out_graph = (
                         TripleStoreManager.strip_provenance(delta_graph)
-                        if strip_provenance
+                        if loaded.strip_provenance
                         else delta_graph
                     )
                     ontology_artifacts = [
@@ -1103,7 +729,7 @@ def create_app(
                 )
                 facts_ttl = turtle_from_graph(
                     postprocessed_facts,
-                    strip_provenance=strip_provenance,
+                    strip_provenance=loaded.strip_provenance,
                 )
 
             last_status = None
@@ -1132,7 +758,7 @@ def create_app(
                 isinstance(e, ValueError)
                 and str(e) == "max_visits must be an integer >= 1"
             ):
-                return _invalid_max_visits_response()
+                return invalid_max_visits_response()
             logger.error("Error in process_unit: %s", e)
             logger.error("Error type: %s", type(e))
             logger.error("Error traceback:", exc_info=True)

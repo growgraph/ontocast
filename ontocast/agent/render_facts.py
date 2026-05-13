@@ -16,9 +16,10 @@ from ontocast.onto.enum import FailureStage, LLMGraphFormat, Status, WorkflowNod
 from ontocast.onto.model import FactsRenderReport, GraphUpdateRenderReport
 from ontocast.onto.ontology_access import (
     UnitFactsOntologyAccess,
+    known_prefixes_for_llm_parse,
     ontology_access_for_unit_facts,
 )
-from ontocast.onto.rdfgraph import RDFGraph, extract_known_prefixes
+from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.prompt.common import (
     facts_template,
@@ -42,16 +43,6 @@ from ontocast.prompt.render_facts import (
 from ontocast.tool.atomic import AtomicToolBox
 
 logger = logging.getLogger(__name__)
-
-
-def _extract_known_prefixes(access: UnitFactsOntologyAccess) -> dict[str, str]:
-    """Extract ontology prefixes used to patch missing declarations in LLM TTL output."""
-    snap = access.ontology_for_prefixes()
-    return extract_known_prefixes(
-        snap.graph,
-        extra_prefix=snap.prefix or None,
-        extra_namespace=snap.namespace or None,
-    )
 
 
 async def render_facts(state: UnitFactsState, tools: AtomicToolBox) -> UnitFactsState:
@@ -190,7 +181,7 @@ async def render_facts_fresh(
 
     access = ontology_access_for_unit_facts(state)
 
-    known_prefixes = _extract_known_prefixes(access)
+    known_prefixes = known_prefixes_for_llm_parse(access)
 
     prompt_data = _prepare_prompt_data(state, access)
     fresh_output_instruction = (
@@ -278,7 +269,7 @@ async def render_facts_update(
     }
     prompt_data.update(prompt_data_update)
     prompt = _create_prompt_template()
-    known_prefixes = _extract_known_prefixes(access)
+    known_prefixes = known_prefixes_for_llm_parse(access)
 
     try:
         # Set known prefixes in context before parsing

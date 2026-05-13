@@ -37,6 +37,8 @@ Cache Usage:
     ensuring organized cache storage while maintaining a single cache instance.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from functools import wraps
@@ -63,52 +65,46 @@ def track_llm_usage(func: Callable) -> Callable:
     """Decorator to track LLM usage automatically."""
 
     @wraps(func)
-    def wrapper(self, *args, **kwargs):
+    def wrapper(self: LLMTool, *args, **kwargs):
         # Get prompt for character counting
         prompt = args[0] if args else ""
-        prompt_str = (
-            self._prompt_to_string(prompt)
-            if hasattr(self, "_prompt_to_string")
-            else str(prompt)
-        )
+        prompt_str = self._prompt_to_string(prompt)
 
         # Call the original function
         result = func(self, *args, **kwargs)
 
         # Track usage if budget tracker is available in the tool
-        if hasattr(self, "budget_tracker") and self.budget_tracker is not None:
+        bt = self.budget_tracker
+        if bt is not None:
             chars_sent = len(prompt_str)
             chars_received = (
                 len(result.content)
-                if hasattr(result, "content") and result.content
+                if isinstance(result, AIMessage) and result.content
                 else 0
             )
-            self.budget_tracker.add_usage(chars_sent, chars_received)
+            bt.add_usage(chars_sent, chars_received)
 
         return result
 
     @wraps(func)
-    async def async_wrapper(self, *args, **kwargs):
+    async def async_wrapper(self: LLMTool, *args, **kwargs):
         # Get prompt for character counting
         prompt = args[0] if args else ""
-        prompt_str = (
-            self._prompt_to_string(prompt)
-            if hasattr(self, "_prompt_to_string")
-            else str(prompt)
-        )
+        prompt_str = self._prompt_to_string(prompt)
 
         # Call the original function
         result = await func(self, *args, **kwargs)
 
         # Track usage if budget tracker is available in the tool
-        if hasattr(self, "budget_tracker") and self.budget_tracker is not None:
+        bt = self.budget_tracker
+        if bt is not None:
             chars_sent = len(prompt_str)
             chars_received = (
                 len(result.content)
-                if hasattr(result, "content") and result.content
+                if isinstance(result, AIMessage) and result.content
                 else len(str(result))
             )
-            self.budget_tracker.add_usage(chars_sent, chars_received)
+            bt.add_usage(chars_sent, chars_received)
 
         return result
 
@@ -362,14 +358,16 @@ class LLMTool(Tool):
         """
         if isinstance(prompt, str):
             return prompt
-        elif hasattr(prompt, "to_string"):
-            return prompt.to_string()
-        elif hasattr(prompt, "text"):
-            return prompt.text
-        elif hasattr(prompt, "content"):
-            return prompt.content
-        else:
-            return str(prompt)
+        to_string = getattr(prompt, "to_string", None)
+        if callable(to_string):
+            return str(to_string())
+        text_attr = getattr(prompt, "text", None)
+        if isinstance(text_attr, str):
+            return text_attr
+        content_attr = getattr(prompt, "content", None)
+        if content_attr is not None:
+            return str(content_attr)
+        return str(prompt)
 
     @track_llm_usage
     async def complete(self, prompt: str, **kwargs) -> Any:

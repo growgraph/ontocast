@@ -168,6 +168,23 @@ class Ontology(OntologyPropertiesWithLineage):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    def _apply_iri_fragment_hash_or_version(self) -> None:
+        """Normalize IRI when it carries a trailing hash or semantic-version fragment."""
+        if not self.iri or "#" not in self.iri:
+            return
+        base_iri, fragment = self.iri.rsplit("#", 1)
+        if len(fragment) > 20 and all(c in "0123456789abcdef" for c in fragment):
+            if self.hash is None:
+                self.hash = fragment
+            self.iri = base_iri
+            logger.debug("Extracted hash from IRI fragment: %s", fragment)
+        elif fragment.startswith("v") and re.match(r"^v\d+\.\d+\.\d+$", fragment):
+            version_str = fragment[1:]
+            if self.version is None:
+                self.version = version_str
+            self.iri = base_iri
+            logger.debug("Extracted version from IRI fragment: %s", version_str)
+
     def __init__(self, **kwargs):
         # Pop current_domain if provided, else use DEFAULT_DOMAIN
         current_domain = kwargs.pop("current_domain", DEFAULT_DOMAIN)
@@ -185,23 +202,7 @@ class Ontology(OntologyPropertiesWithLineage):
             # This is explicitly a null ontology - don't derive ontology_id, don't compute hash, etc.
             return
 
-        # Parse IRI fragment for hash-based or version-based identifiers
-        if self.iri and "#" in self.iri:
-            base_iri, fragment = self.iri.rsplit("#", 1)
-            # Check if fragment is a hash (long hex string) or version (v1.2.3)
-            if len(fragment) > 20 and all(c in "0123456789abcdef" for c in fragment):
-                # Looks like a hash - extract it
-                if self.hash is None:
-                    self.hash = fragment
-                    self.iri = base_iri  # Remove fragment from IRI
-                    logger.debug(f"Extracted hash from IRI fragment: {fragment}")
-            elif fragment.startswith("v") and re.match(r"^v\d+\.\d+\.\d+$", fragment):
-                # Semantic version fragment - extract version
-                version_str = fragment[1:]  # Remove 'v' prefix
-                if self.version is None:
-                    self.version = version_str
-                self.iri = base_iri  # Remove fragment from IRI
-                logger.debug(f"Extracted version from IRI fragment: {version_str}")
+        self._apply_iri_fragment_hash_or_version()
 
         # Try to sync from graph first (this is the primary source of truth)
         graph_had_ontology = False
@@ -320,10 +321,8 @@ class Ontology(OntologyPropertiesWithLineage):
         Returns:
             bool: True if this is NULL_ONTOLOGY or has null characteristics.
         """
-        from ontocast.onto.null import NULL_ONTOLOGY
-
-        # Check identity first (fastest)
-        if self is NULL_ONTOLOGY:
+        # Check identity first (fastest); singleton imported after class definition
+        if self is _NULL_ONTOLOGY_SINGLETON:
             return True
         # Check characteristics
         return self.iri == ONTOLOGY_NULL_IRI and self.ontology_id is None
@@ -335,10 +334,11 @@ class Ontology(OntologyPropertiesWithLineage):
         if graph does not provide a valid pair.
         """
         for k, v in kwargs.items():
-            if hasattr(self, k):
-                current = getattr(self, k)
-                if not current and v:
-                    setattr(self, k, v)
+            if k not in self.model_fields:
+                continue
+            current = getattr(self, k)
+            if not current and v:
+                setattr(self, k, v)
         # Try to sync from graph first
         graph_had_ontology = False
         if self.graph:
@@ -1288,3 +1288,7 @@ class Ontology(OntologyPropertiesWithLineage):
                 logger.warning(warning)
 
         return warnings
+
+
+# Import null singleton after Ontology class (avoids circular import).
+from ontocast.onto.null import NULL_ONTOLOGY as _NULL_ONTOLOGY_SINGLETON  # noqa: E402

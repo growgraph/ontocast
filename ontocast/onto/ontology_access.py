@@ -8,6 +8,7 @@ so agents and stategraph code do not duplicate ``ontology_snapshot`` /
 from typing import Protocol
 
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.rdfgraph import extract_known_prefixes
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.prompt.ontology_context import extract_domain_prefix_pairs
@@ -31,6 +32,16 @@ class OntologyPromptSource(Protocol):
     def domain_prefix_pairs(self) -> list[tuple[str, str]]:
         """Domain ontology prefix/namespace pairs used for prompt instructions."""
         ...
+
+
+def known_prefixes_for_llm_parse(source: OntologyPromptSource) -> dict[str, str]:
+    """Collect namespace prefixes for TTL/JSON-LD repair during LLM output parsing."""
+    current = source.ontology_for_prefixes()
+    return extract_known_prefixes(
+        current.graph,
+        extra_prefix=current.prefix or None,
+        extra_namespace=current.namespace or None,
+    )
 
 
 class UnitOntologyAccess:

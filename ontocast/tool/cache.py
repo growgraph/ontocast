@@ -4,16 +4,14 @@ This module provides a generic caching mechanism that can be used by various
 tools to cache their results based on input content and configuration parameters.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from ontocast.util import render_text_hash
-
-if TYPE_CHECKING:
-    from ontocast.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +55,7 @@ class Cacher:
     def __init__(
         self,
         cache_dir: str | Path | None = None,
-        config: "Config | None" = None,
+        config: object | None = None,
     ):
         """Initialize the shared cacher.
 
@@ -66,11 +64,12 @@ class Cacher:
             config: Optional config object to get cache_dir from.
         """
         if cache_dir is None and config is not None:
-            # Try to get cache_dir from config
-            if hasattr(config, "tool_config") and hasattr(
-                config.tool_config, "path_config"
-            ):
-                cache_dir = config.tool_config.path_config.cache_dir
+            tool_cfg = getattr(config, "tool_config", None)
+            path_cfg = (
+                getattr(tool_cfg, "path_config", None) if tool_cfg is not None else None
+            )
+            if path_cfg is not None:
+                cache_dir = path_cfg.cache_dir
 
         if cache_dir is None:
             cache_dir = _get_default_cache_dir()

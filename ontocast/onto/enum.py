@@ -19,7 +19,7 @@ class OntologyDecision(StrEnum):
 
 
 class FactsDecision(StrEnum):
-    """Enumeration of Ontology Decisions used in the workflow."""
+    """Enumeration of routing decisions after ontology quality checks."""
 
     TEXT_TO_FACTS = "adequate ontology; render facts"
     TEXT_TO_ONTOLOGY = "inadequate ontology; retry render onto"
@@ -76,7 +76,7 @@ class FailureStage(StrEnum):
         "Failed to generate SPARQL update for ontology"
     )
     GENERATE_TTL_FOR_FACTS = "Failed to generate semantic triples (turtle) for facts"
-    GENERATE_SPARQL_UPDATE_FOR_FACTS = "Failed to generate SPARQL update for ontology"
+    GENERATE_SPARQL_UPDATE_FOR_FACTS = "Failed to generate SPARQL update for facts"
 
 
 class WorkflowNode(StrEnum):

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 from collections import defaultdict
 from typing import Any
@@ -73,6 +75,16 @@ class BudgetTracker(BasePydanticModel):
         """
         self.facts_operations_count += num_operations
         self.facts_triples_generated += num_triples
+
+    def merge_from(self, other: BudgetTracker) -> None:
+        """Accumulate counters from another tracker (e.g. parallel unit workers)."""
+        self.chars_sent += other.chars_sent
+        self.chars_received += other.chars_received
+        self.calls_count += other.calls_count
+        self.ontology_triples_generated += other.ontology_triples_generated
+        self.facts_triples_generated += other.facts_triples_generated
+        self.ontology_operations_count += other.ontology_operations_count
+        self.facts_operations_count += other.facts_operations_count
 
     def get_summary(self) -> str:
         """Get a summary of LLM usage and generated triples."""
@@ -319,7 +331,7 @@ class AgentState(BasePydanticModel):
     )
     suggestions: Suggestions = Field(
         default_factory=Suggestions,
-        description="Context manager for passing information between agents",
+        description="Structured critique feedback for the next render/critic pass",
     )
 
     # Budget Tracking

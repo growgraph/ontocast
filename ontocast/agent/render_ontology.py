@@ -17,9 +17,10 @@ from ontocast.onto.enum import FailureStage, LLMGraphFormat, Status, WorkflowNod
 from ontocast.onto.model import GraphUpdateRenderReport, OntologyRenderReport
 from ontocast.onto.ontology_access import (
     UnitOntologyAccess,
+    known_prefixes_for_llm_parse,
     ontology_access_for_unit_ontology,
 )
-from ontocast.onto.rdfgraph import RDFGraph, extract_known_prefixes
+from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitOntologyState
 from ontocast.prompt.common import (
     ontology_template,
@@ -42,14 +43,45 @@ from ontocast.tool.atomic import AtomicToolBox
 logger = logging.getLogger(__name__)
 
 
-def _extract_known_prefixes(access: UnitOntologyAccess) -> dict[str, str]:
-    """Extract ontology prefixes used to patch missing declarations in LLM TTL output."""
-    current = access.ontology_for_prefixes()
-    return extract_known_prefixes(
-        current.graph,
-        extra_prefix=current.prefix or None,
-        extra_namespace=current.namespace or None,
+def _create_ontology_render_prompt_template() -> PromptTemplate:
+    return PromptTemplate(
+        template=template_prompt,
+        input_variables=[
+            "preamble",
+            "intro_instruction",
+            "ontology_instruction",
+            "output_instruction",
+            "user_instruction",
+            "improvement_instruction",
+            "ontology_ttl",
+            "text",
+            "external_evidence",
+            "format_instructions",
+        ],
     )
+
+
+def _handle_ontology_render_error(
+    state: UnitOntologyState, error: Exception, stage: FailureStage
+) -> UnitOntologyState:
+    logger.error("Failed to generate ontology output: %s", error)
+    state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.FAILED)
+    state.set_failure(stage, str(error))
+    return state
+
+
+def _prepare_ontology_common_prompt_layers(
+    state: UnitOntologyState, access: UnitOntologyAccess
+) -> tuple[str, str, str]:
+    domain_pairs = access.domain_prefix_pairs()
+    general_ontology_instruction_str = general_ontology_instruction.format(
+        domain_ontologies_clause=format_ontologies_clause(domain_pairs)
+    )
+    text_chapter = text_template.format(text=state.content_unit.text)
+    external_evidence = state.external_evidence_text
+    if external_evidence:
+        state.mark_external_evidence_used(WorkflowNode.TEXT_TO_ONTOLOGY)
+    return general_ontology_instruction_str, text_chapter, external_evidence
 
 
 async def render_ontology(
@@ -114,32 +146,13 @@ async def render_ontology_fresh(
     ontology_ttl = ""
     improvement_instruction_str = ""
     access = ontology_access_for_unit_ontology(state)
-    domain_pairs = access.domain_prefix_pairs()
-    general_ontology_instruction_str = general_ontology_instruction.format(
-        domain_ontologies_clause=format_ontologies_clause(domain_pairs)
-    )
+    (
+        general_ontology_instruction_str,
+        text_chapter,
+        external_evidence,
+    ) = _prepare_ontology_common_prompt_layers(state, access)
 
-    text_chapter = text_template.format(text=state.content_unit.text)
-
-    external_evidence = state.external_evidence_text
-    if external_evidence:
-        state.mark_external_evidence_used(WorkflowNode.TEXT_TO_ONTOLOGY)
-
-    prompt = PromptTemplate(
-        template=template_prompt,
-        input_variables=[
-            "preamble",
-            "intro_instruction",
-            "ontology_instruction",
-            "output_instruction",
-            "user_instruction",
-            "improvement_instruction",
-            "ontology_ttl",
-            "text",
-            "external_evidence",
-            "format_instructions",
-        ],
-    )
+    prompt = _create_ontology_render_prompt_template()
 
     try:
         llm_tool = await tools.get_llm_tool(state.budget_tracker)
@@ -179,10 +192,9 @@ async def render_ontology_fresh(
         return state
 
     except Exception as e:
-        logger.error(f"Failed to generate triples: {str(e)}")
-        state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.FAILED)
-        state.set_failure(FailureStage.GENERATE_TTL_FOR_ONTOLOGY, str(e))
-        return state
+        return _handle_ontology_render_error(
+            state, e, FailureStage.GENERATE_TTL_FOR_ONTOLOGY
+        )
 
 
 async def render_ontology_update(
@@ -232,31 +244,14 @@ async def render_ontology_update(
         state.suggestions, WorkflowNode.TEXT_TO_ONTOLOGY
     )
 
-    domain_pairs = access.domain_prefix_pairs()
-    general_ontology_instruction_str = general_ontology_instruction.format(
-        domain_ontologies_clause=format_ontologies_clause(domain_pairs)
-    )
-    text_chapter = text_template.format(text=state.content_unit.text)
-    external_evidence = state.external_evidence_text
-    if external_evidence:
-        state.mark_external_evidence_used(WorkflowNode.TEXT_TO_ONTOLOGY)
+    (
+        general_ontology_instruction_str,
+        text_chapter,
+        external_evidence,
+    ) = _prepare_ontology_common_prompt_layers(state, access)
 
-    prompt = PromptTemplate(
-        template=template_prompt,
-        input_variables=[
-            "preamble",
-            "intro_instruction",
-            "ontology_instruction",
-            "output_instruction",
-            "user_instruction",
-            "improvement_instruction",
-            "ontology_ttl",
-            "text",
-            "external_evidence",
-            "format_instructions",
-        ],
-    )
-    known_prefixes = _extract_known_prefixes(access)
+    prompt = _create_ontology_render_prompt_template()
+    known_prefixes = known_prefixes_for_llm_parse(access)
 
     try:
         llm_tool = await tools.get_llm_tool(state.budget_tracker)
@@ -301,10 +296,9 @@ async def render_ontology_update(
         return state
 
     except Exception as e:
-        logger.error(f"Failed to generate ontology update: {str(e)}")
-        state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.FAILED)
-        state.set_failure(FailureStage.GENERATE_SPARQL_UPDATE_FOR_ONTOLOGY, str(e))
-        return state
+        return _handle_ontology_render_error(
+            state, e, FailureStage.GENERATE_SPARQL_UPDATE_FOR_ONTOLOGY
+        )
     finally:
         # Clear the context after parsing
         RDFGraph.set_known_prefixes(None)

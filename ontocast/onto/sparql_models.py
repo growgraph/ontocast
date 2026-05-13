@@ -129,120 +129,6 @@ class StructuredSPARQLQueryModel(BaseModel):
         ]
 
 
-class OntologyUpdateReport(BaseModel):
-    """Report from ontology update process using structured SPARQL.
-
-    Attributes:
-        update_success: True if the ontology update was performed successfully
-        structured_query: The structured SPARQL query used for the update
-        add_count: Number of ADD operations
-        update_count: Number of UPDATE operations
-        remove_count: Number of REMOVE operations
-        critique: Optional critique of the update process
-    """
-
-    update_success: bool = Field(
-        description="True if the ontology update was performed successfully, False otherwise"
-    )
-    structured_query: StructuredSPARQLQueryModel = Field(
-        description="The structured SPARQL query used for the update"
-    )
-    add_count: int = Field(
-        description="Number of ADD operations in the structured query"
-    )
-    update_count: int = Field(
-        description="Number of UPDATE operations in the structured query"
-    )
-    remove_count: int = Field(
-        description="Number of REMOVE operations in the structured query"
-    )
-    critique: str | None = Field(
-        None, description="Optional critique or explanation of the update process"
-    )
-
-
-class FactsUpdateReport(BaseModel):
-    """Report from facts update process using structured SPARQL.
-
-    Attributes:
-        update_success: True if the facts update was performed successfully
-        structured_query: The structured SPARQL query used for the update
-        add_count: Number of ADD operations
-        update_count: Number of UPDATE operations
-        remove_count: Number of REMOVE operations
-        critique: Optional critique of the update process
-    """
-
-    update_success: bool = Field(
-        description="True if the facts update was performed successfully, False otherwise"
-    )
-    structured_query: StructuredSPARQLQueryModel = Field(
-        description="The structured SPARQL query used for the update"
-    )
-    add_count: int = Field(
-        description="Number of ADD operations in the structured query"
-    )
-    update_count: int = Field(
-        description="Number of UPDATE operations in the structured query"
-    )
-    remove_count: int = Field(
-        description="Number of REMOVE operations in the structured query"
-    )
-    critique: str | None = Field(
-        None, description="Optional critique or explanation of the update process"
-    )
-
-
-class FreshOntologyReport(BaseModel):
-    """Report from fresh ontology generation process.
-
-    Attributes:
-        generation_success: True if the ontology was generated successfully
-        ontology_graph: The generated ontology as an RDFGraph
-        ontology_score: Score 0-100 for ontology quality
-        critique: Optional critique of the ontology generation
-    """
-
-    generation_success: bool = Field(
-        description="True if the ontology was generated successfully, False otherwise"
-    )
-    ontology_graph: RDFGraph = Field(
-        default_factory=RDFGraph,
-        description="The generated ontology as an RDFGraph in Turtle format",
-    )
-    ontology_score: float | None = Field(
-        None, description="Score 0-100 for ontology quality and completeness"
-    )
-    critique: str | None = Field(
-        None, description="Optional critique or explanation of the ontology generation"
-    )
-
-
-class FreshFactsReport(BaseModel):
-    """Report from fresh facts generation process.
-
-    Attributes:
-        generation_success: True if the facts were generated successfully
-        facts_graph: The generated facts as an RDFGraph
-        facts_score: Score 0-100 for facts quality
-        critique: Optional critique of the facts generation
-    """
-
-    generation_success: bool = Field(
-        description="True if the facts were generated successfully, False otherwise"
-    )
-    facts_graph: RDFGraph = Field(
-        default_factory=RDFGraph,
-        description="The generated facts as an RDFGraph in Turtle format",
-    )
-    facts_score: float | None = Field(
-        None, description="Score 0-100 for facts quality and completeness"
-    )
-    critique: str | None = Field(
-        None, description="Optional critique or explanation of the facts generation"
-    )
-
-
 class TripleOp(BaseModel):
     """Operation to modify triples in the RDF graph.
 
@@ -371,10 +257,7 @@ class GraphUpdate(BaseModel):
             - total_operations: Number of operations
             - total_triples: Total number of triples across all TripleOp operations
         """
-        total_triples = 0
-        for op in self.triple_operations:
-            if isinstance(op, TripleOp):
-                total_triples += len(op.graph)
+        total_triples = sum(len(op.graph) for op in self.triple_operations)
         return (len(self.triple_operations), total_triples)
 
     def extract_insert_graph(self) -> RDFGraph:
@@ -388,7 +271,7 @@ class GraphUpdate(BaseModel):
         """
         result = RDFGraph()
         for op in self.triple_operations:
-            if isinstance(op, TripleOp) and op.type == "insert" and len(op.graph) > 0:
+            if op.type == "insert" and len(op.graph) > 0:
                 for triple in op.graph:
                     result.add(triple)
                 for prefix, uri in op.graph.namespaces():
@@ -405,47 +288,45 @@ class GraphUpdate(BaseModel):
             String representation of all operations showing what will be added, removed, and modified.
             Returns empty string if no operations to perform.
         """
-        if not self.triple_operations:
+        if not self.triple_operations and not self.sparql_operations:
             return ""
 
         diff_parts = []
         operation_count = 0
 
         for i, op in enumerate(self.triple_operations, 1):
-            if isinstance(op, TripleOp):
-                if len(op.graph) > 0:
-                    op_type = op.type.upper()
-                    diff_parts.append(f"{i}. {op_type} {len(op.graph)} triple(s):")
+            if len(op.graph) > 0:
+                op_type = op.type.upper()
+                diff_parts.append(f"{i}. {op_type} {len(op.graph)} triple(s):")
 
-                    # Show prefixes from graph and explicit prefixes
-                    graph_prefixes = {
-                        prefix: str(uri)
-                        for prefix, uri in op.graph.namespaces()
-                        if prefix
-                    }
-                    all_prefixes = {**graph_prefixes, **op.prefixes}
-                    if all_prefixes:
-                        prefix_list = ", ".join(
-                            [f"{k}: {v}" for k, v in all_prefixes.items()]
-                        )
-                        diff_parts.append(f"   Prefixes: {prefix_list}")
+                # Show prefixes from graph and explicit prefixes
+                graph_prefixes = {
+                    prefix: str(uri) for prefix, uri in op.graph.namespaces() if prefix
+                }
+                all_prefixes = {**graph_prefixes, **op.prefixes}
+                if all_prefixes:
+                    prefix_list = ", ".join(
+                        [f"{k}: {v}" for k, v in all_prefixes.items()]
+                    )
+                    diff_parts.append(f"   Prefixes: {prefix_list}")
 
-                    for subject, predicate, obj in op.graph:
-                        symbol = "+" if op.type == "insert" else "-"
-                        diff_parts.append(
-                            f"   {symbol} {self._serialize_rdf_term(subject)} {self._serialize_rdf_term(predicate)} {self._serialize_rdf_term(obj)}"
-                        )
-                    operation_count += 1
+                for subject, predicate, obj in op.graph:
+                    symbol = "+" if op.type == "insert" else "-"
+                    diff_parts.append(
+                        f"   {symbol} {self._serialize_rdf_term(subject)} {self._serialize_rdf_term(predicate)} {self._serialize_rdf_term(obj)}"
+                    )
+                operation_count += 1
 
-            elif isinstance(op, GenericSparqlQuery):
-                if op.query.strip():
-                    # Truncate long queries for readability
-                    query_preview = op.query.strip()
-                    if len(query_preview) > 100:
-                        query_preview = query_preview[:97] + "..."
-                    diff_parts.append(f"{i}. CUSTOM SPARQL QUERY:")
-                    diff_parts.append(f"   {query_preview}")
-                    operation_count += 1
+        base_index = len(self.triple_operations)
+        for j, op in enumerate(self.sparql_operations, 1):
+            if op.query.strip():
+                i = base_index + j
+                query_preview = op.query.strip()
+                if len(query_preview) > 100:
+                    query_preview = query_preview[:97] + "..."
+                diff_parts.append(f"{i}. CUSTOM SPARQL QUERY:")
+                diff_parts.append(f"   {query_preview}")
+                operation_count += 1
 
         if operation_count == 0:
             return ""

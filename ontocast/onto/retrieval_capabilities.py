@@ -1,5 +1,8 @@
 """Vector retrieval prerequisites for ``selected_vector_search_ontology`` context mode."""
 
+from __future__ import annotations
+
+from ontocast.onto.enum import OntologyContextMode
 from ontocast.toolbox import ToolBox
 
 
@@ -36,3 +39,12 @@ def require_vector_retrieval(tools: ToolBox) -> None:
         "vector_store and patch_retriever are available and initialized."
         f"{details}"
     )
+
+
+def validate_ontology_context_mode(
+    ontology_context_mode: OntologyContextMode,
+    tools: ToolBox,
+) -> None:
+    """Raise if the requested ontology context mode cannot be satisfied."""
+    if ontology_context_mode == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY:
+        require_vector_retrieval(tools)

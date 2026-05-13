@@ -13,7 +13,7 @@ from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.state import AgentState
+from ontocast.onto.state import AgentState, BudgetTracker
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.atomic import facts_loop, ontology_loop
 from ontocast.stategraph.context_resolver import (
@@ -50,12 +50,13 @@ def make_render_ontology_node(tools: ToolBox):
         ) -> tuple[int, UnitOntologyState, str, list[str], OntologyAssemblyMode]:
             async with semaphore:
                 base_state = state.model_copy(deep=True)
+                unit_budget = BudgetTracker()
                 ontology_state = UnitOntologyState(
                     content_unit=state.content_units[unit_index],
                     ontology_snapshot=NULL_ONTOLOGY,
                     ontology_patch_sources=[],
                     ontology_user_instruction=state.ontology_user_instruction,
-                    budget_tracker=base_state.budget_tracker,
+                    budget_tracker=unit_budget,
                     max_visits_per_node=tools.config.server.max_visits_per_node,
                     current_domain=state.current_domain,
                     ontology_max_triples=tools.config.server.ontology_max_triples,
@@ -86,6 +87,7 @@ def make_render_ontology_node(tools: ToolBox):
             patch_sources,
             assembly_mode,
         ) in ordered_results:
+            state.budget_tracker.merge_from(result.budget_tracker)
             unit_contexts[unit_index] = (anchor_iri, patch_sources, assembly_mode)
             has_output = bool(result.all_updates) or (
                 result.current_ontology.hash != result.ontology_snapshot.hash
@@ -314,12 +316,13 @@ def make_render_facts_node(tools: ToolBox):
         ) -> tuple[int, UnitFactsState, str, list[str], OntologyAssemblyMode]:
             async with semaphore:
                 base_state = state.model_copy(deep=True)
+                unit_budget = BudgetTracker()
                 facts_state = UnitFactsState(
                     content_unit=state.content_units[unit_index],
                     ontology_snapshot=NULL_ONTOLOGY,
                     ontology_patch_sources=[],
                     facts_user_instruction=state.facts_user_instruction,
-                    budget_tracker=base_state.budget_tracker,
+                    budget_tracker=unit_budget,
                     max_visits_per_node=tools.config.server.max_visits_per_node,
                     llm_graph_format=state.llm_graph_format,
                 )
@@ -351,6 +354,7 @@ def make_render_facts_node(tools: ToolBox):
             patch_sources,
             assembly_mode,
         ) in ordered_results:
+            state.budget_tracker.merge_from(result.budget_tracker)
             unit_contexts[unit_index] = (anchor_iri, patch_sources, assembly_mode)
             has_output = len(result.content_unit.graph) > 0
             if not has_output:
