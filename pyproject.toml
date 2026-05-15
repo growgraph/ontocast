@@ -72,7 +72,6 @@ plot = [
 
 [project.scripts]
 cmp-states = "ontocast.cli.cmp_states:main"
-match-graphs = "ontocast.cli.match_graphs:main"
 ontocast = "ontocast.cli.server:run"
 pdfs-to-markdown = "ontocast.cli.pdfs_to_markdown:main"
 plot-graph = "ontocast.cli.plot_graph:main"

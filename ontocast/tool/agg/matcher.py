@@ -8,8 +8,8 @@ from itertools import product
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
-from rdflib import URIRef
-from rdflib.term import Node
+from rdflib import RDFS, XSD, URIRef
+from rdflib.term import Literal, Node
 
 from ontocast.onto.iri_policy import split_namespace_local
 from ontocast.onto.rdfgraph import RDFGraph
@@ -19,6 +19,15 @@ from .clustering import EntityClusterer
 from .normalizer import EntityNormalizer, EntityRepresentation
 
 logger = logging.getLogger(__name__)
+
+GENERIC_NAMESPACES = frozenset(
+    {
+        "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+        "http://www.w3.org/2000/01/rdf-schema#",
+        "http://www.w3.org/2002/07/owl#",
+        "http://www.w3.org/2001/XMLSchema#",
+    }
+)
 
 
 class MatchRegime(StrEnum):
@@ -48,6 +57,13 @@ class MatchMetrics(BaseModel):
     false_negatives: int
     predicted_count: int
     ground_truth_count: int
+    entity_precision: float
+    entity_recall: float
+    entity_f1: float
+    entity_true_positives: int
+    entity_false_positives: int
+    entity_false_negatives: int
+    domain_entity_matches: int
 
 
 class TripleSetMatchResult(BaseModel):
@@ -134,6 +150,60 @@ class TripleSetMatcher:
         if isinstance(term, URIRef):
             return mapping.get(term, term)
         return term
+
+    @staticmethod
+    def _normalize_literal(node: Node) -> Node:
+        if isinstance(node, Literal) and node.datatype == XSD.string:
+            return Literal(str(node))
+        return node
+
+    @staticmethod
+    def _normalize_triple(triple: tuple[Node, Node, Node]) -> tuple[Node, Node, Node]:
+        subject, predicate, obj = triple
+        return (
+            TripleSetMatcher._normalize_literal(subject),
+            TripleSetMatcher._normalize_literal(predicate),
+            TripleSetMatcher._normalize_literal(obj),
+        )
+
+    @staticmethod
+    def _is_informative_triple(triple: tuple[Node, Node, Node]) -> bool:
+        _, predicate, _ = triple
+        return predicate != RDFS.label
+
+    def _prepare_metric_triples(
+        self, triples: set[tuple[Node, Node, Node]]
+    ) -> set[tuple[Node, Node, Node]]:
+        return {
+            self._normalize_triple(triple)
+            for triple in triples
+            if self._is_informative_triple(triple)
+        }
+
+    @staticmethod
+    def _is_domain_entity(entity: URIRef) -> bool:
+        namespace, _ = split_namespace_local(str(entity))
+        return namespace is not None and namespace not in GENERIC_NAMESPACES
+
+    @staticmethod
+    def _count_domain_entity_matches(entity_matches: list[EntityMatch]) -> int:
+        return sum(
+            1
+            for matched in entity_matches
+            if TripleSetMatcher._is_domain_entity(matched.left_entity)
+            and TripleSetMatcher._is_domain_entity(matched.right_entity)
+        )
+
+    def _compute_prf(
+        self,
+        true_positives: int,
+        predicted_count: int,
+        ground_truth_count: int,
+    ) -> tuple[float, float, float]:
+        precision = self._safe_divide(true_positives, predicted_count)
+        recall = self._safe_divide(true_positives, ground_truth_count)
+        f1 = self._safe_divide(2 * precision * recall, precision + recall)
+        return precision, recall, f1
 
     def _project_triples(
         self, graph: RDFGraph, mapping: dict[URIRef, URIRef]
@@ -262,18 +332,35 @@ class TripleSetMatcher:
         }
 
         if ground_truth_side == GroundTruthSide.RIGHT:
-            predicted = self._project_triples(left_graph, left_to_right)
-            ground_truth = set(right_graph)
+            raw_predicted = self._project_triples(left_graph, left_to_right)
+            raw_ground_truth = set(right_graph)
         else:
-            predicted = self._project_triples(right_graph, right_to_left)
-            ground_truth = set(left_graph)
+            raw_predicted = self._project_triples(right_graph, right_to_left)
+            raw_ground_truth = set(left_graph)
+
+        predicted = self._prepare_metric_triples(raw_predicted)
+        ground_truth = self._prepare_metric_triples(raw_ground_truth)
 
         true_positives = len(predicted & ground_truth)
         false_positives = len(predicted - ground_truth)
         false_negatives = len(ground_truth - predicted)
-        precision = self._safe_divide(true_positives, len(predicted))
-        recall = self._safe_divide(true_positives, len(ground_truth))
-        f1 = self._safe_divide(2 * precision * recall, precision + recall)
+        precision, recall, f1 = self._compute_prf(
+            true_positives,
+            len(predicted),
+            len(ground_truth),
+        )
+
+        matched_left = {matched.left_entity for matched in entity_matches}
+        matched_right = {matched.right_entity for matched in entity_matches}
+        entity_true_positives = len(entity_matches)
+        entity_false_positives = len(left_entities) - len(matched_left)
+        entity_false_negatives = len(right_entities) - len(matched_right)
+        entity_precision, entity_recall, entity_f1 = self._compute_prf(
+            entity_true_positives,
+            len(left_entities),
+            len(right_entities),
+        )
+        domain_entity_matches = self._count_domain_entity_matches(entity_matches)
 
         return TripleSetMatchResult(
             regime=regime,
@@ -289,5 +376,12 @@ class TripleSetMatcher:
                 false_negatives=false_negatives,
                 predicted_count=len(predicted),
                 ground_truth_count=len(ground_truth),
+                entity_precision=entity_precision,
+                entity_recall=entity_recall,
+                entity_f1=entity_f1,
+                entity_true_positives=entity_true_positives,
+                entity_false_positives=entity_false_positives,
+                entity_false_negatives=entity_false_negatives,
+                domain_entity_matches=domain_entity_matches,
             ),
         )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from rdflib import RDF, URIRef
+from rdflib import RDF, RDFS, XSD, Literal, URIRef
 
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.agg.matcher import GroundTruthSide, MatchRegime, TripleSetMatcher
@@ -30,6 +30,7 @@ def test_match_exact_graphs_have_perfect_metrics(
             URIRef("https://left.example/Alpha"): np.array([1.0, 0.0]),
             URIRef("https://left.example/Beta"): np.array([0.0, 1.0]),
             URIRef("https://pred.example/relatedTo"): np.array([0.5, 0.5]),
+            URIRef("https://type.example/Person"): np.array([0.3, 0.7]),
             URIRef(str(RDF.type)): np.array([0.2, 0.8]),
         }
 
@@ -38,6 +39,9 @@ def test_match_exact_graphs_have_perfect_metrics(
     assert result.metrics.precision == 1.0
     assert result.metrics.recall == 1.0
     assert result.metrics.f1 == 1.0
+    assert result.metrics.entity_precision == 1.0
+    assert result.metrics.entity_recall == 1.0
+    assert result.metrics.entity_f1 == 1.0
 
 
 def test_strict_requires_type_namespace_overlap(
@@ -72,6 +76,7 @@ def test_strict_requires_type_namespace_overlap(
 
     assert len(loose.entity_matches) > len(strict.entity_matches)
     assert strict.metrics.true_positives < loose.metrics.true_positives
+    assert strict.metrics.entity_true_positives <= loose.metrics.entity_true_positives
 
 
 def test_match_is_deterministic_for_equal_scores(
@@ -108,3 +113,57 @@ def test_match_is_deterministic_for_equal_scores(
         for item in result.entity_matches
     ]
     assert pairs == sorted(pairs)
+
+
+def test_label_triples_excluded_from_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    left_graph = RDFGraph()
+    right_graph = RDFGraph()
+    entity = URIRef("https://left.example/Alpha")
+    left_graph.add((entity, RDFS.label, Literal("Alpha")))
+    right_graph.add((entity, RDFS.label, Literal("Alpha")))
+    matcher = TripleSetMatcher(similarity_threshold=0.1)
+    monkeypatch.setattr(
+        matcher.clusterer,
+        "embed_representations",
+        lambda *_args, **_kwargs: {
+            entity: np.array([1.0, 0.0]),
+            RDFS.label: np.array([0.0, 1.0]),
+        },
+    )
+
+    result = matcher.match(left_graph, right_graph)
+
+    assert result.metrics.ground_truth_count == 0
+    assert result.metrics.predicted_count == 0
+    assert result.metrics.true_positives == 0
+    assert result.metrics.precision == 0.0
+    assert result.metrics.recall == 0.0
+
+
+def test_xsd_string_literal_normalized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    predicate = URIRef("https://pred.example/name")
+    left_graph = RDFGraph()
+    right_graph = RDFGraph()
+    entity = URIRef("https://example.org/entity")
+    left_graph.add((entity, predicate, Literal("Alan Wright", datatype=XSD.string)))
+    right_graph.add((entity, predicate, Literal("Alan Wright")))
+    matcher = TripleSetMatcher(similarity_threshold=0.1)
+    monkeypatch.setattr(
+        matcher.clusterer,
+        "embed_representations",
+        lambda *_args, **_kwargs: {
+            entity: np.array([1.0, 0.0]),
+            predicate: np.array([0.0, 1.0]),
+        },
+    )
+
+    result = matcher.match(left_graph, right_graph)
+
+    assert result.metrics.true_positives == 1
+    assert result.metrics.precision == 1.0
+    assert result.metrics.recall == 1.0
+    assert result.metrics.f1 == 1.0
