@@ -13,8 +13,10 @@ from ontocast.agent.common import call_llm_with_retry
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import FactsCritiqueReport, Suggestions
 from ontocast.onto.ontology_access import ontology_access_for_unit_facts
+from ontocast.onto.rdfgraph import format_quarantine_for_prompt
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.prompt.common import (
+    critique_graph_format_instruction,
     facts_template,
     ontology_template,
     text_template,
@@ -28,6 +30,22 @@ from ontocast.prompt.criticise_facts import (
 from ontocast.tool.atomic import AtomicToolBox
 
 logger = logging.getLogger(__name__)
+
+
+def _build_quarantine_chapter(state: UnitFactsState) -> str:
+    if not state.quarantined_literal_triples:
+        return ""
+
+    formatted = format_quarantine_for_prompt(
+        state.quarantined_literal_triples,
+        state.llm_graph_format,
+    )
+    return (
+        "\n\n## Quarantined triples (invalid XSD typed literals, excluded from applied graph)\n"
+        "The following triples were not merged into the facts graph. Replace them using "
+        "structured representations defined in the ontology chapter above.\n\n"
+        f"{formatted}\n"
+    )
 
 
 async def criticise_facts(
@@ -68,7 +86,7 @@ async def criticise_facts(
 
     facts_chapter = facts_template.format(
         facts_ttl=facts_ttl,
-    )
+    ) + _build_quarantine_chapter(state)
 
     text_chapter = text_template.format(text=state.content_unit.text)
 
@@ -87,9 +105,12 @@ async def criticise_facts(
             "ontology_chapter",
             "facts_chapter",
             "text_chapter",
+            "graph_format_instruction",
             "format_instructions",
         ],
     )
+
+    graph_format_instruction = critique_graph_format_instruction(state.llm_graph_format)
 
     prompt_data = {
         "preamble": preamble,
@@ -98,6 +119,7 @@ async def criticise_facts(
         "ontology_chapter": ontology_chapter,
         "facts_chapter": facts_chapter,
         "text_chapter": text_chapter,
+        "graph_format_instruction": graph_format_instruction,
         "format_instructions": parser.get_format_instructions(),
     }
 

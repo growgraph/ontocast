@@ -13,8 +13,14 @@ from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import OntologyCritiqueReport, Suggestions
 from ontocast.onto.ontology_access import ontology_access_for_unit_ontology
 from ontocast.onto.unit_states import UnitOntologyState
-from ontocast.prompt.common import ontology_template, text_template
-from ontocast.prompt.common import system_preamble_ontology as system_preamble
+from ontocast.prompt.common import (
+    critique_graph_format_instruction,
+    ontology_template,
+    text_template,
+)
+from ontocast.prompt.common import (
+    system_preamble_ontology as system_preamble,
+)
 from ontocast.prompt.criticise_ontology import (
     intro_instruction,
     ontology_criteria,
@@ -84,9 +90,12 @@ async def criticise_ontology(
             "ontology_chapter",
             "text_chapter",
             "external_evidence",
+            "graph_format_instruction",
             "format_instructions",
         ],
     )
+
+    graph_format_instruction = critique_graph_format_instruction(state.llm_graph_format)
 
     try:
         critique: OntologyCritiqueReport = await call_llm_with_retry(
@@ -101,6 +110,7 @@ async def criticise_ontology(
                 "user_instruction": user_instruction,
                 "ontology_chapter": ontology_chapter,
                 "external_evidence": external_evidence,
+                "graph_format_instruction": graph_format_instruction,
                 "format_instructions": parser.get_format_instructions(),
             },
         )

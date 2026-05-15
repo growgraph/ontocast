@@ -450,6 +450,35 @@ def test_atomizer_hierarchy_clues_include_parent_label_gloss() -> None:
     assert "parent relation label" in nh_prop
 
 
+def test_atomizer_core_representation_includes_skos_alt_label() -> None:
+    """skos:altLabel values appear in core text for ontology and facts atoms."""
+    graph = RDFGraph._from_turtle_str(
+        """
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix ex: <https://example.org/alt#> .
+
+        ex: a owl:Ontology .
+        ex:Term a rdfs:Class ;
+            skos:prefLabel "Preferred"@en ;
+            skos:altLabel "Synonym A"@en ;
+            skos:altLabel "Synonym B"@en .
+        """
+    )
+    ontology = Ontology(graph=graph)
+    atom = next(
+        a
+        for a in GraphAtomizer().atomize(source=ontology, depth=1)
+        if a.iri.endswith("#Term")
+    )
+    core = atom.core_representation.lower()
+    assert core.startswith("preferred")
+    assert "synonym a" in core
+    assert "synonym b" in core
+
+
 def test_atomizer_minimal_representation_splits_iri_local_name() -> None:
     graph = RDFGraph._from_turtle_str(
         """

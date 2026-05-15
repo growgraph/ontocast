@@ -101,9 +101,11 @@ class OntologySelectorReport(BasePydanticModel):
 class SemanticTriplesFactsReport(BaseModel):
     """Report containing semantic triples and evaluation scores.
 
+    Graph payloads follow ``LLM_GRAPH_FORMAT`` (Turtle strings or compact JSON-LD
+    objects embedded in the structured LLM response; both parse to ``RDFGraph``).
+
     Attributes:
-        semantic_graph: Semantic triples (facts) representing the document
-            in turtle (ttl) format.
+        semantic_graph: Semantic triples (facts) representing the document.
         ontology_relevance_score: Score 0-100 for how relevant the ontology
             is to the document. 0 is the worst, 100 is the best.
         triples_generation_score: Score 0-100 for how well the facts extraction /
@@ -201,6 +203,12 @@ class GraphUpdateRenderReport(BaseModel):
 
 
 class TripleFix(BaseModel):
+    """A single actionable correction to an RDF facts or ontology graph.
+
+    ``incorrect_value`` / ``correct_value`` are plain strings today; use the same
+    graph syntax as the deployment (Turtle or compact JSON-LD per output instructions).
+    """
+
     text_fragment: str = Field(
         description="Exact quote from source text justifying this change"
     )
@@ -255,12 +263,20 @@ class TripleFix(BaseModel):
 
     incorrect_value: str | None = Field(
         default=None,
-        description="Current incorrect triple/entity/value (for REMOVE and REPLACE). Use Turtle syntax.",
+        description=(
+            "Current incorrect triple/entity/value (for REMOVE and REPLACE). "
+            "Use the same graph syntax as the deployment (Turtle string or compact "
+            "JSON-LD per output instructions)."
+        ),
     )
 
     correct_value: str | None = Field(
         default=None,
-        description="Proposed correct triple/entity/value (for ADD and REPLACE). Use Turtle syntax.",
+        description=(
+            "Proposed correct triple/entity/value (for ADD and REPLACE). "
+            "Use the same graph syntax as the deployment (Turtle string or compact "
+            "JSON-LD per output instructions)."
+        ),
     )
 
     explanation: str = Field(
@@ -319,8 +335,11 @@ class OntologyCritiqueReport(BaseModel):
 
     actionable_ontology_fixes: list[TripleFix] = Field(
         default_factory=list,
-        description="List of specific fixes to correct the facts graph. "
-        "For each fix, provide the text evidence, the action type, and the relevant triples.",
+        description=(
+            "List of specific fixes to correct the ontology graph. "
+            "For each fix, provide text evidence, action type, and relevant triples "
+            "in deployment graph syntax (Turtle or JSON-LD per output instructions)."
+        ),
     )
 
     systemic_critique_summary: str = Field(
@@ -351,7 +370,8 @@ class FactsCritiqueReport(BaseModel):
         default_factory=list,
         description=(
             "List of specific fixes to correct the facts graph. "
-            "For each fix, provide the text evidence, the action type, and the relevant triples."
+            "For each fix, provide text evidence, action type, and relevant triples "
+            "in deployment graph syntax (Turtle or JSON-LD per output instructions)."
         ),
     )
 

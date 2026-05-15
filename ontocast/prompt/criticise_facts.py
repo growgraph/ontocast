@@ -21,6 +21,8 @@ template_prompt = """
 
 {text_chapter}
 
+{graph_format_instruction}
+
 {format_instructions}
 """
 
@@ -81,6 +83,13 @@ Before finalizing your critique:
    - Flag as error
    - Search available ontologies for semantically similar entities
    - Suggest REPLACE if found, or REMOVE if no suitable replacement exists
+
+7. Quarantined typed literals: When a "Quarantined triples" section is present,
+   each entry had an XSD datatype whose lexical form is invalid for that type
+   (e.g. ranges, approximations, or unit suffixes encoded as a single decimal).
+   - Propose critical REPLACE fixes that use ontology-defined structured representations
+     from the ontology chapter (not ad-hoc xsd:string unless no pattern exists).
+   - `correct_value` / `incorrect_value` MUST follow the GRAPH FORMAT INSTRUCTION below.
 
 # SEARCH DECISION OUTPUT
 

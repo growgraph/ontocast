@@ -20,6 +20,7 @@ from ontocast.config import (
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI, PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
 from ontocast.onto.enum import (
+    LLMGraphFormat,
     OntologyAssemblyMode,
     OntologyContextMode,
     RenderMode,
@@ -460,6 +461,46 @@ async def test_criticise_ontology_skips_external_evidence_when_disabled(
     await criticise_ontology_module.criticise_ontology(state, tools=tools)
 
     assert captured_prompt_kwargs.get("external_evidence") == ""
+
+
+@pytest.mark.anyio
+async def test_criticise_ontology_prompt_includes_graph_format_instruction(
+    monkeypatch,
+) -> None:
+    captured_prompt_kwargs: dict[str, object] = {}
+
+    async def fake_call_llm_with_retry(**kwargs):
+        captured_prompt_kwargs.update(kwargs["prompt_kwargs"])
+        return OntologyCritiqueReport(
+            success=True,
+            score=95,
+            systemic_critique_summary="Looks good.",
+            actionable_ontology_fixes=[],
+        )
+
+    async def fake_get_llm_tool(_budget_tracker):
+        return object()
+
+    monkeypatch.setattr(
+        criticise_ontology_module, "call_llm_with_retry", fake_call_llm_with_retry
+    )
+    tools = cast(
+        AtomicToolBox,
+        SimpleNamespace(
+            get_llm_tool=fake_get_llm_tool,
+        ),
+    )
+    state = UnitOntologyState(
+        content_unit=_build_content_unit(),
+        ontology_snapshot=_build_ontology(),
+        llm_graph_format=LLMGraphFormat.JSONLD,
+    )
+
+    await criticise_ontology_module.criticise_ontology(state, tools=tools)
+
+    instruction = str(captured_prompt_kwargs.get("graph_format_instruction", ""))
+    assert "LLM_GRAPH_FORMAT=jsonld" in instruction
+    assert "incorrect_value" in instruction
 
 
 @pytest.mark.anyio

@@ -290,7 +290,7 @@ class GraphAtomizer(Tool):
         literals = self._collect_literals(
             graph,
             parent,
-            [RDFS.label, SKOS.prefLabel, DCTERMS.title],
+            [RDFS.label, SKOS.prefLabel, DCTERMS.title, SKOS.altLabel],
             1,
         )
         if not literals:
@@ -440,7 +440,10 @@ class GraphAtomizer(Tool):
         self, entity: URIRef, graph: RDFGraph, role: str
     ) -> str:
         labels = self._collect_literals(
-            graph, entity, [RDFS.label, SKOS.prefLabel, DCTERMS.title], 3
+            graph,
+            entity,
+            [RDFS.label, SKOS.prefLabel, DCTERMS.title, SKOS.altLabel],
+            5,
         )
         descriptions = self._collect_literals(
             graph, entity, [RDFS.comment, DCTERMS.description, SKOS.definition], 2

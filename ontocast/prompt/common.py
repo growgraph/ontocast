@@ -4,6 +4,8 @@ This module contains reusable prompt templates and components to avoid
 duplication across different prompt modules.
 """
 
+from ontocast.onto.enum import LLMGraphFormat
+
 system_preamble_semantic = """
 # SYSTEM INSTRUCTION
 
@@ -96,6 +98,34 @@ For each `TripleOp.graph` field, provide a compact JSON-LD **object** (not a str
    Language-tagged literals use {"@value": "...", "@language": "en"}.
 5. No comments, no trailing prose - output strictly valid JSON.
 """
+
+output_instruction_critique_turtle = """\n\n
+# GRAPH FORMAT INSTRUCTION (LLM_GRAPH_FORMAT=turtle)
+
+The deployment emits RDF graph fixes in Turtle syntax.
+For each `incorrect_value` and `correct_value` in actionable fixes, provide a **string**
+containing valid Turtle: `@prefix` declarations when needed, then one or more triples.
+Example: "@prefix ex: <http://example.org/> . ex:alice ex:worksFor ex:acme ."
+"""
+
+output_instruction_critique_jsonld = """\n\n
+# GRAPH FORMAT INSTRUCTION (LLM_GRAPH_FORMAT=jsonld)
+
+The deployment emits RDF graph fixes as compact JSON-LD.
+For each `incorrect_value` and `correct_value` in actionable fixes, provide a **string**
+containing valid JSON for one subject node (inline `@context` or compact IRIs only):
+Example: "{\\"@context\\": {\\"ex\\": \\"http://example.org/\\"}, \\"@id\\": \\"ex:alice\\", \\"ex:worksFor\\": {\\"@id\\": \\"ex:acme\\"}}"
+Use `{"@value": "...", "@type": "xsd:date"}` for typed literals and `{"@value": "...", "@language": "en"}`
+for language-tagged literals.
+"""
+
+
+def critique_graph_format_instruction(llm_graph_format: LLMGraphFormat) -> str:
+    """Return critic-specific graph syntax instructions for TripleFix values."""
+    if llm_graph_format == LLMGraphFormat.JSONLD:
+        return output_instruction_critique_jsonld
+    return output_instruction_critique_turtle
+
 
 user_template = """\n\n
 # USER INSTRUCTION

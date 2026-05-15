@@ -15,6 +15,8 @@ template_prompt = """
 
 {external_evidence}
 
+{graph_format_instruction}
+
 {format_instructions}
 """
 
@@ -49,7 +51,7 @@ Provide a constructive, actionable critique following these priorities:
    - Use severity: "critical" (breaks semantic graph), "important" (significant gap), or "minor" (polish)
 3. For each fix, provide:
    - Exact text evidence (quote from source)
-   - Clear before/after using Turtle syntax
+   - Clear before/after using the graph syntax from the GRAPH FORMAT INSTRUCTION below
    - Actionable explanation
 4. Systemic summary should identify patterns, not repeat individual fixes
 

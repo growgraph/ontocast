@@ -25,6 +25,7 @@ from ontocast.agent.render_ontology import render_ontology
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import ExternalEvidenceCacheEntry, ExternalEvidenceRequest
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.rdfgraph import format_quarantine_for_prompt
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.context_resolver import (
@@ -46,6 +47,30 @@ def _resolve_max_visits_limit(state_visits: int, override: int | None) -> int:
 def _skip_critic_after_final_render(render_attempt: int, max_visits: int) -> bool:
     """True when this render attempt is the last allowed; critic cannot drive a retry."""
     return render_attempt == max_visits
+
+
+def _surface_unresolved_quarantine(unit_state: UnitFactsState) -> None:
+    """Log and record quarantined literals when the critic is skipped on the final render."""
+    if not unit_state.quarantined_literal_triples:
+        return
+
+    logger.warning(
+        "%d quarantined literal triple(s) were not critiqued (final render)",
+        len(unit_state.quarantined_literal_triples),
+    )
+    formatted = format_quarantine_for_prompt(
+        unit_state.quarantined_literal_triples,
+        unit_state.llm_graph_format,
+    )
+    notice = (
+        "Unresolved quarantined typed literals (invalid XSD lexical forms, not applied):\n"
+        f"{formatted}"
+    )
+    existing = unit_state.suggestions.systemic_critique_summary.strip()
+    if existing:
+        unit_state.suggestions.systemic_critique_summary = f"{existing}\n\n{notice}"
+    else:
+        unit_state.suggestions.systemic_critique_summary = notice
 
 
 def _reset_node_evidence_context(
@@ -161,6 +186,7 @@ async def facts_loop(
                     render_attempt,
                     max_visits,
                 )
+                _surface_unresolved_quarantine(unit_state)
                 return unit_state
 
             for critic_attempt in range(1, max_visits + 1):

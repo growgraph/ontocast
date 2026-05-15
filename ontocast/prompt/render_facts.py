@@ -55,19 +55,38 @@ facts_instruction_template = """\n\n
    - If no ontology entity can be verified, create a `cd:` entity instead of inventing a new ontology-prefixed IRI
 6a. Opaque Identifier Ontologies (Wikidata-style Q/P codes, hashes, UUIDs):
    - When ontology IRIs contain opaque local names (Q-numbers, P-numbers, hash strings, numeric IDs),
-     entity identity is determined EXCLUSIVELY by `rdfs:label` — not the IRI fragment
+     entity identity is determined EXCLUSIVELY by `rdfs:label`, `rdfs:comment`, skos:altLabel — not the IRI fragment
    - Use the TERM INDEX (if provided below the ontology) to map text mentions to their canonical IRI
    - NEVER construct an IRI by appending a label string to the ontology namespace
-     (e.g. `ont_10_culture_concepts:culture` is ALWAYS wrong — the correct IRI is whatever appears in the ontology with `rdfs:label "culture"`)
+     (e.g. `onto:culture` is ALWAYS wrong — the correct IRI is whatever appears in the ontology with `rdfs:label "culture"`)
    - NEVER invent or guess a Q/P code — only use codes that appear explicitly in the provided ontology
    - For property domain/range chains: resolve referenced opaque IRIs to their labels before deciding
      which subject/object types are valid for a given property
 7. Maximize atomicity: decompose complex facts and complex literals into simple subject-predicate-object statements (e.g. decompose person's  first name and last name).
-8. Literals Handling:
-    - Use appropriate XSD datatypes: xsd:integer, xsd:decimal, xsd:float, xsd:date, xsd:dateTime
+8. Literals and Quantity Values:
+   - Use appropriate XSD datatypes: xsd:integer, xsd:decimal, xsd:float,
+     xsd:date, xsd:dateTime. Dates use ISO 8601.
     - Dates: Use ISO 8601 format (e.g., "2024-01-15"^^xsd:date)
     - Numbers: Always use typed literals (e.g., "42"^^xsd:integer, "99.95"^^xsd:decimal)
     - Currencies: Include currency codes (e.g., "1000"^^xsd:decimal with schema:priceCurrency "USD")
+   - NEVER encode a numeric measurement as xsd:string, even if the source
+     text is approximate or bounded.
+   - When a measurement appears with an epistemic qualifier — approximation
+     (∼, ~, ≈, ca., about), bound (<, >, ≤, ≥, up to, at least, more than,
+     exceeding), range (X–Y, X to Y), or uncertainty (X ± Y) — decompose
+     it into a structured node:
+       * Search the provided ontology for a class representing approximate or
+         bounded quantity values (e.g. a QuantityValue subclass, a
+         MeasuredValue class, or equivalent).
+       * If found, instantiate it and use its typed decimal properties for
+         the numeric components (nominal value, lower/upper bound, uncertainty)
+         and its qualifier properties for the epistemic marker.
+       * If no such class is found in the domain ontology, use qudt:QuantityValue
+         as the type and attach the numeric parts with qudt:numericValue /
+         qudt:unit, adding a plain qualifier annotation (e.g. rdfs:comment
+         or a well-known approximation property).
+   - Prose restatements of a measurement in dcterms:description are redundant
+     once typed numeric properties exist — omit them.
 9. To extract data from tables, use CSV on the Web (CSVW) to describe tables
 10. No comments in Turtle: Output must contain only @prefix declarations and triples. Do not include comments (lines starting with #)
 11. Decide whether external evidence is needed for a retry and set `external_evidence_request`:

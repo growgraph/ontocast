@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from rdflib import SKOS
+
 from ontocast.onto.facts import Facts
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.vector_store.atomizer import GraphAtomizer
@@ -78,3 +80,34 @@ def test_atomizer_facts_focal_entities_are_cd_only() -> None:
     assert atoms
     assert all(a.iri.startswith(facts_namespace) for a in atoms)
     assert not any(outside_ns in a.iri for a in atoms)
+
+
+def test_atomizer_facts_core_representation_includes_skos_alt_label() -> None:
+    facts_namespace = "https://example.org/facts"
+    graph = RDFGraph._from_turtle_str(
+        f"""
+        @prefix cd: <{facts_namespace}/> .
+        @prefix skos: <{SKOS}> .
+        @prefix ex: <https://example.org/test/> .
+
+        cd:Entity a ex:Thing ;
+            skos:prefLabel "Main label"@en ;
+            skos:altLabel "Alternate name"@en .
+        """
+    )
+    facts = Facts(
+        graph=graph,
+        iri="https://example.org/factsGraph#doc1",
+        ontology_id="doc1",
+        hash="hash1",
+        version="1.0.0",
+        facts_namespace=facts_namespace,
+    )
+    atom = next(
+        a
+        for a in GraphAtomizer().atomize(source=facts, depth=0)
+        if a.iri.endswith("/Entity")
+    )
+    core = atom.core_representation.lower()
+    assert "main label" in core
+    assert "alternate name" in core

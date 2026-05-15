@@ -19,7 +19,7 @@ from ontocast.onto.ontology_access import (
     known_prefixes_for_llm_parse,
     ontology_access_for_unit_facts,
 )
-from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.rdfgraph import RDFGraph, finalize_llm_graph
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.prompt.common import (
     facts_template,
@@ -176,6 +176,7 @@ async def render_facts_fresh(
         UnitFactsState: Updated state with rendered facts.
     """
     logger.info("Rendering fresh facts")
+    state.quarantined_literal_triples = []
     llm_tool = await tools.get_llm_tool(state.budget_tracker)
     parser = PydanticOutputParser(pydantic_object=FactsRenderReport)
 
@@ -216,10 +217,17 @@ async def render_facts_fresh(
         )
         facts_report = render_report.facts_report
         facts_report.semantic_graph.sanitize_prefixes_namespaces()
-        state.content_unit.graph = facts_report.semantic_graph
+        clean_graph, rejected = finalize_llm_graph(facts_report.semantic_graph)
+        state.content_unit.graph = clean_graph
+        state.quarantined_literal_triples = rejected
+        if rejected:
+            logger.warning(
+                "Fresh facts quarantined %d triple(s) with invalid typed literals",
+                len(rejected),
+            )
 
         # Track triples in budget tracker (fresh facts)
-        num_triples = len(facts_report.semantic_graph)
+        num_triples = len(clean_graph)
         logger.info(f"Fresh facts generated with {num_triples} triple(s).")
         state.budget_tracker.add_facts_update(num_operations=1, num_triples=num_triples)
 
@@ -247,6 +255,7 @@ async def render_facts_update(
         UnitFactsState: Updated state with rendered facts.
     """
     logger.info("Rendering updates for facts")
+    state.quarantined_literal_triples = []
     llm_tool = await tools.get_llm_tool(state.budget_tracker)
     parser = PydanticOutputParser(pydantic_object=GraphUpdateRenderReport)
 
@@ -288,6 +297,17 @@ async def render_facts_update(
             WorkflowNode.TEXT_TO_FACTS, render_report.external_evidence_request
         )
         graph_update = render_report.graph_update
+        all_rejected = []
+        for op in graph_update.triple_operations:
+            clean_graph, rejected = finalize_llm_graph(op.graph)
+            op.graph = clean_graph
+            all_rejected.extend(rejected)
+        state.quarantined_literal_triples = all_rejected
+        if all_rejected:
+            logger.warning(
+                "Facts update quarantined %d triple(s) with invalid typed literals",
+                len(all_rejected),
+            )
         state.facts_updates.append(graph_update)
         state.update_facts()
 

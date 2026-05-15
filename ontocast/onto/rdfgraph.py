@@ -5,15 +5,17 @@ import unicodedata
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from contextvars import ContextVar
+from decimal import Decimal, InvalidOperation
 from typing import Any, Union
 
-from pydantic import GetCoreSchemaHandler
+from pydantic import BaseModel, ConfigDict, GetCoreSchemaHandler
 from pydantic_core import core_schema
 from pyld import jsonld
 from rdflib import Graph, Literal, Namespace, URIRef
-from rdflib.namespace import NamespaceManager
+from rdflib.namespace import XSD, NamespaceManager
 
 from ontocast.onto.constants import COMMON_PREFIXES
+from ontocast.onto.enum import LLMGraphFormat
 from ontocast.onto.iri_policy import normalize_namespace_iri, sanitize_prefix_map
 from ontocast.util import render_text_hash
 
@@ -84,6 +86,85 @@ def extract_known_prefixes(
         known[extra_prefix] = extra_namespace
 
     return known
+
+
+class RejectedLiteralTriple(BaseModel):
+    """A triple removed during LLM ingest because the object literal failed XSD validation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    subject: str
+    predicate: str
+    object_lexical: str
+    datatype: str
+
+
+def _format_term_for_turtle(term: str) -> str:
+    if term.startswith("http://") or term.startswith("https://"):
+        return f"<{term}>"
+    return term
+
+
+def _datatype_to_compact(datatype: str) -> str:
+    xsd_base = str(XSD)
+    if datatype.startswith(xsd_base):
+        local = datatype[len(xsd_base) :]
+        return f"xsd:{local}"
+    return datatype
+
+
+def format_quarantine_for_prompt(
+    rejected: list[RejectedLiteralTriple],
+    llm_graph_format: LLMGraphFormat,
+) -> str:
+    """Format quarantined triples for critic or improvement prompts."""
+    if not rejected:
+        return ""
+
+    if llm_graph_format == LLMGraphFormat.JSONLD:
+        lines: list[str] = []
+        for item in rejected:
+            pred_key = item.predicate
+            if item.predicate.startswith("http"):
+                for prefix, uri in COMMON_PREFIXES.items():
+                    ns = uri.strip("<>")
+                    if item.predicate.startswith(ns):
+                        pred_key = f"{prefix}:{item.predicate[len(ns) :]}"
+                        break
+            subj = item.subject
+            if item.subject.startswith("http"):
+                for prefix, uri in COMMON_PREFIXES.items():
+                    ns = uri.strip("<>")
+                    if item.subject.startswith(ns):
+                        subj = f"{prefix}:{item.subject[len(ns) :]}"
+                        break
+            lines.append(
+                json.dumps(
+                    {
+                        "@id": subj,
+                        pred_key: {
+                            "@value": item.object_lexical,
+                            "@type": _datatype_to_compact(item.datatype),
+                        },
+                    },
+                    indent=2,
+                )
+            )
+        return "\n".join(lines)
+
+    return "\n".join(
+        f"{_format_term_for_turtle(item.subject)} "
+        f"{_format_term_for_turtle(item.predicate)} "
+        f'"{item.object_lexical}"^^<{item.datatype}> .'
+        for item in rejected
+    )
+
+
+def finalize_llm_graph(
+    graph: "RDFGraph",
+) -> tuple["RDFGraph", list[RejectedLiteralTriple]]:
+    """Remove invalid XSD typed literals from an LLM-parsed graph."""
+    return RDFGraph.partition_invalid_typed_literals(graph)
 
 
 class RDFGraph(Graph):
@@ -455,9 +536,21 @@ class RDFGraph(Graph):
         def replace_decimal(match: re.Match[str]) -> str:
             lexical = match.group(1)
             try:
-                float(lexical)
+                Decimal(lexical)
+                if lexical.strip().lower() in {
+                    "nan",
+                    "+nan",
+                    "-nan",
+                    "inf",
+                    "+inf",
+                    "-inf",
+                    "infinity",
+                    "+infinity",
+                    "-infinity",
+                }:
+                    return f'"{lexical}"'
                 return match.group(0)
-            except ValueError:
+            except InvalidOperation:
                 return f'"{lexical}"'
 
         coerced = INTEGER_TYPED_LITERAL_PATTERN.sub(replace_integer, turtle_str)
@@ -483,6 +576,83 @@ class RDFGraph(Graph):
             return f'"{lexical}"'
 
         return DATE_TYPED_LITERAL_PATTERN.sub(replace_date, turtle_str)
+
+    @staticmethod
+    def _is_valid_typed_literal(literal: Literal) -> bool:
+        """Return whether *literal* has a valid lexical form for its XSD datatype."""
+        if literal.datatype is None:
+            return True
+
+        lexical = str(literal)
+        datatype = literal.datatype
+
+        if datatype in (XSD.decimal, XSD.double):
+            lowered = lexical.strip().lower()
+            if lowered in {
+                "nan",
+                "+nan",
+                "-nan",
+                "inf",
+                "+inf",
+                "-inf",
+                "infinity",
+                "+infinity",
+                "-infinity",
+            }:
+                return False
+            try:
+                Decimal(lexical)
+                return True
+            except InvalidOperation:
+                return False
+
+        if datatype == XSD.integer:
+            try:
+                int(lexical)
+                return True
+            except ValueError:
+                return False
+
+        if datatype == XSD.float:
+            try:
+                float(lexical)
+                return True
+            except ValueError:
+                return False
+
+        return True
+
+    @classmethod
+    def partition_invalid_typed_literals(
+        cls, graph: "RDFGraph"
+    ) -> tuple["RDFGraph", list[RejectedLiteralTriple]]:
+        """Split *graph* into a clean graph and quarantined invalid typed literals."""
+        clean = cls()
+        for prefix, namespace_uri in graph.namespaces():
+            if prefix:
+                clean.bind(prefix, namespace_uri)
+
+        rejected: list[RejectedLiteralTriple] = []
+        for subject, predicate, obj in graph:
+            if isinstance(obj, Literal) and not cls._is_valid_typed_literal(obj):
+                rejected.append(
+                    RejectedLiteralTriple(
+                        subject=str(subject),
+                        predicate=str(predicate),
+                        object_lexical=str(obj),
+                        datatype=str(obj.datatype),
+                    )
+                )
+                continue
+            clean.add((subject, predicate, obj))
+
+        if rejected:
+            logger.warning(
+                "Quarantined %d triple(s) with invalid XSD typed literals",
+                len(rejected),
+            )
+
+        return clean, rejected
 
     @classmethod
     def _repair_common_turtle_issues(

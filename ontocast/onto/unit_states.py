@@ -23,7 +23,7 @@ from ontocast.onto.model import (
     Suggestions,
 )
 from ontocast.onto.ontology import Ontology
-from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
 from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.state import AgentState, BudgetTracker
 
@@ -155,6 +155,10 @@ class UnitFactsState(UnitState):
     content_unit: ContentUnit = Field(description="Unit under processing (mutable)")
     facts_user_instruction: str = Field(default="")
     facts_updates: list[GraphUpdate] = Field(default_factory=list)
+    quarantined_literal_triples: list[RejectedLiteralTriple] = Field(
+        default_factory=list,
+        description="Triples excluded from the applied graph due to invalid XSD typed literals.",
+    )
     assembly_anchor_iri: str = Field(
         default="",
         description="Anchor IRI from context assembly (or merged document primary).",

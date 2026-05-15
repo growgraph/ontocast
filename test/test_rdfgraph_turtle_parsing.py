@@ -2,7 +2,12 @@ from copy import deepcopy
 
 from rdflib import Graph, Literal, URIRef
 
-from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.enum import LLMGraphFormat
+from ontocast.onto.rdfgraph import (
+    RDFGraph,
+    finalize_llm_graph,
+    format_quarantine_for_prompt,
+)
 
 
 def test_from_turtle_coerces_invalid_integer_typed_literal() -> None:
@@ -135,6 +140,98 @@ def test_deepcopy_preserves_rdfgraph_type() -> None:
 
     assert isinstance(copied, RDFGraph)
     assert len(copied) == len(graph)
+
+
+def test_from_turtle_coerces_nan_decimal_to_plain_literal() -> None:
+    ttl = """
+    @prefix ex: <https://example.com/ns#> .
+    @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+    ex:item ex:value "NaN"^^xsd:decimal .
+    """
+
+    graph = RDFGraph._from_turtle_str(ttl)
+
+    assert len(graph) == 1
+    triple = (
+        URIRef("https://example.com/ns#item"),
+        URIRef("https://example.com/ns#value"),
+        Literal("NaN"),
+    )
+    assert triple in graph
+
+
+def test_partition_invalid_decimal_with_full_uri_datatype() -> None:
+    graph = RDFGraph()
+    graph.add(
+        (
+            URIRef("https://example.com/ns#item"),
+            URIRef("https://example.com/ns#value"),
+            Literal(
+                "10-15",
+                datatype=URIRef("http://www.w3.org/2001/XMLSchema#decimal"),
+            ),
+        )
+    )
+    graph.add(
+        (
+            URIRef("https://example.com/ns#item"),
+            URIRef("https://example.com/ns#amount"),
+            Literal(
+                "42.5",
+                datatype=URIRef("http://www.w3.org/2001/XMLSchema#decimal"),
+            ),
+        )
+    )
+
+    clean, rejected = RDFGraph.partition_invalid_typed_literals(graph)
+
+    assert len(clean) == 1
+    assert len(rejected) == 1
+    assert rejected[0].object_lexical == "10-15"
+    assert rejected[0].datatype.endswith("#decimal")
+
+
+def test_finalize_llm_graph_jsonld_range_decimal() -> None:
+    graph = RDFGraph._from_jsonld_obj(
+        {
+            "@context": {
+                "ex": "https://example.com/ns#",
+                "xsd": "http://www.w3.org/2001/XMLSchema#",
+            },
+            "@graph": [
+                {
+                    "@id": "ex:item",
+                    "ex:value": {"@value": "10-15", "@type": "xsd:decimal"},
+                }
+            ],
+        }
+    )
+
+    clean, rejected = finalize_llm_graph(graph)
+
+    assert len(clean) == 0
+    assert len(rejected) == 1
+    assert rejected[0].object_lexical == "10-15"
+
+
+def test_format_quarantine_for_prompt_turtle() -> None:
+    graph = RDFGraph()
+    graph.add(
+        (
+            URIRef("https://example.com/ns#item"),
+            URIRef("https://example.com/ns#value"),
+            Literal(
+                "10-15",
+                datatype=URIRef("http://www.w3.org/2001/XMLSchema#decimal"),
+            ),
+        )
+    )
+    _, rejected = RDFGraph.partition_invalid_typed_literals(graph)
+
+    formatted = format_quarantine_for_prompt(rejected, LLMGraphFormat.TURTLE)
+
+    assert '"10-15"^^<http://www.w3.org/2001/XMLSchema#decimal>' in formatted
+    assert "ex:item" in formatted or "https://example.com/ns#item" in formatted
 
 
 def test_content_unit_sanitize_coerces_plain_graph() -> None:
