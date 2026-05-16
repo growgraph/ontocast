@@ -37,3 +37,7 @@
 !planning
 
 !.cursor/rules/*.mdc
+
+!scripts
+!scripts/*py
+

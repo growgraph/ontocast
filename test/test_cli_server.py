@@ -224,39 +224,133 @@ def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
     assert captured["ontology_graph"] is facts_graph
 
 
-def test_match_endpoint_returns_match_payload(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _FakeMatcher:
+def _match_test_app(monkeypatch: pytest.MonkeyPatch):
+    class _FakeAligner:
         def __init__(self, embedding_model: str, similarity_threshold: float) -> None:
-            self.embedding_model = embedding_model
-            self.similarity_threshold = similarity_threshold
+            pass
 
-        def match(self, **_kwargs):
+        def align_graphs(self, graphs, *, regime):
             class _Result:
                 def model_dump(self, mode: str = "python") -> dict:
                     return {
-                        "regime": "ontology_loose",
-                        "ground_truth_side": "right",
+                        "regime": str(regime),
                         "similarity_threshold": 0.8,
-                        "entity_matches": [],
-                        "metrics": {
-                            "precision": 1.0,
-                            "recall": 1.0,
-                            "f1": 1.0,
-                            "true_positives": 1,
-                            "false_positives": 0,
-                            "false_negatives": 0,
-                            "predicted_count": 1,
-                            "ground_truth_count": 1,
-                        },
+                        "entity_count": 2,
+                        "cluster_count": 1,
+                        "clusters": [
+                            {
+                                "members": [
+                                    {
+                                        "graph_id": "predicted",
+                                        "entity": "https://predicted.example/a",
+                                        "similarity": 1.0,
+                                    },
+                                    {
+                                        "graph_id": "gt",
+                                        "entity": "https://gt.example/a",
+                                        "similarity": 1.0,
+                                    },
+                                ]
+                            }
+                        ],
                     }
 
             return _Result()
 
-    monkeypatch.setattr(server_module, "TripleSetMatcher", _FakeMatcher)
+    class _FakeEvaluator:
+        def evaluate(self, **_kwargs):
+            from ontocast.tool.agg.match_models import MatchMetrics
+
+            return MatchMetrics(
+                precision=1.0,
+                recall=1.0,
+                f1=1.0,
+                true_positives=1,
+                false_positives=0,
+                false_negatives=0,
+                predicted_count=1,
+                ground_truth_count=1,
+                entity_precision=1.0,
+                entity_recall=1.0,
+                entity_f1=1.0,
+                entity_true_positives=1,
+                entity_false_positives=0,
+                entity_false_negatives=0,
+                domain_entity_matches=1,
+            )
+
+    monkeypatch.setattr(server_module, "EntityAligner", _FakeAligner)
+    monkeypatch.setattr(server_module, "TripleSetEvaluator", _FakeEvaluator)
+    monkeypatch.setattr(
+        server_module,
+        "derive_pair_matches",
+        lambda *_args, **_kwargs: [],
+    )
     monkeypatch.setattr(
         server_module, "create_agent_graph", lambda _tools: SimpleNamespace()
     )
+    tools = cast(ToolBox, SimpleNamespace())
+    return create_app(
+        tools=tools,
+        server_config=ServerConfig(),
+        active_tenant="tenant-a",
+        active_project="project-a",
+    )
 
+
+def test_align_entities_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _match_test_app(monkeypatch)
+    client = TestClient(app)
+    response = client.post(
+        "/match/entities",
+        json={
+            "graphs": [
+                {
+                    "id": "predicted",
+                    "graph": (
+                        "@prefix ex: <https://predicted.example/> . "
+                        "ex:a <https://pred.example/relatedTo> ex:b ."
+                    ),
+                },
+                {
+                    "id": "gt",
+                    "graph": (
+                        "@prefix ex: <https://gt.example/> . "
+                        "ex:a <https://pred.example/relatedTo> ex:b ."
+                    ),
+                },
+            ],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["cluster_count"] == 1
+
+
+def test_evaluate_match_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _match_test_app(monkeypatch)
+    client = TestClient(app)
+    response = client.post(
+        "/match/evaluate",
+        json={
+            "predicted_graph": (
+                "@prefix ex: <https://predicted.example/> . "
+                "ex:a <https://pred.example/relatedTo> ex:b ."
+            ),
+            "gt_graph": (
+                "@prefix ex: <https://gt.example/> . "
+                "ex:a <https://pred.example/relatedTo> ex:b ."
+            ),
+            "entity_matches": [],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["f1"] == 1.0
+
+
+def test_derive_matches_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        server_module, "create_agent_graph", lambda _tools: SimpleNamespace()
+    )
     tools = cast(ToolBox, SimpleNamespace())
     app = create_app(
         tools=tools,
@@ -266,18 +360,29 @@ def test_match_endpoint_returns_match_payload(monkeypatch: pytest.MonkeyPatch) -
     )
     client = TestClient(app)
     response = client.post(
-        "/match",
+        "/match/derive-matches",
         json={
-            "left_graph": (
-                "@prefix ex: <https://left.example/> . "
-                "ex:a <https://pred.example/relatedTo> ex:b ."
-            ),
-            "right_graph": (
-                "@prefix ex: <https://right.example/> . "
-                "ex:a <https://pred.example/relatedTo> ex:b ."
-            ),
+            "clusters": [
+                {
+                    "members": [
+                        {
+                            "graph_id": "predicted",
+                            "entity": "http://predicted.example/a",
+                            "similarity": 1.0,
+                        },
+                        {
+                            "graph_id": "gt",
+                            "entity": "http://gt.example/a",
+                            "similarity": 1.0,
+                        },
+                    ]
+                }
+            ],
+            "predicted_graph_id": "predicted",
+            "gt_graph_id": "gt",
         },
     )
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["data"]["metrics"]["f1"] == 1.0
+    matches = response.json()["data"]["entity_matches"]
+    assert len(matches) == 1
+    assert matches[0]["predicted_entity"] == "http://predicted.example/a"

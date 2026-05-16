@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
 
+import pytest
 from fastapi import FastAPI
 from starlette.requests import Request
 from starlette.testclient import TestClient
@@ -17,6 +18,7 @@ from ontocast.api.tenancy_resolution import (
     stores_use_tenancy_partitions,
 )
 from ontocast.config import ServerConfig
+from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
 from ontocast.toolbox import ToolBox
@@ -153,7 +155,18 @@ def test_apply_request_tenancy_resolves_without_update_when_not_partitioned() ->
     tools.update_tenancy_with_vector_mode.assert_not_called()
 
 
-def test_ontology_delete_with_tenant_query_calls_update_tenancy() -> None:
+@pytest.mark.parametrize(
+    ("ontology_context_mode", "initialize_vector_store"),
+    [
+        (OntologyContextMode.SELECTED_SINGLE_ONTOLOGY, False),
+        (OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY, True),
+        (OntologyContextMode.FIXED_SINGLE_ONTOLOGY, False),
+    ],
+)
+def test_ontology_delete_with_tenant_query_calls_update_tenancy(
+    ontology_context_mode: OntologyContextMode,
+    initialize_vector_store: bool,
+) -> None:
     update = AsyncMock()
     delete_by_iri = AsyncMock()
     tools = SimpleNamespace(
@@ -168,7 +181,7 @@ def test_ontology_delete_with_tenant_query_calls_update_tenancy() -> None:
             cast(ToolBox, tools),
             active_tenant="startup_t",
             active_project="startup_p",
-            server_config=ServerConfig(),
+            server_config=ServerConfig(ontology_context_mode=ontology_context_mode),
         )
     )
     client = TestClient(app)
@@ -180,7 +193,7 @@ def test_ontology_delete_with_tenant_query_calls_update_tenancy() -> None:
     update.assert_awaited_once_with(
         "acme",
         "p1",
-        initialize_vector_store=False,
+        initialize_vector_store=initialize_vector_store,
         fail_on_vector_store_error=False,
     )
     delete_by_iri.assert_awaited_once_with("https://example.org/onto")

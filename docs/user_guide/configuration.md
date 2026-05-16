@@ -163,43 +163,71 @@ print(tool_config.llm_config.provider)
 print(tool_config.path_config.cache_dir)
 ```
 
-## RDF Triple Matching
+## RDF Graph Matching
 
-The server exposes `POST /match` to align entities between two RDF triple sets and
-compute precision/recall/F1.
+Matching is split into entity alignment (global, across many graphs) and evaluation
+(predicted vs ground truth, using explicit entity mappings).
 
-- `regime=ontology_loose`: semantic + symbolic checks
-- `regime=ontology_strict`: loose checks + shared type namespace requirement
-- `ground_truth_side`: choose `left` or `right` to define recall denominator
+### `POST /match/entities`
 
-### API payload example
+Align entities globally across a list of graphs (connected-component clustering over
+embedding + symbolic compatibility).
 
 ```json
 {
-  "left_graph": "@prefix ex: <https://left.example/> . ex:a <https://p/relatedTo> ex:b .",
-  "right_graph": "@prefix ex: <https://right.example/> . ex:a <https://p/relatedTo> ex:b .",
+  "graphs": [
+    {"id": "gt:doc1.ttl", "graph": "@prefix ex: <https://gt.example/> . ..."},
+    {"id": "predicted:doc1.ttl", "graph": "@prefix ex: <https://pred.example/> . ..."}
+  ],
   "regime": "ontology_loose",
-  "ground_truth_side": "right",
   "similarity_threshold": 0.8
 }
 ```
 
-### Standalone CLI
+### `POST /match/derive-matches`
 
-```bash
-match-graphs \
-  --left ./left.ttl \
-  --right ./right.ttl \
-  --regime ontology_strict \
-  --ground-truth-side right \
-  --similarity-threshold 0.8 \
-  --json-output
+Derive 1:1 predicted↔gt entity matches for one graph pair from alignment clusters.
+
+```json
+{
+  "clusters": [],
+  "predicted_graph_id": "predicted:doc1.ttl",
+  "gt_graph_id": "gt:doc1.ttl",
+  "similarity_threshold": 0.8
+}
 ```
 
-Metric interpretation:
-- high precision + low recall means conservative matching
-- high recall + low precision means permissive matching
-- F1 summarizes precision/recall balance
+### `POST /match/evaluate`
+
+Compute triple and entity precision/recall/F1 given graphs and entity matches.
+Label triples (`rdfs:label`) are excluded from triple metrics.
+
+```json
+{
+  "predicted_graph": "@prefix ex: <https://predicted.example/> . ...",
+  "gt_graph": "@prefix ex: <https://gt.example/> . ...",
+  "entity_matches": [
+    {"predicted_entity": "https://pred.example/a", "gt_entity": "https://gt.example/a", "similarity": 0.95}
+  ]
+}
+```
+
+Precision and recall use the same semantics for triples and entities:
+precision = TP / |predicted|, recall = TP / |ground truth|.
+
+### Standalone CLI
+
+`match-dirs` is a standalone HTTP client (no ontocast imports). It calls all three
+endpoints per paired TTL file: align (gt + predicted only), derive, evaluate.
+
+```bash
+uv run match-dirs \
+  --gt ./benchmark \
+  --predicted ./extracted \
+  --url http://localhost:8999 \
+  --regime ontology_strict \
+  --similarity-threshold 0.8
+```
 
 ## Validation Notes
 

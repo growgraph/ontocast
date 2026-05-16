@@ -93,29 +93,61 @@ from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.stategraph import create_agent_graph
 from ontocast.stategraph.helpers import build_ontology_delta_graph
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
-from ontocast.tool.agg.matcher import GroundTruthSide, MatchRegime, TripleSetMatcher
+from ontocast.tool.agg.entity_aligner import EntityAligner
+from ontocast.tool.agg.match_derivation import derive_pair_matches
+from ontocast.tool.agg.match_models import (
+    EntityCluster,
+    EntityMatch,
+    MatchRegime,
+    TaggedGraph,
+)
+from ontocast.tool.agg.triple_evaluator import TripleSetEvaluator
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
 
 
-class MatchRequest(BaseModel):
-    """Payload for RDF triple-set matching."""
-
-    left_graph: RDFGraph
-    right_graph: RDFGraph
-    regime: MatchRegime = MatchRegime.ONTOLOGY_LOOSE
-    ground_truth_side: GroundTruthSide = GroundTruthSide.RIGHT
-    similarity_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
-    embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
+class TaggedGraphInput(BaseModel):
+    id: str
+    graph: RDFGraph
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
-class MatchResponse(BaseModel):
-    """API response for RDF triple-set matching."""
+class AlignEntitiesRequest(BaseModel):
+    graphs: list[TaggedGraphInput]
+    regime: MatchRegime = MatchRegime.ONTOLOGY_LOOSE
+    similarity_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
+    embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
 
+
+class AlignEntitiesResponse(BaseModel):
+    data: dict
+
+
+class DeriveMatchesRequest(BaseModel):
+    clusters: list[EntityCluster]
+    predicted_graph_id: str
+    gt_graph_id: str
+    similarity_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class DeriveMatchesResponse(BaseModel):
+    data: dict
+
+
+class EvaluateMatchRequest(BaseModel):
+    predicted_graph: RDFGraph
+    gt_graph: RDFGraph
+    entity_matches: list[EntityMatch]
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class EvaluateMatchResponse(BaseModel):
     data: dict
 
 
@@ -412,22 +444,65 @@ def create_app(
     async def info():
         return InfoResponse(version=metadata.version("ontocast"))
 
-    @app.post("/match", response_model=MatchResponse)
-    async def match(request: MatchRequest):
+    @app.post("/match/entities", response_model=AlignEntitiesResponse)
+    async def align_entities(request: AlignEntitiesRequest):
         try:
-            matcher = TripleSetMatcher(
+            aligner = EntityAligner(
                 embedding_model=request.embedding_model,
                 similarity_threshold=request.similarity_threshold,
             )
-            result = matcher.match(
-                left_graph=request.left_graph,
-                right_graph=request.right_graph,
-                regime=request.regime,
-                ground_truth_side=request.ground_truth_side,
-            )
-            return MatchResponse(data=result.model_dump(mode="json"))
+            tagged_graphs = [
+                TaggedGraph(id=item.id, graph=item.graph) for item in request.graphs
+            ]
+            result = aligner.align_graphs(tagged_graphs, regime=request.regime)
+            return AlignEntitiesResponse(data=result.model_dump(mode="json"))
         except Exception as e:
-            logger.error("Error matching RDF triple sets: %s", e)
+            logger.error("Error aligning entities: %s", e)
+            return JSONResponse(
+                status_code=500,
+                content=StatusErrorBody(
+                    error=str(e),
+                    error_type=type(e).__name__,
+                ).model_dump(),
+            )
+
+    @app.post("/match/derive-matches", response_model=DeriveMatchesResponse)
+    async def derive_matches(request: DeriveMatchesRequest):
+        try:
+            entity_matches = derive_pair_matches(
+                request.clusters,
+                request.predicted_graph_id,
+                request.gt_graph_id,
+                similarity_threshold=request.similarity_threshold,
+            )
+            return DeriveMatchesResponse(
+                data={
+                    "entity_matches": [
+                        match.model_dump(mode="json") for match in entity_matches
+                    ]
+                }
+            )
+        except Exception as e:
+            logger.error("Error deriving entity matches: %s", e)
+            return JSONResponse(
+                status_code=500,
+                content=StatusErrorBody(
+                    error=str(e),
+                    error_type=type(e).__name__,
+                ).model_dump(),
+            )
+
+    @app.post("/match/evaluate", response_model=EvaluateMatchResponse)
+    async def evaluate_match(request: EvaluateMatchRequest):
+        try:
+            metrics = TripleSetEvaluator().evaluate(
+                predicted_graph=request.predicted_graph,
+                gt_graph=request.gt_graph,
+                entity_matches=request.entity_matches,
+            )
+            return EvaluateMatchResponse(data=metrics.model_dump(mode="json"))
+        except Exception as e:
+            logger.error("Error evaluating RDF triple sets: %s", e)
             return JSONResponse(
                 status_code=500,
                 content=StatusErrorBody(
