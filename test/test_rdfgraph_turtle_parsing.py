@@ -209,9 +209,12 @@ def test_finalize_llm_graph_jsonld_range_decimal() -> None:
 
     clean, rejected = finalize_llm_graph(graph)
 
-    assert len(clean) == 0
-    assert len(rejected) == 1
-    assert rejected[0].object_lexical == "10-15"
+    assert len(clean) == 1
+    assert len(rejected) == 0
+    obj = next(clean.objects())
+    assert isinstance(obj, Literal)
+    assert obj.datatype is None
+    assert str(obj) == "10-15"
 
 
 def test_format_quarantine_for_prompt_turtle() -> None:
@@ -255,3 +258,73 @@ def test_content_unit_sanitize_coerces_plain_graph() -> None:
     unit.sanitize()
 
     assert isinstance(unit.graph, RDFGraph)
+
+
+def test_from_jsonld_coerces_invalid_decimal_before_parse() -> None:
+    graph = RDFGraph._from_jsonld_obj(
+        {
+            "@context": {
+                "ex": "https://example.com/ns#",
+                "xsd": "http://www.w3.org/2001/XMLSchema#",
+            },
+            "@graph": [
+                {
+                    "@id": "ex:item",
+                    "ex:value": {"@value": "10-15", "@type": "xsd:decimal"},
+                }
+            ],
+        }
+    )
+
+    assert len(graph) == 1
+    obj = next(graph.objects())
+    assert isinstance(obj, Literal)
+    assert obj.datatype is None
+    assert str(obj) == "10-15"
+
+
+def test_from_jsonld_coerces_nan_decimal_in_nquads_path() -> None:
+    graph = RDFGraph._from_jsonld_obj(
+        {
+            "@context": {
+                "ex": "https://example.com/ns#",
+                "xsd": "http://www.w3.org/2001/XMLSchema#",
+            },
+            "@graph": [
+                {
+                    "@id": "ex:item",
+                    "ex:value": {"@value": "NaN", "@type": "xsd:decimal"},
+                }
+            ],
+        }
+    )
+
+    assert len(graph) == 1
+    obj = next(graph.objects())
+    assert isinstance(obj, Literal)
+    assert obj.datatype is None
+    assert str(obj) == "NaN"
+
+
+def test_from_turtle_recovers_unknown_qudt_prefix() -> None:
+    from ontocast.onto.constants import WELL_KNOWN_PREFIXES
+
+    ttl = """
+    @prefix ex: <https://example.com/ns#> .
+    ex:item qudt:quantity "5" .
+    """
+    graph = RDFGraph._from_turtle_str(ttl)
+
+    assert len(graph) == 1
+    predicate = next(graph.predicates())
+    assert str(predicate).startswith(WELL_KNOWN_PREFIXES["qudt"])
+
+
+def test_coerce_invalid_nquads_typed_literals_strips_bad_decimal() -> None:
+    nquads = (
+        "<https://example.com/ns#item> <https://example.com/ns#value> "
+        '"10-15"^^<http://www.w3.org/2001/XMLSchema#decimal> .\n'
+    )
+    coerced = RDFGraph._coerce_invalid_nquads_typed_literals(nquads)
+    assert "^^<http://www.w3.org/2001/XMLSchema#decimal>" not in coerced
+    assert '"10-15"' in coerced

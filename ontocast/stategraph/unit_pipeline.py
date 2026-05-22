@@ -21,9 +21,9 @@ The loops run sequentially:
    :func:`~ontocast.stategraph.context_resolver.resolve_unit_ontology_context`
    call inside the loop.
 3. **Facts loop** (if ``render_mode`` includes facts): extracts facts from the
-   input text. Facts ontology context is always selected by
-   :func:`~ontocast.stategraph.atomic.facts_loop` so downstream aggregation can
-   use the same context that actually drove facts rendering.
+   input text. When the ontology loop ran, its ``current_ontology`` is passed as
+   pre-resolved context so facts reuse that output instead of re-querying the
+   catalog or triple store.
 """
 
 import logging
@@ -36,6 +36,7 @@ from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.atomic import facts_loop, ontology_loop
+from ontocast.stategraph.context_resolver import UnitOntologyContext
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,17 @@ async def run_unit_pipeline(
             "run_unit_pipeline: ontology loop finished (status=%s)", onto_result.status
         )
         agent_state.budget_tracker = onto_result.budget_tracker
+        if not onto_result.current_ontology.is_null():
+            agent_state.reduced_ontology_artifacts = [onto_result.current_ontology]
+
+    facts_pre_resolved_context: UnitOntologyContext | None = None
+    if onto_result is not None and not onto_result.current_ontology.is_null():
+        facts_pre_resolved_context = UnitOntologyContext(
+            anchor_iri=onto_result.assembly_anchor_iri,
+            ontology_snapshot=onto_result.current_ontology,
+            patch_sources=list(onto_result.ontology_patch_sources),
+            assembly_mode=onto_result.assembly_mode_used,
+        )
 
     if agent_state.render_facts:
         facts_state = UnitFactsState(
@@ -122,7 +134,12 @@ async def run_unit_pipeline(
             llm_graph_format=agent_state.llm_graph_format,
         )
         logger.info("run_unit_pipeline: starting facts loop")
-        facts_result = await facts_loop(facts_state, tools, agent_state)
+        facts_result = await facts_loop(
+            facts_state,
+            tools,
+            agent_state,
+            pre_resolved_context=facts_pre_resolved_context,
+        )
         logger.info(
             "run_unit_pipeline: facts loop finished (status=%s)", facts_result.status
         )

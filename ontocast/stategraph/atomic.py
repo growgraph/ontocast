@@ -25,6 +25,7 @@ from ontocast.agent.render_ontology import render_ontology
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import ExternalEvidenceCacheEntry, ExternalEvidenceRequest
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.rdfgraph import format_quarantine_for_prompt
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
@@ -36,6 +37,15 @@ from ontocast.stategraph.context_resolver import (
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
+
+
+def _document_supplemental_ontologies(document_state: AgentState) -> list[Ontology]:
+    """Non-null reduced ontology artifacts for LLM ingest prefix repair."""
+    return [
+        ontology
+        for ontology in document_ontology_access(document_state).reduced_artifacts()
+        if not ontology.is_null()
+    ]
 
 
 def _resolve_max_visits_limit(state_visits: int, override: int | None) -> int:
@@ -145,7 +155,10 @@ async def facts_loop(
         for render_attempt in range(1, max_visits + 1):
             unit_state.node_visits[WorkflowNode.TEXT_TO_FACTS] += 1
             _reset_node_evidence_context(unit_state, WorkflowNode.TEXT_TO_FACTS)
-            unit_state = await render_facts(unit_state, atomic)
+            supplemental = _document_supplemental_ontologies(document_state)
+            unit_state = await render_facts(
+                unit_state, atomic, supplemental_ontologies=supplemental
+            )
             if unit_state.status != Status.SUCCESS:
                 render_request = unit_state.get_external_evidence_request(
                     WorkflowNode.TEXT_TO_FACTS
@@ -157,7 +170,9 @@ async def facts_loop(
                     unit_state = await fetch_external_evidence_for_node(
                         unit_state, atomic, WorkflowNode.TEXT_TO_FACTS
                     )
-                    unit_state = await render_facts(unit_state, atomic)
+                    unit_state = await render_facts(
+                        unit_state, atomic, supplemental_ontologies=supplemental
+                    )
                     if unit_state.status == Status.SUCCESS:
                         logger.info(
                             "Unit facts render recovered with search at attempt %s/%s",
@@ -274,7 +289,10 @@ async def ontology_loop(
         for render_attempt in range(1, max_visits + 1):
             unit_state.node_visits[WorkflowNode.TEXT_TO_ONTOLOGY] += 1
             _reset_node_evidence_context(unit_state, WorkflowNode.TEXT_TO_ONTOLOGY)
-            unit_state = await render_ontology(unit_state, atomic)
+            supplemental = _document_supplemental_ontologies(document_state)
+            unit_state = await render_ontology(
+                unit_state, atomic, supplemental_ontologies=supplemental
+            )
             if unit_state.status != Status.SUCCESS:
                 render_request = unit_state.get_external_evidence_request(
                     WorkflowNode.TEXT_TO_ONTOLOGY
@@ -286,7 +304,9 @@ async def ontology_loop(
                     unit_state = await fetch_external_evidence_for_node(
                         unit_state, atomic, WorkflowNode.TEXT_TO_ONTOLOGY
                     )
-                    unit_state = await render_ontology(unit_state, atomic)
+                    unit_state = await render_ontology(
+                        unit_state, atomic, supplemental_ontologies=supplemental
+                    )
                     if unit_state.status == Status.SUCCESS:
                         logger.info(
                             "Unit ontology render recovered with search at attempt %s/%s",

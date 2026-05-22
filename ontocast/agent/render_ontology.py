@@ -8,6 +8,7 @@ The agent decides between generating bare Turtle for fresh ontologies and SPARQL
 """
 
 import logging
+from collections.abc import Sequence
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
@@ -15,9 +16,10 @@ from langchain_core.prompts import PromptTemplate
 from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.onto.enum import FailureStage, LLMGraphFormat, Status, WorkflowNode
 from ontocast.onto.model import GraphUpdateRenderReport, OntologyRenderReport
+from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import (
     UnitOntologyAccess,
-    known_prefixes_for_llm_parse,
+    build_llm_prefix_map,
     ontology_access_for_unit_ontology,
 )
 from ontocast.onto.rdfgraph import RDFGraph
@@ -85,7 +87,9 @@ def _prepare_ontology_common_prompt_layers(
 
 
 async def render_ontology(
-    state: UnitOntologyState, tools: AtomicToolBox
+    state: UnitOntologyState,
+    tools: AtomicToolBox,
+    supplemental_ontologies: Sequence[Ontology] | None = None,
 ) -> UnitOntologyState:
     """Structured hybrid ontology renderer with Turtle/SPARQL decision logic.
 
@@ -110,14 +114,19 @@ async def render_ontology(
     has_seed_ontology = access.has_non_null_seed_snapshot()
     has_no_seed_ontology = current.is_null() and not has_seed_ontology
 
+    extras = list(supplemental_ontologies or ())
     if has_no_seed_ontology:
-        return await render_ontology_fresh(state, tools)
+        return await render_ontology_fresh(state, tools, supplemental_ontologies=extras)
     else:
-        return await render_ontology_update(state, tools)
+        return await render_ontology_update(
+            state, tools, supplemental_ontologies=extras
+        )
 
 
 async def render_ontology_fresh(
-    state: UnitOntologyState, tools: AtomicToolBox
+    state: UnitOntologyState,
+    tools: AtomicToolBox,
+    supplemental_ontologies: Sequence[Ontology] | None = None,
 ) -> UnitOntologyState:
     """Render ontology triples into a human-readable format.
 
@@ -153,8 +162,13 @@ async def render_ontology_fresh(
     ) = _prepare_ontology_common_prompt_layers(state, access)
 
     prompt = _create_ontology_render_prompt_template()
+    known_prefixes = build_llm_prefix_map(
+        access.ontology_for_prefixes(),
+        supplemental_ontologies or (),
+    )
 
     try:
+        RDFGraph.set_known_prefixes(known_prefixes if known_prefixes else None)
         llm_tool = await tools.get_llm_tool(state.budget_tracker)
         render_report: OntologyRenderReport = await call_llm_with_retry(
             llm_tool=llm_tool,
@@ -195,10 +209,14 @@ async def render_ontology_fresh(
         return _handle_ontology_render_error(
             state, e, FailureStage.GENERATE_TTL_FOR_ONTOLOGY
         )
+    finally:
+        RDFGraph.set_known_prefixes(None)
 
 
 async def render_ontology_update(
-    state: UnitOntologyState, tools: AtomicToolBox
+    state: UnitOntologyState,
+    tools: AtomicToolBox,
+    supplemental_ontologies: Sequence[Ontology] | None = None,
 ) -> UnitOntologyState:
     """Render ontology triples into a human-readable format.
 
@@ -251,11 +269,13 @@ async def render_ontology_update(
     ) = _prepare_ontology_common_prompt_layers(state, access)
 
     prompt = _create_ontology_render_prompt_template()
-    known_prefixes = known_prefixes_for_llm_parse(access)
+    known_prefixes = build_llm_prefix_map(
+        access.ontology_for_prefixes(),
+        supplemental_ontologies or (),
+    )
 
     try:
         llm_tool = await tools.get_llm_tool(state.budget_tracker)
-        # Set known prefixes in context before parsing
         RDFGraph.set_known_prefixes(known_prefixes if known_prefixes else None)
 
         render_report: GraphUpdateRenderReport = await call_llm_with_retry(

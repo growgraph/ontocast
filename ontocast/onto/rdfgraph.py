@@ -14,7 +14,7 @@ from pyld import jsonld
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import XSD, NamespaceManager
 
-from ontocast.onto.constants import COMMON_PREFIXES
+from ontocast.onto.constants import COMMON_PREFIXES, prefix_lookup_for_ingest
 from ontocast.onto.enum import LLMGraphFormat
 from ontocast.onto.iri_policy import normalize_namespace_iri, sanitize_prefix_map
 from ontocast.util import render_text_hash
@@ -29,10 +29,89 @@ INTEGER_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:i
 DECIMAL_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:decimal')
 DOUBLE_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:double')
 DATE_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:date')
+NQUADS_INTEGER_TYPED_LITERAL_PATTERN = re.compile(
+    r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^<http://www\.w3\.org/2001/XMLSchema#integer>'
+)
+NQUADS_DECIMAL_TYPED_LITERAL_PATTERN = re.compile(
+    r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^<http://www\.w3\.org/2001/XMLSchema#decimal>'
+)
+NQUADS_DOUBLE_TYPED_LITERAL_PATTERN = re.compile(
+    r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^<http://www\.w3\.org/2001/XMLSchema#double>'
+)
+NQUADS_DATE_TYPED_LITERAL_PATTERN = re.compile(
+    r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^<http://www\.w3\.org/2001/XMLSchema#date>'
+)
+XSD_GYEAR_IRI = "http://www.w3.org/2001/XMLSchema#gYear"
+UNKNOWN_PREFIX_ERROR_PATTERN = re.compile(r"Unknown namespace prefix\s*:\s*(\w+)")
 # Bare numeric value followed by ^^ datatype — missing surrounding quotes
 UNQUOTED_TYPED_LITERAL_PATTERN = re.compile(
     r'(?<!")\b(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\^\^([\w:]+)'
 )
+
+_INVALID_DECIMAL_LEXICALS = frozenset(
+    {
+        "nan",
+        "+nan",
+        "-nan",
+        "inf",
+        "+inf",
+        "-inf",
+        "infinity",
+        "+infinity",
+        "-infinity",
+    }
+)
+
+
+def _is_valid_integer_lexical(lexical: str) -> bool:
+    try:
+        int(lexical)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_valid_decimal_lexical(lexical: str) -> bool:
+    lowered = lexical.strip().lower()
+    if lowered in _INVALID_DECIMAL_LEXICALS:
+        return False
+    try:
+        Decimal(lexical)
+        return True
+    except InvalidOperation:
+        return False
+
+
+def _coerce_date_lexical_for_turtle(lexical: str) -> str:
+    if re.fullmatch(r"\d{4}", lexical):
+        return f'"{lexical}"^^xsd:gYear'
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", lexical):
+        return f'"{lexical}"^^xsd:date'
+    return f'"{lexical}"'
+
+
+def _coerce_date_lexical_for_nquads(lexical: str) -> str:
+    if re.fullmatch(r"\d{4}", lexical):
+        return f'"{lexical}"^^<{XSD_GYEAR_IRI}>'
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", lexical):
+        return f'"{lexical}"^^<http://www.w3.org/2001/XMLSchema#date>'
+    return f'"{lexical}"'
+
+
+def _format_namespace_uri_for_turtle_declaration(namespace_uri: str) -> str:
+    if namespace_uri.startswith("<") and namespace_uri.endswith(">"):
+        return namespace_uri
+    return f"<{namespace_uri}>"
+
+
+def _prefix_lookup_for_turtle_repair() -> dict[str, str]:
+    """Merged ingest + context prefix map for Turtle repair (context overrides ingest)."""
+    lookup = prefix_lookup_for_ingest()
+    known = _known_prefixes_context.get()
+    if known:
+        lookup = {**lookup, **known}
+    return lookup
+
 
 # Context variable to store known prefixes during parsing
 _known_prefixes_context: ContextVar[dict[str, str] | None] = ContextVar[
@@ -294,59 +373,34 @@ class RDFGraph(Graph):
 
     @staticmethod
     def _ensure_prefixes(turtle_str: str) -> str:
-        """Ensure all common prefixes and used custom prefixes are declared in the Turtle string.
+        """Declare prefixes used in Turtle but missing from ``@prefix`` lines.
 
-        This method:
-        1. Adds missing common prefixes (rdf, rdfs, owl, etc.)
-        2. Detects prefixes that are used but not declared
-        3. Adds declarations for used prefixes if they're available in the context
-
-        Args:
-            turtle_str: The input Turtle string.
-
-        Returns:
-            str: The Turtle string with all necessary prefixes declared.
+        Resolves undeclared used prefixes from ingest vocabulary (COMMON +
+        WELL_KNOWN) and the context map set via :meth:`set_known_prefixes`.
         """
         declared_prefixes = set(
             match.group(1) for match in PREFIX_PATTERN.finditer(turtle_str)
         )
 
-        # Add missing common prefixes
-        missing_common = {
-            prefix: uri
-            for prefix, uri in COMMON_PREFIXES.items()
-            if prefix not in declared_prefixes
-        }
-
-        # Detect prefixes that are used but not declared
-        used_prefixes = set()
+        used_prefixes: set[str] = set()
         for match in PREFIX_USAGE_PATTERN.finditer(turtle_str):
             prefix = match.group(1)
-            # Skip if already declared or is a common prefix we're about to add
-            if prefix not in declared_prefixes and prefix not in missing_common:
+            if prefix not in declared_prefixes:
                 used_prefixes.add(prefix)
 
-        # Get known prefixes from context (set by caller)
-        known_prefixes = _known_prefixes_context.get()
-        missing_custom = {}
-        if known_prefixes and used_prefixes:
-            for prefix in used_prefixes:
-                if prefix in known_prefixes:
-                    namespace_uri = known_prefixes[prefix]
-                    # Format as Turtle prefix declaration
-                    if not namespace_uri.startswith("<"):
-                        namespace_uri = f"<{namespace_uri}>"
-                    missing_custom[prefix] = namespace_uri
+        lookup = _prefix_lookup_for_turtle_repair()
+        missing: dict[str, str] = {}
+        for prefix in used_prefixes:
+            if prefix in lookup:
+                missing[prefix] = _format_namespace_uri_for_turtle_declaration(
+                    lookup[prefix]
+                )
 
-        all_missing = {**missing_common, **missing_custom}
-
-        if not all_missing:
+        if not missing:
             return turtle_str
 
         prefix_block = (
-            "\n".join(
-                f"@prefix {prefix}: {uri} ." for prefix, uri in all_missing.items()
-            )
+            "\n".join(f"@prefix {prefix}: {uri} ." for prefix, uri in missing.items())
             + "\n\n"
         )
 
@@ -454,14 +508,19 @@ class RDFGraph(Graph):
             g._sanitize_prefix_boundaries_from_turtle(normalized_turtle)
             return g
         except Exception as parse_error:
+            error_message = str(parse_error)
             repaired_turtle = cls._repair_common_turtle_issues(
-                patched_turtle, parse_error_message=str(parse_error)
+                patched_turtle, parse_error_message=error_message
             )
+            if repaired_turtle == patched_turtle:
+                repaired_turtle = cls._repair_unknown_prefix(
+                    patched_turtle, error_message
+                )
             if repaired_turtle == patched_turtle:
                 raise
             logger.warning(
                 "Recovering malformed Turtle after parse failure: %s",
-                str(parse_error),
+                error_message,
             )
             repaired_graph = cls()
             repaired_graph.parse(data=repaired_turtle, format="turtle")
@@ -527,31 +586,15 @@ class RDFGraph(Graph):
 
         def replace_integer(match: re.Match[str]) -> str:
             lexical = match.group(1)
-            try:
-                int(lexical)
+            if _is_valid_integer_lexical(lexical):
                 return match.group(0)
-            except ValueError:
-                return f'"{lexical}"'
+            return f'"{lexical}"'
 
         def replace_decimal(match: re.Match[str]) -> str:
             lexical = match.group(1)
-            try:
-                Decimal(lexical)
-                if lexical.strip().lower() in {
-                    "nan",
-                    "+nan",
-                    "-nan",
-                    "inf",
-                    "+inf",
-                    "-inf",
-                    "infinity",
-                    "+infinity",
-                    "-infinity",
-                }:
-                    return f'"{lexical}"'
+            if _is_valid_decimal_lexical(lexical):
                 return match.group(0)
-            except InvalidOperation:
-                return f'"{lexical}"'
+            return f'"{lexical}"'
 
         coerced = INTEGER_TYPED_LITERAL_PATTERN.sub(replace_integer, turtle_str)
         coerced = DECIMAL_TYPED_LITERAL_PATTERN.sub(replace_decimal, coerced)
@@ -561,21 +604,108 @@ class RDFGraph(Graph):
 
     @staticmethod
     def _coerce_invalid_date_typed_literals(turtle_str: str) -> str:
-        """Normalize date literals with invalid xsd:date lexical forms.
-
-        - `YYYY` is coerced to `xsd:gYear`
-        - invalid date values fall back to plain literals
-        """
+        """Normalize date literals with invalid xsd:date lexical forms."""
 
         def replace_date(match: re.Match[str]) -> str:
             lexical = match.group(1)
-            if re.fullmatch(r"\d{4}", lexical):
-                return f'"{lexical}"^^xsd:gYear'
             if re.fullmatch(r"\d{4}-\d{2}-\d{2}", lexical):
+                return match.group(0)
+            return _coerce_date_lexical_for_turtle(lexical)
+
+        return DATE_TYPED_LITERAL_PATTERN.sub(replace_date, turtle_str)
+
+    @staticmethod
+    def _coerce_invalid_nquads_typed_literals(nquads_str: str) -> str:
+        """Coerce invalid XSD typed literals in normalized n-quads before rdflib parse."""
+
+        def replace_integer(match: re.Match[str]) -> str:
+            lexical = match.group(1)
+            if _is_valid_integer_lexical(lexical):
                 return match.group(0)
             return f'"{lexical}"'
 
-        return DATE_TYPED_LITERAL_PATTERN.sub(replace_date, turtle_str)
+        def replace_decimal(match: re.Match[str]) -> str:
+            lexical = match.group(1)
+            if _is_valid_decimal_lexical(lexical):
+                return match.group(0)
+            return f'"{lexical}"'
+
+        def replace_date(match: re.Match[str]) -> str:
+            lexical = match.group(1)
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", lexical):
+                return match.group(0)
+            return _coerce_date_lexical_for_nquads(lexical)
+
+        coerced = NQUADS_INTEGER_TYPED_LITERAL_PATTERN.sub(replace_integer, nquads_str)
+        coerced = NQUADS_DECIMAL_TYPED_LITERAL_PATTERN.sub(replace_decimal, coerced)
+        coerced = NQUADS_DOUBLE_TYPED_LITERAL_PATTERN.sub(replace_decimal, coerced)
+        coerced = NQUADS_DATE_TYPED_LITERAL_PATTERN.sub(replace_date, coerced)
+        return coerced
+
+    @staticmethod
+    def _repair_unknown_prefix(turtle_str: str, parse_error_message: str) -> str:
+        """Inject ``@prefix`` for a single unknown prefix named in an rdflib parse error."""
+        match = UNKNOWN_PREFIX_ERROR_PATTERN.search(parse_error_message)
+        if not match:
+            return turtle_str
+        prefix = match.group(1)
+        if re.search(rf"@prefix\s+{re.escape(prefix)}\s*:", turtle_str):
+            return turtle_str
+
+        lookup = _prefix_lookup_for_turtle_repair()
+        namespace_uri = lookup.get(prefix)
+        if not namespace_uri:
+            return turtle_str
+
+        ingest_only = prefix_lookup_for_ingest()
+        if prefix in ingest_only and namespace_uri == ingest_only[prefix]:
+            source = "well_known"
+        else:
+            source = "context"
+        logger.warning(
+            "Recovering unknown Turtle prefix %r from %s namespace <%s>",
+            prefix,
+            source,
+            namespace_uri,
+        )
+        declaration = (
+            f"@prefix {prefix}: "
+            f"{_format_namespace_uri_for_turtle_declaration(namespace_uri)} .\n"
+        )
+        return declaration + turtle_str
+
+    @staticmethod
+    def _merge_known_prefixes_into_jsonld(data: dict | list) -> dict | list:
+        """Shallow-merge known prefix URIs into JSON-LD ``@context`` before normalization."""
+        known = _known_prefixes_context.get()
+        if not known:
+            return data
+
+        def merge_context(context: object) -> object:
+            if not isinstance(context, dict):
+                return context
+            merged = dict(context)
+            for prefix, uri in known.items():
+                if prefix.startswith("@") or prefix in merged:
+                    continue
+                merged[prefix] = uri
+            return merged
+
+        if isinstance(data, dict):
+            if "@context" in data:
+                data = dict(data)
+                data["@context"] = merge_context(data["@context"])
+            return data
+        if isinstance(data, list):
+            return [
+                (
+                    {**item, "@context": merge_context(item["@context"])}
+                    if isinstance(item, dict) and "@context" in item
+                    else item
+                )
+                for item in data
+            ]
+        return data
 
     @staticmethod
     def _is_valid_typed_literal(literal: Literal) -> bool:
@@ -587,31 +717,10 @@ class RDFGraph(Graph):
         datatype = literal.datatype
 
         if datatype in (XSD.decimal, XSD.double):
-            lowered = lexical.strip().lower()
-            if lowered in {
-                "nan",
-                "+nan",
-                "-nan",
-                "inf",
-                "+inf",
-                "-inf",
-                "infinity",
-                "+infinity",
-                "-infinity",
-            }:
-                return False
-            try:
-                Decimal(lexical)
-                return True
-            except InvalidOperation:
-                return False
+            return _is_valid_decimal_lexical(lexical)
 
         if datatype == XSD.integer:
-            try:
-                int(lexical)
-                return True
-            except ValueError:
-                return False
+            return _is_valid_integer_lexical(lexical)
 
         if datatype == XSD.float:
             try:
@@ -836,17 +945,16 @@ class RDFGraph(Graph):
             RDFGraph: A new RDFGraph instance with namespace prefixes extracted from @context.
         """
         # Use pyld to convert JSON-LD to n-quads, then parse to avoid rdflib's deprecated ConjunctiveGraph
-        # This adapts to the new convention by using pyld directly instead of rdflib's JSON-LD parser
         jsonld_data = json.loads(jsonld_str)
+        jsonld_data = cls._merge_known_prefixes_into_jsonld(jsonld_data)
         normalized = jsonld.normalize(
             jsonld_data,
             {"algorithm": "URDNA2015", "format": "application/n-quads"},
         )
 
-        # jsonld.normalize returns a string when format is "application/n-quads"
         normalized_str = normalized if isinstance(normalized, str) else str(normalized)
+        normalized_str = cls._coerce_invalid_nquads_typed_literals(normalized_str)
 
-        # Parse the normalized n-quads into RDFGraph
         g = cls()
         g.parse(data=normalized_str, format="nquads")
 

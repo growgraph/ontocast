@@ -1,8 +1,8 @@
 """Tests for ontocast.onto.ontology_access."""
 
-from rdflib import URIRef
+from rdflib import Namespace, URIRef
 
-from ontocast.onto.constants import ONTOLOGY_NULL_IRI
+from ontocast.onto.constants import ONTOLOGY_NULL_IRI, WELL_KNOWN_PREFIXES
 from ontocast.onto.content_unit import ContentUnit, SourceUnit
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
@@ -10,6 +10,7 @@ from ontocast.onto.ontology_access import (
     DocumentOntologyAccess,
     UnitFactsOntologyAccess,
     UnitOntologyAccess,
+    build_llm_prefix_map,
     document_ontology_access,
     ontology_access_for_unit_facts,
     ontology_access_for_unit_ontology,
@@ -112,6 +113,24 @@ def test_unit_facts_access_uses_snapshot_only() -> None:
     assert access.effective_ontology_for_prompt() is snap
     assert access.ontology_for_prefixes() is snap
     assert access.has_non_null_seed_snapshot()
+
+
+def test_build_llm_prefix_map_merges_supplemental_ontology() -> None:
+    primary = _real_ontology("https://example.org/primary")
+    supplemental = _real_ontology("https://example.org/supp")
+    supplemental.graph.bind("custom", Namespace("https://example.org/custom#"))
+    supplemental.graph.add(
+        (
+            URIRef("https://example.org/custom#Thing"),
+            URIRef("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+            URIRef("http://www.w3.org/2002/07/owl#Class"),
+        )
+    )
+
+    merged = build_llm_prefix_map(primary, [supplemental])
+
+    assert merged["qudt"] == WELL_KNOWN_PREFIXES["qudt"]
+    assert merged["custom"] == "https://example.org/custom#"
 
 
 def test_unit_facts_access_null_snapshot() -> None:

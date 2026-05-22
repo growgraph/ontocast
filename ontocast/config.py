@@ -55,6 +55,13 @@ class OllamaModel(LLMModelNameAbstract):
     LLAMA3_1_70B = "llama3.1:70b"
     GRANITE3_3_2B = "granite3.3:2b"
     GRANITE3_3_8B = "granite3.3:8b"
+    GRANITE4_1_3B = "granite4.1:3b"
+    GRANITE4_1_8B = "granite4.1:8b"
+    GRANITE4_1_30B = "granite4.1:30b"
+    QWEN3_6_LATEST = "qwen3.6:latest"
+    QWEN3_6_27B = "qwen3.6:27b"
+    QWEN3_6_35B = "qwen3.6:35b"
+    KIMI_K2_6_CLOUD = "kimi-k2.6:cloud"
 
 
 LLMModelName = OpenAIModel | OllamaModel

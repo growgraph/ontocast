@@ -29,6 +29,30 @@ COMMON_PREFIXES = {
     "prov": "<http://www.w3.org/ns/prov#>",
     "ex": "<http://example.org/>",
 }
+
+# Cross-domain vocabularies merged only at LLM ingest repair (not default serialization).
+WELL_KNOWN_PREFIXES: dict[str, str] = {
+    "qudt": "http://qudt.org/schema/qudt/",
+    "unit": "http://qudt.org/vocab/unit/",
+    "quantitykind": "http://qudt.org/vocab/quantitykind/",
+    "om": "http://www.ontology-of-units-of-measure.org/resource/om-2/",
+    "geo": "http://www.w3.org/2003/01/geo/wgs84_pos#",
+    "time": "http://www.w3.org/2006/time#",
+    "sh": "http://www.w3.org/ns/shacl#",
+    "dcat": "http://www.w3.org/ns/dcat#",
+    "void": "http://rdfs.org/ns/void#",
+}
+
+
+def prefix_lookup_for_ingest() -> dict[str, str]:
+    """Prefix map for Turtle/JSON-LD ingest repair (COMMON + WELL_KNOWN, bare URIs)."""
+    lookup: dict[str, str] = {}
+    for prefix, uri in COMMON_PREFIXES.items():
+        lookup[prefix] = uri.strip("<>")
+    lookup.update(WELL_KNOWN_PREFIXES)
+    return lookup
+
+
 PROV = Namespace("http://www.w3.org/ns/prov#")
 SCHEMA = Namespace("https://schema.org/")
 

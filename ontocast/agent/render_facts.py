@@ -6,6 +6,7 @@ understandable.
 """
 
 import logging
+from collections.abc import Sequence
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
@@ -14,9 +15,10 @@ from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import FailureStage, LLMGraphFormat, Status, WorkflowNode
 from ontocast.onto.model import FactsRenderReport, GraphUpdateRenderReport
+from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import (
     UnitFactsOntologyAccess,
-    known_prefixes_for_llm_parse,
+    build_llm_prefix_map,
     ontology_access_for_unit_facts,
 )
 from ontocast.onto.rdfgraph import RDFGraph, finalize_llm_graph
@@ -45,7 +47,11 @@ from ontocast.tool.atomic import AtomicToolBox
 logger = logging.getLogger(__name__)
 
 
-async def render_facts(state: UnitFactsState, tools: AtomicToolBox) -> UnitFactsState:
+async def render_facts(
+    state: UnitFactsState,
+    tools: AtomicToolBox,
+    supplemental_ontologies: Sequence[Ontology] | None = None,
+) -> UnitFactsState:
     """Structured hybrid facts renderer with Turtle/SPARQL decision logic.
 
     This function decides between generating bare Turtle for fresh facts
@@ -64,12 +70,13 @@ async def render_facts(state: UnitFactsState, tools: AtomicToolBox) -> UnitFacts
     progress_info = state.get_content_unit_progress_string()
     logger.info(f"Render facts for {progress_info}")
 
+    extras = list(supplemental_ontologies or ())
     if is_fresh_facts_graph:
         logger.info("Generating fresh facts as Turtle")
-        return await render_facts_fresh(state, tools)
+        return await render_facts_fresh(state, tools, supplemental_ontologies=extras)
     else:
         logger.info("Generating facts update")
-        return await render_facts_update(state, tools)
+        return await render_facts_update(state, tools, supplemental_ontologies=extras)
 
 
 def _prepare_prompt_data(
@@ -164,7 +171,9 @@ def _handle_rendering_error(
 
 
 async def render_facts_fresh(
-    state: UnitFactsState, tools: AtomicToolBox
+    state: UnitFactsState,
+    tools: AtomicToolBox,
+    supplemental_ontologies: Sequence[Ontology] | None = None,
 ) -> UnitFactsState:
     """Render fresh facts from the current chunk into Turtle format.
 
@@ -182,7 +191,10 @@ async def render_facts_fresh(
 
     access = ontology_access_for_unit_facts(state)
 
-    known_prefixes = known_prefixes_for_llm_parse(access)
+    known_prefixes = build_llm_prefix_map(
+        access.ontology_for_prefixes(),
+        supplemental_ontologies or (),
+    )
 
     prompt_data = _prepare_prompt_data(state, access)
     fresh_output_instruction = (
@@ -243,7 +255,9 @@ async def render_facts_fresh(
 
 
 async def render_facts_update(
-    state: UnitFactsState, tools: AtomicToolBox
+    state: UnitFactsState,
+    tools: AtomicToolBox,
+    supplemental_ontologies: Sequence[Ontology] | None = None,
 ) -> UnitFactsState:
     """Render facts updates using SPARQL operations.
 
@@ -278,7 +292,10 @@ async def render_facts_update(
     }
     prompt_data.update(prompt_data_update)
     prompt = _create_prompt_template()
-    known_prefixes = known_prefixes_for_llm_parse(access)
+    known_prefixes = build_llm_prefix_map(
+        access.ontology_for_prefixes(),
+        supplemental_ontologies or (),
+    )
 
     try:
         # Set known prefixes in context before parsing

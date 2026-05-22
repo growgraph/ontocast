@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from rdflib import URIRef
+from rdflib import Literal, URIRef
 
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import FailureStage, LLMGraphFormat, Status
@@ -65,11 +65,11 @@ def _build_tools() -> AtomicToolBox:
 async def test_render_facts_routes_to_fresh_when_graph_is_empty(monkeypatch) -> None:
     calls = {"fresh": 0, "update": 0}
 
-    async def fake_fresh(state: UnitFactsState, tools) -> UnitFactsState:
+    async def fake_fresh(state: UnitFactsState, tools, **kwargs) -> UnitFactsState:
         calls["fresh"] += 1
         return state
 
-    async def fake_update(state: UnitFactsState, tools) -> UnitFactsState:
+    async def fake_update(state: UnitFactsState, tools, **kwargs) -> UnitFactsState:
         calls["update"] += 1
         return state
 
@@ -158,7 +158,7 @@ async def test_criticise_facts_marks_failed_and_sets_suggestions(monkeypatch) ->
 
 
 @pytest.mark.anyio
-async def test_render_facts_fresh_quarantines_invalid_typed_literal(
+async def test_render_facts_fresh_coerces_invalid_typed_literal_at_ingest(
     monkeypatch,
 ) -> None:
     async def fake_call_llm_with_retry(**kwargs):
@@ -195,13 +195,18 @@ async def test_render_facts_fresh_quarantines_invalid_typed_literal(
     result = await render_facts_module.render_facts_fresh(state, tools=_build_tools())
 
     assert result.status == Status.SUCCESS
-    assert len(result.content_unit.graph) == 0
-    assert len(result.quarantined_literal_triples) == 1
-    assert result.quarantined_literal_triples[0].object_lexical == "10-15"
+    assert len(result.content_unit.graph) == 1
+    assert len(result.quarantined_literal_triples) == 0
+    obj = next(result.content_unit.graph.objects())
+    assert isinstance(obj, Literal)
+    assert obj.datatype is None
+    assert str(obj) == "10-15"
 
 
 @pytest.mark.anyio
-async def test_render_facts_update_quarantines_before_apply(monkeypatch) -> None:
+async def test_render_facts_update_coerces_invalid_literal_in_update_graph(
+    monkeypatch,
+) -> None:
     async def fake_call_llm_with_retry(**kwargs):
         bad_graph = RDFGraph._from_jsonld_obj(
             {
@@ -236,8 +241,8 @@ async def test_render_facts_update_quarantines_before_apply(monkeypatch) -> None
     result = await render_facts_module.render_facts_update(state, tools=_build_tools())
 
     assert result.status == Status.SUCCESS
-    assert len(result.quarantined_literal_triples) == 1
-    assert len(result.content_unit.graph) == initial_len
+    assert len(result.quarantined_literal_triples) == 0
+    assert len(result.content_unit.graph) == initial_len + 1
 
 
 @pytest.mark.anyio

@@ -5,10 +5,12 @@ so agents and stategraph code do not duplicate ``ontology_snapshot`` /
 ``ontology_artifacts`` branching.
 """
 
+from collections.abc import Iterable
 from typing import Protocol
 
+from ontocast.onto.constants import prefix_lookup_for_ingest
 from ontocast.onto.ontology import Ontology
-from ontocast.onto.rdfgraph import extract_known_prefixes
+from ontocast.onto.rdfgraph import RDFGraph, extract_known_prefixes
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.prompt.ontology_context import extract_domain_prefix_pairs
@@ -34,14 +36,64 @@ class OntologyPromptSource(Protocol):
         ...
 
 
+def _merge_prefix_bindings_from_graph(
+    merged: dict[str, str],
+    graph: RDFGraph,
+    extra_prefix: str | None,
+    extra_namespace: str | None,
+) -> None:
+    """Add explicit and implicit namespace bindings from *graph* into *merged*."""
+    for prefix, namespace_uri in extract_known_prefixes(
+        graph,
+        extra_prefix=extra_prefix,
+        extra_namespace=extra_namespace,
+    ).items():
+        if prefix not in merged:
+            merged[prefix] = namespace_uri
+
+    scratch = graph.copy()
+    scratch.bind_implicit_namespaces()
+    for prefix, namespace_uri in scratch.namespaces():
+        if prefix and prefix not in merged:
+            merged[prefix] = str(namespace_uri)
+
+
+def build_llm_prefix_map(
+    primary: Ontology,
+    supplemental: Iterable[Ontology] = (),
+) -> dict[str, str]:
+    """Collect namespace prefixes for LLM Turtle/JSON-LD ingest repair.
+
+    Layers (first wins on prefix name conflicts after ingest vocabulary):
+    1. ``prefix_lookup_for_ingest()`` (COMMON + WELL_KNOWN)
+    2. Primary ontology graph bindings + implicit stems
+    3. Supplemental ontology graphs (same extraction)
+    """
+    merged = prefix_lookup_for_ingest()
+    ontologies: list[Ontology] = [primary, *supplemental]
+    for ontology in ontologies:
+        if ontology.is_null():
+            continue
+        graph = ontology.graph
+        if not isinstance(graph, RDFGraph):
+            normalized = RDFGraph()
+            for triple in graph:
+                normalized.add(triple)
+            for prefix, namespace_uri in graph.namespaces():
+                normalized.bind(prefix, namespace_uri)
+            graph = normalized
+        _merge_prefix_bindings_from_graph(
+            merged,
+            graph,
+            extra_prefix=ontology.prefix or None,
+            extra_namespace=ontology.namespace or None,
+        )
+    return merged
+
+
 def known_prefixes_for_llm_parse(source: OntologyPromptSource) -> dict[str, str]:
     """Collect namespace prefixes for TTL/JSON-LD repair during LLM output parsing."""
-    current = source.ontology_for_prefixes()
-    return extract_known_prefixes(
-        current.graph,
-        extra_prefix=current.prefix or None,
-        extra_namespace=current.namespace or None,
-    )
+    return build_llm_prefix_map(source.ontology_for_prefixes())
 
 
 class UnitOntologyAccess:
