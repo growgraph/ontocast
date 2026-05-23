@@ -942,6 +942,52 @@ def test_render_updated_graph_splits_compound_sparql_insert_updates() -> None:
     ) in updated_graph
 
 
+def test_render_updated_graph_splits_compound_sparql_with_many_prefixes() -> None:
+    """Regression: shared PREFIX block + second INSERT at ~line 44 (Text2KGBench style)."""
+    from ontocast.onto.sparql_models import STANDARD_PREFIXES
+
+    graph = RDFGraph()
+    graph.parse(
+        data="@prefix ex: <http://example.org/> . ex:Existing ex:kept ex:Value .",
+        format="turtle",
+    )
+    prefix_block = "\n".join(
+        f"PREFIX {prefix}: <{uri}>" for prefix, uri in STANDARD_PREFIXES.items()
+    )
+    compound_query = (
+        f"{prefix_block}\n"
+        "INSERT DATA { <http://example.org/a> <http://example.org/p1> "
+        "<http://example.org/o1> . }\n"
+        "INSERT DATA { <http://example.org/a> <http://example.org/p2> "
+        "<http://example.org/o2> . }"
+    )
+    update = GraphUpdate(sparql_operations=[GenericSparqlQuery(query=compound_query)])
+
+    updated_graph, was_applied = AgentState.render_updated_graph(graph, [update])
+
+    assert was_applied is True
+    assert len(list(updated_graph)) >= 3
+
+
+def test_apply_update_query_splits_insert_where_plus_insert_data() -> None:
+    graph = RDFGraph()
+    graph.parse(
+        data="@prefix ex: <http://example.org/> . ex:a ex:p1 ex:o1 .",
+        format="turtle",
+    )
+    query = (
+        "PREFIX ex: <http://example.org/>\n"
+        "INSERT { ?s ?p ?o } WHERE { ?s ?p ?o . FILTER(?p = ex:p1) }\n"
+        "INSERT DATA { ex:a ex:p2 ex:o2 . }"
+    )
+    AgentState._apply_update_query(graph, query)
+    assert (
+        URIRef("http://example.org/a"),
+        URIRef("http://example.org/p2"),
+        URIRef("http://example.org/o2"),
+    ) in graph
+
+
 def test_build_ontology_delta_graph_warns_and_drops_delete_operations(
     caplog,
 ) -> None:

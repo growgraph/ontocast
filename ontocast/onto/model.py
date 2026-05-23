@@ -120,6 +120,7 @@ class SemanticTriplesFactsReport(BaseModel):
         "Use prefixes for namespaces, do NOT add comments.",
     )
     ontology_relevance_score: float | None = Field(
+        default=None,
         ge=0,
         le=100,
         description=(
@@ -128,6 +129,7 @@ class SemanticTriplesFactsReport(BaseModel):
         ),
     )
     triples_generation_score: float | None = Field(
+        default=None,
         ge=0,
         le=100,
         description=(
@@ -321,6 +323,14 @@ class TripleFix(BaseModel):
         return "\n".join(lines)
 
 
+def _coerce_critique_score(v: object) -> float:
+    """Coerce LLM score output (may be a JSON string) to float."""
+    try:
+        return float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class OntologyCritiqueReport(BaseModel):
     """Report from ontology update critique process."""
 
@@ -332,6 +342,11 @@ class OntologyCritiqueReport(BaseModel):
         le=100,
         description="Score 0-100 for how well the presented ontology serves as the ontology for the document. 0 is the worst, 100 is the best.",
     )
+
+    @field_validator("score", mode="before")
+    @classmethod
+    def coerce_score(cls, v: object) -> float:
+        return _coerce_critique_score(v)
 
     actionable_ontology_fixes: list[TripleFix] = Field(
         default_factory=list,
@@ -365,6 +380,11 @@ class FactsCritiqueReport(BaseModel):
             "0 is the worst, 100 is the best."
         ),
     )
+
+    @field_validator("score", mode="before")
+    @classmethod
+    def coerce_score(cls, v: object) -> float:
+        return _coerce_critique_score(v)
 
     actionable_triple_fixes: list[TripleFix] = Field(
         default_factory=list,

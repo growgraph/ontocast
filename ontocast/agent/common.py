@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 _JSON_COMMENT_RE = re.compile(r'"(?:[^"\\]|\\.)*"|//[^\n]*')
+_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
 
 
 def strip_json_comments(text: str) -> str:
@@ -40,6 +41,15 @@ def strip_json_comments(text: str) -> str:
         return matched if matched.startswith('"') else ""
 
     return _JSON_COMMENT_RE.sub(_replace, text)
+
+
+def strip_trailing_commas(text: str) -> str:
+    """Remove trailing commas before ``}`` or ``]`` (invalid in strict JSON)."""
+    prev = None
+    while prev != text:
+        prev = text
+        text = _TRAILING_COMMA_RE.sub(r"\1", text)
+    return text
 
 
 def render_suggestions_prompt(suggestions: Suggestions, stage: WorkflowNode) -> str:
@@ -144,7 +154,9 @@ async def call_llm_with_retry(
 
             # Call LLM
             response = await llm_tool(prompt.format_prompt(**attempt_kwargs))
-            content_to_parse = strip_json_comments(response.content)
+            content_to_parse = strip_trailing_commas(
+                strip_json_comments(response.content)
+            )
             last_sanitized_content = content_to_parse
 
             parsed = parser.parse(content_to_parse)

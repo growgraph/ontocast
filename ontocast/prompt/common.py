@@ -61,6 +61,9 @@ output_instruction_sparql = """\n\n
 
 Generate SPARQL operations that modify the existing ontology, not replace it entirely.
 Follow the Pydantic schema definitions exactly - they fully specify the output structure.
+
+`sparql_operations` is for complex custom queries only. All standard add/remove operations
+MUST use `triple_operations` with type `insert` or `delete`.
 """
 
 output_instruction_jsonld = """\n\n
@@ -97,6 +100,9 @@ For each `TripleOp.graph` field, provide a compact JSON-LD **object** (not a str
 4. Typed literals MUST use the value/type form: {"@value": "...", "@type": "xsd:date"}.
    Language-tagged literals use {"@value": "...", "@language": "en"}.
 5. No comments, no trailing prose - output strictly valid JSON.
+
+`sparql_operations` is for complex custom queries only. All standard add/remove operations
+MUST use `triple_operations` with type `insert` or `delete`.
 """
 
 output_instruction_critique_turtle = """\n\n

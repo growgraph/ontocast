@@ -43,6 +43,7 @@ facts_instruction_template = """\n\n
 3. Thoroughly Extract and Link: extract all possible text mentions that correspond to entities, classes, types, or relationships defined in {domain_ontologies_clause}
 4. Enforce typing: all `cd:` entities (facts) must be linked (e.g. using rdf:type) to entities from either {domain_ontologies_clause} or basic ontologies (RDFS, OWL, etc), e.g. rdfs:Class, rdf:Property, schema:Person, schema:Organization, etc.
 5. Define all prefixes for all namespaces used rdf, rdfs, owl, schema, etc
+5a. PREFIX HYGIENE: Use **only** the prefix shorthands listed in the `@prefix` declarations of the ontology above. Do not invent alternative aliases.
 6. CRITICAL - Entity Matching Protocol:
    - BEFORE creating any `cd:` entity, search the domain ontology for existing entities that match the concept semantically
    - A "matching entity" means a resource that EXISTS VERBATIM in the provided ontology as a named individual

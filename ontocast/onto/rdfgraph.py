@@ -655,6 +655,13 @@ class RDFGraph(Graph):
         lookup = _prefix_lookup_for_turtle_repair()
         namespace_uri = lookup.get(prefix)
         if not namespace_uri:
+            ctx = _known_prefixes_context.get() or {}
+            prefix_lower = prefix.lower()
+            for _p, _uri in ctx.items():
+                if _uri.rstrip("#/").rsplit("/", 1)[-1].lower() == prefix_lower:
+                    namespace_uri = _uri
+                    break
+        if not namespace_uri:
             return turtle_str
 
         ingest_only = prefix_lookup_for_ingest()
@@ -944,47 +951,55 @@ class RDFGraph(Graph):
         Returns:
             RDFGraph: A new RDFGraph instance with namespace prefixes extracted from @context.
         """
-        # Use pyld to convert JSON-LD to n-quads, then parse to avoid rdflib's deprecated ConjunctiveGraph
+        # Primary path: pyld URDNA2015 → n-quads → rdflib.  Avoids rdflib's
+        # deprecated ConjunctiveGraph and gives canonical blank-node labelling.
         jsonld_data = json.loads(jsonld_str)
         jsonld_data = cls._merge_known_prefixes_into_jsonld(jsonld_data)
-        normalized = jsonld.normalize(
-            jsonld_data,
-            {"algorithm": "URDNA2015", "format": "application/n-quads"},
-        )
+        try:
+            normalized = jsonld.normalize(
+                jsonld_data,
+                {"algorithm": "URDNA2015", "format": "application/n-quads"},
+            )
+        except Exception as jsonld_err:
+            # Fallback: rdflib's own JSON-LD parser (no URDNA2015, but tolerant
+            # of bad @context entries that pyld rejects).
+            logger.warning(
+                "JSON-LD normalization failed (%s); retrying with rdflib json-ld parser",
+                jsonld_err,
+            )
+            g = cls()
+            g.parse(data=json.dumps(jsonld_data), format="json-ld")
+            cls._bind_context_prefixes(g, jsonld_data)
+            return g
 
         normalized_str = normalized if isinstance(normalized, str) else str(normalized)
         normalized_str = cls._coerce_invalid_nquads_typed_literals(normalized_str)
 
         g = cls()
         g.parse(data=normalized_str, format="nquads")
+        cls._bind_context_prefixes(g, jsonld_data)
+        return g
 
-        # Extract prefixes from @context in JSON-LD and bind them
+    @staticmethod
+    def _bind_context_prefixes(g: "RDFGraph", jsonld_data: dict | list) -> None:
+        """Bind namespace prefixes declared in a JSON-LD ``@context`` onto *g*."""
         try:
-            context = None
-
-            # Handle single object or array
+            context: object = None
             if isinstance(jsonld_data, dict):
                 context = jsonld_data.get("@context")
             elif isinstance(jsonld_data, list) and jsonld_data:
-                # For arrays, check first item for @context
-                first_item = jsonld_data[0]
-                if isinstance(first_item, dict):
-                    context = first_item.get("@context")
-
-            # Bind prefixes from @context
-            if context and isinstance(context, dict):
+                first = jsonld_data[0]
+                if isinstance(first, dict):
+                    context = first.get("@context")
+            if isinstance(context, dict):
                 for prefix, uri in context.items():
                     if isinstance(uri, str) and not prefix.startswith("@"):
-                        # Skip JSON-LD keywords (starting with @)
                         try:
                             g.bind(prefix, uri)
-                        except Exception as e:
-                            logger.debug(f"Failed to bind prefix '{prefix}': {e}")
-
-        except (json.JSONDecodeError, ValueError, AttributeError) as e:
-            logger.debug(f"Could not extract prefixes from JSON-LD @context: {e}")
-
-        return g
+                        except Exception as exc:
+                            logger.debug("Failed to bind prefix %r: %s", prefix, exc)
+        except (ValueError, AttributeError) as exc:
+            logger.debug("Could not bind prefixes from JSON-LD @context: %s", exc)
 
     @staticmethod
     def _to_turtle_str(g: Any) -> str:

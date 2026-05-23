@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections import defaultdict
 from typing import Any
 
@@ -25,6 +26,9 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.util import render_text_hash
+
+# Top-level SPARQL update keywords at line start (used to split compound LLM output).
+_TOP_LEVEL_UPDATE_START_RE = re.compile(r"(?m)^(?=(?:INSERT|DELETE|WITH)\b)")
 
 
 class BudgetTracker(BasePydanticModel):
@@ -472,66 +476,37 @@ class AgentState(BasePydanticModel):
 
     @classmethod
     def _apply_update_query(cls, graph: RDFGraph, query: str) -> None:
-        """Apply one SPARQL update query, recovering common LLM compound outputs."""
-        try:
-            graph.update(query)
-            return
-        except Exception as exc:
-            split_queries = cls._split_compound_sparql_updates(query, exc)
-            if not split_queries:
-                raise
-            for split_query in split_queries:
-                graph.update(split_query)
+        """Apply one SPARQL update query, splitting compound LLM output proactively."""
+        parts = cls._split_compound_sparql_query(query)
+        for part in parts:
+            graph.update(part)
 
     @staticmethod
-    def _split_compound_sparql_updates(
-        query: str, parse_error: Exception
-    ) -> list[str] | None:
-        """Split concatenated top-level UPDATE statements if parser rejects input.
+    def _split_compound_sparql_query(query: str) -> list[str]:
+        """Split a query string containing concatenated top-level UPDATE statements.
 
-        LLM outputs sometimes concatenate multiple update statements (e.g. two
-        top-level INSERT blocks) into a single custom SPARQL string without a
-        separator accepted by the parser. We only recover in that specific case.
+        LLMs frequently emit several ``INSERT DATA`` / ``DELETE DATA`` blocks joined
+        after a shared ``PREFIX`` block.  Splitting on top-level keyword boundaries
+        before calling ``graph.update`` avoids parse errors entirely.
+
+        A single-statement query is returned as a one-element list.
         """
-        message = str(parse_error)
-        if "Expected end of text, found" not in message:
-            return None
+        stripped = query.strip()
+        if not stripped:
+            return [stripped]
 
-        prefixes: list[str] = []
-        body_lines: list[str] = []
-        for raw_line in query.splitlines():
-            stripped = raw_line.strip()
-            if stripped.upper().startswith("PREFIX "):
-                prefixes.append(stripped)
-            elif stripped:
-                body_lines.append(stripped)
+        starts = [m.start() for m in _TOP_LEVEL_UPDATE_START_RE.finditer(stripped)]
+        if len(starts) <= 1:
+            return [stripped]
 
-        if not body_lines:
-            return None
-
-        top_level_ops = ("INSERT", "DELETE", "WITH")
-        segments: list[list[str]] = []
-        current: list[str] = []
-        for line in body_lines:
-            if current and line.upper().startswith(top_level_ops):
-                segments.append(current)
-                current = [line]
-            else:
-                current.append(line)
-        if current:
-            segments.append(current)
-
-        if len(segments) <= 1:
-            return None
-
-        prefix_block = "\n".join(prefixes)
-        rebuilt = []
-        for segment in segments:
-            segment_block = "\n".join(segment)
-            rebuilt.append(
-                f"{prefix_block}\n{segment_block}" if prefix_block else segment_block
-            )
-        return rebuilt
+        prefix_block = stripped[: starts[0]].strip()
+        parts: list[str] = []
+        for i, start in enumerate(starts):
+            end = starts[i + 1] if i + 1 < len(starts) else len(stripped)
+            body = stripped[start:end].strip()
+            if body:
+                parts.append(f"{prefix_block}\n{body}" if prefix_block else body)
+        return parts or [stripped]
 
     def generate_ontology_updates_markdown(self) -> str:
         """Generate a markdown string representing the chain of ontology updates.

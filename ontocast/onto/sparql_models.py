@@ -8,7 +8,7 @@ import logging
 from typing import Annotated, Any
 from typing import Literal as TypingLiteral
 
-from pydantic import BaseModel, BeforeValidator, Field
+from pydantic import BaseModel, BeforeValidator, Field, field_validator
 from rdflib import BNode, Literal, Node, URIRef
 
 from ontocast.onto.constants import COMMON_PREFIXES
@@ -139,6 +139,14 @@ class TripleOp(BaseModel):
     type: TypingLiteral["insert", "delete"] = Field(
         description="Type of operation: 'insert' to add triples, 'delete' to remove triples"
     )
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def normalize_op_type(cls, v: object) -> str:
+        if isinstance(v, str) and v.lower() == "update":
+            return "insert"
+        return v  # type: ignore[return-value]
+
     graph: Annotated[
         RDFGraph,
         BeforeValidator(

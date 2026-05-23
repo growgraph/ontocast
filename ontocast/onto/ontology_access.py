@@ -58,6 +58,36 @@ def _merge_prefix_bindings_from_graph(
             merged[prefix] = str(namespace_uri)
 
 
+_SEMANTIC_SUFFIXES = frozenset(
+    {
+        "relations",
+        "concepts",
+        "properties",
+        "individuals",
+        "classes",
+        "roles",
+        "attributes",
+        "instances",
+    }
+)
+
+
+def _add_semantic_aliases(prefix_map: dict[str, str]) -> dict[str, str]:
+    """Extend *prefix_map* with URI-tail aliases for common semantic namespace segments.
+
+    When an ontology registers ``ns2`` → ``…/relations#``, this adds the alias
+    ``relations`` → ``…/relations#`` so that LLM-invented prefixes like
+    ``relations:P57`` can be repaired without knowing the opaque prefix name.
+    """
+    new = {
+        uri.rstrip("#/").rsplit("/", 1)[-1].lower(): uri
+        for uri in prefix_map.values()
+        if uri.rstrip("#/").rsplit("/", 1)[-1].lower() in _SEMANTIC_SUFFIXES
+    }
+    new = {k: v for k, v in new.items() if k not in prefix_map}
+    return {**prefix_map, **new} if new else prefix_map
+
+
 def build_llm_prefix_map(
     primary: Ontology,
     supplemental: Iterable[Ontology] = (),
@@ -68,6 +98,7 @@ def build_llm_prefix_map(
     1. ``prefix_lookup_for_ingest()`` (COMMON + WELL_KNOWN)
     2. Primary ontology graph bindings + implicit stems
     3. Supplemental ontology graphs (same extraction)
+    4. Semantic URI-tail aliases (``relations``, ``concepts``, etc.)
     """
     merged = prefix_lookup_for_ingest()
     ontologies: list[Ontology] = [primary, *supplemental]
@@ -88,7 +119,7 @@ def build_llm_prefix_map(
             extra_prefix=ontology.prefix or None,
             extra_namespace=ontology.namespace or None,
         )
-    return merged
+    return _add_semantic_aliases(merged)
 
 
 def known_prefixes_for_llm_parse(source: OntologyPromptSource) -> dict[str, str]:
