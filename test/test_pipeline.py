@@ -92,7 +92,7 @@ def test_unit_facts_loop_isolates_input_state() -> None:
 
 @pytest.mark.anyio
 async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
-    async def fake_render(state: UnitFactsState, tools) -> UnitFactsState:
+    async def fake_render(state: UnitFactsState, tools, **kwargs) -> UnitFactsState:
         state.status = Status.SUCCESS
         return state
 
@@ -131,7 +131,9 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
 
 @pytest.mark.anyio
 async def test_run_unit_ontology_loop_emits_updates(monkeypatch) -> None:
-    async def fake_render(state: UnitOntologyState, tools) -> UnitOntologyState:
+    async def fake_render(
+        state: UnitOntologyState, tools, **kwargs
+    ) -> UnitOntologyState:
         state.status = Status.SUCCESS
         state.ontology_updates = [GraphUpdate()]
         state.current_ontology = Ontology(
@@ -361,11 +363,15 @@ def test_normalize_ontology_node_skips_global_reduce_for_multi_anchor_artifacts(
 async def test_render_ontology_uses_update_when_snapshot_exists(monkeypatch) -> None:
     calls = {"fresh": 0, "update": 0}
 
-    async def fake_fresh(state: UnitOntologyState, tools) -> UnitOntologyState:
+    async def fake_fresh(
+        state: UnitOntologyState, tools, **kwargs
+    ) -> UnitOntologyState:
         calls["fresh"] += 1
         return state
 
-    async def fake_update(state: UnitOntologyState, tools) -> UnitOntologyState:
+    async def fake_update(
+        state: UnitOntologyState, tools, **kwargs
+    ) -> UnitOntologyState:
         calls["update"] += 1
         return state
 
@@ -620,7 +626,9 @@ async def test_ontology_loop_runs_external_evidence_nodes(monkeypatch) -> None:
         _ = tools, target_node
         return state
 
-    async def fake_render(state: UnitOntologyState, tools) -> UnitOntologyState:
+    async def fake_render(
+        state: UnitOntologyState, tools, **kwargs
+    ) -> UnitOntologyState:
         _ = tools
         state.status = Status.SUCCESS
         return state
@@ -676,7 +684,9 @@ async def test_ontology_loop_plans_search_when_critic_requests_it(monkeypatch) -
         called_nodes.append(target_node)
         return state
 
-    async def fake_render(state: UnitOntologyState, tools) -> UnitOntologyState:
+    async def fake_render(
+        state: UnitOntologyState, tools, **kwargs
+    ) -> UnitOntologyState:
         _ = tools
         state.status = Status.SUCCESS
         return state

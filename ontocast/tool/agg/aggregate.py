@@ -264,12 +264,12 @@ class EmbeddingBasedAggregator:
 
         left_label_tokens = {
             self.normalizer.normalize_string(label)
-            for label in left_rep.labels
+            for label in left_rep.labels + left_rep.alt_labels
             if label.strip()
         }
         right_label_tokens = {
             self.normalizer.normalize_string(label)
-            for label in right_rep.labels
+            for label in right_rep.labels + right_rep.alt_labels
             if label.strip()
         }
         if left_label_tokens & right_label_tokens:

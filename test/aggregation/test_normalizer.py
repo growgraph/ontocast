@@ -47,6 +47,25 @@ def test_create_representation_collects_metadata(normalizer: EntityNormalizer) -
     assert "Test Entity" in representation.labels
     assert ex.hasValue in representation.properties
     assert "type" in representation.representation
+    assert representation.core_representation.startswith("test entity")
+
+
+def test_create_representation_uses_alt_labels_when_no_rdfs_label(
+    normalizer: EntityNormalizer,
+) -> None:
+    graph = RDFGraph()
+    ex = Namespace("http://example.org/")
+    rel = Namespace("http://relations.example/")
+
+    entity = ex.fact4
+    graph.add((entity, RDF.type, ex.Person))
+    graph.add((entity, rel.screenwriter, Literal("Maurice Noble")))
+
+    representation = normalizer.create_representation(entity, graph)
+
+    assert representation.labels == []
+    assert "Maurice Noble" in representation.alt_labels
+    assert representation.core_representation.startswith("maurice noble")
 
 
 def test_create_representation_marks_ontology_entity(

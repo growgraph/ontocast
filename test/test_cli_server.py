@@ -14,9 +14,14 @@ from ontocast.cli.http_parse import (
     resolve_ontology_context_mode,
 )
 from ontocast.cli.http_responses import ontology_context_config_error_response
+from ontocast.cli.process_request import (
+    ParsedProcessRequest,
+    build_agent_state_from_parsed,
+)
 from ontocast.cli.server import (
     _persist_unit_pipeline_outputs,
     _select_unit_facts_ontology_graph,
+    calculate_recursion_limit,
     create_app,
 )
 from ontocast.config import ServerConfig
@@ -75,6 +80,41 @@ def test_parse_max_visits_param_rejects_zero_or_negative_values() -> None:
 def test_parse_max_visits_param_rejects_non_numeric_values() -> None:
     with pytest.raises(ValueError, match="max_visits must be an integer >= 1"):
         parse_max_visits_param("abc", default=1)
+
+
+def test_calculate_recursion_limit_uses_per_request_max_visits() -> None:
+    server_config = ServerConfig(
+        max_visits_per_node=1,
+        base_recursion_limit=10,
+        estimated_chunks=10,
+    )
+    default_limit = calculate_recursion_limit(5, server_config)
+    override_limit = calculate_recursion_limit(5, server_config, max_visits_per_node=4)
+    assert default_limit == 50
+    assert override_limit == 200
+
+
+def test_build_agent_state_from_parsed_sets_max_visits() -> None:
+    parsed = ParsedProcessRequest(
+        files_dict={"input.json": b'{"text": "hello"}'},
+        max_visits=6,
+        strip_provenance=False,
+        ontology_user_instruction="",
+        ontology_selection_user_instruction="",
+        facts_user_instruction="",
+        ontology_context_fixed_ontology_id="onto-1",
+        render_mode=None,
+        llm_graph_format=None,
+        ontology_context_mode_value=OntologyContextMode.FIXED_SINGLE_ONTOLOGY,
+    )
+    state = build_agent_state_from_parsed(
+        parsed,
+        server_config=ServerConfig(max_visits_per_node=2),
+        resolved_tenant="t",
+        resolved_project="p",
+        max_chunks=1,
+    )
+    assert state.max_visits == 6
 
 
 def _tools(vector_store: object | None, patch_retriever: object | None) -> ToolBox:

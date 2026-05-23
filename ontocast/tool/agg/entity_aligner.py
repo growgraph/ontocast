@@ -72,6 +72,41 @@ class EntityAligner:
             return False
         return bool(left_namespaces & right_namespaces)
 
+    def _normalized_label_tokens(self, rep: EntityRepresentation) -> set[str]:
+        return {
+            self.normalizer.normalize_string(label)
+            for label in rep.labels + rep.alt_labels
+            if label.strip()
+        }
+
+    def _exact_label_match(
+        self,
+        left: GraphEntityRef,
+        right: GraphEntityRef,
+        representations: dict[GraphEntityRef, EntityRepresentation],
+    ) -> bool:
+        left_rep = representations.get(left)
+        right_rep = representations.get(right)
+        if left_rep is None or right_rep is None:
+            return False
+        left_tokens = self._normalized_label_tokens(left_rep)
+        right_tokens = self._normalized_label_tokens(right_rep)
+        if not left_tokens or not right_tokens:
+            return False
+        return bool(left_tokens & right_tokens)
+
+    def _class_instance_compatible(
+        self,
+        left: GraphEntityRef,
+        right: GraphEntityRef,
+        representations: dict[GraphEntityRef, EntityRepresentation],
+    ) -> bool:
+        left_rep = representations.get(left)
+        right_rep = representations.get(right)
+        if left_rep is None or right_rep is None:
+            return False
+        return left.entity in right_rep.types or right.entity in left_rep.types
+
     def _pair_compatible(
         self,
         left: GraphEntityRef,
@@ -79,6 +114,11 @@ class EntityAligner:
         representations: dict[GraphEntityRef, EntityRepresentation],
         regime: MatchRegime,
     ) -> bool:
+        if self._class_instance_compatible(left, right, representations):
+            if regime == MatchRegime.ONTOLOGY_STRICT:
+                return self._strict_types_compatible(left, right, representations)
+            return True
+
         pair_representations = {
             left.entity: representations[left],
             right.entity: representations[right],
@@ -169,16 +209,18 @@ class EntityAligner:
         for left, right in combinations(refs, 2):
             if left.graph_id == right.graph_id:
                 continue
+            if not self._pair_compatible(left, right, representations, regime):
+                continue
             left_embedding = embeddings[left]
             right_embedding = embeddings[right]
             score = cosine_similarity(left_embedding, right_embedding)
-            if score < self.similarity_threshold:
+            label_confirmed = self._exact_label_match(left, right, representations)
+            if score < self.similarity_threshold and not label_confirmed:
                 continue
-            if not self._pair_compatible(left, right, representations, regime):
-                continue
+            edge_score = score if score >= self.similarity_threshold else 1.0
             edges.append((left, right))
-            edge_scores[(left, right)] = score
-            edge_scores[(right, left)] = score
+            edge_scores[(left, right)] = edge_score
+            edge_scores[(right, left)] = edge_score
 
         adjacency: dict[GraphEntityRef, set[GraphEntityRef]] = {
             node: set() for node in refs

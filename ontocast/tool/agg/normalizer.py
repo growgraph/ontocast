@@ -40,6 +40,7 @@ class EntityRepresentation:
         types: List of type URIs for this entity
         properties: List of property URIs used with this entity
         labels: List of labels found for this entity
+        alt_labels: String literals from domain predicates (when no rdfs:label)
         representation: Combined string representation r(e) for embedding
         is_ontology_entity: Whether this entity is from an ontology namespace
         role: Detected entity role (class / property / instance)
@@ -51,6 +52,7 @@ class EntityRepresentation:
     properties: list[URIRef]
     labels: list[str]
     is_ontology_entity: bool
+    alt_labels: list[str] = field(default_factory=list)
     role: EntityRole | None = field(default=None)
     core_representation: str = ""
     neighborhood_representation: str = ""
@@ -132,7 +134,7 @@ class EntityNormalizer:
 
     def extract_entity_context(
         self, entity: URIRef, graph: RDFGraph
-    ) -> tuple[list[URIRef], list[URIRef], list[str], bool]:
+    ) -> tuple[list[URIRef], list[URIRef], list[str], list[str], bool]:
         """Extract semantic context for an entity from the graph.
 
         Args:
@@ -140,14 +142,16 @@ class EntityNormalizer:
             graph: RDF graph containing the entity
 
         Returns:
-            Tuple of (types, properties, labels, is_predicate).
+            Tuple of (types, properties, labels, alt_labels, is_predicate).
             *is_predicate* is ``True`` when the entity appears in the
             predicate position of at least one triple.
         """
         types = []
         properties = set()
         labels = []
+        alt_labels: list[str] = []
         is_predicate = False
+        schema_predicates = {RDF.type, RDFS.label, RDFS.comment}
 
         # Extract information from triples
         for s, p, o in graph:
@@ -162,6 +166,14 @@ class EntityNormalizer:
                 # Collect labels
                 if p == RDFS.label and isinstance(o, Literal):
                     labels.append(str(o))
+                elif (
+                    p not in schema_predicates
+                    and isinstance(o, Literal)
+                    and o.datatype is None
+                ):
+                    value = str(o).strip()
+                    if len(value) >= 3 and not value.isnumeric():
+                        alt_labels.append(value)
 
             # When entity is object
             elif o == entity:
@@ -173,7 +185,7 @@ class EntityNormalizer:
 
         sorted_types = sorted(types, key=lambda entity: str(entity))
         sorted_properties = sorted(properties, key=lambda entity: str(entity))
-        return sorted_types, sorted_properties, labels, is_predicate
+        return sorted_types, sorted_properties, labels, alt_labels, is_predicate
 
     def _render_term(self, term: Node) -> str:
         return render_term_for_text(term)
@@ -227,6 +239,27 @@ class EntityNormalizer:
             return "no neighborhood facts available"
         return ". ".join(selected)
 
+    @staticmethod
+    def _normal_form_differs_from_text(normal_form: str, text: str) -> bool:
+        if not normal_form or not text:
+            return bool(normal_form or text)
+        if normal_form == text:
+            return False
+        return normal_form not in text and text not in normal_form
+
+    def _leading_text_tokens(
+        self, *, normal_form: str, labels: list[str], alt_labels: list[str]
+    ) -> tuple[str, bool]:
+        """Return leading sentence text and whether URI normal_form is appended."""
+        effective_labels = labels if labels else alt_labels[:2]
+        if effective_labels:
+            leading = self.normalize_string(effective_labels[0])
+            append_normal_form = self._normal_form_differs_from_text(
+                normal_form, leading
+            )
+            return leading, append_normal_form
+        return normal_form, False
+
     def _build_core_representation(
         self,
         *,
@@ -234,13 +267,22 @@ class EntityNormalizer:
         types: list[URIRef],
         properties: list[URIRef],
         labels: list[str],
+        alt_labels: list[str] | None = None,
     ) -> str:
-        # Prefer grammatical text over schema-like field labels to improve
-        # embedding alignment with natural-language queries.
-        sentences: list[str] = [normal_form]
+        # Prefer human-readable labels over URI local names for embedding alignment.
+        alt_labels = alt_labels or []
+        leading, append_normal_form = self._leading_text_tokens(
+            normal_form=normal_form,
+            labels=labels,
+            alt_labels=alt_labels,
+        )
+        sentences: list[str] = [leading]
+        if append_normal_form:
+            sentences.append(normal_form)
         if labels:
             normalized_labels = [self.normalize_string(label) for label in labels[:3]]
-            sentences.append(f"It is labeled {', '.join(normalized_labels)}")
+            if not any(token == leading for token in normalized_labels):
+                sentences.append(f"It is labeled {', '.join(normalized_labels)}")
         if types:
             type_names = [self.normalize_uri(entity_type) for entity_type in types[:3]]
             # Keep the 'type' keyword to maintain compatibility with any
@@ -279,8 +321,8 @@ class EntityNormalizer:
         normal_form = self.normalize_uri(entity)
 
         # Extract semantic context
-        types, properties, labels, is_predicate = self.extract_entity_context(
-            entity, graph
+        types, properties, labels, alt_labels, is_predicate = (
+            self.extract_entity_context(entity, graph)
         )
 
         # Detect role from the already-extracted context (no extra graph scan)
@@ -291,6 +333,7 @@ class EntityNormalizer:
             types=types,
             properties=properties,
             labels=labels,
+            alt_labels=alt_labels,
         )
         neighborhood_representation = self._build_neighborhood_representation(
             entity=entity,
@@ -306,6 +349,7 @@ class EntityNormalizer:
             types=types,
             properties=properties,
             labels=labels,
+            alt_labels=alt_labels,
             is_ontology_entity=is_ontology,
             role=role,
             core_representation=core_representation,

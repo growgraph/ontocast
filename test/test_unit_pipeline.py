@@ -101,3 +101,50 @@ async def test_run_unit_pipeline_feeds_ontology_loop_output_to_facts(
     assert ctx.patch_sources == ["https://example.com/onto/seed"]
     assert ctx.assembly_mode == OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY
     assert agent_state.reduced_ontology_artifacts == [evolved]
+
+
+@pytest.mark.anyio
+async def test_run_unit_pipeline_uses_agent_state_max_visits(monkeypatch) -> None:
+    """Per-request max_visits on AgentState drives unit loop limits, not server config."""
+    captured: list[int] = []
+
+    async def fake_ontology_loop(
+        state: UnitOntologyState, tools: ToolBox, document_state: AgentState
+    ) -> UnitOntologyState:
+        captured.append(state.max_visits_per_node)
+        state.status = Status.SUCCESS
+        return state
+
+    async def fake_facts_loop(
+        state: UnitFactsState,
+        tools: ToolBox,
+        document_state: AgentState,
+        *,
+        pre_resolved_ontology: Ontology | None = None,
+        pre_resolved_context: UnitOntologyContext | None = None,
+    ) -> UnitFactsState:
+        captured.append(state.max_visits_per_node)
+        state.status = Status.SUCCESS
+        return state
+
+    monkeypatch.setattr(unit_pipeline, "convert_document", lambda _s, _t: None)
+    monkeypatch.setattr(unit_pipeline, "ontology_loop", fake_ontology_loop)
+    monkeypatch.setattr(unit_pipeline, "facts_loop", fake_facts_loop)
+
+    agent_state = _minimal_agent_state()
+    agent_state.max_visits = 7
+    tools = cast(
+        ToolBox,
+        SimpleNamespace(
+            config=SimpleNamespace(
+                server=SimpleNamespace(
+                    max_visits_per_node=2,
+                    ontology_max_triples=50_000,
+                )
+            )
+        ),
+    )
+
+    await unit_pipeline.run_unit_pipeline(agent_state, tools)
+
+    assert captured == [7, 7]

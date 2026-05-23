@@ -21,6 +21,11 @@ Optional query (or multipart) parameter ``strip_provenance`` on ``/process`` and
 for facts and ontology artifacts omits reification/provenance scaffolding
 (:class:`~ontocast.tool.triple_manager.core.TripleStoreManager.strip_provenance`).
 
+Per-request ``max_visits`` (query, multipart field, or JSON body field) overrides
+``max_visits_per_node`` from server config and limits render/critic loops in
+``/process_unit`` (:func:`~ontocast.stategraph.unit_pipeline.run_unit_pipeline`)
+and per-chunk loops in ``/process``.
+
 The server integrates with the OntoCast workflow graph to process documents
 through the complete pipeline: chunking, ontology selection, fact extraction,
 and aggregation.
@@ -191,26 +196,35 @@ def get_next_level(level: int) -> int:
 def calculate_recursion_limit(
     head_chunks: int | None,
     server_config: ServerConfig,
+    *,
+    max_visits_per_node: int | None = None,
 ) -> int:
     """Calculate the recursion limit based on max visits and head chunks.
 
     Args:
         head_chunks: Optional maximum number of chunks to process
+        server_config: Server configuration
+        max_visits_per_node: Per-request override; defaults to server config
 
     Returns:
         int: Calculated recursion limit
     """
+    visits = (
+        max_visits_per_node
+        if max_visits_per_node is not None
+        else server_config.max_visits_per_node
+    )
     if head_chunks is not None:
         # If we know the number of chunks, calculate exact limit
         return max(
             server_config.base_recursion_limit,
-            server_config.max_visits_per_node * head_chunks * 10,
+            visits * head_chunks * 10,
         )
     else:
         # If we don't know chunks, use a conservative estimate
         return max(
             server_config.base_recursion_limit,
-            server_config.max_visits_per_node * server_config.estimated_chunks * 10,
+            visits * server_config.estimated_chunks * 10,
         )
 
 
@@ -415,10 +429,6 @@ def create_app(
     )
 
     workflow: CompiledStateGraph = create_agent_graph(tools)
-    recursion_limit = calculate_recursion_limit(
-        head_chunks,
-        server_config,
-    )
 
     @app.get("/health")
     async def health_check():
@@ -592,11 +602,16 @@ def create_app(
                 resolved_project=resolved_project,
                 max_chunks=head_chunks,
             )
+            request_recursion_limit = calculate_recursion_limit(
+                head_chunks,
+                server_config,
+                max_visits_per_node=initial_state.max_visits,
+            )
 
             async for chunk in workflow.astream(
                 initial_state,
                 stream_mode="values",
-                config=RunnableConfig(recursion_limit=recursion_limit),
+                config=RunnableConfig(recursion_limit=request_recursion_limit),
             ):
                 workflow_state = chunk
 

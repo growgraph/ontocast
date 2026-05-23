@@ -57,7 +57,7 @@ def make_render_ontology_node(tools: ToolBox):
                     ontology_patch_sources=[],
                     ontology_user_instruction=state.ontology_user_instruction,
                     budget_tracker=unit_budget,
-                    max_visits_per_node=tools.config.server.max_visits_per_node,
+                    max_visits_per_node=state.max_visits,
                     current_domain=state.current_domain,
                     ontology_max_triples=tools.config.server.ontology_max_triples,
                     llm_graph_format=state.llm_graph_format,
@@ -323,7 +323,7 @@ def make_render_facts_node(tools: ToolBox):
                     ontology_patch_sources=[],
                     facts_user_instruction=state.facts_user_instruction,
                     budget_tracker=unit_budget,
-                    max_visits_per_node=tools.config.server.max_visits_per_node,
+                    max_visits_per_node=state.max_visits,
                     llm_graph_format=state.llm_graph_format,
                 )
                 result = await facts_loop(

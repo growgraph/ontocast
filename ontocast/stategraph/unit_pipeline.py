@@ -91,7 +91,7 @@ async def run_unit_pipeline(
     onto_result: UnitOntologyState | None = None
     facts_result: UnitFactsState | None = None
 
-    max_visits = tools.config.server.max_visits_per_node
+    max_visits = agent_state.max_visits
 
     if agent_state.render_ontology:
         ontology_state = UnitOntologyState(
