@@ -58,9 +58,14 @@ nav:
     -   Quick Start: getting_started/quickstart.md
 -   User Guide:
     -   Core Concepts: user_guide/concepts.md
-    -   Configuration System: user_guide/configuration.md
-    -   Triple Store Configuration: user_guide/triple_stores.md
     -   Workflow: user_guide/workflow.md
+    -   Configuration System: user_guide/configuration.md
+    -   API Endpoints: user_guide/api.md
+    -   Tenancy: user_guide/tenancy.md
+    -   Ontology Context: user_guide/ontology_context.md
+    -   Entity Disambiguation: user_guide/aggregation.md
+    -   Triple Store Configuration: user_guide/triple_stores.md
+    -   LLM Caching: user_guide/llm_caching.md
     -   User Instructions: user_guide/user_instructions.md
 -   API Reference: reference/
 -   Contributing: contributing.md

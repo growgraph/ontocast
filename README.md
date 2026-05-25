@@ -20,14 +20,17 @@ OntoCast is a framework for extracting semantic triples (creating a Knowledge Gr
 ## Key Features
 
 - **Ontology-Guided Extraction**: Ensures semantic consistency and co-evolves ontologies
-- **Entity Disambiguation**: Resolves references across document chunks
+- **Entity Disambiguation**: Resolves references across document chunks (embedding + symbolic alignment)
+- **Parallel Processing**: Per-unit ontology and facts loops with configurable worker concurrency
 - **Multi-Format Support**: Handles text, JSON, PDF, and Markdown
 - **Semantic Chunking**: Splits text based on semantic similarity
-- **MCP Compatibility**: Implements Model Control Protocol endpoints
-- **RDF Output**: Produces standardized RDF/Turtle
-- **Triple Store Integration**: Supports Neo4j (n10s) and Apache Fuseki
+- **RDF Output**: Produces standardized RDF/Turtle (optional JSON-LD LLM wire format)
+- **RDF 1.2 Provenance**: Quoted-triple / reification support; optional `strip_provenance` on API output
+- **Triple Store Integration**: Supports Neo4j (n10s), Apache Fuseki, and filesystem fallback
+- **Ontology Context Modes**: Catalog selection, Qdrant vector retrieval, or fixed catalog ontology
+- **Tenancy**: Partition Fuseki datasets and Qdrant collections by tenant and project
+- **REST API**: Document processing, ontology catalog management, and graph-matching endpoints
 - **Hierarchical Configuration**: Type-safe configuration system with environment variable support
-- **CLI Parameters**: Flexible command-line interface with `--skip-ontology-critique` option
 - **Automatic LLM Caching**: Built-in response caching for improved performance and cost reduction
 - **GraphUpdate Operations**: Token-efficient SPARQL-based updates instead of full graph regeneration
 - **Budget Tracking**: Comprehensive tracking of LLM usage and triple generation metrics
@@ -69,67 +72,61 @@ pip install "ontocast[doc-processing]"
 
 ### 1. Configuration
 
-Create a `.env` file with your configuration:
+Copy the example file and edit as needed:
+
+```bash
+cp .env.example .env
+```
+
+Minimal settings:
 
 ```bash
 # LLM Configuration
 LLM_PROVIDER=openai
 LLM_API_KEY=your-api-key-here
 LLM_MODEL_NAME=gpt-4o-mini
-LLM_TEMPERATURE=0.1
+LLM_TEMPERATURE=0.0
 
 # Server Configuration
 PORT=8999
-MAX_VISITS=3
-RECURSION_LIMIT=1000
+BASE_RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
-ONTOLOGY_MAX_TRIPLES=10000
+MAX_VISITS=1
+RENDER_MODE=ontology_and_facts
+ONTOLOGY_MAX_TRIPLES=50000
 
 # Path Configuration
 ONTOCAST_WORKING_DIRECTORY=/path/to/working
 ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontologies
 ONTOCAST_CACHE_DIR=/path/to/cache
 
-# Optional: Triple Store Configuration
-FUSEKI_URI=http://localhost:3032
-FUSEKI_AUTH=admin:password
-FUSEKI_DATASET=ontocast
-
-# Optional: Skip ontology critique
-SKIP_ONTOLOGY_DEVELOPMENT=false
-# Optional: Maximum triples allowed in ontology graph (set empty for unlimited)
-ONTOLOGY_MAX_TRIPLES=10000
+# Optional: Triple Store Configuration (Fuseki preferred over Neo4j)
+FUSEKI_URI=http://localhost:3030
+FUSEKI_AUTH=admin/admin
+# Datasets default to ontocast--test--facts / ontocast--test--ontologies when unset
 
 # Optional: Web search grounding (search-later mode)
-# Node execution starts without search; search runs only when node output requests it.
 WEB_SEARCH_ENABLED=false
 WEB_SEARCH_PROVIDER=duckduckgo
 WEB_SEARCH_TOP_K=3
-WEB_SEARCH_TIMEOUT_SECONDS=8.0
-WEB_SEARCH_MAX_SNIPPET_CHARS=400
-WEB_SEARCH_MAX_TOTAL_CHARS=1800
-WEB_SEARCH_ONTOLOGY_RENDER_ENABLED=true
-WEB_SEARCH_ONTOLOGY_CRITIC_ENABLED=true
-WEB_SEARCH_FACTS_RENDER_ENABLED=false
-WEB_SEARCH_FACTS_CRITIC_ENABLED=false
-WEB_SEARCH_PLANNER_ENABLED=true
-WEB_SEARCH_PLANNER_MAX_QUERIES=3
-WEB_SEARCH_PLANNER_MIN_QUERY_CHARS=12
-WEB_SEARCH_PLANNER_MIN_CONFIDENCE=0.35
-WEB_SEARCH_REUSE_EVIDENCE_ACROSS_ATTEMPT=true
-WEB_SEARCH_MIN_SNIPPET_CHARS=40
-WEB_SEARCH_ALLOWED_DOMAINS=
-WEB_SEARCH_BLOCKED_DOMAINS=
 ```
+
+See [Configuration Guide](docs/user_guide/configuration.md) and `.env.example` for the full surface (embeddings, Qdrant, aggregation, etc.).
 
 ### 2. Start Server
 
 ```bash
-ontocast \
-    --env-path .env \
-    --working-directory /path/to/working \
-    --ontology-directory /path/to/ontologies
+# Backend automatically detected from .env configuration
+ontocast --env-path .env
+
+# Process a specific file (batch mode)
+ontocast --env-path .env --input-path ./document.pdf
+
+# Process only the first N chunks (for testing)
+ontocast --env-path .env --head-chunks 5
 ```
+
+Paths and triple-store credentials are configured via `.env` — not CLI overrides.
 
 ### 3. Process Documents
 
@@ -137,30 +134,50 @@ ontocast \
 curl -X POST http://localhost:8999/process -F "file=@document.pdf"
 ```
 
+JSON body example:
+
+```bash
+curl -X POST http://localhost:8999/process \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Your document text here"}'
+```
+
 ### 4. API Endpoints
 
-The OntoCast server provides the following endpoints:
+The OntoCast server exposes a REST API. Common endpoints:
 
-- **POST /process**: Process documents and extract semantic triples
-  ```bash
-  curl -X POST http://localhost:8999/process -F "file=@document.pdf"
-  ```
+- **POST /process** — full document pipeline (JSON or multipart file upload)
+- **POST /process_unit** — single-unit pipeline (useful for debugging prompts)
+- **POST /ontologies** — upload catalog ontologies (Turtle)
+- **POST /flush** — flush/clean triple store data
+- **GET /health**, **GET /info** — health and service metadata
+- **POST /match/entities** (and related match routes) — entity alignment and evaluation
 
-- **POST /flush**: Flush/clean triple store data
-  ```bash
-  # Clean all datasets (Fuseki) or entire database (Neo4j)
-  curl -X POST http://localhost:8999/flush
-  
-  # Clean specific Fuseki dataset
-  curl -X POST "http://localhost:8999/flush?dataset=my_dataset"
-  ```
-  **Note:** For Fuseki, you can specify a `dataset` query parameter to clean a specific dataset. If omitted, all datasets are cleaned. For Neo4j, the `dataset` parameter is ignored and all data is deleted.
+```bash
+curl -X POST http://localhost:8999/process -F "file=@document.pdf"
 
-- **GET /health**: Health check endpoint
-- **GET /info**: Service information endpoint
+curl -X POST http://localhost:8999/flush
+
+curl -X POST "http://localhost:8999/flush?dataset=my_dataset"
+```
+
+For Fuseki, an optional `dataset` query parameter targets a specific dataset; Neo4j ignores it and clears the whole database.
+
+Full reference: [API Endpoints](docs/user_guide/api.md).
 
 ---
 
+## Workflow
+
+The extraction pipeline converts documents to Markdown, chunks them, runs parallel per-unit ontology and facts loops, then merges and serializes results.
+
+![Workflow diagram](docs/assets/graph.png)
+
+Landscape layout: [docs/assets/graph.lr.png](docs/assets/graph.lr.png). Per-unit render/critic loops: [Workflow guide](docs/user_guide/workflow.md).
+
+Regenerate diagrams after graph changes: `uv run plot-graph`
+
+---
 
 ## LLM Caching
 
@@ -177,22 +194,11 @@ OntoCast includes automatic LLM response caching to improve performance and redu
 - **Faster Execution**: Repeated queries return cached responses instantly
 - **Cost Reduction**: Identical requests don't hit the LLM API
 - **Offline Capability**: Tests can run without API access if responses are cached
-- **Transparent**: No configuration required - works automatically
+- **Transparent**: No configuration required — works automatically
 
-### Custom Cache Directory
+Details: [LLM Caching](docs/user_guide/llm_caching.md)
 
-If you need to specify a custom cache directory:
-
-```python
-from pathlib import Path
-from ontocast.tool.llm import LLMTool
-
-# Cache directory is managed automatically by Cacher
-llm_tool = LLMTool.create(
-    config=llm_config
-)
-```
-
+---
 
 ## Configuration System
 
@@ -202,54 +208,43 @@ OntoCast uses a hierarchical configuration system built on Pydantic BaseSettings
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `LLM_API_KEY` | API key for LLM provider | - | Yes |
+| `LLM_API_KEY` | API key for LLM provider | - | Yes (OpenAI) |
 | `LLM_PROVIDER` | LLM provider (openai, ollama) | openai | No |
 | `LLM_MODEL_NAME` | Model name | gpt-4o-mini | No |
-| `LLM_TEMPERATURE` | Temperature setting | 0.1 | No |
-| `ONTOCAST_WORKING_DIRECTORY` | Working directory path | - | Yes |
-| `ONTOCAST_ONTOLOGY_DIRECTORY` | Ontology files directory | - | No |
+| `LLM_TEMPERATURE` | Temperature setting | 0.0 | No |
+| `ONTOCAST_WORKING_DIRECTORY` | Working directory path | - | Yes (filesystem mode) |
+| `ONTOCAST_ONTOLOGY_DIRECTORY` | Ontology seed files | - | No |
 | `PORT` | Server port | 8999 | No |
-| `MAX_VISITS` | Maximum visits per node | 3 | No |
-| `SKIP_ONTOLOGY_DEVELOPMENT` | Skip ontology critique | false | No |
-| `ONTOLOGY_MAX_TRIPLES` | Maximum triples allowed in ontology graph | 10000 | No |
-| `SKIP_FACTS_RENDERING` | Skip facts rendering and go straight to aggregation | false | No |
-| `ONTOCAST_CACHE_DIR` | Custom cache directory for LLM responses | Platform default | No |
-| `WEB_SEARCH_ENABLED` | Enable optional web grounding (search runs only on node request) | false | No |
-| `WEB_SEARCH_PROVIDER` | Web search provider | duckduckgo | No |
-| `WEB_SEARCH_TOP_K` | Number of search results used per call | 3 | No |
-| `WEB_SEARCH_ONTOLOGY_RENDER_ENABLED` | Allow search-eligible ontology render retries | true | No |
-| `WEB_SEARCH_ONTOLOGY_CRITIC_ENABLED` | Allow search-eligible ontology critic retries | true | No |
-| `WEB_SEARCH_FACTS_RENDER_ENABLED` | Allow search-eligible facts render retries | false | No |
-| `WEB_SEARCH_FACTS_CRITIC_ENABLED` | Allow search-eligible facts critic retries | false | No |
-| `WEB_SEARCH_PLANNER_ENABLED` | Use LLM planner for query decisioning | true | No |
-| `WEB_SEARCH_PLANNER_MAX_QUERIES` | Maximum planned focused queries per node | 3 | No |
-| `WEB_SEARCH_PLANNER_MIN_QUERY_CHARS` | Guardrail minimum query length | 12 | No |
-| `WEB_SEARCH_PLANNER_MIN_CONFIDENCE` | Guardrail minimum planner confidence | 0.35 | No |
-| `WEB_SEARCH_ALLOWED_DOMAINS` | Optional comma-separated allowlist domains | empty | No |
-| `WEB_SEARCH_BLOCKED_DOMAINS` | Optional comma-separated blocklist domains | empty | No |
+| `MAX_VISITS` | Maximum render/critic visits per unit loop | 1 | No |
+| `BASE_RECURSION_LIMIT` | Base recursion limit for workflow | 1000 | No |
+| `RENDER_MODE` | `ontology`, `facts`, or `ontology_and_facts` | ontology_and_facts | No |
+| `ONTOLOGY_MAX_TRIPLES` | Maximum triples in ontology graph | 50000 | No |
+| `ONTOCAST_CACHE_DIR` | Custom cache directory | Platform default | No |
+| `WEB_SEARCH_ENABLED` | Optional web grounding (search-later) | false | No |
+
+See [Configuration Guide](docs/user_guide/configuration.md) for chunking, Qdrant, embeddings, aggregation, and web-search variables.
 
 ### Triple Store Configuration
 
 ```bash
 # Fuseki (Preferred)
-FUSEKI_URI=http://localhost:3032
-FUSEKI_AUTH=admin:password
-FUSEKI_DATASET=dataset_name
+FUSEKI_URI=http://localhost:3030
+FUSEKI_AUTH=admin/admin
 
 # Neo4j (Alternative)
-NEO4J_URI=bolt://localhost:7689
-NEO4J_AUTH=neo4j:password
+NEO4J_URI=bolt://localhost:7687
+NEO4J_AUTH=neo4j/password
 ```
+
+When multiple triple stores are configured, **Fuseki is preferred over Neo4j**. See [Triple Store Setup](docs/user_guide/triple_stores.md).
 
 ### CLI Parameters
 
 ```bash
-# Skip ontology critique step
-ontocast --skip-ontology-critique
-
-# Process only first N chunks (for testing)
-ontocast --head-chunks 5
-
+ontocast --env-path .env
+ontocast --env-path .env --input-path ./document.pdf
+ontocast --env-path .env --head-chunks 5
+ontocast --env-path .env --tenant acme --project reports
 ```
 
 ---
@@ -258,11 +253,9 @@ ontocast --head-chunks 5
 
 OntoCast supports multiple triple store backends with automatic fallback:
 
-1. **Apache Fuseki** (Recommended) - Native RDF with SPARQL support
-2. **Neo4j with n10s** - Graph database with RDF capabilities  
-3. **Filesystem** (Fallback) - Local file-based storage
-
-When multiple triple stores are configured, **Fuseki is preferred over Neo4j**.
+1. **Apache Fuseki** (Recommended) — Native RDF with SPARQL support
+2. **Neo4j with n10s** — Graph database with RDF capabilities  
+3. **Filesystem** (Fallback) — Local file-based storage
 
 ### Quick Setup with Docker
 
@@ -288,55 +281,43 @@ See [Triple Store Setup](docs/user_guide/triple_stores.md) for detailed instruct
 
 ## Documentation
 
-- [Quick Start Guide](docs/getting_started/quickstart.md) - Get started quickly
-- [Configuration System](docs/user_guide/configuration.md) - Detailed configuration guide
-- [Triple Store Setup](docs/user_guide/triple_stores.md) - Triple store configuration
-- [User Guide](docs/user_guide/concepts.md) - Core concepts and workflow
-- [API Reference](docs/reference/onto.md) - Detailed API documentation
+- [Quick Start Guide](docs/getting_started/quickstart.md) — Get started quickly
+- [Workflow](docs/user_guide/workflow.md) — Pipeline and diagrams
+- [Configuration System](docs/user_guide/configuration.md) — Environment variables
+- [API Endpoints](docs/user_guide/api.md) — REST reference
+- [Tenancy](docs/user_guide/tenancy.md) — Multi-tenant stores
+- [Ontology Context](docs/user_guide/ontology_context.md) — Catalog vs vector retrieval
+- [Triple Store Setup](docs/user_guide/triple_stores.md) — Fuseki / Neo4j setup
+- [LLM Caching](docs/user_guide/llm_caching.md) — Automatic response caching
+- [User Guide](docs/user_guide/concepts.md) — Core concepts
+- [API Reference](docs/reference/onto/state.md) — Python API (MkDocs)
+
+Build docs locally: `uv run mkdocs build`
 
 ---
 
-## Recent Changes
+## Highlights
 
-### Ontology Management Improvements
+### Ontology Management
 
 - **Automatic Versioning**: Semantic version increment based on change analysis (MAJOR/MINOR/PATCH)
 - **Hash-Based Lineage**: Git-style versioning with parent hashes for tracking ontology evolution
 - **Multiple Version Storage**: Versions stored as separate named graphs in Fuseki triple stores
 - **Timestamp Tracking**: `updated_at` field tracks when ontology was last modified
-- **Smart Version Analysis**: Analyzes ontology changes (classes, properties, instances) to determine appropriate version bump
 
 ### GraphUpdate System
 
 - **Token Efficiency**: LLM outputs structured SPARQL operations (insert/delete) instead of full TTL graphs
 - **Incremental Updates**: Only changes are generated, dramatically reducing token usage
 - **Structured Operations**: TripleOp operations with explicit prefix declarations for precise updates
-- **SPARQL Generation**: Automatic conversion of operations to executable SPARQL queries
 
 ### Budget Tracking
 
 - **LLM Statistics**: Tracks API calls, characters sent/received for cost monitoring
 - **Triple Metrics**: Tracks ontology and facts triples generated per operation
 - **Summary Reports**: Budget summaries logged at end of processing
-- **Integrated Tracking**: Budget tracker integrated into AgentState for clean dependency injection
 
-### Configuration System Overhaul
-
-- **Hierarchical Configuration**: New `ToolConfig` and `ServerConfig` structure
-- **Environment Variables**: Support for `.env` files and environment variables
-- **Type Safety**: Full type safety with Python 3.12 union syntax
-- **API Key**: Changed from `OPENAI_API_KEY` to `LLM_API_KEY` for consistency
-- **Dependency Injection**: Removed global variables, implemented proper DI
-
-### Enhanced Features
-
-- **CLI Parameters**: New `--skip-ontology-critique` and `--skip-facts-rendering` parameters
-- **RDFGraph Operations**: Improved `__iadd__` method with proper prefix binding
-- **Triple Store Management**: Better separation between filesystem and external stores
-- **Serialization Interface**: Unified `serialize()` method for storing Ontology and RDFGraph objects
-- **Error Handling**: Improved error handling and validation
-
-See [CHANGELOG.md](CHANGELOG.md) for complete details.
+See [CHANGELOG.md](CHANGELOG.md) for release-by-release notes.
 
 ---
 
@@ -348,26 +329,16 @@ See [CHANGELOG.md](CHANGELOG.md) for complete details.
 from ontocast.config import Config
 from ontocast.toolbox import ToolBox
 
-# Load configuration
 config = Config()
-
-# Initialize tools
 tools = ToolBox(config)
 
-# Process documents
-# ... (use tools for processing)
+# Process documents via tools / workflow graph
 ```
 
 ### Server Usage
 
 ```bash
-# Start server with custom configuration
-ontocast \
-    --env-path .env \
-    --working-directory /data/working \
-    --ontology-directory /data/ontologies \
-    --skip-ontology-critique \
-    --head-chunks 10
+ontocast --env-path .env --input-path ./document.pdf --head-chunks 10
 ```
 
 ---
@@ -392,7 +363,7 @@ We welcome contributions! Please see our [Contributing Guide](docs/contributing.
 
 ## License
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License 2.0 — see the [LICENSE](LICENSE) file for details.
 
 ---
 

@@ -28,16 +28,31 @@ Configure your triple store connection using environment variables in your `.env
 ```bash
 # Fuseki Configuration (Preferred)
 # FUSEKI_URI = HTTP service root only (SPARQL at {FUSEKI_URI}/{dataset}/sparql).
-# The UI URL http://localhost:3032/#/dataset/foo uses the same foo as FUSEKI_DATASET.
+# When FUSEKI_DATASET is unset, defaults to ontocast--test--facts (see Tenancy below).
 FUSEKI_URI=http://localhost:3032
 FUSEKI_AUTH=admin:password
-FUSEKI_DATASET=dataset_name
+#FUSEKI_DATASET=ontocast--test--facts
+#FUSEKI_ONTOLOGIES_DATASET=ontocast--test--ontologies
 
 # Neo4j Configuration (Alternative)
 NEO4J_URI=bolt://localhost:7689
 NEO4J_AUTH=neo4j:password
 
 ```
+
+### Tenancy and Dataset Names
+
+Fuseki uses **two datasets** per tenant/project partition:
+
+- `{tenant}--{project}--facts` — extracted facts graphs
+- `{tenant}--{project}--ontologies` — catalog / versioned ontologies
+
+When `FUSEKI_DATASET` and `FUSEKI_ONTOLOGIES_DATASET` are unset, OntoCast derives names from the built-in default tenant `ontocast` and project `test`.
+
+Per-request `?tenant=` and `?project=` query parameters retarget the active Fuseki datasets at runtime. See [Tenancy](tenancy.md).
+
+Explicit `FUSEKI_DATASET` in `.env` overrides the default derived name for server startup scope.
+
 
 ### Configuration Hierarchy
 
@@ -106,10 +121,12 @@ docker compose stop test.fuseki
 **4. Configure OntoCast for Fuseki:**
 
 ```bash
-# In your .env file (URI = server root; same name as in #/dataset/<name> in the UI)
+# In your .env file (URI = server root)
 FUSEKI_URI=http://localhost:3032
 FUSEKI_AUTH=admin:abc123-qwe
-FUSEKI_DATASET=dataset_name
+# Optional: override default ontocast--test--* dataset names
+#FUSEKI_DATASET=mytenant--myproject--facts
+#FUSEKI_ONTOLOGIES_DATASET=mytenant--myproject--ontologies
 ```
 
 ---

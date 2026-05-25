@@ -217,7 +217,7 @@ def main() -> None:
             padding=20,
         )
 
-        with open("docs/assets/graph.mmd", "wb") as f:
+        with open("docs/assets/graph.preview.png", "wb") as f:
             f.write(png_data)
     except ImportError as e:
         logger.info(f"MermaidDrawMethod not available, skipping mermaid PNG: {e}")

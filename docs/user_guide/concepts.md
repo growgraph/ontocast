@@ -1,61 +1,104 @@
 # Concepts
 
-Here we introduce the main concepts of OntoCast, a framework for transforming data into semantic triples.
+Main concepts in OntoCast, a framework for transforming documents into semantic triples.
 
 ## Ontology Management
 
 OntoCast manages ontologies with automatic versioning and timestamp tracking:
 
-- **Semantic Versioning**: Automatic version increments (MAJOR/MINOR/PATCH) based on change analysis
-- **Hash-Based Lineage**: Git-style versioning with parent hashes for tracking ontology evolution
-- **Multiple Versions**: Versions stored as separate named graphs in Fuseki triple stores
-- **Timestamp Tracking**: `updated_at` field tracks when ontology was last modified
-- **Smart Analysis**: Analyzes ontology changes (classes, properties, instances) to determine appropriate version bump:
-  - **MAJOR**: Substantial breaking changes (deletions of classes/properties)
-  - **MINOR**: New features (new classes/properties) or any deletions
-  - **PATCH**: Updates to existing structures (instances, descriptions, small changes)
-- **Property Syncing**: Version and timestamp are synced to the RDF graph as `owl:versionInfo` and `dcterms:modified`
-- **Versioned IRIs**: Each version gets a unique IRI with hash fragment for storage organization
+- **Semantic Versioning**: MAJOR/MINOR/PATCH increments from change analysis
+- **Hash-Based Lineage**: Parent hashes track ontology evolution
+- **Multiple Versions**: Stored as separate named graphs in Fuseki
+- **Timestamp Tracking**: `updated_at` synced as `dcterms:modified`
+- **Versioned IRIs**: Unique IRIs with hash fragments for storage
 
 ## GraphUpdate System
 
-OntoCast uses a token-efficient GraphUpdate system for incremental graph modifications:
+Token-efficient incremental graph modifications:
 
-- **Structured Operations**: LLM outputs `GraphUpdate` objects containing `TripleOp` operations (insert/delete) instead of full TTL graphs
-- **Token Efficiency**: Only changes are generated, dramatically reducing LLM token usage compared to full graph regeneration
-- **SPARQL Generation**: Operations are automatically converted to executable SPARQL queries
-- **Incremental Updates**: Graph updates are applied incrementally, allowing for precise modifications
-- **Operation Types**: Supports both `insert` and `delete` operations with explicit prefix declarations
-- **Custom Queries**: Also supports `GenericSparqlQuery` for complex custom SPARQL operations
+- **Structured Operations**: LLM outputs `GraphUpdate` with `TripleOp` insert/delete ops
+- **Wire Formats**: Turtle strings or compact JSON-LD (`LLM_GRAPH_FORMAT`); canonical runtime models are the same
+- **SPARQL Generation**: Operations convert to executable SPARQL
+- **Token Savings**: Typically 80–95% fewer output tokens vs full graph regeneration
 
-### How GraphUpdate Saves Tokens
+## RDF 1.2 Provenance
 
-Instead of generating the entire graph in Turtle format (which can be thousands of tokens), the LLM now outputs only the changes:
+OntoCast uses **pyoxigraph** for RDF 1.2 quoted-triple syntax and separates provenance from the working ontology:
 
-- **Before**: Full TTL graph with all triples (e.g., 5000 tokens)
-- **After**: Structured operations with only changes (e.g., 200 tokens)
-- **Savings**: Typically 80-95% reduction in output tokens
+- During **normalization**, reification triples, `prov:wasDerivedFrom`, chunk metadata, and alignment artifacts (`owl:sameAs`) move to a **provenance artifact**
+- The clean ontology graph feeds consolidation and serialization
+- API clients can pass `strip_provenance=true` to omit reification scaffolding from returned Turtle
+
+See [Workflow](workflow.md#4-ontology-reduce-document-level).
+
+## Parallel Map/Reduce
+
+Document processing uses a **parallel map/reduce** architecture:
+
+- **Map**: each content unit runs an independent ontology or facts loop (bounded by `PARALLEL_WORKERS`)
+- **Reduce**: normalize merged ontology updates; merge and disambiguate facts across units
+- Per-request `max_visits` overrides the server default for render/critic retry budgets
+
+## Entity Disambiguation
+
+Cross-chunk identity resolution during facts aggregation:
+
+- Embedding similarity + symbolic compatibility (`EntityAligner`)
+- Connected-component clustering with configurable `AGG_SIMILARITY_THRESHOLD`
+- `skos:altName` and label-aware matching
+- Provenance annotations on merged triples
+
+See [Aggregation](aggregation.md) for configuration details.
+
+## Ontology Context
+
+Before rendering, each unit receives ontology context from one of three modes:
+
+| Mode | Source |
+|------|--------|
+| `selected_single_ontology` | LLM picks a catalog TTL per unit |
+| `selected_vector_search_ontology` | Qdrant hybrid retrieval + induced subgraph |
+| `fixed_single_ontology` | Pinned catalog `ontology_id` |
+
+Details: [Ontology Context](ontology_context.md).
+
+## Tenancy
+
+Runtime **tenant** and **project** parameters (HTTP query/form/JSON) partition triple-store datasets and Qdrant collections:
+
+```
+{tenant}--{project}--facts
+{tenant}--{project}--ontologies
+```
+
+Defaults: `ontocast` / `test`. Not read from environment variables.
+
+Details: [Tenancy](tenancy.md).
 
 ## Budget Tracking
 
-OntoCast provides comprehensive budget tracking for LLM usage and triple generation:
-
-- **LLM Statistics**: Tracks API calls, characters sent/received for cost monitoring
-- **Triple Metrics**: Tracks ontology and facts triples generated per operation
-- **Operation Counts**: Tracks number of update operations for both ontology and facts
-- **Summary Reports**: Budget summaries logged at end of processing with format:
+- **LLM Statistics**: API calls, characters sent/received
+- **Triple Metrics**: Ontology and facts triples per operation
+- **Summary Reports**: Logged at end of processing:
   ```
   LLM: X calls, Y sent, Z received | Triples: A ontology, B facts
   ```
-- **Integrated Tracking**: Budget tracker integrated into AgentState for clean dependency injection
-- **Automatic Updates**: Budget tracker automatically updated when LLM calls are made or triples are generated
+- **BudgetTracker** lives on `AgentState` and per-unit states; merged at reduce stages
 
 ## Key Components
 
-- **Ontology**: RDF graph with properties (id, title, description, version, timestamp, hash, parent_hashes)
-- **AgentState**: Central state management with budget tracking and GraphUpdate operations
-- **ToolBox**: Collection of tools for processing and caching
-- **Triple Stores**: Support for filesystem, Fuseki, and Neo4j storage
-- **GraphUpdate**: Structured representation of graph modifications as SPARQL operations
-- **BudgetTracker**: Lightweight tracker for LLM usage and triple generation statistics
+| Component | Role |
+|-----------|------|
+| `Ontology` | Versioned RDF graph with metadata (id, hash, lineage) |
+| `RDFGraph` | RDF 1.2-aware graph wrapper (Turtle + JSON-LD) |
+| `AgentState` | Document-level workflow state |
+| `UnitOntologyState` / `UnitFactsState` | Per-unit loop state |
+| `ToolBox` | LLM, triple store, chunking, vector store, cache |
+| `GraphUpdate` | Structured SPARQL operations from the LLM |
+| `ContentUnit` | One chunk's ontology/facts outputs |
 
+## Next Steps
+
+- [Workflow](workflow.md) — full pipeline stages
+- [Configuration](configuration.md) — environment variables
+- [API Endpoints](api.md) — REST interface

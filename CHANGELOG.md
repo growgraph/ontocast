@@ -6,6 +6,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.4.0] - 2026-05-26
+
+### Added
+- **Parallel map/reduce pipeline** for document processing: per-unit ontology and facts loops run concurrently with configurable `PARALLEL_WORKERS`, retry budgets (`PARALLEL_ONTOLOGY_RETRIES`, `PARALLEL_FACTS_RETRIES`), and a dedicated `/process_unit` endpoint for single-unit runs.
+- **Robust semantic disambiguation across chunks**: embedding- and symbolic-aware entity alignment during aggregation (`EntityAligner`, connected-component clustering, `skos:altName` handling) with improved cross-unit identity resolution.
+- **RDF 1.2 provenance support**: quoted-triple / reification syntax via `pyoxigraph`; provenance and alignment triples are split into a side artifact during ontology normalization; optional `strip_provenance` on `/process` and `/process_unit` omits reification scaffolding from API Turtle output.
+- **Enhanced ontology update consolidation**: normalize → consolidate → structural check → consistency critic pipeline replaces the legacy sublimation stage; optional post-normalization consolidation pass via `ENABLE_ONTOLOGY_CONSOLIDATION`.
+- **JSON-LD as LLM wire format**: `LLM_GRAPH_FORMAT=jsonld` emits compact JSON-LD (`@context` + `@graph`) for graph payloads while keeping canonical domain models (`GraphUpdate`, critique reports, etc.) at runtime; Turtle remains the default.
+- Per-unit **ontology catalog selection** (`select_ontology_catalog`) with optional `ontology_selection_user_instruction`.
+- **Ontology context modes**: `selected_single_ontology`, `selected_vector_search_ontology` (Qdrant stitched ensemble), and `fixed_single_ontology` (`ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`).
+- **Qdrant vector retrieval** with dual-vector + BM25 hybrid fusion, patch-retrieval scoring/MMR caps (`ONTOLOGY_PATCH_*`), and induced-subgraph triple budgets (`QDRANT_INDUCED_SUBGRAPH_*`).
+- **Embedding configuration** surface (`EMBEDDING_*`) and embedding-ready representation contracts for atomizer/retrieval pipelines.
+- **Tenancy-aware storage**: `tenant` / `project` request parameters partition Fuseki datasets and Qdrant collections (`{tenant}--{project}--facts|ontologies`); defaults derive from built-in `ontocast` / `test`.
+- REST **ontology management** routes: `POST/PUT/DELETE /ontologies` for catalog upload, replace, and delete.
+- **Graph matching API**: `POST /match/entities`, `POST /match/derive-matches`, and `POST /match/evaluate` for entity alignment and triple/entity precision-recall evaluation.
+- `match-dirs` standalone CLI client for batch benchmark evaluation against the match endpoints.
+
+### Changed
+- **BREAKING**: Ontology post-render processing now uses `normalize_ontology_units()` instead of `sublimate_ontology()`; provenance is extracted rather than inlined in the working ontology graph.
+- **BREAKING**: CLI server module is `ontocast.cli.server` (entry point unchanged: `ontocast`); legacy `serve` module removed.
+- Workflow graph restructured around parallel unit rendering, normalization, and optional consolidation before facts extraction.
+- Fuseki/Qdrant dataset and collection names default from tenant/project naming when unset (explicit `FUSEKI_DATASET` / `FUSEKI_ONTOLOGIES_DATASET` still supported).
+- Default `max_visits_per_node` is now `1` (override via `MAX_VISITS` or per-request `max_visits`).
+- Graph format instructions, JSON Schema bindings, and prompt context chapters are driven by a shared format profile (`LLM_GRAPH_FORMAT`).
+- Improved IRI policy, ontology access helpers, and atomizer coverage for facts and ontology cores.
+
+### Removed
+- `sublimate_ontology` agent stage and module (superseded by normalize + consolidate).
+- Top-level `tool/aggregate` module path (aggregation lives under `tool/agg/`).
+
+### Fixed
+- GraphUpdate parsing and alignment edge cases across Turtle and JSON-LD encodings.
+- Graceful initialization when vector store or optional backends are unavailable.
+- Match endpoint robustness and evaluation semantics (label triples excluded from triple metrics).
+
+### Documentation
+- User guides updated for 0.4.0 pipeline (workflow, API, tenancy, ontology context, aggregation).
+- API reference pages are generated at build time via `docs/gen_pages.py` (stale committed stubs removed).
+- Workflow diagrams: `docs/assets/graph.png` (TB), `graph.lr.png` (LR); regenerate with `uv run plot-graph`.
+- Configuration defaults aligned with `config.py` and `.env.example`.
+
 ## [0.3.0] - 2026-03-10
 
 ### Added
@@ -124,7 +165,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Migration Guide
 
-### Environment Variables
+### Upgrading to 0.4.0
+
+**Environment variables:**
+
+```bash
+# Old (ignored in 0.4.0)
+RECURSION_LIMIT=1000
+
+# New
+BASE_RECURSION_LIMIT=1000
+```
+
+**Defaults changed:**
+
+| Setting | 0.3.x docs / `.env.example` | 0.4.0 code default |
+|---------|----------------------------|-------------------|
+| `MAX_VISITS` | often documented as `3` | `1` |
+| `ONTOLOGY_MAX_TRIPLES` | sometimes `10000` | `50000` |
+| Fuseki datasets | explicit `FUSEKI_DATASET` | derive `ontocast--test--facts` when unset |
+
+**Removed APIs:**
+
+- `ontocast.agent.sublimate_ontology` — use `normalize_ontology_units()` and optional consolidation instead.
+- `ontocast.cli.serve` — server is `ontocast.cli.server` (CLI command `ontocast` unchanged).
+
+**New request parameters:**
+
+- `tenant`, `project` — partition Fuseki/Qdrant (query string on `/process`, `/ontologies`, etc.)
+- `strip_provenance` — omit reification from API Turtle output
+- `ontology_context_mode`, `ontology_context_fixed_ontology_id` — per-request ontology context
+
+See [docs/user_guide/](docs/user_guide/) for full guides.
+
+### Upgrading from 0.1.x / 0.3.x (general)
 ```bash
 # Old
 OPENAI_API_KEY=your_key_here

@@ -13,200 +13,98 @@
 
 ## Overview
 
-OntoCast is a framework for extracting semantic triples (creating a Knowledge Graph) from documents using an agentic, ontology-driven approach. It combines ontology management, natural language processing, and knowledge graph serialization to turn unstructured text into structured, queryable data.
+OntoCast extracts semantic triples from documents using an agentic, ontology-driven pipeline. It co-evolves ontologies and facts graphs with parallel per-chunk processing, RDF 1.2 provenance, and optional vector-backed ontology retrieval.
 
 ---
 
 ## Key Features
 
-- **Ontology-Guided Extraction**: Ensures semantic consistency and co-evolves ontologies
-- **Entity Disambiguation**: Resolves references across document chunks
-- **Multi-Format Support**: Handles text, JSON, PDF, and Markdown
-- **Semantic Chunking**: Splits text based on semantic similarity
-- **MCP Compatibility**: Implements Model Control Protocol endpoints
-- **RDF Output**: Produces standardized RDF/Turtle
-- **Triple Store Integration**: Supports Neo4j (n10s) and Apache Fuseki
-- **Automatic LLM Caching**: Built-in response caching for improved performance and cost reduction
-- **GraphUpdate Operations**: Token-efficient SPARQL-based updates instead of full graph regeneration
-- **Budget Tracking**: Comprehensive tracking of LLM usage and triple generation metrics
-- **Ontology Versioning**: Automatic semantic versioning with hash-based lineage tracking
+- **Parallel map/reduce pipeline** — concurrent per-unit ontology and facts loops
+- **Robust entity disambiguation** — embedding + symbolic alignment across chunks
+- **RDF 1.2 provenance** — quoted triples, provenance artifacts, optional `strip_provenance`
+- **GraphUpdate operations** — token-efficient SPARQL insert/delete instead of full graph regeneration
+- **JSON-LD wire format** — optional `LLM_GRAPH_FORMAT=jsonld` for LLM payloads
+- **Ontology context modes** — catalog selection, vector retrieval, or fixed ontology
+- **Triple store integration** — Fuseki, Neo4j (n10s), or filesystem fallback
+- **Tenancy** — partition datasets/collections by tenant and project
+- **REST API** — document processing, ontology catalog management, graph matching
+- **Automatic LLM caching** — built-in response caching
 
 ---
 
-## Applications
+## Documentation
 
-OntoCast can be used for:
-
-- **Knowledge Graph Construction**: Build domain-specific or general-purpose knowledge graphs from documents
-- **Semantic Search**: Power search and retrieval with structured triples
-- **GraphRAG**: Enable retrieval-augmented generation over knowledge graphs (e.g., with LLMs)
-- **Ontology Management**: Automate ontology creation, validation, and refinement
-- **Data Integration**: Unify data from diverse sources into a semantic graph
+- [Quick Start](getting_started/quickstart.md)
+- [Workflow](user_guide/workflow.md)
+- [Core Concepts](user_guide/concepts.md)
+- [Configuration](user_guide/configuration.md)
+- [API Endpoints](user_guide/api.md)
+- [Tenancy](user_guide/tenancy.md)
+- [Ontology Context](user_guide/ontology_context.md)
+- [Triple Stores](user_guide/triple_stores.md)
+- [LLM Caching](user_guide/llm_caching.md)
+- [API Reference](reference/onto/state.md)
 
 ---
 
 ## Installation
 
 ```sh
-uv add ontocast 
+uv add ontocast
 # or
 pip install ontocast
 ```
 
+Optional PDF/DOCX conversion: `pip install "ontocast[doc-processing]"`
+
 ---
 
-## Configuration
-
-## Documentation
-
-- [Quick Start Guide](getting_started/quickstart.md) - Get started quickly
-- [Configuration System](user_guide/configuration.md) - Detailed configuration guide
-- [LLM Caching](user_guide/llm_caching.md) - Automatic response caching
-- [Triple Store Setup](user_guide/triple_stores.md) - Triple store configuration
-- [User Guide](user_guide/concepts.md) - Core concepts and workflow
-- [API Reference](reference/onto.md) - Detailed API documentation
-
-
-### Environment Variables
-
-Copy the example file and edit as needed:
+## Quick Start
 
 ```bash
 cp .env.example .env
-# Edit with your values
-```
+# Edit LLM_API_KEY and paths
 
-**Main options:**
-```bash
-# LLM Configuration
-# common
-LLM_PROVIDER=openai # or ollama
-LLM_MODEL_NAME=gpt-4o-mini # ollama model
-LLM_TEMPERATURE=0.0
-
-# openai
-LLM_API_KEY=your_openai_api_key_here
-
-# ollama
-LLM_BASE_URL=
-
-# Server
-PORT=8999
-BASE_RECURSION_LIMIT=1000
-ESTIMATED_CHUNKS=30
-MAX_VISITS=3
-RENDER_MODE=ontology_and_facts
-ONTOLOGY_MAX_TRIPLES=50000
-PARALLEL_WORKERS=4
-PARALLEL_FACTS_RETRIES=3
-PARALLEL_ONTOLOGY_RETRIES=3
-ENABLE_ONTOLOGY_CONSOLIDATION=false
-
-# Backend Configuration (auto-detected)
-FUSEKI_URI=http://localhost:3032
-FUSEKI_AUTH=admin:password
-ONTOCAST_WORKING_DIRECTORY=/path/to/working
-
-# Optional: Triple Store Configuration (Fuseki preferred over Neo4j)
-FUSEKI_URI=http://localhost:3032
-FUSEKI_AUTH=admin/abc123-qwe
-FUSEKI_DATASET=dataset_name
-FUSEKI_ONTOLOGIES_DATASET=ontologies
-
-NEO4J_URI=bolt://localhost:7689
-NEO4J_AUTH=neo4j/test!passfortesting
-
-# Aggregation controls
-AGG_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
-AGG_SIMILARITY_THRESHOLD=0.80
-
-# Optional web grounding
-WEB_SEARCH_ENABLED=false
-WEB_SEARCH_PROVIDER=duckduckgo
-```
-
----
-
-## Triple Store Setup
-
-OntoCast supports multiple triple store backends. When both Fuseki and Neo4j are configured, **Fuseki is preferred**.
-
-- See [Triple Store Setup](user_guide/triple_stores.md) for detailed Docker Compose instructions and sample `.env.example` files.
-- Quick summary: copy and edit the provided `.env.example` in `docker/fuseki` or `docker/neo4j`, then run `docker compose --env-file .env <service> up -d` in the respective directory.
-
----
-
-## Running OntoCast Server
-
-```bash
-# Backend automatically detected from .env configuration
 ontocast --env-path .env
 
-# Process specific file
-ontocast --env-path .env --input-path ./document.pdf
-
-# Process with chunk limit (for testing)
-ontocast --env-path .env --head-chunks 5
+curl -X POST http://localhost:8999/process -F "file=@document.pdf"
 ```
 
-- Backend selection is **fully automatic** based on available configuration
-- No explicit backend flags needed - just provide the required credentials/paths in .env
-- All paths and directories are configured via .env file
+See [Quick Start Guide](getting_started/quickstart.md) for full configuration.
 
 ---
 
-## API Usage
+## REST API (Summary)
 
-- **POST /process**: Accepts `application/json` or file uploads (`multipart/form-data`).
-- Returns: JSON with extracted facts (Turtle), ontology (Turtle), and processing metadata. Triples are also serialized to the configured triple store.
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/health` | Health check |
+| `GET` | `/info` | Service metadata |
+| `POST` | `/process` | Full document pipeline |
+| `POST` | `/process_unit` | Single content unit |
+| `POST` | `/flush` | Clear triple store data |
+| `POST` | `/ontologies` | Upload catalog ontology |
+| `PUT/DELETE` | `/ontologies/{iri}` | Replace or delete ontology |
+| `POST` | `/match/entities` | Global entity alignment |
+| `POST` | `/match/derive-matches` | Pairwise entity matching |
+| `POST` | `/match/evaluate` | Triple/entity metrics |
 
-**Example:**
-```bash
-curl -X POST http://localhost:8999/process \
-    -H "Content-Type: application/json" \
-    -d '{"text": "Your document text here"}'
-    
-# Process a PDF file
-curl -X POST http://url:port/process -F "file=@data/pdf/sample.pdf"
-
-# Process a json file
-curl -X POST http://url:port/process -F "file=@test2/sample.json"
-```
-
----
-
-## MCP Endpoints
-
-- `GET /health`: Health check
-- `GET /info`: Service info
-- `POST /process`: Document processing
-- `POST /flush`: Flush/clean triple store data (optional `dataset` query parameter for Fuseki)
+Details: [API Endpoints](user_guide/api.md).
 
 ---
 
-## Filesystem Mode
+## Workflow
 
-If no triple store is configured, OntoCast stores ontologies and facts as Turtle files in the working directory.
+Document-level pipeline (regenerated via `uv run plot-graph`):
 
----
+![Workflow diagram](assets/graph.png)
 
-## Notes
+Landscape variant: [graph.lr.png](assets/graph.lr.png). Per-unit render/critic loops are documented in [Workflow](user_guide/workflow.md#per-unit-atomic-loop).
 
-- JSON documents must contain a `text` field, e.g.:
-  ```json
-  { "text": "abc" }
-  ```
-- `recursion_limit` is calculated as `max_visits * estimated_chunks` (default 30, or set via `.env`)
-- Default port: 8999
-
----
-
-## Docker
-
-To build the OntoCast Docker image:
-```sh
-docker buildx build -t growgraph/ontocast:0.1.4 . 2>&1 | tee build.log
-```
+1. Convert → chunk document
+2. Parallel ontology render per unit → normalize → optional consolidate → validate
+3. Parallel facts render per unit → merge with disambiguation
+4. Serialize to triple store; return Turtle in API response
 
 ---
 
@@ -214,66 +112,19 @@ docker buildx build -t growgraph/ontocast:0.1.4 . 2>&1 | tee build.log
 
 ```
 ontocast/
-├── agent/           # Agent workflow and orchestration
-├── cli/             # CLI utilities and server
+├── agent/           # Render, critic, normalize, serialize agents
+├── api/             # FastAPI routers (ontologies, schemas, tenancy)
+├── cli/             # Server and utility CLIs
+├── onto/            # Ontology, RDFGraph, state models
 ├── prompt/          # LLM prompt templates
-├── stategraph/      # State graph logic
-├── tool/            # Triple store, chunking, and ontology tools
-├── toolbox.py       # Toolbox for agent tools
-├── onto.py          # Ontology and RDF graph handling
-├── util.py          # Utilities
+├── stategraph/      # LangGraph workflow
+├── tool/            # Triple stores, chunking, vector store, aggregation
+├── config.py        # Pydantic settings
+└── toolbox.py       # Tool dependency container
 ```
-Other directories:
-- `docker/` – Docker Compose and .env.example files for triple stores
-- `data/` – Example data, ontologies, and test files
-- `docs/` – Documentation and user guides
-- `test/` – Test suite
-
----
-
-## Workflow
-
-The extraction follows a multi-stage workflow:
-
-<img src="https://github.com/growgraph/ontocast/blob/main/docs/assets/graph.png?raw=true" alt="Workflow diagram" width="350" style="float: right; margin-left: 20px;"/>
-
-1. **Document Preparation**
-    - [Optional] Convert to Markdown
-    - Text chunking
-2. **Ontology Processing**
-    - Ontology selection
-    - Text to ontology triples
-    - Ontology critique
-3. **Fact Extraction**
-    - Text to facts
-    - Facts critique
-    - Ontology sublimation
-4. **Chunk Normalization**
-    - Chunk KG aggregation
-    - Entity/Property Disambiguation
-5. **Storage**
-    - Triple/KG serialization
-
----
-
-
-## Roadmap
-
-- [x] Add Jena Fuseki triple store for triple serialization
-- [x] Add Neo4j n10s for triple serialization
-- [ ] Replace triple prompting with a tool for local graph retrieval
 
 ---
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
-
----
-
-## Acknowledgments
-
-- Uses RDFlib for semantic triple management
-- Uses docling for pdf/pptx conversion
-- Uses OpenAI language models / open models served via Ollama for fact extraction
-- Uses langchain/langgraph
+See [Contributing](contributing.md) and [CHANGELOG](../CHANGELOG.md).

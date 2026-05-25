@@ -54,7 +54,7 @@ LLM_API_KEY=your-api-key-here
 LLM_MODEL_NAME=gpt-4o-mini
 
 # Server Configuration
-MAX_VISITS=3
+MAX_VISITS=1
 BASE_RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
 RENDER_MODE=ontology_and_facts
@@ -154,7 +154,7 @@ OntoCast uses a hierarchical configuration system:
 | `NEO4J_URI` + `NEO4J_AUTH` | Use Neo4j as main triple store | Auto-detected |
 | `ONTOCAST_WORKING_DIRECTORY` + `ONTOCAST_ONTOLOGY_DIRECTORY` | Use filesystem as main triple store | Auto-detected |
 | `ONTOCAST_ONTOLOGY_DIRECTORY` | Ontology files directory | Provide seed ontologies |
-| `MAX_VISITS` | Maximum visits per node | 3 |
+| `MAX_VISITS` | Maximum visits per node | 1 |
 | `BASE_RECURSION_LIMIT` | Base recursion limit for workflow | 1000 |
 | `ONTOLOGY_MAX_TRIPLES` | Maximum triples allowed in ontology graph | 50000 |
 | `ENABLE_ONTOLOGY_CONSOLIDATION` | Run ontology consolidation pass | false |
@@ -165,5 +165,5 @@ Now that you've processed your first document, you can:
 
 1. Try processing different types of documents (PDF, Word)
 2. Configure triple stores (Neo4j, Fuseki) for persistent storage
-3. Check the [API Reference](../reference/onto.md) for more details
+3. Check the [API Endpoints](../user_guide/api.md) for REST usage
 4. Explore the [User Guide](../user_guide/concepts.md) for advanced usage

@@ -21,8 +21,13 @@ Config
 │   ├── fuseki: FusekiConfig
 │   ├── domain: DomainConfig
 │   ├── web_search: WebSearchConfig
-│   └── aggregation: AggregationConfig
-└── server: ServerConfig
+│   ├── aggregation: AggregationConfig
+│   ├── embedding: EmbeddingConfig
+│   ├── patch_retrieval: PatchRetrievalConfig
+│   └── qdrant: QdrantConfig
+├── server: ServerConfig
+├── logging_level: str | None
+└── clean: bool
 ```
 
 ## Environment Variables
@@ -43,11 +48,11 @@ LLM_BASE_URL=http://localhost:11434     # optional (mainly for ollama)
 PORT=8999
 BASE_RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
-MAX_VISITS=3                             # alias for max_visits_per_node
+MAX_VISITS=1                             # alias for max_visits_per_node
 RENDER_MODE=ontology_and_facts           # ontology | facts | ontology_and_facts
-LLM_GRAPH_FORMAT=turtle                  # turtle | jsonld — controls LLM output encoding and prompt context graphs
-ONTOLOGY_CONTEXT_MODE=selected_single_ontology   # selected_single_ontology | selected_vector_search_ontology | fixed_single_ontology
-#ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID=catalog_id  # required for fixed_single_ontology
+LLM_GRAPH_FORMAT=turtle                  # turtle | jsonld
+ONTOLOGY_CONTEXT_MODE=selected_single_ontology
+#ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID=catalog_id
 ONTOLOGY_MAX_TRIPLES=50000               # empty/unset for unlimited
 PARALLEL_WORKERS=4
 PARALLEL_FACTS_RETRIES=3
@@ -67,11 +72,11 @@ CHUNK_MAX_SIZE=12000
 ### Triple Stores
 
 ```bash
-# Fuseki
+# Fuseki — dataset names default to ontocast--test--facts / ontocast--test--ontologies
 FUSEKI_URI=http://localhost:3030
 FUSEKI_AUTH=admin/admin
-FUSEKI_DATASET=dataset_name
-FUSEKI_ONTOLOGIES_DATASET=ontologies
+#FUSEKI_DATASET=custom--project--facts
+#FUSEKI_ONTOLOGIES_DATASET=custom--project--ontologies
 
 # Neo4j
 NEO4J_URI=bolt://localhost:7687
@@ -80,24 +85,55 @@ NEO4J_PORT=7476
 NEO4J_BOLT_PORT=7689
 ```
 
-### Qdrant Retrieval Budgets
+See [Tenancy](tenancy.md) for how tenant/project names relate to dataset and collection names.
+
+### Embeddings
+
+```bash
+EMBEDDING_PROVIDER=huggingface          # huggingface | openai | ollama
+EMBEDDING_MODEL_NAME=paraphrase-multilingual-MiniLM-L12-v2
+# EMBEDDING_API_KEY=
+# EMBEDDING_BASE_URL=http://localhost:11434
+EMBEDDING_DIMENSION=384
+```
+
+### Qdrant
 
 ```bash
 QDRANT_URI=http://localhost:6333
 QDRANT_API_KEY=abc123-qwe
 QDRANT_TOP_K=10
+QDRANT_GRPC_PORT=6334
+QDRANT_USE_GRPC=false
 QDRANT_INDUCED_SUBGRAPH_DEPTH=1
-# Hard cap for total stitched context triples
 QDRANT_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=300
-# Estimated budget per query window used to distribute triples across ranked entities
 QDRANT_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
+# QDRANT_ONTOLOGY_COLLECTION=ontocast--test--ontologies
+# QDRANT_FACTS_COLLECTION=ontocast--test--facts
+# QDRANT_FUSION_CORE_WEIGHT=0.7
+# QDRANT_FUSION_NEIGHBORHOOD_WEIGHT=0.3
+# QDRANT_FUSION_BM25_WEIGHT=0.2
+# QDRANT_DEDUP_MODE=iri
 ```
 
 Budget behavior:
 
 - `QDRANT_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` is the global upper bound returned to the LLM.
 - `QDRANT_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` shapes per-entity allocation during retrieval.
-- Retrieval guarantees broad seed coverage when feasible, then allocates remaining budget by entity relevance.
+
+See [Ontology Context](ontology_context.md) for vector-search mode requirements.
+
+### Ontology Patch Retrieval
+
+Post-vector scoring and capping (backend-agnostic; prefix `ONTOLOGY_PATCH_`):
+
+```bash
+ONTOLOGY_PATCH_PER_QUERY_CORE_SCORE_RATIO=0.85
+ONTOLOGY_PATCH_PER_QUERY_NEIGHBORHOOD_SCORE_RATIO=0.85
+ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE=0.18
+# ONTOLOGY_PATCH_MMR_LAMBDA=0.7
+# ONTOLOGY_PATCH_MAX_ATOMS=0
+```
 
 ### Paths and Domain
 
@@ -134,28 +170,36 @@ WEB_SEARCH_PLANNER_MIN_QUERY_CHARS=12
 WEB_SEARCH_PLANNER_MIN_CONFIDENCE=0.35
 WEB_SEARCH_REUSE_EVIDENCE_ACROSS_ATTEMPT=true
 WEB_SEARCH_MIN_SNIPPET_CHARS=40
-WEB_SEARCH_ALLOWED_DOMAINS=              # comma-separated
-WEB_SEARCH_BLOCKED_DOMAINS=              # comma-separated
+WEB_SEARCH_ALLOWED_DOMAINS=
+WEB_SEARCH_BLOCKED_DOMAINS=
 WEB_SEARCH_REGION=wt-wt
 WEB_SEARCH_SAFESEARCH=moderate
 ```
 
 Search is "search-later": nodes run without search first, and only request external evidence when needed.
 
-## LLM graph format (`LLM_GRAPH_FORMAT`)
+### Other
+
+```bash
+CLEAN=false                              # flush triple store before --input-path batch
+LOGGING_LEVEL=info                       # debug | info | warning | error
+```
+
+## LLM Graph Format (`LLM_GRAPH_FORMAT`)
 
 - `turtle` (default): the LLM emits RDF graph fields as Turtle strings; prompt context chapters use `` ```ttl `` blocks.
 - `jsonld`: the LLM emits compact JSON-LD objects (`@context` + `@graph`); prompt context uses `` ```json `` blocks.
-- Domain models (`GraphUpdate`, `FactsRenderReport`, critique reports, etc.) are **single canonical classes** at runtime. The format affects only LLM wire encoding (parse validators + JSON Schema in format instructions), not duplicate Pydantic types.
-- The setting applies consistently to render and critique agents (output instructions, format-bound JSON Schema, prompt context chapters, and `llm_graph_format_ctx` during parsing).
+- Domain models (`GraphUpdate`, critique reports, etc.) are **single canonical classes** at runtime. The format affects only LLM wire encoding, not duplicate Pydantic types.
 
-## Ontology Context Mode Behavior
+## Ontology Context Mode
 
-- `ONTOLOGY_CONTEXT_MODE=selected_single_ontology` is the default (LLM-chosen catalog TTL per unit); it does not require Qdrant.
-- `selected_single_ontology` skips vector-store initialization when running the server or file batch processing unless you select vector mode.
-- `ontology_context_mode=selected_vector_search_ontology` requires configured and initialized vector infrastructure (`QDRANT_URI` and compatible embedding settings).
-- If a request asks for `selected_vector_search_ontology` while vector store is unavailable, API returns `409` with `error_code: VECTOR_STORE_UNAVAILABLE`.
-- `fixed_single_ontology` uses the catalog ontology whose `ontology_id` is `ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID` (or per-request `ontology_context_fixed_ontology_id` query/form/JSON field). Omitting the id when mode is fixed returns HTTP 400 from the API.
+- `selected_single_ontology` (default): LLM picks one catalog ontology per content unit; no Qdrant required.
+- `selected_vector_search_ontology`: Qdrant stitched ensemble; requires `QDRANT_URI` and embedding settings.
+- `fixed_single_ontology`: pin one catalog `ontology_id` via `ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`.
+
+If vector mode is requested while Qdrant is unavailable, the API returns `409` with `error_code: VECTOR_STORE_UNAVAILABLE`.
+
+Details: [Ontology Context](ontology_context.md).
 
 ## Usage
 
@@ -171,82 +215,21 @@ print(tool_config.llm_config.provider)
 print(tool_config.path_config.cache_dir)
 ```
 
-## RDF Graph Matching
+## Graph Matching API
 
-Matching is split into entity alignment (global, across many graphs) and evaluation
-(predicted vs ground truth, using explicit entity mappings).
-
-### `POST /match/entities`
-
-Align entities globally across a list of graphs (connected-component clustering over
-embedding + symbolic compatibility).
-
-```json
-{
-  "graphs": [
-    {"id": "gt:doc1.ttl", "graph": "@prefix ex: <https://gt.example/> . ..."},
-    {"id": "predicted:doc1.ttl", "graph": "@prefix ex: <https://pred.example/> . ..."}
-  ],
-  "regime": "ontology_loose",
-  "similarity_threshold": 0.8
-}
-```
-
-### `POST /match/derive-matches`
-
-Derive 1:1 predicted↔gt entity matches for one graph pair from alignment clusters.
-
-```json
-{
-  "clusters": [],
-  "predicted_graph_id": "predicted:doc1.ttl",
-  "gt_graph_id": "gt:doc1.ttl",
-  "similarity_threshold": 0.8
-}
-```
-
-### `POST /match/evaluate`
-
-Compute triple and entity precision/recall/F1 given graphs and entity matches.
-Label triples (`rdfs:label`) are excluded from triple metrics.
-
-```json
-{
-  "predicted_graph": "@prefix ex: <https://predicted.example/> . ...",
-  "gt_graph": "@prefix ex: <https://gt.example/> . ...",
-  "entity_matches": [
-    {"predicted_entity": "https://pred.example/a", "gt_entity": "https://gt.example/a", "similarity": 0.95}
-  ]
-}
-```
-
-Precision and recall use the same semantics for triples and entities:
-precision = TP / |predicted|, recall = TP / |ground truth|.
-
-### Standalone CLI
-
-`match-dirs` is a standalone HTTP client (no ontocast imports). It calls all three
-endpoints per paired TTL file: align (gt + predicted only), derive, evaluate.
-
-```bash
-uv run match-dirs \
-  --gt ./benchmark \
-  --predicted ./extracted \
-  --url http://localhost:8999 \
-  --regime ontology_strict \
-  --similarity-threshold 0.8
-```
+Entity alignment and evaluation endpoints are documented in [API Endpoints](api.md#graph-matching).
 
 ## Validation Notes
 
 - `LLM_PROVIDER=openai` requires `LLM_API_KEY`.
 - `LLM_MODEL_NAME` must match the selected provider family.
 - `MAX_VISITS` is supported as an alias for `max_visits_per_node`.
+- `RECURSION_LIMIT` was renamed to `BASE_RECURSION_LIMIT`.
 - `WEB_SEARCH_ALLOWED_DOMAINS` and `WEB_SEARCH_BLOCKED_DOMAINS` accept comma-separated values.
 
 ## Recommended Workflow
 
 1. Copy `.env.example` to `.env`.
 2. Fill in LLM credentials and backend settings.
-3. Start with defaults for chunking/search/aggregation.
+3. Start with defaults for chunking, search, and aggregation.
 4. Tune only after inspecting extraction quality and runtime.
