@@ -1,18 +1,20 @@
-"""Pydantic models for SPARQL operations.
+"""Pydantic models for SPARQL graph mutations and tool SPARQL operations.
 
-This module provides Pydantic models for structured SPARQL queries
-that can be used with PydanticOutputParser for LLM integration.
+``GraphUpdate`` / ``TripleOp`` are the canonical LLM pipeline mutation abstraction
+(ordered triple patches + optional raw SPARQL strings). ``SPARQLOperationModel`` is
+used by tooling (``tool/sparql.py``, ``graph_version_manager.py``) — a separate path.
 """
 
 import logging
-from typing import Annotated, Any
+from typing import Any
 from typing import Literal as TypingLiteral
 
-from pydantic import BaseModel, BeforeValidator, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 from rdflib import BNode, Literal, Node, URIRef
 
 from ontocast.onto.constants import COMMON_PREFIXES
 from ontocast.onto.enum import SPARQLOperationType
+from ontocast.onto.llm_graph_payload import LLMGraphWire
 from ontocast.onto.rdfgraph import RDFGraph
 
 logger = logging.getLogger(__name__)
@@ -47,88 +49,6 @@ class SPARQLOperationModel(BaseModel):
     )
 
 
-class StructuredSPARQLQueryModel(BaseModel):
-    """Pydantic model for structured SPARQL queries.
-
-    Attributes:
-        operations: List of SPARQL operations (INSERT, UPDATE, DELETE)
-        namespaces: Dictionary mapping prefixes to URIs
-    """
-
-    operations: list[SPARQLOperationModel] = Field(
-        default_factory=list, description="List of SPARQL operations to execute"
-    )
-    namespaces: dict[str, str] = Field(
-        default_factory=dict,
-        description="Dictionary mapping namespace prefixes to URIs",
-    )
-
-    def get_summary(self) -> str:
-        """Get a summary of the structured query."""
-        add_count = len(
-            [
-                op
-                for op in self.operations
-                if op.operation_type == SPARQLOperationType.INSERT
-            ]
-        )
-        update_count = len(
-            [
-                op
-                for op in self.operations
-                if op.operation_type == SPARQLOperationType.UPDATE
-            ]
-        )
-        remove_count = len(
-            [
-                op
-                for op in self.operations
-                if op.operation_type == SPARQLOperationType.DELETE
-            ]
-        )
-
-        return (
-            f"Structured SPARQL Query: "
-            f"{add_count} ADD operations, "
-            f"{update_count} UPDATE operations, "
-            f"{remove_count} REMOVE operations"
-        )
-
-    def get_all_operations(self) -> list[SPARQLOperationModel]:
-        """Get all operations in execution order (INSERT, UPDATE, DELETE)."""
-        # Sort operations by type: INSERT first, then UPDATE, then DELETE
-        type_order = {
-            SPARQLOperationType.INSERT: 0,
-            SPARQLOperationType.UPDATE: 1,
-            SPARQLOperationType.DELETE: 2,
-        }
-        return sorted(self.operations, key=lambda op: type_order[op.operation_type])
-
-    def get_add_operations(self) -> list[SPARQLOperationModel]:
-        """Get all INSERT operations."""
-        return [
-            op
-            for op in self.operations
-            if op.operation_type == SPARQLOperationType.INSERT
-        ]
-
-    def get_update_operations(self) -> list[SPARQLOperationModel]:
-        """Get all UPDATE operations."""
-        return [
-            op
-            for op in self.operations
-            if op.operation_type == SPARQLOperationType.UPDATE
-        ]
-
-    def get_remove_operations(self) -> list[SPARQLOperationModel]:
-        """Get all DELETE operations."""
-        return [
-            op
-            for op in self.operations
-            if op.operation_type == SPARQLOperationType.DELETE
-        ]
-
-
 class TripleOp(BaseModel):
     """Operation to modify triples in the RDF graph.
 
@@ -147,19 +67,12 @@ class TripleOp(BaseModel):
             return "insert"
         return v  # type: ignore[return-value]
 
-    graph: Annotated[
-        RDFGraph,
-        BeforeValidator(
-            lambda v: RDFGraph._from_any(v) if not isinstance(v, RDFGraph) else v
-        ),
-    ] = Field(
+    graph: LLMGraphWire = Field(
         default_factory=RDFGraph,
-        description="RDF graph containing triples to insert or delete. "
-        "Provide either a Turtle string or a compact JSON-LD object "
-        "(per the OUTPUT INSTRUCTION). "
-        'Example Turtle: "@prefix ex: <http://example.org/> . ex:John a ex:Person ; rdfs:label "John Doe" ." '
-        'Example JSON-LD: {"@context": {"ex": "http://example.org/", "rdfs": "http://www.w3.org/2000/01/rdf-schema#"}, '
-        '"@graph": [{"@id": "ex:John", "@type": "ex:Person", "rdfs:label": "John Doe"}]}',
+        description=(
+            "RDF graph containing triples to insert or delete. "
+            "Encoding is defined by deployment llm_graph_format and OUTPUT INSTRUCTION."
+        ),
     )
     prefixes: dict[str, str] = Field(
         default_factory=dict,
@@ -198,9 +111,8 @@ class GraphUpdate(BaseModel):
     triple_operations: list[TripleOp] = Field(
         default_factory=list,
         description="List of graph update operations in execution order. "
-        "Each operation should be a TripleOp (for insert/delete) with an RDF graph "
-        "given either as a Turtle string or as a compact JSON-LD object "
-        "(per the OUTPUT INSTRUCTION).",
+        "Each operation should be a TripleOp (insert/delete) with graph encoding "
+        "per deployment llm_graph_format and OUTPUT INSTRUCTION.",
     )
 
     sparql_operations: list[GenericSparqlQuery] = Field(

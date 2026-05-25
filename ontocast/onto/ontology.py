@@ -10,6 +10,7 @@ from rdflib import DCTERMS, OWL, RDF, RDFS, XSD, Literal, URIRef
 
 from ontocast.onto.constants import DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI, PROV
 from ontocast.onto.iri_policy import normalize_namespace_iri
+from ontocast.onto.llm_graph_payload import LLMGraphWire
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.util import derive_ontology_id
@@ -154,12 +155,12 @@ class Ontology(OntologyPropertiesWithLineage):
             if ontology_id is set.
     """
 
-    graph: RDFGraph = Field(
+    graph: LLMGraphWire = Field(
         default_factory=RDFGraph,
-        description="RDF triples that define an ontology. "
-        "Provide as a Turtle string OR a compact JSON-LD object, "
-        "as specified by the OUTPUT INSTRUCTION. "
-        "Use prefixes for namespaces, do NOT add comments.",
+        description=(
+            "RDF triples that define an ontology. "
+            "Encoding is defined by deployment llm_graph_format and OUTPUT INSTRUCTION."
+        ),
     )
 
     current_domain: str = Field(

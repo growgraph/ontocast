@@ -11,7 +11,6 @@ from ontocast.onto.model import (
     FactsCritiqueReport,
     FactsRenderReport,
     GraphUpdateRenderReport,
-    SemanticTriplesFactsReport,
     TripleFix,
 )
 from ontocast.onto.ontology import Ontology
@@ -99,11 +98,9 @@ async def test_render_facts_fresh_sets_success_and_budget(monkeypatch) -> None:
             format="turtle",
         )
         return FactsRenderReport(
-            facts_report=SemanticTriplesFactsReport(
-                semantic_graph=rendered_graph,
-                ontology_relevance_score=95,
-                triples_generation_score=94,
-            )
+            semantic_graph=rendered_graph,
+            ontology_relevance_score=95,
+            triples_generation_score=94,
         )
 
     monkeypatch.setattr(
@@ -177,11 +174,9 @@ async def test_render_facts_fresh_coerces_invalid_typed_literal_at_ingest(
             }
         )
         return FactsRenderReport(
-            facts_report=SemanticTriplesFactsReport(
-                semantic_graph=rendered_graph,
-                ontology_relevance_score=95,
-                triples_generation_score=94,
-            )
+            semantic_graph=rendered_graph,
+            ontology_relevance_score=95,
+            triples_generation_score=94,
         )
 
     monkeypatch.setattr(

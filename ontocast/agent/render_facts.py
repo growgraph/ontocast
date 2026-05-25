@@ -13,7 +13,7 @@ from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.onto.constants import DEFAULT_IRI
-from ontocast.onto.enum import FailureStage, LLMGraphFormat, Status, WorkflowNode
+from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import FactsRenderReport, GraphUpdateRenderReport
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import (
@@ -23,22 +23,13 @@ from ontocast.onto.ontology_access import (
 )
 from ontocast.onto.rdfgraph import RDFGraph, finalize_llm_graph
 from ontocast.onto.unit_states import UnitFactsState
-from ontocast.prompt.common import (
-    facts_template,
-    ontology_template,
-    output_instruction_empty,
-    output_instruction_jsonld,
-    output_instruction_sparql,
-    output_instruction_sparql_jsonld,
-    text_template,
-    user_template,
-)
+from ontocast.prompt.common import text_template, user_template
+from ontocast.prompt.graph_format import get_graph_format_profile
 from ontocast.prompt.ontology_context import (
     build_ontology_index,
     format_ontologies_clause,
 )
 from ontocast.prompt.render_facts import (
-    facts_instruction_template,
     preamble,
     template_prompt,
 )
@@ -80,13 +71,16 @@ async def render_facts(
 
 
 def _prepare_prompt_data(
-    state: UnitFactsState, access: UnitFactsOntologyAccess
+    state: UnitFactsState,
+    access: UnitFactsOntologyAccess,
+    profile,
 ) -> dict[str, str]:
     """Prepare common prompt data for both fresh and update rendering.
 
     Args:
         state: The current unit facts state
         access: Read-only ontology context (facts prompts use snapshot only).
+        profile: Active graph format profile.
 
     Returns:
         Dictionary containing formatted prompt components
@@ -101,14 +95,11 @@ def _prepare_prompt_data(
         ctx.graph = normalized_graph
     domain_pairs = access.domain_prefix_pairs()
     ontology_index = build_ontology_index(ctx.graph)
-    ontology_chapter = (
-        ontology_template.format(ontology_ttl=ctx.graph.serialize_canonical_turtle())
-        + ontology_index
-    )
+    ontology_chapter = profile.format_ontology_chapter(ctx.graph, suffix=ontology_index)
 
-    facts_instruction_str = facts_instruction_template.format(
-        domain_ontologies_clause=format_ontologies_clause(domain_pairs),
+    facts_instruction_str = profile.facts_operational_guidelines(
         facts_namespace=DEFAULT_IRI,
+        domain_ontologies_clause=format_ontologies_clause(domain_pairs),
     )
 
     text_chapter = text_template.format(text=state.content_unit.text)
@@ -187,6 +178,7 @@ async def render_facts_fresh(
     logger.info("Rendering fresh facts")
     state.quarantined_literal_triples = []
     llm_tool = await tools.get_llm_tool(state.budget_tracker)
+    profile = get_graph_format_profile(state.llm_graph_format)
     parser = PydanticOutputParser(pydantic_object=FactsRenderReport)
 
     access = ontology_access_for_unit_facts(state)
@@ -196,16 +188,11 @@ async def render_facts_fresh(
         supplemental_ontologies or (),
     )
 
-    prompt_data = _prepare_prompt_data(state, access)
-    fresh_output_instruction = (
-        output_instruction_jsonld
-        if state.llm_graph_format == LLMGraphFormat.JSONLD
-        else output_instruction_empty
-    )
+    prompt_data = _prepare_prompt_data(state, access, profile)
     prompt_data_fresh = {
         "preamble": preamble,
         "improvement_instruction": "",
-        "output_instruction": fresh_output_instruction,
+        "output_instruction": profile.render_fresh_output_instruction(target="facts"),
     }
     prompt_data.update(prompt_data_fresh)
 
@@ -220,16 +207,16 @@ async def render_facts_fresh(
             prompt=prompt,
             parser=parser,
             prompt_kwargs={
-                "format_instructions": parser.get_format_instructions(),
+                "format_instructions": profile.format_instructions(FactsRenderReport),
                 **prompt_data,
             },
+            llm_graph_format=state.llm_graph_format,
         )
         state.set_external_evidence_request(
             WorkflowNode.TEXT_TO_FACTS, render_report.external_evidence_request
         )
-        facts_report = render_report.facts_report
-        facts_report.semantic_graph.sanitize_prefixes_namespaces()
-        clean_graph, rejected = finalize_llm_graph(facts_report.semantic_graph)
+        render_report.semantic_graph.sanitize_prefixes_namespaces()
+        clean_graph, rejected = finalize_llm_graph(render_report.semantic_graph)
         state.content_unit.graph = clean_graph
         state.quarantined_literal_triples = rejected
         if rejected:
@@ -271,24 +258,18 @@ async def render_facts_update(
     logger.info("Rendering updates for facts")
     state.quarantined_literal_triples = []
     llm_tool = await tools.get_llm_tool(state.budget_tracker)
+    profile = get_graph_format_profile(state.llm_graph_format)
     parser = PydanticOutputParser(pydantic_object=GraphUpdateRenderReport)
 
     access = ontology_access_for_unit_facts(state)
-    prompt_data = _prepare_prompt_data(state, access)
-    update_output_instruction = (
-        output_instruction_sparql_jsonld
-        if state.llm_graph_format == LLMGraphFormat.JSONLD
-        else output_instruction_sparql
-    )
+    prompt_data = _prepare_prompt_data(state, access, profile)
     prompt_data_update = {
         "preamble": preamble,
         "improvement_instruction": render_suggestions_prompt(
             state.suggestions, WorkflowNode.TEXT_TO_FACTS
         ),
-        "output_instruction": update_output_instruction,
-        "fact_chapter": facts_template.format(
-            facts_ttl=state.content_unit.graph.serialize_canonical_turtle()
-        ),
+        "output_instruction": profile.render_update_output_instruction(),
+        "fact_chapter": profile.format_facts_chapter(state.content_unit.graph),
     }
     prompt_data.update(prompt_data_update)
     prompt = _create_prompt_template()
@@ -306,9 +287,12 @@ async def render_facts_update(
             prompt=prompt,
             parser=parser,
             prompt_kwargs={
-                "format_instructions": parser.get_format_instructions(),
+                "format_instructions": profile.format_instructions(
+                    GraphUpdateRenderReport
+                ),
                 **prompt_data,
             },
+            llm_graph_format=state.llm_graph_format,
         )
         state.set_external_evidence_request(
             WorkflowNode.TEXT_TO_FACTS, render_report.external_evidence_request

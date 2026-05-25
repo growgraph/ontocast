@@ -14,7 +14,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
-from ontocast.onto.enum import FailureStage, LLMGraphFormat, Status, WorkflowNode
+from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import GraphUpdateRenderReport, OntologyRenderReport
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import (
@@ -24,15 +24,9 @@ from ontocast.onto.ontology_access import (
 )
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitOntologyState
-from ontocast.prompt.common import (
-    ontology_template,
-    output_instruction_jsonld,
-    output_instruction_sparql,
-    output_instruction_sparql_jsonld,
-    output_instruction_ttl,
-    text_template,
-)
 from ontocast.prompt.common import system_preamble_ontology as system_preamble
+from ontocast.prompt.common import text_template
+from ontocast.prompt.graph_format import get_graph_format_profile
 from ontocast.prompt.ontology_context import format_ontologies_clause
 from ontocast.prompt.render_ontology import (
     general_ontology_instruction,
@@ -142,16 +136,13 @@ async def render_ontology_fresh(
         AgentState: Updated state with rendered triples.
     """
 
+    profile = get_graph_format_profile(state.llm_graph_format)
     parser = PydanticOutputParser(pydantic_object=OntologyRenderReport)
     logger.info("Rendering fresh ontology")
     intro_instruction = intro_instruction_fresh.format(
         current_domain=state.current_domain
     )
-    output_instruction = (
-        output_instruction_jsonld
-        if state.llm_graph_format == LLMGraphFormat.JSONLD
-        else output_instruction_ttl
-    )
+    output_instruction = profile.render_fresh_output_instruction(target="ontology")
     ontology_ttl = ""
     improvement_instruction_str = ""
     access = ontology_access_for_unit_ontology(state)
@@ -184,8 +175,11 @@ async def render_ontology_fresh(
                 "improvement_instruction": improvement_instruction_str,
                 "text": text_chapter,
                 "external_evidence": external_evidence,
-                "format_instructions": parser.get_format_instructions(),
+                "format_instructions": profile.format_instructions(
+                    OntologyRenderReport
+                ),
             },
+            llm_graph_format=state.llm_graph_format,
         )
         state.set_external_evidence_request(
             WorkflowNode.TEXT_TO_ONTOLOGY, render_report.external_evidence_request
@@ -232,6 +226,7 @@ async def render_ontology_update(
         UnitOntologyState: Updated state with rendered triples.
     """
 
+    profile = get_graph_format_profile(state.llm_graph_format)
     parser = PydanticOutputParser(pydantic_object=GraphUpdateRenderReport)
     access = ontology_access_for_unit_ontology(state)
     current = access.effective_ontology_for_prompt()
@@ -250,14 +245,8 @@ async def render_ontology_update(
         ontology_desc=ontology_desc,
         multi_source_note=multi_source_note,
     )
-    ontology_chapter = ontology_template.format(
-        ontology_ttl=current.graph.serialize_canonical_turtle()
-    )
-    output_instruction = (
-        output_instruction_sparql_jsonld
-        if state.llm_graph_format == LLMGraphFormat.JSONLD
-        else output_instruction_sparql
-    )
+    ontology_chapter = profile.format_ontology_chapter(current.graph)
+    output_instruction = profile.render_update_output_instruction()
     improvement_instruction_str = render_suggestions_prompt(
         state.suggestions, WorkflowNode.TEXT_TO_ONTOLOGY
     )
@@ -292,8 +281,11 @@ async def render_ontology_update(
                 "user_instruction": state.ontology_user_instruction,
                 "text": text_chapter,
                 "external_evidence": external_evidence,
-                "format_instructions": parser.get_format_instructions(),
+                "format_instructions": profile.format_instructions(
+                    GraphUpdateRenderReport
+                ),
             },
+            llm_graph_format=state.llm_graph_format,
         )
         state.set_external_evidence_request(
             WorkflowNode.TEXT_TO_ONTOLOGY, render_report.external_evidence_request

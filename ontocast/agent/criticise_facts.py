@@ -15,18 +15,13 @@ from ontocast.onto.model import FactsCritiqueReport, Suggestions
 from ontocast.onto.ontology_access import ontology_access_for_unit_facts
 from ontocast.onto.rdfgraph import format_quarantine_for_prompt
 from ontocast.onto.unit_states import UnitFactsState
-from ontocast.prompt.common import (
-    critique_graph_format_instruction,
-    facts_template,
-    ontology_template,
-    text_template,
-    user_template,
-)
+from ontocast.prompt.common import text_template, user_template
 from ontocast.prompt.criticise_facts import (
     evaluation_instruction,
     preamble,
     template_prompt,
 )
+from ontocast.prompt.graph_format import get_graph_format_profile
 from ontocast.tool.atomic import AtomicToolBox
 
 logger = logging.getLogger(__name__)
@@ -73,19 +68,13 @@ async def criticise_facts(
     )
 
     llm_tool = await tools.get_llm_tool(state.budget_tracker)
+    profile = get_graph_format_profile(state.llm_graph_format)
     parser = PydanticOutputParser(pydantic_object=FactsCritiqueReport)
 
     ctx = ontology_access_for_unit_facts(state).effective_ontology_for_prompt()
-    ontology_ttl = ctx.graph.serialize_canonical_turtle()
-
-    ontology_chapter = ontology_template.format(
-        ontology_ttl=ontology_ttl,
-    )
-
-    facts_ttl = state.content_unit.graph.serialize_canonical_turtle()
-
-    facts_chapter = facts_template.format(
-        facts_ttl=facts_ttl,
+    ontology_chapter = profile.format_ontology_chapter(ctx.graph)
+    facts_chapter = profile.format_facts_chapter(
+        state.content_unit.graph
     ) + _build_quarantine_chapter(state)
 
     text_chapter = text_template.format(text=state.content_unit.text)
@@ -110,7 +99,7 @@ async def criticise_facts(
         ],
     )
 
-    graph_format_instruction = critique_graph_format_instruction(state.llm_graph_format)
+    graph_format_instruction = profile.critique_graph_instruction()
 
     prompt_data = {
         "preamble": preamble,
@@ -120,7 +109,7 @@ async def criticise_facts(
         "facts_chapter": facts_chapter,
         "text_chapter": text_chapter,
         "graph_format_instruction": graph_format_instruction,
-        "format_instructions": parser.get_format_instructions(),
+        "format_instructions": profile.format_instructions(FactsCritiqueReport),
     }
 
     try:
@@ -129,6 +118,7 @@ async def criticise_facts(
             prompt=prompt,
             parser=parser,
             prompt_kwargs=prompt_data,
+            llm_graph_format=state.llm_graph_format,
         )
         state.set_external_evidence_request(
             WorkflowNode.CRITICISE_FACTS, critique.external_evidence_request

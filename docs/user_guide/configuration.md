@@ -45,6 +45,7 @@ BASE_RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
 MAX_VISITS=3                             # alias for max_visits_per_node
 RENDER_MODE=ontology_and_facts           # ontology | facts | ontology_and_facts
+LLM_GRAPH_FORMAT=turtle                  # turtle | jsonld — controls LLM output encoding and prompt context graphs
 ONTOLOGY_CONTEXT_MODE=selected_single_ontology   # selected_single_ontology | selected_vector_search_ontology | fixed_single_ontology
 #ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID=catalog_id  # required for fixed_single_ontology
 ONTOLOGY_MAX_TRIPLES=50000               # empty/unset for unlimited
@@ -140,6 +141,13 @@ WEB_SEARCH_SAFESEARCH=moderate
 ```
 
 Search is "search-later": nodes run without search first, and only request external evidence when needed.
+
+## LLM graph format (`LLM_GRAPH_FORMAT`)
+
+- `turtle` (default): the LLM emits RDF graph fields as Turtle strings; prompt context chapters use `` ```ttl `` blocks.
+- `jsonld`: the LLM emits compact JSON-LD objects (`@context` + `@graph`); prompt context uses `` ```json `` blocks.
+- Domain models (`GraphUpdate`, `FactsRenderReport`, critique reports, etc.) are **single canonical classes** at runtime. The format affects only LLM wire encoding (parse validators + JSON Schema in format instructions), not duplicate Pydantic types.
+- The setting applies consistently to render and critique agents (output instructions, format-bound JSON Schema, prompt context chapters, and `llm_graph_format_ctx` during parsing).
 
 ## Ontology Context Mode Behavior
 

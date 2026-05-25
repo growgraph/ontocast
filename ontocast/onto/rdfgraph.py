@@ -11,7 +11,7 @@ from typing import Any, Union
 from pydantic import BaseModel, ConfigDict, GetCoreSchemaHandler
 from pydantic_core import core_schema
 from pyld import jsonld
-from rdflib import Graph, Literal, Namespace, URIRef
+from rdflib import BNode, Graph, Literal, Namespace, Node, URIRef
 from rdflib.namespace import XSD, NamespaceManager
 
 from ontocast.onto.constants import COMMON_PREFIXES, prefix_lookup_for_ingest
@@ -1108,6 +1108,95 @@ class RDFGraph(Graph):
         if isinstance(serialized, bytes):
             return serialized.decode("utf-8")
         return str(serialized)
+
+    def _compact_iri_for_jsonld(self, term: Node) -> str | dict[str, str]:
+        if isinstance(term, BNode):
+            return {"@id": f"_:{term}"}
+        if not isinstance(term, URIRef):
+            return str(term)
+        term_str = str(term)
+        for prefix, namespace in self.namespaces():
+            if not prefix:
+                continue
+            ns = str(namespace)
+            if term_str.startswith(ns):
+                local = term_str[len(ns) :]
+                return f"{prefix}:{local}"
+        if term_str.startswith("http://") or term_str.startswith("https://"):
+            return term_str
+        return term_str
+
+    def _literal_to_jsonld(self, literal: Literal) -> str | dict[str, str]:
+        if literal.language:
+            return {"@value": str(literal), "@language": literal.language}
+        if literal.datatype:
+            return {
+                "@value": str(literal),
+                "@type": _datatype_to_compact(str(literal.datatype)),
+            }
+        return str(literal)
+
+    def _object_to_jsonld(self, obj: Node) -> str | dict[str, str]:
+        if isinstance(obj, Literal):
+            return self._literal_to_jsonld(obj)
+        if isinstance(obj, (URIRef, BNode)):
+            compact = self._compact_iri_for_jsonld(obj)
+            if isinstance(compact, dict):
+                return compact
+            return {"@id": compact}
+        return str(obj)
+
+    def serialize_compact_jsonld_for_prompt(self) -> str:
+        """Serialize graph as compact JSON-LD text for LLM context prompts."""
+        self.sanitize_prefixes_namespaces()
+        context: dict[str, str] = {}
+        for prefix, namespace in self.namespaces():
+            if prefix:
+                context[prefix] = str(namespace)
+
+        nodes: dict[str, dict[str, Any]] = defaultdict(dict)
+        for subject, predicate, obj in self:
+            subj_key = str(subject)
+            if "@id" not in nodes[subj_key]:
+                subj_compact = self._compact_iri_for_jsonld(subject)
+                if isinstance(subj_compact, dict):
+                    nodes[subj_key].update(subj_compact)
+                else:
+                    nodes[subj_key]["@id"] = subj_compact
+
+            pred_compact = self._compact_iri_for_jsonld(predicate)
+            if not isinstance(pred_compact, str):
+                pred_key = str(predicate)
+            else:
+                pred_key = pred_compact
+
+            value = self._object_to_jsonld(obj)
+            existing = nodes[subj_key].get(pred_key)
+            if existing is None:
+                nodes[subj_key][pred_key] = value
+            elif isinstance(existing, list):
+                existing.append(value)
+            else:
+                nodes[subj_key][pred_key] = [existing, value]
+
+        graph_nodes = []
+        for node in nodes.values():
+            if "@id" not in node:
+                continue
+            graph_nodes.append(node)
+
+        payload: dict[str, Any] = {"@context": context, "@graph": graph_nodes}
+        try:
+            return json.dumps(payload, indent=2, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "Compact JSON-LD prompt serialization failed (%s); using rdflib json-ld",
+                exc,
+            )
+            fallback = self.serialize(format="json-ld")
+            if isinstance(fallback, bytes):
+                return fallback.decode("utf-8")
+            return str(fallback)
 
     def __new__(cls, *args, **kwargs):
         """Create a new RDFGraph instance."""
