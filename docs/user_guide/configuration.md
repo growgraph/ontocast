@@ -35,11 +35,32 @@ Config
 ### LLM
 
 ```bash
-LLM_PROVIDER=openai                     # openai | ollama
+LLM_PROVIDER=openai                     # openai | ollama | anthropic | google
 LLM_MODEL_NAME=gpt-4o-mini
 LLM_TEMPERATURE=0.0
-LLM_API_KEY=your_openai_api_key_here    # required for openai provider
-LLM_BASE_URL=http://localhost:11434     # optional (mainly for ollama)
+LLM_API_KEY=your_api_key_here           # required for openai, anthropic, google
+LLM_BASE_URL=http://localhost:11434     # optional (ollama; anthropic proxy URL)
+```
+
+| Provider | Example `LLM_MODEL_NAME` | `LLM_API_KEY` |
+|----------|--------------------------|---------------|
+| `openai` | `gpt-4o-mini` | Required |
+| `ollama` | `llama3.1` | Not used (`LLM_BASE_URL` required) |
+| `anthropic` | `claude-sonnet-4-20250514` | Required |
+| `google` | `gemini-2.0-flash` | Required |
+
+OntoCast uses `LLM_API_KEY` for all cloud providers (not `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY`).
+
+```bash
+# Anthropic Claude
+LLM_PROVIDER=anthropic
+LLM_MODEL_NAME=claude-sonnet-4-20250514
+LLM_API_KEY=your_anthropic_api_key_here
+
+# Google Gemini
+LLM_PROVIDER=google
+LLM_MODEL_NAME=gemini-2.0-flash
+LLM_API_KEY=your_google_api_key_here
 ```
 
 ### Server
@@ -221,7 +242,7 @@ Entity alignment and evaluation endpoints are documented in [API Endpoints](api.
 
 ## Validation Notes
 
-- `LLM_PROVIDER=openai` requires `LLM_API_KEY`.
+- `LLM_PROVIDER=openai`, `anthropic`, or `google` requires `LLM_API_KEY`.
 - `LLM_MODEL_NAME` must match the selected provider family.
 - `MAX_VISITS` is supported as an alias for `max_visits_per_node`.
 - `RECURSION_LIMIT` was renamed to `BASE_RECURSION_LIMIT`.

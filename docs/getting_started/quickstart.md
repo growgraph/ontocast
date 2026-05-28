@@ -104,6 +104,20 @@ LLM_BASE_URL=http://localhost:11434
 LLM_MODEL_NAME=granite3.3
 ```
 
+#### Alternative: Claude / Gemini
+
+```bash
+# Anthropic Claude
+LLM_PROVIDER=anthropic
+LLM_MODEL_NAME=claude-sonnet-4-20250514
+LLM_API_KEY=your-anthropic-api-key
+
+# Google Gemini
+LLM_PROVIDER=google
+LLM_MODEL_NAME=gemini-2.0-flash
+LLM_API_KEY=your-google-api-key
+```
+
 ### CLI Parameters
 
 You can use these CLI parameters:

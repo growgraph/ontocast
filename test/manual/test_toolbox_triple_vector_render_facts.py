@@ -218,7 +218,11 @@ def _prepare_config() -> Config:
     _ = _require_env("LLM_PROVIDER")
     _ = _require_env("LLM_MODEL_NAME")
     provider = LLMProvider(_require_env("LLM_PROVIDER").lower())
-    if provider == LLMProvider.OPENAI:
+    if provider in (
+        LLMProvider.OPENAI,
+        LLMProvider.ANTHROPIC,
+        LLMProvider.GOOGLE,
+    ):
         _ = _require_env("LLM_API_KEY")
     elif provider == LLMProvider.OLLAMA:
         _ = _require_env("LLM_BASE_URL")

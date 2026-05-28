@@ -1,7 +1,8 @@
 """Language Model (LLM) integration tool for OntoCast.
 
 This module provides integration with various language models through LangChain,
-supporting both OpenAI and Ollama providers. It enables text generation and
+supporting OpenAI, Ollama, Anthropic (Claude), and Google (Gemini) providers.
+It enables text generation and
 structured data extraction capabilities with optional caching support.
 
 Cache Usage:
@@ -44,9 +45,11 @@ import logging
 from functools import wraps
 from typing import Any, Callable, Type, TypeVar
 
+from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages.ai import AIMessage
 from langchain_core.output_parsers import PydanticOutputParser
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, SecretStr
@@ -61,51 +64,62 @@ T = TypeVar("T", bound=BaseModel)
 logger = logging.getLogger(__name__)
 
 
+def _usage_from_llm_result(result: Any) -> tuple[int | None, int | None]:
+    """Extract token usage from an LLM response when the provider reports it."""
+    if isinstance(result, AIMessage):
+        usage = result.usage_metadata
+        if usage is not None:
+            input_tokens = usage.get("input_tokens")
+            output_tokens = usage.get("output_tokens")
+            if input_tokens is not None and output_tokens is not None:
+                return int(input_tokens), int(output_tokens)
+
+        response_metadata = result.response_metadata or {}
+        token_usage = response_metadata.get("token_usage")
+        if isinstance(token_usage, dict):
+            prompt_tokens = token_usage.get("prompt_tokens")
+            completion_tokens = token_usage.get("completion_tokens")
+            if prompt_tokens is not None and completion_tokens is not None:
+                return int(prompt_tokens), int(completion_tokens)
+
+    return None, None
+
+
+def _chars_received_from_result(result: Any) -> int:
+    if isinstance(result, AIMessage) and result.content:
+        return len(result.content)
+    return len(str(result))
+
+
 def track_llm_usage(func: Callable) -> Callable:
     """Decorator to track LLM usage automatically."""
 
+    def _record_usage(tool: LLMTool, prompt_str: str, result: Any) -> None:
+        bt = tool.budget_tracker
+        if bt is None:
+            return
+        input_tokens, output_tokens = _usage_from_llm_result(result)
+        bt.add_usage(
+            len(prompt_str),
+            _chars_received_from_result(result),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+
     @wraps(func)
     def wrapper(self: LLMTool, *args, **kwargs):
-        # Get prompt for character counting
         prompt = args[0] if args else ""
         prompt_str = self._prompt_to_string(prompt)
-
-        # Call the original function
         result = func(self, *args, **kwargs)
-
-        # Track usage if budget tracker is available in the tool
-        bt = self.budget_tracker
-        if bt is not None:
-            chars_sent = len(prompt_str)
-            chars_received = (
-                len(result.content)
-                if isinstance(result, AIMessage) and result.content
-                else 0
-            )
-            bt.add_usage(chars_sent, chars_received)
-
+        _record_usage(self, prompt_str, result)
         return result
 
     @wraps(func)
     async def async_wrapper(self: LLMTool, *args, **kwargs):
-        # Get prompt for character counting
         prompt = args[0] if args else ""
         prompt_str = self._prompt_to_string(prompt)
-
-        # Call the original function
         result = await func(self, *args, **kwargs)
-
-        # Track usage if budget tracker is available in the tool
-        bt = self.budget_tracker
-        if bt is not None:
-            chars_sent = len(prompt_str)
-            chars_received = (
-                len(result.content)
-                if isinstance(result, AIMessage) and result.content
-                else len(str(result))
-            )
-            bt.add_usage(chars_sent, chars_received)
-
+        _record_usage(self, prompt_str, result)
         return result
 
     return async_wrapper if asyncio.iscoroutinefunction(func) else wrapper
@@ -115,7 +129,8 @@ class LLMTool(Tool):
     """Tool for interacting with language models.
 
     This class provides a unified interface for working with different language model
-    providers (OpenAI, Ollama) through LangChain. It supports both synchronous and
+    providers (OpenAI, Ollama, Anthropic, Google) through LangChain. It supports both
+    synchronous and
     asynchronous operations.
 
     Attributes:
@@ -227,6 +242,22 @@ class LLMTool(Tool):
                 model=self.config.model_name,
                 base_url=self.config.base_url,
                 temperature=self.config.temperature,
+            )
+        elif self.config.provider == LLMProvider.ANTHROPIC:
+            anthropic_kwargs: dict[str, Any] = {
+                "model": self.config.model_name,
+                "temperature": self.config.temperature,
+            }
+            if self.config.api_key:
+                anthropic_kwargs["anthropic_api_key"] = SecretStr(self.config.api_key)
+            if self.config.base_url:
+                anthropic_kwargs["anthropic_api_url"] = self.config.base_url
+            self._llm = ChatAnthropic(**anthropic_kwargs)
+        elif self.config.provider == LLMProvider.GOOGLE:
+            self._llm = ChatGoogleGenerativeAI(
+                model=self.config.model_name,
+                temperature=self.config.temperature,
+                google_api_key=self.config.api_key,
             )
         else:
             raise ValueError(f"Unsupported provider: {self.config.provider}")

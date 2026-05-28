@@ -28,6 +28,8 @@ class LLMProvider(StrEnum):
 
     OPENAI = "openai"
     OLLAMA = "ollama"
+    ANTHROPIC = "anthropic"
+    GOOGLE = "google"
 
 
 class LLMModelNameAbstract(StrEnum):
@@ -35,7 +37,16 @@ class LLMModelNameAbstract(StrEnum):
 
 
 class OpenAIModel(LLMModelNameAbstract):
-    """OpenAI model names."""
+    """OpenAI model names"""
+
+    # Flagship & Specialized Reasoning
+    GPT5_4_PRO = "gpt-5.4-pro"
+    GPT5_4_THINKING = "gpt-5.4-thinking"
+    GPT5_4 = "gpt-5.4"
+
+    # Cost-Optimized Lineup
+    GPT5_4_MINI = "gpt-5.4-mini"
+    GPT5_4_NANO = "gpt-5.4-nano"
 
     GPT4_O = "gpt-4o"
     GPT4_O_MINI = "gpt-4o-mini"
@@ -47,24 +58,72 @@ class OpenAIModel(LLMModelNameAbstract):
 
 
 class OllamaModel(LLMModelNameAbstract):
-    """Ollama model names."""
+    """Ollama model names"""
 
-    QWEN2_5 = "qwen2.5"
-    QWEN2_5_72B = "qwen2.5:72b"
+    # Meta
+    LLAMA4_SCOUT = "llama4-scout:17b"
+    LLAMA3_3 = "llama3.3"
+    LLAMA3_3_70B = "llama3.3:70b"
     LLAMA3_1 = "llama3.1"
     LLAMA3_1_70B = "llama3.1:70b"
-    GRANITE3_3_2B = "granite3.3:2b"
-    GRANITE3_3_8B = "granite3.3:8b"
-    GRANITE4_1_3B = "granite4.1:3b"
-    GRANITE4_1_8B = "granite4.1:8b"
-    GRANITE4_1_30B = "granite4.1:30b"
+
+    # Alibaba Qwen
     QWEN3_6_LATEST = "qwen3.6:latest"
     QWEN3_6_27B = "qwen3.6:27b"
     QWEN3_6_35B = "qwen3.6:35b"
+    QWEN2_5_72B = "qwen2.5:72b"
+
+    # IBM Granite
+    GRANITE4_1_3B = "granite4.1:3b"
+    GRANITE4_1_8B = "granite4.1:8b"
+    GRANITE4_1_30B = "granite4.1:30b"
+
+    # Moonshot / DeepSeek
+    DEEPSEEK_R1 = "deepseek-r1"
+    DEEPSEEK_V3 = "deepseek-v3"
     KIMI_K2_6_CLOUD = "kimi-k2.6:cloud"
 
 
-LLMModelName = OpenAIModel | OllamaModel
+class ClaudeModel(LLMModelNameAbstract):
+    """Anthropic Claude model names"""
+
+    CLAUDE_SONNET_4 = "claude-sonnet-4-20250514"
+    CLAUDE_3_5_SONNET = "claude-3-5-sonnet-latest"
+    CLAUDE_3_5_HAIKU = "claude-3-5-haiku-latest"
+
+    # Frontier Flagships (High Intelligence / Reasoning)
+    CLAUDE_4_7_OPUS = "claude-4.7-opus-latest"
+    CLAUDE_4_6_OPUS = "claude-4.6-opus-latest"
+
+    # Balanced Production Sweet Spot
+    CLAUDE_4_6_SONNET = "claude-4.6-sonnet-latest"
+    CLAUDE_4_5_SONNET = "claude-4.5-sonnet-latest"
+
+    # Ultra-Fast / Cost-Effective
+    CLAUDE_4_5_HAIKU = "claude-4.5-haiku-latest"
+
+
+class GeminiModel(LLMModelNameAbstract):
+    """Google Gemini model names"""
+
+    GEMINI_2_0_FLASH = "gemini-2.0-flash"
+    GEMINI_1_5_PRO = "gemini-1.5-pro"
+
+    # Frontier Intelligence & Reasoning
+    GEMINI_3_1_PRO = "gemini-3.1-pro"
+    GEMINI_2_5_PRO = "gemini-2.5-pro"
+
+    # Speed & Multimodal Agents
+    GEMINI_3_5_FLASH = "gemini-3.5-flash"
+    GEMINI_3_FLASH = "gemini-3-flash"
+    GEMINI_2_5_FLASH = "gemini-2.5-flash"
+
+    # Ultra Budget & Low-Latency
+    GEMINI_3_1_FLASH_LITE = "gemini-3.1-flash-lite"
+    GEMINI_2_5_FLASH_LITE = "gemini-2.5-flash-lite"
+
+
+LLMModelName = OpenAIModel | OllamaModel | ClaudeModel | GeminiModel
 
 
 class WebSearchProvider(StrEnum):
@@ -125,6 +184,16 @@ class LLMConfig(BaseSettings):
         if provider == LLMProvider.OLLAMA and not isinstance(v, OllamaModel):
             raise ValueError(
                 f"Model {v} is not compatible with Ollama provider. Use OllamaModel values."
+            )
+
+        if provider == LLMProvider.ANTHROPIC and not isinstance(v, ClaudeModel):
+            raise ValueError(
+                f"Model {v} is not compatible with Anthropic provider. Use ClaudeModel values."
+            )
+
+        if provider == LLMProvider.GOOGLE and not isinstance(v, GeminiModel):
+            raise ValueError(
+                f"Model {v} is not compatible with Google provider. Use GeminiModel values."
             )
 
         return v
@@ -772,10 +841,16 @@ class Config(BaseSettings):
 
     def validate_llm_config(self) -> None:
         """Validate LLM configuration and raise errors for missing required settings."""
+        provider = self.tool_config.llm_config.provider
         if (
-            self.tool_config.llm_config.provider == LLMProvider.OPENAI
+            provider
+            in (
+                LLMProvider.OPENAI,
+                LLMProvider.ANTHROPIC,
+                LLMProvider.GOOGLE,
+            )
             and not self.tool_config.llm_config.api_key
         ):
             raise ValueError(
-                "LLM_API_KEY environment variable is required for OpenAI provider"
+                f"LLM_API_KEY environment variable is required for {provider.value} provider"
             )

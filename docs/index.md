@@ -127,4 +127,4 @@ ontocast/
 
 ## Contributing
 
-See [Contributing](contributing.md) and [CHANGELOG](../CHANGELOG.md).
+See [Contributing](contributing.md) and [CHANGELOG](https://github.com/growgraph/ontocast/blob/main/CHANGELOG.md).

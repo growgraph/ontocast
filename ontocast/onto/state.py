@@ -39,6 +39,12 @@ class BudgetTracker(BasePydanticModel):
         default=0, description="Total characters received from LLM"
     )
     calls_count: int = Field(default=0, description="Total number of LLM API calls")
+    input_tokens: int = Field(
+        default=0, description="Total input tokens (when reported by provider)"
+    )
+    output_tokens: int = Field(
+        default=0, description="Total output tokens (when reported by provider)"
+    )
 
     # Triple generation tracking
     ontology_triples_generated: int = Field(
@@ -54,11 +60,22 @@ class BudgetTracker(BasePydanticModel):
         default=0, description="Total number of facts update operations"
     )
 
-    def add_usage(self, chars_sent: int, chars_received: int) -> None:
+    def add_usage(
+        self,
+        chars_sent: int,
+        chars_received: int,
+        *,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+    ) -> None:
         """Add usage statistics."""
         self.chars_sent += chars_sent
         self.chars_received += chars_received
         self.calls_count += 1
+        if input_tokens is not None:
+            self.input_tokens += input_tokens
+        if output_tokens is not None:
+            self.output_tokens += output_tokens
 
     def add_ontology_update(self, num_operations: int, num_triples: int) -> None:
         """Add ontology update statistics.
@@ -85,6 +102,8 @@ class BudgetTracker(BasePydanticModel):
         self.chars_sent += other.chars_sent
         self.chars_received += other.chars_received
         self.calls_count += other.calls_count
+        self.input_tokens += other.input_tokens
+        self.output_tokens += other.output_tokens
         self.ontology_triples_generated += other.ontology_triples_generated
         self.facts_triples_generated += other.facts_triples_generated
         self.ontology_operations_count += other.ontology_operations_count
@@ -97,6 +116,11 @@ class BudgetTracker(BasePydanticModel):
             f"{self.chars_sent:,} sent, "
             f"{self.chars_received:,} received",
         ]
+
+        if self.input_tokens > 0 or self.output_tokens > 0:
+            parts.append(
+                f"{self.input_tokens:,} in / {self.output_tokens:,} out tokens"
+            )
 
         if self.ontology_triples_generated > 0 or self.facts_triples_generated > 0:
             parts.append(
