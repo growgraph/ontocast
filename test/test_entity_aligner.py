@@ -151,3 +151,78 @@ def test_align_class_entity_matches_instance_of_that_class(
         members_by_entity[city_class].graph_id
         != members_by_entity[city_instance].graph_id
     )
+
+
+def test_align_same_ontology_uri_without_labels_despite_low_embedding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    predicted_graph = RDFGraph()
+    gt_graph = RDFGraph()
+    song_class = URIRef("https://ontology.example/Q2188189")
+    predicted_instance = URIRef("https://predicted.example/charitable_events")
+    gt_instance = URIRef("https://gt.example/never_too_far_hero_medley")
+
+    predicted_graph.add((predicted_instance, RDF.type, song_class))
+    gt_graph.add((gt_instance, RDF.type, song_class))
+
+    aligner = EntityAligner(similarity_threshold=0.99)
+
+    def fake_encode(texts, **_kwargs):
+        return [np.array([1.0, 0.0]), np.array([0.0, 1.0])] * (len(texts) // 2 + 1)
+
+    monkeypatch.setattr(aligner.clusterer.embedder, "encode", fake_encode)
+    result = aligner.align_graphs(
+        [
+            TaggedGraph(id="predicted", graph=predicted_graph),
+            TaggedGraph(id="gt", graph=gt_graph),
+        ]
+    )
+    assert any(
+        song_class in {member.entity for member in cluster.members}
+        and {"predicted", "gt"}.issubset(
+            {member.graph_id for member in cluster.members}
+        )
+        for cluster in result.clusters
+    )
+
+
+def test_align_same_uri_clusters_in_strict_regime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    predicted_graph = RDFGraph()
+    gt_graph = RDFGraph()
+    shared_predicate = URIRef("https://relations.example/P577")
+    predicted_graph.add(
+        (
+            URIRef("https://predicted.example/fact"),
+            shared_predicate,
+            URIRef("https://predicted.example/date"),
+        )
+    )
+    gt_graph.add(
+        (
+            URIRef("https://gt.example/fact"),
+            shared_predicate,
+            URIRef("https://gt.example/date"),
+        )
+    )
+
+    aligner = EntityAligner(similarity_threshold=0.99)
+
+    def fake_encode(texts, **_kwargs):
+        return [np.array([1.0, 0.0, 0.0])] * len(texts)
+
+    monkeypatch.setattr(aligner.clusterer.embedder, "encode", fake_encode)
+    result = aligner.align_graphs(
+        [
+            TaggedGraph(id="predicted", graph=predicted_graph),
+            TaggedGraph(id="gt", graph=gt_graph),
+        ],
+        regime=MatchRegime.ONTOLOGY_STRICT,
+    )
+    members_by_entity = {
+        member.entity: {member.graph_id for member in cluster.members}
+        for cluster in result.clusters
+        for member in cluster.members
+    }
+    assert members_by_entity[shared_predicate] == {"predicted", "gt"}

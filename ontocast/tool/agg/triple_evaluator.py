@@ -11,7 +11,7 @@ from .match_common import (
     prepare_metric_triples,
     project_triples,
 )
-from .match_models import EntityMatch, MatchMetrics
+from .match_models import EntityMatch, MatchMetrics, as_uri_ref
 
 
 class TripleSetEvaluator:
@@ -24,7 +24,8 @@ class TripleSetEvaluator:
         entity_matches: list[EntityMatch],
     ) -> MatchMetrics:
         predicted_to_gt = {
-            matched.predicted_entity: matched.gt_entity for matched in entity_matches
+            as_uri_ref(matched.predicted_entity): as_uri_ref(matched.gt_entity)
+            for matched in entity_matches
         }
 
         raw_predicted = project_triples(predicted_graph, predicted_to_gt)
@@ -42,13 +43,15 @@ class TripleSetEvaluator:
             len(ground_truth),
         )
 
-        predicted_entities = extract_entities(predicted_graph)
-        gt_entities = extract_entities(gt_graph)
-        matched_predicted = {matched.predicted_entity for matched in entity_matches}
-        matched_gt = {matched.gt_entity for matched in entity_matches}
+        predicted_entities = set(extract_entities(predicted_graph))
+        gt_entities = set(extract_entities(gt_graph))
+        matched_predicted = {
+            as_uri_ref(matched.predicted_entity) for matched in entity_matches
+        }
+        matched_gt = {as_uri_ref(matched.gt_entity) for matched in entity_matches}
         entity_true_positives = len(entity_matches)
-        entity_false_positives = len(predicted_entities) - len(matched_predicted)
-        entity_false_negatives = len(gt_entities) - len(matched_gt)
+        entity_false_positives = len(predicted_entities - matched_predicted)
+        entity_false_negatives = len(gt_entities - matched_gt)
         entity_precision, entity_recall, entity_f1 = compute_prf(
             entity_true_positives,
             len(predicted_entities),

@@ -3,7 +3,7 @@
 facts_instruction_shared = """\n\n
 # OPERATIONAL GUIDELINES
 
-1. Facts MUST use the fixed namespace `{facts_namespace}` with the prefix `cd:`. Local names for facts should not be capitalized.
+1. Facts MUST use the fixed namespace `{facts_namespace}` with the prefix `cd:`. Local names for facts should not be capitalized (use lowercase_snake_case).
 
 1a. TWO-NAMESPACE CONTRACT (most important rule):
     - {domain_ontologies_clause}: schema elements only — classes (as `rdf:type` objects), predicates, and named individuals that exist verbatim in the ontology
@@ -14,33 +14,38 @@ facts_instruction_shared = """\n\n
 
 1b. Every new `cd:` instance MUST carry `rdfs:label` with its canonical name from the source text (same language). URI local names and predicate-object literals do not substitute for a label.
 
+1c. CLASS VS. INSTANCE POSITION RULE (Anti-Mixing Constraint):
+    - Ontology Classes (typically in PascalCase, e.g., `onto:ClinicalTrial`) represent abstract concepts, NOT concrete occurrences.
+    - NEVER use an ontology Class IRI as the subject or object of a standard domain property. You must mint a unique `cd:` instance for that specific occurrence and type it using the class.
+    - WRONG: `cd:patient_1 onto:underwentTrial onto:ClinicalTrial .` (Using a Class as a factual instance slot)
+    - CORRECT: `cd:patient_1 onto:underwentTrial cd:trial_1 . cd:trial_1 a onto:ClinicalTrial .`
+
 2. Use the provided {domain_ontologies_clause} (below) and standard ontologies (RDFS, OWL, schema.org, etc.) to identify/infer entities, classes, types, and relationships
 3. Thoroughly Extract and Link: extract all possible text mentions that correspond to entities, classes, types, or relationships defined in {domain_ontologies_clause}
-4. Enforce typing: all `cd:` entities (facts) must be linked (e.g. using rdf:type) to entities from either {domain_ontologies_clause} or basic ontologies (RDFS, OWL, etc), e.g. rdfs:Class, rdf:Property, schema:Person, schema:Organization, etc.
+4. Enforce typing: all `cd:` entities (facts) are data instances and must be linked via `rdf:type` to a valid operational Class from either {domain_ontologies_clause} or standard core vocabularies (e.g., `schema:Person`, `schema:Organization`, `onto:Trial`).
+   - CRITICAL: NEVER type a `cd:` instance as `rdfs:Class` or `rdf:Property`. You are extracting data occurrences, not rewriting or defining the schema.
 5. Declare every namespace prefix you use (rdf, rdfs, owl, schema, domain ontologies, cd, etc.).
 5a. PREFIX HYGIENE: Use **only** prefix aliases declared in the ontology context above. Do not invent alternative aliases.
-6. CRITICAL - Entity Matching Protocol:
-   - BEFORE creating any `cd:` entity, search the domain ontology for existing entities that match the concept semantically
-   - A "matching entity" means a resource that EXISTS VERBATIM in the provided ontology as a named individual
-     (declared with owl:NamedIndividual or explicitly typed) — NOT simply a class whose name resembles the entity.
-     A class existing in the ontology does NOT mean an instance of that class also exists: create a new `cd:` instance typed by that class.
-   - Match by meaning, not just exact label; check all `rdfs:label` language variants
-   - If a matching named individual exists in the domain ontology, use its IRI directly — do NOT duplicate it in `cd:`
-   - Only create `cd:` entities for NEW facts not already defined in the ontology as named individuals
-   - NEVER mint new IRIs in the domain ontology namespace(s) unless that exact IRI already exists in the provided ontology as a named individual
-   - Preserve canonical ontology IRIs exactly as given (character-for-character): no translation, no transliteration, no casing changes
-   - Cross-lingual mentions MUST be linked to the existing canonical ontology IRI when semantically equivalent
-   - If no ontology entity can be verified, create a `cd:` entity instead of inventing a new ontology-prefixed IRI
+6. CRITICAL - Entity Matching & Namespace Isolation Protocol:
+   - Understand the Ontology Contents: The provided ontology contains the schema (Classes and Properties). It may also contain a small set of static Reference Individuals (e.g., fixed status constants, countries, or controlled vocabularies). It does NOT contain the dynamic data instances described in your source text.
+   - The Target Lookup Rule: BEFORE creating a `cd:` entity, check if the text mention refers to one of those static Reference Individuals existing verbatim in the provided ontology context (declared as `owl:NamedIndividual` or an explicit individual token).
+   - Class vs. Individual Boundary: A Class in the ontology (e.g., `onto:Trial`) is an abstract concept, NOT an instance. Finding a Class that matches the type of your text mention does NOT mean you found a matching individual. For any text occurrence, you must create a NEW `cd:` instance and type it with that Class.
+   - Namespace Isolation Guardrail: NEVER mint or invent new IRIs inside the domain ontology namespace. The domain ontology namespace is strictly READ-ONLY. If a real-world entity mentioned in the text is not explicitly present in the provided ontology as a verbatim reference individual, it is a NEW fact and MUST receive a `cd:` namespace IRI.
+   - Exact Matching: If (and only if) an exact matching reference individual is already defined in the ontology, use its canonical IRI directly instead of duplicating it in `cd:`. Match by semantic meaning and language variants (`rdfs:label`), preserving character-for-character casing.
+   - Safe Fallback: If you cannot find an explicit, pre-declared reference individual in the provided ontology for a text mention, treat it as a new data instance and place it under the `cd:` namespace.
+   
 6a. Opaque Identifier Ontologies (Wikidata-style Q/P codes, hashes, UUIDs):
    - When ontology IRIs contain opaque local names (Q-numbers, P-numbers, hash strings, numeric IDs),
-     entity identity is determined EXCLUSIVELY by `rdfs:label`, `rdfs:comment`, skos:altLabel — not the IRI fragment
-   - Use the TERM INDEX (if provided below the ontology) to map text mentions to their canonical IRI
+     entity identity is determined EXCLUSIVELY by `rdfs:label`, `rdfs:comment`, skos:altLabel — not the IRI fragment.
+   - Use the TERM INDEX (if provided below the ontology) to map text mentions to their canonical IRI.
    - NEVER construct an IRI by appending a label string to the ontology namespace
      (e.g. `onto:culture` is ALWAYS wrong — the correct IRI is whatever appears in the ontology with `rdfs:label "culture"`)
-   - NEVER invent or guess a Q/P code — only use codes that appear explicitly in the provided ontology
+   - NEVER invent or guess a Q/P code — only use codes that appear explicitly in the provided ontology.
    - For property domain/range chains: resolve referenced opaque IRIs to their labels before deciding
-     which subject/object types are valid for a given property
-7. Maximize atomicity: decompose complex facts and complex literals into simple subject-predicate-object statements (e.g. decompose person's  first name and last name).
+     which subject/object types are valid for a given property.
+
+7. Maximize atomicity: decompose complex facts and complex literals into simple subject-predicate-object statements (e.g. decompose person's first name and last name).
+
 8. Literals and Quantity Values:
    - Use appropriate XSD datatypes: xsd:integer, xsd:decimal, xsd:float,
      xsd:date, xsd:dateTime. Dates use ISO 8601.
@@ -63,12 +68,20 @@ facts_instruction_shared = """\n\n
          or a well-known approximation property).
    - Prose restatements of a measurement in dcterms:description are redundant
      once typed numeric properties exist — omit them.
-9. To extract data from tables, use CSV on the Web (CSVW) to describe tables
+
+9. To extract data from tables, use CSV on the Web (CSVW) to describe tables.
+
 10. {output_hygiene_rule}
+
 11. Decide whether external evidence is needed for a retry and set `external_evidence_request`:
     - Set `initiate_search=true` only when ambiguity/term disambiguation/standards lookup materially blocks quality.
     - Otherwise keep `initiate_search=false`.
     - Provide concise `rationale` and optional focused `query_hints` when search is requested.
+
+# FINAL STRUCTURAL VALIDATION CHECKLIST
+Before finalizing output, verify:
+- Are there any PascalCase IRIs acting as graph subjects or objects (excluding `rdf:type` targets)? If yes, fix them into `cd:` instances.
+- Did you use `rdfs:Class` or `rdf:Property` anywhere as an instance type? If yes, replace it with its meaningful domain-specific concept class.
 """
 
 facts_literal_rules_turtle = """\

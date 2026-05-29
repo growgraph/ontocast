@@ -24,6 +24,7 @@ def test_graph_entity_member_parses_json_string_entity() -> None:
             "similarity": 0.9,
         }
     )
+    assert isinstance(member.entity, URIRef)
     assert str(member.entity) == "http://text2kg.bench/alan_wright"
 
 
@@ -35,8 +36,20 @@ def test_entity_match_parses_json_string_entities() -> None:
             "similarity": 1.0,
         }
     )
+    assert isinstance(match.predicted_entity, URIRef)
+    assert isinstance(match.gt_entity, URIRef)
     assert str(match.predicted_entity) == "http://predicted.example/a"
     assert str(match.gt_entity) == "http://gt.example/a"
+
+
+def test_entity_match_keeps_uriref_when_constructed_with_uriref() -> None:
+    predicted = URIRef("http://predicted.example/a")
+    gt = URIRef("http://gt.example/a")
+    match = EntityMatch(predicted_entity=predicted, gt_entity=gt, similarity=1.0)
+    assert isinstance(match.predicted_entity, URIRef)
+    assert isinstance(match.gt_entity, URIRef)
+    assert match.predicted_entity is predicted
+    assert match.gt_entity is gt
 
 
 def test_entity_cluster_accepts_string_entities_in_members() -> None:

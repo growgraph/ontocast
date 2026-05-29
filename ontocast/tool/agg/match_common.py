@@ -12,7 +12,7 @@ from rdflib.term import Literal, Node
 from ontocast.onto.iri_policy import split_namespace_local
 from ontocast.onto.rdfgraph import RDFGraph
 
-from .match_models import EntityMatch
+from .match_models import EntityMatch, as_uri_ref
 
 GENERIC_NAMESPACES = frozenset(
     {
@@ -46,7 +46,10 @@ def extract_entities(graph: RDFGraph) -> list[URIRef]:
 
 def map_term(term: Node, mapping: dict[URIRef, URIRef]) -> Node:
     if isinstance(term, URIRef):
-        return mapping.get(term, term)
+        mapped = mapping.get(term)
+        if mapped is None:
+            return term
+        return as_uri_ref(mapped) if isinstance(mapped, str) else mapped
     return term
 
 
@@ -87,8 +90,8 @@ def count_domain_entity_matches(entity_matches: list[EntityMatch]) -> int:
     return sum(
         1
         for matched in entity_matches
-        if is_domain_entity(matched.predicted_entity)
-        and is_domain_entity(matched.gt_entity)
+        if is_domain_entity(as_uri_ref(matched.predicted_entity))
+        and is_domain_entity(as_uri_ref(matched.gt_entity))
     )
 
 
@@ -136,14 +139,13 @@ def greedy_one_to_one(candidates: list[EntityMatch]) -> list[EntityMatch]:
     used_predicted: set[URIRef] = set()
     used_gt: set[URIRef] = set()
     for candidate in candidates:
-        if (
-            candidate.predicted_entity in used_predicted
-            or candidate.gt_entity in used_gt
-        ):
+        predicted_entity = as_uri_ref(candidate.predicted_entity)
+        gt_entity = as_uri_ref(candidate.gt_entity)
+        if predicted_entity in used_predicted or gt_entity in used_gt:
             continue
         chosen.append(candidate)
-        used_predicted.add(candidate.predicted_entity)
-        used_gt.add(candidate.gt_entity)
+        used_predicted.add(predicted_entity)
+        used_gt.add(gt_entity)
     return chosen
 
 
@@ -157,8 +159,10 @@ def build_entity_match_candidates(
 ) -> list[EntityMatch]:
     candidates: list[EntityMatch] = []
     for predicted_entity, gt_entity in product(predicted_entities, gt_entities):
-        predicted_embedding = embeddings.get(predicted_entity)
-        gt_embedding = embeddings.get(gt_entity)
+        predicted_key = as_uri_ref(predicted_entity)
+        gt_key = as_uri_ref(gt_entity)
+        predicted_embedding = embeddings.get(predicted_key)
+        gt_embedding = embeddings.get(gt_key)
         if predicted_embedding is None or gt_embedding is None:
             continue
         score = cosine_similarity(predicted_embedding, gt_embedding)

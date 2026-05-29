@@ -114,6 +114,9 @@ class EntityAligner:
         representations: dict[GraphEntityRef, EntityRepresentation],
         regime: MatchRegime,
     ) -> bool:
+        if left.entity == right.entity:
+            return True
+
         if self._class_instance_compatible(left, right, representations):
             if regime == MatchRegime.ONTOLOGY_STRICT:
                 return self._strict_types_compatible(left, right, representations)
@@ -208,6 +211,11 @@ class EntityAligner:
         edge_scores: dict[tuple[GraphEntityRef, GraphEntityRef], float] = {}
         for left, right in combinations(refs, 2):
             if left.graph_id == right.graph_id:
+                continue
+            if left.entity == right.entity:
+                edges.append((left, right))
+                edge_scores[(left, right)] = 1.0
+                edge_scores[(right, left)] = 1.0
                 continue
             if not self._pair_compatible(left, right, representations, regime):
                 continue

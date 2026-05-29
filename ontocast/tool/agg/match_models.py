@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, GetCoreSchemaHandler
+from pydantic_core import core_schema
 from rdflib import URIRef
 
 from ontocast.onto.rdfgraph import RDFGraph
@@ -19,22 +20,38 @@ def coerce_uri_ref(value: Any) -> URIRef:
     raise TypeError(f"Expected URIRef or str, got {type(value).__name__}")
 
 
+def as_uri_ref(value: URIRef | str) -> URIRef:
+    """Normalize a graph or match term to URIRef for rdflib-safe equality."""
+    return coerce_uri_ref(value)
+
+
+class _RdfUriRefAnnotation:
+    """Pydantic schema that keeps URIRef instances (avoids str coercion)."""
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, _source_type: Any, _handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
+        return core_schema.no_info_plain_validator_function(
+            coerce_uri_ref,
+            serialization=core_schema.to_string_ser_schema(),
+        )
+
+
+RdfUriRef = Annotated[URIRef, _RdfUriRefAnnotation()]
+
+
 class MatchRegime(StrEnum):
     ONTOLOGY_LOOSE = "ontology_loose"
     ONTOLOGY_STRICT = "ontology_strict"
 
 
 class EntityMatch(BaseModel):
-    predicted_entity: URIRef
-    gt_entity: URIRef
+    predicted_entity: RdfUriRef
+    gt_entity: RdfUriRef
     similarity: float
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    @field_validator("predicted_entity", "gt_entity", mode="before")
-    @classmethod
-    def _coerce_entity_uri(cls, value: Any) -> URIRef:
-        return coerce_uri_ref(value)
 
 
 class MatchMetrics(BaseModel):
@@ -64,15 +81,10 @@ class TaggedGraph(BaseModel):
 
 class GraphEntityMember(BaseModel):
     graph_id: str
-    entity: URIRef
+    entity: RdfUriRef
     similarity: float | None = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    @field_validator("entity", mode="before")
-    @classmethod
-    def _coerce_entity_uri(cls, value: Any) -> URIRef:
-        return coerce_uri_ref(value)
 
 
 class EntityCluster(BaseModel):
