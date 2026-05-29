@@ -10,8 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Anthropic (Claude) and Google (Gemini) LLM providers** via `LLM_PROVIDER=anthropic|google`, with `ClaudeModel` and `GeminiModel` config enums.
 - **Token usage reporting** in `BudgetTracker` when providers return `usage_metadata` on LLM responses (character counts remain the universal fallback).
+- **LLM disk cache controls** on `LLMConfig`: `LLM_CACHE_ENABLED` (default on), `LLM_CACHE_READ_ONLY`, and in-memory plus on-disk stats via `LLMTool.get_cache_stats()`; `GET /info` exposes `llm_cache`.
+- **Global LLM in-flight limit** (`LLM_MAX_INFLIGHT`, default 16) — shared semaphore caps concurrent provider requests across parallel unit workers.
+- **Optional process concurrency cap** (`MAX_CONCURRENT_PROCESSES`) — limits simultaneous `/process` and `/process_unit` handlers (additional requests wait for a slot).
+- **OpenAI Batch API helpers** (`ontocast.tool.llm_batch`) to export chat batch JSONL and import completed results into the LLM disk cache for offline benchmark pre-warming.
+- **`BudgetTracker.cache_hits`** — disk-cache hits count toward character totals but not `calls_count`; included in budget summaries when non-zero.
 
 ### Changed
+- **LLM caching path** — `complete`, `extract`, `__call__`, and `acall` share one `_invoke_cached` implementation with consistent cache keys (normalized prompt text), optional disable/read-only modes, and provider calls gated by the global in-flight semaphore.
 - **Facts extraction prompts** (`facts_guidelines.py`): clearer two-namespace contract — domain ontology is read-only schema plus optional **reference individuals**; all text-derived occurrences use `cd:` with `lowercase_snake_case` local names. New rules separate **classes** from **instances** (no PascalCase class IRIs in subject/object slots), forbid typing `cd:` entities as `rdfs:Class` / `rdf:Property`, and add a final structural validation checklist before output.
 
 ### Fixed
@@ -20,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 - User guide: facts two-namespace model (`concepts.md`), facts guidelines vs `facts_user_instruction` (`user_instructions.md`), entity alignment and evaluate semantics (`aggregation.md`, `api.md`, `workflow.md`).
+- User guide: LLM cache configuration, in-flight/process limits, batch pre-warming, and `/info` cache stats (`llm_caching.md`, `configuration.md`, `api.md`, `concepts.md`, `workflow.md`).
 
 ## [0.4.0] - 2026-05-26
 

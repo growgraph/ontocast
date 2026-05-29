@@ -96,11 +96,12 @@ Details: [Tenancy](tenancy.md).
 
 ## Budget Tracking
 
-- **LLM Statistics**: API calls, characters sent/received
+- **LLM Statistics**: API calls, characters sent/received; optional token counts when the provider reports usage metadata
+- **Cache hits**: Disk-cache hits increment `cache_hits` and character totals but **not** `calls_count` (no provider tokens)
 - **Triple Metrics**: Ontology and facts triples per operation
 - **Summary Reports**: Logged at end of processing:
   ```
-  LLM: X calls, Y sent, Z received | Triples: A ontology, B facts
+  LLM: X calls, Y sent, Z received, N cache hits | Triples: A ontology, B facts
   ```
 - **BudgetTracker** lives on `AgentState` and per-unit states; merged at reduce stages
 

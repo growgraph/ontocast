@@ -10,7 +10,17 @@ Returns service health. Use for load balancers and readiness probes.
 
 ### `GET /info`
 
-Returns version, configuration summary, and active backend information.
+Returns service metadata, including:
+
+| Field | Description |
+|-------|-------------|
+| `version` | Package version |
+| `llm_cache` | When the LLM tool is initialized: in-memory hit/miss counters plus on-disk cache file stats (`cache_hits`, `cache_misses`, `disk`) |
+| `max_concurrent_processes` | Configured cap on simultaneous `/process` handlers, if `MAX_CONCURRENT_PROCESSES` is set |
+
+```bash
+curl http://localhost:8999/info
+```
 
 ---
 
@@ -62,7 +72,7 @@ curl -X POST "http://localhost:8999/process?tenant=acme&project=reports" \
   -F "file=@document.pdf"
 ```
 
-**Response:** JSON with `data.facts` (Turtle), `data.ontology_artifacts` (list of ontology TTL payloads), and `metadata` (status, chunk counts, budget).
+**Response:** JSON with `data.facts` (Turtle), `data.ontology_artifacts` (list of ontology TTL payloads), and `metadata` (status, chunk counts, budget including `cache_hits` when applicable).
 
 ---
 
@@ -178,6 +188,9 @@ match-dirs \
 | `400` | Invalid parameters (e.g. missing fixed ontology id) |
 | `409` | Vector store unavailable when vector ontology mode requested |
 | `500` | Processing or store errors |
+| `503` | Health check: LLM not initialized or health probe failure |
+
+When `MAX_CONCURRENT_PROCESSES` is set, additional `/process` and `/process_unit` requests **wait** until a handler slot is free (they are not rejected with 503).
 
 Vector mode unavailable:
 
@@ -193,5 +206,6 @@ Vector mode unavailable:
 ## Related
 
 - [Configuration](configuration.md) — server and tool settings
+- [LLM Caching](llm_caching.md) — disk cache, in-flight limits, batch pre-warming
 - [User Instructions](user_instructions.md) — guiding extraction
 - [Workflow](workflow.md) — what happens inside `/process`

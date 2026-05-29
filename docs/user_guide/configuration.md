@@ -51,6 +51,14 @@ LLM_BASE_URL=http://localhost:11434     # optional (ollama; anthropic proxy URL)
 
 OntoCast uses `LLM_API_KEY` for all cloud providers (not `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY`).
 
+**Disk cache and provider concurrency** (see [LLM Caching](llm_caching.md)):
+
+```bash
+LLM_CACHE_ENABLED=true          # read/write disk cache (default true)
+LLM_CACHE_READ_ONLY=false       # use cache without writing new entries
+LLM_MAX_INFLIGHT=16             # max concurrent provider requests (all documents)
+```
+
 ```bash
 # Anthropic Claude
 LLM_PROVIDER=anthropic
@@ -79,6 +87,7 @@ PARALLEL_WORKERS=4
 PARALLEL_FACTS_RETRIES=3
 PARALLEL_ONTOLOGY_RETRIES=3
 ENABLE_ONTOLOGY_CONSOLIDATION=false
+# MAX_CONCURRENT_PROCESSES=4      # optional cap on simultaneous /process handlers
 ```
 
 ### Chunking
@@ -247,6 +256,8 @@ Entity alignment and evaluation endpoints are documented in [API Endpoints](api.
 - `MAX_VISITS` is supported as an alias for `max_visits_per_node`.
 - `RECURSION_LIMIT` was renamed to `BASE_RECURSION_LIMIT`.
 - `WEB_SEARCH_ALLOWED_DOMAINS` and `WEB_SEARCH_BLOCKED_DOMAINS` accept comma-separated values.
+- `LLM_CACHE_ENABLED` and `LLM_CACHE_READ_ONLY` control disk cache read/write behavior.
+- `LLM_MAX_INFLIGHT` must be ≥ 1; `MAX_CONCURRENT_PROCESSES` must be ≥ 1 when set.
 
 ## Recommended Workflow
 

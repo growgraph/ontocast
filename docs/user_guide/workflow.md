@@ -134,7 +134,7 @@ Facts output uses the **`cd:` namespace** for text-derived instances; domain ont
 
 - Ontology and facts serialized to the configured triple store
 - API returns Turtle (optionally with `strip_provenance=true` to omit reification scaffolding)
-- Budget summary logged (LLM calls, characters, triple counts)
+- Budget summary logged (LLM calls, cache hits, characters, triple counts)
 
 ## Configuration
 
@@ -142,6 +142,8 @@ Facts output uses the **`cd:` namespace** for text-derived instances; domain ont
 |---------------------|--------|
 | `RENDER_MODE` | `ontology`, `facts`, or `ontology_and_facts` |
 | `PARALLEL_WORKERS` | Max concurrent unit workers |
+| `LLM_MAX_INFLIGHT` | Max concurrent provider LLM requests (shared across units) |
+| `MAX_CONCURRENT_PROCESSES` | Optional cap on simultaneous `/process` pipelines |
 | `MAX_VISITS` / `max_visits` | Render/critic retry budget per loop |
 | `ENABLE_ONTOLOGY_CONSOLIDATION` | Optional post-normalization consolidation |
 | `ONTOLOGY_CONTEXT_MODE` | How per-unit ontology context is sourced |
