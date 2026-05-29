@@ -39,16 +39,35 @@ Document processing uses a **parallel map/reduce** architecture:
 - **Reduce**: normalize merged ontology updates; merge and disambiguate facts across units
 - Per-request `max_visits` overrides the server default for render/critic retry budgets
 
+## Facts Extraction Model
+
+Facts rendering follows a **two-namespace contract** baked into the operational guidelines (supplement any `facts_user_instruction` you pass on `/process`):
+
+| Namespace | Role |
+|-----------|------|
+| Domain ontology prefix | Schema only: classes (`rdf:type` targets), properties, and **reference individuals** that already exist verbatim in the catalog (e.g. controlled vocabulary entries) |
+| `cd:` (`FACTS_NAMESPACE`) | Every **new** instance extracted from the source text, even when typed with an ontology class |
+
+Rules the model is steered to follow:
+
+- Mint `cd:` instances with `lowercase_snake_case` local names and an `rdfs:label` from the source text.
+- Never invent IRIs under the domain ontology namespace; reuse a reference individual’s canonical IRI only when it is explicitly declared in the provided ontology.
+- A matching **class** does not mean a matching **individual** — text occurrences become new `cd:` nodes typed with that class.
+- Do not place ontology class IRIs in subject/object slots; do not type `cd:` entities as `rdfs:Class` or `rdf:Property`.
+
+Details and examples: [User Instructions](user_instructions.md#facts-extraction-guidelines).
+
 ## Entity Disambiguation
 
 Cross-chunk identity resolution during facts aggregation:
 
 - Embedding similarity + symbolic compatibility (`EntityAligner`)
+- Identical `URIRef` across unit graphs always merge (independent of embedding score)
 - Connected-component clustering with configurable `AGG_SIMILARITY_THRESHOLD`
 - `skos:altName` and label-aware matching
 - Provenance annotations on merged triples
 
-See [Aggregation](aggregation.md) for configuration details.
+The same aligner backs benchmark **graph matching** (`/match/entities`, `/match/evaluate`). See [Aggregation](aggregation.md) for configuration and evaluation notes.
 
 ## Ontology Context
 

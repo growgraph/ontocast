@@ -31,12 +31,12 @@ Lower thresholds merge more aggressively (fewer duplicate entities, higher false
 
 1. **Candidate extraction** — entities from each unit's facts graph
 2. **Embedding** — dense vectors from `AGG_EMBEDDING_MODEL`
-3. **Symbolic checks** — labels, `skos:altName`, IRI compatibility
+3. **Symbolic checks** — labels, `skos:altName`, IRI compatibility; **identical `URIRef` always compatible** (e.g. the same ontology class appearing in predicted and ground-truth graphs clusters with score 1.0 even when labels are missing or embeddings disagree)
 4. **Clustering** — connected components over similarity + compatibility edges
 5. **URI rewrite** — merge graphs under canonical entity URIs
 6. **Provenance** — track which unit contributed each merged triple
 
-The standalone **EntityAligner** (`tool/agg/entity_aligner.py`) powers global alignment for the `/match/entities` API (benchmark use), using the same embedding and symbolic regime concepts.
+The standalone **EntityAligner** (`tool/agg/entity_aligner.py`) powers global alignment for the `/match/entities` API (benchmark use), using the same embedding and symbolic regime concepts (`ontology_loose` / `ontology_strict`).
 
 ## Graph Matching API
 
@@ -45,6 +45,8 @@ For evaluation against ground truth, use the match endpoints (see [API Endpoints
 - Align entities across multiple graphs globally
 - Derive pairwise predicted↔GT mappings
 - Compute triple and entity precision/recall/F1
+
+Entity match payloads accept IRI strings or `URIRef` values; evaluation normalizes to `URIRef` for projection. **Entity false positives/negatives** count unmatched entities in each graph (set difference), so a shared ontology vocabulary IRI matched once is not also counted as an extra false positive on the other side.
 
 The `match-dirs` CLI automates this for directory pairs of TTL files.
 

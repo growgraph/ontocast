@@ -131,6 +131,8 @@ curl -X POST "http://localhost:8999/flush?dataset=my_dataset"
 
 Benchmark-oriented endpoints for entity alignment and evaluation. Used by the standalone `match-dirs` CLI.
 
+Alignment treats **identical IRIs** across input graphs as the same entity (score 1.0) before embedding similarity is considered — important when predicted and ground-truth graphs share ontology class or property IRIs.
+
 ### `POST /match/entities`
 
 Align entities globally across a list of graphs (embedding + symbolic clustering).
@@ -153,6 +155,8 @@ Derive 1:1 predicted↔ground-truth entity matches for one graph pair from align
 ### `POST /match/evaluate`
 
 Compute triple and entity precision/recall/F1 given graphs and entity matches. Label triples (`rdfs:label`) are excluded from triple metrics.
+
+Entity metrics: true positives = number of accepted entity matches; false positives = predicted entities not in the matched set; false negatives = ground-truth entities not in the matched set (set-based, so correctly matched shared vocabulary IRIs are not double-penalized).
 
 **Standalone CLI:**
 

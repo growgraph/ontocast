@@ -128,6 +128,8 @@ Provenance triples (`prov:`, reification, chunk metadata) are kept in `ontology_
 
 When facts rendering is enabled, each unit runs a **facts loop** (render → critic, with optional web evidence), then **merge facts** applies cross-chunk entity disambiguation and aggregation.
 
+Facts output uses the **`cd:` namespace** for text-derived instances; domain ontology IRIs are read-only schema and pre-declared reference individuals (see [Facts extraction model](concepts.md#facts-extraction-model)). Optional `facts_user_instruction` adds focus on top of these built-in guidelines.
+
 ### 6. Output
 
 - Ontology and facts serialized to the configured triple store

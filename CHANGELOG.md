@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Anthropic (Claude) and Google (Gemini) LLM providers** via `LLM_PROVIDER=anthropic|google`, with `ClaudeModel` and `GeminiModel` config enums.
 - **Token usage reporting** in `BudgetTracker` when providers return `usage_metadata` on LLM responses (character counts remain the universal fallback).
 
+### Changed
+- **Facts extraction prompts** (`facts_guidelines.py`): clearer two-namespace contract — domain ontology is read-only schema plus optional **reference individuals**; all text-derived occurrences use `cd:` with `lowercase_snake_case` local names. New rules separate **classes** from **instances** (no PascalCase class IRIs in subject/object slots), forbid typing `cd:` entities as `rdfs:Class` / `rdf:Property`, and add a final structural validation checklist before output.
+
+### Fixed
+- **Entity alignment** (`EntityAligner`): identical `URIRef` across graphs always form a compatibility edge (score 1.0), so shared ontology terms (e.g. a class used in both predicted and ground-truth graphs) cluster correctly even when label embeddings differ.
+- **Match / evaluate API** (`match_models`, `triple_evaluator`, `match_common`): entity fields stay `URIRef` through Pydantic validation; triple projection and entity precision/recall use set-based unmatched counts so shared-vocabulary IRIs are not double-counted as false positives/negatives.
+
+### Documentation
+- User guide: facts two-namespace model (`concepts.md`), facts guidelines vs `facts_user_instruction` (`user_instructions.md`), entity alignment and evaluate semantics (`aggregation.md`, `api.md`, `workflow.md`).
+
 ## [0.4.0] - 2026-05-26
 
 ### Added
