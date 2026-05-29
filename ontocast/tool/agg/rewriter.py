@@ -22,6 +22,7 @@ triple-term syntax (``<<( s p o )>>``) is serialised correctly via
 
 import logging
 from collections import defaultdict
+from typing import cast
 
 import pyoxigraph as ox
 from oxrdflib._converter import to_ox
@@ -352,7 +353,9 @@ class GraphRewriter:
         """
         # Access the underlying pyoxigraph Store and graph context so
         # that triples added here are visible through the rdflib API.
-        ox_store: ox.Store = graph.store._inner  # type: ignore[attr-defined]
+        from ontocast.onto.rdfgraph import _oxigraph_inner_store
+
+        ox_store = cast(ox.Store, _oxigraph_inner_store(graph.store))
         graph_ctx_raw = to_ox(graph.identifier)
         assert isinstance(graph_ctx_raw, (ox.NamedNode, ox.BlankNode, ox.DefaultGraph))
         graph_ctx: ox.NamedNode | ox.BlankNode | ox.DefaultGraph = graph_ctx_raw

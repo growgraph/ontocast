@@ -7,7 +7,7 @@ abstract interfaces and concrete implementations for different triple store back
 import abc
 import asyncio
 import os
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import Field
 from rdflib import Graph
@@ -60,7 +60,7 @@ class TripleStoreManager(Tool):
         return await asyncio.to_thread(self.fetch_ontologies)
 
     @abc.abstractmethod
-    def serialize_graph(self, graph: Graph, **kwargs) -> bool | None:
+    def serialize_graph(self, graph: Graph, **kwargs) -> bool | dict[str, Any] | None:
         """Store an RDF graph in the triple store.
 
         This method should store the given RDF graph in the triple store.
@@ -77,7 +77,9 @@ class TripleStoreManager(Tool):
         pass
 
     @abc.abstractmethod
-    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> bool | None:  # type: ignore[override]
+    def serialize(
+        self, o: Ontology | RDFGraph, **kwargs
+    ) -> bool | dict[str, Any] | None:
         """Store an RDF graph in the triple store.
 
         This method should store the given RDF graph in the triple store.
@@ -93,7 +95,9 @@ class TripleStoreManager(Tool):
         """
         pass
 
-    async def aserialize(self, o: Ontology | RDFGraph, **kwargs) -> bool | None:
+    async def aserialize(
+        self, o: Ontology | RDFGraph, **kwargs
+    ) -> bool | dict[str, Any] | None:
         """Async serialize helper for backends without native async I/O."""
         return await asyncio.to_thread(self.serialize, o, **kwargs)
 

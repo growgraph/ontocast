@@ -65,7 +65,9 @@ class TripleOp(BaseModel):
     def normalize_op_type(cls, v: object) -> str:
         if isinstance(v, str) and v.lower() == "update":
             return "insert"
-        return v  # type: ignore[return-value]
+        if isinstance(v, str):
+            return v
+        raise TypeError(f"TripleOp.type must be a string, got {type(v).__name__}")
 
     graph: LLMGraphWire = Field(
         default_factory=RDFGraph,

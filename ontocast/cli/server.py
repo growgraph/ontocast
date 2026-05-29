@@ -45,7 +45,6 @@ import asyncio
 import logging
 import logging.config
 import pathlib
-from importlib import metadata
 
 import click
 import uvicorn
@@ -55,6 +54,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, ConfigDict, Field
 
+from ontocast._version import __version__
 from ontocast.agent.serialize import serialize as serialize_agent_state
 from ontocast.api.ontologies import build_ontology_router
 from ontocast.api.schemas import (
@@ -418,7 +418,7 @@ def create_app(
     when the request omits ``tenant`` / ``project`` query parameters.
     """
 
-    app = FastAPI(title="ontocast", version=metadata.version("ontocast"))
+    app = FastAPI(title="ontocast", version=__version__)
     app.include_router(
         build_ontology_router(
             tools,
@@ -429,6 +429,10 @@ def create_app(
     )
 
     workflow: CompiledStateGraph = create_agent_graph(tools)
+
+    process_semaphore: asyncio.Semaphore | None = None
+    if server_config.max_concurrent_processes is not None:
+        process_semaphore = asyncio.Semaphore(server_config.max_concurrent_processes)
 
     @app.get("/health")
     async def health_check():
@@ -441,7 +445,7 @@ def create_app(
                     ).model_dump(),
                 )
             return HealthOkResponse(
-                llm_provider=tools.llm_provider, version=metadata.version("ontocast")
+                llm_provider=tools.llm_provider, version=__version__
             )
         except Exception as e:
             logger.error("Health check failed: %s", e)
@@ -452,7 +456,14 @@ def create_app(
 
     @app.get("/info", response_model=InfoResponse)
     async def info():
-        return InfoResponse(version=metadata.version("ontocast"))
+        llm_cache = None
+        if tools.llm is not None:
+            llm_cache = tools.llm.get_cache_stats()
+        return InfoResponse(
+            version=__version__,
+            llm_cache=llm_cache,
+            max_concurrent_processes=server_config.max_concurrent_processes,
+        )
 
     @app.post("/match/entities", response_model=AlignEntitiesResponse)
     async def align_entities(request: AlignEntitiesRequest):
@@ -570,6 +581,8 @@ def create_app(
     @app.post("/process")
     async def process(request: Request):
         workflow_state: dict | None = None
+        if process_semaphore is not None:
+            await process_semaphore.acquire()
         try:
             loaded = await load_parsed_process_request(
                 request, server_config, log_label="process"
@@ -708,6 +721,9 @@ def create_app(
                     error_details=error_details,
                 ).model_dump(),
             )
+        finally:
+            if process_semaphore is not None:
+                process_semaphore.release()
 
     @app.post("/process_unit")
     async def process_unit(request: Request):
@@ -719,6 +735,8 @@ def create_app(
         ontology.  Accepts the same content types and query parameters as
         ``/process`` (including ``strip_provenance``).
         """
+        if process_semaphore is not None:
+            await process_semaphore.acquire()
         try:
             loaded = await load_parsed_process_request(
                 request, server_config, log_label="process_unit"
@@ -860,6 +878,9 @@ def create_app(
                     error_details=None,
                 ).model_dump(),
             )
+        finally:
+            if process_semaphore is not None:
+                process_semaphore.release()
 
     return app
 

@@ -2,10 +2,12 @@
 
 from pydantic import BaseModel, Field
 
+from ontocast._version import __version__
+
 
 class HealthOkResponse(BaseModel):
     status: str = "healthy"
-    version: str = "0.1.1"
+    version: str = __version__
     llm_provider: str | None = None
 
 
@@ -16,7 +18,7 @@ class HealthErrorResponse(BaseModel):
 
 class InfoResponse(BaseModel):
     name: str = "ontocast"
-    version: str = "0.1.1"
+    version: str = __version__
     description: str = (
         "Agentic ontology assisted framework for semantic triple extraction"
     )
@@ -27,6 +29,14 @@ class InfoResponse(BaseModel):
         default_factory=lambda: ["text", "json", "pdf", "markdown"]
     )
     output_types: list[str] = Field(default_factory=lambda: ["turtle", "json"])
+    llm_cache: dict | None = Field(
+        default=None,
+        description="In-memory and on-disk LLM cache statistics when available.",
+    )
+    max_concurrent_processes: int | None = Field(
+        default=None,
+        description="Configured cap on concurrent /process handlers, if any.",
+    )
 
 
 class FlushOkResponse(BaseModel):

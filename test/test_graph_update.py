@@ -67,7 +67,7 @@ def test_graph_update_with_language_tags():
         triple_operations=[
             TripleOp(
                 type="insert",
-                graph=triples,  # type: ignore[arg-type]
+                graph=RDFGraph._from_turtle_str(triples),
                 prefixes={"ex": "http://example.org/"},
             )
         ]
@@ -116,7 +116,7 @@ def test_graph_update_insert_operation():
         triple_operations=[
             TripleOp(
                 type="insert",
-                graph=triples,  # type: ignore[arg-type]
+                graph=RDFGraph._from_turtle_str(triples),
                 prefixes={"ex": "http://example.org/"},
             )
         ]
@@ -161,8 +161,8 @@ def test_graph_update_extract_insert_graph() -> None:
     """
     gu = GraphUpdate(
         triple_operations=[
-            TripleOp(type="insert", graph=insert_ttl),  # type: ignore[arg-type]
-            TripleOp(type="delete", graph=delete_ttl),  # type: ignore[arg-type]
+            TripleOp(type="insert", graph=RDFGraph._from_turtle_str(insert_ttl)),
+            TripleOp(type="delete", graph=RDFGraph._from_turtle_str(delete_ttl)),
         ]
     )
     insert_graph = gu.extract_insert_graph()
@@ -213,7 +213,7 @@ def test_graph_update_delete_operation():
         triple_operations=[
             TripleOp(
                 type="delete",
-                graph=triples,  # type: ignore[arg-type]
+                graph=RDFGraph._from_turtle_str(triples),
                 prefixes={"ex": "http://example.org/"},
             )
         ]
@@ -276,7 +276,7 @@ def test_graph_update_with_prefixes():
         triple_operations=[
             TripleOp(
                 type="insert",
-                graph=triples,  # type: ignore[arg-type]
+                graph=RDFGraph._from_turtle_str(triples),
                 prefixes={
                     "ex": "http://example.org/",
                     "schema": "https://schema.org/",
@@ -357,7 +357,7 @@ def test_graph_update_mixed_operations_ordered():
             # First: Insert new person with custom schema prefix
             TripleOp(
                 type="insert",
-                graph=insert_jane,  # type: ignore[arg-type]
+                graph=RDFGraph._from_turtle_str(insert_jane),
                 prefixes={
                     "ex": "http://example.org/",
                     "schema": "https://schema.org/",
@@ -366,13 +366,13 @@ def test_graph_update_mixed_operations_ordered():
             # Second: Delete John's label
             TripleOp(
                 type="delete",
-                graph=delete_john_label,  # type: ignore[arg-type]
+                graph=RDFGraph._from_turtle_str(delete_john_label),
                 prefixes={"ex": "http://example.org/"},
             ),
             # Third: Insert new label for John
             TripleOp(
                 type="insert",
-                graph=insert_john_label,  # type: ignore[arg-type]
+                graph=RDFGraph._from_turtle_str(insert_john_label),
                 prefixes={"ex": "http://example.org/"},
             ),
         ]

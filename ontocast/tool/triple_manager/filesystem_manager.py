@@ -7,6 +7,7 @@ ontologies and facts as Turtle files.
 
 import logging
 import pathlib
+from typing import Any
 
 from rdflib import Graph
 
@@ -144,7 +145,10 @@ class FilesystemTripleStoreManager(TripleStoreManager):
             serialization_format = "turtle" if is_oxigraph else "longturtle"
         graph.serialize(format=serialization_format, destination=output_path)
 
-    def serialize(self, o: Ontology | RDFGraph, graph_uri: str | None = None):  # type: ignore[override]
+    def serialize(
+        self, o: Ontology | RDFGraph, **kwargs: Any
+    ) -> bool | dict[str, Any] | None:
+        graph_uri = kwargs.get("graph_uri")
         if isinstance(o, Ontology):
             graph = o.graph
             fname = f"ontology_{o.ontology_id}_{o.version}.ttl"

@@ -385,7 +385,7 @@ class MockNeo4jTripleStoreManager(TripleStoreManagerWithAuth):
         """
         return self.ontologies.copy()
 
-    def serialize_graph(self, graph: Graph, **kwargs) -> Dict[str, Any] | None:  # type: ignore[override]
+    def serialize_graph(self, graph: Graph, **kwargs) -> Dict[str, Any] | None:
         """Store an RDF graph in the mock store.
 
         Args:
@@ -437,7 +437,7 @@ class MockNeo4jTripleStoreManager(TripleStoreManagerWithAuth):
             "labels_added": 1,
         }
 
-    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> Dict[str, Any] | None:  # type: ignore[override]
+    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> Dict[str, Any] | None:
         """Store an Ontology or RDFGraph in the mock store.
 
         Args:

@@ -31,6 +31,24 @@ def test_merge_from_accumulates_tokens() -> None:
     assert left.chars_sent == 30
 
 
+def test_add_cache_hit_does_not_increment_calls_count() -> None:
+    tracker = BudgetTracker()
+    tracker.add_cache_hit(100, 50)
+    assert tracker.cache_hits == 1
+    assert tracker.calls_count == 0
+    assert tracker.chars_sent == 100
+    assert tracker.chars_received == 50
+
+
+def test_merge_from_accumulates_cache_hits() -> None:
+    left = BudgetTracker()
+    left.add_cache_hit(10, 5)
+    right = BudgetTracker()
+    right.add_cache_hit(20, 15)
+    left.merge_from(right)
+    assert left.cache_hits == 2
+
+
 def test_get_summary_includes_tokens_when_present() -> None:
     tracker = BudgetTracker()
     tracker.add_usage(100, 50, input_tokens=1000, output_tokens=250)

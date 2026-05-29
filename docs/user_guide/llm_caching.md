@@ -15,6 +15,24 @@ The LLM caching system automatically caches responses from language model provid
 
 ---
 
+## Configuration
+
+| Setting | Env | Default | Description |
+|---------|-----|---------|-------------|
+| `cache_enabled` | `LLM_CACHE_ENABLED` | `true` | Read/write disk cache |
+| `cache_read_only` | `LLM_CACHE_READ_ONLY` | `false` | Use cache without writing new entries |
+| `llm_max_inflight` | `LLM_MAX_INFLIGHT` | `16` | Max concurrent provider requests (all documents) |
+
+Server-wide process concurrency (separate from LLM in-flight limit):
+
+| Setting | Env | Description |
+|---------|-----|-------------|
+| `max_concurrent_processes` | `MAX_CONCURRENT_PROCESSES` | Cap simultaneous `/process` and `/process_unit` handlers |
+
+Cache statistics are exposed on `GET /info` under `llm_cache`.
+
+---
+
 ## Shared Caching Architecture
 
 OntoCast uses a **shared caching architecture** where:
@@ -209,11 +227,13 @@ from ontocast.tool.llm import LLMTool
 
 # Check cache directory
 llm_tool = LLMTool.create(config=llm_config)
-print(f"Cache directory: {llm_tool.cache.tool_cache_dir}")
+cache_dir = llm_tool.cache.shared_cacher.cache_dir / "llm"
+print(f"Cache directory: {cache_dir}")
 
 # List cached files
-cache_files = list(llm_tool.cache.tool_cache_dir.glob("**/*.json"))
+cache_files = list(cache_dir.glob("*.json"))
 print(f"Cached responses: {len(cache_files)}")
+print(f"Stats: {llm_tool.get_cache_stats()}")
 ```
 
 ### Clear Cache
@@ -410,10 +430,37 @@ converted = tools.converter(document_file)
 chunks = tools.chunker(text)
 ```
 
+### OpenAI Batch API (offline benchmarks)
+
+For large first-pass benchmark runs, you can pre-fill the disk cache using the provider Batch API (~50% lower cost, hours of latency). See `ontocast.tool.llm_batch`:
+
+```python
+from pathlib import Path
+from ontocast.config import LLMConfig
+from ontocast.tool.cache import Cacher
+from ontocast.tool.llm_batch import (
+    import_openai_batch_output_jsonl,
+    write_openai_chat_batch_jsonl,
+)
+
+# 1. Build requests (custom_id -> prompt text mapping for import)
+write_openai_chat_batch_jsonl(requests, Path("batch_input.jsonl"))
+# 2. Submit batch_input.jsonl via OpenAI dashboard or API; download output JSONL
+# 3. Import into the same cache directory the server will use
+import_openai_batch_output_jsonl(
+    Path("batch_output.jsonl"),
+    shared_cache=Cacher(cache_dir="/path/to/cache"),
+    llm_config=LLMConfig(),
+    custom_id_to_cache_key={"req-1": "full prompt text used as cache key"},
+)
+```
+
+---
+
 ### Cache Key Generation
 
 Cache keys are generated based on:
-- **Content hash**: SHA256 hash of the input content
+- **Content hash**: SHA256 hash of the normalized prompt text (`to_string()` for LangChain prompt values)
 - **Configuration**: All relevant parameters that affect the output
 - **Tool-specific parameters**: Model names, chunking modes, etc.
 

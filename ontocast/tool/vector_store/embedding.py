@@ -103,8 +103,8 @@ class OpenAIEmbeddingTool(_LangChainEmbeddingTool):
         )
         return OpenAIEmbeddings(
             model=self.config.model_name,
-            openai_api_key=api_key,
-            openai_api_base=self.config.base_url,
+            api_key=api_key,
+            base_url=self.config.base_url,
         )
 
 

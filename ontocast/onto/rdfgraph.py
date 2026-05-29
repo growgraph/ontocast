@@ -6,7 +6,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
-from typing import Any, Union
+from typing import Any, Union, cast
 
 from pydantic import BaseModel, ConfigDict, GetCoreSchemaHandler
 from pydantic_core import core_schema
@@ -20,6 +20,15 @@ from ontocast.onto.iri_policy import normalize_namespace_iri, sanitize_prefix_ma
 from ontocast.util import render_text_hash
 
 logger = logging.getLogger(__name__)
+
+
+def _oxigraph_inner_store(rdflib_store: object) -> object:
+    """Return the underlying pyoxigraph ``Store`` from an ``OxigraphStore``."""
+    inner = getattr(rdflib_store, "_inner", None)
+    if inner is None:
+        raise RuntimeError("Expected an OxigraphStore with a pyoxigraph _inner store")
+    return inner
+
 
 PREFIX_PATTERN = re.compile(r"@prefix\s+(\w+):\s+<[^>]+>\s+\.")
 PREFIX_DECLARATION_PATTERN = re.compile(r"@prefix\s+(\w+):\s+<([^>]+)>\s+\.")
@@ -1041,7 +1050,7 @@ class RDFGraph(Graph):
                 "pyoxigraph / oxrdflib must be installed for Turtle-star serialisation"
             ) from exc
 
-        inner_store: ox.Store = self.store._inner  # type: ignore[attr-defined]
+        inner_store = cast(ox.Store, _oxigraph_inner_store(self.store))
         graph_ctx_raw = to_ox(self.identifier)
         assert isinstance(
             graph_ctx_raw,
@@ -1094,11 +1103,13 @@ class RDFGraph(Graph):
             for namespace, prefix in namespace_to_prefix.items()
             if any(iri.startswith(namespace) for iri in used_iri_terms)
         }
-        raw: bytes = tmp.dump(
+        raw = tmp.dump(
             format=ox.RdfFormat.TURTLE,
             from_graph=ox.DefaultGraph(),
             prefixes=prefixes or None,
-        )  # type: ignore[assignment]
+        )
+        if raw is None:
+            raise RuntimeError("pyoxigraph dump returned no data")
         return raw.decode()
 
     def serialize_canonical_turtle(self) -> str:

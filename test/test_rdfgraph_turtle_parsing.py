@@ -253,7 +253,7 @@ def test_content_unit_sanitize_coerces_plain_graph() -> None:
         index=0,
         doc_iri=URIRef("https://example.org/doc/1"),
     )
-    unit.graph = plain  # type: ignore[assignment]
+    object.__setattr__(unit, "graph", plain)
 
     unit.sanitize()
 

@@ -107,13 +107,14 @@ def test_initialize_materializes_then_adds_with_skip_vector(monkeypatch, test_on
                 cast(ToolBox, self), ontology_context_mode
             )
 
+        _synchronize_ontologies = fake_sync
+        _materialize_ontology = fake_mat
+
     st = Stub()
-    st._synchronize_ontologies = fake_sync.__get__(st, Stub)  # type: ignore[method-assign]
-    st._materialize_ontology = fake_mat.__get__(st, Stub)  # type: ignore[method-assign]
     st.ontology_manager.add_ontology = MagicMock(side_effect=fake_add)
 
     async def main():
-        await ToolBox.initialize(st)  # type: ignore[arg-type]
+        await ToolBox.initialize(cast(ToolBox, st))
 
     asyncio.run(main())
 
@@ -184,7 +185,7 @@ def test_initialize_skips_vector_store_in_full_ttl_mode(monkeypatch) -> None:
     st = Stub()
     asyncio.run(
         ToolBox.initialize(
-            st,  # type: ignore[arg-type]
+            cast(ToolBox, st),
             ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
             fail_on_vector_store_error=False,
         )
@@ -229,7 +230,7 @@ def test_initialize_vector_store_failure_is_non_fatal_when_configured(
     st = Stub()
     asyncio.run(
         ToolBox.initialize(
-            st,  # type: ignore[arg-type]
+            cast(ToolBox, st),
             ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY,
             fail_on_vector_store_error=False,
         )
@@ -274,7 +275,7 @@ def test_ingest_ontology_ttl_rejects_identity_conflict_before_persisting() -> No
         stub = Stub()
 
         with pytest.raises(ValueError, match="already bound to IRI"):
-            asyncio.run(ToolBox.ingest_ontology_ttl(stub, incoming_ttl))  # type: ignore[arg-type]
+            asyncio.run(ToolBox.ingest_ontology_ttl(cast(ToolBox, stub), incoming_ttl))
 
         stub._materialize_ontology.assert_not_awaited()
         assert list(od.glob("*.ttl")) == []

@@ -18,7 +18,6 @@ import re
 from difflib import SequenceMatcher
 from enum import StrEnum
 from itertools import combinations
-from typing import cast
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
@@ -450,7 +449,7 @@ class EmbeddingBasedAggregator:
                 grouped.setdefault(find(entity), []).append(entity)
 
             for group in grouped.values():
-                sorted_group = cast(list[URIRef], sorted(group, key=str))
+                sorted_group = sorted(group, key=str)
                 validated_clusters.append(sorted_group)
 
         return validated_clusters, rejected_merges

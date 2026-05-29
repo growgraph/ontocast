@@ -681,6 +681,8 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         ontology_dict = defaultdict(list)
 
         for onto in all_ontologies:
+            if not isinstance(onto, Ontology):
+                continue
             ontology_dict[onto.iri].append(onto)
 
         # Build set of all parent hashes to identify terminal ontologies
@@ -688,6 +690,8 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         all_parent_hashes = set()
 
         for onto in all_ontologies:
+            if not isinstance(onto, Ontology):
+                continue
             if onto.hash:
                 # Collect all parent hashes
                 for parent_hash in onto.parent_hashes:

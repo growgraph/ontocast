@@ -161,6 +161,21 @@ class LLMConfig(BaseSettings):
         default=None, description="LLM base URL (for ollama, etc.)"
     )
     api_key: str | None = Field(default=None, description="API key for LLM provider")
+    cache_enabled: bool = Field(
+        default=True,
+        description="When true, read and write LLM response disk cache entries.",
+    )
+    cache_read_only: bool = Field(
+        default=False,
+        description="When true, use cached responses but do not write new entries.",
+    )
+    llm_max_inflight: int = Field(
+        default=16,
+        ge=1,
+        description=(
+            "Maximum concurrent provider LLM requests shared across all documents."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="LLM_",
@@ -280,6 +295,14 @@ class ServerConfig(BaseSettings):
     enable_ontology_consolidation: bool = Field(
         default=False,
         description="Run optional ontology consolidation pass after normalization",
+    )
+    max_concurrent_processes: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "When set, limit concurrent /process and /process_unit handlers; "
+            "additional requests receive HTTP 503 until a slot is free."
+        ),
     )
 
     model_config = SettingsConfigDict(

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from datetime import datetime, timezone
-from typing import Protocol, cast
+from typing import Protocol
 
 from pydantic import Field
 from rdflib import DCTERMS, OWL, RDF, RDFS, SKOS, BNode, Literal, URIRef
@@ -279,10 +279,7 @@ class GraphAtomizer(Tool):
                 if not any(str(e).startswith(p) for p in excluded_vocab_prefixes)
             }
 
-        return cast(
-            list[URIRef],
-            sorted(entities, key=lambda entity: str(entity)),
-        )
+        return sorted(entities, key=lambda entity: str(entity))
 
     def _parent_resource_phrase(self, graph: RDFGraph, parent: URIRef) -> str:
         """Local name plus optional label gloss when it adds information."""
@@ -401,14 +398,13 @@ class GraphAtomizer(Tool):
             key=str,
         )[:max_properties]
         for prop in props_with_domain:
-            prop_ref = cast(URIRef, prop)
-            prop_verb = self._normalize_uri(prop_ref)  # bare verb for SPO
+            prop_verb = self._normalize_uri(prop)  # bare verb for SPO
             ranges = self._collect_range_labels(
-                prop_ref, graph, max_items=endpoint_label_cap
+                prop, graph, max_items=endpoint_label_cap
             )
             for r_label in ranges or ["something"]:
                 clues.append(f"it {prop_verb} {r_label}")
-            self._append_inverse_of_clues_for_property(prop_ref, graph, clues)
+            self._append_inverse_of_clues_for_property(prop, graph, clues)
 
         props_with_range = sorted(
             {
@@ -419,14 +415,13 @@ class GraphAtomizer(Tool):
             key=str,
         )[:max_properties]
         for prop in props_with_range:
-            prop_ref = cast(URIRef, prop)
-            prop_verb = self._normalize_uri(prop_ref)  # bare verb for SPO
+            prop_verb = self._normalize_uri(prop)  # bare verb for SPO
             domains = self._collect_domain_labels(
-                prop_ref, graph, max_items=endpoint_label_cap
+                prop, graph, max_items=endpoint_label_cap
             )
             for d_label in domains or ["something"]:
                 clues.append(f"{d_label} {prop_verb} it")
-            self._append_inverse_of_clues_for_property(prop_ref, graph, clues)
+            self._append_inverse_of_clues_for_property(prop, graph, clues)
 
     def _build_minimal_representation(self, entity: URIRef) -> str:
         """IRI local name as keyword-oriented tokens: split camelCase/PascalCase, etc.
@@ -515,20 +510,18 @@ class GraphAtomizer(Tool):
                 if isinstance(o, URIRef)
             ]
             for par in sorted(set(parents), key=str):
-                par_ref = cast(URIRef, par)
                 siblings = sorted(
                     (
                         sib
-                        for sib in parent_to_children.get(par_ref, set[URIRef]())
+                        for sib in parent_to_children.get(par, set[URIRef]())
                         if sib != entity
                     ),
                     key=str,
                 )
                 for sib in siblings[:6]:
-                    sib_ref = cast(URIRef, sib)
                     clues.append(
-                        f"{self._normalize_uri(sib_ref)} is also a kind of "
-                        f"{self._parent_resource_phrase(graph, par_ref)}"
+                        f"{self._normalize_uri(sib)} is also a kind of "
+                        f"{self._parent_resource_phrase(graph, par)}"
                     )
 
             self._append_property_domain_range_clues_for_subject_resource(

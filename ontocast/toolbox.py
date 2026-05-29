@@ -213,20 +213,16 @@ class ToolBox:
             self.ontology_manager.register_vector_store(self.patch_retriever)
 
     async def get_llm_tool(self, budget_tracker):
-        """Get an LLM tool instance with a specific budget tracker.
+        """Return the shared LLM tool with the given budget tracker attached.
 
         Args:
             budget_tracker: The budget tracker instance to use.
 
         Returns:
-            LLMTool: LLM tool with the specified budget tracker.
+            LLMTool: Shared LLM tool with the specified budget tracker.
         """
-        # Create a new LLM tool with the budget tracker
-        return await LLMTool.acreate(
-            config=self.config.tool_config.llm_config,
-            cache=self.shared_cache,
-            budget_tracker=budget_tracker,
-        )
+        self.llm.budget_tracker = budget_tracker
+        return self.llm
 
     def require_triple_store_manager(self) -> TripleStoreManager:
         """Return the configured triple store manager or raise a clear error."""
@@ -573,6 +569,8 @@ async def render_ontology_summary(ontology: Ontology, llm_tool) -> OntologyPrope
     Returns:
         OntologyProperties: A structured summary containing only the missing properties.
     """
+    from typing import Any, cast
+
     from pydantic import create_model
 
     # Sample the graph intelligently (first 100 sections)
@@ -602,7 +600,7 @@ async def render_ontology_summary(ontology: Ontology, llm_tool) -> OntologyPrope
         return OntologyProperties()
 
     # Create a dynamic model with only unset fields
-    DynamicProps = create_model("DynamicOntologyProps", **unset_fields)
+    DynamicProps = create_model("DynamicOntologyProps", **cast(Any, unset_fields))
 
     # Define the output parser
     parser = PydanticOutputParser(pydantic_object=DynamicProps)

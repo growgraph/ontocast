@@ -52,7 +52,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, PrivateAttr, SecretStr
 
 from ontocast.config import LLMConfig, LLMProvider
 
@@ -62,6 +62,15 @@ from .onto import Tool
 T = TypeVar("T", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
+
+# Shared across all LLMTool instances with the same max_inflight setting.
+_inflight_semaphores: dict[int, asyncio.Semaphore] = {}
+
+
+def _inflight_semaphore(max_inflight: int) -> asyncio.Semaphore:
+    if max_inflight not in _inflight_semaphores:
+        _inflight_semaphores[max_inflight] = asyncio.Semaphore(max_inflight)
+    return _inflight_semaphores[max_inflight]
 
 
 def _usage_from_llm_result(result: Any) -> tuple[int | None, int | None]:
@@ -92,7 +101,7 @@ def _chars_received_from_result(result: Any) -> int:
 
 
 def track_llm_usage(func: Callable) -> Callable:
-    """Decorator to track LLM usage automatically."""
+    """Decorator to track LLM usage for methods that always hit the provider."""
 
     def _record_usage(tool: LLMTool, prompt_str: str, result: Any) -> None:
         bt = tool.budget_tracker
@@ -107,14 +116,6 @@ def track_llm_usage(func: Callable) -> Callable:
         )
 
     @wraps(func)
-    def wrapper(self: LLMTool, *args, **kwargs):
-        prompt = args[0] if args else ""
-        prompt_str = self._prompt_to_string(prompt)
-        result = func(self, *args, **kwargs)
-        _record_usage(self, prompt_str, result)
-        return result
-
-    @wraps(func)
     async def async_wrapper(self: LLMTool, *args, **kwargs):
         prompt = args[0] if args else ""
         prompt_str = self._prompt_to_string(prompt)
@@ -122,7 +123,7 @@ def track_llm_usage(func: Callable) -> Callable:
         _record_usage(self, prompt_str, result)
         return result
 
-    return async_wrapper if asyncio.iscoroutinefunction(func) else wrapper
+    return async_wrapper
 
 
 class LLMTool(Tool):
@@ -141,6 +142,8 @@ class LLMTool(Tool):
     config: LLMConfig = Field(default_factory=LLMConfig)
     cache: Any = Field(default=None, exclude=True)
     budget_tracker: Any = Field(default=None, exclude=True)
+    _cache_hits: int = PrivateAttr(default=0)
+    _cache_misses: int = PrivateAttr(default=0)
 
     def __init__(
         self,
@@ -230,12 +233,12 @@ class LLMTool(Tool):
                     f"model {self.config.model_name}"
                 )
             self._llm = ChatOpenAI(
-                model=self.config.model_name,  # type: ignore
+                model=self.config.model_name,
                 temperature=self.config.temperature,
-                base_url=self.config.base_url,  # type: ignore
+                base_url=self.config.base_url,
                 api_key=(
                     SecretStr(self.config.api_key) if self.config.api_key else None
-                ),  # type: ignore
+                ),
             )
         elif self.config.provider == LLMProvider.OLLAMA:
             self._llm = ChatOllama(
@@ -262,105 +265,96 @@ class LLMTool(Tool):
         else:
             raise ValueError(f"Unsupported provider: {self.config.provider}")
 
-    @track_llm_usage
-    async def __call__(self, *args: Any, **kwds: Any) -> Any:
-        """Call the language model directly (asynchronous).
-
-        Args:
-            *args: Positional arguments passed to the LLM.
-            **kwds: Keyword arguments passed to the LLM.
-
-        Returns:
-            Any: The LLM's response.
-        """
-        # Extract prompt from args (first argument is typically the prompt)
-        prompt = args[0] if args else ""
-
-        # Prepare configuration for caching
-        config_dict = {
+    def _cache_config_dict(self, **extra: Any) -> dict[str, Any]:
+        config_dict: dict[str, Any] = {
             "provider": self.config.provider,
             "model_name": self.config.model_name,
             "temperature": self.config.temperature,
             "base_url": self.config.base_url,
         }
+        config_dict.update(extra)
+        return config_dict
 
-        # Check cache first
-        cached_response = self.cache.get(prompt, config=config_dict, **kwds)
+    def _cache_key_content(self, *args: Any) -> str:
+        """Stable string for disk cache keys from invoke arguments."""
+        if not args:
+            return ""
+        primary = self._prompt_to_string(args[0])
+        if len(args) == 1:
+            return primary
+        extra = [self._prompt_to_string(arg) for arg in args[1:]]
+        return primary + "\n---\n" + "\n---\n".join(extra)
 
-        if cached_response is not None:
-            prompt_str = self._prompt_to_string(prompt)
-            logger.debug(f"Cache hit for __call__: {prompt_str[:50]}...")
-            # Return a mock BaseMessage object with the cached content
-            content = cached_response["content"]
-            content_str = content if isinstance(content, str) else str(content)
-            return AIMessage(content=content_str)
+    def _record_cache_hit(self, prompt_str: str, content_str: str) -> None:
+        self._cache_hits += 1
+        bt = self.budget_tracker
+        if bt is not None:
+            bt.add_cache_hit(len(prompt_str), len(content_str))
 
-        # Generate new response
-        prompt_str = self._prompt_to_string(prompt)
-        logger.debug(
-            f"Cache miss, calling LLM for __call__, prompt size {len(prompt_str[:50])}..."
+    def _record_api_usage(self, prompt_str: str, result: Any) -> None:
+        self._cache_misses += 1
+        bt = self.budget_tracker
+        if bt is None:
+            return
+        input_tokens, output_tokens = _usage_from_llm_result(result)
+        bt.add_usage(
+            len(prompt_str),
+            _chars_received_from_result(result),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
-        response = await self.llm.ainvoke(*args, **kwds)
-
-        # Cache the response
-        response_data = {
-            "content": response.content,
-            "prompt": self._prompt_to_string(prompt),
-            "kwargs": kwds,
+    def get_cache_stats(
+        self,
+    ) -> dict[str, int | dict[str, int | dict[str, int] | dict[str, dict[str, int]]]]:
+        """Return in-memory hit/miss counters and on-disk cache file stats."""
+        disk_stats = self.cache.get_cache_stats()
+        return {
+            "cache_hits": self._cache_hits,
+            "cache_misses": self._cache_misses,
+            "disk": disk_stats,
         }
-        self.cache.set(prompt, response_data, config=config_dict, **kwds)
+
+    async def _invoke_cached(self, *args: Any, **kwds: Any) -> Any:
+        """Invoke the LLM with optional disk cache and global in-flight limiting."""
+        prompt_key = self._cache_key_content(*args)
+        prompt_str = self._prompt_to_string(args[0]) if args else ""
+        config_dict = self._cache_config_dict()
+
+        if self.config.cache_enabled:
+            cached_response = self.cache.get(prompt_key, config=config_dict, **kwds)
+            if cached_response is not None:
+                logger.debug("Cache hit: %s...", prompt_str[:50])
+                content = cached_response["content"]
+                content_str = content if isinstance(content, str) else str(content)
+                self._record_cache_hit(prompt_str, content_str)
+                return AIMessage(content=content_str)
+
+        logger.debug("Cache miss, calling LLM: %s...", prompt_str[:50])
+
+        max_inflight = max(1, self.config.llm_max_inflight)
+        async with _inflight_semaphore(max_inflight):
+            response = await self.llm.ainvoke(*args, **kwds)
+
+        self._record_api_usage(prompt_str, response)
+
+        if self.config.cache_enabled and not self.config.cache_read_only:
+            response_data = {
+                "content": response.content,
+                "prompt": prompt_str,
+                "kwargs": kwds,
+            }
+            self.cache.set(prompt_key, response_data, config=config_dict, **kwds)
 
         return response
 
-    @track_llm_usage
+    async def __call__(self, *args: Any, **kwds: Any) -> Any:
+        """Call the language model directly (asynchronous)."""
+        return await self._invoke_cached(*args, **kwds)
+
     async def acall(self, *args: Any, **kwds: Any) -> Any:
-        """Call the language model directly (asynchronous).
-
-        Args:
-            *args: Positional arguments passed to the LLM.
-            **kwds: Keyword arguments passed to the LLM.
-
-        Returns:
-            Any: The LLM's response.
-        """
-        # Extract prompt from args (first argument is typically the prompt)
-        prompt = args[0] if args else ""
-
-        # Prepare configuration for caching
-        config_dict = {
-            "provider": self.config.provider,
-            "model_name": self.config.model_name,
-            "temperature": self.config.temperature,
-            "base_url": self.config.base_url,
-        }
-
-        # Check cache first
-        cached_response = self.cache.get(prompt, config=config_dict, **kwds)
-
-        if cached_response is not None:
-            prompt_str = self._prompt_to_string(prompt)
-            logger.debug(f"Cache hit for acall: {prompt_str[:50]}...")
-            # Return a mock BaseMessage object with the cached content
-            content = cached_response["content"]
-            content_str = content if isinstance(content, str) else str(content)
-            return AIMessage(content=content_str)
-
-        # Generate new response
-        prompt_str = self._prompt_to_string(prompt)
-        logger.debug(f"Cache miss, calling LLM for acall: {prompt_str[:50]}...")
-
-        response = await self.llm.ainvoke(*args, **kwds)
-
-        # Cache the response
-        response_data = {
-            "content": response.content,
-            "prompt": self._prompt_to_string(prompt),
-            "kwargs": kwds,
-        }
-        self.cache.set(prompt, response_data, config=config_dict, **kwds)
-
-        return response
+        """Alias for :meth:`__call__`."""
+        return await self._invoke_cached(*args, **kwds)
 
     @property
     def llm(self) -> BaseChatModel:
@@ -400,100 +394,76 @@ class LLMTool(Tool):
             return str(content_attr)
         return str(prompt)
 
-    @track_llm_usage
     async def complete(self, prompt: str, **kwargs) -> Any:
-        """Generate a completion for the given prompt.
+        """Generate a completion for the given prompt."""
+        config_dict = self._cache_config_dict()
+        prompt_key = self._prompt_to_string(prompt)
 
-        Args:
-            prompt: The input prompt for generation.
-            **kwargs: Additional keyword arguments for generation.
+        if self.config.cache_enabled:
+            cached_response = self.cache.get(prompt_key, config=config_dict, **kwargs)
+            if cached_response is not None:
+                logger.debug("Cache hit for prompt: %s...", prompt_key[:50])
+                content = cached_response["content"]
+                content_str = content if isinstance(content, str) else str(content)
+                self._record_cache_hit(prompt_key, content_str)
+                return content_str
 
-        Returns:
-            Any: The generated completion.
-        """
-        # Prepare configuration for caching
-        config_dict = {
-            "provider": self.config.provider,
-            "model_name": self.config.model_name,
-            "temperature": self.config.temperature,
-            "base_url": self.config.base_url,
-        }
+        logger.debug("Cache miss, calling LLM for prompt: %s...", prompt_key[:50])
 
-        # Check cache first
-        cached_response = self.cache.get(prompt, config=config_dict, **kwargs)
+        max_inflight = max(1, self.config.llm_max_inflight)
+        async with _inflight_semaphore(max_inflight):
+            response = await self.llm.ainvoke(prompt, **kwargs)
 
-        if cached_response is not None:
-            logger.debug(f"Cache hit for prompt: {prompt[:50]}...")
-            content = cached_response["content"]
-            return content if isinstance(content, str) else str(content)
+        self._record_api_usage(prompt_key, response)
 
-        # Generate new response
-        logger.debug(f"Cache miss, calling LLM for prompt: {prompt[:50]}...")
+        if self.config.cache_enabled and not self.config.cache_read_only:
+            response_data = {
+                "content": response.content,
+                "prompt": prompt_key,
+                "kwargs": kwargs,
+            }
+            self.cache.set(prompt_key, response_data, config=config_dict, **kwargs)
 
-        response = await self.llm.ainvoke(prompt, **kwargs)
+        content = response.content
+        return content if isinstance(content, str) else str(content)
 
-        # Cache the response
-        response_data = {
-            "content": response.content,
-            "prompt": self._prompt_to_string(prompt),
-            "kwargs": kwargs,
-        }
-        self.cache.set(prompt, response_data, config=config_dict, **kwargs)
-
-        return response.content
-
-    @track_llm_usage
     async def extract(self, prompt: str, output_schema: Type[T], **kwargs) -> T:
-        """Extract structured data from the prompt according to a schema.
-
-        Args:
-            prompt: The input prompt for extraction.
-            output_schema: The Pydantic model class defining the output structure.
-            **kwargs: Additional keyword arguments for extraction.
-
-        Returns:
-            T: The extracted data conforming to the output schema.
-        """
+        """Extract structured data from the prompt according to a schema."""
         parser = PydanticOutputParser(pydantic_object=output_schema)
         format_instructions = parser.get_format_instructions()
 
         full_prompt = f"{prompt}\n\n{format_instructions}"
+        config_dict = self._cache_config_dict(
+            output_schema=output_schema.__name__,
+        )
 
-        # Prepare configuration for caching
-        config_dict = {
-            "provider": self.config.provider,
-            "model_name": self.config.model_name,
-            "temperature": self.config.temperature,
-            "base_url": self.config.base_url,
-            "output_schema": output_schema.__name__,
-        }
-
-        # Check cache first
-        cached_response = self.cache.get(full_prompt, config=config_dict, **kwargs)
-
-        if cached_response is not None:
-            logger.debug(f"Cache hit for extraction: {prompt[:50]}...")
-            # Parse the cached content
-            content = cached_response["content"]
-            if isinstance(content, str):
-                return parser.parse(content)
-            else:
-                # Fallback: convert to string if it's not already
+        if self.config.cache_enabled:
+            cached_response = self.cache.get(full_prompt, config=config_dict, **kwargs)
+            if cached_response is not None:
+                logger.debug("Cache hit for extraction: %s...", prompt[:50])
+                content = cached_response["content"]
+                content_str = content if isinstance(content, str) else str(content)
+                self._record_cache_hit(full_prompt, content_str)
+                if isinstance(content, str):
+                    return parser.parse(content)
                 return parser.parse(str(content))
 
-        # Generate new response
-        logger.debug(f"Cache miss, calling LLM for extraction: {prompt[:50]}...")
+        logger.debug("Cache miss, calling LLM for extraction: %s...", prompt[:50])
 
-        response = await self.llm.ainvoke(full_prompt, **kwargs)
+        max_inflight = max(1, self.config.llm_max_inflight)
+        async with _inflight_semaphore(max_inflight):
+            response = await self.llm.ainvoke(full_prompt, **kwargs)
 
-        # Cache the response
-        response_data = {
-            "content": response.content,
-            "prompt": self._prompt_to_string(full_prompt),
-            "output_schema": output_schema.__name__,
-            "kwargs": kwargs,
-        }
-        self.cache.set(full_prompt, response_data, config=config_dict, **kwargs)
+        self._record_api_usage(full_prompt, response)
+
+        if self.config.cache_enabled and not self.config.cache_read_only:
+            response_data = {
+                "content": response.content,
+                "prompt": full_prompt,
+                "output_schema": output_schema.__name__,
+                "kwargs": kwargs,
+            }
+            self.cache.set(full_prompt, response_data, config=config_dict, **kwargs)
 
         content = response.content
         return parser.parse(content if isinstance(content, str) else str(content))

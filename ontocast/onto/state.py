@@ -39,6 +39,10 @@ class BudgetTracker(BasePydanticModel):
         default=0, description="Total characters received from LLM"
     )
     calls_count: int = Field(default=0, description="Total number of LLM API calls")
+    cache_hits: int = Field(
+        default=0,
+        description="LLM calls satisfied from disk cache (no provider tokens)",
+    )
     input_tokens: int = Field(
         default=0, description="Total input tokens (when reported by provider)"
     )
@@ -77,6 +81,12 @@ class BudgetTracker(BasePydanticModel):
         if output_tokens is not None:
             self.output_tokens += output_tokens
 
+    def add_cache_hit(self, chars_sent: int, chars_received: int) -> None:
+        """Record a disk-cache hit (does not increment calls_count)."""
+        self.cache_hits += 1
+        self.chars_sent += chars_sent
+        self.chars_received += chars_received
+
     def add_ontology_update(self, num_operations: int, num_triples: int) -> None:
         """Add ontology update statistics.
 
@@ -102,6 +112,7 @@ class BudgetTracker(BasePydanticModel):
         self.chars_sent += other.chars_sent
         self.chars_received += other.chars_received
         self.calls_count += other.calls_count
+        self.cache_hits += other.cache_hits
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
         self.ontology_triples_generated += other.ontology_triples_generated
@@ -116,6 +127,8 @@ class BudgetTracker(BasePydanticModel):
             f"{self.chars_sent:,} sent, "
             f"{self.chars_received:,} received",
         ]
+        if self.cache_hits > 0:
+            parts.append(f"{self.cache_hits:,} cache hits")
 
         if self.input_tokens > 0 or self.output_tokens > 0:
             parts.append(
