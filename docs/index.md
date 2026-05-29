@@ -28,7 +28,7 @@ OntoCast extracts semantic triples from documents using an agentic, ontology-dri
 - **Triple store integration** — Fuseki, Neo4j (n10s), or filesystem fallback
 - **Tenancy** — partition datasets/collections by tenant and project
 - **REST API** — document processing, ontology catalog management, graph matching
-- **Automatic LLM caching** — built-in response caching
+- **Automatic LLM caching** — disk cache with optional read-only mode, global in-flight limiting, and OpenAI Batch API pre-warming for benchmarks
 
 ---
 

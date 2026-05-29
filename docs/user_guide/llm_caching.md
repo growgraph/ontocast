@@ -11,7 +11,7 @@ The LLM caching system automatically caches responses from language model provid
 - **Performance**: Cached responses return instantly
 - **Cost Reduction**: Avoids duplicate API calls
 - **Offline Testing**: Tests can run without API access
-- **Transparency**: No configuration required - works automatically
+- **Transparency**: Enabled by default; optional env vars control read-only mode, concurrency, and observability
 
 ---
 
@@ -29,7 +29,19 @@ Server-wide process concurrency (separate from LLM in-flight limit):
 |---------|-----|-------------|
 | `max_concurrent_processes` | `MAX_CONCURRENT_PROCESSES` | Cap simultaneous `/process` and `/process_unit` handlers |
 
-Cache statistics are exposed on `GET /info` under `llm_cache`.
+Cache statistics are exposed on `GET /info` under `llm_cache`. Processing budget summaries include `cache_hits` when responses are served from disk (see [Budget Tracking](concepts.md#budget-tracking)).
+
+### Concurrency layers
+
+Three independent knobs affect parallelism:
+
+| Layer | Setting | What it limits |
+|-------|---------|----------------|
+| Unit workers | `PARALLEL_WORKERS` | Concurrent ontology/facts loops per document |
+| Provider calls | `LLM_MAX_INFLIGHT` | Concurrent LLM HTTP requests **across all units and documents** |
+| HTTP handlers | `MAX_CONCURRENT_PROCESSES` | Simultaneous `/process` and `/process_unit` pipelines |
+
+`LLM_MAX_INFLIGHT` prevents rate-limit storms when `PARALLEL_WORKERS` is high. `MAX_CONCURRENT_PROCESSES` is optional; when set, extra clients **wait** for a handler slot rather than starting unbounded full pipelines.
 
 ---
 
@@ -81,15 +93,7 @@ response1 = llm_tool("What is the capital of France?")
 response2 = llm_tool("What is the capital of France?")
 ```
 
-### Cache Key Generation
-
-Cache keys are generated based on:
-- LLM provider and model
-- Prompt text
-- Temperature and other parameters
-- API endpoint URL
-
-This ensures that different configurations or parameters result in separate cache entries.
+Cache keys hash **normalized prompt text** (LangChain prompt values use `to_string()`) together with provider, model, temperature, base URL, and schema-specific fields (for structured `extract` calls). Different configurations never share an entry.
 
 ---
 
@@ -274,11 +278,13 @@ class CustomLLMTool(LLMTool):
 ```python
 from ontocast.tool.llm import LLMTool
 
-# Get cache statistics
 llm_tool = LLMTool.create(config=llm_config)
-stats = llm_tool.cache.get_cache_stats()
+stats = llm_tool.get_cache_stats()
+# {"cache_hits": 12, "cache_misses": 3, "disk": {"total_files": 42, ...}}
 print(f"Cache stats: {stats}")
 ```
+
+On a running server, the same counters are available from `GET /info` (`llm_cache` field).
 
 ---
 
@@ -454,17 +460,6 @@ import_openai_batch_output_jsonl(
     custom_id_to_cache_key={"req-1": "full prompt text used as cache key"},
 )
 ```
-
----
-
-### Cache Key Generation
-
-Cache keys are generated based on:
-- **Content hash**: SHA256 hash of the normalized prompt text (`to_string()` for LangChain prompt values)
-- **Configuration**: All relevant parameters that affect the output
-- **Tool-specific parameters**: Model names, chunking modes, etc.
-
-This ensures that different configurations produce different cache entries, even for the same input content.
 
 ### Best Practices
 

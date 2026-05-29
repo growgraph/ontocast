@@ -40,10 +40,24 @@ Prefer ontologies focused on legal and compliance terminology. Avoid generic bus
 
 Facts user instructions guide the AI when extracting specific facts and instances from your documents. These instructions help focus on particular types of facts or data points.
 
+They **supplement** the built-in operational guidelines (two-namespace contract, entity matching, class vs instance rules). They do not replace them.
+
 **Example:**
 ```
 Extract financial data, dates, and numerical values. Focus on revenue, profit, and growth metrics. Include all monetary amounts with proper currency information.
 ```
+
+### Facts extraction guidelines
+
+OntoCast always applies the following rules during facts rendering (see also [Facts extraction model](concepts.md#facts-extraction-model)):
+
+1. **`cd:` for new data** — Instances found in the source text use the configured facts namespace (`cd:` by default), with `lowercase_snake_case` local names and `rdfs:label`.
+2. **Domain ontology is read-only** — Do not mint new IRIs under the catalog ontology prefix. Reuse an ontology IRI only when that exact **reference individual** already exists in the provided ontology context.
+3. **Class ≠ instance** — Ontology classes type `cd:` instances; class IRIs must not appear as factual subjects/objects, and text mentions do not become ontology-prefixed individuals just because a matching class exists.
+4. **Typing** — Every `cd:` entity gets `rdf:type` to a domain or core class (e.g. `schema:Person`); never type facts as `rdfs:Class` or `rdf:Property`.
+5. **Opaque IDs** (Wikidata-style Q/P codes) — Map mentions via labels and the term index; never guess or construct IRIs from label strings.
+
+Use `facts_user_instruction` to steer *what* to extract (domains, metrics, relationships), not to override namespace or IRI policy.
 
 ---
 

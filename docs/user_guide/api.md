@@ -10,7 +10,17 @@ Returns service health. Use for load balancers and readiness probes.
 
 ### `GET /info`
 
-Returns version, configuration summary, and active backend information.
+Returns service metadata, including:
+
+| Field | Description |
+|-------|-------------|
+| `version` | Package version |
+| `llm_cache` | When the LLM tool is initialized: in-memory hit/miss counters plus on-disk cache file stats (`cache_hits`, `cache_misses`, `disk`) |
+| `max_concurrent_processes` | Configured cap on simultaneous `/process` handlers, if `MAX_CONCURRENT_PROCESSES` is set |
+
+```bash
+curl http://localhost:8999/info
+```
 
 ---
 
@@ -74,7 +84,7 @@ curl -X POST "http://localhost:8999/process?tenant=acme&project=reports" \
   -F "file=@document.pdf"
 ```
 
-**Response:** JSON with `data.facts` (Turtle), `data.ontology_artifacts` (list of ontology TTL payloads), and `metadata` (status, chunk counts, budget).
+**Response:** JSON with `data.facts` (Turtle), `data.ontology_artifacts` (list of ontology TTL payloads), and `metadata` (status, chunk counts, budget including `cache_hits` when applicable).
 
 ---
 
@@ -143,6 +153,8 @@ curl -X POST "http://localhost:8999/flush?dataset=my_dataset"
 
 Benchmark-oriented endpoints for entity alignment and evaluation. Used by the standalone `match-dirs` CLI.
 
+Alignment treats **identical IRIs** across input graphs as the same entity (score 1.0) before embedding similarity is considered — important when predicted and ground-truth graphs share ontology class or property IRIs.
+
 ### `POST /match/entities`
 
 Align entities globally across a list of graphs (embedding + symbolic clustering).
@@ -166,6 +178,8 @@ Derive 1:1 predicted↔ground-truth entity matches for one graph pair from align
 
 Compute triple and entity precision/recall/F1 given graphs and entity matches. Label triples (`rdfs:label`) are excluded from triple metrics.
 
+Entity metrics: true positives = number of accepted entity matches; false positives = predicted entities not in the matched set; false negatives = ground-truth entities not in the matched set (set-based, so correctly matched shared vocabulary IRIs are not double-penalized).
+
 **Standalone CLI:**
 
 ```bash
@@ -186,6 +200,9 @@ match-dirs \
 | `400` | Invalid parameters (e.g. missing fixed ontology id) |
 | `409` | Vector store unavailable when vector ontology mode requested |
 | `500` | Processing or store errors |
+| `503` | Health check: LLM not initialized or health probe failure |
+
+When `MAX_CONCURRENT_PROCESSES` is set, additional `/process` and `/process_unit` requests **wait** until a handler slot is free (they are not rejected with 503).
 
 Vector mode unavailable:
 
@@ -201,5 +218,6 @@ Vector mode unavailable:
 ## Related
 
 - [Configuration](configuration.md) — server and tool settings
+- [LLM Caching](llm_caching.md) — disk cache, in-flight limits, batch pre-warming
 - [User Instructions](user_instructions.md) — guiding extraction
 - [Workflow](workflow.md) — what happens inside `/process`
