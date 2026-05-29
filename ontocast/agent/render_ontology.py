@@ -73,7 +73,7 @@ def _prepare_ontology_common_prompt_layers(
     general_ontology_instruction_str = general_ontology_instruction.format(
         domain_ontologies_clause=format_ontologies_clause(domain_pairs)
     )
-    text_chapter = text_template.format(text=state.content_unit.text)
+    text_chapter = text_template.format(text=state.content_unit.extraction_text)
     external_evidence = state.external_evidence_text
     if external_evidence:
         state.mark_external_evidence_used(WorkflowNode.TEXT_TO_ONTOLOGY)

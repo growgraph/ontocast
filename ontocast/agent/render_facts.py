@@ -102,7 +102,7 @@ def _prepare_prompt_data(
         domain_ontologies_clause=format_ontologies_clause(domain_pairs),
     )
 
-    text_chapter = text_template.format(text=state.content_unit.text)
+    text_chapter = text_template.format(text=state.content_unit.extraction_text)
 
     fact_chapter = ""
 

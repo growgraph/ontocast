@@ -106,6 +106,9 @@ def test_build_agent_state_from_parsed_sets_max_visits() -> None:
         render_mode=None,
         llm_graph_format=None,
         ontology_context_mode_value=OntologyContextMode.FIXED_SINGLE_ONTOLOGY,
+        target_sections=None,
+        summarize_sections=None,
+        summary_max_sentences=5,
     )
     state = build_agent_state_from_parsed(
         parsed,

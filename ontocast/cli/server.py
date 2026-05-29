@@ -39,6 +39,11 @@ Example:
 
     # Process with chunk limit
     ontocast --head-chunks 5
+
+    # Structured document: filter sections and summarize before extraction
+    ontocast --input-path ./paper.pdf \\
+        --target-sections results,methods \\
+        --summarize-sections results --summary-max-sentences 5
 """
 
 import asyncio
@@ -72,6 +77,10 @@ from ontocast.api.tenancy_resolution import (
     apply_request_tenancy,
     resolve_tenant_project,
     stores_use_tenancy_partitions,
+)
+from ontocast.cli.http_parse import (
+    parse_sections_list_param,
+    parse_summary_max_sentences_param,
 )
 from ontocast.cli.http_responses import (
     invalid_max_visits_response,
@@ -273,6 +282,9 @@ def expand_input_to_states(
     ontology_context_mode_value: OntologyContextMode,
     tenant: str | None,
     project: str | None,
+    target_sections: list[str] | None = None,
+    summarize_sections: list[str] | None = None,
+    summary_max_sentences: int = 5,
 ) -> list[AgentState]:
     """Expand a local input file into one ``AgentState`` per logical record.
 
@@ -292,6 +304,9 @@ def expand_input_to_states(
         ),
         "tenant": tenant,
         "project": project,
+        "target_sections": target_sections,
+        "summarize_sections": summarize_sections,
+        "summary_max_sentences": summary_max_sentences,
     }
 
     if file_path.suffix.lower() != ".jsonl":
@@ -368,6 +383,9 @@ async def _process_files_input(
     ontology_context_mode_value: OntologyContextMode,
     tenant: str | None,
     project: str | None,
+    target_sections: list[str] | None = None,
+    summarize_sections: list[str] | None = None,
+    summary_max_sentences: int = 5,
 ) -> None:
     recursion_limit = calculate_recursion_limit(head_chunks, config.server)
     for file_path in files:
@@ -379,6 +397,9 @@ async def _process_files_input(
                 ontology_context_mode_value=ontology_context_mode_value,
                 tenant=tenant,
                 project=project,
+                target_sections=target_sections,
+                summarize_sections=summarize_sections,
+                summary_max_sentences=summary_max_sentences,
             )
             for state in states:
                 if use_unit_pipeline:
@@ -914,12 +935,40 @@ def create_app(
         f"(default {DEFAULT_PROJECT!r} when omitted; not read from .env)."
     ),
 )
+@click.option(
+    "--target-sections",
+    type=str,
+    default=None,
+    help=(
+        "Comma-separated section labels to keep when chunking (e.g. results,methods). "
+        "Enables section tagging in the workflow graph."
+    ),
+)
+@click.option(
+    "--summarize-sections",
+    type=str,
+    default=None,
+    help=(
+        "Comma-separated section labels to summarize before extraction, or '*' / empty "
+        "for all chunks. When set, runs the summarize_chunks graph node."
+    ),
+)
+@click.option(
+    "--summary-max-sentences",
+    type=int,
+    default=5,
+    show_default=True,
+    help="Max sentences per chunk summary when --summarize-sections is set.",
+)
 def run(
     input_path: pathlib.Path | None,
     head_chunks: int | None,
     use_unit_pipeline: bool,
     tenant: str | None,
     project: str | None,
+    target_sections: str | None,
+    summarize_sections: str | None,
+    summary_max_sentences: int,
 ):
     """
     Main entry point for the OntoCast server/CLI.
@@ -979,6 +1028,21 @@ def run(
     )
     validate_ontology_context_mode(ontology_context_mode_value, tools)
 
+    parsed_target_sections = (
+        parse_sections_list_param(target_sections)
+        if target_sections is not None
+        else None
+    )
+    parsed_summarize_sections = (
+        parse_sections_list_param(summarize_sections)
+        if summarize_sections is not None
+        else None
+    )
+    parsed_summary_max_sentences = parse_summary_max_sentences_param(
+        summary_max_sentences,
+        default=5,
+    )
+
     workflow: CompiledStateGraph = create_agent_graph(tools)
 
     if input_path is not None:
@@ -1000,6 +1064,9 @@ def run(
                 ontology_context_mode_value=ontology_context_mode_value,
                 tenant=t_res,
                 project=p_res,
+                target_sections=parsed_target_sections,
+                summarize_sections=parsed_summarize_sections,
+                summary_max_sentences=parsed_summary_max_sentences,
             )
         )
     else:

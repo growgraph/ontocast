@@ -9,6 +9,7 @@ import logging
 
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import Status
+from ontocast.onto.section import assign_section_labels, filter_units_by_target_sections
 from ontocast.onto.state import AgentState
 from ontocast.toolbox import ToolBox
 
@@ -49,6 +50,28 @@ def chunk_text(state: AgentState, tools: ToolBox) -> AgentState:
                     doc_iri=state.doc_iri,
                 )
             )
+
+        if state.section_spans:
+            assign_section_labels(
+                state.content_units,
+                state.input_text,
+                state.section_spans,
+            )
+
+        if state.target_sections is not None:
+            before = len(state.content_units)
+            state.content_units = filter_units_by_target_sections(
+                state.content_units,
+                state.target_sections,
+            )
+            logger.info(
+                "Section filter %s: kept %s/%s chunks",
+                state.target_sections,
+                len(state.content_units),
+                before,
+            )
+            for index, unit in enumerate(state.content_units):
+                unit.index = index
 
         logger.info(
             "Created "

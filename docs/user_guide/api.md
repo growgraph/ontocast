@@ -40,6 +40,18 @@ Runs the full document pipeline: convert → chunk → ontology map/reduce → f
 | `ontology_user_instruction` | Guide ontology extraction |
 | `ontology_selection_user_instruction` | Guide catalog ontology selection |
 | `facts_user_instruction` | Guide facts extraction |
+| `target_sections` | Comma-separated or JSON list; keep only these sections (enables section tagging) |
+| `summarize_sections` | Sections to summarize before extraction; omit to skip. `*` or empty = all chunks |
+| `summary_max_sentences` | Max sentences per summary when summarization runs (default `5`) |
+
+**CLI file processing** (`ontocast --input-path …`) accepts the same structured-document flags:
+
+```bash
+ontocast --input-path ./papers/ \
+  --target-sections results,methods \
+  --summarize-sections results \
+  --summary-max-sentences 5
+```
 
 **Examples:**
 

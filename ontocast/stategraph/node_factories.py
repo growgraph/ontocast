@@ -6,13 +6,20 @@ from rdflib import DCTERMS, RDFS, Literal, URIRef
 
 from ontocast.agent.normalize_ontology import normalize_ontology_units
 from ontocast.agent.render_ontology import render_ontology_update
+from ontocast.agent.summarize_chunks import summarize_chunk
 from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
-from ontocast.onto.enum import OntologyAssemblyMode, OntologyContextMode, Status
+from ontocast.onto.enum import (
+    OntologyAssemblyMode,
+    OntologyContextMode,
+    Status,
+    WorkflowNode,
+)
 from ontocast.onto.iri_policy import split_namespace_local
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.section import should_summarize_unit
 from ontocast.onto.state import AgentState, BudgetTracker
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.atomic import facts_loop, ontology_loop
@@ -537,3 +544,53 @@ def make_consistency_critic_node(tools: ToolBox):
         return state
 
     return consistency_critic
+
+
+def make_summarize_chunks_node(tools: ToolBox):
+    async def summarize_chunks(state: AgentState) -> AgentState:
+        if not state.content_units or not state.use_summarization:
+            state.status = Status.SUCCESS
+            return state
+
+        worker_limit = max(1, tools.config.server.parallel_workers)
+        semaphore = asyncio.Semaphore(worker_limit)
+
+        async def process_unit(unit_index: int) -> tuple[int, str | None]:
+            async with semaphore:
+                unit = state.content_units[unit_index]
+                if not should_summarize_unit(unit, state.summarize_sections):
+                    return unit_index, None
+                try:
+                    summary = await summarize_chunk(
+                        unit,
+                        tools,
+                        max_sentences=state.summary_max_sentences,
+                    )
+                    return unit_index, summary
+                except Exception as exc:
+                    logger.warning(
+                        "Summarization failed for unit %s: %s",
+                        unit_index,
+                        exc,
+                    )
+                    return unit_index, None
+
+        tasks = [process_unit(i) for i in range(len(state.content_units))]
+        raw_results = await asyncio.gather(*tasks)
+        summarized_count = 0
+        for unit_index, summary in sorted(raw_results, key=lambda item: item[0]):
+            if summary is None:
+                continue
+            state.content_units[unit_index].summary = summary
+            summarized_count += 1
+
+        logger.info(
+            "Summarized %s/%s content unit(s)",
+            summarized_count,
+            len(state.content_units),
+        )
+        state.set_node_status(WorkflowNode.SUMMARIZE_CHUNKS, Status.SUCCESS)
+        state.status = Status.SUCCESS
+        return state
+
+    return summarize_chunks

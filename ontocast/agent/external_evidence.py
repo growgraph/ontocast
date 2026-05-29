@@ -98,7 +98,7 @@ def _resolve_user_instruction(state: UnitFactsState | UnitOntologyState) -> str:
 
 
 def _resolve_content_text(state: UnitFactsState | UnitOntologyState) -> str:
-    return state.content_unit.text
+    return state.content_unit.extraction_text
 
 
 def _resolve_search_request(

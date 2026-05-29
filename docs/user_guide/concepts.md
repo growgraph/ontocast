@@ -31,6 +31,18 @@ OntoCast uses **pyoxigraph** for RDF 1.2 quoted-triple syntax and separates prov
 
 See [Workflow](workflow.md#4-ontology-reduce-document-level).
 
+## Structured documents (optional)
+
+For papers and other heading-structured text, `/process` accepts optional query or JSON body parameters:
+
+| Parameter | Default | Effect |
+|-----------|---------|--------|
+| `target_sections` | omitted | Run section tagging and keep only listed sections (e.g. `results,methods`) |
+| `summarize_sections` | omitted | Run LLM summarization; omit to skip. Use empty value or `*` to summarize all chunks |
+| `summary_max_sentences` | `5` | Max sentences per summary when summarization runs |
+
+When all are omitted, the pipeline matches the legacy path (`convert → chunk → extract`) with no extra nodes.
+
 ## Parallel Map/Reduce
 
 Document processing uses a **parallel map/reduce** architecture:

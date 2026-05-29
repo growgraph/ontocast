@@ -14,7 +14,9 @@ from ontocast.cli.http_parse import (
     parse_max_visits_param,
     parse_ontology_context_mode_param,
     parse_render_mode_param,
+    parse_sections_list_param,
     parse_strip_provenance_param,
+    parse_summary_max_sentences_param,
     resolve_ontology_context_mode,
 )
 from ontocast.cli.http_responses import missing_fixed_catalog_ontology_id_response
@@ -39,6 +41,9 @@ class ParsedProcessRequest:
     render_mode: str | None
     llm_graph_format: str | None
     ontology_context_mode_value: OntologyContextMode
+    target_sections: list[str] | None
+    summarize_sections: list[str] | None
+    summary_max_sentences: int
 
 
 async def load_parsed_process_request(
@@ -78,6 +83,23 @@ async def load_parsed_process_request(
         )
     )
 
+    target_sections: list[str] | None = None
+    if "target_sections" in request.query_params:
+        target_sections = parse_sections_list_param(
+            request.query_params.get("target_sections")
+        )
+
+    summarize_sections: list[str] | None = None
+    if "summarize_sections" in request.query_params:
+        summarize_sections = parse_sections_list_param(
+            request.query_params.get("summarize_sections")
+        )
+
+    summary_max_sentences = parse_summary_max_sentences_param(
+        request.query_params.get("summary_max_sentences"),
+        default=5,
+    )
+
     if content_type.startswith("application/json"):
         bytes_data = await request.body()
         logger.debug("%s JSON body length: %s", log_label, len(bytes_data))
@@ -95,6 +117,19 @@ async def load_parsed_process_request(
                 body_format = parsed_obj.get("llm_graph_format")
                 if body_format is not None:
                     llm_graph_format = body_format
+                if "target_sections" in parsed_obj:
+                    target_sections = parse_sections_list_param(
+                        parsed_obj.get("target_sections")
+                    )
+                if "summarize_sections" in parsed_obj:
+                    summarize_sections = parse_sections_list_param(
+                        parsed_obj.get("summarize_sections")
+                    )
+                if "summary_max_sentences" in parsed_obj:
+                    summary_max_sentences = parse_summary_max_sentences_param(
+                        parsed_obj.get("summary_max_sentences"),
+                        summary_max_sentences,
+                    )
         except (json.JSONDecodeError, UnicodeDecodeError):
             logger.debug(
                 "%s JSON body could not be decoded for ontology id preview",
@@ -120,6 +155,15 @@ async def load_parsed_process_request(
                 max_visits = parse_max_visits_param(str(value), max_visits)
             elif key == "llm_graph_format" and value:
                 llm_graph_format = str(value)
+            elif key == "target_sections" and value is not None:
+                target_sections = parse_sections_list_param(str(value))
+            elif key == "summarize_sections" and value is not None:
+                summarize_sections = parse_sections_list_param(str(value))
+            elif key == "summary_max_sentences" and value:
+                summary_max_sentences = parse_summary_max_sentences_param(
+                    str(value),
+                    summary_max_sentences,
+                )
         if not files_dict:
             return JSONResponse(
                 status_code=400,
@@ -158,6 +202,9 @@ async def load_parsed_process_request(
         render_mode=render_mode,
         llm_graph_format=llm_graph_format,
         ontology_context_mode_value=ontology_context_mode_value,
+        target_sections=target_sections,
+        summarize_sections=summarize_sections,
+        summary_max_sentences=summary_max_sentences,
     )
 
 
@@ -192,4 +239,7 @@ def build_agent_state_from_parsed(
         ontology_selection_user_instruction=parsed.ontology_selection_user_instruction,
         facts_user_instruction=parsed.facts_user_instruction,
         ontology_context_fixed_ontology_id=parsed.ontology_context_fixed_ontology_id,
+        target_sections=parsed.target_sections,
+        summarize_sections=parsed.summarize_sections,
+        summary_max_sentences=parsed.summary_max_sentences,
     )

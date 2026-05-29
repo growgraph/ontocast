@@ -77,7 +77,7 @@ async def criticise_facts(
         state.content_unit.graph
     ) + _build_quarantine_chapter(state)
 
-    text_chapter = text_template.format(text=state.content_unit.text)
+    text_chapter = text_template.format(text=state.content_unit.extraction_text)
 
     user_instruction = (
         user_template.format(user_instruction=state.facts_user_instruction)

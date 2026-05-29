@@ -67,7 +67,7 @@ async def criticise_ontology(
 
     ontology_chapter = profile.format_ontology_chapter(current.graph)
 
-    text_chapter = text_template.format(text=state.content_unit.text)
+    text_chapter = text_template.format(text=state.content_unit.extraction_text)
 
     user_instruction = state.ontology_user_instruction
     external_evidence = state.external_evidence_text

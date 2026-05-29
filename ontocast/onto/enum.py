@@ -83,7 +83,9 @@ class WorkflowNode(StrEnum):
     """Enumeration of workflow nodes in the processing pipeline."""
 
     CONVERT_TO_MD = "Convert to Markdown"
+    TAG_SECTIONS = "Tag Sections"
     CHUNK = "Chunk Text"
+    SUMMARIZE_CHUNKS = "Summarize Chunks"
     TEXT_TO_ONTOLOGY = "Text to Ontology"
     TEXT_TO_FACTS = "Text to Facts"
     CRITICISE_ONTOLOGY = "Criticise Ontology"

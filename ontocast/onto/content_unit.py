@@ -41,6 +41,14 @@ class SourceUnit(BaseModel):
     type: OutputType = Field(
         default=OutputType.FACTS, description="Type of content unit"
     )
+    section_label: str | None = Field(
+        default=None,
+        description="Section label assigned by tag_sections (e.g. results, methods)",
+    )
+    summary: str | None = Field(
+        default=None,
+        description="LLM-compressed summary of this chunk used for extraction prompts",
+    )
     _hid: str = PrivateAttr(default="")
 
     @field_validator("doc_iri", mode="before")
@@ -88,6 +96,13 @@ class SourceUnit(BaseModel):
 
     def __len__(self):
         return len(self.text)
+
+    @property
+    def extraction_text(self) -> str:
+        """Text fed to extraction and critique LLM prompts."""
+        if self.summary:
+            return self.summary
+        return self.text
 
 
 class ContentUnit(SourceUnit):

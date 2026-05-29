@@ -1,5 +1,6 @@
 """Shared HTTP query/body parsing for CLI server routes."""
 
+import json
 import logging
 
 from ontocast.onto.enum import LLMGraphFormat, OntologyContextMode, RenderMode
@@ -97,6 +98,36 @@ def parse_strip_provenance_param(value: str | None) -> bool:
         value,
     )
     return False
+
+
+def parse_sections_list_param(value: str | list[str] | None) -> list[str]:
+    """Parse a section list from comma-separated text or JSON array."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    raw = str(value).strip()
+    if not raw:
+        return []
+    if raw.startswith("["):
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list):
+            raise ValueError("section list JSON must be an array")
+        return [str(item).strip() for item in parsed if str(item).strip()]
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def parse_summary_max_sentences_param(value: str | int | None, default: int) -> int:
+    """Parse optional summary_max_sentences (positive integer)."""
+    if value is None:
+        return default
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError("summary_max_sentences must be a positive integer") from exc
+    if parsed < 1:
+        raise ValueError("summary_max_sentences must be a positive integer")
+    return parsed
 
 
 def parse_max_visits_param(value: str | int | None, default: int) -> int:

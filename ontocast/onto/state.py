@@ -24,6 +24,7 @@ from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.model import BasePydanticModel, Suggestions
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.section import SectionSpan
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.util import render_text_hash
 
@@ -339,6 +340,22 @@ class AgentState(BasePydanticModel):
         default=3, description="Maximum number of visits allowed per node"
     )
     max_chunks: int | None = None
+    section_spans: list[SectionSpan] = Field(
+        default_factory=list,
+        description="Section spans detected in input_text by tag_sections.",
+    )
+    target_sections: list[str] | None = Field(
+        default=None,
+        description="Sections to include when chunking. None = no filter.",
+    )
+    summarize_sections: list[str] | None = Field(
+        default=None,
+        description="Sections to summarize. None = skip summarization node.",
+    )
+    summary_max_sentences: int = Field(
+        default=5,
+        description="Max sentences per chunk summary when summarization is enabled.",
+    )
     model_config = ConfigDict(arbitrary_types_allowed=True, populate_by_name=True)
     render_mode: RenderMode = Field(
         default=RenderMode.ONTOLOGY_AND_FACTS,
@@ -393,6 +410,16 @@ class AgentState(BasePydanticModel):
     def get_node_status(self, node: WorkflowNode) -> Status:
         """Get the status of a workflow node, returning NOT_VISITED if not set."""
         return self.statuses.get(node, Status.NOT_VISITED)
+
+    @property
+    def use_section_tagging(self) -> bool:
+        """Whether the tag_sections node should run."""
+        return self.target_sections is not None or self.summarize_sections is not None
+
+    @property
+    def use_summarization(self) -> bool:
+        """Whether the summarize_chunks node should run."""
+        return self.summarize_sections is not None
 
     @property
     def render_ontology(self) -> bool:
