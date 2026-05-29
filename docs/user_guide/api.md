@@ -185,9 +185,13 @@ Derive 1:1 predicted↔ground-truth entity matches for one graph pair from align
 
 ### `POST /match/evaluate`
 
-Compute triple and entity precision/recall/F1 given graphs and entity matches. Label triples (`rdfs:label`) are excluded from triple metrics.
+Compute triple, **facts**, and entity precision/recall/F1 given graphs and entity matches.
 
-Entity metrics: true positives = number of accepted entity matches; false positives = predicted entities not in the matched set; false negatives = ground-truth entities not in the matched set (set-based, so correctly matched shared vocabulary IRIs are not double-penalized).
+- **Triple metrics** — all triples except `rdfs:label` (includes `rdf:type` and other schema assertions).
+- **Facts metrics** — relational assertions only: excludes schema predicates (`rdf:type`, `rdfs:subClassOf`, `rdfs:comment`) and any triple whose subject or object is an ontological (class/concept) URIRef. Ontology **relation** IRIs used only as predicates (e.g. `.../relations#P674`) are not treated as ontological entities.
+- **Entity metrics** — true positives = number of accepted entity matches; false positives = predicted entities not in the matched set; false negatives = ground-truth entities not in the matched set (set-based, so correctly matched shared vocabulary IRIs are not double-penalized).
+
+Response fields: `precision` / `recall` / `f1` (triples), `fact_precision` / `fact_recall` / `fact_f1` (facts), `entity_precision` / `entity_recall` / `entity_f1` (entities), plus TP/FP/FN counts for each tier.
 
 **Standalone CLI:**
 

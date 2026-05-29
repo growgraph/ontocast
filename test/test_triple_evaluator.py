@@ -200,3 +200,145 @@ def test_evaluate_json_validated_matches_produce_true_positives() -> None:
         entity_matches=entity_matches,
     )
     assert metrics.true_positives >= 1
+
+
+def test_type_only_overlap_has_triple_metrics_but_no_fact_tp() -> None:
+    person_type = URIRef("https://types/Person")
+    entity = URIRef("https://example.org/Alpha")
+    graph = RDFGraph()
+    graph.add((entity, RDF.type, person_type))
+
+    metrics = TripleSetEvaluator().evaluate(
+        predicted_graph=graph,
+        gt_graph=graph,
+        entity_matches=[
+            EntityMatch(predicted_entity=entity, gt_entity=entity, similarity=1.0),
+            EntityMatch(
+                predicted_entity=person_type, gt_entity=person_type, similarity=1.0
+            ),
+            EntityMatch(predicted_entity=RDF.type, gt_entity=RDF.type, similarity=1.0),
+        ],
+    )
+    assert metrics.true_positives == 1
+    assert metrics.precision == 1.0
+    assert metrics.fact_true_positives == 0
+    assert metrics.fact_predicted_count == 0
+    assert metrics.fact_ground_truth_count == 0
+
+
+def test_relational_triple_perfect_fact_metrics() -> None:
+    book = URIRef("http://text2kg.bench/prisoners_of_the_sun")
+    person = URIRef("http://text2kg.bench/captain_haddock")
+    characters = URIRef("https://bench.example/relations/P674")
+
+    graph = RDFGraph()
+    graph.add((book, characters, person))
+
+    metrics = TripleSetEvaluator().evaluate(
+        predicted_graph=graph,
+        gt_graph=graph,
+        entity_matches=[
+            EntityMatch(predicted_entity=book, gt_entity=book, similarity=1.0),
+            EntityMatch(predicted_entity=person, gt_entity=person, similarity=1.0),
+            EntityMatch(
+                predicted_entity=characters, gt_entity=characters, similarity=1.0
+            ),
+        ],
+    )
+    assert metrics.fact_true_positives == 1
+    assert metrics.fact_precision == 1.0
+    assert metrics.fact_recall == 1.0
+    assert metrics.fact_f1 == 1.0
+
+
+def test_subclass_axiom_excluded_from_facts() -> None:
+    class_a = URIRef("https://ontology.example/ClassA")
+    class_b = URIRef("https://ontology.example/ClassB")
+    graph = RDFGraph()
+    graph.add((class_a, RDFS.subClassOf, class_b))
+
+    metrics = TripleSetEvaluator().evaluate(
+        predicted_graph=graph,
+        gt_graph=graph,
+        entity_matches=[
+            EntityMatch(predicted_entity=class_a, gt_entity=class_a, similarity=1.0),
+            EntityMatch(predicted_entity=class_b, gt_entity=class_b, similarity=1.0),
+            EntityMatch(
+                predicted_entity=RDFS.subClassOf,
+                gt_entity=RDFS.subClassOf,
+                similarity=1.0,
+            ),
+        ],
+    )
+    assert metrics.true_positives == 1
+    assert metrics.fact_true_positives == 0
+
+
+def test_extra_relation_lowers_fact_precision() -> None:
+    book = URIRef("http://text2kg.bench/book")
+    person = URIRef("http://text2kg.bench/person")
+    extra = URIRef("http://text2kg.bench/extra")
+    p674 = URIRef("https://bench.example/relations/P674")
+    p50 = URIRef("https://bench.example/relations/P50")
+
+    gt_graph = RDFGraph()
+    gt_graph.add((book, p674, person))
+
+    predicted_graph = RDFGraph()
+    predicted_graph.add((book, p674, person))
+    predicted_graph.add((book, p50, extra))
+
+    entity_matches = [
+        EntityMatch(predicted_entity=book, gt_entity=book, similarity=1.0),
+        EntityMatch(predicted_entity=person, gt_entity=person, similarity=1.0),
+        EntityMatch(predicted_entity=extra, gt_entity=extra, similarity=1.0),
+        EntityMatch(predicted_entity=p674, gt_entity=p674, similarity=1.0),
+        EntityMatch(predicted_entity=p50, gt_entity=p50, similarity=1.0),
+    ]
+
+    metrics = TripleSetEvaluator().evaluate(
+        predicted_graph=predicted_graph,
+        gt_graph=gt_graph,
+        entity_matches=entity_matches,
+    )
+    assert metrics.fact_true_positives == 1
+    assert metrics.fact_predicted_count == 2
+    assert metrics.fact_precision == 0.5
+    assert metrics.fact_recall == 1.0
+
+
+def test_wrong_type_excluded_from_facts_but_counts_in_triple_metrics() -> None:
+    book = URIRef("http://text2kg.bench/book")
+    person = URIRef("http://text2kg.bench/person")
+    correct_type = URIRef("https://ontology.example/concepts/Q95074")
+    wrong_type = URIRef("https://ontology.example/concepts/Q5")
+    p674 = URIRef("https://bench.example/relations/P674")
+
+    gt_graph = RDFGraph()
+    gt_graph.add((book, p674, person))
+    gt_graph.add((person, RDF.type, correct_type))
+
+    predicted_graph = RDFGraph()
+    predicted_graph.add((book, p674, person))
+    predicted_graph.add((person, RDF.type, wrong_type))
+
+    metrics = TripleSetEvaluator().evaluate(
+        predicted_graph=predicted_graph,
+        gt_graph=gt_graph,
+        entity_matches=[
+            EntityMatch(predicted_entity=book, gt_entity=book, similarity=1.0),
+            EntityMatch(predicted_entity=person, gt_entity=person, similarity=1.0),
+            EntityMatch(
+                predicted_entity=correct_type, gt_entity=correct_type, similarity=1.0
+            ),
+            EntityMatch(
+                predicted_entity=wrong_type, gt_entity=wrong_type, similarity=1.0
+            ),
+            EntityMatch(predicted_entity=p674, gt_entity=p674, similarity=1.0),
+            EntityMatch(predicted_entity=RDF.type, gt_entity=RDF.type, similarity=1.0),
+        ],
+    )
+    assert metrics.fact_true_positives == 1
+    assert metrics.fact_f1 == 1.0
+    assert metrics.true_positives == 1
+    assert metrics.false_positives == 1

@@ -5,9 +5,11 @@ from __future__ import annotations
 from ontocast.onto.rdfgraph import RDFGraph
 
 from .match_common import (
+    collect_ontology_entities,
     compute_prf,
     count_domain_entity_matches,
     extract_entities,
+    prepare_fact_triples,
     prepare_metric_triples,
     project_triples,
 )
@@ -43,6 +45,18 @@ class TripleSetEvaluator:
             len(ground_truth),
         )
 
+        ontology_entities = collect_ontology_entities(predicted | ground_truth)
+        predicted_facts = prepare_fact_triples(predicted, ontology_entities)
+        ground_truth_facts = prepare_fact_triples(ground_truth, ontology_entities)
+        fact_true_positives = len(predicted_facts & ground_truth_facts)
+        fact_false_positives = len(predicted_facts - ground_truth_facts)
+        fact_false_negatives = len(ground_truth_facts - predicted_facts)
+        fact_precision, fact_recall, fact_f1 = compute_prf(
+            fact_true_positives,
+            len(predicted_facts),
+            len(ground_truth_facts),
+        )
+
         predicted_entities = set(extract_entities(predicted_graph))
         gt_entities = set(extract_entities(gt_graph))
         matched_predicted = {
@@ -75,4 +89,12 @@ class TripleSetEvaluator:
             entity_false_positives=entity_false_positives,
             entity_false_negatives=entity_false_negatives,
             domain_entity_matches=domain_entity_matches,
+            fact_precision=fact_precision,
+            fact_recall=fact_recall,
+            fact_f1=fact_f1,
+            fact_true_positives=fact_true_positives,
+            fact_false_positives=fact_false_positives,
+            fact_false_negatives=fact_false_negatives,
+            fact_predicted_count=len(predicted_facts),
+            fact_ground_truth_count=len(ground_truth_facts),
         )

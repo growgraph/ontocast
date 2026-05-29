@@ -320,6 +320,14 @@ def _match_test_app(monkeypatch: pytest.MonkeyPatch):
                 entity_false_positives=0,
                 entity_false_negatives=0,
                 domain_entity_matches=1,
+                fact_precision=1.0,
+                fact_recall=1.0,
+                fact_f1=1.0,
+                fact_true_positives=1,
+                fact_false_positives=0,
+                fact_false_negatives=0,
+                fact_predicted_count=1,
+                fact_ground_truth_count=1,
             )
 
     monkeypatch.setattr(server_module, "EntityAligner", _FakeAligner)

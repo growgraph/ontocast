@@ -44,7 +44,9 @@ For evaluation against ground truth, use the match endpoints (see [API Endpoints
 
 - Align entities across multiple graphs globally
 - Derive pairwise predicted↔GT mappings
-- Compute triple and entity precision/recall/F1
+- Compute triple, facts, and entity precision/recall/F1
+
+**Facts vs triple metrics:** triple-level scores count typing and taxonomy (`rdf:type`, `rdfs:subClassOf`, …). **Facts** scores measure only instance-to-instance relations (e.g. book → character via an ontology property), excluding schema predicates and triples that touch class/concept nodes in subject or object position. Relation property IRIs in predicate position still count toward facts.
 
 Entity match payloads accept IRI strings or `URIRef` values; evaluation normalizes to `URIRef` for projection. **Entity false positives/negatives** count unmatched entities in each graph (set difference), so a shared ontology vocabulary IRI matched once is not also counted as an extra false positive on the other side.
 

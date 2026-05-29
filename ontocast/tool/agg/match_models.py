@@ -70,6 +70,14 @@ class MatchMetrics(BaseModel):
     entity_false_positives: int
     entity_false_negatives: int
     domain_entity_matches: int
+    fact_precision: float
+    fact_recall: float
+    fact_f1: float
+    fact_true_positives: int
+    fact_false_positives: int
+    fact_false_negatives: int
+    fact_predicted_count: int
+    fact_ground_truth_count: int
 
 
 class TaggedGraph(BaseModel):

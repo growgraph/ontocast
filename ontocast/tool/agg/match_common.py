@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from itertools import product
 
 import numpy as np
-from rdflib import RDFS, XSD, URIRef
+from rdflib import RDF, RDFS, XSD, URIRef
 from rdflib.term import Literal, Node
 
 from ontocast.onto.iri_policy import split_namespace_local
@@ -78,6 +78,61 @@ def prepare_metric_triples(
 ) -> set[tuple[Node, Node, Node]]:
     return {
         normalize_triple(triple) for triple in triples if is_informative_triple(triple)
+    }
+
+
+SCHEMA_PREDICATES = frozenset({RDF.type, RDFS.subClassOf, RDFS.label, RDFS.comment})
+
+
+def _is_generic_vocab_entity(entity: URIRef) -> bool:
+    namespace, _ = split_namespace_local(str(entity))
+    return namespace is not None and namespace in GENERIC_NAMESPACES
+
+
+def collect_ontology_entities(
+    triples: set[tuple[Node, Node, Node]],
+) -> frozenset[URIRef]:
+    """URIRefs that are class/concept/schema nodes (s/o), not relation predicates."""
+    ontology_entities: set[URIRef] = set()
+    for subject, predicate, obj in triples:
+        if predicate == RDF.type and isinstance(obj, URIRef):
+            ontology_entities.add(obj)
+        elif predicate == RDFS.subClassOf:
+            if isinstance(subject, URIRef):
+                ontology_entities.add(subject)
+            if isinstance(obj, URIRef):
+                ontology_entities.add(obj)
+        if isinstance(subject, URIRef) and _is_generic_vocab_entity(subject):
+            ontology_entities.add(subject)
+        if isinstance(obj, URIRef) and _is_generic_vocab_entity(obj):
+            ontology_entities.add(obj)
+    return frozenset(ontology_entities)
+
+
+def is_fact_triple(
+    triple: tuple[Node, Node, Node],
+    ontology_entities: frozenset[URIRef],
+) -> bool:
+    if not is_informative_triple(triple):
+        return False
+    subject, predicate, obj = triple
+    if predicate in SCHEMA_PREDICATES:
+        return False
+    if isinstance(subject, URIRef) and subject in ontology_entities:
+        return False
+    if isinstance(obj, URIRef) and obj in ontology_entities:
+        return False
+    return True
+
+
+def prepare_fact_triples(
+    triples: set[tuple[Node, Node, Node]],
+    ontology_entities: frozenset[URIRef],
+) -> set[tuple[Node, Node, Node]]:
+    return {
+        normalize_triple(triple)
+        for triple in triples
+        if is_fact_triple(triple, ontology_entities)
     }
 
 
