@@ -1,13 +1,13 @@
 # OntoCast Workflow
 
-This document describes the document processing pipeline implemented in `stategraph/create.py`.
+This document describes the document processing pipeline implemented in `stategraph/create.py`. After changing optional nodes (e.g. Tag Sections, Summarize Chunks), regenerate workflow diagrams with `uv run plot-graph`.
 
 ## Overview
 
 OntoCast transforms input documents into RDF ontology and facts graphs through a **parallel map/reduce** pipeline:
 
 1. **Document conversion** — PDF, DOCX, TXT, MD, or JSON → Markdown
-2. **Semantic chunking** — split into content units (optionally limited with `--head-chunks`)
+2. **Chunking** — semantic split into content units (`--head-chunks` limits count for testing). Optionally: **Tag Sections** → chunk → assign section-aligned labels → filter by `target_sections` → **Summarize Chunks** (see [Structured documents](concepts.md#structured-documents-optional))
 3. **Ontology map/reduce** (when `render_mode` includes ontology):
    - Per-unit context assembly (catalog selection or vector retrieval)
    - Render/critic loops with optional web evidence
@@ -91,11 +91,21 @@ Implementation: [`stategraph/atomic.py`](../../ontocast/stategraph/atomic.py).
 - Accepts text, JSON (`text` field), or file uploads via `/process`
 - Converts supported formats to Markdown while preserving structure
 
-### 2. Chunking
+### 2. Chunking (and optional structured preprocessing)
 
-- Semantic chunking splits the document into **content units**
-- Units are processed **in parallel** up to `PARALLEL_WORKERS`
+Default path: **Convert** → **Chunk** → extraction.
+
+When `target_sections` and/or `summarize_sections` are set on `/process` or CLI (`--target-sections`, `--summarize-sections`):
+
+| Node | When | What it does |
+|------|------|----------------|
+| **Tag Sections** | Either parameter set | Detect heading lines; store `section_spans` on `AgentState` |
+| **Chunk** | Always | Semantic `ChunkerTool` split; assign `section_label` per unit via span overlap; filter by `target_sections` if set |
+| **Summarize Chunks** | `summarize_sections` set | LLM compresses selected units; prompts use `extraction_text` |
+
+- Units are processed **in parallel** up to `PARALLEL_WORKERS` (summarization respects the same cap)
 - Use `--head-chunks N` on the CLI to process only the first N units (testing)
+- Without section parameters, the graph skips Tag Sections and Summarize Chunks
 
 ### 3. Per-Unit Ontology Loop
 
@@ -149,6 +159,7 @@ Facts output uses the **`cd:` namespace** for text-derived instances; domain ont
 | `ONTOLOGY_CONTEXT_MODE` | How per-unit ontology context is sourced |
 | `LLM_GRAPH_FORMAT` | `turtle` or `jsonld` LLM wire encoding |
 | `--head-chunks` | CLI limit on units processed |
+| `target_sections` / `summarize_sections` / `summary_max_sentences` | Per-request structured-document preprocessing (not env vars) |
 
 Full reference: [Configuration System](configuration.md).
 

@@ -28,7 +28,7 @@ curl http://localhost:8999/info
 
 ### `POST /process`
 
-Runs the full document pipeline: convert → chunk → ontology map/reduce → facts map/reduce → serialize.
+Runs the full document pipeline: convert → [tag sections] → chunk → [summarize chunks] → ontology map/reduce → facts map/reduce → serialize. Bracketed stages run only when structured-document parameters are set.
 
 **Content types:**
 
@@ -82,6 +82,15 @@ curl -X POST "http://localhost:8999/process?strip_provenance=true" \
 # Multi-tenant request
 curl -X POST "http://localhost:8999/process?tenant=acme&project=reports" \
   -F "file=@document.pdf"
+
+# Structured paper: keep Results/Methods, summarize Results only
+curl -X POST "http://localhost:8999/process?target_sections=results,methods&summarize_sections=results&summary_max_sentences=5" \
+  -F "file=@paper.pdf"
+
+# JSON body with section lists
+curl -X POST http://localhost:8999/process \
+  -H "Content-Type: application/json" \
+  -d '{"text": "# Introduction\n...\n## Results\n...", "target_sections": ["results"], "summarize_sections": ["*"], "summary_max_sentences": 5}'
 ```
 
 **Response:** JSON with `data.facts` (Turtle), `data.ontology_artifacts` (list of ontology TTL payloads), and `metadata` (status, chunk counts, budget including `cache_hits` when applicable).
@@ -221,3 +230,4 @@ Vector mode unavailable:
 - [LLM Caching](llm_caching.md) — disk cache, in-flight limits, batch pre-warming
 - [User Instructions](user_instructions.md) — guiding extraction
 - [Workflow](workflow.md) — what happens inside `/process`
+- [Structured documents](concepts.md#structured-documents-optional) — section tagging and summarization

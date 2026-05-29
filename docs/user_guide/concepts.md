@@ -33,15 +33,27 @@ See [Workflow](workflow.md#4-ontology-reduce-document-level).
 
 ## Structured documents (optional)
 
-For papers and other heading-structured text, `/process` accepts optional query or JSON body parameters:
+For papers and other heading-structured Markdown text, `/process` and `ontocast --input-path` accept optional parameters. When both `target_sections` and `summarize_sections` are omitted, the pipeline stays `convert → chunk → extract` with no extra graph nodes.
+
+### Section tagging and section-aligned chunks
+
+1. **Tag Sections** (when `target_sections` or `summarize_sections` is set) scans converted text for academic-style headings (`introduction`, `methods`, `results`, `discussion`, `conclusion`, `future_work`, `limitations`, `related_work`, `background`, and numbered variants).
+2. **Chunk** still uses the semantic `ChunkerTool`; each content unit then gets a `section_label` by **maximum character-span overlap** with detected section ranges (section-aligned labeling, not a separate chunker mode).
+3. **`target_sections`** drops units whose label is not in the allowlist (case-insensitive).
+
+Recognized labels match normalized heading text (underscore form), e.g. `results`, `future_work`.
+
+### Optional summarization
+
+When `summarize_sections` is present (including empty or `*` for all units), the **Summarize Chunks** node runs an LLM pass per selected unit (bounded by `PARALLEL_WORKERS`). Summaries are stored on `ContentUnit.summary`; render and critic agents read `extraction_text`, which prefers the summary over the raw chunk.
 
 | Parameter | Default | Effect |
 |-----------|---------|--------|
-| `target_sections` | omitted | Run section tagging and keep only listed sections (e.g. `results,methods`) |
-| `summarize_sections` | omitted | Run LLM summarization; omit to skip. Use empty value or `*` to summarize all chunks |
+| `target_sections` | omitted | Enable tagging; keep only listed sections (e.g. `results,methods`) |
+| `summarize_sections` | omitted | Enable tagging + summarization node; omit to skip summaries. `*` or empty = all chunks |
 | `summary_max_sentences` | `5` | Max sentences per summary when summarization runs |
 
-When all are omitted, the pipeline matches the legacy path (`convert → chunk → extract`) with no extra nodes.
+Section lists accept comma-separated values or a JSON array in query, form, or JSON body fields.
 
 ## Parallel Map/Reduce
 
@@ -127,7 +139,7 @@ Details: [Tenancy](tenancy.md).
 | `UnitOntologyState` / `UnitFactsState` | Per-unit loop state |
 | `ToolBox` | LLM, triple store, chunking, vector store, cache |
 | `GraphUpdate` | Structured SPARQL operations from the LLM |
-| `ContentUnit` | One chunk's ontology/facts outputs |
+| `ContentUnit` | One chunk's text, optional `section_label` / `summary`, and ontology/facts outputs (`extraction_text` for LLM prompts) |
 
 ## Next Steps
 

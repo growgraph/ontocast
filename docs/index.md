@@ -29,6 +29,7 @@ OntoCast extracts semantic triples from documents using an agentic, ontology-dri
 - **Tenancy** — partition datasets/collections by tenant and project
 - **REST API** — document processing, ontology catalog management, graph matching
 - **Automatic LLM caching** — disk cache with optional read-only mode, global in-flight limiting, and OpenAI Batch API pre-warming for benchmarks
+- **Structured documents** — optional section tagging, section-aligned chunk labels, section filtering, and LLM summarization before extraction
 
 ---
 
@@ -101,7 +102,7 @@ Document-level pipeline (regenerated via `uv run plot-graph`):
 
 Landscape variant: [graph.lr.png](assets/graph.lr.png). Per-unit render/critic loops are documented in [Workflow](user_guide/workflow.md#per-unit-atomic-loop).
 
-1. Convert → chunk document
+1. Convert → optional tag sections → chunk (semantic) → optional summarize chunks
 2. Parallel ontology render per unit → normalize → optional consolidate → validate
 3. Parallel facts render per unit → merge with disambiguation
 4. Serialize to triple store; return Turtle in API response

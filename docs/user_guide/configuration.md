@@ -99,6 +99,27 @@ CHUNK_MIN_SIZE=3000
 CHUNK_MAX_SIZE=12000
 ```
 
+Semantic chunking is configured here. **Section-aligned labels** and filtering are not chunker settings: they run when `/process` or CLI file mode passes `target_sections` and/or `summarize_sections` (see [Structured documents](concepts.md#structured-documents-optional)).
+
+### Structured documents (per request)
+
+No environment variables. Pass on `POST /process`, multipart form, JSON body, or CLI batch mode:
+
+| Parameter | CLI flag | Description |
+|-----------|----------|-------------|
+| `target_sections` | `--target-sections` | Comma-separated or JSON list; enables tagging and keeps only these sections |
+| `summarize_sections` | `--summarize-sections` | Enables tagging + summarization; `*` or empty = all chunks |
+| `summary_max_sentences` | `--summary-max-sentences` | Max sentences per summary (default `5`) |
+
+```bash
+ontocast --input-path ./papers/ \
+  --target-sections results,methods \
+  --summarize-sections results \
+  --summary-max-sentences 5
+```
+
+Details: [API Endpoints](api.md#post-process), [Workflow](workflow.md#2-chunking-and-optional-structured-preprocessing).
+
 ### Triple Stores
 
 ```bash

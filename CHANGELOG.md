@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Optional process concurrency cap** (`MAX_CONCURRENT_PROCESSES`) — limits simultaneous `/process` and `/process_unit` handlers (additional requests wait for a slot).
 - **OpenAI Batch API helpers** (`ontocast.tool.llm_batch`) to export chat batch JSONL and import completed results into the LLM disk cache for offline benchmark pre-warming.
 - **`BudgetTracker.cache_hits`** — disk-cache hits count toward character totals but not `calls_count`; included in budget summaries when non-zero.
+- **Structured-document preprocessing** for heading-structured text (papers, reports): optional **Tag Sections** node detects academic-style headings, assigns **section-aligned labels** to semantic chunks via character-span overlap, and `target_sections` filters units before extraction.
+- **Optional chunk summarization** — `summarize_sections` and `summary_max_sentences` on `/process` and CLI (`--summarize-sections`, `--summary-max-sentences`) run a **Summarize Chunks** graph node; ontology/facts render and critic prompts use `ContentUnit.extraction_text` (summary when present, else full chunk text).
 
 ### Changed
 - **LLM caching path** — `complete`, `extract`, `__call__`, and `acall` share one `_invoke_cached` implementation with consistent cache keys (normalized prompt text), optional disable/read-only modes, and provider calls gated by the global in-flight semaphore.
@@ -27,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Documentation
 - User guide: facts two-namespace model (`concepts.md`), facts guidelines vs `facts_user_instruction` (`user_instructions.md`), entity alignment and evaluate semantics (`aggregation.md`, `api.md`, `workflow.md`).
 - User guide: LLM cache configuration, in-flight/process limits, batch pre-warming, and `/info` cache stats (`llm_caching.md`, `configuration.md`, `api.md`, `concepts.md`, `workflow.md`).
+- User guide: structured documents — section tagging, section-aligned chunk labels, `target_sections` / `summarize_sections` (`concepts.md`, `workflow.md`, `api.md`, `configuration.md`).
 
 ## [0.4.0] - 2026-05-26
 
