@@ -2,6 +2,7 @@ import logging
 from collections import Counter
 
 from pydantic import BaseModel, Field
+from rdflib.namespace import OWL, RDF
 
 from ontocast.agent.select_ontology_catalog import select_catalog_ontology_for_excerpt
 from ontocast.onto.content_unit import SourceUnit
@@ -184,15 +185,39 @@ async def _resolve_ensemble_context(
         max_total_triples=qcfg.induced_subgraph_max_total_triples,
         estimated_triples_per_query=qcfg.induced_subgraph_estimated_triples_per_query,
     )
+    metrics = retriever.last_retrieval_metrics
+    if metrics:
+        state.retrieval_metrics["patch_retrieval"] = metrics
+        logger.info(
+            "Patch retrieval: queries=%s atoms_final=%s source_iris=%s expanded=%s triples=%s",
+            metrics.get("query_count"),
+            metrics.get("atoms_final"),
+            metrics.get("source_ontology_iris"),
+            metrics.get("expanded_ontology_iris"),
+            metrics.get("snapshot_triple_count"),
+        )
     anchor_iri = source_iris[0] if source_iris else NULL_ONTOLOGY.iri
+    for onto_subject in {
+        s for s, _, _ in patch_graph.triples((None, RDF.type, OWL.Ontology))
+    }:
+        for triple in list(patch_graph.triples((onto_subject, None, None))):
+            patch_graph.remove(triple)
+    patch_graph.sanitize_prefixes_namespaces()
+
     ontology_snapshot = Ontology(
         ontology_id=None,
-        title="Retrieved unit patch context",
-        description="Composite ontology context assembled from unit-level retrieval.",
+        title=None,
+        description=None,
         graph=patch_graph,
         iri=anchor_iri,
         current_domain=state.current_domain,
     )
+    for onto_subject in {
+        s for s, _, _ in ontology_snapshot.graph.triples((None, RDF.type, OWL.Ontology))
+    }:
+        for triple in list(ontology_snapshot.graph.triples((onto_subject, None, None))):
+            ontology_snapshot.graph.remove(triple)
+
     return UnitOntologyContext(
         anchor_iri=anchor_iri,
         ontology_snapshot=ontology_snapshot,

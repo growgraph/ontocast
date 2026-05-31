@@ -32,10 +32,39 @@ If vector infrastructure is unavailable, the API returns **409** with `error_cod
 
 | Variable | Role |
 |----------|------|
-| `QDRANT_TOP_K` | Fused hits per query |
-| `QDRANT_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | Global triple cap for context |
-| `QDRANT_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | Per-query allocation hint |
-| `ONTOLOGY_PATCH_*` | Post-retrieval scoring, MMR, atom caps |
+| `QDRANT_TOP_K` | Fused hits per proposition window (default `10`) |
+| `QDRANT_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | Global triple cap for context (default `550`) |
+| `QDRANT_INDUCED_SUBGRAPH_DEPTH` | BFS depth for hub seed expansion (default `2`) |
+| `QDRANT_INDUCED_SUBGRAPH_HUB_SEED_COUNT` | Top seeds receiving full BFS budget (default `8`) |
+| `QDRANT_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH` | `rdfs:subClassOf` hops included in schema shell (default `3`) |
+| `QDRANT_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | Per-entity BFS quota hint |
+| `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `hybrid` (default), `max_score`, or `rrf` |
+| `ONTOLOGY_PATCH_MAX_ATOMS_TIER1` | Strong global seed cap for hybrid merge (default `12`) |
+| `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | Tier-2 seeds per ontology IRI (default `3`) |
+| `ONTOLOGY_PATCH_MIN_ENTITY_SCORE` | Tier-2 minimum fused score (default `0.3`) |
+| `ONTOLOGY_PATCH_MAX_ATOMS` | Total seed cap after merge/MMR (default `25`) |
+| `ONTOLOGY_PATCH_MERGED_SCORE_RATIO` | Trim weak seeds vs top score (default `0.45`) |
+| `ONTOLOGY_PATCH_MMR_LAMBDA` | MMR relevance vs diversity (default `0.9`) |
+
+### Recommended preset for dense scientific text
+
+Use vector search mode with defaults above, or tighten further:
+
+- `ONTOLOGY_PATCH_MAX_ATOMS=20`
+- `ONTOLOGY_PATCH_MERGED_SCORE_RATIO=0.5`
+- `QDRANT_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=600`
+
+Retrieval expands ontology scope beyond hit sources when seeds reference classes
+in other catalog ontologies via `rdfs:subClassOf`, `rdfs:domain`, or `rdfs:range`.
+
+### Diagnostics
+
+Manual staged logging for matsci / perovskitemat coverage:
+
+```bash
+ONTOCAST_RUN_MANUAL_TESTS=1 cd ontocast && uv run pytest \\
+  test/manual/test_perovskite_retrieval_diagnostics.py -v --log-cli-level=INFO
+```
 
 ### `fixed_single_ontology`
 

@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
+from collections import defaultdict
 from collections.abc import Iterable
 from typing import Any
 
-from pydantic import Field
-from rdflib import Namespace
+from pydantic import Field, PrivateAttr
+from rdflib import Namespace, URIRef
+from rdflib.namespace import RDFS
 
-from ontocast.config import PatchRetrievalConfig, QdrantConfig
+from ontocast.config import CrossQueryMergeMode, PatchRetrievalConfig, QdrantConfig
 from ontocast.onto.constants import COMMON_PREFIXES
+from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.onto import Tool
 from ontocast.tool.vector_store.core import (
@@ -20,6 +24,10 @@ from ontocast.tool.vector_store.core import (
     OntologySearchHitsByChannel,
 )
 from ontocast.tool.vector_store.qdrant import QdrantVectorStore
+
+logger = logging.getLogger(__name__)
+
+_STRUCTURAL_REFERENCE_PREDICATES = frozenset({RDFS.subClassOf, RDFS.domain, RDFS.range})
 
 
 def _bind_common_vocab_prefixes(graph: RDFGraph) -> None:
@@ -37,9 +45,10 @@ def _source_iris_from_atoms(atoms: Iterable[GraphAtom]) -> list[str]:
 
 def _ranked_entity_weights(
     atoms: list[GraphAtom],
-) -> tuple[list[str], dict[str, float]]:
-    """Collapse atom scores to entity-level ranking and relevance weights."""
+) -> tuple[list[str], dict[str, float], dict[str, str | None]]:
+    """Collapse atom scores to entity-level ranking, relevance weights, and roles."""
     best_score_by_iri: dict[str, float] = {}
+    entity_roles: dict[str, str | None] = {}
     for atom in atoms:
         iri = atom.iri
         if not iri:
@@ -48,11 +57,12 @@ def _ranked_entity_weights(
         previous = best_score_by_iri.get(iri)
         if previous is None or score > previous:
             best_score_by_iri[iri] = score
+            entity_roles[iri] = atom.entity_role
     ranked = sorted(
         best_score_by_iri.keys(),
         key=lambda iri: (-best_score_by_iri[iri], iri),
     )
-    return ranked, best_score_by_iri
+    return ranked, best_score_by_iri, entity_roles
 
 
 def _filter_hits_by_relative_floor(
@@ -85,6 +95,28 @@ def _normalized_fusion_weights_triple(
     if total <= 0.0:
         return (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
     return (cw / total, nw / total, bw / total)
+
+
+def _normalize_core_neighborhood_weights(qc: QdrantConfig) -> tuple[float, float]:
+    """Normalized dense-lane weights for MMR cosine fusion (BM25 excluded)."""
+    cw, nw, _ = _normalized_fusion_weights_triple(qc)
+    total = cw + nw
+    if total <= 0.0:
+        return (0.5, 0.5)
+    return (cw / total, nw / total)
+
+
+def _normalize_relevance_scores(atoms: list[GraphAtom]) -> list[GraphAtom]:
+    """Scale atom scores to [0, 1] for MMR relevance term."""
+    if not atoms:
+        return []
+    max_score = max(float(atom.score or 0.0) for atom in atoms)
+    if max_score <= 0.0:
+        return atoms
+    return [
+        atom.model_copy(update={"score": float(atom.score or 0.0) / max_score})
+        for atom in atoms
+    ]
 
 
 def _rank_fuse_hits(
@@ -136,10 +168,123 @@ def _rank_fuse_hits(
     return out
 
 
+def _best_hit_by_entity_iri(
+    hits: list[OntologySearchHit],
+) -> dict[str, OntologySearchHit]:
+    best: dict[str, OntologySearchHit] = {}
+    for hit in hits:
+        iri = hit.atom.iri
+        if not iri:
+            continue
+        prev = best.get(iri)
+        if prev is None or hit.score > prev.score:
+            best[iri] = hit
+    return best
+
+
+def _merge_hits_across_queries_max_score(
+    collected: list[OntologySearchHit],
+) -> list[OntologySearchHit]:
+    best_by_iri = _best_hit_by_entity_iri(collected)
+    return sorted(
+        best_by_iri.values(),
+        key=lambda hit: (hit.score, hit.atom.iri or ""),
+        reverse=True,
+    )
+
+
+def _merge_hits_across_queries_hybrid(
+    collected: list[OntologySearchHit],
+    *,
+    max_atoms_tier1: int,
+    per_ontology_seed_quota: int,
+    min_entity_score: float,
+    max_atoms_total: int,
+) -> list[OntologySearchHit]:
+    """Tier-1 strong global seeds, tier-2 per-ontology coverage."""
+    best_by_iri = _best_hit_by_entity_iri(collected)
+    if not best_by_iri:
+        return []
+
+    tier1_candidates = sorted(
+        best_by_iri.values(),
+        key=lambda hit: (hit.score, hit.atom.iri or ""),
+        reverse=True,
+    )
+    tier1_limit = len(tier1_candidates) if max_atoms_tier1 <= 0 else max_atoms_tier1
+    tier1 = tier1_candidates[:tier1_limit]
+    selected_iris = {hit.atom.iri for hit in tier1 if hit.atom.iri}
+
+    by_ontology: dict[str, list[OntologySearchHit]] = defaultdict(list)
+    for hit in best_by_iri.values():
+        onto_iri = hit.atom.ontology_iri
+        entity_iri = hit.atom.iri
+        if not onto_iri or not entity_iri or entity_iri in selected_iris:
+            continue
+        if hit.score >= min_entity_score:
+            by_ontology[onto_iri].append(hit)
+
+    tier2: list[OntologySearchHit] = []
+    quota = per_ontology_seed_quota if per_ontology_seed_quota > 0 else 9999
+    for onto_iri in sorted(by_ontology.keys()):
+        candidates = sorted(
+            by_ontology[onto_iri],
+            key=lambda hit: (hit.score, hit.atom.iri or ""),
+            reverse=True,
+        )
+        added = 0
+        for hit in candidates:
+            if hit.atom.iri in selected_iris:
+                continue
+            tier2.append(hit)
+            selected_iris.add(hit.atom.iri)
+            added += 1
+            if added >= quota:
+                break
+
+    merged = tier1 + tier2
+    if max_atoms_total > 0:
+        merged = merged[:max_atoms_total]
+    return merged
+
+
+def _merge_hits_across_queries(
+    collected: list[OntologySearchHit],
+    *,
+    merge_mode: CrossQueryMergeMode,
+    max_atoms_tier1: int,
+    per_ontology_seed_quota: int,
+    min_entity_score: float,
+    max_atoms_total: int,
+) -> list[OntologySearchHit]:
+    if merge_mode == CrossQueryMergeMode.RRF:
+        return _rank_fuse_hits(
+            collected,
+            [],
+            [],
+            core_weight=1.0,
+            neighborhood_weight=0.0,
+            bm25_weight=0.0,
+        )
+    if merge_mode == CrossQueryMergeMode.MAX_SCORE:
+        merged = _merge_hits_across_queries_max_score(collected)
+        if max_atoms_total > 0:
+            merged = merged[:max_atoms_total]
+        return merged
+    return _merge_hits_across_queries_hybrid(
+        collected,
+        max_atoms_tier1=max_atoms_tier1,
+        per_ontology_seed_quota=per_ontology_seed_quota,
+        min_entity_score=min_entity_score,
+        max_atoms_total=max_atoms_total,
+    )
+
+
 def _filter_and_merge_patch_hits(
     hits_by_query: list[OntologySearchHitsByChannel],
     *,
     qdrant_config: QdrantConfig,
+    patch_config: PatchRetrievalConfig,
     per_query_core_score_ratio: float,
     per_query_neighborhood_score_ratio: float,
     per_query_bm25_score_ratio: float,
@@ -148,7 +293,7 @@ def _filter_and_merge_patch_hits(
     min_bm25_query_best_score: float,
     min_merged_max_score: float,
 ) -> list[GraphAtom]:
-    """Filter each channel per query, then rank-fuse per query and across queries."""
+    """Filter each channel per query, then merge across queries."""
     cw, nw, bw = _normalized_fusion_weights_triple(qdrant_config)
     collected: list[OntologySearchHit] = []
     for query_hits in hits_by_query:
@@ -181,14 +326,17 @@ def _filter_and_merge_patch_hits(
     if not collected:
         return []
 
-    merged_hits = _rank_fuse_hits(
+    merged_hits = _merge_hits_across_queries(
         collected,
-        [],
-        [],
-        core_weight=1.0,
-        neighborhood_weight=0.0,
-        bm25_weight=0.0,
+        merge_mode=patch_config.cross_query_merge_mode,
+        max_atoms_tier1=patch_config.max_atoms_tier1,
+        per_ontology_seed_quota=patch_config.per_ontology_seed_quota,
+        min_entity_score=patch_config.min_entity_score,
+        max_atoms_total=0,
     )
+    if not merged_hits:
+        return []
+
     merged_max = merged_hits[0].score
     if min_merged_max_score > 0.0 and merged_max < min_merged_max_score:
         return []
@@ -198,6 +346,59 @@ def _filter_and_merge_patch_hits(
         atom = hit.atom.model_copy(update={"score": hit.score})
         out.append(atom)
     return out
+
+
+def _ontology_iri_for_entity(
+    entity_iri: str,
+    ontologies: list[Ontology],
+) -> str | None:
+    """Resolve which catalog ontology document owns ``entity_iri``."""
+    ref = URIRef(entity_iri)
+    for ontology in ontologies:
+        namespace = (ontology.namespace or ontology.iri or "").rstrip("#/")
+        if not namespace:
+            continue
+        if (
+            entity_iri == namespace
+            or entity_iri.startswith(f"{namespace}#")
+            or entity_iri.startswith(f"{namespace}/")
+        ):
+            return ontology.iri
+    for ontology in ontologies:
+        graph = ontology.graph
+        if any(graph.triples((ref, None, None))):
+            return ontology.iri
+    return None
+
+
+def _expand_ontology_iris_by_reference(
+    entity_uris: list[str],
+    hit_ontology_iris: list[str],
+    ontologies: list[Ontology],
+) -> list[str]:
+    """Include ontologies referenced by seed subClassOf/domain/range axioms."""
+    expanded = set(hit_ontology_iris)
+    seed_refs = {URIRef(uri) for uri in entity_uris if uri}
+    referenced_iris: set[str] = set()
+
+    for ontology in ontologies:
+        graph = ontology.graph
+        for seed in seed_refs:
+            for _, pred, obj in graph.triples((seed, None, None)):
+                if pred in _STRUCTURAL_REFERENCE_PREDICATES and isinstance(obj, URIRef):
+                    referenced_iris.add(str(obj))
+            for subj, pred, _ in graph.triples((None, None, seed)):
+                if pred in _STRUCTURAL_REFERENCE_PREDICATES and isinstance(
+                    subj, URIRef
+                ):
+                    referenced_iris.add(str(subj))
+
+    for ref_iri in referenced_iris:
+        owner = _ontology_iri_for_entity(ref_iri, ontologies)
+        if owner:
+            expanded.add(owner)
+
+    return sorted(expanded)
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -292,6 +493,11 @@ class OntologyPatchRetriever(Tool):
         default_factory=PatchRetrievalConfig,
         exclude=True,
     )
+    _last_retrieval_metrics: dict[str, Any] = PrivateAttr(default_factory=dict)
+
+    @property
+    def last_retrieval_metrics(self) -> dict[str, Any]:
+        return self._last_retrieval_metrics
 
     def _effective_top_k(self, top_k: int | None) -> int:
         if top_k is not None:
@@ -380,20 +586,11 @@ class OntologyPatchRetriever(Tool):
         max_total_triples: int = 300,
         estimated_triples_per_query: int = 24,
     ) -> tuple[RDFGraph, list[str]]:
-        """Vector search over all ``queries`` once, score-filter, dedupe, single subgraph expansion.
-
-        Hits are filtered per query and per channel relative to each channel's best
-        score (see ``PatchRetrievalConfig`` per-query ratio fields for core,
-        neighborhood, and BM25), then merged by rank fusion so channels with
-        different score distributions all contribute. Optional per-channel
-        min-best filters and ``min_merged_max_score`` reject weak or irrelevant
-        candidates.
-
-        Returns the merged RDF graph (possibly disconnected across ontologies) and sorted
-        distinct ontology IRIs that contributed vector hits.
-        """
+        """Vector search over all ``queries`` once, score-filter, dedupe, single subgraph expansion."""
+        self._last_retrieval_metrics = {}
         if not queries:
             return RDFGraph(), []
+
         eff_top_k = self._effective_top_k(top_k)
         hits_by_query = await self.vector_store.asearch_patch_hits_many(
             queries=queries,
@@ -404,6 +601,7 @@ class OntologyPatchRetriever(Tool):
         merged = _filter_and_merge_patch_hits(
             hits_by_query,
             qdrant_config=qc,
+            patch_config=pc,
             per_query_core_score_ratio=pc.per_query_core_score_ratio,
             per_query_neighborhood_score_ratio=pc.per_query_neighborhood_score_ratio,
             per_query_bm25_score_ratio=pc.per_query_bm25_score_ratio,
@@ -412,36 +610,62 @@ class OntologyPatchRetriever(Tool):
             min_bm25_query_best_score=pc.min_bm25_query_best_score,
             min_merged_max_score=pc.min_merged_max_score,
         )
+        atoms_after_merge = len(merged)
+
         if merged and pc.merged_score_ratio > 0.0:
             merged_top = float(merged[0].score or 0.0)
             merged_floor = merged_top * pc.merged_score_ratio
             merged = [
                 atom for atom in merged if float(atom.score or 0.0) >= merged_floor
             ]
+
         if merged and pc.mmr_lambda < 1.0:
+            merged = _normalize_relevance_scores(merged)
             vectors = await self.vector_store.afetch_vectors(
                 [atom.atom_id for atom in merged]
             )
+            core_w, neigh_w = _normalize_core_neighborhood_weights(qc)
             merged = _mmr_rerank(
                 merged,
                 vectors,
                 mmr_lambda=pc.mmr_lambda,
                 max_atoms=pc.max_atoms,
-                core_weight=qc.fusion_core_weight,
-                neighborhood_weight=qc.fusion_neighborhood_weight,
+                core_weight=core_w,
+                neighborhood_weight=neigh_w,
             )
         elif pc.max_atoms > 0:
             merged = merged[: pc.max_atoms]
+
+        if not merged:
+            self._last_retrieval_metrics = {
+                "query_count": len(queries),
+                "top_k": eff_top_k,
+                "atoms_after_merge": atoms_after_merge,
+                "atoms_final": 0,
+            }
+            return RDFGraph(), []
+
         source_iris = _source_iris_from_atoms(merged)
+        seeds_by_ontology: dict[str, int] = defaultdict(int)
+        for atom in merged:
+            if atom.ontology_iri:
+                seeds_by_ontology[atom.ontology_iri] += 1
+
+        self._last_retrieval_metrics = {
+            "query_count": len(queries),
+            "top_k": eff_top_k,
+            "merge_mode": pc.cross_query_merge_mode.value,
+            "atoms_after_merge": atoms_after_merge,
+            "atoms_final": len(merged),
+            "source_ontology_iris": source_iris,
+            "seeds_by_ontology": dict(seeds_by_ontology),
+        }
 
         if not expand_sparql or self.sparql_tool is None:
             return RDFGraph(), source_iris
 
-        if not merged:
-            return RDFGraph(), []
-
-        entity_uris, entity_relevance = _ranked_entity_weights(merged)
-        ontology_iris = sorted(
+        entity_uris, entity_relevance, entity_roles = _ranked_entity_weights(merged)
+        hit_ontology_iris = sorted(
             {atom.ontology_iri for atom in merged if atom.ontology_iri}
         )
         ontology_version_filters: dict[str, set[str]] = {}
@@ -456,15 +680,37 @@ class OntologyPatchRetriever(Tool):
                     atom.ontology_hash
                 )
 
+        ontology_iris = hit_ontology_iris
+        if self.sparql_tool.triple_store_manager is not None:
+            catalog = await self.sparql_tool.triple_store_manager.afetch_ontologies()
+            ontology_iris = _expand_ontology_iris_by_reference(
+                entity_uris,
+                hit_ontology_iris,
+                catalog,
+            )
+            expanded = sorted(set(ontology_iris) - set(hit_ontology_iris))
+            if expanded:
+                self._last_retrieval_metrics["expanded_ontology_iris"] = expanded
+
+        hub_seed_count = qc.induced_subgraph_hub_seed_count
+        ancestor_depth = qc.induced_subgraph_ancestor_closure_depth
+
         graph = await self.sparql_tool.aget_induced_subgraph(
             entity_uris=entity_uris,
             entity_relevance=entity_relevance,
+            entity_roles=entity_roles,
             ontology_iris=ontology_iris,
             depth=subgraph_depth,
             max_total_triples=max_total_triples,
             estimated_triples_per_query=estimated_triples_per_query,
             ontology_version_filters=ontology_version_filters or None,
             ontology_hash_filters=ontology_hash_filters or None,
+            hub_seed_count=hub_seed_count,
+            ancestor_closure_depth=ancestor_depth,
         )
+        self._last_retrieval_metrics["snapshot_triple_count"] = len(graph)
+        self._last_retrieval_metrics["ontology_iris_for_expansion"] = ontology_iris
+        self._last_retrieval_metrics.update(self.sparql_tool.last_finalize_metrics)
+
         _bind_common_vocab_prefixes(graph)
         return graph, source_iris

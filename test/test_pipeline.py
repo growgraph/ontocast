@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import logging
 from pathlib import Path
@@ -1071,11 +1072,11 @@ def test_chunk_text_resets_content_units_on_each_call() -> None:
     tools = SimpleNamespace(chunker=FakeChunker())
     state = AgentState(render_mode=RenderMode.ONTOLOGY)
     state.set_text("first invocation text")
-    _chunk_text(state, cast(ToolBox, tools))
+    asyncio.run(_chunk_text(state, cast(ToolBox, tools)))
     assert len(state.content_units) == 1
 
     state.set_text("second invocation text")
-    _chunk_text(state, cast(ToolBox, tools))
+    asyncio.run(_chunk_text(state, cast(ToolBox, tools)))
     assert len(state.content_units) == 1, (
         "content_units should be reset per call, not accumulated across calls"
     )

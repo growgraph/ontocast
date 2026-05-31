@@ -43,7 +43,8 @@ Example:
     # Structured document: filter sections and summarize before extraction
     ontocast --input-path ./paper.pdf \\
         --target-sections results,methods \\
-        --summarize-sections results --summary-max-sentences 5
+        --summarize-sections results --summary-max-sentences 5 \\
+        --document-type-hint "journal article"
 """
 
 import asyncio
@@ -79,6 +80,7 @@ from ontocast.api.tenancy_resolution import (
     stores_use_tenancy_partitions,
 )
 from ontocast.cli.http_parse import (
+    parse_document_type_hint_param,
     parse_sections_list_param,
     parse_summary_max_sentences_param,
 )
@@ -285,6 +287,7 @@ def expand_input_to_states(
     target_sections: list[str] | None = None,
     summarize_sections: list[str] | None = None,
     summary_max_sentences: int = 5,
+    document_type_hint: str | None = None,
 ) -> list[AgentState]:
     """Expand a local input file into one ``AgentState`` per logical record.
 
@@ -307,6 +310,7 @@ def expand_input_to_states(
         "target_sections": target_sections,
         "summarize_sections": summarize_sections,
         "summary_max_sentences": summary_max_sentences,
+        "document_type_hint": document_type_hint,
     }
 
     if file_path.suffix.lower() != ".jsonl":
@@ -386,6 +390,7 @@ async def _process_files_input(
     target_sections: list[str] | None = None,
     summarize_sections: list[str] | None = None,
     summary_max_sentences: int = 5,
+    document_type_hint: str | None = None,
 ) -> None:
     recursion_limit = calculate_recursion_limit(head_chunks, config.server)
     for file_path in files:
@@ -400,6 +405,7 @@ async def _process_files_input(
                 target_sections=target_sections,
                 summarize_sections=summarize_sections,
                 summary_max_sentences=summary_max_sentences,
+                document_type_hint=document_type_hint,
             )
             for state in states:
                 if use_unit_pipeline:
@@ -960,6 +966,15 @@ def create_app(
     show_default=True,
     help="Max sentences per chunk summary when --summarize-sections is set.",
 )
+@click.option(
+    "--document-type-hint",
+    type=str,
+    default=None,
+    help=(
+        "Optional free-text hint about the source material (e.g. 'SEC 10-K', "
+        "'journal article') for section-heading LLM classification."
+    ),
+)
 def run(
     input_path: pathlib.Path | None,
     head_chunks: int | None,
@@ -969,6 +984,7 @@ def run(
     target_sections: str | None,
     summarize_sections: str | None,
     summary_max_sentences: int,
+    document_type_hint: str | None,
 ):
     """
     Main entry point for the OntoCast server/CLI.
@@ -1042,6 +1058,7 @@ def run(
         summary_max_sentences,
         default=5,
     )
+    parsed_document_type_hint = parse_document_type_hint_param(document_type_hint)
 
     workflow: CompiledStateGraph = create_agent_graph(tools)
 
@@ -1067,6 +1084,7 @@ def run(
                 target_sections=parsed_target_sections,
                 summarize_sections=parsed_summarize_sections,
                 summary_max_sentences=parsed_summary_max_sentences,
+                document_type_hint=parsed_document_type_hint,
             )
         )
     else:

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import pytest
 from pydantic import PrivateAttr
 
 from ontocast.config import (
+    CrossQueryMergeMode,
     EmbeddingConfig,
     PatchRetrievalConfig,
     QdrantConfig,
@@ -31,7 +32,11 @@ from ontocast.tool.vector_store.core import (
 from ontocast.tool.vector_store.embedding import EmbeddingTool, FastembedBm25SparseTool
 from ontocast.tool.vector_store.patch_retriever import (
     OntologyPatchRetriever,
+    _expand_ontology_iris_by_reference,
+    _merge_hits_across_queries_hybrid,
+    _merge_hits_across_queries_max_score,
     _mmr_rerank,
+    _normalize_core_neighborhood_weights,
 )
 from ontocast.tool.vector_store.qdrant import QdrantVectorStore
 from ontocast.util import render_text_hash
@@ -163,6 +168,7 @@ class StubSPARQLTool(SPARQLTool):
         super().__init__(**kwargs)
         self._last_entity_uris: list[str] = []
         self._last_entity_relevance: dict[str, float] | None = None
+        self._last_entity_roles: Mapping[str, str | None] | None = None
         self._last_ontology_iris: list[str] = []
         self._last_ontology_version_filters: dict[str, set[str]] | None = None
         self._last_ontology_hash_filters: dict[str, set[str]] | None = None
@@ -202,17 +208,21 @@ class StubSPARQLTool(SPARQLTool):
         self,
         entity_uris: list[str],
         entity_relevance: dict[str, float] | None = None,
+        entity_roles: Mapping[str, str | None] | None = None,
         ontology_iris: list[str] | None = None,
         depth: int = 1,
         max_total_triples: int = 300,
         estimated_triples_per_query: int = 24,
         ontology_version_filters: dict[str, set[str]] | None = None,
         ontology_hash_filters: dict[str, set[str]] | None = None,
+        hub_seed_count: int = 8,
+        ancestor_closure_depth: int = 3,
     ) -> RDFGraph:
-        del depth
+        del depth, hub_seed_count, ancestor_closure_depth
         self.induced_subgraph_calls += 1
         self._last_entity_uris = entity_uris
         self._last_entity_relevance = entity_relevance
+        self._last_entity_roles = entity_roles
         self._last_ontology_iris = ontology_iris or []
         self._last_ontology_version_filters = ontology_version_filters
         self._last_ontology_hash_filters = ontology_hash_filters
@@ -764,6 +774,7 @@ async def test_aretrieve_ensemble_per_query_ratio_keeps_weak_query_hits() -> Non
             per_query_core_score_ratio=0.85,
             per_query_neighborhood_score_ratio=0.85,
             min_merged_max_score=0.0,
+            merged_score_ratio=0.0,
             min_core_query_best_score=0.0,
             min_neighborhood_query_best_score=0.0,
         ),
@@ -804,6 +815,7 @@ async def test_aretrieve_ensemble_empty_when_merged_scores_below_floor() -> None
             per_query_core_score_ratio=1.0,
             per_query_neighborhood_score_ratio=1.0,
             min_merged_max_score=2.0,
+            merged_score_ratio=0.0,
             min_core_query_best_score=0.0,
             min_neighborhood_query_best_score=0.0,
         ),
@@ -841,6 +853,7 @@ async def test_aretrieve_ensemble_drops_subquery_when_top_below_min_query_best()
             per_query_core_score_ratio=1.0,
             per_query_neighborhood_score_ratio=1.0,
             min_merged_max_score=0.0,
+            merged_score_ratio=0.0,
             min_core_query_best_score=0.1,
             min_neighborhood_query_best_score=0.1,
         ),
@@ -1100,6 +1113,7 @@ async def test_aretrieve_ensemble_mmr_promotes_diverse_candidates() -> None:
             per_query_core_score_ratio=0.0,
             per_query_neighborhood_score_ratio=0.0,
             min_merged_max_score=0.0,
+            merged_score_ratio=0.0,
             mmr_lambda=0.5,
             max_atoms=2,
         ),
@@ -1150,6 +1164,7 @@ async def test_aretrieve_ensemble_rank_fusion_uses_rank_not_score() -> None:
             per_query_core_score_ratio=0.0,
             per_query_neighborhood_score_ratio=0.0,
             min_merged_max_score=0.0,
+            merged_score_ratio=0.0,
             mmr_lambda=1.0,
             max_atoms=2,
         ),
@@ -1190,6 +1205,7 @@ async def test_aretrieve_ensemble_lambda_one_skips_vector_fetch() -> None:
             per_query_core_score_ratio=0.0,
             per_query_neighborhood_score_ratio=0.0,
             min_merged_max_score=0.0,
+            merged_score_ratio=0.0,
             mmr_lambda=1.0,
             max_atoms=2,
         ),
@@ -1268,6 +1284,7 @@ async def test_aretrieve_ensemble_forwards_ranking_and_budget_controls() -> None
             per_query_core_score_ratio=0.0,
             per_query_neighborhood_score_ratio=0.0,
             min_merged_max_score=0.0,
+            merged_score_ratio=0.0,
             mmr_lambda=1.0,
         ),
     )
@@ -1284,8 +1301,8 @@ async def test_aretrieve_ensemble_forwards_ranking_and_budget_controls() -> None
         "https://example.org/smoke#B",
     ]
     assert sparql_tool.last_entity_relevance == {
-        "https://example.org/smoke#A": pytest.approx(1.0),
-        "https://example.org/smoke#B": pytest.approx(0.5),
+        "https://example.org/smoke#A": pytest.approx(0.7 / 1.2),
+        "https://example.org/smoke#B": pytest.approx(0.7 / 1.2 / 2),
     }
     assert sparql_tool.last_max_total_triples == 77
     assert sparql_tool.last_estimated_triples_per_query == 9
@@ -1317,6 +1334,7 @@ async def test_aretrieve_ensemble_patch_max_atoms_caps_output() -> None:
             per_query_core_score_ratio=0.0,
             per_query_neighborhood_score_ratio=0.0,
             min_merged_max_score=0.0,
+            merged_score_ratio=0.0,
             mmr_lambda=1.0,
             max_atoms=2,
         ),
@@ -1348,3 +1366,155 @@ def test_mmr_rerank_atoms_missing_vectors_fallback() -> None:
     )
     # "b" has no vector, so it should rely on relevance and remain competitive.
     assert [a.atom_id for a in ranked] == ["a", "b"]
+
+
+def test_normalize_core_neighborhood_weights_renormalizes_dense_lanes() -> None:
+    qc = QdrantConfig(
+        fusion_core_weight=0.7,
+        fusion_neighborhood_weight=0.5,
+        fusion_bm25_weight=0.2,
+    )
+    cw, nw = _normalize_core_neighborhood_weights(qc)
+    assert abs(cw + nw - 1.0) < 1e-9
+    assert cw > nw
+
+
+def test_hybrid_merge_favors_dominant_single_window_hit() -> None:
+    collected = [
+        OntologySearchHit(atom=_scored_atom("dom", "Dominant", 1.2).atom, score=1.2),
+        OntologySearchHit(atom=_scored_atom("w1", "Weak", 0.34).atom, score=0.34),
+        OntologySearchHit(atom=_scored_atom("w2", "Weak", 0.33).atom, score=0.33),
+        OntologySearchHit(atom=_scored_atom("w3", "Weak", 0.32).atom, score=0.32),
+    ]
+    merged = _merge_hits_across_queries_hybrid(
+        collected,
+        max_atoms_tier1=2,
+        per_ontology_seed_quota=0,
+        min_entity_score=0.3,
+        max_atoms_total=2,
+    )
+    assert merged[0].atom.iri.endswith("#Dominant")
+    assert merged[0].score == 1.2
+
+
+def test_hybrid_merge_tier2_adds_per_ontology_coverage() -> None:
+    matsci = "https://example.org/matsci"
+    perov = "https://example.org/perov"
+
+    def _hit(entity: str, onto: str, score: float) -> OntologySearchHit:
+        atom = GraphAtom(
+            atom_id=entity,
+            ontology_iri=onto,
+            iri=f"{onto}#{entity}",
+            entity_role="resource",
+            core_representation=entity,
+            neighborhood_representation="",
+            score=score,
+        )
+        return OntologySearchHit(atom=atom, score=score)
+
+    collected = [
+        _hit("M1", matsci, 0.95),
+        _hit("M2", matsci, 0.90),
+        _hit("M3", matsci, 0.85),
+        _hit("P1", perov, 0.40),
+    ]
+    merged = _merge_hits_across_queries_hybrid(
+        collected,
+        max_atoms_tier1=2,
+        per_ontology_seed_quota=1,
+        min_entity_score=0.35,
+        max_atoms_total=4,
+    )
+    iris = {hit.atom.iri for hit in merged}
+    assert f"{matsci}#M1" in iris
+    assert f"{matsci}#M2" in iris
+    assert f"{perov}#P1" in iris
+
+
+def test_max_score_merge_beats_rrf_frequency_bias() -> None:
+    """Entity with one strong window outranks entity appearing weakly in many windows."""
+    weak_repeated = [
+        OntologySearchHit(
+            atom=_scored_atom(f"w{i}", "Repeated", 0.31 + i * 0.01).atom,
+            score=0.31 + i * 0.01,
+        )
+        for i in range(3)
+    ]
+    strong_once = [
+        OntologySearchHit(atom=_scored_atom("s", "Strong", 1.0).atom, score=1.0),
+    ]
+    max_score = _merge_hits_across_queries_max_score(weak_repeated + strong_once)
+    assert max_score[0].atom.iri.endswith("#Strong")
+
+
+def test_expand_ontology_iris_by_reference_includes_cross_ontology_parent() -> None:
+    matsci_iri = "https://growgraph.dev/ontologies/matsci-ontology"
+    perov_iri = "https://growgraph.dev/ontologies/perovskitemat"
+    matsci_graph = RDFGraph._from_turtle_str(
+        f"""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix matsci: <https://growgraph.dev/ontologies/matsci-ontology#> .
+        @prefix perov: <https://growgraph.dev/ontologies/perovskitemat#> .
+
+        <{matsci_iri}> a owl:Ontology .
+        matsci:PerovskiteQD a owl:Class ;
+            rdfs:subClassOf perov:PerovskiteNanocrystal .
+        """
+    )
+    perov_graph = RDFGraph._from_turtle_str(
+        f"""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix perov: <https://growgraph.dev/ontologies/perovskitemat#> .
+
+        <{perov_iri}> a owl:Ontology .
+        perov:PerovskiteNanocrystal a owl:Class ;
+            rdfs:label "Perovskite nanocrystal" .
+        """
+    )
+    ontologies = [
+        Ontology(iri=matsci_iri, graph=matsci_graph, title="matsci"),
+        Ontology(iri=perov_iri, graph=perov_graph, title="perov"),
+    ]
+    expanded = _expand_ontology_iris_by_reference(
+        ["https://growgraph.dev/ontologies/matsci-ontology#PerovskiteQD"],
+        [matsci_iri],
+        ontologies,
+    )
+    assert perov_iri in expanded
+
+
+@pytest.mark.anyio
+async def test_aretrieve_ensemble_rrf_mode_regression() -> None:
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    vector_store = StubVectorStore(
+        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        embedding=embedding,
+    )
+    vector_store.set_hits_by_query(
+        [
+            _channel_hits(core_hits=[_scored_atom("a", "A", 0.95)]),
+            _channel_hits(core_hits=[_scored_atom("a", "A", 0.94)]),
+            _channel_hits(core_hits=[_scored_atom("a", "A", 0.93)]),
+            _channel_hits(core_hits=[_scored_atom("b", "B", 0.99)]),
+        ]
+    )
+    sparql_tool = StubSPARQLTool(triple_store_manager=None)
+    retriever = OntologyPatchRetriever(
+        vector_store=vector_store,
+        sparql_tool=sparql_tool,
+        patch=PatchRetrievalConfig(
+            cross_query_merge_mode=CrossQueryMergeMode.RRF,
+            per_query_core_score_ratio=0.0,
+            min_merged_max_score=0.0,
+            merged_score_ratio=0.0,
+            mmr_lambda=1.0,
+            max_atoms=2,
+        ),
+    )
+    await retriever.aretrieve_ensemble(
+        queries=["q1", "q2", "q3", "q4"], top_k=1, expand_sparql=True
+    )
+    assert sparql_tool.last_entity_uris[0].endswith("#A")

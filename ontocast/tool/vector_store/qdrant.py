@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections import defaultdict
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -976,6 +977,31 @@ class QdrantVectorStore(VectorStoreTool):
             points_selector=qdrant_models.PointIdsList(points=duplicate_ids),
         )
         return len(duplicate_ids)
+
+    def count_points_by_ontology_iri(self, *, batch_size: int = 512) -> dict[str, int]:
+        """Count indexed atoms grouped by ``ontology_iri`` payload (diagnostics)."""
+        collection_name = self._ontology_collection_name()
+        counts: dict[str, int] = defaultdict(int)
+        offset: Any = None
+        while True:
+            points, next_offset = self.client.scroll(
+                collection_name=collection_name,
+                with_payload=True,
+                with_vectors=False,
+                offset=offset,
+                limit=batch_size,
+            )
+            if not points:
+                break
+            for point in points:
+                payload = point.payload or {}
+                onto_iri = str(payload.get("ontology_iri", ""))
+                if onto_iri:
+                    counts[onto_iri] += 1
+            if next_offset is None:
+                break
+            offset = next_offset
+        return dict(counts)
 
     def _query_named_vector(
         self,

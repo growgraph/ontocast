@@ -222,7 +222,7 @@ class AgentState(BasePydanticModel):
         default_factory=dict,
         description="Per-unit ontology assembly mode (ensemble / vote majority / primary).",
     )
-    retrieval_metrics: dict[str, int | float | str] = Field(
+    retrieval_metrics: dict[str, int | float | str | dict[str, Any]] = Field(
         default_factory=dict,
         description="Runtime retrieval/evaluation metrics for observability.",
     )
@@ -355,6 +355,13 @@ class AgentState(BasePydanticModel):
     summary_max_sentences: int = Field(
         default=5,
         description="Max sentences per chunk summary when summarization is enabled.",
+    )
+    document_type_hint: str | None = Field(
+        default=None,
+        description=(
+            "Optional free-text hint about the source material (e.g. '10-K filing', "
+            "'journal article') for section-heading LLM classification only."
+        ),
     )
     model_config = ConfigDict(arbitrary_types_allowed=True, populate_by_name=True)
     render_mode: RenderMode = Field(

@@ -26,6 +26,7 @@ from ontocast.tool.graph_diff import DiffTool
 from ontocast.tool.graph_version_manager import GraphVersionManager
 from ontocast.tool.llm import LLMTool
 from ontocast.tool.ontology_manager import OntologyManager
+from ontocast.tool.section_classifier import SectionClassifierTool
 from ontocast.tool.sparql import SPARQLTool
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.tool.vector_store import (
@@ -182,7 +183,8 @@ class ToolBox:
         self.version_manager: GraphVersionManager = GraphVersionManager()
         self.diff_tool: DiffTool = DiffTool()
 
-        self.embedding_tool: EmbeddingTool | None = None
+        self.embedding_tool: EmbeddingTool = EmbeddingTool.create(tool_config.embedding)
+        self.section_classifier = SectionClassifierTool()
         self.vector_store: QdrantVectorStore | None = None
         self.patch_retriever: OntologyPatchRetriever | None = None
         self.vector_store_ready: bool = False
@@ -197,7 +199,6 @@ class ToolBox:
                     "EmbeddingConfig.dimension when set "
                     f"(got vector_size={q_vs}, embedding.dimension={emb_dim})"
                 )
-            self.embedding_tool = EmbeddingTool.create(tool_config.embedding)
             # BM25 is always enabled whenever vector search is enabled.
             sparse_embedding = FastembedBm25SparseTool(config=tool_config.embedding)
             self.vector_store = QdrantVectorStore(

@@ -1357,6 +1357,13 @@ class RDFGraph(Graph):
         for stem, count in stem_counts.items():
             if count < 2:
                 continue
+            # Skip stems that are a strict URI prefix of an already-declared namespace
+            # — they are parent-directory IRIs, not domain namespaces.
+            if any(
+                other_ns != stem and other_ns.startswith(stem)
+                for other_ns in declared_namespaces
+            ):
+                continue
             slug = stem.rstrip("#/").rsplit("/", 1)[-1].replace("-", "_")
             prefix = f"{prefix_base}_{slug}" if prefix_base else slug
             self.bind(prefix, Namespace(stem), override=False)

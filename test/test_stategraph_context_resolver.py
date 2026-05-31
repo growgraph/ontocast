@@ -28,6 +28,7 @@ class _StubPatchRetriever:
     def __init__(self, graph: RDFGraph, sources: list[str]) -> None:
         self._graph = graph
         self._sources = sources
+        self.last_retrieval_metrics: dict = {}
 
     async def aretrieve_ensemble(self, **kwargs) -> tuple[RDFGraph, list[str]]:
         _ = kwargs

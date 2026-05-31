@@ -10,6 +10,7 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from ontocast.api.schemas import StatusErrorBody
 from ontocast.cli.http_parse import (
+    parse_document_type_hint_param,
     parse_llm_graph_format_param,
     parse_max_visits_param,
     parse_ontology_context_mode_param,
@@ -44,6 +45,7 @@ class ParsedProcessRequest:
     target_sections: list[str] | None
     summarize_sections: list[str] | None
     summary_max_sentences: int
+    document_type_hint: str | None
 
 
 async def load_parsed_process_request(
@@ -100,6 +102,10 @@ async def load_parsed_process_request(
         default=5,
     )
 
+    document_type_hint = parse_document_type_hint_param(
+        request.query_params.get("document_type_hint")
+    )
+
     if content_type.startswith("application/json"):
         bytes_data = await request.body()
         logger.debug("%s JSON body length: %s", log_label, len(bytes_data))
@@ -130,6 +136,12 @@ async def load_parsed_process_request(
                         parsed_obj.get("summary_max_sentences"),
                         summary_max_sentences,
                     )
+                if "document_type_hint" in parsed_obj:
+                    raw_hint = parsed_obj.get("document_type_hint")
+                    if raw_hint is not None:
+                        document_type_hint = parse_document_type_hint_param(
+                            str(raw_hint)
+                        )
         except (json.JSONDecodeError, UnicodeDecodeError):
             logger.debug(
                 "%s JSON body could not be decoded for ontology id preview",
@@ -164,6 +176,8 @@ async def load_parsed_process_request(
                     str(value),
                     summary_max_sentences,
                 )
+            elif key == "document_type_hint" and value is not None:
+                document_type_hint = parse_document_type_hint_param(str(value))
         if not files_dict:
             return JSONResponse(
                 status_code=400,
@@ -205,6 +219,7 @@ async def load_parsed_process_request(
         target_sections=target_sections,
         summarize_sections=summarize_sections,
         summary_max_sentences=summary_max_sentences,
+        document_type_hint=document_type_hint,
     )
 
 
@@ -242,4 +257,5 @@ def build_agent_state_from_parsed(
         target_sections=parsed.target_sections,
         summarize_sections=parsed.summarize_sections,
         summary_max_sentences=parsed.summary_max_sentences,
+        document_type_hint=parsed.document_type_hint,
     )

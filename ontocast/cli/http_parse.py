@@ -4,6 +4,7 @@ import json
 import logging
 
 from ontocast.onto.enum import LLMGraphFormat, OntologyContextMode, RenderMode
+from ontocast.onto.section import normalise_user_section_label
 
 logger = logging.getLogger(__name__)
 
@@ -100,12 +101,24 @@ def parse_strip_provenance_param(value: str | None) -> bool:
     return False
 
 
+def _normalise_section_tokens(raw_tokens: list[str]) -> list[str]:
+    result: list[str] = []
+    for token in raw_tokens:
+        normalised = normalise_user_section_label(token)
+        if normalised is None:
+            logger.warning("Unrecognised section label %r — skipping", token)
+        else:
+            result.append(normalised)
+    return result
+
+
 def parse_sections_list_param(value: str | list[str] | None) -> list[str]:
     """Parse a section list from comma-separated text or JSON array."""
     if value is None:
         return []
     if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
+        raw_tokens = [str(item).strip() for item in value if str(item).strip()]
+        return _normalise_section_tokens(raw_tokens)
     raw = str(value).strip()
     if not raw:
         return []
@@ -113,8 +126,18 @@ def parse_sections_list_param(value: str | list[str] | None) -> list[str]:
         parsed = json.loads(raw)
         if not isinstance(parsed, list):
             raise ValueError("section list JSON must be an array")
-        return [str(item).strip() for item in parsed if str(item).strip()]
-    return [part.strip() for part in raw.split(",") if part.strip()]
+        raw_tokens = [str(item).strip() for item in parsed if str(item).strip()]
+        return _normalise_section_tokens(raw_tokens)
+    raw_tokens = [part.strip() for part in raw.split(",") if part.strip()]
+    return _normalise_section_tokens(raw_tokens)
+
+
+def parse_document_type_hint_param(value: str | None) -> str | None:
+    """Parse optional document_type_hint; empty strings become None."""
+    if value is None:
+        return None
+    stripped = str(value).strip()
+    return stripped or None
 
 
 def parse_summary_max_sentences_param(value: str | int | None, default: int) -> int:

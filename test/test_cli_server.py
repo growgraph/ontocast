@@ -109,6 +109,7 @@ def test_build_agent_state_from_parsed_sets_max_visits() -> None:
         target_sections=None,
         summarize_sections=None,
         summary_max_sentences=5,
+        document_type_hint=None,
     )
     state = build_agent_state_from_parsed(
         parsed,

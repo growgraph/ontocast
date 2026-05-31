@@ -140,6 +140,14 @@ class EmbeddingProvider(StrEnum):
     OLLAMA = "ollama"
 
 
+class CrossQueryMergeMode(StrEnum):
+    """How per-query fused hits are merged across proposition windows."""
+
+    HYBRID = "hybrid"
+    MAX_SCORE = "max_score"
+    RRF = "rrf"
+
+
 class QdrantDedupMode(StrEnum):
     """How Qdrant point identity is derived during upsert."""
 
@@ -620,7 +628,7 @@ class PatchRetrievalConfig(BaseSettings):
         ),
     )
     merged_score_ratio: float = Field(
-        default=0.0,
+        default=0.45,
         ge=0.0,
         le=1.0,
         description=(
@@ -628,8 +636,37 @@ class PatchRetrievalConfig(BaseSettings):
             "fraction of the merged top score. 0 disables."
         ),
     )
+    cross_query_merge_mode: CrossQueryMergeMode = Field(
+        default=CrossQueryMergeMode.HYBRID,
+        description=(
+            "Cross-window merge: hybrid (max-score tier-1 + per-ontology tier-2), "
+            "max_score (entity best per window), or rrf (legacy reciprocal rank sum)."
+        ),
+    )
+    max_atoms_tier1: int = Field(
+        default=12,
+        ge=0,
+        description=(
+            "Hybrid merge: global cap on strong tier-1 seeds (max score per entity IRI). "
+            "0 means no tier-1 cap."
+        ),
+    )
+    per_ontology_seed_quota: int = Field(
+        default=3,
+        ge=0,
+        description=(
+            "Hybrid merge: additional seeds per ontology IRI in tier-2 (multi-ontology coverage)."
+        ),
+    )
+    min_entity_score: float = Field(
+        default=0.3,
+        ge=0.0,
+        description=(
+            "Hybrid merge tier-2: minimum per-entity max fused score to qualify as a seed."
+        ),
+    )
     mmr_lambda: float = Field(
-        default=0.7,
+        default=0.9,
         ge=0.0,
         le=1.0,
         description=(
@@ -638,7 +675,7 @@ class PatchRetrievalConfig(BaseSettings):
         ),
     )
     max_atoms: int = Field(
-        default=0,
+        default=25,
         ge=0,
         description="Hard cap for retained atoms after filtering / MMR (0 means unlimited).",
     )
@@ -682,7 +719,7 @@ class QdrantConfig(BaseSettings):
         ),
     )
     top_k: int = Field(
-        default=3,
+        default=10,
         ge=1,
         description=(
             "Default number of fused vector hits per query for ontology-patch retrieval "
@@ -691,12 +728,27 @@ class QdrantConfig(BaseSettings):
         ),
     )
     induced_subgraph_depth: int = Field(
-        default=1,
+        default=2,
         ge=0,
         description="Neighborhood expansion depth for induced subgraph retrieval.",
     )
+    induced_subgraph_hub_seed_count: int = Field(
+        default=8,
+        ge=0,
+        description=(
+            "Induced subgraph: number of top-relevance seeds that receive full BFS hub "
+            "expansion. 0 disables hub-only BFS (all seeds expand)."
+        ),
+    )
+    induced_subgraph_ancestor_closure_depth: int = Field(
+        default=3,
+        ge=0,
+        description=(
+            "Induced subgraph schema shell: max rdfs:subClassOf hops upward per class seed."
+        ),
+    )
     induced_subgraph_max_total_triples: int = Field(
-        default=300,
+        default=550,
         ge=1,
         description="Hard cap on triples returned for induced subgraph retrieval.",
     )

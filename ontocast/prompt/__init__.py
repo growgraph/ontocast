@@ -14,4 +14,5 @@ Available prompts:
 - graph_format: GraphFormatProfile (prompt + format instructions for llm_graph_format)
 - llm_json_schema: Format-bound JSON Schema for canonical report models
 - facts_guidelines: Format-specific facts operational guidelines
+- tag_sections: Section heading classification for structured documents
 """
