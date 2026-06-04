@@ -10,17 +10,7 @@ Returns service health. Use for load balancers and readiness probes.
 
 ### `GET /info`
 
-Returns service metadata, including:
-
-| Field | Description |
-|-------|-------------|
-| `version` | Package version |
-| `llm_cache` | When the LLM tool is initialized: in-memory hit/miss counters plus on-disk cache file stats (`cache_hits`, `cache_misses`, `disk`) |
-| `max_concurrent_processes` | Configured cap on simultaneous `/process` handlers, if `MAX_CONCURRENT_PROCESSES` is set |
-
-```bash
-curl http://localhost:8999/info
-```
+Returns version, configuration summary, and active backend information.
 
 ---
 
@@ -28,7 +18,7 @@ curl http://localhost:8999/info
 
 ### `POST /process`
 
-Runs the full document pipeline: convert → [tag sections] → chunk → [summarize chunks] → ontology map/reduce → facts map/reduce → serialize. Bracketed stages run only when structured-document parameters are set.
+Runs the full document pipeline: convert → chunk → ontology map/reduce → facts map/reduce → serialize.
 
 **Content types:**
 
@@ -50,18 +40,6 @@ Runs the full document pipeline: convert → [tag sections] → chunk → [summa
 | `ontology_user_instruction` | Guide ontology extraction |
 | `ontology_selection_user_instruction` | Guide catalog ontology selection |
 | `facts_user_instruction` | Guide facts extraction |
-| `target_sections` | Comma-separated or JSON list; keep only these sections (enables section tagging) |
-| `summarize_sections` | Sections to summarize before extraction; omit to skip. `*` or empty = all chunks |
-| `summary_max_sentences` | Max sentences per summary when summarization runs (default `5`) |
-
-**CLI file processing** (`ontocast --input-path …`) accepts the same structured-document flags:
-
-```bash
-ontocast --input-path ./papers/ \
-  --target-sections results,methods \
-  --summarize-sections results \
-  --summary-max-sentences 5
-```
 
 **Examples:**
 
@@ -82,18 +60,9 @@ curl -X POST "http://localhost:8999/process?strip_provenance=true" \
 # Multi-tenant request
 curl -X POST "http://localhost:8999/process?tenant=acme&project=reports" \
   -F "file=@document.pdf"
-
-# Structured paper: keep Results/Methods, summarize Results only
-curl -X POST "http://localhost:8999/process?target_sections=results,methods&summarize_sections=results&summary_max_sentences=5" \
-  -F "file=@paper.pdf"
-
-# JSON body with section lists
-curl -X POST http://localhost:8999/process \
-  -H "Content-Type: application/json" \
-  -d '{"text": "# Introduction\n...\n## Results\n...", "target_sections": ["results"], "summarize_sections": ["*"], "summary_max_sentences": 5}'
 ```
 
-**Response:** JSON with `data.facts` (Turtle), `data.ontology_artifacts` (list of ontology TTL payloads), and `metadata` (status, chunk counts, budget including `cache_hits` when applicable).
+**Response:** JSON with `data.facts` (Turtle), `data.ontology_artifacts` (list of ontology TTL payloads), and `metadata` (status, chunk counts, budget).
 
 ---
 
@@ -162,8 +131,6 @@ curl -X POST "http://localhost:8999/flush?dataset=my_dataset"
 
 Benchmark-oriented endpoints for entity alignment and evaluation. Used by the standalone `match-dirs` CLI.
 
-Alignment treats **identical IRIs** across input graphs as the same entity (score 1.0) before embedding similarity is considered — important when predicted and ground-truth graphs share ontology class or property IRIs.
-
 ### `POST /match/entities`
 
 Align entities globally across a list of graphs (embedding + symbolic clustering).
@@ -185,13 +152,7 @@ Derive 1:1 predicted↔ground-truth entity matches for one graph pair from align
 
 ### `POST /match/evaluate`
 
-Compute triple, **facts**, and entity precision/recall/F1 given graphs and entity matches.
-
-- **Triple metrics** — all triples except `rdfs:label` (includes `rdf:type` and other schema assertions).
-- **Facts metrics** — relational assertions only: excludes schema predicates (`rdf:type`, `rdfs:subClassOf`, `rdfs:comment`) and any triple whose subject or object is an ontological (class/concept) URIRef. Ontology **relation** IRIs used only as predicates (e.g. `.../relations#P674`) are not treated as ontological entities.
-- **Entity metrics** — true positives = number of accepted entity matches; false positives = predicted entities not in the matched set; false negatives = ground-truth entities not in the matched set (set-based, so correctly matched shared vocabulary IRIs are not double-penalized).
-
-Response fields: `precision` / `recall` / `f1` (triples), `fact_precision` / `fact_recall` / `fact_f1` (facts), `entity_precision` / `entity_recall` / `entity_f1` (entities), plus TP/FP/FN counts for each tier.
+Compute triple and entity precision/recall/F1 given graphs and entity matches. Label triples (`rdfs:label`) are excluded from triple metrics.
 
 **Standalone CLI:**
 
@@ -213,9 +174,6 @@ match-dirs \
 | `400` | Invalid parameters (e.g. missing fixed ontology id) |
 | `409` | Vector store unavailable when vector ontology mode requested |
 | `500` | Processing or store errors |
-| `503` | Health check: LLM not initialized or health probe failure |
-
-When `MAX_CONCURRENT_PROCESSES` is set, additional `/process` and `/process_unit` requests **wait** until a handler slot is free (they are not rejected with 503).
 
 Vector mode unavailable:
 
@@ -231,7 +189,5 @@ Vector mode unavailable:
 ## Related
 
 - [Configuration](configuration.md) — server and tool settings
-- [LLM Caching](llm_caching.md) — disk cache, in-flight limits, batch pre-warming
 - [User Instructions](user_instructions.md) — guiding extraction
 - [Workflow](workflow.md) — what happens inside `/process`
-- [Structured documents](concepts.md#structured-documents-optional) — section tagging and summarization

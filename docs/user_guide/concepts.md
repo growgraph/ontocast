@@ -37,11 +37,17 @@ For papers and other heading-structured Markdown text, `/process` and `ontocast 
 
 ### Section tagging and section-aligned chunks
 
-1. **Tag Sections** (when `target_sections` or `summarize_sections` is set) scans converted text for academic-style headings (`introduction`, `methods`, `results`, `discussion`, `conclusion`, `future_work`, `limitations`, `related_work`, `background`, and numbered variants).
-2. **Chunk** still uses the semantic `ChunkerTool`; each content unit then gets a `section_label` by **maximum character-span overlap** with detected section ranges (section-aligned labeling, not a separate chunker mode).
-3. **`target_sections`** drops units whose label is not in the allowlist (case-insensitive).
+When `target_sections` or `summarize_sections` is set, the **Chunk** node runs a single prepare pipeline:
 
-Recognized labels match normalized heading text (underscore form), e.g. `results`, `future_work`.
+1. **Segment** — Docling `HybridChunker` segments for layout-aware PDFs/DOCX; if none, semantic chunking on exported markdown (plain or weak structure).
+2. **Coalesce** — undersized segments merge into the right neighbor (trailing tiny segments merge left); short abstract headings are preserved; section boundaries come from heading lines and Docling breadcrumbs.
+3. **Tag** — heading regex on exported markdown (`ontocast.config.section_labels` YAML), optional front-matter abstract span, overlap labeling, then parallel LLM backfill for unlabeled segments at or above `CHUNK_SECTION_TAG_MIN_CHARS` (`PARALLEL_WORKERS`).
+4. **Filter** — `target_sections` allowlist, or `summarize_sections` allowlist when `target_sections` is omitted (not `*`).
+5. **Size** — split oversized segments (semantic when available), merge undersized consecutive same-label chunks to `min_size` / `max_size`.
+
+**Schema selection:** `section_schema_id` (e.g. `academic`, `financial`, `legal`, `clinical`, `manual`, `fiction`, `general`) or `document_type_hint` (substring match in `manifest.yaml`, e.g. `10-Q` → financial). Default is `academic`.
+
+Recognized labels are canonical ids from the active schema (underscore form), e.g. `results`, `md_and_a`, `risk_factors`.
 
 ### Optional summarization
 
@@ -49,9 +55,11 @@ When `summarize_sections` is present (including empty or `*` for all units), the
 
 | Parameter | Default | Effect |
 |-----------|---------|--------|
-| `target_sections` | omitted | Enable tagging; keep only listed sections (e.g. `results,methods`) |
-| `summarize_sections` | omitted | Enable tagging + summarization node; omit to skip summaries. `*` or empty = all chunks |
+| `target_sections` | omitted | Section prepare + keep only listed sections (e.g. `results,methods`) |
+| `summarize_sections` | omitted | Section prepare + summarization node; omit to skip summaries. `*` or empty = all chunks after prepare |
 | `summary_max_sentences` | `5` | Max sentences per summary when summarization runs |
+| `section_schema_id` | omitted (`academic`) | Section label YAML schema (`financial`, `legal`, `clinical`, `manual`, `fiction`, `general`) |
+| `document_type_hint` | omitted | Free-text hint to resolve schema when `section_schema_id` is not set |
 
 Section lists accept comma-separated values or a JSON array in query, form, or JSON body fields.
 

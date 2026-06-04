@@ -43,7 +43,15 @@ class SourceUnit(BaseModel):
     )
     section_label: str | None = Field(
         default=None,
-        description="Section label assigned by tag_sections (e.g. results, methods)",
+        description="Section label assigned during chunk prepare (e.g. results, methods)",
+    )
+    headings: list[str] | None = Field(
+        default=None,
+        description="Docling heading breadcrumb for this chunk (tagging hint).",
+    )
+    doc_item_refs: list[str] = Field(
+        default_factory=list,
+        description="Docling doc_item self_refs covered by this chunk (tagging hint).",
     )
     summary: str | None = Field(
         default=None,

@@ -31,7 +31,6 @@ from .converter import ConverterTool
 from .llm import LLMTool
 from .onto import Tool
 from .ontology_manager import OntologyManager
-from .section_classifier import SectionClassifierTool
 from .triple_manager import (
     FilesystemTripleStoreManager,
     FusekiTripleStoreManager,
@@ -56,5 +55,4 @@ __all__ = [
     "QdrantVectorStore",
     "OntologyPatchRetriever",
     "EmbeddingBasedAggregator",
-    "SectionClassifierTool",
 ]

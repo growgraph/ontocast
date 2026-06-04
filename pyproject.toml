@@ -33,6 +33,7 @@ dependencies = [
   "pydantic>=2.11.9",
   "pyld>=2.0.4",
   "python-multipart>=0.0.22",
+  "pyyaml>=6.0.2",
   "qdrant-client>=1.15.1",
   "rapidfuzz>=3.13.0",
   "rdflib>=7.1.4",
@@ -80,7 +81,7 @@ plot = [
 
 [project.scripts]
 cmp-states = "ontocast.cli.cmp_states:main"
-match-dirs = "scripts.match_dirs:main"
+match-graphs = "ontocast.cli.match_graphs:main"
 ontocast = "ontocast.cli.server:run"
 pdfs-to-markdown = "ontocast.cli.pdfs_to_markdown:main"
 plot-graph = "ontocast.cli.plot_graph:main"

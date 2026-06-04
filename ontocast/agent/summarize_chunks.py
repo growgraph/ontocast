@@ -9,6 +9,22 @@ from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
 
+
+def should_summarize_unit(
+    unit: ContentUnit,
+    summarize_sections: list[str] | None,
+) -> bool:
+    """Whether a unit should be passed through the summarization node."""
+    if summarize_sections is None:
+        return False
+    if not summarize_sections or "*" in summarize_sections:
+        return True
+    if unit.section_label is None:
+        return False
+    allowed = {section.strip().lower() for section in summarize_sections}
+    return unit.section_label.lower() in allowed
+
+
 _SUMMARIZE_PROMPT = ChatPromptTemplate.from_messages(
     [
         (

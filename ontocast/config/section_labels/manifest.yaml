@@ -1,0 +1,45 @@
+catalog_version: "1.0"
+default_schema: academic
+schemas:
+-   id: academic
+    file: academic.yaml
+-   id: financial
+    file: financial.yaml
+-   id: legal
+    file: legal.yaml
+-   id: clinical
+    file: clinical.yaml
+-   id: manual
+    file: manual.yaml
+-   id: fiction
+    file: fiction.yaml
+-   id: general
+    file: general.yaml
+document_type_hints:
+    "10-q": financial
+    "10-k": financial
+    "10q": financial
+    "10k": financial
+    "annual report": financial
+    "sec filing": financial
+    "quarterly report": financial
+    "clinical trial": clinical
+    "clinical study": clinical
+    "protocol": clinical
+    "csr": clinical
+    "case report": clinical
+    "contract": legal
+    "agreement": legal
+    "terms of service": legal
+    "privacy policy": legal
+    "novel": fiction
+    "fiction": fiction
+    "user guide": manual
+    "installation guide": manual
+    "operator manual": manual
+    "runbook": manual
+    "paper": academic
+    "manuscript": academic
+    "research article": academic
+    "memo": general
+    "internal report": general

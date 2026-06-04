@@ -235,6 +235,13 @@ class ChunkConfig(BaseSettings):
     )
     min_size: int = Field(default=3000, description="Minimum chunk size in characters")
     max_size: int = Field(default=12000, description="Maximum chunk size in characters")
+    section_tag_min_chars: int = Field(
+        default=80,
+        description=(
+            "Min stripped length for LLM section tagging; smaller segments merge "
+            "into neighbors before tagging"
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="CHUNK_",

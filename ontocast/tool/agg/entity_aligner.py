@@ -105,7 +105,10 @@ class EntityAligner:
         right_rep = representations.get(right)
         if left_rep is None or right_rep is None:
             return False
-        return left.entity in right_rep.types or right.entity in left_rep.types
+
+        left_is_type_of_right = left.entity in (right_rep.types or [])
+        right_is_type_of_left = right.entity in (left_rep.types or [])
+        return not (left_is_type_of_right or right_is_type_of_left)
 
     def _pair_compatible(
         self,
@@ -117,10 +120,8 @@ class EntityAligner:
         if left.entity == right.entity:
             return True
 
-        if self._class_instance_compatible(left, right, representations):
-            if regime == MatchRegime.ONTOLOGY_STRICT:
-                return self._strict_types_compatible(left, right, representations)
-            return True
+        if not self._class_instance_compatible(left, right, representations):
+            return False
 
         pair_representations = {
             left.entity: representations[left],
@@ -134,10 +135,41 @@ class EntityAligner:
             left.entity, right.entity, pair_representations
         ):
             return False
-        if regime == MatchRegime.ONTOLOGY_STRICT:
-            if not self._strict_types_compatible(left, right, representations):
-                return False
+
+        # Type check: always apply when both entities have types.
+        # Regime only controls whether namespace must match (strict)
+        # or just any shared type suffices (loose).
+        left_rep = representations.get(left)
+        right_rep = representations.get(right)
+        both_have_types = (
+            left_rep is not None
+            and right_rep is not None
+            and left_rep.types
+            and right_rep.types
+        )
+        if both_have_types:
+            if regime == MatchRegime.ONTOLOGY_STRICT:
+                if not self._strict_types_compatible(left, right, representations):
+                    return False
+            else:
+                if not self._any_type_overlap(left, right, representations):
+                    return False
+
         return True
+
+    def _any_type_overlap(
+        self,
+        left: GraphEntityRef,
+        right: GraphEntityRef,
+        representations: dict[GraphEntityRef, EntityRepresentation],
+    ) -> bool:
+        left_rep = representations.get(left)
+        right_rep = representations.get(right)
+        if left_rep is None or right_rep is None:
+            return False
+        left_types = set(left_rep.types)
+        right_types = set(right_rep.types)
+        return bool(left_types & right_types)
 
     def _connected_components(
         self,

@@ -1,19 +1,19 @@
-"""Prompt templates for section heading classification."""
+"""Prompt templates for section classification during chunk prepare."""
 
 from langchain_core.prompts import ChatPromptTemplate
 
-HEADING_CLASSIFICATION_PROMPT = ChatPromptTemplate.from_messages(
+CHUNK_SECTION_CLASSIFICATION_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You classify section headings from structured text into normalised labels. "
-            "Use only these labels: {allowed_labels}. "
-            "If a heading does not match any section type, set label to null. "
-            "{format_instructions}",
+            "You classify a short excerpt from a structured document into one "
+            "normalised section label. Use only these labels: {allowed_labels}. "
+            "If the excerpt does not clearly belong to any section type, set label "
+            "to null. {format_instructions}",
         ),
         (
             "human",
-            "{document_context}Classify each heading (one per line):\n{headings}",
+            "{document_context}Excerpt:\n{fragment}",
         ),
     ]
 )

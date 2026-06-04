@@ -64,6 +64,48 @@ def test_from_turtle_drops_invalid_date_datatype_for_non_iso_dates() -> None:
     assert triple in graph
 
 
+def test_from_turtle_preserves_xsd_datetime_literal() -> None:
+    """xsd:dateTime must not be corrupted by xsd:date literal coercion."""
+    ttl = """
+    @prefix doc: <https://growgraph.dev/doc/b9355d00de72/> .
+    @prefix prov: <http://www.w3.org/ns/prov#> .
+    @prefix schema: <https://schema.org/> .
+    @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+    doc:b9355d00de72 a prov:Entity,
+            schema:text ;
+        prov:generatedAtTime "2026-06-02T15:04:28.776738+00:00"^^xsd:dateTime ;
+        schema:identifier "b9355d00de72"^^xsd:string ;
+        schema:position 0 .
+    """
+
+    graph = RDFGraph._from_turtle_str(ttl)
+
+    assert len(graph) == 5
+    generated_at = Literal(
+        "2026-06-02T15:04:28.776738+00:00",
+        datatype=URIRef("http://www.w3.org/2001/XMLSchema#dateTime"),
+    )
+    assert (
+        URIRef("https://growgraph.dev/doc/b9355d00de72/b9355d00de72"),
+        URIRef("http://www.w3.org/ns/prov#generatedAtTime"),
+        generated_at,
+    ) in graph
+
+
+def test_coerce_invalid_date_typed_literals_does_not_match_datetime() -> None:
+    turtle = 'prov:generatedAtTime "2026-06-02T15:04:28.776738+00:00"^^xsd:dateTime ;'
+    assert RDFGraph._coerce_invalid_date_typed_literals(turtle) == turtle
+
+
+def test_coerce_invalid_nquads_date_typed_literals_does_not_match_datetime() -> None:
+    nquads = (
+        '"2026-06-02T15:04:28.776738+00:00"^^'
+        "<http://www.w3.org/2001/XMLSchema#dateTime> "
+    )
+    assert RDFGraph._coerce_invalid_nquads_typed_literals(nquads) == nquads
+
+
 def test_from_turtle_removes_invisible_unicode_chars() -> None:
     ttl = """
     @prefix ex: <https://example.com/ns#> .

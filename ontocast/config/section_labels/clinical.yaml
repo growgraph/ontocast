@@ -1,0 +1,69 @@
+schema_version: "1.0"
+id: clinical
+description: Clinical trial protocols, CSRs, and registry entries
+labels:
+-   id: synopsis
+    heading_patterns:
+    -   '^synopsis\s*$'
+    -   '^study\s+synopsis\s*$'
+    -   '^brief\s+summary\s*$'
+-   id: background
+    heading_patterns:
+    -   '^background\s*$'
+    -   '^introduction\s*$'
+    -   '^rationale\s*$'
+-   id: objectives
+    heading_patterns:
+    -   '^objectives?\s*$'
+    -   '^study\s+objectives?\s*$'
+    -   '^primary\s+objective\s*$'
+-   id: endpoints
+    heading_patterns:
+    -   '^endpoints?\s*$'
+    -   '^study\s+endpoints?\s*$'
+    -   '^primary\s+endpoint\s*$'
+-   id: study_design
+    heading_patterns:
+    -   '^study\s+design\s*$'
+    -   '^trial\s+design\s*$'
+    -   '^design\s*$'
+-   id: population
+    heading_patterns:
+    -   '^population\s*$'
+    -   '^study\s+population\s*$'
+-   id: eligibility
+    heading_patterns:
+    -   '^eligibility\s*$'
+    -   '^inclusion\s+(?:and\s+exclusion\s+)?criteria\s*$'
+    -   '^exclusion\s+criteria\s*$'
+-   id: interventions
+    heading_patterns:
+    -   '^interventions?\s*$'
+    -   '^study\s+interventions?\s*$'
+    -   '^treatments?\s*$'
+-   id: outcomes
+    heading_patterns:
+    -   '^outcomes?\s*$'
+    -   '^study\s+outcomes?\s*$'
+-   id: adverse_events
+    heading_patterns:
+    -   '^adverse\s+events?\s*$'
+    -   '^safety\s*$'
+    -   '^safety\s+outcomes?\s*$'
+-   id: statistical_analysis
+    heading_patterns:
+    -   '^statistical\s+(?:analysis|methods?|considerations)\s*$'
+    -   '^statistics?\s*$'
+-   id: ethics
+    heading_patterns:
+    -   '^ethics?\s*$'
+    -   '^ethical\s+considerations\s*$'
+    -   '^institutional\s+review\s+board\s*$'
+-   id: data_management
+    heading_patterns:
+    -   '^data\s+management\s*$'
+    -   '^data\s+handling\s*$'
+-   id: references
+    heading_patterns:
+    -   '^references\s*$'
+    -   '^bibliography\s*$'

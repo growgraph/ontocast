@@ -1,0 +1,35 @@
+schema_version: "1.0"
+id: fiction
+description: Novels, short fiction, and literary works
+labels:
+-   id: front_matter
+    heading_patterns:
+    -   '^front\s+matter\s*$'
+    -   '^half[\s-]?title\s*$'
+    -   '^title\s+page\s*$'
+-   id: dedication
+    heading_patterns:
+    -   '^dedication\s*$'
+-   id: epigraph
+    heading_patterns:
+    -   '^epigraph\s*$'
+-   id: prologue
+    heading_patterns:
+    -   '^prologue\s*$'
+-   id: part
+    heading_patterns:
+    -   '^part\s+(?:\d+|[IVXivx]+)\s*$'
+    -   '^book\s+(?:\d+|[IVXivx]+)\s*$'
+-   id: chapter
+    heading_patterns:
+    -   '^chapter\s+(?:\d+|[IVXivx]+)\s*$'
+    -   '^ch(?:apter)?\.?\s*(?:\d+|[IVXivx]+)\s*$'
+-   id: epilogue
+    heading_patterns:
+    -   '^epilogue\s*$'
+-   id: afterword
+    heading_patterns:
+    -   '^afterword\s*$'
+-   id: acknowledgements
+    heading_patterns:
+    -   '^acknowledg(?:e?ments?|ments?)\s*$'

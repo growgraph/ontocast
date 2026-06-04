@@ -6,7 +6,7 @@ from rdflib import DCTERMS, RDFS, Literal, URIRef
 
 from ontocast.agent.normalize_ontology import normalize_ontology_units
 from ontocast.agent.render_ontology import render_ontology_update
-from ontocast.agent.summarize_chunks import summarize_chunk
+from ontocast.agent.summarize_chunks import should_summarize_unit, summarize_chunk
 from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
 from ontocast.onto.enum import (
     OntologyAssemblyMode,
@@ -19,7 +19,6 @@ from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.section import should_summarize_unit
 from ontocast.onto.state import AgentState, BudgetTracker
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.atomic import facts_loop, ontology_loop

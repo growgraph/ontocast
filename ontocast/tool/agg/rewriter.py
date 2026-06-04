@@ -475,7 +475,7 @@ class GraphRewriter:
                 merged_entities[mapped].add(original)
 
         for unit in units:
-            if unit.graph is None:
+            if unit.graph is None or len(unit.graph) == 0:
                 continue
 
             # 1. Chunk metadata

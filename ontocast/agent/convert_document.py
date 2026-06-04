@@ -8,6 +8,7 @@ import json
 import logging
 import pathlib
 
+from ontocast.onto.docling_helpers import plain_text_to_docling_doc
 from ontocast.onto.enum import OntologyContextMode, Status
 from ontocast.onto.state import AgentState
 from ontocast.toolbox import ToolBox
@@ -104,7 +105,7 @@ def _fail_when_fixed_catalog_ontology_missing(state: AgentState) -> AgentState |
 
 
 def convert_document(state: AgentState, tools: ToolBox) -> AgentState:
-    """Convert a single raw input payload on the state into text.
+    """Convert a single raw input payload on the state into a DoclingDocument.
 
     Strict 1-in / 1-out agent node: ``state.raw_input`` must contain exactly
     one ``{filename: bytes}`` entry. Batch fan-out (e.g. JSONL) is the caller's
@@ -115,7 +116,7 @@ def convert_document(state: AgentState, tools: ToolBox) -> AgentState:
         tools: The toolbox instance providing utility functions.
 
     Returns:
-        AgentState: Updated state with ``input_text`` populated, or with
+        AgentState: Updated state with ``docling_doc`` populated, or with
         ``status == Status.FAILED`` if conversion could not be performed.
     """
     logger.debug("Converting document")
@@ -136,8 +137,8 @@ def convert_document(state: AgentState, tools: ToolBox) -> AgentState:
     logger.debug("Converting %s with extension %s", filename, file_extension)
 
     if file_extension in tools.converter.supported_extensions:
-        result = tools.converter(file_content)
-        state.set_text(result["text"])
+        doc = tools.converter(file_content)
+        state.set_docling_doc(doc)
         blocked = _fail_when_fixed_catalog_ontology_missing(state)
         return blocked if blocked is not None else state
 
@@ -147,12 +148,13 @@ def convert_document(state: AgentState, tools: ToolBox) -> AgentState:
         if json_text is None:
             state.status = Status.FAILED
             return state
-        state.set_text(json_text)
+        state.set_docling_doc(plain_text_to_docling_doc(json_text, filename))
         blocked = _fail_when_fixed_catalog_ontology_missing(state)
         return blocked if blocked is not None else state
 
     if file_extension == ".txt":
-        state.set_text(json.loads(file_content.decode("utf-8")))
+        text = json.loads(file_content.decode("utf-8"))
+        state.set_docling_doc(plain_text_to_docling_doc(text, filename))
         blocked = _fail_when_fixed_catalog_ontology_missing(state)
         return blocked if blocked is not None else state
 

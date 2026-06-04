@@ -15,6 +15,7 @@ from ontocast.cli.http_parse import (
     parse_max_visits_param,
     parse_ontology_context_mode_param,
     parse_render_mode_param,
+    parse_section_schema_id_param,
     parse_sections_list_param,
     parse_strip_provenance_param,
     parse_summary_max_sentences_param,
@@ -46,6 +47,7 @@ class ParsedProcessRequest:
     summarize_sections: list[str] | None
     summary_max_sentences: int
     document_type_hint: str | None
+    section_schema_id: str | None
 
 
 async def load_parsed_process_request(
@@ -105,6 +107,9 @@ async def load_parsed_process_request(
     document_type_hint = parse_document_type_hint_param(
         request.query_params.get("document_type_hint")
     )
+    section_schema_id = parse_section_schema_id_param(
+        request.query_params.get("section_schema_id")
+    )
 
     if content_type.startswith("application/json"):
         bytes_data = await request.body()
@@ -142,6 +147,12 @@ async def load_parsed_process_request(
                         document_type_hint = parse_document_type_hint_param(
                             str(raw_hint)
                         )
+                if "section_schema_id" in parsed_obj:
+                    raw_schema = parsed_obj.get("section_schema_id")
+                    if raw_schema is not None:
+                        section_schema_id = parse_section_schema_id_param(
+                            str(raw_schema)
+                        )
         except (json.JSONDecodeError, UnicodeDecodeError):
             logger.debug(
                 "%s JSON body could not be decoded for ontology id preview",
@@ -178,6 +189,8 @@ async def load_parsed_process_request(
                 )
             elif key == "document_type_hint" and value is not None:
                 document_type_hint = parse_document_type_hint_param(str(value))
+            elif key == "section_schema_id" and value is not None:
+                section_schema_id = parse_section_schema_id_param(str(value))
         if not files_dict:
             return JSONResponse(
                 status_code=400,
@@ -220,6 +233,7 @@ async def load_parsed_process_request(
         summarize_sections=summarize_sections,
         summary_max_sentences=summary_max_sentences,
         document_type_hint=document_type_hint,
+        section_schema_id=section_schema_id,
     )
 
 
@@ -258,4 +272,5 @@ def build_agent_state_from_parsed(
         summarize_sections=parsed.summarize_sections,
         summary_max_sentences=parsed.summary_max_sentences,
         document_type_hint=parsed.document_type_hint,
+        section_schema_id=parsed.section_schema_id,
     )

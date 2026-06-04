@@ -1,0 +1,62 @@
+schema_version: "1.0"
+id: financial
+description: SEC filings, annual and quarterly reports, investor documents
+labels:
+-   id: cover
+    heading_patterns:
+    -   '^form\s+10[-\s]?[qk]\s*$'
+    -   '^cover\s+page\s*$'
+-   id: highlights
+    heading_patterns:
+    -   '^highlights?\s*$'
+    -   '^financial\s+highlights?\s*$'
+-   id: business_overview
+    heading_patterns:
+    -   '^item\s+1\.?\s*$'
+    -   '^business\s*$'
+    -   '^business\s+overview\s*$'
+    -   '^description\s+of\s+business\s*$'
+-   id: risk_factors
+    heading_patterns:
+    -   '^item\s+1a\.?\s*$'
+    -   '^risk\s+factors\s*$'
+-   id: md_and_a
+    heading_patterns:
+    -   '^item\s+7\.?\s*$'
+    -   '^management\s+discussion\s+and\s+analysis\s*$'
+    -   '^md\s*&\s*a\s*$'
+-   id: financial_statements
+    heading_patterns:
+    -   '^item\s+8\.?\s*$'
+    -   '^financial\s+statements\s*$'
+    -   '^consolidated\s+financial\s+statements\s*$'
+-   id: notes_to_financials
+    heading_patterns:
+    -   '^notes?\s+to\s+(?:consolidated\s+)?financial\s+statements\s*$'
+    -   '^notes?\s+to\s+financial\s+statements\s*$'
+-   id: auditor_report
+    heading_patterns:
+    -   '^report\s+of\s+independent\s+registered\s+public\s+accounting\s+firm\s*$'
+    -   '^auditors?\s+report\s*$'
+-   id: controls_procedures
+    heading_patterns:
+    -   '^item\s+9a\.?\s*$'
+    -   '^controls\s+and\s+procedures\s*$'
+    -   '^internal\s+control\s+over\s+financial\s+reporting\s*$'
+-   id: legal_proceedings
+    heading_patterns:
+    -   '^item\s+3\.?\s*$'
+    -   '^legal\s+proceedings\s*$'
+-   id: executive_compensation
+    heading_patterns:
+    -   '^item\s+11\.?\s*$'
+    -   '^executive\s+compensation\s*$'
+-   id: exhibits
+    heading_patterns:
+    -   '^item\s+15\.?\s*$'
+    -   '^exhibits?\s*$'
+    -   '^exhibit\s+index\s*$'
+-   id: references
+    heading_patterns:
+    -   '^references\s*$'
+    -   '^bibliography\s*$'

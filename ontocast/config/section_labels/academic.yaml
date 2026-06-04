@@ -1,0 +1,60 @@
+schema_version: "1.0"
+id: academic
+description: IMRaD and common paper or report section headings
+labels:
+-   id: abstract
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?abstract[.:;—\-]*\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?abstract\s*[:.—\-]\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?ABSTRACT\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:executive\s+summary|synopsis)\s*$'
+-   id: introduction
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?introduction\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:overview|preamble|foreword|preface|motivation)\s*$'
+-   id: related_work
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?related\s+work\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:related\s+(?:literature|approaches?|research|studies)|prior\s+(?:work|art)|literature\s+(?:review|survey)|state\s+of\s+the\s+art|survey)\s*$'
+-   id: background
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?background\s*$'
+-   id: methods
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?methods?\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?methodology\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:materials?\s+and\s+)?(?:methods?|methodology|approach|experimental\s+setup|proposed\s+(?:method|model|framework|system)|implementation|design|procedure|protocol|framework|architecture)\s*$'
+-   id: results
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?results?\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:experimental\s+)?(?:results?|findings?|evaluation|experiments?|ablation(?:\s+stud(?:y|ies))?|outcomes?|performance|benchmarks?)\s*$'
+-   id: discussion
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?discussion\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:analysis|interpretation|observations?)\s*$'
+-   id: conclusion
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?conclusions?\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:conclusions?|concluding\s+remarks?|summary|final\s+remarks?|final\s+thoughts|takeaways?|wrap[\s-]?up)\s*$'
+-   id: future_work
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?future\s+work\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:future\s+(?:work|directions?|research)|next\s+steps?|roadmap|outlook)\s*$'
+-   id: limitations
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?limitations?\s*$'
+-   id: acknowledgements
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?acknowledg(?:e?ments?|ments?)\s*$'
+-   id: data
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?data(?:set|sets)?\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:corpus|data\s+(?:collection|description))\s*$'
+-   id: appendix
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?appendi(?:x|ces)\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:supplementary\s+material|supplement)\s*$'
+-   id: references
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?references\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:bibliography|works\s+cited)\s*$'

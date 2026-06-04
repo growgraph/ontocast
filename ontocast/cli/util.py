@@ -29,7 +29,7 @@ def pdf2markdown(file_path: pathlib.Path, converter: ConverterTool | None = None
     if file_path.suffix == ".pdf":
         if converter is None:
             converter = ConverterTool()
-        result = converter(file_path)
-        return result
+        doc = converter(file_path)
+        return doc.export_to_markdown()
     else:
         raise ValueError(f"Unsupported extension {str(file_path.suffix)}")

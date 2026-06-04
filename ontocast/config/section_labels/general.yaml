@@ -1,0 +1,35 @@
+schema_version: "1.0"
+id: general
+description: Memos, internal reports, and mixed Markdown documents
+labels:
+-   id: summary
+    heading_patterns:
+    -   '^summary\s*$'
+    -   '^executive\s+summary\s*$'
+    -   '^overview\s*$'
+-   id: background
+    heading_patterns:
+    -   '^background\s*$'
+    -   '^context\s*$'
+-   id: analysis
+    heading_patterns:
+    -   '^analysis\s*$'
+    -   '^findings?\s*$'
+    -   '^discussion\s*$'
+-   id: recommendations
+    heading_patterns:
+    -   '^recommendations?\s*$'
+    -   '^next\s+steps?\s*$'
+    -   '^action\s+items?\s*$'
+-   id: appendix
+    heading_patterns:
+    -   '^appendi(?:x|ces)\s*$'
+    -   '^attachments?\s*$'
+-   id: references
+    heading_patterns:
+    -   '^references\s*$'
+    -   '^bibliography\s*$'
+-   id: unclassified
+    heading_patterns:
+    -   '^unclassified\s*$'
+    -   '^miscellaneous\s*$'

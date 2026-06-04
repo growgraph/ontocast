@@ -3,8 +3,8 @@
 import json
 import logging
 
+from ontocast.config.section_labels import normalise_user_section_label
 from ontocast.onto.enum import LLMGraphFormat, OntologyContextMode, RenderMode
-from ontocast.onto.section import normalise_user_section_label
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,14 @@ def parse_document_type_hint_param(value: str | None) -> str | None:
     if value is None:
         return None
     stripped = str(value).strip()
+    return stripped or None
+
+
+def parse_section_schema_id_param(value: str | None) -> str | None:
+    """Parse optional section_schema_id; empty strings become None."""
+    if value is None:
+        return None
+    stripped = str(value).strip().lower()
     return stripped or None
 
 

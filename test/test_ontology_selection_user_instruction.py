@@ -45,7 +45,8 @@ def test_convert_document_sets_ontology_selection_user_instruction_from_json() -
 
     out = convert_document(state, tools)
 
-    assert out.input_text == "Hello world"
+    assert out.docling_doc is not None
+    assert out.docling_doc.export_to_markdown().strip() == "Hello world"
     assert out.ontology_selection_user_instruction == "Prefer legal ontologies"
 
 

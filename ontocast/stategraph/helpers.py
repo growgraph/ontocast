@@ -91,6 +91,6 @@ def build_document_excerpt(state: AgentState) -> str:
 
     if excerpt_parts:
         return "\n\n[...]\n\n".join(excerpt_parts)
-    if state.input_text:
-        return state.input_text
+    if state.docling_doc is not None:
+        return state.docling_doc.export_to_markdown()
     return ""

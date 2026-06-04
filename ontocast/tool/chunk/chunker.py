@@ -8,6 +8,7 @@ from pydantic import Field
 
 from ontocast.config import ChunkConfig
 from ontocast.tool.cache import Cacher, ToolCacher
+from ontocast.tool.chunk.sizing import size_bounded_text
 from ontocast.tool.chunk.util import SENTENCE_SPLIT_REGEX, SemanticChunker
 from ontocast.tool.onto import Tool
 
@@ -116,19 +117,14 @@ class ChunkerTool(Tool):
                         # Set to a sentinel value to prevent repeated failed attempts
                         self._model = None
 
-    def _naive_chunk(self, doc: str) -> list[str]:
-        """Naive chunking fallback when semantic chunking is not available.
+    def naive_split(self, doc: str) -> list[str]:
+        """Split text by paragraph/sentence boundaries up to ``max_size``.
 
-        Args:
-            doc: The document text to chunk.
-
-        Returns:
-            List of text chunks.
+        Unlike :meth:`_naive_chunk`, does not enforce ``min_size`` filtering.
         """
-        # Split by paragraphs first (double newlines)
         paragraphs = re.split(r"\n\s*\n", doc.strip())
 
-        chunks = []
+        chunks: list[str] = []
         current_chunk = ""
 
         for paragraph in paragraphs:
@@ -136,7 +132,6 @@ class ChunkerTool(Tool):
             if not paragraph:
                 continue
 
-            # If adding this paragraph would exceed max_size, start a new chunk
             if (
                 current_chunk
                 and len(current_chunk) + len(paragraph) + 2 > self.config.max_size
@@ -150,9 +145,7 @@ class ChunkerTool(Tool):
                 else:
                     current_chunk = paragraph
 
-            # If a single paragraph is too large, split it by sentences
             if len(current_chunk) > self.config.max_size:
-                # Save the previous chunk if it exists
                 if len(current_chunk) - len(paragraph) - 2 > 0:
                     prev_chunk = current_chunk[
                         : len(current_chunk) - len(paragraph) - 2
@@ -160,7 +153,6 @@ class ChunkerTool(Tool):
                     if prev_chunk:
                         chunks.append(prev_chunk)
 
-                # Split the large paragraph by sentences
                 sentences = re.split(r"(?<=[.!?])\s+", paragraph)
                 temp_chunk = ""
 
@@ -177,12 +169,25 @@ class ChunkerTool(Tool):
 
                 current_chunk = temp_chunk
 
-        # Add the last chunk
         if current_chunk:
             chunks.append(current_chunk.strip())
 
-        # Filter out chunks that are too small
-        chunks = [chunk for chunk in chunks if len(chunk) >= self.config.min_size]
+        return chunks
+
+    def size_text(self, doc: str) -> list[str]:
+        """Split ``doc`` to respect ``min_size`` / ``max_size`` using naive boundaries."""
+        return size_bounded_text(doc, self.config, self.naive_split)
+
+    def _naive_chunk(self, doc: str) -> list[str]:
+        """Naive chunking fallback when semantic chunking is not available.
+
+        Args:
+            doc: The document text to chunk.
+
+        Returns:
+            List of text chunks.
+        """
+        chunks = self.size_text(doc)
 
         logger.info(f"Naive chunking produced {len(chunks)} chunks")
         return chunks

@@ -5,7 +5,8 @@ import re
 from collections import defaultdict
 from typing import Any
 
-from pydantic import ConfigDict, Field
+from docling_core.types.doc import DoclingDocument
+from pydantic import ConfigDict, Field, field_validator
 from rdflib import URIRef
 
 from ontocast.onto.constants import DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI
@@ -24,7 +25,6 @@ from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.model import BasePydanticModel, Suggestions
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.section import SectionSpan
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.util import render_text_hash
 
@@ -152,7 +152,7 @@ class AgentState(BasePydanticModel):
     including input text, content units, ontologies, and workflow status.
 
     Attributes:
-        input_text: Input text to process.
+        docling_doc: Parsed document in native Docling format.
         current_domain: IRI used for forming document namespace.
         doc_hid: An almost unique hash/id for the parent document.
         raw_input: Single raw input payload as {filename: bytes}.
@@ -166,7 +166,10 @@ class AgentState(BasePydanticModel):
         max_chunks: Maximum number of source content units to split and process.
     """
 
-    input_text: str = Field(description="Input text", default="")
+    docling_doc: DoclingDocument | None = Field(
+        default=None,
+        description="Parsed document in native Docling format.",
+    )
     current_domain: str = Field(
         description="IRI used for forming document namespace", default=DEFAULT_DOMAIN
     )
@@ -340,10 +343,6 @@ class AgentState(BasePydanticModel):
         default=3, description="Maximum number of visits allowed per node"
     )
     max_chunks: int | None = None
-    section_spans: list[SectionSpan] = Field(
-        default_factory=list,
-        description="Section spans detected in input_text by tag_sections.",
-    )
     target_sections: list[str] | None = Field(
         default=None,
         description="Sections to include when chunking. None = no filter.",
@@ -360,7 +359,14 @@ class AgentState(BasePydanticModel):
         default=None,
         description=(
             "Optional free-text hint about the source material (e.g. '10-K filing', "
-            "'journal article') for section-heading LLM classification only."
+            "'journal article') used to resolve section label schema and LLM tagging."
+        ),
+    )
+    section_schema_id: str | None = Field(
+        default=None,
+        description=(
+            "Section label schema id from ontocast.config.section_labels (e.g. academic, "
+            "financial). Overrides document_type_hint when set."
         ),
     )
     model_config = ConfigDict(arbitrary_types_allowed=True, populate_by_name=True)
@@ -419,8 +425,8 @@ class AgentState(BasePydanticModel):
         return self.statuses.get(node, Status.NOT_VISITED)
 
     @property
-    def use_section_tagging(self) -> bool:
-        """Whether the tag_sections node should run."""
+    def needs_section_prepare(self) -> bool:
+        """Whether chunk prepare runs section tagging and optional filter."""
         return self.target_sections is not None or self.summarize_sections is not None
 
     @property
@@ -605,14 +611,23 @@ class AgentState(BasePydanticModel):
 
         return "\n".join(markdown_parts)
 
-    def set_text(self, text):
-        """Set the input text and generate document hash.
+    def set_docling_doc(self, doc: DoclingDocument) -> None:
+        """Set the parsed document and generate document hash.
 
         Args:
-            text: The input text to set.
+            doc: The DoclingDocument to set.
         """
-        self.input_text = text
-        self.doc_hid = render_text_hash(self.input_text)
+        self.docling_doc = doc
+        self.doc_hid = render_text_hash(doc.model_dump_json())
+
+    @field_validator("docling_doc", mode="before")
+    @classmethod
+    def _coerce_docling_doc(cls, value: object) -> DoclingDocument | None:
+        if value is None or isinstance(value, DoclingDocument):
+            return value
+        if isinstance(value, dict):
+            return DoclingDocument.model_validate(value)
+        raise TypeError(f"Expected DoclingDocument or dict, got {type(value).__name__}")
 
     def set_failure(self, stage: FailureStage, reason: str, success_score: float = 0.0):
         """Set failure state with stage and reason.

@@ -1,0 +1,64 @@
+schema_version: "1.0"
+id: legal
+description: Contracts, policies, statutes, and terms of use
+labels:
+-   id: definitions
+    heading_patterns:
+    -   '^definitions?\s*$'
+    -   '^defined\s+terms\s*$'
+-   id: recitals
+    heading_patterns:
+    -   '^recitals?\s*$'
+    -   '^whereas\s*$'
+    -   '^background\s*$'
+-   id: scope
+    heading_patterns:
+    -   '^scope\s*$'
+    -   '^purpose\s*$'
+-   id: obligations
+    heading_patterns:
+    -   '^obligations?\s*$'
+    -   '^duties\s*$'
+-   id: representations_warranties
+    heading_patterns:
+    -   '^representations?\s+and\s+warranties\s*$'
+    -   '^warranties\s*$'
+-   id: covenants
+    heading_patterns:
+    -   '^covenants?\s*$'
+-   id: liability
+    heading_patterns:
+    -   '^liability\s*$'
+    -   '^limitation\s+of\s+liability\s*$'
+-   id: indemnity
+    heading_patterns:
+    -   '^indemnit(?:y|ies|ification)\s*$'
+-   id: termination
+    heading_patterns:
+    -   '^termination\s*$'
+    -   '^term\s+and\s+termination\s*$'
+-   id: dispute_resolution
+    heading_patterns:
+    -   '^dispute\s+resolution\s*$'
+    -   '^arbitration\s*$'
+    -   '^governing\s+law\s+and\s+jurisdiction\s*$'
+-   id: governing_law
+    heading_patterns:
+    -   '^governing\s+law\s*$'
+    -   '^applicable\s+law\s*$'
+-   id: notices
+    heading_patterns:
+    -   '^notices?\s*$'
+-   id: schedules
+    heading_patterns:
+    -   '^schedules?\s*$'
+    -   '^attachments?\s*$'
+-   id: signatures
+    heading_patterns:
+    -   '^signatures?\s*$'
+    -   '^execution\s*$'
+    -   '^in\s+witness\s+whereof\s*$'
+-   id: amendments
+    heading_patterns:
+    -   '^amendments?\s*$'
+    -   '^modifications?\s*$'

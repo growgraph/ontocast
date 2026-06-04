@@ -102,7 +102,7 @@ Document-level pipeline (regenerated via `uv run plot-graph`):
 
 Landscape variant: [graph.lr.png](assets/graph.lr.png). Per-unit render/critic loops are documented in [Workflow](user_guide/workflow.md#per-unit-atomic-loop).
 
-1. Convert → optional tag sections → chunk (semantic) → optional summarize chunks
+1. Convert → chunk prepare (segment, tag, filter, size) → optional summarize chunks
 2. Parallel ontology render per unit → normalize → optional consolidate → validate
 3. Parallel facts render per unit → merge with disambiguation
 4. Serialize to triple store; return Turtle in API response

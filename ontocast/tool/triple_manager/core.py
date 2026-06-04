@@ -10,7 +10,7 @@ import os
 from typing import Any, ClassVar
 
 from pydantic import Field
-from rdflib import Graph
+from rdflib import RDF, Graph
 
 from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.ontology import Ontology
@@ -102,6 +102,15 @@ class TripleStoreManager(Tool):
         return await asyncio.to_thread(self.serialize, o, **kwargs)
 
     @classmethod
+    def _provenance_source_nodes(cls, graph: Graph) -> set:
+        """Return chunk/source nodes whose triples are provenance scaffolding."""
+        derived_from = set(graph.objects(None, PROV.wasDerivedFrom))
+        entity_nodes = set(graph.subjects(RDF.type, PROV.Entity))
+        text_chunk_nodes = set(graph.subjects(RDF.type, SCHEMA.text))
+        chunk_metadata_nodes = entity_nodes & text_chunk_nodes
+        return derived_from | chunk_metadata_nodes
+
+    @classmethod
     def strip_provenance(cls, graph: Graph) -> RDFGraph:
         """Return a graph without reification/provenance scaffolding triples."""
         clean = RDFGraph()
@@ -109,7 +118,7 @@ class TripleStoreManager(Tool):
             clean.bind(prefix, namespace)
 
         reifier_nodes = set(graph.subjects(RDF_REIFIES, None))
-        source_nodes = set(graph.objects(None, PROV.wasDerivedFrom))
+        source_nodes = cls._provenance_source_nodes(graph)
 
         for subject, predicate, object_ in graph:
             if predicate in {RDF_REIFIES, PROV.wasDerivedFrom}:

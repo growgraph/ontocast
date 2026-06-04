@@ -37,7 +37,9 @@ PREFIX_USAGE_PATTERN = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]*):[^\s]")
 INTEGER_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:integer')
 DECIMAL_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:decimal')
 DOUBLE_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:double')
-DATE_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:date')
+DATE_TYPED_LITERAL_PATTERN = re.compile(
+    r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:date(?!Time)'
+)
 NQUADS_INTEGER_TYPED_LITERAL_PATTERN = re.compile(
     r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^<http://www\.w3\.org/2001/XMLSchema#integer>'
 )
@@ -48,7 +50,7 @@ NQUADS_DOUBLE_TYPED_LITERAL_PATTERN = re.compile(
     r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^<http://www\.w3\.org/2001/XMLSchema#double>'
 )
 NQUADS_DATE_TYPED_LITERAL_PATTERN = re.compile(
-    r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^<http://www\.w3\.org/2001/XMLSchema#date>'
+    r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^<http://www\.w3\.org/2001/XMLSchema#date(?!Time)>'
 )
 XSD_GYEAR_IRI = "http://www.w3.org/2001/XMLSchema#gYear"
 UNKNOWN_PREFIX_ERROR_PATTERN = re.compile(r"Unknown namespace prefix\s*:\s*(\w+)")

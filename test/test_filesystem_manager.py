@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from rdflib import RDF, URIRef
+from rdflib import RDF, Literal, URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI, PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType
@@ -77,3 +77,20 @@ def test_strip_provenance_removes_source_nodes() -> None:
         SCHEMA.identifier,
         URIRef(f"{DEFAULT_IRI}/chunk-1"),
     ) not in clean_graph
+
+
+def test_strip_provenance_removes_orphan_chunk_metadata() -> None:
+    """Chunk metadata without wasDerivedFrom links is still stripped."""
+    manager = FilesystemTripleStoreManager(
+        working_directory=Path("/tmp"),
+        ontology_path=Path("/tmp"),
+    )
+    unit_uri = URIRef("https://example.org/doc/chunk/0")
+    graph = RDFGraph()
+    graph.add((unit_uri, RDF.type, PROV.Entity))
+    graph.add((unit_uri, RDF.type, SCHEMA.text))
+    graph.add((unit_uri, SCHEMA.identifier, Literal("abc")))
+
+    clean_graph = manager.strip_provenance(graph)
+
+    assert len(clean_graph) == 0

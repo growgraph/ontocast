@@ -16,8 +16,7 @@ config:
 ---
 graph TD;
 	__start__([<p>__start__</p>]):::first
-	Convert\20to\20Markdown(Convert to Markdown)
-	Tag\20Sections(Tag Sections)
+	Convert\20to\20Text(Convert to Text)
 	Chunk\20Text(Chunk Text)
 	Summarize\20Chunks(Summarize Chunks)
 	Update\20Ontology(Update Ontology)
@@ -35,17 +34,15 @@ graph TD;
 	Consistency\20Critic -.-> Render\20Facts;
 	Consistency\20Critic -.-> Serialize;
 	Consolidate\20Ontology --> Structural\20Check;
-	Convert\20to\20Markdown -.-> Chunk\20Text;
-	Convert\20to\20Markdown -.-> Tag\20Sections;
+	Convert\20to\20Text --> Chunk\20Text;
 	Merge\20Facts --> Serialize;
 	Normalize\20Ontology\20Updates --> Consolidate\20Ontology;
 	Render\20Facts --> Merge\20Facts;
 	Structural\20Check --> Consistency\20Critic;
 	Summarize\20Chunks -.-> Render\20Facts;
 	Summarize\20Chunks -.-> Update\20Ontology;
-	Tag\20Sections --> Chunk\20Text;
 	Update\20Ontology --> Normalize\20Ontology\20Updates;
-	__start__ --> Convert\20to\20Markdown;
+	__start__ --> Convert\20to\20Text;
 	Serialize --> __end__;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0

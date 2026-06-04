@@ -91,7 +91,7 @@ def draw_graphviz(
     rankdir: str = "TB",
 ) -> None:
     is_lr = rankdir == "LR"
-    splines = "spline" if not is_lr else "ortho"
+    splines = "spline"
 
     viz: Any = pgv_module.AGraph(directed=True, strict=False)
     viz.graph_attr.update(

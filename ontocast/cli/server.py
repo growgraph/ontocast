@@ -81,6 +81,7 @@ from ontocast.api.tenancy_resolution import (
 )
 from ontocast.cli.http_parse import (
     parse_document_type_hint_param,
+    parse_section_schema_id_param,
     parse_sections_list_param,
     parse_summary_max_sentences_param,
 )
@@ -288,6 +289,7 @@ def expand_input_to_states(
     summarize_sections: list[str] | None = None,
     summary_max_sentences: int = 5,
     document_type_hint: str | None = None,
+    section_schema_id: str | None = None,
 ) -> list[AgentState]:
     """Expand a local input file into one ``AgentState`` per logical record.
 
@@ -311,6 +313,7 @@ def expand_input_to_states(
         "summarize_sections": summarize_sections,
         "summary_max_sentences": summary_max_sentences,
         "document_type_hint": document_type_hint,
+        "section_schema_id": section_schema_id,
     }
 
     if file_path.suffix.lower() != ".jsonl":
@@ -391,6 +394,7 @@ async def _process_files_input(
     summarize_sections: list[str] | None = None,
     summary_max_sentences: int = 5,
     document_type_hint: str | None = None,
+    section_schema_id: str | None = None,
 ) -> None:
     recursion_limit = calculate_recursion_limit(head_chunks, config.server)
     for file_path in files:
@@ -406,6 +410,7 @@ async def _process_files_input(
                 summarize_sections=summarize_sections,
                 summary_max_sentences=summary_max_sentences,
                 document_type_hint=document_type_hint,
+                section_schema_id=section_schema_id,
             )
             for state in states:
                 if use_unit_pipeline:
@@ -972,7 +977,16 @@ def create_app(
     default=None,
     help=(
         "Optional free-text hint about the source material (e.g. 'SEC 10-K', "
-        "'journal article') for section-heading LLM classification."
+        "'journal article') to resolve section label schema and LLM tagging."
+    ),
+)
+@click.option(
+    "--section-schema-id",
+    type=str,
+    default=None,
+    help=(
+        "Section label schema id (academic, financial, legal, clinical, manual, "
+        "fiction, general). Overrides --document-type-hint when set."
     ),
 )
 def run(
@@ -985,6 +999,7 @@ def run(
     summarize_sections: str | None,
     summary_max_sentences: int,
     document_type_hint: str | None,
+    section_schema_id: str | None,
 ):
     """
     Main entry point for the OntoCast server/CLI.
@@ -1059,6 +1074,7 @@ def run(
         default=5,
     )
     parsed_document_type_hint = parse_document_type_hint_param(document_type_hint)
+    parsed_section_schema_id = parse_section_schema_id_param(section_schema_id)
 
     workflow: CompiledStateGraph = create_agent_graph(tools)
 
@@ -1085,6 +1101,7 @@ def run(
                 summarize_sections=parsed_summarize_sections,
                 summary_max_sentences=parsed_summary_max_sentences,
                 document_type_hint=parsed_document_type_hint,
+                section_schema_id=parsed_section_schema_id,
             )
         )
     else:

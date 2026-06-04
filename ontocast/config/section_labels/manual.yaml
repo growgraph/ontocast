@@ -1,0 +1,61 @@
+schema_version: "1.0"
+id: manual
+description: Product documentation, SOPs, and runbooks
+labels:
+-   id: overview
+    heading_patterns:
+    -   '^overview\s*$'
+    -   '^introduction\s*$'
+    -   '^getting\s+started\s*$'
+-   id: prerequisites
+    heading_patterns:
+    -   '^prerequisites?\s*$'
+    -   '^requirements?\s*$'
+    -   '^before\s+you\s+begin\s*$'
+-   id: installation
+    heading_patterns:
+    -   '^installation\s*$'
+    -   '^install(?:ation)?\s+guide\s*$'
+    -   '^setup\s*$'
+-   id: configuration
+    heading_patterns:
+    -   '^configuration\s*$'
+    -   '^config(?:uration)?\s*$'
+    -   '^settings?\s*$'
+-   id: usage
+    heading_patterns:
+    -   '^usage\s*$'
+    -   '^using\s+'
+    -   '^how\s+to\s+'
+-   id: operations
+    heading_patterns:
+    -   '^operations?\s*$'
+    -   '^operation\s*$'
+    -   '^day[\s-]?to[\s-]?day\s*$'
+-   id: troubleshooting
+    heading_patterns:
+    -   '^troubleshooting\s*$'
+    -   '^faq\s*$'
+    -   '^common\s+issues?\s*$'
+-   id: api_reference
+    heading_patterns:
+    -   '^api\s+reference\s*$'
+    -   '^api\s+documentation\s*$'
+    -   '^reference\s*$'
+-   id: security
+    heading_patterns:
+    -   '^security\s*$'
+    -   '^security\s+considerations\s*$'
+-   id: changelog
+    heading_patterns:
+    -   '^changelog\s*$'
+    -   '^release\s+notes?\s*$'
+    -   '^version\s+history\s*$'
+-   id: glossary
+    heading_patterns:
+    -   '^glossary\s*$'
+    -   '^terminology\s*$'
+-   id: appendix
+    heading_patterns:
+    -   '^appendi(?:x|ces)\s*$'
+    -   '^supplement(?:ary)?\s*$'

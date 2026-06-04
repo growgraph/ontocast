@@ -14,12 +14,10 @@ from .render_facts import render_facts, render_facts_fresh
 from .render_ontology import render_ontology, render_ontology_fresh
 from .serialize import serialize
 from .summarize_chunks import summarize_chunk
-from .tag_sections import tag_sections
 
 __all__ = [
     "chunk_text",
     "convert_document",
-    "tag_sections",
     "summarize_chunk",
     "criticise_facts",
     "criticise_ontology",

@@ -105,3 +105,17 @@ def test_shared_triple_accumulates_multiple_provenance_sources(
     sources = {str(src) for src in merged.objects(statements[0], PROV.wasDerivedFrom)}
     assert str(URIRef(unit_a.iri_absolute)) in sources
     assert str(URIRef(unit_b.iri_absolute)) in sources
+
+
+def test_merge_graphs_with_provenance_skips_empty_unit_graph(
+    graph_rewriter: GraphRewriter,
+) -> None:
+    unit = ContentUnit(
+        text="test",
+        index=0,
+        doc_iri=URIRef("https://example.org/doc"),
+        graph=RDFGraph(),
+        type=OutputType.FACTS,
+    )
+    merged = graph_rewriter.merge_graphs_with_provenance([unit], mapping={})
+    assert len(merged) == 0

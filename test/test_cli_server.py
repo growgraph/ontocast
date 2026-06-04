@@ -26,6 +26,7 @@ from ontocast.cli.server import (
 )
 from ontocast.config import ServerConfig
 from ontocast.onto.content_unit import ContentUnit
+from ontocast.onto.docling_helpers import plain_text_to_docling_doc
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
@@ -110,6 +111,7 @@ def test_build_agent_state_from_parsed_sets_max_visits() -> None:
         summarize_sections=None,
         summary_max_sentences=5,
         document_type_hint=None,
+        section_schema_id=None,
     )
     state = build_agent_state_from_parsed(
         parsed,
@@ -239,7 +241,7 @@ def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
     onto_result = SimpleNamespace(
         current_ontology=Ontology(graph=RDFGraph(), iri="https://example.org/onto"),
     )
-    state = AgentState(input_text="x")
+    state = AgentState(docling_doc=plain_text_to_docling_doc("x", "doc"))
     captured: dict[str, RDFGraph] = {}
 
     class _Aggregator:

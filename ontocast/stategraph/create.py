@@ -4,7 +4,7 @@ from langgraph.constants import END, START
 from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from ontocast.agent import chunk_text, convert_document, tag_sections
+from ontocast.agent import chunk_text, convert_document
 from ontocast.agent.serialize import serialize
 from ontocast.onto.enum import WorkflowNode
 from ontocast.onto.state import AgentState
@@ -20,8 +20,7 @@ from ontocast.stategraph.node_factories import (
 )
 from ontocast.stategraph.routing import (
     route_after_chunk,
-    route_after_chunk_pre,
-    route_after_convert,
+    route_after_tag_or_chunk,
 )
 from ontocast.toolbox import ToolBox
 
@@ -29,10 +28,8 @@ from ontocast.toolbox import ToolBox
 def create_agent_graph(tools: ToolBox) -> CompiledStateGraph:
     """Create the parallel map/reduce agent graph.
 
-    Flow: CONVERT -> [TAG_SECTIONS] -> CHUNK -> [SUMMARIZE_CHUNKS] -> (conditional)
-          - Ontology map-reduce: RENDER_ONTOLOGY_UPDATE -> NORMALIZE -> CONSOLIDATE ->
-            STRUCTURAL_CHECK -> CONSISTENCY_CRITIC -> (optional facts) -> ...
-          - Facts-only: RENDER_FACTS -> MERGE_FACTS -> SERIALIZE
+    Flow: CONVERT -> CHUNK (prepare: segment, tag, filter, size) ->
+          [SUMMARIZE_CHUNKS] -> (conditional extraction)
 
     Per-unit ontology context is assembled inside ``ontology_loop`` (not at a
     document-level select node). For ``ONTOLOGY_AND_FACTS``, the full ontology
@@ -42,7 +39,6 @@ def create_agent_graph(tools: ToolBox) -> CompiledStateGraph:
     workflow = StateGraph(AgentState)
 
     convert_document_node = partial(convert_document, tools=tools)
-    tag_sections_node = partial(tag_sections, tools=tools)
     chunk_text_node = partial(chunk_text, tools=tools)
     serialize_node = partial(serialize, tools=tools)
 
@@ -55,8 +51,7 @@ def create_agent_graph(tools: ToolBox) -> CompiledStateGraph:
     structural_check_node = make_structural_check_node(tools)
     consistency_critic_node = make_consistency_critic_node(tools)
 
-    workflow.add_node(WorkflowNode.CONVERT_TO_MD, convert_document_node)
-    workflow.add_node(WorkflowNode.TAG_SECTIONS, tag_sections_node)
+    workflow.add_node(WorkflowNode.CONVERT_TO_TEXT, convert_document_node)
     workflow.add_node(WorkflowNode.CHUNK, chunk_text_node)
     workflow.add_node(WorkflowNode.SUMMARIZE_CHUNKS, summarize_chunks_node)
     workflow.add_node(WorkflowNode.RENDER_ONTOLOGY_UPDATE, render_ontology_node)
@@ -67,19 +62,11 @@ def create_agent_graph(tools: ToolBox) -> CompiledStateGraph:
     workflow.add_node(WorkflowNode.STRUCTURAL_CHECK, structural_check_node)
     workflow.add_node(WorkflowNode.CONSISTENCY_CRITIC, consistency_critic_node)
     workflow.add_node(WorkflowNode.SERIALIZE, serialize_node)
-    workflow.add_edge(START, WorkflowNode.CONVERT_TO_MD)
-    workflow.add_conditional_edges(
-        WorkflowNode.CONVERT_TO_MD,
-        route_after_convert,
-        {
-            WorkflowNode.TAG_SECTIONS: WorkflowNode.TAG_SECTIONS,
-            WorkflowNode.CHUNK: WorkflowNode.CHUNK,
-        },
-    )
-    workflow.add_edge(WorkflowNode.TAG_SECTIONS, WorkflowNode.CHUNK)
+    workflow.add_edge(START, WorkflowNode.CONVERT_TO_TEXT)
+    workflow.add_edge(WorkflowNode.CONVERT_TO_TEXT, WorkflowNode.CHUNK)
     workflow.add_conditional_edges(
         WorkflowNode.CHUNK,
-        route_after_chunk_pre,
+        route_after_chunk,
         {
             WorkflowNode.SUMMARIZE_CHUNKS: WorkflowNode.SUMMARIZE_CHUNKS,
             WorkflowNode.RENDER_ONTOLOGY_UPDATE: WorkflowNode.RENDER_ONTOLOGY_UPDATE,
@@ -88,7 +75,7 @@ def create_agent_graph(tools: ToolBox) -> CompiledStateGraph:
     )
     workflow.add_conditional_edges(
         WorkflowNode.SUMMARIZE_CHUNKS,
-        route_after_chunk,
+        route_after_tag_or_chunk,
         {
             WorkflowNode.RENDER_ONTOLOGY_UPDATE: WorkflowNode.RENDER_ONTOLOGY_UPDATE,
             WorkflowNode.RENDER_FACTS: WorkflowNode.RENDER_FACTS,

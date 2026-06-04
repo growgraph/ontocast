@@ -10,6 +10,7 @@ from sklearn.decomposition import PCA
 from umap import UMAP
 
 from ontocast.config import ChunkConfig
+from ontocast.tool.chunk.sizing import merge_small_parts
 
 # Regex pattern for splitting text into sentences
 # Matches: paragraph breaks (double newlines) OR sentence endings followed by capital letters
@@ -268,38 +269,12 @@ class SemanticChunker(BaseDocumentTransformer):
                                 chunk_parts.append(current_delims[k])
                         chunks.append("".join(chunk_parts))
 
-        return self._merge_small_chunks(chunks)
-
-    def _merge_small_chunks(self, chunks: List[str]) -> List[str]:
-        """Greedy merge chunks that fall below min_size.
-
-        Ensures no chunk exceeds max_size after merging.
-        Note: Chunks must contain whole sentences, so we merge at sentence boundaries.
-        """
-        merged = []
-        if not chunks:
-            return []
-
-        current = chunks[0]
-        for next_chunk in chunks[1:]:
-            # Calculate merged length - join without extra separator since chunks
-            # already contain their delimiters
-            merged_len = len(current) + len(next_chunk)
-
-            if len(current) < self.min_size and merged_len <= self.max_size:
-                # Merge chunks (both contain whole sentences, so result is valid)
-                current += next_chunk
-            else:
-                # Can't merge without exceeding max_size, so keep current chunk
-                # Note: current chunk might exceed max_size if it's a single long sentence,
-                # but we can't split sentences, so we keep it as-is
-                merged.append(current)
-                current = next_chunk
-
-        # Handle last chunk
-        merged.append(current)
-
-        return merged
+        return merge_small_parts(
+            chunks,
+            self.min_size,
+            self.max_size,
+            separator="",
+        )
 
     def transform_documents(
         self, documents: Sequence[Document], **kwargs: Any

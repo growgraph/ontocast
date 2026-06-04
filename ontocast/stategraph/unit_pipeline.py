@@ -81,8 +81,13 @@ async def run_unit_pipeline(
             stage=str(agent_state.failure_stage),
         )
 
+    full_text = (
+        agent_state.docling_doc.export_to_markdown()
+        if agent_state.docling_doc is not None
+        else ""
+    )
     unit = ContentUnit(
-        text=agent_state.input_text,
+        text=full_text,
         index=0,
         doc_iri=agent_state.doc_iri,
     )

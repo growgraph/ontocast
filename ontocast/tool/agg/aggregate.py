@@ -913,7 +913,7 @@ class EmbeddingBasedAggregator:
         }
 
         # Step 7: Rewrite and merge with provenance
-        active_units = [u for u in units if u.graph is not None]
+        active_units = [u for u in units if u.graph is not None and len(u.graph) > 0]
         merged_graph = self.rewriter.merge_graphs_with_provenance(
             active_units,
             final_mapping,
