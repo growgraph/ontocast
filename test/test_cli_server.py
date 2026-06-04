@@ -333,7 +333,6 @@ def _match_test_app(monkeypatch: pytest.MonkeyPatch):
                 fact_ground_truth_count=1,
             )
 
-    monkeypatch.setattr(server_module, "EntityAligner", _FakeAligner)
     monkeypatch.setattr(server_module, "TripleSetEvaluator", _FakeEvaluator)
     monkeypatch.setattr(
         server_module,
@@ -343,7 +342,14 @@ def _match_test_app(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         server_module, "create_agent_graph", lambda _tools: SimpleNamespace()
     )
-    tools = cast(ToolBox, SimpleNamespace())
+    tools = cast(
+        ToolBox,
+        SimpleNamespace(
+            get_entity_aligner=lambda embedding_model, similarity_threshold: (
+                _FakeAligner(embedding_model, similarity_threshold)
+            ),
+        ),
+    )
     return create_app(
         tools=tools,
         server_config=ServerConfig(),

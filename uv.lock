@@ -3168,6 +3168,7 @@ version = "0.4.0"
 provides-extras = ["all", "dev", "docs", "plot"]
 requires-dist = [
   {extras = ["all"], name = "fastembed", specifier = ">=0.8.0"},
+  {extras = ["chunking"], marker = "extra == 'dev'", name = "docling-core", specifier = ">=2.57.0"},
   {extras = ["python"], marker = "extra == 'docs'", name = "mkdocstrings", specifier = ">=0.29.1"},
   {extras = ["standard"], name = "uvicorn", specifier = ">=0.32.0"},
   {marker = "extra == 'all'", name = "docling", specifier = ">=2.57.0"},
@@ -3228,6 +3229,7 @@ all = [
   {name = "sentence-transformers"}
 ]
 dev = [
+  {extra = ["chunking"], name = "docling-core"},
   {name = "pre-commit"},
   {name = "pytest"},
   {name = "pytest-dotenv"},

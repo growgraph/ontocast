@@ -1,11 +1,44 @@
+import importlib
+from types import ModuleType, SimpleNamespace
 from typing import cast
 from unittest.mock import Mock
 
+import pytest
 from rdflib import URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI
-from ontocast.tool.agg.clustering import ClusterRepresentativeSelector
+from ontocast.tool.agg import clustering
+from ontocast.tool.agg.clustering import (
+    ClusterRepresentativeSelector,
+    EntityClusterer,
+    get_shared_sentence_transformer,
+)
 from ontocast.tool.agg.normalizer import EntityRepresentation
+
+
+def test_shared_sentence_transformer_cache_reuses_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clustering._EMBEDDER_CACHE.clear()
+    created: list[str] = []
+
+    class _FakeModel:
+        def __init__(self, model_name: str) -> None:
+            created.append(model_name)
+
+    def _fake_import_module(name: str) -> SimpleNamespace | ModuleType:
+        if name == "sentence_transformers":
+            return SimpleNamespace(SentenceTransformer=_FakeModel)
+        return importlib.import_module(name)
+
+    monkeypatch.setattr(clustering.importlib, "import_module", _fake_import_module)
+
+    shared = get_shared_sentence_transformer("test-model")
+    clusterer_embedder = EntityClusterer(embedding_model="test-model").embedder
+
+    assert shared is clusterer_embedder
+    assert created == ["test-model"]
+    clustering._EMBEDDER_CACHE.clear()
 
 
 def test_simplicity_score_prefers_simple_uris(

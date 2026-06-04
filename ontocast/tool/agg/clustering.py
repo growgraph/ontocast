@@ -6,6 +6,7 @@ to identify groups of similar entities.
 
 import importlib
 import logging
+import threading
 from typing import Any
 
 import numpy as np
@@ -16,6 +17,31 @@ from sklearn.metrics.pairwise import cosine_similarity
 from .normalizer import EntityRepresentation
 
 logger = logging.getLogger(__name__)
+
+_EMBEDDER_CACHE: dict[str, Any] = {}
+_EMBEDDER_LOCK = threading.Lock()
+
+
+def get_shared_sentence_transformer(model_name: str) -> Any:
+    """Return a process-wide cached SentenceTransformer for *model_name*."""
+    cached = _EMBEDDER_CACHE.get(model_name)
+    if cached is not None:
+        return cached
+    with _EMBEDDER_LOCK:
+        cached = _EMBEDDER_CACHE.get(model_name)
+        if cached is not None:
+            return cached
+        try:
+            st = importlib.import_module("sentence_transformers")
+        except ImportError as e:
+            raise ImportError(
+                "Entity clustering requires the sentence-transformers package. "
+                "Install it with: uv add sentence-transformers"
+            ) from e
+        logger.info("Loading sentence-transformer model: %s", model_name)
+        cached = st.SentenceTransformer(model_name)
+        _EMBEDDER_CACHE[model_name] = cached
+        return cached
 
 
 class EntityClusterer:
@@ -46,15 +72,7 @@ class EntityClusterer:
     @property
     def embedder(self) -> Any:
         if self._embedder is None:
-            try:
-                st = importlib.import_module("sentence_transformers")
-            except ImportError as e:
-                raise ImportError(
-                    "Entity clustering requires the sentence-transformers package. "
-                    "Install it with: uv add sentence-transformers"
-                ) from e
-
-            self._embedder = st.SentenceTransformer(self.embedding_model)
+            self._embedder = get_shared_sentence_transformer(self.embedding_model)
         return self._embedder
 
     def embed_representations(

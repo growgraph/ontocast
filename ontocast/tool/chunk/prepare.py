@@ -6,8 +6,8 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from docling.chunking import HybridChunker
 from docling_core.transforms.chunker.doc_chunk import DocMeta
+from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
 from docling_core.types.doc import DoclingDocument
 
 from ontocast.config import ChunkConfig

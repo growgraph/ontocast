@@ -21,6 +21,7 @@ from ontocast.tool import (
     FusekiTripleStoreManager,
     Neo4jTripleStoreManager,
 )
+from ontocast.tool.agg.entity_aligner import EntityAligner
 from ontocast.tool.cache import Cacher
 from ontocast.tool.graph_diff import DiffTool
 from ontocast.tool.graph_version_manager import GraphVersionManager
@@ -174,6 +175,7 @@ class ToolBox:
             embedding_model=tool_config.aggregation.embedding_model,
             similarity_threshold=tool_config.aggregation.similarity_threshold,
         )
+        self._entity_aligners: dict[tuple[str, float], EntityAligner] = {}
 
         # SPARQL, version management, and diff tools
         self.sparql_tool: SPARQLTool = SPARQLTool(
@@ -210,6 +212,29 @@ class ToolBox:
                 patch=tool_config.patch_retrieval,
             )
             self.ontology_manager.register_vector_store(self.patch_retriever)
+
+    def get_entity_aligner(
+        self,
+        embedding_model: str | None = None,
+        similarity_threshold: float | None = None,
+    ) -> EntityAligner:
+        """Return a cached entity aligner for the given embedding settings."""
+        tool_config = self.config.get_tool_config()
+        model = embedding_model or tool_config.aggregation.embedding_model
+        threshold = (
+            similarity_threshold
+            if similarity_threshold is not None
+            else tool_config.aggregation.similarity_threshold
+        )
+        cache_key = (model, threshold)
+        aligner = self._entity_aligners.get(cache_key)
+        if aligner is None:
+            aligner = EntityAligner(
+                embedding_model=model,
+                similarity_threshold=threshold,
+            )
+            self._entity_aligners[cache_key] = aligner
+        return aligner
 
     async def get_llm_tool(self, budget_tracker):
         """Return the shared LLM tool with the given budget tracker attached.
