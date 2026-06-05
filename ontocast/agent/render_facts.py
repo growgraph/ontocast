@@ -44,10 +44,10 @@ async def render_facts(
     tools: AtomicToolBox,
     supplemental_ontologies: Sequence[Ontology] | None = None,
 ) -> UnitFactsState:
-    """Structured hybrid facts renderer with Turtle/SPARQL decision logic.
+    """Structured hybrid facts renderer: fresh Turtle or structured graph updates.
 
     This function decides between generating bare Turtle for fresh facts
-    and SPARQL operations for updates based on whether facts exist.
+    and structured TripleOp graph patches for updates based on whether facts exist.
 
     Args:
         state: The current unit facts state
@@ -266,7 +266,7 @@ async def render_facts_update(
     tools: AtomicToolBox,
     supplemental_ontologies: Sequence[Ontology] | None = None,
 ) -> UnitFactsState:
-    """Render facts updates using SPARQL operations.
+    """Render facts updates using structured graph patch operations.
 
     Args:
         state: The current unit facts state containing the chunk to render.
@@ -361,7 +361,7 @@ async def render_facts_update(
 
     except Exception as e:
         return _handle_rendering_error(
-            state, e, FailureStage.GENERATE_SPARQL_UPDATE_FOR_FACTS
+            state, e, FailureStage.GENERATE_GRAPH_UPDATE_FOR_FACTS
         )
     finally:
         # Clear the context after parsing

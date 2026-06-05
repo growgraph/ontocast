@@ -57,6 +57,29 @@ def test_detect_role_for_class_property_and_instance() -> None:
     assert detect_role(instance_entity, graph) == EntityRole.INSTANCE
 
 
+def test_detect_role_infers_class_from_type_value_usage() -> None:
+    """A range/domain class referenced only as a rdf:type value — with no own
+    ``a owl:Class`` declaration in the local per-sentence graph — must still
+    receive EntityRole.CLASS so the matcher can align it correctly against
+    OntoCast-predicted class entities.  This scenario arises when two ontology
+    entities share the same rdfs:label (e.g. Text2KGBench space ontology has
+    both property P59 and class Q8928 labeled "constellation"): without
+    structural role inference the class would fall back to INSTANCE, causing
+    false-negative entity matches."""
+    graph = RDFGraph()
+    range_class = URIRef("http://onto.ex/Q8928")  # no explicit rdf:type owl:Class
+    prop = URIRef("http://onto.ex/P59")
+    subject = URIRef("http://text2kg.bench/ngc_259")
+    obj = URIRef("http://text2kg.bench/cetus")
+
+    graph.add((subject, prop, obj))  # P59 used as predicate
+    graph.add((obj, RDF.type, range_class))  # Q8928 used as type value only
+
+    assert detect_role(prop, graph) == EntityRole.PROPERTY
+    assert detect_role(range_class, graph) == EntityRole.CLASS
+    assert detect_role(obj, graph) == EntityRole.INSTANCE
+
+
 def test_normalize_local_name_uses_role_specific_formatting() -> None:
     class_rep = make_representation(
         "http://ex.org/JudicialDecision", "judicial decision"

@@ -16,11 +16,29 @@ from ontocast.prompt.web_grounding import (
 
 _GRAPH_FIELD_NAMES = frozenset({"graph", "semantic_graph"})
 
+_GRAPH_WIRE_DESCRIPTIONS: dict[LLMGraphFormat, str] = {
+    LLMGraphFormat.TURTLE: (
+        "Plain Turtle string: @prefix declarations and triples only. "
+        "Never UPDATE query syntax (INSERT DATA, DELETE DATA, PREFIX)."
+    ),
+    LLMGraphFormat.JSONLD: (
+        "Compact JSON-LD object with @context and @graph. "
+        "Never UPDATE query syntax or Turtle ^^/@prefix inside JSON."
+    ),
+}
+
 
 def _wire_graph_json_schema(fmt: LLMGraphFormat) -> JsonSchemaValue:
     if fmt == LLMGraphFormat.TURTLE:
-        return {"type": "string"}
-    return {"type": "object", "additionalProperties": True}
+        return {
+            "type": "string",
+            "description": _GRAPH_WIRE_DESCRIPTIONS[fmt],
+        }
+    return {
+        "type": "object",
+        "additionalProperties": True,
+        "description": _GRAPH_WIRE_DESCRIPTIONS[fmt],
+    }
 
 
 def _patch_graph_field_schemas(node: Any, fmt: LLMGraphFormat) -> None:

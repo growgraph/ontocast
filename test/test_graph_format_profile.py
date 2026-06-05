@@ -47,6 +47,30 @@ def test_turtle_update_instruction_names_triple_op_graph() -> None:
     assert "Turtle string" in text
 
 
+def test_graph_update_instruction_does_not_mention_sparql() -> None:
+    for fmt in LLMGraphFormat:
+        profile = get_graph_format_profile(fmt)
+        text = profile.render_update_output_instruction()
+        assert "SPARQL" not in text
+        assert "sparql_operations" not in text
+        assert "Generate SPARQL" not in text
+        lower = text.lower()
+        assert "generate sparql" not in lower
+
+
+def test_graph_update_instruction_forbids_sparql_in_graph_field() -> None:
+    profile = get_graph_format_profile(LLMGraphFormat.TURTLE)
+    text = profile.render_update_output_instruction()
+    assert "NEVER use UPDATE query syntax" in text
+
+
+def test_graph_update_schema_has_no_sparql_operations() -> None:
+    schema = schema_for_model(GraphUpdateRenderReport, LLMGraphFormat.TURTLE)
+    graph_update_def = schema["$defs"]["GraphUpdate"]
+    assert "sparql_operations" not in graph_update_def.get("properties", {})
+    assert "GenericSparqlQuery" not in schema.get("$defs", {})
+
+
 def test_jsonld_operational_guidelines_forbid_caret_caret() -> None:
     profile = get_graph_format_profile(LLMGraphFormat.JSONLD)
     text = profile.facts_operational_guidelines(
@@ -128,7 +152,7 @@ def test_parse_report_jsonld_facts_is_canonical() -> None:
     assert len(report.semantic_graph) >= 1
 
 
-def test_parse_report_turtle_graph_update_has_generate_sparql() -> None:
+def test_parse_report_turtle_graph_update_compiles_to_insert_data() -> None:
     profile = get_graph_format_profile(LLMGraphFormat.TURTLE)
     payload = {
         "graph_update": {
@@ -140,7 +164,6 @@ def test_parse_report_turtle_graph_update_has_generate_sparql() -> None:
                     ),
                 }
             ],
-            "sparql_operations": [],
         },
         "external_evidence_request": {
             "initiate_search": False,
@@ -224,7 +247,6 @@ def test_parsed_graph_update_applies_via_unit_facts_state() -> None:
                     ),
                 }
             ],
-            "sparql_operations": [],
         },
         "external_evidence_request": {
             "initiate_search": False,

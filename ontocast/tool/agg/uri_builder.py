@@ -59,23 +59,29 @@ def detect_role(entity: URIRef, graph: RDFGraph) -> EntityRole:
     """
     entity_types: set[URIRef] = set()
     is_predicate = False
+    is_type_value = False
 
     for s, p, o in graph:
         if s == entity and p == RDF.type and isinstance(o, URIRef):
             entity_types.add(o)
         if p == entity:
             is_predicate = True
+        if p == RDF.type and o == entity:
+            is_type_value = True
 
     if entity_types & _CLASS_TYPES:
         return EntityRole.CLASS
     if entity_types & _PROPERTY_TYPES or is_predicate:
         return EntityRole.PROPERTY
+    if is_type_value:
+        return EntityRole.CLASS
     return EntityRole.INSTANCE
 
 
 def detect_role_from_context(
     types: list[URIRef],
     is_predicate: bool = False,
+    is_type_value: bool = False,
 ) -> EntityRole:
     """Detect entity role from pre-extracted context (no graph scan needed).
 
@@ -88,6 +94,13 @@ def detect_role_from_context(
         types: ``rdf:type`` values of the entity.
         is_predicate: Whether the entity appears in the predicate position
             of at least one triple.
+        is_type_value: Whether the entity appears as the object of at least
+            one ``rdf:type`` triple (i.e., another entity is typed *as* this
+            entity).  When true and no explicit ``owl:Class`` / ``rdfs:Class``
+            declaration is present, the entity is structurally inferred to be
+            a class.  This handles sparse per-sentence graphs where range/domain
+            classes are referenced as types but never declared with
+            ``a owl:Class`` in the local graph.
 
     Returns:
         The detected :class:`EntityRole`.
@@ -98,6 +111,8 @@ def detect_role_from_context(
         return EntityRole.CLASS
     if type_set & _PROPERTY_TYPES or is_predicate:
         return EntityRole.PROPERTY
+    if is_type_value:
+        return EntityRole.CLASS
     return EntityRole.INSTANCE
 
 

@@ -1,7 +1,6 @@
-"""Enhanced fact criticism agent with memory and SPARQL operations.
+"""Fact criticism agent.
 
-This module provides enhanced functionality for analyzing and validating facts
-with SPARQL operation support.
+This module provides functionality for analyzing and validating extracted facts.
 """
 
 import logging
@@ -47,10 +46,7 @@ def _build_quarantine_chapter(state: UnitFactsState) -> str:
 async def criticise_facts(
     state: UnitFactsState, tools: AtomicToolBox
 ) -> UnitFactsState:
-    """Enhanced criticize facts with SPARQL operations.
-
-    This function performs a critical analysis of the facts in the current content unit,
-    with SPARQL operation support.
+    """Critically analyze facts in the current content unit.
 
     Args:
         state: The current unit facts state containing the chunk to analyze.

@@ -22,7 +22,7 @@ OntoCast extracts semantic triples from documents using an agentic, ontology-dri
 - **Parallel map/reduce pipeline** — concurrent per-unit ontology and facts loops
 - **Robust entity disambiguation** — embedding + symbolic alignment across chunks
 - **RDF 1.2 provenance** — quoted triples, provenance artifacts, optional `strip_provenance`
-- **GraphUpdate operations** — token-efficient SPARQL insert/delete instead of full graph regeneration
+- **GraphUpdate operations** — token-efficient structured insert/delete triple patches instead of full graph regeneration
 - **JSON-LD wire format** — optional `LLM_GRAPH_FORMAT=jsonld` for LLM payloads
 - **Ontology context modes** — catalog selection, vector retrieval, or fixed ontology
 - **Triple store integration** — Fuseki, Neo4j (n10s), or filesystem fallback

@@ -11,7 +11,7 @@ from rdflib import URIRef
 
 from ontocast.onto.constants import DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI
 from ontocast.onto.content_unit import ContentUnit
-from ontocast.onto.context import AgentContext, AgentType, ContextManager
+from ontocast.onto.context import ContextManager
 from ontocast.onto.enum import (
     FailureStage,
     LLMGraphFormat,
@@ -682,72 +682,3 @@ class AgentState(BasePydanticModel):
             else self.ontology_artifacts
         )
         return [ontology.ontology_id for ontology in artifacts if ontology.ontology_id]
-
-    def get_context_for_agent(self, agent_type: AgentType) -> AgentContext:
-        """Get or create context for a specific agent.
-
-        Args:
-            agent_type: Type of agent (renderer, critic, etc.).
-
-        Returns:
-            AgentContext: The context for the agent.
-        """
-        existing_context = self.context_manager.get_latest_context_by_agent(agent_type)
-
-        if existing_context:
-            return existing_context
-
-        # Create new context if none exists
-        return self.context_manager.create_context(agent_type=agent_type)
-
-    def update_context_for_agent(
-        self,
-        agent_type: AgentType,
-        ontology_version: Any | None = None,
-        facts_version: Any | None = None,
-        ontology_operations: list[Any] | None = None,
-        facts_operations: list[Any] | None = None,
-        ontology_critique: dict[str, Any] | None = None,
-        facts_critique: dict[str, Any] | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> AgentContext:
-        """Update context for a specific agent.
-
-        Args:
-            agent_type: Name of the agent updating context.
-            ontology_version: New ontology version if available.
-            facts_version: New facts version if available.
-            ontology_operations: New ontology operations if available.
-            facts_operations: New facts operations if available.
-            ontology_critique: New ontology critique if available.
-            facts_critique: New facts critique if available.
-            metadata: Additional metadata for the context.
-
-        Returns:
-            AgentContext: The updated context.
-        """
-        return self.context_manager.update_context(
-            agent_type=agent_type,
-            ontology_version=ontology_version,
-            facts_version=facts_version,
-            ontology_operations=ontology_operations,
-            facts_operations=facts_operations,
-            ontology_critique=ontology_critique,
-            facts_critique=facts_critique,
-            metadata=metadata,
-        )
-
-    def get_context_summary_for_agent(self, agent_type: AgentType) -> str:
-        """Get a context summary for a specific agent.
-
-        Args:
-            agent_type: Name of the agent requesting context summary.
-
-        Returns:
-            str: A formatted context summary.
-        """
-        context = self.context_manager.get_latest_context_by_agent(agent_type)
-        if not context:
-            return "No context available for this agent."
-
-        return context.get_full_context_summary()

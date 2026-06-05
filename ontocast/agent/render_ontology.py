@@ -3,7 +3,7 @@
 This module provides functionality for rendering RDF triples from ontologies into
 human-readable formats, making the ontological knowledge more accessible and
 understandable.
-The agent decides between generating bare Turtle for fresh ontologies and SPARQL operations for updates.
+The agent decides between generating bare Turtle for fresh ontologies and structured graph updates for patches.
 
 """
 
@@ -90,10 +90,10 @@ async def render_ontology(
     tools: AtomicToolBox,
     supplemental_ontologies: Sequence[Ontology] | None = None,
 ) -> UnitOntologyState:
-    """Structured hybrid ontology renderer with Turtle/SPARQL decision logic.
+    """Structured hybrid ontology renderer: fresh Turtle or structured graph updates.
 
     This function decides between generating bare Turtle for fresh ontologies
-    and SPARQL operations for updates based on whether the ontology exists.
+    and structured TripleOp graph patches for updates based on whether the ontology exists.
 
     Args:
         state: The current unit ontology state
@@ -340,7 +340,7 @@ async def render_ontology_update(
 
     except Exception as e:
         return _handle_ontology_render_error(
-            state, e, FailureStage.GENERATE_SPARQL_UPDATE_FOR_ONTOLOGY
+            state, e, FailureStage.GENERATE_GRAPH_UPDATE_FOR_ONTOLOGY
         )
     finally:
         # Clear the context after parsing

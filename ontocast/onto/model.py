@@ -232,7 +232,9 @@ class FactsRenderReport(BaseModel):
 class GraphUpdateRenderReport(BaseModel):
     """Graph update rendering output with optional search decision."""
 
-    graph_update: GraphUpdate = Field(description="SPARQL graph update payload.")
+    graph_update: GraphUpdate = Field(
+        description="Structured graph patch payload: ordered insert/delete triple operations."
+    )
     external_evidence_request: ExternalEvidenceRequest = Field(
         default_factory=ExternalEvidenceRequest,
         description="Optional request to run web search before retrying.",

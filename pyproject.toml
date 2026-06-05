@@ -37,6 +37,7 @@ dependencies = [
   "qdrant-client>=1.15.1",
   "rapidfuzz>=3.13.0",
   "rdflib>=7.1.4",
+  "requests>=2.32.3",
   "rich>=14.0.0",
   "simsimd>=6.2.1",
   "suthing>=0.4.1",
@@ -52,17 +53,16 @@ version = "0.4.0"
 
 [project.optional-dependencies]
 all = [
+  "docling-core[chunking]>=2.57.0",
   "docling>=2.57.0",
   "easyocr>=1.7.2",
   "sentence-transformers>=5.1.1"
 ]
 dev = [
-  "docling-core[chunking]>=2.57.0",
   "pre-commit>=4.2.0",
   "pytest-dotenv>=0.5.2",
   "pytest-order>=1.3.0",
   "pytest>=8.3.5",
-  "requests>=2.32.3",
   "ruff>=0.11.2",
   "ty>=0.0.14"
 ]

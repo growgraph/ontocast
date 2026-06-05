@@ -8,7 +8,6 @@ from rdflib import Literal, URIRef
 
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import (
-    GenericSparqlQuery,
     GraphUpdate,
     TripleOp,
 )
@@ -416,57 +415,6 @@ def test_graph_update_mixed_operations_ordered():
         URIRef("http://example.org/Jane"),
         URIRef("https://schema.org/name"),
         Literal("Jane Smith"),
-    ) in graph
-
-
-def test_graph_update_generic_sparql_query():
-    """Test GraphUpdate with GenericSparqlQuery operation."""
-    # Create initial RDFGraph
-    graph = RDFGraph._from_turtle_str(
-        """
-        @prefix ex: <http://example.org/> .
-        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-        
-        ex:Person a rdfs:Class ;
-            rdfs:label "Person" .
-        
-        ex:John a ex:Person ;
-            rdfs:label "John Doe" .
-        """
-    )
-
-    initial_triple_count = len(graph)
-
-    # Create GraphUpdate with GenericSparqlQuery
-    # Note: GenericSparqlQuery handles its own prefix declarations
-    graph_update = GraphUpdate(
-        sparql_operations=[
-            GenericSparqlQuery(
-                query="PREFIX ex: <http://example.org/>\nPREFIX schema: <https://schema.org/>\nPREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>\nINSERT { ex:John schema:age 30 } WHERE { ex:John rdf:type ex:Person }"
-            ),
-        ]
-    )
-
-    # Generate SPARQL queries
-    queries = graph_update.generate_sparql_queries()
-
-    # Should generate one query
-    assert len(queries) == 1
-
-    # Verify the query includes the custom SPARQL with prefixes
-    assert "INSERT { ex:John schema:age 30 }" in queries[0]
-    assert "WHERE { ex:John rdf:type ex:Person }" in queries[0]
-
-    # Execute the query on the graph
-    graph.update(queries[0])
-
-    # Verify the custom query was executed
-    assert len(graph) == initial_triple_count + 1
-    assert (
-        URIRef("http://example.org/John"),
-        URIRef("https://schema.org/age"),
-        Literal(30),
     ) in graph
 
 

@@ -7,7 +7,7 @@ duplication across different prompt modules.
 system_preamble_semantic = """
 # SYSTEM INSTRUCTION
 
-You are an expert in semantic technologies, SPARQL and triple extraction.
+You are an expert in semantic technologies, RDF, and triple extraction.
 """
 
 system_preamble_ontology = """

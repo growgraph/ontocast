@@ -72,11 +72,9 @@ class FailureStage(StrEnum):
     GENERATE_TTL_FOR_ONTOLOGY = (
         "Failed to generate semantic triples (turtle) for ontology"
     )
-    GENERATE_SPARQL_UPDATE_FOR_ONTOLOGY = (
-        "Failed to generate SPARQL update for ontology"
-    )
+    GENERATE_GRAPH_UPDATE_FOR_ONTOLOGY = "Failed to generate graph update for ontology"
     GENERATE_TTL_FOR_FACTS = "Failed to generate semantic triples (turtle) for facts"
-    GENERATE_SPARQL_UPDATE_FOR_FACTS = "Failed to generate SPARQL update for facts"
+    GENERATE_GRAPH_UPDATE_FOR_FACTS = "Failed to generate graph update for facts"
 
 
 class WorkflowNode(StrEnum):

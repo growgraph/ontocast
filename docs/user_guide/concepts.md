@@ -16,9 +16,9 @@ OntoCast manages ontologies with automatic versioning and timestamp tracking:
 
 Token-efficient incremental graph modifications:
 
-- **Structured Operations**: LLM outputs `GraphUpdate` with `TripleOp` insert/delete ops
+- **Structured Operations**: LLM outputs `GraphUpdate` with ordered `TripleOp` insert/delete patches
 - **Wire Formats**: Turtle strings or compact JSON-LD (`LLM_GRAPH_FORMAT`); canonical runtime models are the same
-- **SPARQL Generation**: Operations convert to executable SPARQL
+- **Internal compilation**: Triple patches compile to rdflib UPDATE queries at apply time
 - **Token Savings**: Typically 80–95% fewer output tokens vs full graph regeneration
 
 ## RDF 1.2 Provenance
@@ -146,7 +146,7 @@ Details: [Tenancy](tenancy.md).
 | `AgentState` | Document-level workflow state |
 | `UnitOntologyState` / `UnitFactsState` | Per-unit loop state |
 | `ToolBox` | LLM, triple store, chunking, vector store, cache |
-| `GraphUpdate` | Structured SPARQL operations from the LLM |
+| `GraphUpdate` | Structured insert/delete triple patches from the LLM |
 | `ContentUnit` | One chunk's text, optional `section_label` / `summary`, and ontology/facts outputs (`extraction_text` for LLM prompts) |
 
 ## Next Steps

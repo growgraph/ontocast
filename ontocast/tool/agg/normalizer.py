@@ -134,7 +134,7 @@ class EntityNormalizer:
 
     def extract_entity_context(
         self, entity: URIRef, graph: RDFGraph
-    ) -> tuple[list[URIRef], list[URIRef], list[str], list[str], bool]:
+    ) -> tuple[list[URIRef], list[URIRef], list[str], list[str], bool, bool]:
         """Extract semantic context for an entity from the graph.
 
         Args:
@@ -142,15 +142,22 @@ class EntityNormalizer:
             graph: RDF graph containing the entity
 
         Returns:
-            Tuple of (types, properties, labels, alt_labels, is_predicate).
+            Tuple of (types, properties, labels, alt_labels, is_predicate,
+            is_type_value).
             *is_predicate* is ``True`` when the entity appears in the
             predicate position of at least one triple.
+            *is_type_value* is ``True`` when another entity is explicitly
+            typed *as* this entity (i.e., ``(X, rdf:type, entity)`` exists).
+            This allows role inference for range/domain classes that are
+            referenced as types in sparse per-sentence graphs but carry no
+            ``a owl:Class`` declaration locally.
         """
         types = []
         properties = set()
         labels = []
         alt_labels: list[str] = []
         is_predicate = False
+        is_type_value = False
         schema_predicates = {RDF.type, RDFS.label, RDFS.comment}
 
         # Extract information from triples
@@ -178,6 +185,8 @@ class EntityNormalizer:
             # When entity is object
             elif o == entity:
                 properties.add(p)
+                if p == RDF.type:
+                    is_type_value = True
 
             # When entity is used as predicate
             if p == entity:
@@ -185,7 +194,14 @@ class EntityNormalizer:
 
         sorted_types = sorted(types, key=lambda entity: str(entity))
         sorted_properties = sorted(properties, key=lambda entity: str(entity))
-        return sorted_types, sorted_properties, labels, alt_labels, is_predicate
+        return (
+            sorted_types,
+            sorted_properties,
+            labels,
+            alt_labels,
+            is_predicate,
+            is_type_value,
+        )
 
     def _render_term(self, term: Node) -> str:
         return render_term_for_text(term)
@@ -321,12 +337,12 @@ class EntityNormalizer:
         normal_form = self.normalize_uri(entity)
 
         # Extract semantic context
-        types, properties, labels, alt_labels, is_predicate = (
+        types, properties, labels, alt_labels, is_predicate, is_type_value = (
             self.extract_entity_context(entity, graph)
         )
 
         # Detect role from the already-extracted context (no extra graph scan)
-        role = detect_role_from_context(types, is_predicate)
+        role = detect_role_from_context(types, is_predicate, is_type_value)
 
         core_representation = self._build_core_representation(
             normal_form=normal_form,

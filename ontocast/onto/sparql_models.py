@@ -1,8 +1,8 @@
-"""Pydantic models for SPARQL graph mutations and tool SPARQL operations.
+"""Pydantic models for graph mutations and tool SPARQL operations.
 
 ``GraphUpdate`` / ``TripleOp`` are the canonical LLM pipeline mutation abstraction
-(ordered triple patches + optional raw SPARQL strings). ``SPARQLOperationModel`` is
-used by tooling (``tool/sparql.py``, ``graph_version_manager.py``) — a separate path.
+(ordered insert/delete triple patches). ``SPARQLOperationModel`` is used by tooling
+(``tool/sparql.py``, ``graph_version_manager.py``) — a separate path.
 """
 
 import logging
@@ -72,7 +72,8 @@ class TripleOp(BaseModel):
     graph: LLMGraphWire = Field(
         default_factory=RDFGraph,
         description=(
-            "RDF graph containing triples to insert or delete. "
+            "Plain Turtle string or JSON-LD object with triples to insert or delete. "
+            "Never use UPDATE query syntax (INSERT DATA, DELETE DATA, PREFIX). "
             "Encoding is defined by deployment llm_graph_format and OUTPUT INSTRUCTION."
         ),
     )
@@ -86,28 +87,11 @@ class TripleOp(BaseModel):
     )
 
 
-class GenericSparqlQuery(BaseModel):
-    """Operation for custom SPARQL queries that go beyond basic insert/delete operations.
-
-    This operation allows for complex SPARQL queries that cannot be expressed
-    using the structured operations. Use this when you need custom SPARQL syntax,
-    complex WHERE clauses, or operations that don't fit the basic patterns.
-    """
-
-    type: TypingLiteral["sparql_query"] = Field(
-        default="sparql_query",
-        description="Type of operation - always 'sparql_query' for this operation",
-    )
-    query: str = Field(
-        description="The complete SPARQL query string with proper syntax"
-    )
-
-
 class GraphUpdate(BaseModel):
-    """Structured representation of RDF graph updates for LLM output.
+    """Structured RDF graph patches for LLM pipeline output.
 
-    This model represents ontology updates as a structured set of operations.
-    Each operation in the list is executed in order to modify the graph.
+    Each ``TripleOp`` in ``triple_operations`` is executed in order. SPARQL compilation
+    for rdflib apply happens internally via ``generate_sparql_queries()``.
     """
 
     triple_operations: list[TripleOp] = Field(
@@ -117,37 +101,24 @@ class GraphUpdate(BaseModel):
         "per deployment llm_graph_format and OUTPUT INSTRUCTION.",
     )
 
-    sparql_operations: list[GenericSparqlQuery] = Field(
-        default_factory=list,
-        description="List of graph update operations in execution order. "
-        "Each operation should be a GenericSparqlQuery for complex custom queries. ",
-    )
-
     def generate_sparql_queries(self) -> list[str]:
-        """Generate a list of SPARQL queries to execute the graph update.
+        """Compile triple_operations to SPARQL UPDATE strings for rdflib execution.
 
         Returns:
-            List of SPARQL query strings that can be executed to perform the update.
-            The queries are generated in the exact order of operations in the operations list.
+            List of SPARQL query strings in operation order.
         """
         queries = []
 
-        # Process triple operations first
         for op in self.triple_operations:
-            if len(op.graph) > 0:  # Only generate query if there are triples
-                # Build prefix block for this operation
-                # Start with standard prefixes from COMMON_PREFIXES
+            if len(op.graph) > 0:
                 prefixes = STANDARD_PREFIXES.copy()
 
-                # Extract prefixes from RDFGraph's namespace bindings
                 for prefix, uri in op.graph.namespaces():
-                    if prefix:  # Skip empty prefix
+                    if prefix:
                         prefixes[prefix] = str(uri)
 
-                # Add custom prefixes declared in this operation (may override standard ones)
                 prefixes.update(op.prefixes)
 
-                # Generate PREFIX declarations block
                 if prefixes:
                     prefix_declarations = []
                     for prefix, uri in prefixes.items():
@@ -156,18 +127,11 @@ class GraphUpdate(BaseModel):
                 else:
                     prefix_block = ""
 
-                # Generate query based on operation type
                 if op.type == "insert":
                     triple_query = self._generate_insert_query(op.graph, prefix_block)
-                else:  # delete
+                else:
                     triple_query = self._generate_delete_query(op.graph, prefix_block)
                 queries.append(triple_query)
-
-        # Process SPARQL operations
-        for op in self.sparql_operations:
-            if op.query.strip():  # Only generate query if there's content
-                # For custom SPARQL queries, use them as-is
-                queries.append(op.query)
 
         return queries
 
@@ -184,9 +148,6 @@ class GraphUpdate(BaseModel):
 
     def extract_insert_graph(self) -> RDFGraph:
         """Extract RDFGraph of all insert triples from triple_operations.
-
-        Only TripleOps with type='insert' are included. sparql_operations
-        are not extractable as triples and are skipped.
 
         Returns:
             RDFGraph containing the union of all insert triples.
@@ -210,7 +171,7 @@ class GraphUpdate(BaseModel):
             String representation of all operations showing what will be added, removed, and modified.
             Returns empty string if no operations to perform.
         """
-        if not self.triple_operations and not self.sparql_operations:
+        if not self.triple_operations:
             return ""
 
         diff_parts = []
@@ -221,7 +182,6 @@ class GraphUpdate(BaseModel):
                 op_type = op.type.upper()
                 diff_parts.append(f"{i}. {op_type} {len(op.graph)} triple(s):")
 
-                # Show prefixes from graph and explicit prefixes
                 graph_prefixes = {
                     prefix: str(uri) for prefix, uri in op.graph.namespaces() if prefix
                 }
@@ -239,17 +199,6 @@ class GraphUpdate(BaseModel):
                     )
                 operation_count += 1
 
-        base_index = len(self.triple_operations)
-        for j, op in enumerate(self.sparql_operations, 1):
-            if op.query.strip():
-                i = base_index + j
-                query_preview = op.query.strip()
-                if len(query_preview) > 100:
-                    query_preview = query_preview[:97] + "..."
-                diff_parts.append(f"{i}. CUSTOM SPARQL QUERY:")
-                diff_parts.append(f"   {query_preview}")
-                operation_count += 1
-
         if operation_count == 0:
             return ""
 
@@ -263,7 +212,6 @@ class GraphUpdate(BaseModel):
         if len(graph) == 0:
             return ""
 
-        # Format triples for SPARQL using proper RDF term serialization
         triple_patterns = []
         for subject, predicate, obj in graph:
             triple_patterns.append(
@@ -286,7 +234,6 @@ class GraphUpdate(BaseModel):
         if len(graph) == 0:
             return ""
 
-        # Format triples for SPARQL using proper RDF term serialization
         triple_patterns = []
         for subject, predicate, obj in graph:
             triple_patterns.append(
@@ -307,7 +254,6 @@ class GraphUpdate(BaseModel):
     def _serialize_rdf_term(self, term: Node) -> str:
         """Serialize an RDF term to its SPARQL string representation."""
         if isinstance(term, URIRef):
-            # Check if it's already a prefixed name (contains ':')
             if ":" in str(term) and not str(term).startswith("http"):
                 return str(term)
             else:
@@ -315,7 +261,6 @@ class GraphUpdate(BaseModel):
         elif isinstance(term, BNode):
             return f"_:{term}"
         elif isinstance(term, Literal):
-            # Handle language-tagged literals first
             if term.language:
                 return f'"{term}"@{term.language}'
             elif term.datatype:
@@ -323,5 +268,4 @@ class GraphUpdate(BaseModel):
             else:
                 return f'"{term}"'
         else:
-            # Fallback to string representation
             return str(term)

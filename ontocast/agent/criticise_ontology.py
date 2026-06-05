@@ -1,6 +1,6 @@
-"""Enhanced ontology criticism agent with SPARQL operations.
+"""Ontology criticism agent.
 
-This module provides enhanced functionality for analyzing and validating ontologies of previous critiques and SPARQL operation support.
+This module provides functionality for analyzing and validating ontologies.
 """
 
 import logging
@@ -33,10 +33,7 @@ logger = logging.getLogger(__name__)
 async def criticise_ontology(
     state: UnitOntologyState, tools: AtomicToolBox
 ) -> UnitOntologyState:
-    """Enhanced ontology criticism with SPARQL operations.
-
-    This function performs a critical analysis of the ontology in the current
-    state, with SPARQL operation support.
+    """Critically analyze the ontology in the current content unit.
 
     Args:
         state: The current unit ontology state containing the ontology to analyze.
