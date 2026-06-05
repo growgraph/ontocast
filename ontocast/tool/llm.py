@@ -241,11 +241,18 @@ class LLMTool(Tool):
                 ),
             )
         elif self.config.provider == LLMProvider.OLLAMA:
-            self._llm = ChatOllama(
-                model=self.config.model_name,
-                base_url=self.config.base_url,
-                temperature=self.config.temperature,
-            )
+            ollama_kwargs: dict[str, Any] = {
+                "model": self.config.model_name,
+                "base_url": self.config.base_url,
+                "temperature": self.config.temperature,
+            }
+            if self.config.think is not None:
+                ollama_kwargs["reasoning"] = self.config.think
+            if self.config.num_predict is not None:
+                ollama_kwargs["num_predict"] = self.config.num_predict
+            if self.config.num_ctx is not None:
+                ollama_kwargs["num_ctx"] = self.config.num_ctx
+            self._llm = ChatOllama(**ollama_kwargs)
         elif self.config.provider == LLMProvider.ANTHROPIC:
             anthropic_kwargs: dict[str, Any] = {
                 "model": self.config.model_name,

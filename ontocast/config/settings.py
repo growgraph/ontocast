@@ -184,6 +184,37 @@ class LLMConfig(BaseSettings):
             "Maximum concurrent provider LLM requests shared across all documents."
         ),
     )
+    think: bool | None = Field(
+        default=None,
+        description=(
+            "Controls thinking/reasoning mode for Ollama thinking models "
+            "(e.g. qwen3, deepseek-r1). "
+            "False disables thinking and ensures a non-empty content response. "
+            "True enables thinking and captures it separately in reasoning_content. "
+            "None uses the model's default behaviour (thinking tags may appear "
+            "inline in content, or the response may be empty if all tokens are "
+            "consumed during reasoning)."
+        ),
+    )
+    num_predict: int | None = Field(
+        default=None,
+        description=(
+            "Maximum number of tokens to generate (Ollama only). "
+            "None uses Ollama's default (unlimited). "
+            "Increase this when using thinking models to ensure enough tokens "
+            "remain for the actual response after the reasoning phase."
+        ),
+    )
+    num_ctx: int | None = Field(
+        default=None,
+        description=(
+            "Context window size in tokens (Ollama only). "
+            "Controls the total KV-cache window: prompt tokens + output tokens must "
+            "fit within this budget. Ollama's default is model-dependent (often "
+            "2048–4096). For large prompts set this to 16384 or higher. "
+            "Directly affects VRAM usage on the inference server."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="LLM_",
