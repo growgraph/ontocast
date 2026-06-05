@@ -22,6 +22,7 @@ from ontocast.prompt.criticise_facts import (
     template_prompt,
 )
 from ontocast.prompt.graph_format import get_graph_format_profile
+from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
 from ontocast.tool.atomic import AtomicToolBox
 
 logger = logging.getLogger(__name__)
@@ -100,16 +101,28 @@ async def criticise_facts(
     )
 
     graph_format_instruction = profile.critique_graph_instruction()
+    web_search_enabled = tools.web_grounding_enabled_for_node(
+        WorkflowNode.CRITICISE_FACTS
+    )
+    search_guidelines = search_guidelines_for(
+        WorkflowNode.CRITICISE_FACTS, web_search_enabled
+    )
+    evaluation_instruction_str = evaluation_instruction
+    if search_guidelines:
+        evaluation_instruction_str = f"{evaluation_instruction}\n\n{search_guidelines}"
 
     prompt_data = {
         "preamble": preamble,
-        "evaluation_instruction": evaluation_instruction,
+        "evaluation_instruction": evaluation_instruction_str,
         "user_instruction": user_instruction,
         "ontology_chapter": ontology_chapter,
         "facts_chapter": facts_chapter,
         "text_chapter": text_chapter,
         "graph_format_instruction": graph_format_instruction,
-        "format_instructions": profile.format_instructions(FactsCritiqueReport),
+        "format_instructions": profile.format_instructions(
+            FactsCritiqueReport,
+            web_search_enabled=web_search_enabled,
+        ),
     }
 
     try:
@@ -120,8 +133,11 @@ async def criticise_facts(
             prompt_kwargs=prompt_data,
             llm_graph_format=state.llm_graph_format,
         )
-        state.set_external_evidence_request(
-            WorkflowNode.CRITICISE_FACTS, critique.external_evidence_request
+        persist_search_request(
+            state,
+            WorkflowNode.CRITICISE_FACTS,
+            critique.external_evidence_request,
+            web_search_enabled,
         )
 
         logger.debug(

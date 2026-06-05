@@ -153,16 +153,30 @@ class GraphFormatProfile:
         return _OUTPUT_INSTRUCTION_CRITIQUE_TURTLE
 
     def facts_operational_guidelines(
-        self, *, facts_namespace: str, domain_ontologies_clause: str
+        self,
+        *,
+        facts_namespace: str,
+        domain_ontologies_clause: str,
+        search_guidelines: str = "",
     ) -> str:
         return format_facts_operational_guidelines(
             facts_namespace=facts_namespace,
             domain_ontologies_clause=domain_ontologies_clause,
             jsonld=self.format == LLMGraphFormat.JSONLD,
+            search_guidelines=search_guidelines,
         )
 
-    def format_instructions(self, report_cls: type[BaseModel]) -> str:
-        return format_instructions_for_model(report_cls, self.format)
+    def format_instructions(
+        self,
+        report_cls: type[BaseModel],
+        *,
+        web_search_enabled: bool = True,
+    ) -> str:
+        return format_instructions_for_model(
+            report_cls,
+            self.format,
+            web_search_enabled=web_search_enabled,
+        )
 
     def parse_report(self, report_cls: type[T], text: str) -> T:
         token = llm_graph_format_ctx.set(self.format)

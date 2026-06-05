@@ -23,6 +23,7 @@ from ontocast.prompt.criticise_ontology import (
     template_prompt,
 )
 from ontocast.prompt.graph_format import get_graph_format_profile
+from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
 from ontocast.tool import LLMTool
 from ontocast.tool.atomic import AtomicToolBox
 
@@ -90,6 +91,15 @@ async def criticise_ontology(
     )
 
     graph_format_instruction = profile.critique_graph_instruction()
+    web_search_enabled = tools.web_grounding_enabled_for_node(
+        WorkflowNode.CRITICISE_ONTOLOGY
+    )
+    search_guidelines = search_guidelines_for(
+        WorkflowNode.CRITICISE_ONTOLOGY, web_search_enabled
+    )
+    ontology_criteria_str = ontology_criteria
+    if search_guidelines:
+        ontology_criteria_str = f"{ontology_criteria}\n{search_guidelines}"
 
     try:
         critique: OntologyCritiqueReport = await call_llm_with_retry(
@@ -99,20 +109,24 @@ async def criticise_ontology(
             prompt_kwargs={
                 "preamble": system_preamble,
                 "intro_instruction": intro_instruction,
-                "ontology_criteria": ontology_criteria,
+                "ontology_criteria": ontology_criteria_str,
                 "text_chapter": text_chapter,
                 "user_instruction": user_instruction,
                 "ontology_chapter": ontology_chapter,
                 "external_evidence": external_evidence,
                 "graph_format_instruction": graph_format_instruction,
                 "format_instructions": profile.format_instructions(
-                    OntologyCritiqueReport
+                    OntologyCritiqueReport,
+                    web_search_enabled=web_search_enabled,
                 ),
             },
             llm_graph_format=state.llm_graph_format,
         )
-        state.set_external_evidence_request(
-            WorkflowNode.CRITICISE_ONTOLOGY, critique.external_evidence_request
+        persist_search_request(
+            state,
+            WorkflowNode.CRITICISE_ONTOLOGY,
+            critique.external_evidence_request,
+            web_search_enabled,
         )
         logger.info(
             f"Parsed critique report - success: {critique.success}, "

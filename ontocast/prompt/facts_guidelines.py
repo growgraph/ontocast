@@ -73,10 +73,7 @@ facts_instruction_shared = """\n\n
 
 10. {output_hygiene_rule}
 
-11. Decide whether external evidence is needed for a retry and set `external_evidence_request`:
-    - Set `initiate_search=true` only when ambiguity/term disambiguation/standards lookup materially blocks quality.
-    - Otherwise keep `initiate_search=false`.
-    - Provide concise `rationale` and optional focused `query_hints` when search is requested.
+{search_guidelines}
 
 # FINAL STRUCTURAL VALIDATION CHECKLIST
 Before finalizing output, verify:
@@ -110,6 +107,7 @@ def format_facts_operational_guidelines(
     facts_namespace: str,
     domain_ontologies_clause: str,
     jsonld: bool,
+    search_guidelines: str = "",
 ) -> str:
     """Build operational guidelines for the active graph format."""
     literal_rules = facts_literal_rules_jsonld if jsonld else facts_literal_rules_turtle
@@ -119,6 +117,7 @@ def format_facts_operational_guidelines(
         facts_namespace=facts_namespace,
         literal_encoding_rules=literal_rules,
         output_hygiene_rule=hygiene,
+        search_guidelines=search_guidelines,
     )
     if jsonld:
         guidelines += (

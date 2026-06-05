@@ -61,9 +61,4 @@ Provide a constructive, actionable critique following these priorities:
 - For redundancies: suggest consolidation strategy
 - Prioritize fixes that have cascading impact
 - Enforce namespace hygiene: ontology classes/properties MUST NOT be modeled in `cd:` (`{DEFAULT_IRI}`), since `cd:` is reserved for facts/instances
-- Treat external web evidence as optional support only. If evidence conflicts with source text or ontology context, prioritize source text and ontology context.
-- Include `external_evidence_request` in your structured response:
-  - Set `initiate_search=true` only when external web evidence is needed to resolve ambiguity.
-  - Keep `initiate_search=false` when source text + ontology are sufficient.
-  - Provide concise `rationale` and optional focused `query_hints` when search is requested.
 """

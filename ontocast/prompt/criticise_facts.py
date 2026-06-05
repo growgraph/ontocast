@@ -91,14 +91,6 @@ Before finalizing your critique:
      from the ontology chapter (not ad-hoc xsd:string unless no pattern exists).
    - `correct_value` / `incorrect_value` MUST follow the GRAPH FORMAT INSTRUCTION below.
 
-# SEARCH DECISION OUTPUT
-
-Include `external_evidence_request` in your structured response:
-- Set `initiate_search=true` only if external web evidence is necessary to resolve uncertainty
-  that blocks a confident critique.
-- Keep `initiate_search=false` when the source text + ontology are sufficient.
-- When true, provide concise `rationale` and optional focused `query_hints`.
-
 # OUTPUT FORMAT CONSTRAINTS
 
 - Respond with valid JSON only. Do NOT include `//` comments or any other non-JSON syntax inside the JSON block.

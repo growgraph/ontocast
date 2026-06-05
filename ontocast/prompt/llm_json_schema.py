@@ -9,6 +9,10 @@ from pydantic import BaseModel
 from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
 
 from ontocast.onto.enum import LLMGraphFormat
+from ontocast.prompt.web_grounding import (
+    WEB_SEARCH_REQUEST_DEF,
+    WEB_SEARCH_REQUEST_FIELD,
+)
 
 _GRAPH_FIELD_NAMES = frozenset({"graph", "semantic_graph"})
 
@@ -70,14 +74,52 @@ def _schema_generator_for(fmt: LLMGraphFormat) -> type[FormatBoundJsonSchemaGene
     return _BoundGenerator
 
 
-def schema_for_model(model: type[BaseModel], fmt: LLMGraphFormat) -> dict[str, Any]:
+def _strip_web_search_from_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Remove optional web-search request field and its def from a report schema."""
+    stripped = dict(schema)
+    properties = stripped.get("properties")
+    if isinstance(properties, dict):
+        properties = dict(properties)
+        properties.pop(WEB_SEARCH_REQUEST_FIELD, None)
+        stripped["properties"] = properties
+
+    required = stripped.get("required")
+    if isinstance(required, list):
+        stripped["required"] = [
+            name for name in required if name != WEB_SEARCH_REQUEST_FIELD
+        ]
+
+    for defs_key in ("$defs", "definitions"):
+        defs = stripped.get(defs_key)
+        if isinstance(defs, dict) and WEB_SEARCH_REQUEST_DEF in defs:
+            defs = dict(defs)
+            defs.pop(WEB_SEARCH_REQUEST_DEF, None)
+            stripped[defs_key] = defs
+
+    return stripped
+
+
+def schema_for_model(
+    model: type[BaseModel],
+    fmt: LLMGraphFormat,
+    *,
+    web_search_enabled: bool = True,
+) -> dict[str, Any]:
     """JSON Schema for ``model`` with graph fields locked to ``fmt`` wire encoding."""
-    return model.model_json_schema(schema_generator=_schema_generator_for(fmt))
+    schema = model.model_json_schema(schema_generator=_schema_generator_for(fmt))
+    if not web_search_enabled:
+        schema = _strip_web_search_from_schema(schema)
+    return schema
 
 
-def format_instructions_for_model(model: type[BaseModel], fmt: LLMGraphFormat) -> str:
+def format_instructions_for_model(
+    model: type[BaseModel],
+    fmt: LLMGraphFormat,
+    *,
+    web_search_enabled: bool = True,
+) -> str:
     """LangChain-compatible format instructions using format-bound schema."""
-    schema = schema_for_model(model, fmt)
+    schema = schema_for_model(model, fmt, web_search_enabled=web_search_enabled)
     schema_str = json.dumps(schema, indent=2)
     return (
         "The output should be formatted as a JSON instance that conforms to the "

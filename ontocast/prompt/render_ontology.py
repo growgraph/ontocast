@@ -81,17 +81,7 @@ general_ontology_instruction = f"""
 
 10. **When introducing entities from other domain ontologies, declare their namespace prefixes** (e.g., `@prefix foaf: <http://xmlns.com/foaf/0.1/> .` or `@prefix dcterms: <http://purl.org/dc/terms/> .`).
 
-11. **External evidence is optional and advisory**:
-   - Use web evidence only to resolve ambiguity, terminology, standards, or domain conventions.
-   - If external snippets conflict with source text or ontology context, prioritize source text and ontology context.
-   - Avoid adding entities/relations that are only weakly supported by web snippets.
-
-12. **Search decision output**:
-   - Include `external_evidence_request` in your structured response.
-   - Set `initiate_search=true` only when web evidence is necessary to resolve uncertainty
-     before a better retry can be produced.
-   - Otherwise keep `initiate_search=false`.
-   - When true, provide short `rationale` and optional focused `query_hints`.
+{{search_guidelines}}
 """
 
 

@@ -418,6 +418,7 @@ async def test_render_ontology_update_adds_external_evidence_when_enabled(
         AtomicToolBox,
         SimpleNamespace(
             get_llm_tool=fake_get_llm_tool,
+            web_grounding_enabled_for_node=lambda _node: True,
         ),
     )
     state = UnitOntologyState(
@@ -462,6 +463,7 @@ async def test_criticise_ontology_skips_external_evidence_when_disabled(
         AtomicToolBox,
         SimpleNamespace(
             get_llm_tool=fake_get_llm_tool,
+            web_grounding_enabled_for_node=lambda _node: False,
         ),
     )
     state = UnitOntologyState(
@@ -499,6 +501,7 @@ async def test_criticise_ontology_prompt_includes_graph_format_instruction(
         AtomicToolBox,
         SimpleNamespace(
             get_llm_tool=fake_get_llm_tool,
+            web_grounding_enabled_for_node=lambda _node: False,
         ),
     )
     state = UnitOntologyState(

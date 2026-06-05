@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from pydantic import BaseModel
 
 from ontocast.onto.enum import LLMGraphFormat
 from ontocast.onto.llm_graph_payload import (
@@ -15,6 +16,7 @@ from ontocast.onto.model import (
     FactsCritiqueReport,
     FactsRenderReport,
     GraphUpdateRenderReport,
+    OntologyCritiqueReport,
     OntologyRenderReport,
     Suggestions,
 )
@@ -22,6 +24,7 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.prompt.graph_format import get_graph_format_profile
 from ontocast.prompt.llm_json_schema import schema_for_model
+from ontocast.prompt.web_grounding import WEB_SEARCH_REQUEST_FIELD
 
 
 @pytest.mark.parametrize("fmt", list(LLMGraphFormat))
@@ -250,3 +253,49 @@ def test_format_instructions_no_dual_or_on_graph_fields() -> None:
         instructions = profile.format_instructions(OntologyRenderReport)
         assert "Turtle string OR" not in instructions
         assert "OR a compact JSON-LD" not in instructions
+
+
+_SEARCH_MARKERS = (
+    "external_evidence_request",
+    "ExternalEvidenceRequest",
+    "initiate_search",
+)
+
+_REPORT_MODELS = (
+    OntologyRenderReport,
+    GraphUpdateRenderReport,
+    FactsRenderReport,
+    OntologyCritiqueReport,
+    FactsCritiqueReport,
+)
+
+
+@pytest.mark.parametrize("report_cls", _REPORT_MODELS)
+@pytest.mark.parametrize("fmt", list(LLMGraphFormat))
+def test_schema_omits_web_search_when_disabled(
+    report_cls: type[BaseModel],
+    fmt: LLMGraphFormat,
+) -> None:
+    schema = schema_for_model(report_cls, fmt, web_search_enabled=False)
+    assert WEB_SEARCH_REQUEST_FIELD not in schema.get("properties", {})
+    defs = schema.get("$defs", {})
+    assert "ExternalEvidenceRequest" not in defs
+
+    profile = get_graph_format_profile(fmt)
+    instructions = profile.format_instructions(
+        report_cls,
+        web_search_enabled=False,
+    )
+    for marker in _SEARCH_MARKERS:
+        assert marker not in instructions
+
+
+@pytest.mark.parametrize("report_cls", _REPORT_MODELS)
+@pytest.mark.parametrize("fmt", list(LLMGraphFormat))
+def test_schema_includes_web_search_when_enabled(
+    report_cls: type[BaseModel],
+    fmt: LLMGraphFormat,
+) -> None:
+    schema = schema_for_model(report_cls, fmt, web_search_enabled=True)
+    assert "external_evidence_request" in schema.get("properties", {})
+    assert "ExternalEvidenceRequest" in schema.get("$defs", {})
