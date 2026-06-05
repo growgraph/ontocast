@@ -100,6 +100,30 @@ def _chars_received_from_result(result: Any) -> int:
     return len(str(result))
 
 
+def _content_to_str(content: Any) -> str:
+    """Normalise an LLM response content value to a plain string.
+
+    Some providers (Google Gemini, Anthropic) return a list of typed content
+    blocks instead of a bare string, e.g.:
+        [{'type': 'text', 'text': '...', ...}, ...]
+    This function extracts and concatenates all ``text`` blocks so that
+    downstream string-based parsers always receive a plain string.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        if parts:
+            return "".join(parts)
+    return str(content)
+
+
 def track_llm_usage(func: Callable) -> Callable:
     """Decorator to track LLM usage for methods that always hit the provider."""
 
@@ -332,8 +356,7 @@ class LLMTool(Tool):
             cached_response = self.cache.get(prompt_key, config=config_dict, **kwds)
             if cached_response is not None:
                 logger.debug("Cache hit: %s...", prompt_str[:50])
-                content = cached_response["content"]
-                content_str = content if isinstance(content, str) else str(content)
+                content_str = _content_to_str(cached_response["content"])
                 self._record_cache_hit(prompt_str, content_str)
                 return AIMessage(content=content_str)
 
@@ -345,15 +368,19 @@ class LLMTool(Tool):
 
         self._record_api_usage(prompt_str, response)
 
+        content_str = _content_to_str(response.content)
         if self.config.cache_enabled and not self.config.cache_read_only:
             response_data = {
-                "content": response.content,
+                "content": content_str,
                 "prompt": prompt_str,
                 "kwargs": kwds,
             }
             self.cache.set(prompt_key, response_data, config=config_dict, **kwds)
 
-        return response
+        return AIMessage(
+            content=content_str,
+            response_metadata=getattr(response, "response_metadata", {}),
+        )
 
     async def __call__(self, *args: Any, **kwds: Any) -> Any:
         """Call the language model directly (asynchronous)."""

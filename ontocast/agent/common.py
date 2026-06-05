@@ -19,6 +19,7 @@ from ontocast.prompt.render_ontology import (
     improvement_instruction_template as ontology_template,
 )
 from ontocast.tool import LLMTool
+from ontocast.tool.llm import _content_to_str
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +166,7 @@ async def call_llm_with_retry(
                 # Call LLM
                 response = await llm_tool(prompt.format_prompt(**attempt_kwargs))
                 content_to_parse = strip_trailing_commas(
-                    strip_json_comments(response.content)
+                    strip_json_comments(_content_to_str(response.content))
                 )
                 last_sanitized_content = content_to_parse
 

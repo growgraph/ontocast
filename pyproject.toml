@@ -40,6 +40,7 @@ dependencies = [
   "rich>=14.0.0",
   "simsimd>=6.2.1",
   "suthing>=0.4.1",
+  "torch<=2.10",
   "umap-learn>=0.5.11",
   "uvicorn[standard]>=0.32.0"
 ]
