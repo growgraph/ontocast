@@ -522,7 +522,11 @@ class ToolBox:
             ver = o.version or "0.0.0"
             safe_name = f"ontology_{oid}_{ver}.ttl"
         dest = ontology_dir / safe_name
-        await asyncio.to_thread(dest.write_bytes, ttl)
+
+        def _write_synced_ttl() -> None:
+            o.graph.serialize(format="turtle", destination=dest)
+
+        await asyncio.to_thread(_write_synced_ttl)
         await self._materialize_ontology(o)
         self.ontology_manager.add_ontology(o, skip_vector_index=True)
         return o

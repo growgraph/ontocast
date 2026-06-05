@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import asyncio
 
-from ontocast.config import Config, EmbeddingConfig, LLMConfig, PathConfig, ToolConfig
+from ontocast.config import (
+    Config,
+    EmbeddingConfig,
+    FusekiConfig,
+    LLMConfig,
+    Neo4jConfig,
+    PathConfig,
+    ToolConfig,
+)
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.toolbox import ToolBox
@@ -54,6 +62,9 @@ def _build_toolbox(ctx: QdrantSessionTestContext) -> ToolBox:
         ),
         embedding=embedding_config,
         qdrant=ctx.qdrant_config,
+        # Isolate from host Fuseki/Neo4j env so SPARQL expansion reads the temp TTL dir.
+        fuseki=FusekiConfig(uri=None, auth=None),
+        neo4j=Neo4jConfig(uri=None, auth=None),
     )
     return ToolBox(Config(tool_config=tool_config))
 

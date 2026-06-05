@@ -43,6 +43,11 @@ def _source_iris_from_atoms(atoms: Iterable[GraphAtom]) -> list[str]:
     return sorted({atom.ontology_iri for atom in atoms if atom.ontology_iri})
 
 
+def _is_ontology_declaration_atom(atom: GraphAtom) -> bool:
+    """True when the atom focal IRI is the ontology header node (not an expansion seed)."""
+    return bool(atom.ontology_iri and atom.iri == atom.ontology_iri)
+
+
 def _ranked_entity_weights(
     atoms: list[GraphAtom],
 ) -> tuple[list[str], dict[str, float], dict[str, str | None]]:
@@ -51,7 +56,7 @@ def _ranked_entity_weights(
     entity_roles: dict[str, str | None] = {}
     for atom in atoms:
         iri = atom.iri
-        if not iri:
+        if not iri or _is_ontology_declaration_atom(atom):
             continue
         score = float(atom.score or 0.0)
         previous = best_score_by_iri.get(iri)
@@ -611,6 +616,7 @@ class OntologyPatchRetriever(Tool):
             min_merged_max_score=pc.min_merged_max_score,
         )
         atoms_after_merge = len(merged)
+        merged = [atom for atom in merged if not _is_ontology_declaration_atom(atom)]
 
         if merged and pc.merged_score_ratio > 0.0:
             merged_top = float(merged[0].score or 0.0)

@@ -57,7 +57,13 @@ def _build_tools() -> AtomicToolBox:
     async def get_llm_tool(_budget_tracker):
         return object()
 
-    return cast(AtomicToolBox, SimpleNamespace(get_llm_tool=get_llm_tool))
+    return cast(
+        AtomicToolBox,
+        SimpleNamespace(
+            get_llm_tool=get_llm_tool,
+            web_grounding_enabled_for_node=lambda _node: False,
+        ),
+    )
 
 
 @pytest.mark.anyio
