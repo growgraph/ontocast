@@ -173,7 +173,7 @@ The extraction pipeline converts documents to Markdown, chunks them, runs parall
 
 ![Workflow diagram](docs/assets/graph.png)
 
-Landscape layout: [docs/assets/graph.lr.png](docs/assets/graph.lr.png). Per-unit render/critic loops: [Workflow guide](docs/user_guide/workflow.md).
+Landscape layout: [docs/assets/graph.lr.png](docs/assets/graph.lr.png). Per-unit loops: [ontology_loop](docs/assets/ontology_loop.png), [facts_loop](docs/assets/facts_loop.png) — [Workflow guide](docs/user_guide/workflow.md#per-unit-atomic-loop).
 
 Regenerate diagrams after graph changes: `uv run plot-graph`
 

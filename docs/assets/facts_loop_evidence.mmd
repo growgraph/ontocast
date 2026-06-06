@@ -1,0 +1,57 @@
+---
+config:
+  flowchart:
+    curve: basis
+    htmlLabels: true
+    useMaxWidth: true
+  look: handDrawn
+  theme: base
+  themeVariables:
+    fontFamily: '''Architects Daughter'', cursive'
+    fontSize: 20px
+    lineColor: '#FFAB91'
+    primaryBorderColor: '#143642'
+    primaryColor: '#FFF3E0'
+    primaryTextColor: '#372237'
+---
+
+flowchart TD;
+	start([Unit start])
+	ctx[Resolve / apply<br/>ontology context]
+	render_loop{render attempt<br/>1 … max_visits}
+	render_facts[Render facts]
+	render_fail_search{initiate_search?}
+	evid_r[Plan + fetch<br/>web evidence]
+	rerender[Re-render facts]
+	final_render{final render<br/>attempt?}
+	quarantine[Surface unresolved<br/>quarantine]
+	done([Return unit state])
+	critic_loop{critic attempt<br/>1 … max_visits}
+	criticise_facts[Criticise facts]
+	critic_fail_search{initiate_search?}
+	evid_c[Plan + fetch<br/>web evidence]
+	recritic[Re-criticise facts]
+	exhausted([Return (retries exhausted)])
+	start --> ctx;
+	ctx --> render_loop;
+	render_loop --> render_facts;
+	render_facts -.->|success| final_render;
+	render_facts -.->|fail| render_fail_search;
+	render_fail_search -.->|yes| evid_r;
+	evid_r --> rerender;
+	rerender -.->|success| final_render;
+	rerender -.->|fail| render_loop;
+	render_fail_search -.->|no| render_loop;
+	final_render -.->|no| critic_loop;
+	critic_loop --> criticise_facts;
+	criticise_facts -.->|success| done;
+	criticise_facts -.->|fail| critic_fail_search;
+	critic_fail_search -.->|yes| evid_c;
+	evid_c --> recritic;
+	recritic -.->|success| done;
+	recritic -.->|fail| critic_loop;
+	critic_fail_search -.->|no| render_loop;
+	critic_loop -.->|exhausted| render_loop;
+	render_loop -.->|exhausted| exhausted;
+	final_render -.->|yes| quarantine;
+	quarantine --> done;

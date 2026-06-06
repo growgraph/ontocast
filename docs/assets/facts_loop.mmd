@@ -1,0 +1,38 @@
+---
+config:
+  flowchart:
+    curve: basis
+    htmlLabels: true
+    useMaxWidth: true
+  look: handDrawn
+  theme: base
+  themeVariables:
+    fontFamily: '''Architects Daughter'', cursive'
+    fontSize: 20px
+    lineColor: '#FFAB91'
+    primaryBorderColor: '#143642'
+    primaryColor: '#FFF3E0'
+    primaryTextColor: '#372237'
+---
+
+flowchart TD;
+	start([Unit start])
+	ctx[Resolve / apply<br/>ontology context]
+	render_loop{render attempt<br/>1 … max_visits}
+	render_facts[Render facts]
+	final_render{final render<br/>attempt?}
+	quarantine[Surface unresolved<br/>quarantine]
+	done([Return unit state])
+	criticise_facts[Criticise facts]
+	exhausted([Return (retries exhausted)])
+	start --> ctx;
+	ctx --> render_loop;
+	render_loop --> render_facts;
+	render_facts -.->|success| final_render;
+	render_facts -.->|fail| render_loop;
+	final_render -.->|no| criticise_facts;
+	criticise_facts -.->|success| done;
+	criticise_facts -.->|fail| render_loop;
+	render_loop -.->|exhausted| exhausted;
+	final_render -.->|yes| quarantine;
+	quarantine --> done;

@@ -32,7 +32,6 @@ Outputs (under `docs/assets/`):
 | [graph.png](../assets/graph.png) | Top-to-bottom | Full document pipeline (default) |
 | [graph.lr.png](../assets/graph.lr.png) | Left-to-right | Same graph, landscape layout |
 | [graph.svg](../assets/graph.svg) / [graph.lr.svg](../assets/graph.lr.svg) | Vector | Scalable versions |
-| [graph.preview.png](../assets/graph.preview.png) | Mermaid API | Small hand-drawn preview (optional) |
 | [graph.mmd](../../graph.mmd) | Mermaid source | Editable source at repo root |
 
 ![Document workflow (TB)](../assets/graph.png)
@@ -48,38 +47,41 @@ Nodes such as **Update Ontology** and **Render Facts** each run the per-unit ato
 
 ## Per-Unit Atomic Loop
 
-Inside `stategraph/atomic.py`, each content unit runs an independent **render → critic** loop with optional web evidence. The same pattern applies to ontology (`ontology_loop`) and facts (`facts_loop`).
+Inside `stategraph/atomic.py`, each content unit runs an independent **render → critic** loop. Ontology and facts share the same control flow; optional web-evidence branches are omitted in the default diagrams below (see `_evidence` variants).
 
-```mermaid
-flowchart TD
-  START([Unit start]) --> CTX[Resolve ontology context]
-  CTX --> RLOOP{render attempt<br/>1 … max_visits}
-  RLOOP --> RENDER[Render GraphUpdate]
-  RENDER -->|success| FINAL{final render<br/>attempt?}
-  RENDER -->|fail| SEARCH_R{initiate_search?}
-  SEARCH_R -->|yes| EVID_R[Plan + fetch web evidence]
-  EVID_R --> RENDER2[Re-render]
-  RENDER2 -->|success| FINAL
-  RENDER2 -->|fail| RLOOP
-  SEARCH_R -->|no| RLOOP
-  FINAL -->|yes| DONE([Return unit state])
-  FINAL -->|no| CLOOP{critic attempt<br/>1 … max_visits}
-  CLOOP --> CRITIC[Criticise output]
-  CRITIC -->|success| DONE
-  CRITIC -->|fail| SEARCH_C{initiate_search?}
-  SEARCH_C -->|yes| EVID_C[Plan + fetch web evidence]
-  EVID_C --> CRITIC2[Re-criticise]
-  CRITIC2 -->|success| DONE
-  CRITIC2 -->|fail| CLOOP
-  SEARCH_C -->|no| CLOOP
-  CLOOP -->|exhausted| RLOOP
-  RLOOP -->|exhausted| FAIL([Return with failure])
-```
+Outputs (under `docs/assets/`):
+
+| File | Layout | Description |
+|------|--------|-------------|
+| [ontology_loop.png](../assets/ontology_loop.png) | Top-to-bottom | Per-unit ontology loop (core path) |
+| [ontology_loop.lr.png](../assets/ontology_loop.lr.png) | Left-to-right | Ontology loop, landscape layout |
+| [ontology_loop.svg](../assets/ontology_loop.svg) / [ontology_loop.lr.svg](../assets/ontology_loop.lr.svg) | Vector | Scalable ontology loop |
+| [ontology_loop.mmd](../assets/ontology_loop.mmd) | Mermaid source | Core ontology loop source |
+| [ontology_loop_evidence.mmd](../assets/ontology_loop_evidence.mmd) | Mermaid source | Full ontology loop with web evidence |
+| [facts_loop.png](../assets/facts_loop.png) | Top-to-bottom | Per-unit facts loop (core path) |
+| [facts_loop.lr.png](../assets/facts_loop.lr.png) | Left-to-right | Facts loop, landscape layout |
+| [facts_loop.svg](../assets/facts_loop.svg) / [facts_loop.lr.svg](../assets/facts_loop.lr.svg) | Vector | Scalable facts loop |
+| [facts_loop.mmd](../assets/facts_loop.mmd) | Mermaid source | Core facts loop source |
+| [facts_loop_evidence.mmd](../assets/facts_loop_evidence.mmd) | Mermaid source | Full facts loop with web evidence |
+
+![Ontology loop (TB)](../assets/ontology_loop.png)
+
+![Facts loop (TB)](../assets/facts_loop.png)
+
+<details>
+<summary>Full loops with optional web evidence</summary>
+
+![Ontology loop with evidence (TB)](../assets/ontology_loop_evidence.png)
+
+![Facts loop with evidence (TB)](../assets/facts_loop_evidence.png)
+
+</details>
 
 Notes:
 
+- Core diagrams show the default path: render/critic retries without web search. When a node sets `initiate_search`, plan/fetch/retry branches apply — see `*_evidence.mmd` (and matching PNG/SVG).
 - First render/critic pass always runs **without** web search; search runs only when the node sets `initiate_search`.
-- On the **last allowed render attempt**, the critic is skipped (no further extract to critique).
+- On the **last allowed render attempt**, the critic is skipped (no further extract to critique). The facts loop also surfaces unresolved quarantined literals on that path.
 - `/process_unit` runs this loop on a single unit via `unit_pipeline.py` (no chunking or document-level reduce).
 
 Implementation: [`stategraph/atomic.py`](../../ontocast/stategraph/atomic.py).
@@ -110,6 +112,8 @@ When `target_sections` and/or `summarize_sections` are set on `/process` or CLI 
 
 Each content unit runs an independent **ontology loop** (`stategraph/atomic.py`):
 
+![Ontology loop](../assets/ontology_loop.png)
+
 1. **Context assembly** — pick or retrieve ontology context for the unit:
    - LLM catalog selection (`selected_single_ontology`)
    - Qdrant vector ensemble (`selected_vector_search_ontology`)
@@ -136,6 +140,8 @@ Provenance triples (`prov:`, reification, chunk metadata) are kept in `ontology_
 ### 5. Per-Unit Facts Loop
 
 When facts rendering is enabled, each unit runs a **facts loop** (render → critic, with optional web evidence), then **merge facts** applies cross-chunk entity disambiguation and aggregation.
+
+![Facts loop](../assets/facts_loop.png)
 
 Facts output uses the **`cd:` namespace** for text-derived instances; domain ontology IRIs are read-only schema and pre-declared reference individuals (see [Facts extraction model](concepts.md#facts-extraction-model)). Optional `facts_user_instruction` adds focus on top of these built-in guidelines.
 
