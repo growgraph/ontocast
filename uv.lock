@@ -186,11 +186,11 @@ dependencies = [
   {name = "typing-extensions"}
 ]
 name = "anthropic"
-sdist = {hash = "sha256:0e26b90841c2dced7cc6e98d21d5517d0be33f1876b8e779f478202e28bcaa07", size = 853789, upload-time = "2026-05-29T00:21:14.104Z", url = "https://files.pythonhosted.org/packages/46/46/47581b8c689c743ceabf6a0f9ff48472160900ce802d26c0fb50423997b3/anthropic-0.105.2.tar.gz"}
+sdist = {hash = "sha256:8e7169a6ab57fb806b778d9af018c867bad688144efec8969cdb4c5ccecd6670", size = 856312, upload-time = "2026-06-07T17:18:57.358Z", url = "https://files.pythonhosted.org/packages/b1/f1/c6076a92e0bf6b0dfa126e213b3f9e8a510acd73567953210713aae6c256/anthropic-0.107.1.tar.gz"}
 source = {registry = "https://pypi.org/simple"}
-version = "0.105.2"
+version = "0.107.1"
 wheels = [
-  {hash = "sha256:e53ed5f6bf36fb1ecb9b25d8634cfd30e02fab9fb3374a0c2d5c585874757230", size = 837507, upload-time = "2026-05-29T00:21:15.528Z", url = "https://files.pythonhosted.org/packages/83/75/be0c357e33a5a56c8f9db5b4212f886138d2bf59c0952d858f6b75d710ef/anthropic-0.105.2-py3-none-any.whl"}
+  {hash = "sha256:b74338d08000ba105dfc8adae29af3713ece845a4bffec9986a20697e087c7b3", size = 838729, upload-time = "2026-06-07T17:18:58.729Z", url = "https://files.pythonhosted.org/packages/86/0e/71432f0777a263701955a23ebcc6650485c2753be9afbce2a6a8d72526e3/anthropic-0.107.1-py3-none-any.whl"}
 ]
 
 [[package]]
@@ -276,11 +276,11 @@ dependencies = [
   {name = "typing-extensions"}
 ]
 name = "beautifulsoup4"
-sdist = {hash = "sha256:6292b1c5186d356bba669ef9f7f051757099565ad9ada5dd630bd9de5fa7fb86", size = 627737, upload-time = "2025-11-30T15:08:26.084Z", url = "https://files.pythonhosted.org/packages/c3/b0/1c6a16426d389813b48d95e26898aff79abbde42ad353958ad95cc8c9b21/beautifulsoup4-4.14.3.tar.gz"}
+sdist = {hash = "sha256:288e3ca7d54b06f2ac191970bc275c1939cb46d450b255bf6718b04aa37ab4f7", size = 632571, upload-time = "2026-06-07T16:44:20.453Z", url = "https://files.pythonhosted.org/packages/43/65/318323f98dbee45d42dff61d8f047181bc6f2268a9068cfad035a46be5af/beautifulsoup4-4.15.0.tar.gz"}
 source = {registry = "https://pypi.org/simple"}
-version = "4.14.3"
+version = "4.15.0"
 wheels = [
-  {hash = "sha256:0918bfe44902e6ad8d57732ba310582e98da931428d231a5ecb9e7c703a735bb", size = 107721, upload-time = "2025-11-30T15:08:24.087Z", url = "https://files.pythonhosted.org/packages/1a/39/47f9197bdd44df24d67ac8893641e16f386c984a0619ef2ee4c51fbbc019/beautifulsoup4-4.14.3-py3-none-any.whl"}
+  {hash = "sha256:d6f88de62e1d4e38ecb1077eb9724cd0eff29d2a08ca16a401e9b9e93f117cf9", size = 109924, upload-time = "2026-06-07T16:44:21.566Z", url = "https://files.pythonhosted.org/packages/88/c6/92fcd42f1ba33e1184263f25bfabf3d27c383410470f169e4b8163bf9c17/beautifulsoup4-4.15.0-py3-none-any.whl"}
 ]
 
 [[package]]
@@ -288,11 +288,11 @@ dependencies = [
   {name = "webencodings"}
 ]
 name = "bleach"
-sdist = {hash = "sha256:6f3b91b1c0a02bb9a78b5a454c92506aa0fdf197e1d5e114d2e00c6f64306d22", size = 203533, upload-time = "2025-10-27T17:57:39.211Z", url = "https://files.pythonhosted.org/packages/07/18/3c8523962314be6bf4c8989c79ad9531c825210dd13a8669f6b84336e8bd/bleach-6.3.0.tar.gz"}
+sdist = {hash = "sha256:4202482733d85cedd04e59fcb2f89f4e4c7c385a78d3c3c23c30446843a37452", size = 204857, upload-time = "2026-06-05T13:01:13.734Z", url = "https://files.pythonhosted.org/packages/48/3c/e12ac860709702bd5ebeb9b56a4fe334f1001246ee1b8f2b7ee28912df7d/bleach-6.4.0.tar.gz"}
 source = {registry = "https://pypi.org/simple"}
-version = "6.3.0"
+version = "6.4.0"
 wheels = [
-  {hash = "sha256:fe10ec77c93ddf3d13a73b035abaac7a9f5e436513864ccdad516693213c65d6", size = 164437, upload-time = "2025-10-27T17:57:37.538Z", url = "https://files.pythonhosted.org/packages/cd/3a/577b549de0cc09d95f11087ee63c739bba856cd3952697eec4c4bb91350a/bleach-6.3.0-py3-none-any.whl"}
+  {hash = "sha256:4b6b6a54fff2e69a3dde9d21cc6301220bee3c3cb792187d11403fd795031081", size = 165109, upload-time = "2026-06-05T13:01:12.504Z", url = "https://files.pythonhosted.org/packages/58/9d/40b6267367182187139a4000b82a3b287d84d745bccd808e75d916920e9d/bleach-6.4.0-py3-none-any.whl"}
 ]
 
 [package.optional-dependencies]
@@ -554,7 +554,7 @@ wheels = [
 
 [[package]]
 dependencies = [
-  {marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'", name = "cuda-pathfinder"}
+  {name = "cuda-pathfinder"}
 ]
 name = "cuda-bindings"
 source = {registry = "https://pypi.org/simple"}
@@ -681,11 +681,11 @@ dependencies = [
   {name = "typing-extensions"}
 ]
 name = "docling-core"
-sdist = {hash = "sha256:7463a2ce3e70590f330cf16dce11a7dbb761ece007a50e9082b44b7fed849820", size = 333514, upload-time = "2026-06-04T08:05:51.21Z", url = "https://files.pythonhosted.org/packages/61/f7/b13e4449cf11e6c17d20951fd17812cf9f37af0cbe0434130435e683c0ea/docling_core-2.78.1.tar.gz"}
+sdist = {hash = "sha256:3a5c6f757a95b93a1bb4c2c46efbe580f35a390f762a4b4105d97b7fca7cdfeb", size = 334965, upload-time = "2026-06-05T17:48:55.658Z", url = "https://files.pythonhosted.org/packages/4d/b3/9196498f28c5a872b76b356df3ccefc20f2978eea12b8459a3398d036a2e/docling_core-2.79.0.tar.gz"}
 source = {registry = "https://pypi.org/simple"}
-version = "2.78.1"
+version = "2.79.0"
 wheels = [
-  {hash = "sha256:a700d4dc98592e95c05c57ae8d25698f514b8dfbe25e97f36a314f85e9cc0684", size = 285702, upload-time = "2026-06-04T08:05:49.367Z", url = "https://files.pythonhosted.org/packages/a5/d7/8331ddd40cbd2887b616694b19255710999325a8dc7b6590f3d0ba63372b/docling_core-2.78.1-py3-none-any.whl"}
+  {hash = "sha256:42540cbd7ff8bca264e8e8fda9a66ad4446613f520bee8e130588193bc3e0212", size = 286672, upload-time = "2026-06-05T17:48:53.929Z", url = "https://files.pythonhosted.org/packages/d0/f2/2cbf2b8ba8f2ebdefa5ebed29cf1d2eb4306a57ebf6c8b98703b7d4e2054/docling_core-2.79.0-py3-none-any.whl"}
 ]
 
 [package.optional-dependencies]
@@ -1694,14 +1694,15 @@ dependencies = [
   {name = "python-dateutil"},
   {name = "pyzmq"},
   {name = "tornado"},
-  {name = "traitlets"}
+  {name = "traitlets"},
+  {name = "typing-extensions"}
 ]
 name = "jupyter-client"
-sdist = {hash = "sha256:d556811419a4f2d96c869af34e854e3f059b7cc2d6d01a9cd9c85c267691be3e", size = 348020, upload-time = "2026-01-08T13:55:47.938Z", url = "https://files.pythonhosted.org/packages/05/e4/ba649102a3bc3fbca54e7239fb924fd434c766f855693d86de0b1f2bec81/jupyter_client-8.8.0.tar.gz"}
+sdist = {hash = "sha256:23c0c182e1901ffdab96b5a02cb7bc6f0b04524fd7fc43688a14c4ff2308fb77", size = 358714, upload-time = "2026-06-05T12:17:44.014Z", url = "https://files.pythonhosted.org/packages/9c/a2/9ef7832e6c7d619a35bf6732d199a850ef3b6db4af1cd783a71f81eaeab0/jupyter_client-8.9.0.tar.gz"}
 source = {registry = "https://pypi.org/simple"}
-version = "8.8.0"
+version = "8.9.0"
 wheels = [
-  {hash = "sha256:f93a5b99c5e23a507b773d3a1136bd6e16c67883ccdbd9a829b0bbdb98cd7d7a", size = 107371, upload-time = "2026-01-08T13:55:45.562Z", url = "https://files.pythonhosted.org/packages/2d/0b/ceb7694d864abc0a047649aec263878acb9f792e1fec3e676f22dc9015e3/jupyter_client-8.8.0-py3-none-any.whl"}
+  {hash = "sha256:a0efc16adcec2bb6669d2cf91e3ba5337b338bd1ecd0d9c70940752fcb1144b2", size = 109723, upload-time = "2026-06-05T12:17:42.135Z", url = "https://files.pythonhosted.org/packages/ef/ce/93ccaca54d41327491b1f6d7341d0eef49f71e8929f875b53c45446335ca/jupyter_client-8.9.0-py3-none-any.whl"}
 ]
 
 [[package]]
@@ -1823,11 +1824,11 @@ dependencies = [
   {name = "uuid-utils"}
 ]
 name = "langchain-core"
-sdist = {hash = "sha256:1dc341eed802ed9c117c0df3923c991e5e9e226571e5725c194eeb5bd93d1a7f", size = 920260, upload-time = "2026-05-11T18:42:35.919Z", url = "https://files.pythonhosted.org/packages/59/de/679a53472c25860837e32c0442c962fa86e95317a36460e2c9d5c91b17c2/langchain_core-1.4.0.tar.gz"}
+sdist = {hash = "sha256:8234eb8cd3200f690e278159b7d7cee5976381ec90ece7b48db8d8e8850ab37d", size = 932675, upload-time = "2026-06-05T14:51:40.772Z", url = "https://files.pythonhosted.org/packages/80/c1/276a0d704440490fb0d27ce25e556872ca420d285b9d00eb823374717897/langchain_core-1.4.1.tar.gz"}
 source = {registry = "https://pypi.org/simple"}
-version = "1.4.0"
+version = "1.4.1"
 wheels = [
-  {hash = "sha256:23cbbdb46e38ddd1dd5247e6167e96013eae74bea4c5949c550809970a9e565c", size = 548120, upload-time = "2026-05-11T18:42:33.992Z", url = "https://files.pythonhosted.org/packages/0f/1a/86c38c27b81913a1c6c12448cab55defb5a1097c7dc9a4cea83f55477a2d/langchain_core-1.4.0-py3-none-any.whl"}
+  {hash = "sha256:e5dee06e70c123cb98cb0158e4416efac1e386ff47a484901ccf88555e28eec6", size = 549118, upload-time = "2026-06-05T14:51:39.038Z", url = "https://files.pythonhosted.org/packages/ca/79/531d8ee5dc5bf464c18cc86b087569307bc2d6b74548753f26122d08746d/langchain_core-1.4.1-py3-none-any.whl"}
 ]
 
 [[package]]
@@ -2696,11 +2697,11 @@ wheels = [
 
 [[package]]
 name = "narwhals"
-sdist = {hash = "sha256:6486282bb7e4b4ab55963efbd8be1451b764cc4874b74d1fd625eba9dc60b86f", size = 417565, upload-time = "2026-06-01T13:34:36.249Z", url = "https://files.pythonhosted.org/packages/9c/1c/c80cb7719721a44846c6301ef118434bae30a423924bfad3a47f16bdc064/narwhals-2.22.0.tar.gz"}
+sdist = {hash = "sha256:d62920805a0a43b7ff8b54b0c0d3142d796f8a9301836ada37e573d6a33cbcd9", size = 647493, upload-time = "2026-06-05T12:34:34.051Z", url = "https://files.pythonhosted.org/packages/62/3c/c4ef2164a71c1a63d7f1ae411c4082c5fa872405106db60a4b7114989ad7/narwhals-2.22.1.tar.gz"}
 source = {registry = "https://pypi.org/simple"}
-version = "2.22.0"
+version = "2.22.1"
 wheels = [
-  {hash = "sha256:1421797ede01789cc1537619dbc3f36f840737240f748fdb24a60a0225fc80be", size = 453815, upload-time = "2026-06-01T13:34:34.127Z", url = "https://files.pythonhosted.org/packages/1f/b6/e7cdde7b8e90d5dff25b622f95833ef26567ad184c977278b93a1cbd5717/narwhals-2.22.0-py3-none-any.whl"}
+  {hash = "sha256:60567d774edf77db53906f89d9fbd164e66e56d66d388e1e6990f17ac33cfb53", size = 454815, upload-time = "2026-06-05T12:34:32.289Z", url = "https://files.pythonhosted.org/packages/48/ca/36339329c4604adbcc99c899b7eb1ce1a555c499b6a6860757dc9bfed36d/narwhals-2.22.1-py3-none-any.whl"}
 ]
 
 [[package]]
@@ -2946,7 +2947,7 @@ wheels = [
 
 [[package]]
 dependencies = [
-  {marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'", name = "nvidia-cublas-cu12"}
+  {name = "nvidia-cublas-cu12"}
 ]
 name = "nvidia-cudnn-cu12"
 source = {registry = "https://pypi.org/simple"}
@@ -2957,7 +2958,7 @@ wheels = [
 
 [[package]]
 dependencies = [
-  {marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'", name = "nvidia-nvjitlink-cu12"}
+  {name = "nvidia-nvjitlink-cu12"}
 ]
 name = "nvidia-cufft-cu12"
 source = {registry = "https://pypi.org/simple"}
@@ -2984,9 +2985,9 @@ wheels = [
 
 [[package]]
 dependencies = [
-  {marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'", name = "nvidia-cublas-cu12"},
-  {marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'", name = "nvidia-cusparse-cu12"},
-  {marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'", name = "nvidia-nvjitlink-cu12"}
+  {name = "nvidia-cublas-cu12"},
+  {name = "nvidia-cusparse-cu12"},
+  {name = "nvidia-nvjitlink-cu12"}
 ]
 name = "nvidia-cusolver-cu12"
 source = {registry = "https://pypi.org/simple"}
@@ -2997,7 +2998,7 @@ wheels = [
 
 [[package]]
 dependencies = [
-  {marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'", name = "nvidia-nvjitlink-cu12"}
+  {name = "nvidia-nvjitlink-cu12"}
 ]
 name = "nvidia-cusparse-cu12"
 source = {registry = "https://pypi.org/simple"}
@@ -5203,11 +5204,11 @@ wheels = [
 
 [[package]]
 name = "setuptools"
-sdist = {hash = "sha256:487b53915f52501f0a79ccfd0c02c165ffe06631443a886740b91af4b7a5845a", size = 1198299, upload-time = "2026-02-06T21:10:39.601Z", url = "https://files.pythonhosted.org/packages/0d/1c/73e719955c59b8e424d015ab450f51c0af856ae46ea2da83eba51cc88de1/setuptools-81.0.0.tar.gz"}
+sdist = {hash = "sha256:7d872682c5d01cfde07da7bccc7b65469d3dca203318515ada1de5eda35efbf9", size = 1152316, upload-time = "2026-03-09T12:47:17.221Z", url = "https://files.pythonhosted.org/packages/4f/db/cfac1baf10650ab4d1c111714410d2fbb77ac5a616db26775db562c8fab2/setuptools-82.0.1.tar.gz"}
 source = {registry = "https://pypi.org/simple"}
-version = "81.0.0"
+version = "82.0.1"
 wheels = [
-  {hash = "sha256:fdd925d5c5d9f62e4b74b30d6dd7828ce236fd6ed998a08d81de62ce5a6310d6", size = 1062021, upload-time = "2026-02-06T21:10:37.175Z", url = "https://files.pythonhosted.org/packages/e1/e3/c164c88b2e5ce7b24d667b9bd83589cf4f3520d97cad01534cd3c4f55fdb/setuptools-81.0.0-py3-none-any.whl"}
+  {hash = "sha256:a59e362652f08dcd477c78bb6e7bd9d80a7995bc73ce773050228a348ce2e5bb", size = 1006223, upload-time = "2026-03-09T12:47:15.026Z", url = "https://files.pythonhosted.org/packages/9d/76/f789f7a86709c6b087c5a2f52f911838cad707cc613162401badc665acfe/setuptools-82.0.1-py3-none-any.whl"}
 ]
 
 [[package]]
@@ -5548,11 +5549,11 @@ dependencies = [
   {name = "webencodings"}
 ]
 name = "tinycss2"
-sdist = {hash = "sha256:10c0972f6fc0fbee87c3edb76549357415e94548c1ae10ebccdea16fb404a9b7", size = 87085, upload-time = "2024-10-24T14:58:29.895Z", url = "https://files.pythonhosted.org/packages/7a/fd/7a5ee21fd08ff70d3d33a5781c255cbe779659bd03278feb98b19ee550f4/tinycss2-1.4.0.tar.gz"}
+sdist = {hash = "sha256:d339d2b616ba90ccce58da8495a78f46e55d4d25f9fd71dfd526f07e7d53f957", size = 88195, upload-time = "2025-11-23T10:29:10.082Z", url = "https://files.pythonhosted.org/packages/a3/ae/2ca4913e5c0f09781d75482874c3a95db9105462a92ddd303c7d285d3df2/tinycss2-1.5.1.tar.gz"}
 source = {registry = "https://pypi.org/simple"}
-version = "1.4.0"
+version = "1.5.1"
 wheels = [
-  {hash = "sha256:3a49cf47b7675da0b15d0c6e1df8df4ebd96e9394bb905a5775adb0d884c5289", size = 26610, upload-time = "2024-10-24T14:58:28.029Z", url = "https://files.pythonhosted.org/packages/e6/34/ebdc18bae6aa14fbee1a08b63c015c72b64868ff7dae68808ab500c492e2/tinycss2-1.4.0-py3-none-any.whl"}
+  {hash = "sha256:3415ba0f5839c062696996998176c4a3751d18b7edaaeeb658c9ce21ec150661", size = 28404, upload-time = "2025-11-23T10:29:08.676Z", url = "https://files.pythonhosted.org/packages/60/45/c7b5c3168458db837e8ceab06dc77824e18202679d0463f0e8f002143a97/tinycss2-1.5.1-py3-none-any.whl"}
 ]
 
 [[package]]
@@ -5695,11 +5696,11 @@ dependencies = [
   {marker = "sys_platform == 'win32'", name = "colorama"}
 ]
 name = "tqdm"
-sdist = {hash = "sha256:7d825f03f89244ef73f1d4ce193cb1774a8179fd96f31d7e1dcde62092b960bb", size = 169598, upload-time = "2026-02-03T17:35:53.048Z", url = "https://files.pythonhosted.org/packages/09/a9/6ba95a270c6f1fbcd8dac228323f2777d886cb206987444e4bce66338dd4/tqdm-4.67.3.tar.gz"}
+sdist = {hash = "sha256:fc163d96b287bd031e1aa24421ce4411b25559bd0a1be4fe649bdaa4d2c02bf5", size = 171236, upload-time = "2026-06-05T17:23:15.267Z", url = "https://files.pythonhosted.org/packages/06/b3/36c8ecf72e8925200671613332db156d84b99b3aee742a41c1938ebb0808/tqdm-4.68.1.tar.gz"}
 source = {registry = "https://pypi.org/simple"}
-version = "4.67.3"
+version = "4.68.1"
 wheels = [
-  {hash = "sha256:ee1e4c0e59148062281c49d80b25b67771a127c85fc9676d3be5f243206826bf", size = 78374, upload-time = "2026-02-03T17:35:50.982Z", url = "https://files.pythonhosted.org/packages/16/e1/3079a9ff9b8e11b846c6ac5c8b5bfb7ff225eee721825310c91b3b50304f/tqdm-4.67.3-py3-none-any.whl"}
+  {hash = "sha256:fea4a90e4023f764914569f7802a297277c5ab1a66be5144143e142e1a4031d8", size = 78354, upload-time = "2026-06-05T17:23:13.654Z", url = "https://files.pythonhosted.org/packages/47/aa/218a0eb34de1f753c83e4d0d1c8e7c4cef27f20dcb8342e024f63a80dc86/tqdm-4.68.1-py3-none-any.whl"}
 ]
 
 [[package]]
@@ -6192,11 +6193,11 @@ wheels = [
 
 [[package]]
 name = "wcwidth"
-sdist = {hash = "sha256:90e3a7ea092341c44b99562e75d09e4d5160fe7a3974c6fb842a101a95e7eed0", size = 182132, upload-time = "2026-05-02T16:04:12.653Z", url = "https://files.pythonhosted.org/packages/2c/ee/afaf0f85a9a18fe47a67f1e4422ed6cf1fe642f0ae0a2f81166231303c52/wcwidth-0.7.0.tar.gz"}
+sdist = {hash = "sha256:68a882ff6d14e3d14e0cae590b96a0551be64ce4905408112a8254434a1bdf69", size = 1305357, upload-time = "2026-06-05T21:19:35.667Z", url = "https://files.pythonhosted.org/packages/af/44/c833e6b746ffb654e9abacf7ad6c2480a9c8c42e9637c1ae849964fb4dde/wcwidth-0.8.0.tar.gz"}
 source = {registry = "https://pypi.org/simple"}
-version = "0.7.0"
+version = "0.8.0"
 wheels = [
-  {hash = "sha256:5d69154c429a82910e241c738cd0e2976fac8a2dd47a1a805f4afed1c0f136f2", size = 110825, upload-time = "2026-05-02T16:04:11.033Z", url = "https://files.pythonhosted.org/packages/41/52/e465037f5375f43533d1a80b6923955201596a99142ed524d77b571a1418/wcwidth-0.7.0-py3-none-any.whl"}
+  {hash = "sha256:8c75e6099cefd197c4bcc67a486f70b5dbc68f997c05f34a811d853910450d64", size = 324935, upload-time = "2026-06-05T21:19:33.999Z", url = "https://files.pythonhosted.org/packages/fb/17/c68b6cbcfeadbf420b3c3edaf8fda51335bc9c38732adb2d3ba8984dc607/wcwidth-0.8.0-py3-none-any.whl"}
 ]
 
 [[package]]
