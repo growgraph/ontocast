@@ -554,7 +554,7 @@ wheels = [
 
 [[package]]
 dependencies = [
-  {name = "cuda-pathfinder"}
+  {marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'", name = "cuda-pathfinder"}
 ]
 name = "cuda-bindings"
 source = {registry = "https://pypi.org/simple"}
@@ -1322,6 +1322,19 @@ wheels = [
 ]
 
 [[package]]
+dependencies = [
+  {name = "h11"},
+  {name = "truststore"}
+]
+name = "httpcore2"
+sdist = {hash = "sha256:07327e251560960eea8e969d92d4c6a325feb13cca39e25340731336c3baf924", size = 64300, upload-time = "2026-06-01T13:15:02.998Z", url = "https://files.pythonhosted.org/packages/e6/34/18f1c596e677962f040284246f393b10a1f8ce440b3a7e69c637d0f1c7ad/httpcore2-2.3.0.tar.gz"}
+source = {registry = "https://pypi.org/simple"}
+version = "2.3.0"
+wheels = [
+  {hash = "sha256:477e9e334f74e5240dcac002e890580f36a57d40ff0fb14cc9655731d23b8415", size = 80024, upload-time = "2026-06-01T13:15:00.001Z", url = "https://files.pythonhosted.org/packages/c2/dd/3357218c69360d1cecc196c230c9a1d5c9afd5dba362056e23e60a5e64e5/httpcore2-2.3.0-py3-none-any.whl"}
+]
+
+[[package]]
 name = "httptools"
 sdist = {hash = "sha256:6b2a32f18d97e16e90827d7a819ffa8dbd8cc245fc4e1fa9d1095b54ef4bd999", size = 271342, upload-time = "2026-05-25T22:17:48.841Z", url = "https://files.pythonhosted.org/packages/43/e5/d471fcb0e14523fe1c3f4ba58ca52480e7bd70ad7109a3846bc75892f7fb/httptools-0.8.0.tar.gz"}
 source = {registry = "https://pypi.org/simple"}
@@ -1384,6 +1397,21 @@ source = {registry = "https://pypi.org/simple"}
 version = "0.4.3"
 wheels = [
   {hash = "sha256:0ac1c9fe3c0afad2e0ebb25a934a59f4c7823b60792691f779fad2c5568830fc", size = 8960, upload-time = "2025-10-10T21:48:21.158Z", url = "https://files.pythonhosted.org/packages/d2/fd/6668e5aec43ab844de6fc74927e155a3b37bf40d7c3790e49fc0406b6578/httpx_sse-0.4.3-py3-none-any.whl"}
+]
+
+[[package]]
+dependencies = [
+  {name = "anyio"},
+  {name = "httpcore2"},
+  {name = "idna"},
+  {name = "truststore"}
+]
+name = "httpx2"
+sdist = {hash = "sha256:227e7c41d95a76d4077a52640564132777215fc3394e07b66a3116c33d668fa9", size = 81115, upload-time = "2026-06-01T13:15:04.324Z", url = "https://files.pythonhosted.org/packages/9f/9a/cca0b9145f13d8ae34b885ae28d403a1469a433abc78e0f94f4ce94e650b/httpx2-2.3.0.tar.gz"}
+source = {registry = "https://pypi.org/simple"}
+version = "2.3.0"
+wheels = [
+  {hash = "sha256:6f393663bdf6dbe7fe90118e3eb5b2bd024a675cae0390ac08cec9198812d8b7", size = 74538, upload-time = "2026-06-01T13:15:01.566Z", url = "https://files.pythonhosted.org/packages/87/ce/ae2911859847f9ba1d6b23027e53481cbeb50b93234f355a968d300ca2cb/httpx2-2.3.0-py3-none-any.whl"}
 ]
 
 [[package]]
@@ -2947,7 +2975,7 @@ wheels = [
 
 [[package]]
 dependencies = [
-  {name = "nvidia-cublas-cu12"}
+  {marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'", name = "nvidia-cublas-cu12"}
 ]
 name = "nvidia-cudnn-cu12"
 source = {registry = "https://pypi.org/simple"}
@@ -2958,7 +2986,7 @@ wheels = [
 
 [[package]]
 dependencies = [
-  {name = "nvidia-nvjitlink-cu12"}
+  {marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'", name = "nvidia-nvjitlink-cu12"}
 ]
 name = "nvidia-cufft-cu12"
 source = {registry = "https://pypi.org/simple"}
@@ -2985,9 +3013,9 @@ wheels = [
 
 [[package]]
 dependencies = [
-  {name = "nvidia-cublas-cu12"},
-  {name = "nvidia-cusparse-cu12"},
-  {name = "nvidia-nvjitlink-cu12"}
+  {marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'", name = "nvidia-cublas-cu12"},
+  {marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'", name = "nvidia-cusparse-cu12"},
+  {marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'", name = "nvidia-nvjitlink-cu12"}
 ]
 name = "nvidia-cusolver-cu12"
 source = {registry = "https://pypi.org/simple"}
@@ -2998,7 +3026,7 @@ wheels = [
 
 [[package]]
 dependencies = [
-  {name = "nvidia-nvjitlink-cu12"}
+  {marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'", name = "nvidia-nvjitlink-cu12"}
 ]
 name = "nvidia-cusparse-cu12"
 source = {registry = "https://pypi.org/simple"}
@@ -3115,6 +3143,7 @@ dependencies = [
   {name = "fastembed"},
   {name = "hdbscan"},
   {name = "httpx"},
+  {name = "httpx2"},
   {name = "langchain"},
   {name = "langchain-anthropic"},
   {name = "langchain-core"},
@@ -3144,12 +3173,11 @@ dependencies = [
 ]
 name = "ontocast"
 source = {editable = "."}
-version = "0.4.0"
+version = "0.4.1"
 
 [package.metadata]
 provides-extras = ["all", "dev", "docs", "plot"]
 requires-dist = [
-  {extras = ["all"], name = "fastembed", specifier = ">=0.8.0"},
   {extras = ["chunking"], marker = "extra == 'all'", name = "docling-core", specifier = ">=2.57.0"},
   {extras = ["python"], marker = "extra == 'docs'", name = "mkdocstrings", specifier = ">=0.29.1"},
   {extras = ["standard"], name = "uvicorn", specifier = ">=0.32.0"},
@@ -3175,8 +3203,10 @@ requires-dist = [
   {name = "click", specifier = ">=8.1.8"},
   {name = "duckduckgo-search", specifier = ">=8.1.1"},
   {name = "fastapi", specifier = ">=0.115.0"},
+  {name = "fastembed", specifier = ">=0.8.0"},
   {name = "hdbscan", specifier = ">=0.8.41"},
   {name = "httpx", specifier = ">=0.27.0"},
+  {name = "httpx2", specifier = ">=2.3.0"},
   {name = "langchain", specifier = ">=0.3.25"},
   {name = "langchain-anthropic", specifier = ">=0.3.0"},
   {name = "langchain-core", specifier = ">=0.3.60"},
@@ -5834,6 +5864,15 @@ wheels = [
   {hash = "sha256:74caf5e34b66d9f3a429af689c1c7128daba1d8208df60e81106b115c00d6fca", size = 188266850, upload-time = "2026-01-20T16:00:43.041Z", url = "https://files.pythonhosted.org/packages/ab/a8/cdf8b3e4c98132f965f88c2313a4b493266832ad47fb52f23d14d4f86bb5/triton-3.6.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"},
   {hash = "sha256:a17a5d5985f0ac494ed8a8e54568f092f7057ef60e1b0fa09d3fd1512064e803", size = 188273063, upload-time = "2026-01-20T16:01:07.278Z", url = "https://files.pythonhosted.org/packages/df/3d/9e7eee57b37c80cec63322c0231bb6da3cfe535a91d7a4d64896fcb89357/triton-3.6.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"},
   {hash = "sha256:d002e07d7180fd65e622134fbd980c9a3d4211fb85224b56a0a0efbd422ab72f", size = 188400296, upload-time = "2026-01-20T16:00:56.042Z", url = "https://files.pythonhosted.org/packages/35/f8/9c66bfc55361ec6d0e4040a0337fb5924ceb23de4648b8a81ae9d33b2b38/triton-3.6.0-cp313-cp313t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"}
+]
+
+[[package]]
+name = "truststore"
+sdist = {hash = "sha256:9d91bd436463ad5e4ee4aba766628dd6cd7010cf3e2461756b3303710eebc301", size = 26169, upload-time = "2025-08-12T18:49:02.73Z", url = "https://files.pythonhosted.org/packages/53/a3/1585216310e344e8102c22482f6060c7a6ea0322b63e026372e6dcefcfd6/truststore-0.10.4.tar.gz"}
+source = {registry = "https://pypi.org/simple"}
+version = "0.10.4"
+wheels = [
+  {hash = "sha256:adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981", size = 18660, upload-time = "2025-08-12T18:49:01.46Z", url = "https://files.pythonhosted.org/packages/19/97/56608b2249fe206a67cd573bc93cd9896e1efb9e98bce9c163bcdc704b88/truststore-0.10.4-py3-none-any.whl"}
 ]
 
 [[package]]

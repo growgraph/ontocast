@@ -1,4 +1,4 @@
-services:
+uv services:
     qdrant:
         image: ${IMAGE_VERSION}
         restart: "no"
