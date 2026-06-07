@@ -1,45 +1,51 @@
-# Triple Store Configuration
+# Docker services for OntoCast
 
-OntoCast supports multiple triple store backends for storing and managing RDF data. This guide covers the setup and configuration of supported triple stores.
+This directory contains Docker Compose stacks for **optional** infrastructure OntoCast can use at runtime.
 
----
+| Service | Directory | Purpose |
+|---------|-----------|---------|
+| **Apache Fuseki** | `fuseki/` | Persistent RDF triple store (production) |
+| **Qdrant** | `qdrant/` | Vector store for ontology patch retrieval |
 
-## Overview
-
-OntoCast supports the following triple store backends:
-
-1. **Apache Fuseki** (Recommended) - Native RDF triple store with SPARQL support
-2. **Neo4j with n10s plugin** - Graph database with RDF capabilities
-3. **Filesystem** - Local file-based storage (fallback)
-
-When multiple triple stores are configured, OntoCast uses the following priority order:
-1. Fuseki (if `FUSEKI_URI` and `FUSEKI_AUTH` are set)
-2. Neo4j (if `NEO4J_URI` and `NEO4J_AUTH` are set)
-3. Filesystem (default fallback)
+OntoCast does **not** require Docker to run. When `FUSEKI_URI` / `FUSEKI_AUTH` are unset, the server uses an **in-memory pyoxigraph** triple store automatically (data is not persisted across restarts).
 
 ---
 
-## Environment Variables
+## Triple store backend selection
 
-Configure your triple store connection using environment variables in your main `.env` file:
+OntoCast picks the triple store in `ToolBox` at startup:
+
+1. **Fuseki** — when both `FUSEKI_URI` and `FUSEKI_AUTH` are set
+2. **In-memory** — otherwise (zero git config, process-local only)
+
+There is no filesystem or Neo4j fallback anymore. Use Fuseki (below) when you need durable RDF storage.
+
+### OntoCast `.env` (Fuseki client)
+
+Point OntoCast at a running Fuseki instance:
 
 ```bash
-# Fuseki Configuration (Preferred)
+# Fuseki HTTP service root (not a dataset path or UI fragment URL)
 FUSEKI_URI=http://localhost:3032
 FUSEKI_AUTH=admin/abc123-qwe
 
-# Neo4j Configuration (Alternative)
-NEO4J_URI=bolt://localhost:7689
-NEO4J_AUTH=neo4j/test!passfortesting
+# Optional: override default tenant/project dataset names
+#FUSEKI_DATASET=ontocast--test--facts
+#FUSEKI_ONTOLOGIES_DATASET=ontocast--test--ontologies
 ```
+
+When dataset env vars are unset, names default to `ontocast--test--facts` and `ontocast--test--ontologies`. Per-request `?tenant=` / `?project=` retarget partitions at runtime. See [Tenancy](../docs/user_guide/tenancy.md).
+
+### Seed ontologies (optional)
+
+`ONTOCAST_ONTOLOGY_DIRECTORY` is independent of Docker. On `ToolBox.initialize()`, OntoCast scans that directory for `*.ttl` files and materializes any ontologies not already in the triple store. Ongoing persistence is through the triple store only.
 
 ---
 
-## Apache Fuseki Setup
-
-Sample configurations are provided here: [ontocast/docker](https://github.com/growgraph/ontocast/tree/main/docker).
+## Apache Fuseki
 
 **1. Prepare the environment file:**
+
 ```bash
 cd docker/fuseki
 cp .env.example .env
@@ -47,127 +53,115 @@ cp .env.example .env
 ```
 
 **Example `docker/fuseki/.env.example`:**
+
 ```bash
-IMAGE_VERSION=secoresearch/fuseki:5.1.0
-SPEC=test
+IMAGE_VERSION=conceptkernel/jena-fuseki:6.0
+SPEC=ontocast
 CONTAINER_NAME="${SPEC}.fuseki"
-STORE_FOLDER="$HOME/tmp/${CONTAINER_NAME}"
 TS_PORT=3032
 TS_PASSWORD="abc123-qwe"
 TS_USERNAME="admin"
-UID=1000
-GID=1000
 ```
 
-**2. Start/Stop Fuseki:**
+**2. Start / stop:**
+
 ```bash
-# Start
 cd docker/fuseki
 docker compose --env-file .env up fuseki -d
 
-# Stop
-# (use the container name from your .env, e.g. test.fuseki)
-docker compose stop test.fuseki
+# Stop (use container name from .env, e.g. ontocast.fuseki)
+docker compose stop ontocast.fuseki
 ```
 
-**3. Access Fuseki:**
-- Web interface: http://localhost:3032
-- Default dataset: `/test`
-- SPARQL endpoint: http://localhost:3032/test/sparql
+**3. Access:**
+
+- Web UI: http://localhost:3032
+- SPARQL (per dataset): `http://localhost:3032/{dataset}/sparql`
+
+**4. Wire OntoCast** — set `FUSEKI_URI` and `FUSEKI_AUTH` in your main `.env` to match the compose credentials and port.
 
 ---
 
-## Neo4j with n10s Plugin Setup
+## Qdrant (optional vector store)
 
-**1. Prepare the environment file:**
+Required only when using vector-backed ontology context (`SELECTED_VECTOR_SEARCH_ONTOLOGY`).
+
+**1. Prepare:**
+
 ```bash
-cd docker/neo4j
+cd docker/qdrant
 cp .env.example .env
-# Edit with your values
 ```
 
-**Example `docker/neo4j/.env.example`:**
+**Example `docker/qdrant/.env.example`:**
+
 ```bash
-IMAGE_VERSION=neo4j:5.20
-SPEC=test
-CONTAINER_NAME="${SPEC}.sem.neo4j"
-NEO4J_PORT=7476
-NEO4J_BOLT_PORT=7689
-STORE_FOLDER="$HOME/tmp/${CONTAINER_NAME}"
-NEO4J_PLUGINS='["apoc", "graph-data-science", "n10s"]'
-NEO4J_AUTH="neo4j/test!passfortesting"
+IMAGE_VERSION=qdrant/qdrant:v1.18.1
+SPEC=ontocast
+CONTAINER_NAME="${SPEC}.qdrant"
+QDRANT_HTTP_PORT=6333
+QDRANT_GRPC_PORT=6334
+QDRANT_API_KEY="abc123-qwe"
+QDRANT_LOG_LEVEL=INFO
 ```
 
-**2. Start/Stop Neo4j:**
+**2. Start / stop:**
+
 ```bash
-# Start
-cd docker/neo4j
-docker compose --env-file .env up neo4j -d
-
-# Stop
-docker compose stop neo4j
+cd docker/qdrant
+docker compose --env-file .env up qdrant -d
+docker compose stop ontocast.qdrant
 ```
 
-**3. Access Neo4j:**
-- Browser: http://localhost:7476
-- Username: `neo4j`
-- Password: `test!passfortesting`
-- Bolt: bolt://localhost:7689
+**3. Wire OntoCast:**
+
+```bash
+QDRANT_URI=http://localhost:6333
+QDRANT_API_KEY=abc123-qwe
+```
+
+Collection names follow the same `{tenant}--{project}--{facts|ontologies}` pattern when unset.
 
 ---
 
-## Filesystem Storage (Fallback)
+## Backend comparison
 
-If neither Fuseki nor Neo4j is configured, OntoCast will store ontologies and facts as Turtle files in the working directory.
-
-**No setup required.**
-
----
-
-## Triple Store Comparison
-
-| Feature | Fuseki | Neo4j + n10s | Filesystem |
-|---------|--------|--------------|------------|
-| **RDF Native** | ✅ Yes | ⚠️ Via plugin | ✅ Yes |
-| **SPARQL** | ✅ Full 1.1 | ❌ Limited | ❌ No |
-| **Setup Complexity** | ✅ Simple | ⚠️ Moderate | ✅ Very Simple |
-| **Visualization** | ⚠️ Basic | ✅ Excellent | ❌ None |
-| **Production Ready** | ✅ Yes | ✅ Yes | ❌ No |
-
----
-
-## Best Practices
-
-- Use **Filesystem** for quick setup and testing.
-- Use **Fuseki** for RDF-focused or production deployments.
-- Use **Neo4j** if you need advanced graph analytics or visualization.
-- Monitor triple store performance and logs.
-- Backup your data regularly.
+| Feature | Fuseki (Docker) | In-memory (default) |
+|---------|-----------------|---------------------|
+| **Persistence** | Yes | No (process lifetime) |
+| **SPARQL** | Full 1.1 | Internal only |
+| **Tenancy partitions** | Yes | Yes |
+| **Docker required** | Yes | No |
 
 ---
 
 ## Troubleshooting
 
 ### Fuseki
+
 ```bash
-# Check if Fuseki is running
 curl http://localhost:3032/$/ping
-
-# Restart Fuseki
-docker compose restart fuseki
+curl http://localhost:3032/$/datasets
+docker compose -f docker/fuseki/docker-compose.yml restart
 ```
 
-### Neo4j
+### Qdrant
+
 ```bash
-# Check if Neo4j is running
-curl http://localhost:7476
-
-# Check n10s plugin
-cypher-shell -u neo4j -p test!passfortesting "CALL n10s.graphconfig.show()"
+curl http://localhost:6333/healthz
 ```
 
-### Common Problems
-- **Connection Refused**: Triple store not running
-- **Authentication Failed**: Incorrect credentials
-- **Dataset Not Found**: Dataset not created in Fuseki
-- **Plugin Not Loaded**: n10s plugin not installed in Neo4j
+### Common problems
+
+- **Connection refused** — container not running or wrong port in OntoCast `.env`
+- **Authentication failed** — `FUSEKI_AUTH` must be `user/password` (slash-separated)
+- **Wrong URI** — use the Fuseki HTTP root (`http://host:port`), not `/#/dataset/...` UI links
+- **Data gone after restart** — expected with in-memory backend; run Fuseki for persistence
+
+---
+
+## Further reading
+
+- [Triple store guide](../docs/user_guide/triple_stores.md)
+- [Tenancy](../docs/user_guide/tenancy.md)
+- [Configuration](../docs/user_guide/configuration.md)

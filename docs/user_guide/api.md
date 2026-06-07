@@ -109,18 +109,27 @@ See [Tenancy](tenancy.md) for dataset naming.
 
 ### `POST /flush`
 
-Clear triple store data.
+Clear triple-store data (and vector-store partitions when Qdrant is configured).
+
+| Query params | Behavior |
+|--------------|----------|
+| *(none)* | `clean()` on the triple store's **active scope** — Fuseki facts + ontologies datasets for the configured tenant/project, or the in-memory partition currently selected |
+| `tenant`, `project` | `clean_tenancy()` on triple store **and** vector store for that partition (both must support tenancy; returns `400` otherwise) |
 
 ```bash
-# Fuseki: flush default datasets for active tenant/project
+# Flush active triple-store scope (server startup tenant/project)
 curl -X POST http://localhost:8999/flush
 
-# Fuseki: flush a specific dataset
-curl -X POST "http://localhost:8999/flush?dataset=my_dataset"
+# Flush a specific tenant/project partition (triple + vector when configured)
+curl -X POST "http://localhost:8999/flush?tenant=acme&project=reports"
 ```
 
-- **Fuseki:** without `dataset`, flushes facts and ontologies datasets for the resolved tenant/project scope.
-- **Fuseki / in-memory:** cleans the active tenant/project partition (or configured scope when no tenancy query params are set).
+**Backends:**
+
+- **Fuseki** — persistent datasets; scope follows configured or retargeted tenant/project names (`{tenant}--{project}--facts` / `--ontologies`).
+- **In-memory** (default when `FUSEKI_URI` / `FUSEKI_AUTH` are unset) — clears the active pyoxigraph partition; data is not persisted across process restarts.
+
+The `dataset` query parameter is **not** supported. Use `tenant` and `project` instead.
 
 !!! warning
     This operation is irreversible.
