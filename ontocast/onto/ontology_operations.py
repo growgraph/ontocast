@@ -5,7 +5,8 @@ from pathlib import Path
 
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.tool import FusekiTripleStoreManager, OntologyManager
+from ontocast.tool import OntologyManager
+from ontocast.tool.triple_manager.core import TripleStoreManager
 
 logger = logging.getLogger(__name__)
 
@@ -215,26 +216,25 @@ def plot_ontology_graph(
 
 
 async def merge_terminal_ontologies(
-    fuseki_manager: FusekiTripleStoreManager,
+    triple_store_manager: TripleStoreManager,
     ontology_manager: OntologyManager,
     iri: str,
 ) -> Ontology | None:
     """Merge terminal ontologies for a given IRI.
 
-    Fetches all terminal ontologies from Fuseki and merges them pair-wise
-    until only one remains.
+    Fetches all terminal ontologies from the triple store and merges them
+    pair-wise until only one remains.
 
     Args:
-        fuseki_manager: Fuseki triple store manager
+        triple_store_manager: Triple store manager
         ontology_manager: Ontology manager to add merged ontologies to
         iri: IRI of the ontology to merge
 
     Returns:
         Ontology: The final merged ontology, or None if no ontologies found
     """
-    # Fetch all ontologies from Fuseki
     logger.info(f"Fetching ontologies for IRI: {iri}")
-    all_ontologies = await fuseki_manager.afetch_ontologies()
+    all_ontologies = await triple_store_manager.afetch_ontologies()
 
     # Filter by IRI and add to ontology manager
     matching_ontologies = [o for o in all_ontologies if o.iri == iri]

@@ -120,7 +120,7 @@ curl -X POST "http://localhost:8999/flush?dataset=my_dataset"
 ```
 
 - **Fuseki:** without `dataset`, flushes facts and ontologies datasets for the resolved tenant/project scope.
-- **Neo4j:** deletes all nodes and relationships (`dataset` is ignored).
+- **Fuseki / in-memory:** cleans the active tenant/project partition (or configured scope when no tenancy query params are set).
 
 !!! warning
     This operation is irreversible.

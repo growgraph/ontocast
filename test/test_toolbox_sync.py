@@ -25,7 +25,6 @@ from ontocast.toolbox import ToolBox
 def test_materialize_ontology_calls_vector_reindex(test_ontology):
     tb = MagicMock()
     tb.triple_store_manager = None
-    tb.filesystem_manager = None
     reindexed: list = []
 
     def reindex(o):
@@ -44,7 +43,6 @@ def test_materialize_ontology_calls_vector_reindex(test_ontology):
 def test_materialize_ontology_skips_vector_reindex_when_store_not_ready(test_ontology):
     tb = MagicMock()
     tb.triple_store_manager = None
-    tb.filesystem_manager = None
     tb.vector_store = MagicMock()
     tb.vector_store.reindex_ontology = MagicMock()
     tb.is_vector_store_ready = MagicMock(return_value=False)
@@ -59,10 +57,8 @@ def test_materialize_ontology_skips_vector_reindex_when_store_not_ready(test_ont
 def test_materialize_ontology_serializes_remote_triple_store(test_ontology):
     remote = MagicMock()
     remote.aserialize = AsyncMock(return_value=True)
-    fs = MagicMock()
     tb = MagicMock()
     tb.triple_store_manager = remote
-    tb.filesystem_manager = fs
     tb.vector_store = None
 
     async def main():
@@ -93,7 +89,6 @@ def test_initialize_materializes_then_adds_with_skip_vector(monkeypatch, test_on
     class Stub:
         vector_store = None
         triple_store_manager = None
-        filesystem_manager = None
         llm = MagicMock()
         ontology_manager: MagicMock
 
@@ -160,7 +155,6 @@ def test_initialize_skips_vector_store_in_full_ttl_mode(monkeypatch) -> None:
 
     class Stub:
         triple_store_manager = None
-        filesystem_manager = None
         llm = MagicMock()
         ontology_manager: MagicMock
 
@@ -203,7 +197,6 @@ def test_initialize_vector_store_failure_is_non_fatal_when_configured(
 
     class Stub:
         triple_store_manager = None
-        filesystem_manager = None
         llm = MagicMock()
         ontology_manager: MagicMock
 
@@ -278,4 +271,3 @@ def test_ingest_ontology_ttl_rejects_identity_conflict_before_persisting() -> No
             asyncio.run(ToolBox.ingest_ontology_ttl(cast(ToolBox, stub), incoming_ttl))
 
         stub._materialize_ontology.assert_not_awaited()
-        assert list(od.glob("*.ttl")) == []

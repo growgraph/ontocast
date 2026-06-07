@@ -840,8 +840,7 @@ def test_toolbox_serialize_skips_facts_in_ontology_only_mode() -> None:
     store = RecordingStore()
     toolbox = SimpleNamespace(
         ontology_manager=RecordingOntologyManager(),
-        filesystem_manager=store,
-        triple_store_manager=None,
+        triple_store_manager=store,
     )
 
     ToolBox.serialize(cast(ToolBox, toolbox), state)
@@ -869,8 +868,7 @@ def test_toolbox_serialize_includes_facts_when_render_facts_enabled() -> None:
     store = RecordingStore()
     toolbox = SimpleNamespace(
         ontology_manager=RecordingOntologyManager(),
-        filesystem_manager=store,
-        triple_store_manager=None,
+        triple_store_manager=store,
     )
 
     ToolBox.serialize(cast(ToolBox, toolbox), state)
@@ -903,8 +901,7 @@ def test_toolbox_serialize_persists_all_ontology_artifacts() -> None:
     manager = RecordingOntologyManager()
     toolbox = SimpleNamespace(
         ontology_manager=manager,
-        filesystem_manager=store,
-        triple_store_manager=None,
+        triple_store_manager=store,
     )
 
     ToolBox.serialize(cast(ToolBox, toolbox), state)

@@ -63,15 +63,7 @@ def serialize(state: AgentState, tools: ToolBox) -> AgentState:
             len(state.ontology_provenance_artifact),
             provenance_graph_uri,
         )
-        if tools.filesystem_manager is not None:
-            tools.filesystem_manager.serialize(
-                state.ontology_provenance_artifact,
-                graph_uri=provenance_graph_uri,
-            )
-        if (
-            tools.triple_store_manager is not None
-            and tools.triple_store_manager != tools.filesystem_manager
-        ):
+        if tools.triple_store_manager is not None:
             tools.triple_store_manager.serialize(
                 state.ontology_provenance_artifact,
                 graph_uri=provenance_graph_uri,

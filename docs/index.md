@@ -25,7 +25,7 @@ OntoCast extracts semantic triples from documents using an agentic, ontology-dri
 - **GraphUpdate operations** — token-efficient structured insert/delete triple patches instead of full graph regeneration
 - **JSON-LD wire format** — optional `LLM_GRAPH_FORMAT=jsonld` for LLM payloads
 - **Ontology context modes** — catalog selection, vector retrieval, or fixed ontology
-- **Triple store integration** — Fuseki, Neo4j (n10s), or filesystem fallback
+- **Triple store integration** — Fuseki (production) or in-memory pyoxigraph (default)
 - **Tenancy** — partition datasets/collections by tenant and project
 - **REST API** — document processing, ontology catalog management, graph matching
 - **Automatic LLM caching** — disk cache with optional read-only mode, global in-flight limiting, and OpenAI Batch API pre-warming for benchmarks

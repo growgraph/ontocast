@@ -7,17 +7,13 @@ and facts, with proper authentication and dataset management.
 
 import asyncio
 import logging
-import re
-from collections import defaultdict
 from urllib.parse import quote, urlparse, urlunparse
 
 import httpx
 from pydantic import Field
 from rdflib import Graph
-from rdflib.namespace import OWL, RDF
 
 from ontocast.onto.constants import DEFAULT_DATASET, DEFAULT_ONTOLOGIES_DATASET
-from ontocast.onto.iri_policy import split_namespace_local
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.tenancy import (
@@ -26,6 +22,10 @@ from ontocast.onto.tenancy import (
     tenant_project_ontologies_name,
 )
 from ontocast.tool.triple_manager.core import TripleStoreManagerWithAuth
+from ontocast.tool.triple_manager.util import (
+    dedupe_terminal_ontologies,
+    ontology_from_named_graph,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,76 +56,6 @@ def normalize_fuseki_server_uri(raw: str | None) -> str | None:
     return urlunparse(
         (parsed.scheme, parsed.netloc, path, parsed.params, parsed.query, "")
     )
-
-
-def deterministic_turtle_serialization(graph: Graph) -> str:
-    """Create a deterministic Turtle serialization of an RDF graph.
-
-    This function ensures that the same graph content will always produce
-    the same Turtle output, regardless of the order triples were added or
-    how they're stored in Fuseki. This is crucial for caching to work
-    correctly.
-
-    Args:
-        graph: The RDF graph to serialize.
-
-    Returns:
-        str: Deterministically serialized Turtle string.
-    """
-    # Capture and sort namespaces
-    prefix_lines = [
-        f"@prefix {p}: <{ns}> ."
-        for p, ns in sorted(graph.namespace_manager.namespaces())
-    ]
-
-    # Sort triples by their string representation
-    triples_sorted = sorted(graph, key=lambda t: (str(t[0]), str(t[1]), str(t[2])))
-
-    # Serialize triples using n3 format to get proper Turtle syntax
-    triple_lines = [
-        f"{s.n3(graph.namespace_manager)} {p.n3(graph.namespace_manager)} {o.n3(graph.namespace_manager)} ."
-        for s, p, o in triples_sorted
-    ]
-
-    # Return sorted prefixes followed by sorted triples
-    return "\n".join(prefix_lines + [""] + triple_lines)
-
-
-def _compare_versions(ver1: str, ver2: str) -> int:
-    """Compare two semantic version strings.
-
-    Args:
-        ver1: First version string (e.g., "1.2.3")
-        ver2: Second version string (e.g., "1.3.0")
-
-    Returns:
-        int: Negative if ver1 < ver2, 0 if equal, positive if ver1 > ver2
-    """
-
-    def _parse_version(v: str) -> tuple:
-        # Simple version parser - splits by dots and converts to int
-        parts = v.split(".")
-        result = []
-        for part in parts:
-            # Remove any non-numeric suffix
-            numeric_part = re.sub(r"[^0-9].*$", "", part)
-            result.append(int(numeric_part) if numeric_part else 0)
-        # Pad to 3 components
-        while len(result) < 3:
-            result.append(0)
-        return tuple(result)
-
-    try:
-        v1_parts = _parse_version(ver1)
-        v2_parts = _parse_version(ver2)
-        if v1_parts < v2_parts:
-            return -1
-        elif v1_parts > v2_parts:
-            return 1
-        return 0
-    except Exception:
-        # If parsing fails, use string comparison
-        return 1 if ver1 > ver2 else (-1 if ver1 < ver2 else 0)
 
 
 class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
@@ -463,7 +393,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         """
         return f"{self.uri}/{self.ontologies_dataset}"
 
-    async def adrop_named_graph(
+    async def drop_named_graph(
         self, graph_uri: str, *, use_ontologies_dataset: bool = True
     ) -> None:
         """Drop a single named graph in the ontologies or main dataset."""
@@ -484,7 +414,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                     response.text,
                 )
 
-    async def adrop_all_ontology_graphs_for_iri(self, ontology_iri: str) -> None:
+    async def drop_all_ontology_graphs_for_iri(self, ontology_iri: str) -> None:
         """Remove named graphs for ``ontology_iri`` (base and ``iri#...`` versioned)."""
         prefix = f"{ontology_iri}#"
         async with httpx.AsyncClient(auth=self._prepare_auth(), timeout=30.0) as client:
@@ -612,50 +542,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
                 if export_resp.status_code == 200:
                     graph.parse(data=export_resp.text, format="turtle")
-
-                    # Re-serialize deterministically to ensure consistent cache keys
-                    # This sorts both namespaces and triples alphabetically
-                    deterministic_turtle = deterministic_turtle_serialization(graph)
-
-                    # Re-parse from deterministic serialization to ensure we have RDFGraph
-                    deterministic_graph = RDFGraph()
-                    deterministic_graph.parse(
-                        data=deterministic_turtle, format="turtle"
-                    )
-
-                    # Copy namespace bindings from original graph
-                    for prefix, namespace in graph.namespaces():
-                        if prefix:
-                            deterministic_graph.bind(prefix, namespace)
-
-                    graph = deterministic_graph
-
-                    # Find the ontology IRI in the graph
-                    for onto_subj, _, obj in graph.triples(
-                        (None, RDF.type, OWL.Ontology)
-                    ):
-                        onto_iri = str(onto_subj)
-                        # Extract base IRI if graph_uri is versioned
-                        # Handle both hash fragments (#19193944...) and semantic versions (#v1.2.3)
-                        if "#" in graph_uri:
-                            namespace, _ = split_namespace_local(graph_uri)
-                            base_iri = graph_uri
-                            if namespace is not None and namespace.endswith("#"):
-                                base_iri = namespace[:-1]
-                            # Use base IRI from graph_uri (named graph identifier)
-                            # The graph content should have simplified IRI, but use graph_uri as source of truth
-                            onto_iri = base_iri
-
-                        ontology = Ontology(
-                            graph=graph,
-                            iri=onto_iri,
-                        )
-                        # Load properties from graph (will strip any hash fragments if present)
-                        ontology.sync_properties_from_graph()
-                        logger.debug(
-                            f"Successfully loaded ontology: {onto_iri} version: {ontology.version}"
-                        )
-                        return ontology
+                    return ontology_from_named_graph(graph_uri, graph)
                 else:
                     logger.warning(
                         f"Failed to fetch graph {graph_uri}: {export_resp.status_code}"
@@ -670,126 +557,34 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         )
 
         # Filter out None and exceptions
-        all_ontologies = []
+        all_ontologies: list[Ontology] = []
         for result in all_ontologies_results:
             if isinstance(result, Exception):
                 logger.warning(f"Exception fetching ontology: {result}")
-            elif result is not None:
+            elif isinstance(result, Ontology):
                 all_ontologies.append(result)
 
-        # Step 3: Deduplicate and keep latest terminal versions
-        ontology_dict = defaultdict(list)
-
-        for onto in all_ontologies:
-            if not isinstance(onto, Ontology):
-                continue
-            ontology_dict[onto.iri].append(onto)
-
-        # Build set of all parent hashes to identify terminal ontologies
-        # A terminal ontology is one that is not a parent for any other ontology
-        all_parent_hashes = set()
-
-        for onto in all_ontologies:
-            if not isinstance(onto, Ontology):
-                continue
-            if onto.hash:
-                # Collect all parent hashes
-                for parent_hash in onto.parent_hashes:
-                    all_parent_hashes.add(parent_hash)
-
-        # For each unique IRI, select the latest terminal ontology
-        ontologies = []
-
-        for iri, versions in ontology_dict.items():
-            if len(versions) == 1:
-                ontologies.append(versions[0])
-            else:
-                # Multiple versions - find terminal ontologies (not parents)
-                terminal_versions = [
-                    v for v in versions if v.hash and v.hash not in all_parent_hashes
-                ]
-
-                if not terminal_versions:
-                    # No terminal ontologies found - all are parents
-                    # Fall back to non-terminal versions
-                    logger.warning(
-                        f"No terminal ontologies found for {iri}, "
-                        f"using all versions for selection"
-                    )
-                    terminal_versions = versions
-
-                # Select latest by created_at among terminal ontologies
-                try:
-                    versions_with_created = [
-                        v for v in terminal_versions if v.created_at is not None
-                    ]
-
-                    if versions_with_created:
-                        # Sort by created_at (most recent first)
-                        versions_with_created.sort(
-                            key=lambda x: x.created_at, reverse=True
-                        )
-                        selected = versions_with_created[0]
-                        hash_str = (
-                            f"{selected.hash[:16]}..." if selected.hash else "no hash"
-                        )
-                        logger.debug(
-                            f"Selected terminal ontology for {iri} "
-                            f"by created_at: {selected.created_at} "
-                            f"(hash: {hash_str})"
-                        )
-                        ontologies.append(selected)
-                    else:
-                        # No created_at available - fall back to version-based sorting
-                        versions_with_ver = [v for v in terminal_versions if v.version]
-                        if versions_with_ver:
-                            versions_with_ver.sort(
-                                key=lambda x: str(x.version), reverse=False
-                            )
-                            selected = versions_with_ver[-1]
-                            logger.debug(
-                                f"Selected terminal ontology for {iri} "
-                                f"by version: {selected.version} "
-                                f"(no created_at available)"
-                            )
-                            ontologies.append(selected)
-                        else:
-                            # No version info either - use first terminal ontology
-                            selected = terminal_versions[0]
-                            logger.debug(
-                                f"Selected first terminal ontology for {iri} "
-                                f"(no created_at or version available)"
-                            )
-                            ontologies.append(selected)
-                except Exception as e:
-                    logger.warning(
-                        f"Could not select terminal ontology for {iri}: {e}, "
-                        f"using first version"
-                    )
-                    ontologies.append(terminal_versions[0])
-
+        ontologies = dedupe_terminal_ontologies(all_ontologies)
         logger.info(
-            f"Successfully loaded {len(ontologies)} unique ontologies from Fuseki "
+            "Successfully loaded %d unique ontologies from Fuseki", len(ontologies)
         )
         return ontologies
 
-    def serialize_graph(self, graph: Graph, **kwargs) -> bool | None:
+    def serialize_graph(self, graph: Graph, **kwargs) -> bool:
         """Synchronous wrapper for serialize_graph.
 
         For async usage, use aserialize_graph() instead.
         """
         return asyncio.run(self._serialize_graph_with_cleanup(graph, **kwargs))
 
-    async def aserialize_graph(self, graph: Graph, **kwargs) -> bool | None:
+    async def aserialize_graph(self, graph: Graph, **kwargs) -> bool:
         """Async version of serialize_graph.
 
         This is the preferred method when running in an async context.
         """
         return await self._serialize_graph_async(graph, **kwargs)
 
-    async def _serialize_graph_with_cleanup(
-        self, graph: Graph, **kwargs
-    ) -> bool | None:
+    async def _serialize_graph_with_cleanup(self, graph: Graph, **kwargs) -> bool:
         """Wrapper that ensures proper cleanup when using asyncio.run().
 
         This method creates a temporary client and ensures it's properly closed
@@ -807,7 +602,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                 # Restore original client
                 self._client = original_client
 
-    async def _serialize_graph_async(self, graph: Graph, **kwargs) -> bool | None:
+    async def _serialize_graph_async(self, graph: Graph, **kwargs) -> bool:
         """Store an RDF graph as a named graph in a specific Fuseki dataset.
 
         This is a private helper method that handles the common logic for storing
@@ -855,23 +650,21 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             logger.error(f"Response: {response.text}")
             return False
 
-    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> bool | None:
+    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> bool:
         """Synchronous wrapper for serialize.
 
         For async usage, use aserialize() instead.
         """
         return asyncio.run(self._serialize_with_cleanup(o, **kwargs))
 
-    async def aserialize(self, o: Ontology | RDFGraph, **kwargs) -> bool | None:
+    async def aserialize(self, o: Ontology | RDFGraph, **kwargs) -> bool:
         """Async version of serialize.
 
         This is the preferred method when running in an async context.
         """
         return await self._serialize_async(o, **kwargs)
 
-    async def _serialize_with_cleanup(
-        self, o: Ontology | RDFGraph, **kwargs
-    ) -> bool | None:
+    async def _serialize_with_cleanup(self, o: Ontology | RDFGraph, **kwargs) -> bool:
         """Wrapper that ensures proper cleanup when using asyncio.run().
 
         This method creates a temporary client and ensures it's properly closed
@@ -889,7 +682,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                 # Restore original client
                 self._client = original_client
 
-    async def _serialize_async(self, o: Ontology | RDFGraph, **kwargs) -> bool | None:
+    async def _serialize_async(self, o: Ontology | RDFGraph, **kwargs) -> bool:
         """Store an RDF graph as a named graph in Fuseki.
 
         This method stores the given RDF graph as a named graph in Fuseki.

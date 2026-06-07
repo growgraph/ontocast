@@ -3,15 +3,20 @@
 from starlette.requests import Request
 
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
-from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
 from ontocast.toolbox import ToolBox
 
 
 def stores_use_tenancy_partitions(tools: ToolBox) -> bool:
-    """True when Fuseki and/or Qdrant should be retargeted for tenant/project."""
+    """True when triple store and/or Qdrant should be retargeted for tenant/project."""
     if tools.vector_store is not None:
         return True
-    return isinstance(tools.triple_store_manager, FusekiTripleStoreManager)
+    triple = tools.triple_store_manager
+    if triple is None:
+        return False
+    supports = getattr(triple, "supports_tenancy_partition", None)
+    if supports is None:
+        return False
+    return supports()
 
 
 def resolve_tenant_project(tenant: str | None, project: str | None) -> tuple[str, str]:

@@ -26,7 +26,7 @@ OntoCast is a framework for extracting semantic triples (creating a Knowledge Gr
 - **Semantic Chunking**: Splits text based on semantic similarity
 - **RDF Output**: Produces standardized RDF/Turtle (optional JSON-LD LLM wire format)
 - **RDF 1.2 Provenance**: Quoted-triple / reification support; optional `strip_provenance` on API output
-- **Triple Store Integration**: Supports Neo4j (n10s), Apache Fuseki, and filesystem fallback
+- **Triple Store Integration**: Apache Fuseki (production) or in-memory pyoxigraph (default)
 - **Ontology Context Modes**: Catalog selection, Qdrant vector retrieval, or fixed catalog ontology
 - **Tenancy**: Partition Fuseki datasets and Qdrant collections by tenant and project
 - **REST API**: Document processing, ontology catalog management, and graph-matching endpoints
@@ -100,7 +100,7 @@ ONTOCAST_WORKING_DIRECTORY=/path/to/working
 ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontologies
 ONTOCAST_CACHE_DIR=/path/to/cache
 
-# Optional: Triple Store Configuration (Fuseki preferred over Neo4j)
+# Optional: Triple Store Configuration (Fuseki for production persistence)
 FUSEKI_URI=http://localhost:3030
 FUSEKI_AUTH=admin/admin
 # Datasets default to ontocast--test--facts / ontocast--test--ontologies when unset
@@ -161,7 +161,7 @@ curl -X POST http://localhost:8999/flush
 curl -X POST "http://localhost:8999/flush?dataset=my_dataset"
 ```
 
-For Fuseki, an optional `dataset` query parameter targets a specific dataset; Neo4j ignores it and clears the whole database.
+For Fuseki, optional `tenant`/`project` query parameters target a specific partition. Without them, the active server scope is flushed.
 
 Full reference: [API Endpoints](docs/user_guide/api.md).
 
@@ -212,7 +212,7 @@ OntoCast uses a hierarchical configuration system built on Pydantic BaseSettings
 | `LLM_PROVIDER` | LLM provider (openai, ollama) | openai | No |
 | `LLM_MODEL_NAME` | Model name | gpt-4o-mini | No |
 | `LLM_TEMPERATURE` | Temperature setting | 0.0 | No |
-| `ONTOCAST_WORKING_DIRECTORY` | Working directory path | - | Yes (filesystem mode) |
+| `ONTOCAST_WORKING_DIRECTORY` | Working directory path | - | No |
 | `ONTOCAST_ONTOLOGY_DIRECTORY` | Ontology seed files | - | No |
 | `PORT` | Server port | 8999 | No |
 | `MAX_VISITS` | Maximum render/critic visits per unit loop | 1 | No |
@@ -227,16 +227,12 @@ See [Configuration Guide](docs/user_guide/configuration.md) for chunking, Qdrant
 ### Triple Store Configuration
 
 ```bash
-# Fuseki (Preferred)
+# Fuseki (production persistence)
 FUSEKI_URI=http://localhost:3030
 FUSEKI_AUTH=admin/admin
-
-# Neo4j (Alternative)
-NEO4J_URI=bolt://localhost:7687
-NEO4J_AUTH=neo4j/password
 ```
 
-When multiple triple stores are configured, **Fuseki is preferred over Neo4j**. See [Triple Store Setup](docs/user_guide/triple_stores.md).
+When Fuseki is not configured, OntoCast uses an in-memory pyoxigraph backend automatically. See [Triple Store Setup](docs/user_guide/triple_stores.md).
 
 ### CLI Parameters
 
@@ -251,28 +247,17 @@ ontocast --env-path .env --tenant acme --project reports
 
 ## Triple Store Setup
 
-OntoCast supports multiple triple store backends with automatic fallback:
+OntoCast uses a unified triple-store interface with two backends:
 
-1. **Apache Fuseki** (Recommended) — Native RDF with SPARQL support
-2. **Neo4j with n10s** — Graph database with RDF capabilities  
-3. **Filesystem** (Fallback) — Local file-based storage
+1. **Apache Fuseki** — persistent RDF with SPARQL (production)
+2. **In-Memory (pyoxigraph)** — zero-config default when Fuseki is not configured
 
-### Quick Setup with Docker
+### Quick Setup with Docker (Fuseki)
 
-**Fuseki:**
 ```bash
 cd docker/fuseki
 cp .env.example .env
-# Edit .env with your values
 docker compose --env-file .env fuseki up -d
-```
-
-**Neo4j:**
-```bash
-cd docker/neo4j
-cp .env.example .env
-# Edit .env with your values
-docker compose --env-file .env neo4j up -d
 ```
 
 See [Triple Store Setup](docs/user_guide/triple_stores.md) for detailed instructions.
@@ -287,7 +272,7 @@ See [Triple Store Setup](docs/user_guide/triple_stores.md) for detailed instruct
 - [API Endpoints](docs/user_guide/api.md) — REST reference
 - [Tenancy](docs/user_guide/tenancy.md) — Multi-tenant stores
 - [Ontology Context](docs/user_guide/ontology_context.md) — Catalog vs vector retrieval
-- [Triple Store Setup](docs/user_guide/triple_stores.md) — Fuseki / Neo4j setup
+- [Triple Store Setup](docs/user_guide/triple_stores.md) — Fuseki and in-memory backends
 - [LLM Caching](docs/user_guide/llm_caching.md) — Automatic response caching
 - [User Guide](docs/user_guide/concepts.md) — Core concepts
 - [API Reference](docs/reference/onto/state.md) — Python API (MkDocs)

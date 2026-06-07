@@ -17,9 +17,8 @@ from ontocast.tool import (
     ChunkerTool,
     ConverterTool,
     EmbeddingBasedAggregator,
-    FilesystemTripleStoreManager,
     FusekiTripleStoreManager,
-    Neo4jTripleStoreManager,
+    InMemoryTripleStoreManager,
 )
 from ontocast.tool.agg.entity_aligner import EntityAligner
 from ontocast.tool.cache import Cacher
@@ -84,10 +83,6 @@ class ToolBox:
         # Get tool configuration
         tool_config = config.get_tool_config()
 
-        # Extract configuration values
-        working_directory = tool_config.path_config.working_directory
-        ontology_directory = tool_config.path_config.ontology_directory
-
         # Create shared cache instance with config
         self.shared_cache = Cacher(config=config)
 
@@ -114,57 +109,17 @@ class ToolBox:
             web_search_config=tool_config.web_search,
         )
 
-        # Initialize managers based on backend configuration
-        self.filesystem_manager: FilesystemTripleStoreManager | None = None
-
-        # Automatically determine which backends to use based on available configuration
+        # Create triple store manager: Fuseki when configured, otherwise in-memory.
         use_fuseki = tool_config.fuseki.uri and tool_config.fuseki.auth
-        use_neo4j = (
-            tool_config.neo4j.uri is not None and tool_config.neo4j.auth is not None
-        )
-        use_filesystem_triple_store = working_directory is not None
-        use_filesystem_manager = working_directory is not None
-
-        # Validate that we have at least one backend configured
-        if not any([use_fuseki, use_neo4j, use_filesystem_triple_store]):
-            raise ValueError(
-                "No backend configured. Please provide Fuseki/Neo4j credentials or working directory and ontology directory."
-            )
-
-        # Create main triple store manager (only one can be active)
-        # Note: Dataset/database is NOT cleaned on initialization
-        # Use the clean() method or /flush endpoint to explicitly clean the store
-        manager: TripleStoreManager | None = None
         if use_fuseki and tool_config.fuseki.uri and tool_config.fuseki.auth:
-            manager = FusekiTripleStoreManager(
+            self.triple_store_manager: TripleStoreManager = FusekiTripleStoreManager(
                 uri=tool_config.fuseki.uri,
                 auth=tool_config.fuseki.auth,
                 dataset=tool_config.fuseki.dataset,
                 ontologies_dataset=tool_config.fuseki.ontologies_dataset,
             )
-        elif use_neo4j and tool_config.neo4j.uri and tool_config.neo4j.auth:
-            manager = Neo4jTripleStoreManager(
-                uri=tool_config.neo4j.uri, auth=tool_config.neo4j.auth
-            )
-        elif use_filesystem_triple_store:
-            if working_directory is None:
-                raise ValueError(
-                    "Working directory directory must be provided for filesystem triple store"
-                )
-            manager = FilesystemTripleStoreManager(
-                working_directory=working_directory,
-                ontology_path=ontology_directory,
-            )
-        if manager is None:
-            raise ValueError("No triple store backend configured")
-        self.triple_store_manager: TripleStoreManager = manager
-
-        # Create filesystem manager (can be combined with other backends)
-        if use_filesystem_manager:
-            self.filesystem_manager = FilesystemTripleStoreManager(
-                working_directory=working_directory,
-                ontology_path=ontology_directory,
-            )
+        else:
+            self.triple_store_manager = InMemoryTripleStoreManager()
 
         self.ontology_manager: OntologyManager = OntologyManager()
         self.converter: ConverterTool = ConverterTool(cache=self.shared_cache)
@@ -277,20 +232,13 @@ class ToolBox:
         if not t or not p:
             raise ValueError("tenant and project must be non-empty")
 
-        if self.triple_store_manager is not None:
-            from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
-
-            if isinstance(self.triple_store_manager, FusekiTripleStoreManager):
-                await self.triple_store_manager.update_tenancy(t, p)
+        triple = self.triple_store_manager
+        if triple is not None and triple.supports_tenancy_partition():
+            await triple.update_tenancy(t, p)
+            if isinstance(triple, FusekiTripleStoreManager):
                 fuseki_cfg = self.config.tool_config.fuseki
-                fuseki_cfg.dataset = self.triple_store_manager.dataset
-                fuseki_cfg.ontologies_dataset = (
-                    self.triple_store_manager.ontologies_dataset
-                )
-            else:
-                logger.warning(
-                    "Cannot update tenancy: triple store manager is not Fuseki"
-                )
+                fuseki_cfg.dataset = triple.dataset
+                fuseki_cfg.ontologies_dataset = triple.ontologies_dataset
 
         if self.vector_store is not None:
             self.vector_store.apply_tenancy(t, p)
@@ -342,19 +290,7 @@ class ToolBox:
             if ontology and ontology.hash:
                 self.ontology_manager.add_ontology(ontology)
 
-        if self.filesystem_manager is not None:
-            for ontology in ontologies_to_serialize:
-                self.filesystem_manager.serialize(ontology)
-            if state.render_facts:
-                self.filesystem_manager.serialize(
-                    state.aggregated_facts,
-                    graph_uri=state.graph_uri,
-                )
-        if (
-            self.triple_store_manager is not None
-            and self.triple_store_manager != self.filesystem_manager
-        ):
-            # Store ontology in main dataset for reasoning
+        if self.triple_store_manager is not None:
             for ontology in ontologies_to_serialize:
                 self.triple_store_manager.serialize(ontology)
             if state.render_facts:
@@ -387,7 +323,7 @@ class ToolBox:
         then fetches ontologies from the triple store and updates their properties
         using the LLM tool.
         """
-        if isinstance(self.triple_store_manager, FusekiTripleStoreManager):
+        if self.triple_store_manager is not None:
             await self.triple_store_manager.async_init()
 
         if self.should_initialize_vector_store(ontology_context_mode):
@@ -425,66 +361,61 @@ class ToolBox:
             self.ontology_manager.add_ontology(ontology, skip_vector_index=True)
         await update_ontology_manager(om=self.ontology_manager, llm_tool=self.llm)
 
+    def _load_seed_ontologies_from_directory(self) -> list[Ontology]:
+        """Load seed ontologies from ``ontology_directory`` (*.ttl)."""
+        ontology_dir = self.config.tool_config.path_config.ontology_directory
+        if ontology_dir is None:
+            return []
+        directory = pathlib.Path(ontology_dir).expanduser()
+        if not directory.is_dir():
+            return []
+        ontologies: list[Ontology] = []
+        for path in sorted(directory.glob("*.ttl")):
+            try:
+                ontologies.append(Ontology.from_file(path))
+                logger.debug("Loaded seed ontology from %s", path)
+            except Exception as exc:
+                logger.error("Failed to load seed ontology %s: %s", path, exc)
+        return ontologies
+
     async def _synchronize_ontologies(self) -> list[Ontology]:
-        """Synchronize ontologies between filesystem and triple store.
-
-        This method checks both filesystem_manager and triple_store_manager for
-        ontologies and populates triple_store_manager with any ontologies from
-        filesystem_manager that are not present in triple_store_manager.
-
-        Returns:
-            list: The final set of ontologies after synchronization
-        """
+        """Synchronize seed ontologies from disk into the triple store."""
         import asyncio
 
-        filesystem_ontologies = []
-        if self.filesystem_manager is not None:
-            # Run sync method in thread pool to avoid blocking
-            filesystem_ontologies += await asyncio.to_thread(
-                self.filesystem_manager.fetch_ontologies
+        seed_ontologies = await asyncio.to_thread(
+            self._load_seed_ontologies_from_directory
+        )
+        if seed_ontologies:
+            logger.info(
+                "Found %d seed ontologies in ontology_directory", len(seed_ontologies)
             )
-            logger.info(f"Found {len(filesystem_ontologies)} ontologies in filesystem")
 
-        triple_store_ontologies = []
-        if (
-            self.triple_store_manager is not None
-            and self.triple_store_manager != self.filesystem_manager
-        ):
-            triple_store_ontologies += (
+        triple_store_ontologies: list[Ontology] = []
+        if self.triple_store_manager is not None:
+            triple_store_ontologies = (
                 await self.triple_store_manager.afetch_ontologies()
             )
             logger.info(
-                f"Found {len(triple_store_ontologies)} ontologies in triple store"
+                "Found %d ontologies in triple store", len(triple_store_ontologies)
             )
 
-        # Get IRIs from both sources
         triple_store_iris = {o.iri for o in triple_store_ontologies}
-
-        # Find ontologies in filesystem that need to be synced to triple store
-        for fs_onto in filesystem_ontologies:
-            if fs_onto.iri not in triple_store_iris:
+        for seed_onto in seed_ontologies:
+            if seed_onto.iri not in triple_store_iris:
                 logger.info(
-                    f"Syncing ontology from filesystem to triple store: {fs_onto.iri} "
-                    f"(version: {fs_onto.version})"
+                    "Syncing seed ontology to triple store: %s (version: %s)",
+                    seed_onto.iri,
+                    seed_onto.version,
                 )
-                # Upload happens once in ``_materialize_ontology`` (called from ``initialize``);
-                # avoid duplicate ``aserialize`` here.
-                triple_store_ontologies.append(fs_onto)
+                triple_store_ontologies.append(seed_onto)
 
         return triple_store_ontologies
 
     async def _materialize_ontology(self, ontology: Ontology) -> None:
-        """Write ontology to the remote triple store and rebuild vector atoms.
-
-        Skips serializing to the triple store when it is the same logical sink as
-        ``filesystem_manager`` (two FilesystemTripleStoreManager instances).
-        """
+        """Write ontology to the triple store and rebuild vector atoms."""
         import asyncio
 
-        if (
-            self.triple_store_manager is not None
-            and self.triple_store_manager != self.filesystem_manager
-        ):
+        if self.triple_store_manager is not None:
             await self.triple_store_manager.aserialize(ontology)
 
         if self.is_vector_store_ready() and self.vector_store is not None:
@@ -515,56 +446,26 @@ class ToolBox:
             raise ValueError("Ontology hash could not be computed")
         self.ontology_manager.validate_identity_uniqueness(o)
 
-        if filename:
-            safe_name = pathlib.Path(filename).name
-        else:
-            oid = o.ontology_id or "ontology"
-            ver = o.version or "0.0.0"
-            safe_name = f"ontology_{oid}_{ver}.ttl"
-        dest = ontology_dir / safe_name
-
-        def _write_synced_ttl() -> None:
-            o.graph.serialize(format="turtle", destination=dest)
-
-        await asyncio.to_thread(_write_synced_ttl)
         await self._materialize_ontology(o)
         self.ontology_manager.add_ontology(o, skip_vector_index=True)
         return o
 
     async def delete_ontology_by_iri(self, ontology_iri: str) -> None:
-        """Remove ontology from manager, vector store, disk, and Fuseki graphs."""
+        """Remove ontology from manager, vector store, seed files, and triple store."""
         import asyncio
 
-        if isinstance(self.triple_store_manager, Neo4jTripleStoreManager):
-            raise ValueError(
-                "Deleting ontologies is not supported for the Neo4j triple store"
-            )
         self.ontology_manager.remove_ontology_by_iri(ontology_iri)
         if self.vector_store is not None:
             await asyncio.to_thread(self.vector_store.delete_ontology, ontology_iri)
 
-        scan_jobs: list[tuple[pathlib.Path, str]] = []
         cfg_od = self.config.tool_config.path_config.ontology_directory
         if cfg_od is not None:
-            scan_jobs.append((pathlib.Path(cfg_od).expanduser(), "*.ttl"))
-        for mgr in (self.filesystem_manager, self.triple_store_manager):
-            if isinstance(mgr, FilesystemTripleStoreManager):
-                if mgr.ontology_path is not None:
-                    scan_jobs.append((pathlib.Path(mgr.ontology_path), "*.ttl"))
-                if mgr.working_directory is not None:
-                    scan_jobs.append(
-                        (pathlib.Path(mgr.working_directory), "ontology_*.ttl")
-                    )
-        seen: set[tuple[pathlib.Path, str]] = set()
-        for d, pat in scan_jobs:
-            key = (d.resolve(), pat)
-            if key in seen:
-                continue
-            seen.add(key)
-            self._unlink_ttl_files_if_ontology_iri(ontology_iri, d, pat)
+            self._unlink_ttl_files_if_ontology_iri(
+                ontology_iri, pathlib.Path(cfg_od).expanduser(), "*.ttl"
+            )
 
-        if isinstance(self.triple_store_manager, FusekiTripleStoreManager):
-            await self.triple_store_manager.adrop_all_ontology_graphs_for_iri(
+        if self.triple_store_manager is not None:
+            await self.triple_store_manager.drop_all_ontology_graphs_for_iri(
                 ontology_iri
             )
 

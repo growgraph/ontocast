@@ -28,13 +28,13 @@ from ontocast.onto.constants import DEFAULT_DOMAIN
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.tool import (
-    FilesystemTripleStoreManager,
+    InMemoryTripleStoreManager,
     LLMTool,
     OntologyManager,
 )
 from ontocast.tool.triple_manager.mock import (
     MockFusekiTripleStoreManager,
-    MockNeo4jTripleStoreManager,
+    MockInMemoryTripleStoreManager,
 )
 from ontocast.toolbox import ToolBox
 from test.qdrant_util import QdrantSessionTestContext, qdrant_reachable
@@ -182,10 +182,8 @@ def llm_tool(provider, model_name, temperature, llm_base_url):
 
 
 @pytest.fixture
-def tsm_tool(ontology_path, working_directory):
-    return FilesystemTripleStoreManager(
-        working_directory=working_directory, ontology_path=ontology_path
-    )
+def tsm_tool():
+    return InMemoryTripleStoreManager()
 
 
 @pytest.fixture
@@ -312,19 +310,9 @@ def agent_state_onto_fresh():
 
 
 @pytest.fixture(scope="session")
-def neo4j_uri():
-    return os.environ.get("NEO4J_URI", "bolt://localhost:7687")
-
-
-@pytest.fixture(scope="session")
-def neo4j_auth():
-    return os.environ.get("NEO4J_AUTH", "neo4j/test")
-
-
-@pytest.fixture(scope="session")
-def neo4j_triple_store_manager(neo4j_uri, neo4j_auth):
-    """Mock Neo4j triple store manager for testing."""
-    return MockNeo4jTripleStoreManager(uri=neo4j_uri, auth=neo4j_auth, clean=True)
+def in_memory_triple_store_manager():
+    """In-memory triple store manager for testing."""
+    return MockInMemoryTripleStoreManager(clean=True)
 
 
 @pytest.fixture(scope="session")

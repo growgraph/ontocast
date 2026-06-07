@@ -20,7 +20,7 @@ from ontocast.onto.ontology_operations import (
     plot_ontology_graph,
 )
 from ontocast.tool.ontology_manager import OntologyManager
-from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
+from ontocast.tool.triple_manager import FusekiTripleStoreManager
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ def main(env_file: Path, iri: str, output: Path):
     if not (tool_config.fuseki.uri and tool_config.fuseki.auth):
         raise ValueError("Fuseki configuration required (FUSEKI_URI and FUSEKI_AUTH)")
 
-    fuseki_manager = FusekiTripleStoreManager(
+    triple_store_manager = FusekiTripleStoreManager(
         uri=tool_config.fuseki.uri,
         auth=tool_config.fuseki.auth,
         dataset=tool_config.fuseki.dataset,
@@ -71,7 +71,9 @@ def main(env_file: Path, iri: str, output: Path):
 
     # Merge ontologies
     async def run_merge():
-        result = await merge_terminal_ontologies(fuseki_manager, ontology_manager, iri)
+        result = await merge_terminal_ontologies(
+            triple_store_manager, ontology_manager, iri
+        )
         if result:
             logger.info("Merge completed successfully")
             # Plot the graph

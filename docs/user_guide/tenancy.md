@@ -55,9 +55,9 @@ curl -X POST "http://localhost:8999/ontologies?tenant=acme&project=reports" \
 curl -X POST "http://localhost:8999/flush?tenant=acme&project=reports"
 ```
 
-## Filesystem Mode
+## In-Memory Mode
 
-When using filesystem storage (no Fuseki/Neo4j), tenancy affects directory layout under `ONTOCAST_WORKING_DIRECTORY` for isolated working sets.
+When Fuseki is not configured, OntoCast uses an in-memory pyoxigraph backend with the same tenant/project partition model. Data is not persisted across process restarts.
 
 ## Related
 

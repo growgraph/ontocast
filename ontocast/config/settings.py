@@ -356,20 +356,6 @@ class ServerConfig(BaseSettings):
     )
 
 
-class Neo4jConfig(BaseSettings):
-    """Neo4j triple store configuration."""
-
-    uri: str | None = Field(default=None, description="Neo4j URI")
-    auth: str | None = Field(default=None, description="Neo4j authentication")
-    port: int = Field(default=7476, description="Neo4j HTTP port")
-    bolt_port: int = Field(default=7689, description="Neo4j Bolt port")
-
-    model_config = SettingsConfigDict(
-        env_prefix="NEO4J_",
-        case_sensitive=False,
-    )
-
-
 class FusekiConfig(BaseSettings):
     """Fuseki triple store configuration."""
 
@@ -429,7 +415,7 @@ class PathConfig(BaseSettings):
 
     working_directory: Path | None = Field(
         default=None,
-        description="Working directory for OntoCast (required if filesystem_manager is enabled)",
+        description="Working directory for OntoCast caches and artifacts",
     )
     ontology_directory: Path | None = Field(
         default=None, description="Directory containing ontology files"
@@ -903,7 +889,6 @@ class ToolConfig(BaseSettings):
     llm_config: LLMConfig = Field(default_factory=LLMConfig)
     chunk_config: ChunkConfig = Field(default_factory=ChunkConfig)
     path_config: PathConfig = Field(default_factory=PathConfig)
-    neo4j: Neo4jConfig = Field(default_factory=Neo4jConfig)
     fuseki: FusekiConfig = Field(default_factory=FusekiConfig)
     domain: DomainConfig = Field(default_factory=DomainConfig)
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)

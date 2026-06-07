@@ -2788,18 +2788,6 @@ wheels = [
 ]
 
 [[package]]
-dependencies = [
-  {name = "pytz"}
-]
-name = "neo4j"
-sdist = {hash = "sha256:e1e246b65b572bd8ea97f9e0e721b7d40a5ce53e53d0007c29aef63e4f9124d9", size = 241459, upload-time = "2026-05-04T07:35:41.428Z", url = "https://files.pythonhosted.org/packages/ce/f4/aaa4ac19adae4b01bc742b63afd2672a77e7351566f02721e713e4b863ee/neo4j-6.2.0.tar.gz"}
-source = {registry = "https://pypi.org/simple"}
-version = "6.2.0"
-wheels = [
-  {hash = "sha256:b87abdd13a5cc2e3bd51026926c2f20ac38fa3febe98c340520dce19e97388d0", size = 327824, upload-time = "2026-05-04T07:35:39.604Z", url = "https://files.pythonhosted.org/packages/e6/cf/1c3795866cefaac6e648d4e98c373cafd97810f6e317c307371007ab4abb/neo4j-6.2.0-py3-none-any.whl"}
-]
-
-[[package]]
 name = "nest-asyncio"
 sdist = {hash = "sha256:6f172d5449aca15afd6c646851f4e31e02c598d553a667e38cafa997cfec55fe", size = 7418, upload-time = "2024-01-21T14:25:19.227Z", url = "https://files.pythonhosted.org/packages/83/f8/51569ac65d696c8ecbee95938f89d4abf00f47d58d48f6fbabfe8f0baefe/nest_asyncio-1.6.0.tar.gz"}
 source = {registry = "https://pypi.org/simple"}
@@ -3153,12 +3141,12 @@ dependencies = [
   {name = "langchain-ollama"},
   {name = "langchain-openai"},
   {name = "langgraph"},
-  {name = "neo4j"},
   {name = "networkx"},
   {name = "owlready2"},
   {name = "oxrdflib"},
   {name = "pydantic"},
   {name = "pyld"},
+  {name = "pyoxigraph"},
   {name = "python-multipart"},
   {name = "pyyaml"},
   {name = "qdrant-client"},
@@ -3216,12 +3204,12 @@ requires-dist = [
   {name = "langchain-ollama", specifier = ">=0.3.3"},
   {name = "langchain-openai", specifier = ">=0.3.17"},
   {name = "langgraph", specifier = ">=0.2.35"},
-  {name = "neo4j", specifier = ">=5.28.1"},
   {name = "networkx", specifier = ">=3.0"},
   {name = "owlready2", specifier = ">=0.47"},
   {name = "oxrdflib", specifier = ">=0.5.0"},
   {name = "pydantic", specifier = ">=2.11.9"},
   {name = "pyld", specifier = ">=2.0.4"},
+  {name = "pyoxigraph", specifier = ">=0.5.8"},
   {name = "python-multipart", specifier = ">=0.0.22"},
   {name = "pyyaml", specifier = ">=6.0.2"},
   {name = "qdrant-client", specifier = ">=1.15.1"},
@@ -4431,15 +4419,6 @@ source = {registry = "https://pypi.org/simple"}
 version = "1.0.2"
 wheels = [
   {hash = "sha256:160838e0b8565a8b1f67947675886e9fea18aa5e795db7ae531606d68e785cba", size = 472788, upload-time = "2024-08-07T17:33:28.192Z", url = "https://files.pythonhosted.org/packages/d9/4f/00be2196329ebbff56ce564aa94efb0fbc828d00de250b1980de1a34ab49/python_pptx-1.0.2-py3-none-any.whl"}
-]
-
-[[package]]
-name = "pytz"
-sdist = {hash = "sha256:0e60b47b29f21574376f218fe21abc009894a2321ea16c6754f3cad6eb7cdd6a", size = 320861, upload-time = "2026-05-04T01:35:29.667Z", url = "https://files.pythonhosted.org/packages/ff/46/dd499ec9038423421951e4fad73051febaa13d2df82b4064f87af8b8c0c3/pytz-2026.2.tar.gz"}
-source = {registry = "https://pypi.org/simple"}
-version = "2026.2"
-wheels = [
-  {hash = "sha256:04156e608bee23d3792fd45c94ae47fae1036688e75032eea2e3bf0323d1f126", size = 510141, upload-time = "2026-05-04T01:35:27.408Z", url = "https://files.pythonhosted.org/packages/ec/dd/96da98f892250475bdf2328112d7468abdd4acc7b902b6af23f4ed958ea0/pytz-2026.2-py2.py3-none-any.whl"}
 ]
 
 [[package]]

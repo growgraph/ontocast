@@ -21,6 +21,7 @@ from ontocast.config import ServerConfig
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
+from ontocast.tool.triple_manager.in_memory import InMemoryTripleStoreManager
 from ontocast.toolbox import ToolBox
 
 
@@ -78,6 +79,15 @@ def test_stores_use_tenancy_partitions_true_when_fuseki_triple_store() -> None:
     tools = cast(
         ToolBox,
         SimpleNamespace(vector_store=None, triple_store_manager=fuseki),
+    )
+    assert stores_use_tenancy_partitions(tools) is True
+
+
+def test_stores_use_tenancy_partitions_true_when_in_memory_triple_store() -> None:
+    in_memory = InMemoryTripleStoreManager()
+    tools = cast(
+        ToolBox,
+        SimpleNamespace(vector_store=None, triple_store_manager=in_memory),
     )
     assert stores_use_tenancy_partitions(tools) is True
 

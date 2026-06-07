@@ -8,7 +8,7 @@ The framework includes:
 - Document conversion and chunking
 - Ontology selection and management
 - Fact extraction and validation
-- Triple store integration (Neo4j, Fuseki, Filesystem)
+- Triple store integration (Fuseki, In-Memory)
 - LLM-powered semantic analysis
 - REST API server for document processing
 

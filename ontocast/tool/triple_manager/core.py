@@ -7,7 +7,7 @@ abstract interfaces and concrete implementations for different triple store back
 import abc
 import asyncio
 import os
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from pydantic import Field
 from rdflib import RDF, Graph
@@ -15,6 +15,7 @@ from rdflib import RDF, Graph
 from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.tenancy import TENANCY_SEP
 from ontocast.tool import Tool
 
 
@@ -32,7 +33,7 @@ class TripleStoreManager(Tool):
     triple store implementations should inherit from this class.
 
     This is an abstract base class that must be implemented by specific
-    triple store backends (e.g., Neo4j, Fuseki, Filesystem).
+    triple store backends (e.g., Fuseki, In-Memory).
     """
 
     def __init__(self, **kwargs):
@@ -60,46 +61,55 @@ class TripleStoreManager(Tool):
         return await asyncio.to_thread(self.fetch_ontologies)
 
     @abc.abstractmethod
-    def serialize_graph(self, graph: Graph, **kwargs) -> bool | dict[str, Any] | None:
-        """Store an RDF graph in the triple store.
-
-        This method should store the given RDF graph in the triple store.
-        The implementation may choose how to organize the storage (e.g., as named graphs,
-        in specific collections, etc.).
-
-        Args:
-            graph: The RDF graph to store.
-            **kwargs: Implementation-specific arguments (e.g., fname for filesystem, graph_uri for Fuseki).
-
-        Returns:
-            bool | None: Implementation-specific return value (bool for Fuseki, summary for Neo4j, None for Filesystem).
-        """
+    def serialize_graph(self, graph: Graph, **kwargs) -> bool:
+        """Store an RDF graph in the triple store."""
         pass
+
+    async def aserialize_graph(self, graph: Graph, **kwargs) -> bool:
+        """Async serialize helper for backends without native async I/O."""
+        return await asyncio.to_thread(self.serialize_graph, graph, **kwargs)
 
     @abc.abstractmethod
-    def serialize(
-        self, o: Ontology | RDFGraph, **kwargs
-    ) -> bool | dict[str, Any] | None:
-        """Store an RDF graph in the triple store.
-
-        This method should store the given RDF graph in the triple store.
-        The implementation may choose how to organize the storage (e.g., as named graphs,
-        in specific collections, etc.).
-
-        Args:
-            o: RDF graph or Ontology object to store.
-            **kwargs: Implementation-specific arguments (e.g., graph_uri for Fuseki).
-
-        Returns:
-            bool | None: Implementation-specific return value (bool for Fuseki, summary for Neo4j, None for Filesystem).
-        """
+    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> bool:
+        """Store an Ontology or RDFGraph in the triple store."""
         pass
 
-    async def aserialize(
-        self, o: Ontology | RDFGraph, **kwargs
-    ) -> bool | dict[str, Any] | None:
+    async def aserialize(self, o: Ontology | RDFGraph, **kwargs) -> bool:
         """Async serialize helper for backends without native async I/O."""
         return await asyncio.to_thread(self.serialize, o, **kwargs)
+
+    async def async_init(self) -> None:
+        """Backend warmup (e.g. ensure datasets exist). No-op by default."""
+
+    async def update_tenancy(
+        self,
+        tenant: str,
+        project: str,
+        *,
+        sep: str = TENANCY_SEP,
+    ) -> None:
+        """Switch the active tenant/project partition when supported."""
+        if not self.supports_tenancy_partition():
+            raise NotImplementedError(
+                f"{type(self).__name__} does not isolate data by tenant/project"
+            )
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement update_tenancy()"
+        )
+
+    async def drop_named_graph(
+        self, graph_uri: str, *, use_ontologies_dataset: bool = True
+    ) -> None:
+        """Drop a single named graph."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support drop_named_graph()"
+        )
+
+    async def drop_all_ontology_graphs_for_iri(self, ontology_iri: str) -> None:
+        """Remove named graphs for ``ontology_iri`` (base and versioned)."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support drop_all_ontology_graphs_for_iri()"
+        )
 
     @classmethod
     def _provenance_source_nodes(cls, graph: Graph) -> set:
