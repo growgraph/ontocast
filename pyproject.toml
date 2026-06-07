@@ -130,5 +130,5 @@ select = ["E", "F", "I001", "W"]
 "ontocast/prompt/*.py" = ["E501"]
 
 [tool.ty.analysis]
-# docling / docling-core are optional (`project.optional-dependencies.all`); CI type-checks without them.
-allowed-unresolved-imports = ["docling.**", "docling_core.**"]
+# docling / docling-core / lancedb are optional extras; CI type-checks without them.
+allowed-unresolved-imports = ["docling.**", "docling_core.**", "lancedb.**"]
