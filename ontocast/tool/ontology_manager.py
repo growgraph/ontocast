@@ -184,7 +184,7 @@ class OntologyManager(Tool):
         if top_k is not None:
             return top_k
         if self._patch_retriever is not None:
-            return self._patch_retriever.vector_store.config.top_k
+            return self._patch_retriever.vector_store.store_config.top_k
         return 10
 
     def get_patch_context(

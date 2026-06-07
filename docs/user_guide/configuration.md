@@ -17,14 +17,16 @@ Config
 │   ├── llm_config: LLMConfig
 │   ├── chunk_config: ChunkConfig
 │   ├── path_config: PathConfig
-│   ├── neo4j: Neo4jConfig
 │   ├── fuseki: FusekiConfig
 │   ├── domain: DomainConfig
 │   ├── web_search: WebSearchConfig
 │   ├── aggregation: AggregationConfig
 │   ├── embedding: EmbeddingConfig
 │   ├── patch_retrieval: PatchRetrievalConfig
-│   └── qdrant: QdrantConfig
+│   ├── vector_store: VectorStoreConfig
+│   ├── vector_store: VectorStoreConfig
+│   ├── qdrant: QdrantConfig
+│   └── lancedb: LanceDBConfig
 ├── server: ServerConfig
 ├── logging_level: str | None
 └── clean: bool
@@ -111,6 +113,8 @@ No environment variables. Pass on `POST /process`, multipart form, JSON body, or
 | `target_sections` | `--target-sections` | Comma-separated or JSON list; enables tagging and keeps only these sections |
 | `summarize_sections` | `--summarize-sections` | Enables tagging + summarization; `*` or empty = all chunks |
 | `summary_max_sentences` | `--summary-max-sentences` | Max sentences per summary (default `5`) |
+| `section_schema_id` | `--section-schema-id` | Section label schema (`academic`, `financial`, `legal`, …) |
+| `document_type_hint` | `--document-type-hint` | Free-text hint to resolve schema when `section_schema_id` is omitted |
 
 ```bash
 ontocast --input-path ./papers/ \
@@ -129,15 +133,9 @@ FUSEKI_URI=http://localhost:3030
 FUSEKI_AUTH=admin/admin
 #FUSEKI_DATASET=custom--project--facts
 #FUSEKI_ONTOLOGIES_DATASET=custom--project--ontologies
-
-# Neo4j
-NEO4J_URI=bolt://localhost:7687
-NEO4J_AUTH=neo4j/test
-NEO4J_PORT=7476
-NEO4J_BOLT_PORT=7689
 ```
 
-See [Tenancy](tenancy.md) for how tenant/project names relate to dataset and collection names.
+See [Tenancy](tenancy.md) for how tenant/project names relate to dataset, collection, and table names.
 
 ### Embeddings
 
@@ -154,24 +152,42 @@ EMBEDDING_DIMENSION=384
 ```bash
 QDRANT_URI=http://localhost:6333
 QDRANT_API_KEY=abc123-qwe
-QDRANT_TOP_K=10
 QDRANT_GRPC_PORT=6334
 QDRANT_USE_GRPC=false
-QDRANT_INDUCED_SUBGRAPH_DEPTH=1
-QDRANT_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=300
-QDRANT_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 # QDRANT_ONTOLOGY_COLLECTION=ontocast--test--ontologies
 # QDRANT_FACTS_COLLECTION=ontocast--test--facts
-# QDRANT_FUSION_CORE_WEIGHT=0.7
-# QDRANT_FUSION_NEIGHBORHOOD_WEIGHT=0.3
-# QDRANT_FUSION_BM25_WEIGHT=0.2
-# QDRANT_DEDUP_MODE=iri
 ```
+
+### Vector store (backend-agnostic)
+
+Applies to both Qdrant and LanceDB:
+
+```bash
+VECTOR_STORE_TOP_K=10
+VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH=1
+VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=300
+VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
+# VECTOR_STORE_FUSION_CORE_WEIGHT=0.7
+# VECTOR_STORE_FUSION_NEIGHBORHOOD_WEIGHT=0.3
+# VECTOR_STORE_FUSION_BM25_WEIGHT=0.2
+# VECTOR_STORE_DEDUP_MODE=iri
+```
+
+### LanceDB (embedded alternative)
+
+Enable when `QDRANT_URI` is unset. Requires the optional extra: `uv sync --extra lancedb`.
+
+```bash
+LANCEDB_ENABLED=true
+# LANCEDB_DATA_DIR=~/.lancedb_data
+```
+
+`QDRANT_URI` and `LANCEDB_ENABLED=true` cannot both be set.
 
 Budget behavior:
 
-- `QDRANT_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` is the global upper bound returned to the LLM.
-- `QDRANT_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` shapes per-entity allocation during retrieval.
+- `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` is the global upper bound returned to the LLM.
+- `VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` shapes per-entity allocation during retrieval.
 
 See [Ontology Context](ontology_context.md) for vector-search mode requirements.
 
@@ -245,11 +261,11 @@ LOGGING_LEVEL=info                       # debug | info | warning | error
 
 ## Ontology Context Mode
 
-- `selected_single_ontology` (default): LLM picks one catalog ontology per content unit; no Qdrant required.
-- `selected_vector_search_ontology`: Qdrant stitched ensemble; requires `QDRANT_URI` and embedding settings.
+- `selected_single_ontology` (default): LLM picks one catalog ontology per content unit; no vector store required.
+- `selected_vector_search_ontology`: hybrid vector retrieval + induced subgraph; requires `QDRANT_URI` **or** `LANCEDB_ENABLED=true` plus embedding settings.
 - `fixed_single_ontology`: pin one catalog `ontology_id` via `ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`.
 
-If vector mode is requested while Qdrant is unavailable, the API returns `409` with `error_code: VECTOR_STORE_UNAVAILABLE`.
+If vector mode is requested while no vector backend is available, the API returns `409` with `error_code: VECTOR_STORE_UNAVAILABLE`.
 
 Details: [Ontology Context](ontology_context.md).
 

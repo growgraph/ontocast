@@ -13,7 +13,8 @@ from ontocast.config import (
     EmbeddingConfig,
     PatchRetrievalConfig,
     QdrantConfig,
-    QdrantDedupMode,
+    VectorStoreConfig,
+    VectorStoreDedupMode,
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
@@ -36,9 +37,12 @@ from ontocast.tool.vector_store.patch_retriever import (
     _merge_hits_across_queries_hybrid,
     _merge_hits_across_queries_max_score,
     _mmr_rerank,
-    _normalize_core_neighborhood_weights,
 )
-from ontocast.tool.vector_store.qdrant import QdrantVectorStore
+from ontocast.tool.vector_store.qdrant import QdrantVectorStoreManager
+from ontocast.tool.vector_store.util import (
+    normalized_core_neighborhood_weights,
+    point_id_for_atom,
+)
 from ontocast.util.hash import render_text_hash
 
 
@@ -64,7 +68,7 @@ class CountingEmbeddingTool(EmbeddingTool):
         return vectors
 
 
-class StubVectorStore(QdrantVectorStore):
+class StubVectorStore(QdrantVectorStoreManager):
     """Vector store stub for retriever unit tests."""
 
     _atoms: list[GraphAtom] = PrivateAttr(default_factory=list)
@@ -99,7 +103,7 @@ class StubVectorStore(QdrantVectorStore):
         filter_hash: str | None = None,
     ) -> list[GraphAtom]:
         del query, filter_iri, filter_version, filter_hash
-        k = self.config.top_k if top_k is None else top_k
+        k = self.store_config.top_k if top_k is None else top_k
         return self._atoms[:k]
 
     def search_patch_hits(
@@ -111,7 +115,7 @@ class StubVectorStore(QdrantVectorStore):
         filter_hash: str | None = None,
     ) -> list[OntologySearchHit]:
         del query, filter_iri, filter_version, filter_hash
-        k = self.config.top_k if top_k is None else top_k
+        k = self.store_config.top_k if top_k is None else top_k
         return [OntologySearchHit(atom=atom, score=1.0) for atom in self._atoms[:k]]
 
     def search_patch_hits_many(
@@ -523,8 +527,9 @@ def test_fastembed_bm25_sparse_tool_returns_qdrant_sparse_vectors() -> None:
 
 def test_embed_texts_batched_respects_batch_size() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
-    store = QdrantVectorStore(
-        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+    store = QdrantVectorStoreManager(
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
     )
     vectors = store._embed_texts_batched(["a", "b", "c", "d", "e"])
@@ -537,8 +542,9 @@ def test_embed_texts_batched_raises_on_mismatch() -> None:
     embedding = CountingEmbeddingTool(
         config=EmbeddingConfig(dimension=8), truncate_by_one=True
     )
-    store = QdrantVectorStore(
-        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+    store = QdrantVectorStoreManager(
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
     )
 
@@ -552,8 +558,9 @@ def test_embed_texts_batched_raises_on_mismatch() -> None:
 
 def test_bm25_sparse_vector_uses_dot_product_modifier_none() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
-    store = QdrantVectorStore(
-        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+    store = QdrantVectorStoreManager(
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
         sparse_embedding=FastembedBm25SparseTool(config=embedding.config),
     )
@@ -566,7 +573,8 @@ def test_bm25_sparse_vector_uses_dot_product_modifier_none() -> None:
 def test_retriever_expands_graph_via_sparql_tool() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
-        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
     )
     atoms = [
@@ -617,7 +625,8 @@ def test_retriever_expands_graph_via_sparql_tool() -> None:
 async def test_retriever_aretrieve_expands_graph_via_sparql_tool() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
-        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
     )
     atoms = [
@@ -670,7 +679,8 @@ async def test_retriever_aretrieve_expands_graph_via_sparql_tool() -> None:
 async def test_aretrieve_ensemble_calls_induced_subgraph_once() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
-        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
     )
     atoms = [
@@ -746,7 +756,8 @@ async def test_aretrieve_ensemble_per_query_ratio_keeps_weak_query_hits() -> Non
     """Weak-query hits survive vs a strong query because the cutoff is per-query relative."""
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
-        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
     )
     vector_store.set_hits_by_query(
@@ -798,7 +809,8 @@ async def test_aretrieve_ensemble_per_query_ratio_keeps_weak_query_hits() -> Non
 async def test_aretrieve_ensemble_empty_when_merged_scores_below_floor() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
-        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
     )
     vector_store.set_hits_by_query(
@@ -836,7 +848,8 @@ async def test_aretrieve_ensemble_drops_subquery_when_top_below_min_query_best()
 ):
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
-        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
     )
     vector_store.set_hits_by_query(
@@ -897,7 +910,7 @@ def test_search_hits_by_vector_returns_per_channel_typed_scores() -> None:
             self.score = score
             self.payload = {"neighborhood_representation": neighborhood}
 
-    class _Store(QdrantVectorStore):
+    class _Store(QdrantVectorStoreManager):
         def _query_named_vector(
             self,
             vector_name: str,
@@ -921,12 +934,12 @@ def test_search_hits_by_vector_returns_per_channel_typed_scores() -> None:
             )
 
     store = _Store(
-        config=QdrantConfig(
+        store_config=VectorStoreConfig(
             embedding_batch_size=2,
-            upsert_batch_size=2,
             fusion_core_weight=0.7,
             fusion_neighborhood_weight=0.3,
         ),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=CountingEmbeddingTool(config=EmbeddingConfig(dimension=8)),
     )
     hits_by_channel = store.search_hits_by_vector(
@@ -958,7 +971,7 @@ def test_search_hits_by_vector_dedupes_duplicate_iri_hits() -> None:
             self.score = score
             self.payload = {"neighborhood_representation": neighborhood, "iri": iri}
 
-    class _Store(QdrantVectorStore):
+    class _Store(QdrantVectorStoreManager):
         def _query_named_vector(
             self,
             vector_name: str,
@@ -989,12 +1002,12 @@ def test_search_hits_by_vector_dedupes_duplicate_iri_hits() -> None:
             )
 
     store = _Store(
-        config=QdrantConfig(
+        store_config=VectorStoreConfig(
             embedding_batch_size=2,
-            upsert_batch_size=2,
-            dedup_mode=QdrantDedupMode.IRI,
+            dedup_mode=VectorStoreDedupMode.IRI,
             dedup_query_hits_by_iri=True,
         ),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=CountingEmbeddingTool(config=EmbeddingConfig(dimension=8)),
     )
     hits_by_channel = store.search_hits_by_vector(
@@ -1035,29 +1048,29 @@ def test_point_id_for_atom_respects_dedup_mode() -> None:
     )
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
 
-    strict_store = QdrantVectorStore(
-        config=QdrantConfig(
+    strict_store = QdrantVectorStoreManager(
+        store_config=VectorStoreConfig(
             embedding_batch_size=2,
-            upsert_batch_size=2,
-            dedup_mode=QdrantDedupMode.IRI,
+            dedup_mode=VectorStoreDedupMode.IRI,
             dedup_include_version=True,
             dedup_include_hash=True,
         ),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
     )
-    relaxed_store = QdrantVectorStore(
-        config=QdrantConfig(
+    relaxed_store = QdrantVectorStoreManager(
+        store_config=VectorStoreConfig(
             embedding_batch_size=2,
-            upsert_batch_size=2,
-            dedup_mode=QdrantDedupMode.ATOM_ID,
+            dedup_mode=VectorStoreDedupMode.ATOM_ID,
         ),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
     )
 
-    strict_id_a = strict_store._point_id_for_atom(atom_a)
-    strict_id_b = strict_store._point_id_for_atom(atom_b)
-    relaxed_id_a = relaxed_store._point_id_for_atom(atom_a)
-    relaxed_id_b = relaxed_store._point_id_for_atom(atom_b)
+    strict_id_a = point_id_for_atom(atom_a, store_config=strict_store.store_config)
+    strict_id_b = point_id_for_atom(atom_b, store_config=strict_store.store_config)
+    relaxed_id_a = point_id_for_atom(atom_a, store_config=relaxed_store.store_config)
+    relaxed_id_b = point_id_for_atom(atom_b, store_config=relaxed_store.store_config)
 
     assert strict_id_a == strict_id_b
     assert relaxed_id_a != relaxed_id_b
@@ -1084,7 +1097,8 @@ def test_mmr_rerank_lambda_one_is_pure_relevance() -> None:
 async def test_aretrieve_ensemble_mmr_promotes_diverse_candidates() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
-        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
     )
     vector_store.set_hits_by_query(
@@ -1133,13 +1147,13 @@ async def test_aretrieve_ensemble_mmr_promotes_diverse_candidates() -> None:
 async def test_aretrieve_ensemble_rank_fusion_uses_rank_not_score() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
-        config=QdrantConfig(
+        store_config=VectorStoreConfig(
             embedding_batch_size=2,
-            upsert_batch_size=2,
             fusion_core_weight=0.5,
             fusion_neighborhood_weight=0.5,
             fusion_bm25_weight=0.0,
         ),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
     )
     vector_store.set_hits_by_query(
@@ -1184,7 +1198,8 @@ async def test_aretrieve_ensemble_rank_fusion_uses_rank_not_score() -> None:
 async def test_aretrieve_ensemble_lambda_one_skips_vector_fetch() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
-        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
     )
     vector_store.set_hits_by_query(
@@ -1226,7 +1241,8 @@ async def test_aretrieve_ensemble_lambda_one_skips_vector_fetch() -> None:
 async def test_aretrieve_ensemble_merged_score_ratio_trims_below_floor() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
-        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
     )
     vector_store.set_hits_by_query(
@@ -1263,7 +1279,8 @@ async def test_aretrieve_ensemble_merged_score_ratio_trims_below_floor() -> None
 async def test_aretrieve_ensemble_forwards_ranking_and_budget_controls() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
-        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
     )
     vector_store.set_hits_by_query(
@@ -1312,7 +1329,8 @@ async def test_aretrieve_ensemble_forwards_ranking_and_budget_controls() -> None
 async def test_aretrieve_ensemble_patch_max_atoms_caps_output() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
-        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
     )
     vector_store.set_hits_by_query(
@@ -1369,12 +1387,12 @@ def test_mmr_rerank_atoms_missing_vectors_fallback() -> None:
 
 
 def test_normalize_core_neighborhood_weights_renormalizes_dense_lanes() -> None:
-    qc = QdrantConfig(
+    sc = VectorStoreConfig(
         fusion_core_weight=0.7,
         fusion_neighborhood_weight=0.5,
         fusion_bm25_weight=0.2,
     )
-    cw, nw = _normalize_core_neighborhood_weights(qc)
+    cw, nw = normalized_core_neighborhood_weights(sc)
     assert abs(cw + nw - 1.0) < 1e-9
     assert cw > nw
 
@@ -1490,7 +1508,8 @@ def test_expand_ontology_iris_by_reference_includes_cross_ontology_parent() -> N
 async def test_aretrieve_ensemble_rrf_mode_regression() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
-        config=QdrantConfig(embedding_batch_size=2, upsert_batch_size=2),
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
     )
     vector_store.set_hits_by_query(

@@ -50,7 +50,7 @@ description = "Agentic ontology and knowledge graph co-generation"
 name = "ontocast"
 readme = "README.md"
 requires-python = ">=3.12,<4.0"
-version = "0.4.2"
+version = "0.4.3"
 
 [project.optional-dependencies]
 all = [
@@ -77,6 +77,9 @@ docs = [
   "mkdocs>=1.6.1",
   "mkdocstrings-python>=2.0.3",
   "mkdocstrings[python]>=0.29.1"
+]
+lancedb = [
+  "lancedb>=0.33.0"
 ]
 plot = [
   "pygraphviz>=1.14"

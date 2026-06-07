@@ -108,14 +108,14 @@ Before rendering, each unit receives ontology context from one of three modes:
 | Mode | Source |
 |------|--------|
 | `selected_single_ontology` | LLM picks a catalog TTL per unit |
-| `selected_vector_search_ontology` | Qdrant hybrid retrieval + induced subgraph |
+| `selected_vector_search_ontology` | Qdrant or LanceDB hybrid retrieval + induced subgraph |
 | `fixed_single_ontology` | Pinned catalog `ontology_id` |
 
 Details: [Ontology Context](ontology_context.md).
 
 ## Tenancy
 
-Runtime **tenant** and **project** parameters (HTTP query/form/JSON) partition triple-store datasets and Qdrant collections:
+Runtime **tenant** and **project** parameters (HTTP query/form/JSON) partition triple-store datasets and vector-store collections (Qdrant or LanceDB):
 
 ```
 {tenant}--{project}--facts

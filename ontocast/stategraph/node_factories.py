@@ -513,9 +513,7 @@ def make_consistency_critic_node(tools: ToolBox):
         for ontology in artifacts:
             if ontology.iri:
                 allowed_sources.add(ontology.iri)
-        threshold = (
-            tools.config.tool_config.qdrant.consistency_critic_similarity_threshold
-        )
+        threshold = tools.config.tool_config.vector_store.consistency_critic_similarity_threshold
         conflicts: list[str] = []
         for query in query_terms:
             hits = tools.vector_store.search_patch_hits(query=query, top_k=3)

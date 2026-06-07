@@ -1,6 +1,6 @@
 # Tenancy
 
-OntoCast partitions triple-store datasets and Qdrant collections by **tenant** and **project**. This enables multiple logical workspaces on shared infrastructure.
+OntoCast partitions triple-store datasets and vector-store partitions (Qdrant collections or LanceDB tables) by **tenant** and **project**. This enables multiple logical workspaces on shared infrastructure.
 
 ## Naming Convention
 
@@ -28,7 +28,7 @@ Tenant and project are **runtime parameters**, not environment variables. They m
 - Multipart form fields
 - JSON body fields on `/process` and `/process_unit`
 
-When `tenant` or `project` appears in the **query string**, the server retargets Fuseki datasets and Qdrant collections to the resolved partition. Requests without tenancy query parameters use the server's active tenant/project from startup (defaults: `ontocast` / `test`).
+When `tenant` or `project` appears in the **query string**, the server retargets Fuseki datasets and vector-store partitions to the resolved scope. Requests without tenancy query parameters use the server's active tenant/project from startup (defaults: `ontocast` / `test`).
 
 ## Configuration Interaction
 
@@ -37,6 +37,8 @@ When `FUSEKI_DATASET` or `FUSEKI_ONTOLOGIES_DATASET` are **unset**, Fuseki confi
 When explicit dataset names are set in `.env`, they apply as the configured default scope; per-request tenancy still switches the active partition when supported by the store layer.
 
 Qdrant collection names follow the same pattern (`QDRANT_ONTOLOGY_COLLECTION`, `QDRANT_FACTS_COLLECTION` derive when unset).
+
+LanceDB table names follow the same `{tenant}--{project}--ontologies` / `--facts` pattern under `LANCEDB_DATA_DIR` when `LANCEDB_ENABLED=true`.
 
 ## API Usage
 

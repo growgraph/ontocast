@@ -32,7 +32,8 @@ from ontocast.tool.vector_store import (
     EmbeddingTool,
     FastembedBm25SparseTool,
     OntologyPatchRetriever,
-    QdrantVectorStore,
+    VectorStoreManager,
+    create_vector_store_manager,
 )
 from ontocast.tool.web_search import DuckDuckGoSearchProvider
 
@@ -140,29 +141,25 @@ class ToolBox:
         self.diff_tool: DiffTool = DiffTool()
 
         self.embedding_tool: EmbeddingTool = EmbeddingTool.create(tool_config.embedding)
-        self.vector_store: QdrantVectorStore | None = None
+        self.vector_store: VectorStoreManager | None = None
         self.patch_retriever: OntologyPatchRetriever | None = None
         self.vector_store_ready: bool = False
         self.vector_store_last_error: Exception | None = None
 
-        if tool_config.qdrant.uri:
-            q_vs = tool_config.qdrant.vector_size
-            emb_dim = tool_config.embedding.dimension
-            if q_vs is not None and q_vs != emb_dim:
-                raise ValueError(
-                    "QdrantConfig.vector_size must match "
-                    "EmbeddingConfig.dimension when set "
-                    f"(got vector_size={q_vs}, embedding.dimension={emb_dim})"
-                )
-            # BM25 is always enabled whenever vector search is enabled.
+        if tool_config.qdrant.uri or tool_config.lancedb.enabled:
             sparse_embedding = FastembedBm25SparseTool(config=tool_config.embedding)
-            self.vector_store = QdrantVectorStore(
-                config=tool_config.qdrant,
+            vector_store = create_vector_store_manager(
+                tool_config,
                 embedding=self.embedding_tool,
                 sparse_embedding=sparse_embedding,
             )
+            if vector_store is None:
+                raise RuntimeError(
+                    "vector store backend is configured but manager was not created"
+                )
+            self.vector_store = vector_store
             self.patch_retriever = OntologyPatchRetriever(
-                vector_store=self.vector_store,
+                vector_store=vector_store,
                 sparql_tool=self.sparql_tool,
                 patch=tool_config.patch_retrieval,
             )
@@ -242,9 +239,9 @@ class ToolBox:
 
         if self.vector_store is not None:
             self.vector_store.apply_tenancy(t, p)
-            qcfg = self.config.tool_config.qdrant
-            qcfg.ontology_collection = self.vector_store.config.ontology_collection
-            qcfg.facts_collection = self.vector_store.config.facts_collection
+            vsc = self.config.tool_config.vector_store
+            vsc.ontology_table = self.vector_store.store_config.ontology_table
+            vsc.facts_table = self.vector_store.store_config.facts_table
             if initialize_vector_store:
                 try:
                     await self.vector_store.initialize()

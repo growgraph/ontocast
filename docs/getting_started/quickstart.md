@@ -75,15 +75,11 @@ ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files
 ONTOCAST_CACHE_DIR=/path/to/cache/directory
 
 # Triple Store Configuration (optional)
-# For Neo4j
-NEO4J_URI=bolt://localhost:7687
-NEO4J_AUTH=username:password
-
-# For Fuseki
+# Fuseki for persistence; omit both for in-memory pyoxigraph (default)
 FUSEKI_URI=http://localhost:3030
 FUSEKI_AUTH=username:password
-FUSEKI_DATASET=dataset_name
-FUSEKI_ONTOLOGIES_DATASET=ontologies
+#FUSEKI_DATASET=ontocast--test--facts
+#FUSEKI_ONTOLOGIES_DATASET=ontocast--test--ontologies
 
 # Optional aggregation controls
 AGG_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
@@ -164,10 +160,8 @@ OntoCast uses a hierarchical configuration system:
 | `LLM_API_KEY` | API key for LLM provider | Required |
 | `LLM_PROVIDER` | LLM provider (openai, ollama) | openai |
 | `LLM_MODEL_NAME` | Model name | gpt-4o-mini |
-| `FUSEKI_URI` + `FUSEKI_AUTH` | Use Fuseki as main triple store | Auto-detected |
-| `NEO4J_URI` + `NEO4J_AUTH` | Use Neo4j as main triple store | Auto-detected |
-| `ONTOCAST_WORKING_DIRECTORY` + `ONTOCAST_ONTOLOGY_DIRECTORY` | Use filesystem as main triple store | Auto-detected |
-| `ONTOCAST_ONTOLOGY_DIRECTORY` | Ontology files directory | Provide seed ontologies |
+| `FUSEKI_URI` + `FUSEKI_AUTH` | Use Fuseki for persistent triple store | Omit for in-memory (default) |
+| `ONTOCAST_ONTOLOGY_DIRECTORY` | Seed ontology TTL files | Optional bootstrap |
 | `MAX_VISITS` | Maximum visits per node | 1 |
 | `BASE_RECURSION_LIMIT` | Base recursion limit for workflow | 1000 |
 | `ONTOLOGY_MAX_TRIPLES` | Maximum triples allowed in ontology graph | 50000 |
@@ -178,6 +172,6 @@ OntoCast uses a hierarchical configuration system:
 Now that you've processed your first document, you can:
 
 1. Try processing different types of documents (PDF, Word)
-2. Configure triple stores (Neo4j, Fuseki) for persistent storage
+2. Configure Fuseki for persistent triple storage (see [Triple Stores](../user_guide/triple_stores.md))
 3. Check the [API Endpoints](../user_guide/api.md) for REST usage
 4. Explore the [User Guide](../user_guide/concepts.md) for advanced usage

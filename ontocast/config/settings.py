@@ -148,8 +148,8 @@ class CrossQueryMergeMode(StrEnum):
     RRF = "rrf"
 
 
-class QdrantDedupMode(StrEnum):
-    """How Qdrant point identity is derived during upsert."""
+class VectorStoreDedupMode(StrEnum):
+    """How vector-store row/point identity is derived during upsert."""
 
     ATOM_ID = "atom_id"
     IRI = "iri"
@@ -710,45 +710,16 @@ class PatchRetrievalConfig(BaseSettings):
     )
 
 
-class QdrantConfig(BaseSettings):
-    """Qdrant vector store settings."""
+class VectorStoreConfig(BaseSettings):
+    """Backend-agnostic vector store retrieval and indexing settings."""
 
-    uri: str | None = Field(default=None, description="Qdrant HTTP endpoint URI.")
-    api_key: str | None = Field(default=None, description="Qdrant API key.")
-    ontology_collection: str | None = Field(
-        default=None,
-        description="Qdrant collection for ontology atom vectors; derived when unset.",
-    )
-    facts_collection: str | None = Field(
-        default=None,
-        description=(
-            "Qdrant collection reserved for future fact vectors; created on init."
-        ),
-    )
-    grpc_port: int = Field(default=6334, description="Qdrant gRPC port.")
-    use_grpc: bool = Field(default=False, description="Use gRPC client transport.")
-    vector_size: int | None = Field(
-        default=None,
-        ge=1,
-        description=(
-            "Vector size override. When set, must equal EmbeddingConfig.dimension; "
-            "when unset, the embedding dimension is used."
-        ),
-    )
-    distance: QdrantDistance = Field(
-        default=QdrantDistance.COSINE,
-        description=(
-            "Qdrant vector distance when creating collections "
-            "(Cosine, Dot, Euclid, Manhattan; same as qdrant_client Distance)."
-        ),
-    )
     top_k: int = Field(
         default=10,
         ge=1,
         description=(
-            "Default number of fused vector hits per query for ontology-patch retrieval "
-            "(QDRANT_TOP_K). Call sites may pass an explicit ``top_k`` to override this "
-            "for a single retrieval; when omitted, patch search uses this value."
+            "Default number of fused vector hits per query for ontology-patch retrieval. "
+            "Call sites may pass an explicit ``top_k`` to override this for a single "
+            "retrieval; when omitted, patch search uses this value."
         ),
     )
     induced_subgraph_depth: int = Field(
@@ -810,11 +781,6 @@ class QdrantConfig(BaseSettings):
         ge=1,
         description="Batch size used for embedding requests during indexing.",
     )
-    upsert_batch_size: int = Field(
-        default=256,
-        ge=1,
-        description="Batch size used for Qdrant upsert operations.",
-    )
     fusion_core_weight: float = Field(
         default=0.7,
         ge=0.0,
@@ -836,11 +802,11 @@ class QdrantConfig(BaseSettings):
             "neighborhood weights when BM25 retrieval is enabled)."
         ),
     )
-    dedup_mode: QdrantDedupMode = Field(
-        default=QdrantDedupMode.IRI,
+    dedup_mode: VectorStoreDedupMode = Field(
+        default=VectorStoreDedupMode.IRI,
         description=(
-            "Point identity policy for ontology vectors: 'iri' stores one logical point "
-            "per entity key, while 'atom_id' keeps every atom variant as a separate point."
+            "Row/point identity policy for ontology vectors: 'iri' stores one logical "
+            "record per entity key, while 'atom_id' keeps every atom variant separate."
         ),
     )
     dedup_include_version: bool = Field(
@@ -864,6 +830,74 @@ class QdrantConfig(BaseSettings):
             "the best-scoring one."
         ),
     )
+    ontology_table: str | None = Field(
+        default=None,
+        description=(
+            "Ontology atom table/collection name; derived from tenant/project when unset."
+        ),
+    )
+    facts_table: str | None = Field(
+        default=None,
+        description=(
+            "Facts table/collection reserved for future fact vectors; created on init."
+        ),
+    )
+
+    model_config = SettingsConfigDict(
+        env_prefix="VECTOR_STORE_",
+        case_sensitive=False,
+    )
+
+    @model_validator(mode="after")
+    def _resolve_table_names(self) -> VectorStoreConfig:
+        if self.ontology_table is None:
+            self.ontology_table = tenant_project_ontologies_name(
+                DEFAULT_TENANT, DEFAULT_PROJECT
+            )
+        if self.facts_table is None:
+            self.facts_table = tenant_project_facts_name(
+                DEFAULT_TENANT, DEFAULT_PROJECT
+            )
+        return self
+
+
+class QdrantConfig(BaseSettings):
+    """Qdrant-specific vector store connection settings."""
+
+    uri: str | None = Field(default=None, description="Qdrant HTTP endpoint URI.")
+    api_key: str | None = Field(default=None, description="Qdrant API key.")
+    ontology_collection: str | None = Field(
+        default=None,
+        description="Qdrant collection for ontology atom vectors; derived when unset.",
+    )
+    facts_collection: str | None = Field(
+        default=None,
+        description=(
+            "Qdrant collection reserved for future fact vectors; created on init."
+        ),
+    )
+    grpc_port: int = Field(default=6334, description="Qdrant gRPC port.")
+    use_grpc: bool = Field(default=False, description="Use gRPC client transport.")
+    vector_size: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Vector size override. When set, must equal EmbeddingConfig.dimension; "
+            "when unset, the embedding dimension is used."
+        ),
+    )
+    distance: QdrantDistance = Field(
+        default=QdrantDistance.COSINE,
+        description=(
+            "Qdrant vector distance when creating collections "
+            "(Cosine, Dot, Euclid, Manhattan; same as qdrant_client Distance)."
+        ),
+    )
+    upsert_batch_size: int = Field(
+        default=256,
+        ge=1,
+        description="Batch size used for Qdrant upsert operations.",
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="QDRANT_",
@@ -878,6 +912,50 @@ class QdrantConfig(BaseSettings):
             )
         if self.facts_collection is None:
             self.facts_collection = tenant_project_facts_name(
+                DEFAULT_TENANT, DEFAULT_PROJECT
+            )
+        return self
+
+
+class LanceDBConfig(BaseSettings):
+    """Embedded LanceDB vector store settings."""
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable embedded LanceDB when QDRANT_URI is unset. "
+            "Uses a local directory via lancedb.connect(data_dir)."
+        ),
+    )
+    data_dir: Path | str = Field(
+        default="~/.lancedb_data",
+        description=(
+            "Local filesystem directory passed to lancedb.connect(...) "
+            "(supports ~ expansion)."
+        ),
+    )
+    ontology_table: str | None = Field(
+        default=None,
+        description="Lance table for ontology atom vectors; derived when unset.",
+    )
+    facts_table: str | None = Field(
+        default=None,
+        description="Lance table reserved for future fact vectors; created on init.",
+    )
+
+    model_config = SettingsConfigDict(
+        env_prefix="LANCEDB_",
+        case_sensitive=False,
+    )
+
+    @model_validator(mode="after")
+    def _resolve_lancedb_tables(self) -> LanceDBConfig:
+        if self.ontology_table is None:
+            self.ontology_table = tenant_project_ontologies_name(
+                DEFAULT_TENANT, DEFAULT_PROJECT
+            )
+        if self.facts_table is None:
+            self.facts_table = tenant_project_facts_name(
                 DEFAULT_TENANT, DEFAULT_PROJECT
             )
         return self
@@ -898,7 +976,18 @@ class ToolConfig(BaseSettings):
         default_factory=PatchRetrievalConfig,
         description="Ontology patch retrieval: post-vector scoring, MMR, and limits.",
     )
+    vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
+    lancedb: LanceDBConfig = Field(default_factory=LanceDBConfig)
+
+    @model_validator(mode="after")
+    def _reject_dual_vector_backends(self) -> ToolConfig:
+        if self.qdrant.uri and self.lancedb.enabled:
+            raise ValueError(
+                "Configure only one vector store backend: set QDRANT_URI or "
+                "LANCEDB_ENABLED=true, not both."
+            )
+        return self
 
 
 class Config(BaseSettings):

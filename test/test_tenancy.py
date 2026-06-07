@@ -2,7 +2,7 @@
 
 import pytest
 
-from ontocast.config import FusekiConfig, QdrantConfig
+from ontocast.config import FusekiConfig, LanceDBConfig, QdrantConfig, VectorStoreConfig
 from ontocast.onto.tenancy import (
     DEFAULT_PROJECT,
     DEFAULT_TENANT,
@@ -67,6 +67,26 @@ def test_qdrant_config_default_collections(monkeypatch: pytest.MonkeyPatch) -> N
     assert c.facts_collection == tenant_project_facts_name(
         DEFAULT_TENANT, DEFAULT_PROJECT
     )
+
+
+def test_vector_store_config_default_tables(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("VECTOR_STORE_ONTOLOGY_TABLE", raising=False)
+    monkeypatch.delenv("VECTOR_STORE_FACTS_TABLE", raising=False)
+    c = VectorStoreConfig()
+    assert c.ontology_table == tenant_project_ontologies_name(
+        DEFAULT_TENANT, DEFAULT_PROJECT
+    )
+    assert c.facts_table == tenant_project_facts_name(DEFAULT_TENANT, DEFAULT_PROJECT)
+
+
+def test_lancedb_config_default_tables(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LANCEDB_ONTOLOGY_TABLE", raising=False)
+    monkeypatch.delenv("LANCEDB_FACTS_TABLE", raising=False)
+    c = LanceDBConfig()
+    assert c.ontology_table == tenant_project_ontologies_name(
+        DEFAULT_TENANT, DEFAULT_PROJECT
+    )
+    assert c.facts_table == tenant_project_facts_name(DEFAULT_TENANT, DEFAULT_PROJECT)
 
 
 def test_qdrant_explicit_ontology_collection(monkeypatch: pytest.MonkeyPatch) -> None:

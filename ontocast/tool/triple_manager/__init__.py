@@ -13,12 +13,8 @@ from .mock import (
 )
 from .util import deterministic_turtle_serialization
 
-TripleManager = TripleStoreManager
-
-
 __all__ = [
     "TripleStoreManager",
-    "TripleManager",
     "FusekiTripleStoreManager",
     "InMemoryTripleStoreManager",
     "MockTripleStoreManager",

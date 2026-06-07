@@ -32,6 +32,7 @@ from ontocast.tool.vector_store.core import (
     OntologySearchHit,
     OntologySearchHitsByChannel,
 )
+from ontocast.tool.vector_store.qdrant import QdrantVectorStoreManager
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -161,8 +162,8 @@ async def _prepare_clean_integration_stores(tools: ToolBox) -> None:
     if isinstance(triple, FusekiTripleStoreManager):
         await triple.clean()
     vs = tools.vector_store
-    if vs is not None:
-        col = vs.config.ontology_collection
+    if isinstance(vs, QdrantVectorStoreManager):
+        col = vs.qdrant_config.ontology_collection
         if col and vs.client.collection_exists(collection_name=col):
             vs.client.delete_collection(collection_name=col)
         await vs.initialize()
@@ -304,13 +305,13 @@ async def test_ingest_retrieve_micro_chunks_render_facts(
     assert FINANCE_ONTOLOGY_IRI in remote_iris
     assert BIOMED_ONTOLOGY_IRI in remote_iris
 
-    q_top_k = tools.config.tool_config.qdrant.top_k
+    q_top_k = tools.config.tool_config.vector_store.top_k
     iris = frozenset({FINANCE_ONTOLOGY_IRI, BIOMED_ONTOLOGY_IRI})
 
     fin_chunks = _split_into_sentences(finance_source_document_text)
     bio_chunks = _split_into_sentences(biomed_source_document_text)
     logger.info(
-        "Finance doc: %d sentences; biomed doc: %d sentences; patch top_k=%d (QdrantConfig)",
+        "Finance doc: %d sentences; biomed doc: %d sentences; patch top_k=%d (VectorStoreConfig)",
         len(fin_chunks),
         len(bio_chunks),
         q_top_k,
@@ -364,7 +365,7 @@ async def test_ingest_retrieve_micro_chunks_render_facts(
     micro_chunks = fin_chunks
     subgraph_depth = 1
     max_triples = 500
-    # Omit top_k → uses QdrantConfig.top_k (same as explicit q_top_k above).
+    # Omit top_k → uses VectorStoreConfig.top_k (same as explicit q_top_k above).
     stitched, source_iris = await tools.patch_retriever.aretrieve_ensemble(
         queries=micro_chunks,
         expand_sparql=True,

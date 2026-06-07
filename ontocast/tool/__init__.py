@@ -13,7 +13,13 @@ from .triple_manager import (
     InMemoryTripleStoreManager,
     TripleStoreManager,
 )
-from .vector_store import EmbeddingTool, OntologyPatchRetriever, QdrantVectorStore
+from .vector_store import (
+    EmbeddingTool,
+    LanceDBVectorStoreManager,
+    OntologyPatchRetriever,
+    QdrantVectorStoreManager,
+    VectorStoreManager,
+)
 
 __all__ = [
     "LLMTool",
@@ -27,7 +33,9 @@ __all__ = [
     "AtomicToolBox",
     "SearchHit",
     "EmbeddingTool",
-    "QdrantVectorStore",
+    "QdrantVectorStoreManager",
+    "LanceDBVectorStoreManager",
+    "VectorStoreManager",
     "OntologyPatchRetriever",
     "EmbeddingBasedAggregator",
 ]

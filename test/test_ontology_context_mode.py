@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from rdflib import URIRef
 
-from ontocast.config import QdrantConfig
+from ontocast.config import VectorStoreConfig
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import OntologyAssemblyMode, OntologyContextMode
 from ontocast.onto.ontology import Ontology
@@ -54,13 +54,15 @@ async def test_full_ttl_does_not_invoke_ensemble_path(monkeypatch) -> None:
             )
         ],
     )
-    qdrant = QdrantConfig()
+    vector_store_cfg = VectorStoreConfig()
     tools = cast(
         ToolBox,
         SimpleNamespace(
             ontology_manager=SimpleNamespace(),
             llm=AsyncMock(),
-            config=SimpleNamespace(tool_config=SimpleNamespace(qdrant=qdrant)),
+            config=SimpleNamespace(
+                tool_config=SimpleNamespace(vector_store=vector_store_cfg)
+            ),
         ),
     )
     unit = state.content_units[0]
@@ -81,9 +83,9 @@ def test_split_proposition_windows_is_sentence_bounded() -> None:
     ]
 
 
-def test_qdrant_config_proposition_fields_exist() -> None:
-    q = QdrantConfig()
-    assert q.proposition_window_sentences >= 1
+def test_vector_store_config_proposition_fields_exist() -> None:
+    cfg = VectorStoreConfig()
+    assert cfg.proposition_window_sentences >= 1
 
 
 def test_vector_retrieval_available_requires_ready_state() -> None:

@@ -116,7 +116,7 @@ Each content unit runs an independent **ontology loop** (`stategraph/atomic.py`)
 
 1. **Context assembly** — pick or retrieve ontology context for the unit:
    - LLM catalog selection (`selected_single_ontology`)
-   - Qdrant vector ensemble (`selected_vector_search_ontology`)
+   - Vector-store ensemble (`selected_vector_search_ontology`; Qdrant or LanceDB)
    - Fixed catalog ontology (`fixed_single_ontology`)
 2. **Render** — LLM emits `GraphUpdate` operations (Turtle or JSON-LD wire format)
 3. **Critic** — validate structure; retry up to `max_visits` (config or per-request override)
@@ -174,7 +174,7 @@ Full reference: [Configuration System](configuration.md).
 2. **Use `--head-chunks`** for large documents during development.
 3. **Monitor budget summaries** to estimate LLM cost at scale.
 4. **Provide seed ontologies** in `ONTOCAST_ONTOLOGY_DIRECTORY` for catalog selection modes.
-5. **Enable vector mode** only when Qdrant and embeddings are configured.
+5. **Enable vector mode** only when Qdrant or LanceDB and embeddings are configured.
 
 ## Next Steps
 

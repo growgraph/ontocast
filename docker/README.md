@@ -124,6 +124,30 @@ Collection names follow the same `{tenant}--{project}--{facts|ontologies}` patte
 
 ---
 
+## LanceDB (embedded vector store alternative)
+
+Use when you want vector search without running Qdrant. Configure **either** `QDRANT_URI` **or** `LANCEDB_ENABLED=true`, not both.
+
+**1. Install the optional extra:**
+
+```bash
+cd ontocast
+uv sync --extra lancedb
+```
+
+**2. Wire OntoCast:**
+
+```bash
+LANCEDB_ENABLED=true
+LANCEDB_DATA_DIR=~/.lancedb_data
+```
+
+OntoCast calls `lancedb.connect(LANCEDB_DATA_DIR)` once. Tenant/project isolation uses Lance **table names** (`{tenant}--{project}--ontologies` / `--facts`), matching Qdrant collection naming.
+
+Shared retrieval settings use the `VECTOR_STORE_*` prefix (fusion weights, `top_k`, dedup mode, induced subgraph limits, proposition windows).
+
+---
+
 ## Backend comparison
 
 | Feature | Fuseki (Docker) | In-memory (default) |
@@ -131,6 +155,13 @@ Collection names follow the same `{tenant}--{project}--{facts|ontologies}` patte
 | **Persistence** | Yes | No (process lifetime) |
 | **SPARQL** | Full 1.1 | Internal only |
 | **Tenancy partitions** | Yes | Yes |
+| **Docker required** | Yes | No |
+
+| Feature | Qdrant (Docker) | LanceDB (embedded) |
+|---------|-----------------|---------------------|
+| **Persistence** | Yes | Yes (local directory) |
+| **Tenancy partitions** | Yes (collections) | Yes (table names) |
+| **Env var** | `QDRANT_URI` | `LANCEDB_ENABLED` + `LANCEDB_DATA_DIR` |
 | **Docker required** | Yes | No |
 
 ---

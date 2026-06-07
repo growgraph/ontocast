@@ -28,16 +28,16 @@ class UnitOntologyContext(BaseModel):
 
 
 def _unit_queries(unit: SourceUnit, tools: ToolBox) -> list[str]:
-    qcfg = tools.config.tool_config.qdrant
+    vcfg = tools.config.tool_config.vector_store
     text = unit.text.strip()
     if not text:
         return []
-    if not qcfg.proposition_retrieval_enabled:
+    if not vcfg.proposition_retrieval_enabled:
         return [text]
     return split_proposition_windows(
         text,
-        max_sentences=qcfg.proposition_window_sentences,
-        max_windows=qcfg.proposition_max_windows,
+        max_sentences=vcfg.proposition_window_sentences,
+        max_windows=vcfg.proposition_max_windows,
     )
 
 
@@ -176,14 +176,14 @@ async def _resolve_ensemble_context(
         )
     retriever = tools.patch_retriever
     assert retriever is not None
-    qcfg = tools.config.tool_config.qdrant
+    vcfg = tools.config.tool_config.vector_store
     patch_graph, source_iris = await retriever.aretrieve_ensemble(
         queries=queries,
-        top_k=qcfg.top_k,
+        top_k=vcfg.top_k,
         expand_sparql=True,
-        subgraph_depth=qcfg.induced_subgraph_depth,
-        max_total_triples=qcfg.induced_subgraph_max_total_triples,
-        estimated_triples_per_query=qcfg.induced_subgraph_estimated_triples_per_query,
+        subgraph_depth=vcfg.induced_subgraph_depth,
+        max_total_triples=vcfg.induced_subgraph_max_total_triples,
+        estimated_triples_per_query=vcfg.induced_subgraph_estimated_triples_per_query,
     )
     metrics = retriever.last_retrieval_metrics
     if metrics:

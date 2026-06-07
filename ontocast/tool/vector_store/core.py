@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import abc
+import asyncio
 from datetime import datetime, timezone
 
 from pydantic import Field, field_validator
 
+from ontocast.config import VectorStoreConfig
 from ontocast.onto.model import BasePydanticModel
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.tenancy import TENANCY_SEP
 from ontocast.tool.onto import Tool
 from ontocast.tool.representation_contract import combine_embedding_text
 from ontocast.tool.representation_text import ROLE_PREDICATE, ROLE_RESOURCE
+from ontocast.tool.vector_store.embedding import (
+    EmbeddingTool,
+    FastembedBm25SparseTool,
+)
 
 VECTOR_ENTITY_ROLES = frozenset({ROLE_RESOURCE, ROLE_PREDICATE})
 
@@ -110,8 +117,12 @@ class OntologySearchHitsByChannel(BasePydanticModel):
     )
 
 
-class VectorStoreTool(Tool):
+class VectorStoreManager(Tool):
     """Abstract interface for vector store implementations."""
+
+    store_config: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
+    embedding: EmbeddingTool | None = Field(default=None, exclude=True)
+    sparse_embedding: FastembedBm25SparseTool | None = Field(default=None, exclude=True)
 
     @abc.abstractmethod
     async def initialize(self) -> None:
@@ -133,6 +144,53 @@ class VectorStoreTool(Tool):
         """Search ontology patches by query text (``top_k`` None → store default)."""
 
     @abc.abstractmethod
+    def search_patch_hits(
+        self,
+        query: str,
+        top_k: int | None = None,
+        filter_iri: str | None = None,
+        filter_version: str | None = None,
+        filter_hash: str | None = None,
+    ) -> list[OntologySearchHit]:
+        """Search ontology atoms and return rank-fused scored hit objects."""
+
+    @abc.abstractmethod
+    def search_patch_hits_many(
+        self,
+        queries: list[str],
+        top_k: int | None = None,
+        filter_iri: str | None = None,
+        filter_version: str | None = None,
+        filter_hash: str | None = None,
+    ) -> list[OntologySearchHitsByChannel]:
+        """Search ontology atoms for many queries with split-channel outputs."""
+
+    @abc.abstractmethod
+    async def asearch_patch_hits_many(
+        self,
+        queries: list[str],
+        top_k: int | None = None,
+        filter_iri: str | None = None,
+        filter_version: str | None = None,
+        filter_hash: str | None = None,
+    ) -> list[OntologySearchHitsByChannel]:
+        """Async variant of :meth:`search_patch_hits_many`."""
+
+    @abc.abstractmethod
+    def fetch_vectors(
+        self,
+        atom_ids: list[str],
+    ) -> dict[str, tuple[list[float], list[float]]]:
+        """Batch-fetch dense core/neighborhood vectors for MMR."""
+
+    async def afetch_vectors(
+        self,
+        atom_ids: list[str],
+    ) -> dict[str, tuple[list[float], list[float]]]:
+        """Async wrapper around :meth:`fetch_vectors`."""
+        return await asyncio.to_thread(self.fetch_vectors, atom_ids)
+
+    @abc.abstractmethod
     def delete_ontology(
         self,
         iri: str,
@@ -141,8 +199,27 @@ class VectorStoreTool(Tool):
     ) -> None:
         """Delete all indexed atoms for a specific ontology IRI."""
 
+    def reindex_ontology(self, ontology: Ontology) -> int:
+        """Replace all atoms for a given ontology and return indexed count."""
+        self.delete_ontology(ontology.iri)
+        return self.index_ontology(ontology)
+
+    def apply_tenancy(
+        self,
+        tenant: str,
+        project: str,
+        *,
+        sep: str = TENANCY_SEP,
+    ) -> None:
+        """Switch the active tenant/project partition when supported."""
+        if not self.supports_tenancy_partition():
+            raise NotImplementedError(
+                f"{type(self).__name__} does not isolate data by tenant/project"
+            )
+        raise NotImplementedError(f"{type(self).__name__} must implement apply_tenancy")
+
     def supports_tenancy_partition(self) -> bool:
-        """True if :meth:`clean_tenancy` clears isolated collections for (tenant, project)."""
+        """True if tenancy hooks isolate data by tenant/project."""
         return False
 
     async def clean_tenancy(self, tenant: str, project: str) -> None:

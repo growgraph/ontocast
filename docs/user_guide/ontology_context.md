@@ -12,19 +12,24 @@ Set via `ONTOLOGY_CONTEXT_MODE` (server default) or per-request `ontology_contex
 
 The LLM selects one catalog ontology per content unit from seed ontologies in the triple store / `ONTOCAST_ONTOLOGY_DIRECTORY`.
 
-- Does **not** require Qdrant
+- Does **not** require a vector store
 - Vector store initialization is skipped unless vector mode is requested
 - Optional `ontology_selection_user_instruction` guides selection
 
 ### `selected_vector_search_ontology`
 
-Retrieves a stitched ontology ensemble from Qdrant using hybrid vector + BM25 retrieval, then expands an induced subgraph subject to triple budgets.
+Retrieves a stitched ontology ensemble from the configured vector store using hybrid dense + BM25 retrieval, then expands an induced subgraph subject to triple budgets.
 
-**Requires:**
+**Requires one vector backend:**
 
-- `QDRANT_URI` (and optionally `QDRANT_API_KEY`)
-- Compatible `EMBEDDING_*` settings
-- Indexed ontology atoms in the tenant/project collection
+| Backend | Configuration |
+|---------|---------------|
+| **Qdrant** (server) | `QDRANT_URI` (and optionally `QDRANT_API_KEY`) |
+| **LanceDB** (embedded) | `LANCEDB_ENABLED=true`, `LANCEDB_DATA_DIR=~/.lancedb_data` — install with `uv sync --extra lancedb` |
+
+Also required: compatible `EMBEDDING_*` settings and indexed ontology atoms in the active tenant/project partition (Qdrant collection or LanceDB table).
+
+`QDRANT_URI` and `LANCEDB_ENABLED=true` are mutually exclusive.
 
 If vector infrastructure is unavailable, the API returns **409** with `error_code: VECTOR_STORE_UNAVAILABLE`.
 
@@ -32,12 +37,12 @@ If vector infrastructure is unavailable, the API returns **409** with `error_cod
 
 | Variable | Role |
 |----------|------|
-| `QDRANT_TOP_K` | Fused hits per proposition window (default `10`) |
-| `QDRANT_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | Global triple cap for context (default `550`) |
-| `QDRANT_INDUCED_SUBGRAPH_DEPTH` | BFS depth for hub seed expansion (default `2`) |
-| `QDRANT_INDUCED_SUBGRAPH_HUB_SEED_COUNT` | Top seeds receiving full BFS budget (default `8`) |
-| `QDRANT_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH` | `rdfs:subClassOf` hops included in schema shell (default `3`) |
-| `QDRANT_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | Per-entity BFS quota hint |
+| `VECTOR_STORE_TOP_K` | Fused hits per proposition window (default `10`) |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | Global triple cap for context (default `550`) |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH` | BFS depth for hub seed expansion (default `2`) |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT` | Top seeds receiving full BFS budget (default `8`) |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH` | `rdfs:subClassOf` hops included in schema shell (default `3`) |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | Per-entity BFS quota hint |
 | `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `hybrid` (default), `max_score`, or `rrf` |
 | `ONTOLOGY_PATCH_MAX_ATOMS_TIER1` | Strong global seed cap for hybrid merge (default `12`) |
 | `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | Tier-2 seeds per ontology IRI (default `3`) |
@@ -52,7 +57,7 @@ Use vector search mode with defaults above, or tighten further:
 
 - `ONTOLOGY_PATCH_MAX_ATOMS=20`
 - `ONTOLOGY_PATCH_MERGED_SCORE_RATIO=0.5`
-- `QDRANT_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=600`
+- `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=600`
 
 Retrieval expands ontology scope beyond hit sources when seeds reference classes
 in other catalog ontologies via `rdfs:subClassOf`, `rdfs:domain`, or `rdfs:range`.
@@ -99,9 +104,12 @@ Ontologies are synced to the triple store on startup when configured.
 
 ## Vector Indexing
 
-When Qdrant is configured and vector mode is used, ontology atoms are embedded (core + neighborhood representations) and upserted into the tenant/project ontologies collection. BM25 sparse vectors provide a lexical retrieval lane fused with dense scores.
+When a vector backend is configured (Qdrant or LanceDB) and vector mode is used, ontology atoms are embedded (core + neighborhood representations) and upserted into the tenant/project ontologies partition. BM25 sparse vectors provide a lexical retrieval lane fused with dense scores.
 
-Dedup policy (`QDRANT_DEDUP_MODE`): `iri` (one point per entity key) or `atom_id` (every atom variant).
+- **Qdrant** — collections `{tenant}--{project}--ontologies` / `--facts`
+- **LanceDB** — tables with the same naming pattern under `LANCEDB_DATA_DIR`
+
+Dedup policy (`VECTOR_STORE_DEDUP_MODE`): `iri` (one point per entity key) or `atom_id` (every atom variant).
 
 ## Related
 

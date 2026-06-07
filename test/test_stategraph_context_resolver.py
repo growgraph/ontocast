@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from rdflib import URIRef
 
-from ontocast.config import QdrantConfig
+from ontocast.config import VectorStoreConfig
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import OntologyAssemblyMode, OntologyContextMode
 from ontocast.onto.ontology import Ontology
@@ -50,7 +50,7 @@ def _build_tools(
     ontology_manager: object,
     llm: object | None = None,
 ) -> ToolBox:
-    qdrant = QdrantConfig(top_k=3, proposition_retrieval_enabled=False)
+    vcfg = VectorStoreConfig(top_k=3, proposition_retrieval_enabled=False)
     return cast(
         ToolBox,
         SimpleNamespace(
@@ -62,7 +62,7 @@ def _build_tools(
             vector_store_last_error=None,
             ontology_manager=ontology_manager,
             llm=llm,
-            config=SimpleNamespace(tool_config=SimpleNamespace(qdrant=qdrant)),
+            config=SimpleNamespace(tool_config=SimpleNamespace(vector_store=vcfg)),
         ),
     )
 

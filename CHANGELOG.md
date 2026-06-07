@@ -5,9 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.3] - 2026-06-08
 
 ### Added
+- **LanceDB** embedded vector store (`LANCEDB_ENABLED`, `LANCEDB_DATA_DIR`) as a local alternative to Qdrant.
+
+### Changed
+- **BREAKING**: Backend-agnostic vector retrieval settings moved from `QDRANT_*` to `VECTOR_STORE_*` (`top_k`, induced-subgraph limits, proposition windows, fusion weights, dedup mode, embedding batch size). `QDRANT_*` now covers connection/transport only (`URI`, `API_KEY`, collections, gRPC, `VECTOR_SIZE`, `DISTANCE`, `UPSERT_BATCH_SIZE`). Old `QDRANT_TOP_K`, `QDRANT_INDUCED_SUBGRAPH_*`, etc. are **ignored**.
+- **BREAKING**: Configure **either** `QDRANT_URI` **or** `LANCEDB_ENABLED=true`, not both.
+
+## [0.4.2] - 2026-06-08
+
+### Added
+- **In-memory triple store** — default pyoxigraph backend when Fuseki is not configured.
+
+### Changed
+- **BREAKING**: **Neo4j triple store removed** (`NEO4J_*` env vars no longer select a backend). Without Fuseki, OntoCast now uses the in-memory pyoxigraph store automatically.
+
+### Removed
+- `Neo4jTripleStoreManager` and `NEO4J_*` configuration.
+
+## [0.4.1] - 2026-06-07
+
+### Added
+- **Structured documents** — section label catalog, section-aligned chunk prepare (segment → tag → filter → size), optional summarization (`target_sections`, `summarize_sections`, `section_schema_id`, `document_type_hint`).
 - **Facts precision/recall/F1** on `POST /match/evaluate` (`fact_precision`, `fact_recall`, `fact_f1` and counts): relational triples only, excluding schema predicates and triples with ontological class/concept nodes in subject or object position.
 - **Anthropic (Claude) and Google (Gemini) LLM providers** via `LLM_PROVIDER=anthropic|google`, with `ClaudeModel` and `GeminiModel` config enums.
 - **Token usage reporting** in `BudgetTracker` when providers return `usage_metadata` on LLM responses (character counts remain the universal fallback).
@@ -16,25 +37,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Optional process concurrency cap** (`MAX_CONCURRENT_PROCESSES`) — limits simultaneous `/process` and `/process_unit` handlers (additional requests wait for a slot).
 - **OpenAI Batch API helpers** (`ontocast.tool.llm_batch`) to export chat batch JSONL and import completed results into the LLM disk cache for offline benchmark pre-warming.
 - **`BudgetTracker.cache_hits`** — disk-cache hits count toward character totals but not `calls_count`; included in budget summaries when non-zero.
-- **Multi-domain section label catalog** (`data/section_labels/`) — versioned YAML schemas for academic, financial, legal, clinical, manual, fiction, and general documents; `section_schema_id` and `document_type_hint` on `/process` and CLI.
-- **Structured-document preprocessing** for heading-structured text: the **Chunk** node runs prepare (segment → tag → filter → size) with section-aligned labels via document-wide regex spans and parallel LLM backfill; `target_sections` filters units before extraction.
-- **Optional chunk summarization** — `summarize_sections` and `summary_max_sentences` on `/process` and CLI (`--summarize-sections`, `--summary-max-sentences`) run a **Summarize Chunks** graph node; ontology/facts render and critic prompts use `ContentUnit.extraction_text` (summary when present, else full chunk text).
 
 ### Changed
-- **Section pipeline layout** — span detection and LLM backfill live under `ontocast.tool.chunk` (`sections.py`, `section_llm.py`, `segment.py`); section-label YAML and loader live in `ontocast.config.section_labels`; runtime settings remain `from ontocast.config import Config`; `SectionSpan` in `ontocast.onto.section_models`.
-- **Chunk prepare** — pre-tag coalescing merges undersized hybrid segments into the right neighbor (trailing tiny segments merge left); LLM section backfill skips fragments below `CHUNK_SECTION_TAG_MIN_CHARS`; academic abstract detection uses relaxed heading patterns and optional front-matter span injection.
-- **Chunk prepare** — section tagging, allowlist filtering, and size normalization run in one pipeline inside the Chunk node (removed separate Tag Sections workflow node).
-- **LLM caching path** — `complete`, `extract`, `__call__`, and `acall` share one `_invoke_cached` implementation with consistent cache keys (normalized prompt text), optional disable/read-only modes, and provider calls gated by the global in-flight semaphore.
-- **Facts extraction prompts** (`facts_guidelines.py`): clearer two-namespace contract — domain ontology is read-only schema plus optional **reference individuals**; all text-derived occurrences use `cd:` with `lowercase_snake_case` local names. New rules separate **classes** from **instances** (no PascalCase class IRIs in subject/object slots), forbid typing `cd:` entities as `rdfs:Class` / `rdf:Property`, and add a final structural validation checklist before output.
+- **JSON-LD reinforced as internal exchange format** — compact JSON-LD (`@context` + `@graph`) when `LLM_GRAPH_FORMAT=jsonld`; prompt context, graph format instructions, and schema bindings share one format profile while runtime models stay canonical.
+- **Section pipeline layout** — span detection and LLM backfill under `ontocast.tool.chunk`; section-label YAML in `ontocast.config.section_labels`.
+- **Chunk prepare** — coalescing, section tagging, allowlist filtering, and size normalization in one pipeline inside the Chunk node.
+- **LLM caching path** — `complete`, `extract`, `__call__`, and `acall` share one `_invoke_cached` implementation with consistent cache keys, optional disable/read-only modes, and provider calls gated by the global in-flight semaphore.
+- **Facts extraction prompts** (`facts_guidelines.py`): clearer two-namespace contract — domain ontology is read-only schema plus optional **reference individuals**; all text-derived occurrences use `cd:` with `lowercase_snake_case` local names.
 
 ### Fixed
-- **Entity alignment** (`EntityAligner`): identical `URIRef` across graphs always form a compatibility edge (score 1.0), so shared ontology terms (e.g. a class used in both predicted and ground-truth graphs) cluster correctly even when label embeddings differ.
-- **Match / evaluate API** (`match_models`, `triple_evaluator`, `match_common`): entity fields stay `URIRef` through Pydantic validation; triple projection and entity precision/recall use set-based unmatched counts so shared-vocabulary IRIs are not double-counted as false positives/negatives.
+- **Entity alignment** (`EntityAligner`): identical `URIRef` across graphs always form a compatibility edge (score 1.0).
+- **Match / evaluate API** (`match_models`, `triple_evaluator`, `match_common`): entity fields stay `URIRef` through Pydantic validation; triple projection and entity precision/recall use set-based unmatched counts.
 
 ### Documentation
-- User guide: facts two-namespace model (`concepts.md`), facts guidelines vs `facts_user_instruction` (`user_instructions.md`), entity alignment and evaluate semantics (`aggregation.md`, `api.md`, `workflow.md`).
-- User guide: LLM cache configuration, in-flight/process limits, batch pre-warming, and `/info` cache stats (`llm_caching.md`, `configuration.md`, `api.md`, `concepts.md`, `workflow.md`).
-- User guide: structured documents — section tagging, section-aligned chunk labels, `target_sections` / `summarize_sections` (`concepts.md`, `workflow.md`, `api.md`, `configuration.md`).
+- Structured documents, facts two-namespace model, entity alignment, LLM cache, and evaluate semantics (`concepts.md`, `workflow.md`, `api.md`, `configuration.md`, `aggregation.md`, `llm_caching.md`, `user_instructions.md`).
 
 ## [0.4.0] - 2026-05-26
 
@@ -46,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **JSON-LD as LLM wire format**: `LLM_GRAPH_FORMAT=jsonld` emits compact JSON-LD (`@context` + `@graph`) for graph payloads while keeping canonical domain models (`GraphUpdate`, critique reports, etc.) at runtime; Turtle remains the default.
 - Per-unit **ontology catalog selection** (`select_ontology_catalog`) with optional `ontology_selection_user_instruction`.
 - **Ontology context modes**: `selected_single_ontology`, `selected_vector_search_ontology` (Qdrant stitched ensemble), and `fixed_single_ontology` (`ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`).
-- **Qdrant vector retrieval** with dual-vector + BM25 hybrid fusion, patch-retrieval scoring/MMR caps (`ONTOLOGY_PATCH_*`), and induced-subgraph triple budgets (`QDRANT_INDUCED_SUBGRAPH_*`).
+- **Qdrant vector retrieval** with dual-vector + BM25 hybrid fusion, patch-retrieval scoring/MMR caps (`ONTOLOGY_PATCH_*`), and induced-subgraph triple budgets (`VECTOR_STORE_INDUCED_SUBGRAPH_*` since 0.4.3; was `QDRANT_INDUCED_SUBGRAPH_*` in 0.4.0–0.4.2).
 - **Embedding configuration** surface (`EMBEDDING_*`) and embedding-ready representation contracts for atomizer/retrieval pipelines.
 - **Tenancy-aware storage**: `tenant` / `project` request parameters partition Fuseki datasets and Qdrant collections (`{tenant}--{project}--facts|ontologies`); defaults derive from built-in `ontocast` / `test`.
 - REST **ontology management** routes: `POST/PUT/DELETE /ontologies` for catalog upload, replace, and delete.
@@ -194,6 +210,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 
 ## Migration Guide
+
+### Upgrading to 0.4.3
+
+**Vector store env vars** — retrieval/indexing settings are backend-agnostic; rename `QDRANT_` → `VECTOR_STORE_` for:
+
+| Old (ignored) | New |
+|---------------|-----|
+| `QDRANT_TOP_K` | `VECTOR_STORE_TOP_K` |
+| `QDRANT_INDUCED_SUBGRAPH_DEPTH` | `VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH` |
+| `QDRANT_INDUCED_SUBGRAPH_HUB_SEED_COUNT` | `VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT` |
+| `QDRANT_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH` | `VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH` |
+| `QDRANT_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` |
+| `QDRANT_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | `VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` |
+| `QDRANT_PROPOSITION_*` | `VECTOR_STORE_PROPOSITION_*` |
+| `QDRANT_FUSION_*` | `VECTOR_STORE_FUSION_*` |
+| `QDRANT_DEDUP_*` | `VECTOR_STORE_DEDUP_*` |
+| `QDRANT_EMBEDDING_BATCH_SIZE` | `VECTOR_STORE_EMBEDDING_BATCH_SIZE` |
+| `QDRANT_CONSISTENCY_CRITIC_SIMILARITY_THRESHOLD` | `VECTOR_STORE_CONSISTENCY_CRITIC_SIMILARITY_THRESHOLD` |
+
+**Unchanged under `QDRANT_`:** `URI`, `API_KEY`, `ONTOLOGY_COLLECTION`, `FACTS_COLLECTION`, `GRPC_PORT`, `USE_GRPC`, `VECTOR_SIZE`, `DISTANCE`, `UPSERT_BATCH_SIZE`.
+
+**LanceDB (optional):** `LANCEDB_ENABLED=true` and `LANCEDB_DATA_DIR=~/.lancedb_data` (`uv sync --extra lancedb`). Do not set `QDRANT_URI` at the same time.
+
+### Upgrading to 0.4.2
+
+**Triple store:**
+
+```bash
+# Old — Neo4j backend (removed)
+NEO4J_URI=bolt://localhost:7687
+NEO4J_AUTH=neo4j/password
+
+# New — omit Fuseki for zero-config dev, or use Fuseki for persistence
+FUSEKI_URI=http://localhost:3032
+FUSEKI_AUTH=admin:password
+# (no triple-store env vars → in-memory pyoxigraph)
+```
 
 ### Upgrading to 0.4.0
 

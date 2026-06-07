@@ -40,6 +40,11 @@ Runs the full document pipeline: convert → chunk → ontology map/reduce → f
 | `ontology_user_instruction` | Guide ontology extraction |
 | `ontology_selection_user_instruction` | Guide catalog ontology selection |
 | `facts_user_instruction` | Guide facts extraction |
+| `target_sections` | Comma-separated or JSON list; section prepare + keep only listed sections |
+| `summarize_sections` | Section prepare + summarization; `*` or empty = all chunks |
+| `summary_max_sentences` | Max sentences per summary when summarization runs (default `5`) |
+| `section_schema_id` | Section label schema (`academic`, `financial`, `legal`, …) |
+| `document_type_hint` | Free-text hint to resolve schema when `section_schema_id` is omitted |
 
 **Examples:**
 
@@ -109,7 +114,7 @@ See [Tenancy](tenancy.md) for dataset naming.
 
 ### `POST /flush`
 
-Clear triple-store data (and vector-store partitions when Qdrant is configured).
+Clear triple-store data (and vector-store partitions when a vector backend is configured).
 
 | Query params | Behavior |
 |--------------|----------|

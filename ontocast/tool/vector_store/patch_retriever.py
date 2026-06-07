@@ -13,7 +13,7 @@ from pydantic import Field, PrivateAttr
 from rdflib import Namespace, URIRef
 from rdflib.namespace import RDFS
 
-from ontocast.config import CrossQueryMergeMode, PatchRetrievalConfig, QdrantConfig
+from ontocast.config import CrossQueryMergeMode, PatchRetrievalConfig, VectorStoreConfig
 from ontocast.onto.constants import COMMON_PREFIXES
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
@@ -22,8 +22,13 @@ from ontocast.tool.vector_store.core import (
     GraphAtom,
     OntologySearchHit,
     OntologySearchHitsByChannel,
+    VectorStoreManager,
 )
-from ontocast.tool.vector_store.qdrant import QdrantVectorStore
+from ontocast.tool.vector_store.util import (
+    normalized_core_neighborhood_weights,
+    normalized_fusion_weights,
+    rank_fuse_channel_hits,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,29 +93,6 @@ def _filter_hits_by_relative_floor(
     return [hit for hit in hits if hit.score >= floor]
 
 
-def _normalized_fusion_weights_triple(
-    qc: QdrantConfig,
-) -> tuple[float, float, float]:
-    cw, nw, bw = (
-        qc.fusion_core_weight,
-        qc.fusion_neighborhood_weight,
-        qc.fusion_bm25_weight,
-    )
-    total = cw + nw + bw
-    if total <= 0.0:
-        return (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
-    return (cw / total, nw / total, bw / total)
-
-
-def _normalize_core_neighborhood_weights(qc: QdrantConfig) -> tuple[float, float]:
-    """Normalized dense-lane weights for MMR cosine fusion (BM25 excluded)."""
-    cw, nw, _ = _normalized_fusion_weights_triple(qc)
-    total = cw + nw
-    if total <= 0.0:
-        return (0.5, 0.5)
-    return (cw / total, nw / total)
-
-
 def _normalize_relevance_scores(atoms: list[GraphAtom]) -> list[GraphAtom]:
     """Scale atom scores to [0, 1] for MMR relevance term."""
     if not atoms:
@@ -122,55 +104,6 @@ def _normalize_relevance_scores(atoms: list[GraphAtom]) -> list[GraphAtom]:
         atom.model_copy(update={"score": float(atom.score or 0.0) / max_score})
         for atom in atoms
     ]
-
-
-def _rank_fuse_hits(
-    core_hits: list[OntologySearchHit],
-    neighborhood_hits: list[OntologySearchHit],
-    bm25_hits: list[OntologySearchHit],
-    *,
-    core_weight: float,
-    neighborhood_weight: float,
-    bm25_weight: float,
-) -> list[OntologySearchHit]:
-    """Rank-fuse core, neighborhood, and optional BM25 hit lists by weighted reciprocal rank."""
-    best_by_id: dict[str, OntologySearchHit] = {}
-    rank_score_by_id: dict[str, float] = {}
-
-    for rank, hit in enumerate(core_hits, start=1):
-        aid = hit.atom.atom_id
-        rank_score_by_id[aid] = rank_score_by_id.get(aid, 0.0) + (core_weight / rank)
-        prev = best_by_id.get(aid)
-        if prev is None or hit.score > prev.score:
-            best_by_id[aid] = hit
-
-    for rank, hit in enumerate(neighborhood_hits, start=1):
-        aid = hit.atom.atom_id
-        rank_score_by_id[aid] = rank_score_by_id.get(aid, 0.0) + (
-            neighborhood_weight / rank
-        )
-        prev = best_by_id.get(aid)
-        if prev is None or hit.score > prev.score:
-            best_by_id[aid] = hit
-
-    for rank, hit in enumerate(bm25_hits, start=1):
-        aid = hit.atom.atom_id
-        rank_score_by_id[aid] = rank_score_by_id.get(aid, 0.0) + (bm25_weight / rank)
-        prev = best_by_id.get(aid)
-        if prev is None or hit.score > prev.score:
-            best_by_id[aid] = hit
-
-    ranked_ids = sorted(
-        rank_score_by_id.keys(),
-        key=lambda aid: (rank_score_by_id[aid], best_by_id[aid].score, aid),
-        reverse=True,
-    )
-    out: list[OntologySearchHit] = []
-    for aid in ranked_ids:
-        source_hit = best_by_id[aid]
-        atom = source_hit.atom.model_copy(update={"score": rank_score_by_id[aid]})
-        out.append(OntologySearchHit(atom=atom, score=rank_score_by_id[aid]))
-    return out
 
 
 def _best_hit_by_entity_iri(
@@ -263,13 +196,14 @@ def _merge_hits_across_queries(
     max_atoms_total: int,
 ) -> list[OntologySearchHit]:
     if merge_mode == CrossQueryMergeMode.RRF:
-        return _rank_fuse_hits(
+        return rank_fuse_channel_hits(
             collected,
             [],
             [],
             core_weight=1.0,
             neighborhood_weight=0.0,
             bm25_weight=0.0,
+            limit=max(len(collected), 1),
         )
     if merge_mode == CrossQueryMergeMode.MAX_SCORE:
         merged = _merge_hits_across_queries_max_score(collected)
@@ -288,7 +222,7 @@ def _merge_hits_across_queries(
 def _filter_and_merge_patch_hits(
     hits_by_query: list[OntologySearchHitsByChannel],
     *,
-    qdrant_config: QdrantConfig,
+    store_config: VectorStoreConfig,
     patch_config: PatchRetrievalConfig,
     per_query_core_score_ratio: float,
     per_query_neighborhood_score_ratio: float,
@@ -299,7 +233,7 @@ def _filter_and_merge_patch_hits(
     min_merged_max_score: float,
 ) -> list[GraphAtom]:
     """Filter each channel per query, then merge across queries."""
-    cw, nw, bw = _normalized_fusion_weights_triple(qdrant_config)
+    cw, nw, bw = normalized_fusion_weights(store_config)
     collected: list[OntologySearchHit] = []
     for query_hits in hits_by_query:
         filtered_core = _filter_hits_by_relative_floor(
@@ -318,13 +252,19 @@ def _filter_and_merge_patch_hits(
             min_query_best_score=min_bm25_query_best_score,
         )
         collected.extend(
-            _rank_fuse_hits(
+            rank_fuse_channel_hits(
                 filtered_core,
                 filtered_neighborhood,
                 filtered_bm25,
                 core_weight=cw,
                 neighborhood_weight=nw,
                 bm25_weight=bw,
+                limit=max(
+                    len(filtered_core)
+                    + len(filtered_neighborhood)
+                    + len(filtered_bm25),
+                    1,
+                ),
             )
         )
 
@@ -492,7 +432,7 @@ def _mmr_rerank(
 class OntologyPatchRetriever(Tool):
     """Combines vector retrieval into one composite ontology graph."""
 
-    vector_store: QdrantVectorStore = Field(exclude=True)
+    vector_store: VectorStoreManager = Field(exclude=True)
     sparql_tool: Any | None = Field(default=None, exclude=True)
     patch: PatchRetrievalConfig = Field(
         default_factory=PatchRetrievalConfig,
@@ -507,7 +447,7 @@ class OntologyPatchRetriever(Tool):
     def _effective_top_k(self, top_k: int | None) -> int:
         if top_k is not None:
             return top_k
-        return self.vector_store.config.top_k
+        return self.vector_store.store_config.top_k
 
     def retrieve(
         self,
@@ -601,11 +541,11 @@ class OntologyPatchRetriever(Tool):
             queries=queries,
             top_k=eff_top_k,
         )
-        qc = self.vector_store.config
+        sc = self.vector_store.store_config
         pc = self.patch
         merged = _filter_and_merge_patch_hits(
             hits_by_query,
-            qdrant_config=qc,
+            store_config=sc,
             patch_config=pc,
             per_query_core_score_ratio=pc.per_query_core_score_ratio,
             per_query_neighborhood_score_ratio=pc.per_query_neighborhood_score_ratio,
@@ -630,7 +570,7 @@ class OntologyPatchRetriever(Tool):
             vectors = await self.vector_store.afetch_vectors(
                 [atom.atom_id for atom in merged]
             )
-            core_w, neigh_w = _normalize_core_neighborhood_weights(qc)
+            core_w, neigh_w = normalized_core_neighborhood_weights(sc)
             merged = _mmr_rerank(
                 merged,
                 vectors,
@@ -698,8 +638,8 @@ class OntologyPatchRetriever(Tool):
             if expanded:
                 self._last_retrieval_metrics["expanded_ontology_iris"] = expanded
 
-        hub_seed_count = qc.induced_subgraph_hub_seed_count
-        ancestor_depth = qc.induced_subgraph_ancestor_closure_depth
+        hub_seed_count = sc.induced_subgraph_hub_seed_count
+        ancestor_depth = sc.induced_subgraph_ancestor_closure_depth
 
         graph = await self.sparql_tool.aget_induced_subgraph(
             entity_uris=entity_uris,
