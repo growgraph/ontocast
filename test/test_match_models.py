@@ -68,7 +68,7 @@ def test_entity_cluster_accepts_string_entities_in_members() -> None:
 
 
 def test_derive_matches_request_accepts_string_entities_in_clusters() -> None:
-    from ontocast.cli.server import DeriveMatchesRequest
+    from ontocast.api.match_models import DeriveMatchesRequest
 
     request = DeriveMatchesRequest.model_validate(
         {

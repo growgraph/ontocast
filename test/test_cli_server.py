@@ -6,24 +6,24 @@ import pytest
 from rdflib import RDF, URIRef
 from starlette.testclient import TestClient
 
-from ontocast.api.schemas import ProcessResultData
-from ontocast.cli import server as server_module
-from ontocast.cli.http_parse import (
+from ontocast.api import app as app_module
+from ontocast.api.app import create_app
+from ontocast.api.parse import (
     parse_max_visits_param,
     parse_ontology_context_mode_param,
     resolve_ontology_context_mode,
 )
-from ontocast.cli.http_responses import ontology_context_config_error_response
-from ontocast.cli.process_request import (
+from ontocast.api.process_helpers import (
+    calculate_recursion_limit,
+    persist_unit_pipeline_outputs,
+    select_unit_facts_ontology_graph,
+)
+from ontocast.api.process_request import (
     ParsedProcessRequest,
     build_agent_state_from_parsed,
 )
-from ontocast.cli.server import (
-    _persist_unit_pipeline_outputs,
-    _select_unit_facts_ontology_graph,
-    calculate_recursion_limit,
-    create_app,
-)
+from ontocast.api.responses import ontology_context_config_error_response
+from ontocast.api.schemas import ProcessResultData
 from ontocast.config import ServerConfig
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.docling_helpers import plain_text_to_docling_doc
@@ -207,7 +207,7 @@ def test_select_unit_facts_ontology_graph_prefers_facts_snapshot() -> None:
         current_ontology=Ontology(graph=onto_graph, iri="https://example.org/onto"),
     )
 
-    selected = _select_unit_facts_ontology_graph(onto_result, facts_result)
+    selected = select_unit_facts_ontology_graph(onto_result, facts_result)
 
     assert selected is facts_graph
 
@@ -218,7 +218,7 @@ def test_select_unit_facts_ontology_graph_falls_back_to_onto_result() -> None:
         current_ontology=Ontology(graph=onto_graph, iri="https://example.org/onto"),
     )
 
-    selected = _select_unit_facts_ontology_graph(onto_result, None)
+    selected = select_unit_facts_ontology_graph(onto_result, None)
 
     assert len(selected) > 0
     assert set(selected) == set(onto_result.current_ontology.graph)
@@ -256,10 +256,12 @@ def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
             return graph
 
     tools = cast(ToolBox, SimpleNamespace(aggregator=_Aggregator()))
-    monkeypatch.setattr("ontocast.cli.server.serialize_agent_state", lambda *_: None)
+    monkeypatch.setattr(
+        "ontocast.api.process_helpers.serialize_agent_state", lambda *_: None
+    )
 
     asyncio.run(
-        _persist_unit_pipeline_outputs(
+        persist_unit_pipeline_outputs(
             state=state,
             onto_result=onto_result,
             facts_result=facts_result,
@@ -333,14 +335,14 @@ def _match_test_app(monkeypatch: pytest.MonkeyPatch):
                 fact_ground_truth_count=1,
             )
 
-    monkeypatch.setattr(server_module, "TripleSetEvaluator", _FakeEvaluator)
+    monkeypatch.setattr(app_module, "TripleSetEvaluator", _FakeEvaluator)
     monkeypatch.setattr(
-        server_module,
+        app_module,
         "derive_pair_matches",
         lambda *_args, **_kwargs: [],
     )
     monkeypatch.setattr(
-        server_module, "create_agent_graph", lambda _tools: SimpleNamespace()
+        app_module, "create_agent_graph", lambda _tools: SimpleNamespace()
     )
     tools = cast(
         ToolBox,
@@ -409,7 +411,7 @@ def test_evaluate_match_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_derive_matches_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        server_module, "create_agent_graph", lambda _tools: SimpleNamespace()
+        app_module, "create_agent_graph", lambda _tools: SimpleNamespace()
     )
     tools = cast(ToolBox, SimpleNamespace())
     app = create_app(

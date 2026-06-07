@@ -39,7 +39,7 @@ from ontocast.tool.vector_store.patch_retriever import (
     _normalize_core_neighborhood_weights,
 )
 from ontocast.tool.vector_store.qdrant import QdrantVectorStore
-from ontocast.util import render_text_hash
+from ontocast.util.hash import render_text_hash
 
 
 class CountingEmbeddingTool(EmbeddingTool):

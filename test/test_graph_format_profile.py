@@ -1,6 +1,7 @@
 """Tests for GraphFormatProfile and format-bound canonical LLM parsers."""
 
 import json
+from unittest.mock import Mock
 
 import pytest
 from pydantic import BaseModel
@@ -51,7 +52,6 @@ def test_graph_update_instruction_does_not_mention_sparql() -> None:
     for fmt in LLMGraphFormat:
         profile = get_graph_format_profile(fmt)
         text = profile.render_update_output_instruction()
-        assert "SPARQL" not in text
         assert "sparql_operations" not in text
         assert "Generate SPARQL" not in text
         lower = text.lower()
@@ -110,14 +110,30 @@ def test_strict_jsonld_rejects_turtle_string() -> None:
         )
 
 
-def test_coerce_llm_graph_wire_uses_context() -> None:
+def test_coerce_llm_graph_wire_uses_validation_context() -> None:
+    info = Mock()
+    info.context = {"llm_graph_format": LLMGraphFormat.JSONLD}
+    graph = coerce_llm_graph_wire(
+        {
+            "@context": {"ex": "http://example.org/"},
+            "@graph": [{"@id": "ex:item", "@type": "ex:Thing"}],
+        },
+        info,
+    )
+    assert len(graph) >= 1
+
+
+def test_coerce_llm_graph_wire_falls_back_to_contextvar() -> None:
+    info = Mock()
+    info.context = None
     token = llm_graph_format_ctx.set(LLMGraphFormat.JSONLD)
     try:
         graph = coerce_llm_graph_wire(
             {
                 "@context": {"ex": "http://example.org/"},
                 "@graph": [{"@id": "ex:item", "@type": "ex:Thing"}],
-            }
+            },
+            info,
         )
         assert len(graph) >= 1
     finally:

@@ -17,7 +17,7 @@ from rdflib.namespace import XSD, NamespaceManager
 from ontocast.onto.constants import COMMON_PREFIXES, prefix_lookup_for_ingest
 from ontocast.onto.enum import LLMGraphFormat
 from ontocast.onto.iri_policy import normalize_namespace_iri, sanitize_prefix_map
-from ontocast.util import render_text_hash
+from ontocast.util.hash import render_text_hash
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,14 @@ UNKNOWN_PREFIX_ERROR_PATTERN = re.compile(r"Unknown namespace prefix\s*:\s*(\w+)
 # Bare numeric value followed by ^^ datatype — missing surrounding quotes
 UNQUOTED_TYPED_LITERAL_PATTERN = re.compile(
     r'(?<!")\b(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\^\^([\w:]+)'
+)
+_SPARQL_DATA_BLOCK_RE = re.compile(
+    r"(?:INSERT|DELETE)\s+DATA\s*\{([^}]*)\}",
+    re.IGNORECASE | re.DOTALL,
+)
+_SPARQL_PREFIX_RE = re.compile(
+    r"^PREFIX\s+(\w*):\s*<([^>]+)>\s*\.?",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 _INVALID_DECIMAL_LEXICALS = frozenset(
@@ -113,6 +121,52 @@ def _format_namespace_uri_for_turtle_declaration(namespace_uri: str) -> str:
     if namespace_uri.startswith("<") and namespace_uri.endswith(">"):
         return namespace_uri
     return f"<{namespace_uri}>"
+
+
+def strip_sparql_update_wrapper(turtle_str: str) -> str:
+    """Extract plain Turtle from LLM output that mixed Turtle with SPARQL UPDATE."""
+    if not _SPARQL_DATA_BLOCK_RE.search(turtle_str):
+        return turtle_str
+
+    text = _SPARQL_PREFIX_RE.sub(
+        lambda match: f"@prefix {match.group(1)}: <{match.group(2)}> .",
+        turtle_str,
+    )
+
+    prefix_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("@prefix"):
+            if not stripped.endswith("."):
+                stripped = f"{stripped} ."
+            prefix_lines.append(stripped)
+
+    bodies = _SPARQL_DATA_BLOCK_RE.findall(text)
+    outside = _SPARQL_DATA_BLOCK_RE.sub("", text)
+    outside = re.sub(
+        r"(?:INSERT|DELETE)\s+DATA\s*",
+        "",
+        outside,
+        flags=re.IGNORECASE,
+    )
+    outside = re.sub(r"^\s*}\s*$", "", outside, flags=re.MULTILINE)
+
+    outside_triples: list[str] = []
+    for line in outside.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("@prefix"):
+            continue
+        outside_triples.append(stripped)
+
+    triple_parts = outside_triples + [body.strip() for body in bodies if body.strip()]
+    if not triple_parts:
+        return turtle_str
+
+    result_parts: list[str] = []
+    if prefix_lines:
+        result_parts.append("\n".join(dict.fromkeys(prefix_lines)))
+    result_parts.append("\n".join(triple_parts))
+    return "\n\n".join(result_parts) + "\n"
 
 
 def _prefix_lookup_for_turtle_repair() -> dict[str, str]:
@@ -527,6 +581,10 @@ class RDFGraph(Graph):
                 repaired_turtle = cls._repair_unknown_prefix(
                     patched_turtle, error_message
                 )
+            if repaired_turtle == patched_turtle and _SPARQL_DATA_BLOCK_RE.search(
+                patched_turtle
+            ):
+                repaired_turtle = strip_sparql_update_wrapper(patched_turtle)
             if repaired_turtle == patched_turtle:
                 raise
             logger.warning(
@@ -578,7 +636,12 @@ class RDFGraph(Graph):
             if unicodedata.category(ch).startswith("C"):
                 continue
             cleaned_chars.append(ch)
-        return "".join(cleaned_chars)
+        normalized = "".join(cleaned_chars)
+        normalized = _SPARQL_PREFIX_RE.sub(
+            lambda match: f"@prefix {match.group(1)}: <{match.group(2)}> .",
+            normalized,
+        )
+        return normalized
 
     @staticmethod
     def _quote_unquoted_typed_literals(turtle_str: str) -> str:
@@ -799,6 +862,12 @@ class RDFGraph(Graph):
         # LLM repeats the subject on lines that follow a ';' continuation.
         if "expected '.' or '}' or ']' at end of statement" in parse_error_message:
             repaired = cls._repair_repeated_subject_after_semicolon(repaired)
+
+        if (
+            "Expected end of text, found 'DELETE'" in parse_error_message
+            or "Expected end of text, found 'INSERT'" in parse_error_message
+        ):
+            repaired = strip_sparql_update_wrapper(repaired)
 
         repaired = cls._repair_missing_object_before_dot(repaired)
         return repaired

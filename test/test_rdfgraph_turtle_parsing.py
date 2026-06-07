@@ -370,3 +370,70 @@ def test_coerce_invalid_nquads_typed_literals_strips_bad_decimal() -> None:
     coerced = RDFGraph._coerce_invalid_nquads_typed_literals(nquads)
     assert "^^<http://www.w3.org/2001/XMLSchema#decimal>" not in coerced
     assert '"10-15"' in coerced
+
+
+def test_strip_sparql_update_wrapper_extracts_delete_data_triples() -> None:
+    from ontocast.onto.rdfgraph import strip_sparql_update_wrapper
+
+    ttl = """
+    @prefix cd: <https://example.com/facts/> .
+    @prefix ex: <https://example.com/ns#> .
+
+    cd:entity_1 a ex:SomeClass ;
+        ex:label "foo" .
+
+    DELETE DATA {
+      cd:old_entity a ex:OtherClass .
+    }
+    """
+    stripped = strip_sparql_update_wrapper(ttl)
+    assert "DELETE DATA" not in stripped
+    assert "cd:entity_1 a ex:SomeClass" in stripped
+    assert "cd:old_entity a ex:OtherClass" in stripped
+
+
+def test_from_turtle_parses_mixed_turtle_and_delete_data() -> None:
+    ttl = """
+    @prefix cd: <https://example.com/facts/> .
+    @prefix ex: <https://example.com/ns#> .
+
+    cd:entity_1 a ex:SomeClass ;
+        ex:label "foo" .
+
+    DELETE DATA {
+      cd:old_entity a ex:OtherClass .
+    }
+    """
+    graph = RDFGraph._from_turtle_str(ttl)
+
+    assert len(graph) == 3
+
+
+def test_normalize_turtle_input_converts_sparql_prefix() -> None:
+    ttl = "PREFIX ex: <https://example.com/ns#>\nex:a ex:b ex:c ."
+    normalized = RDFGraph._normalize_turtle_input(ttl)
+    assert "@prefix ex: <https://example.com/ns#> ." in normalized
+    assert "PREFIX ex:" not in normalized
+
+
+def test_model_validate_uses_explicit_llm_graph_format_context() -> None:
+    from ontocast.onto.model import GraphUpdateRenderReport
+
+    payload = {
+        "graph_update": {
+            "triple_operations": [
+                {
+                    "type": "insert",
+                    "graph": {
+                        "@context": {"ex": "http://example.org/"},
+                        "@graph": [{"@id": "ex:item", "@type": "ex:Thing"}],
+                    },
+                }
+            ],
+        },
+    }
+    report = GraphUpdateRenderReport.model_validate(
+        payload,
+        context={"llm_graph_format": LLMGraphFormat.JSONLD},
+    )
+    assert len(report.graph_update.triple_operations[0].graph) >= 1

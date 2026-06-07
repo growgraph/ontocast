@@ -27,7 +27,7 @@ from ontocast.tool.representation_text import (
     stable_sorted_triples,
 )
 from ontocast.tool.vector_store.core import GraphAtom
-from ontocast.util import render_text_hash
+from ontocast.util.hash import render_text_hash
 
 # rdf:type values that add little embedding signal (OWL/RDFS scaffolding).
 _GENERIC_TYPE_IRIS: frozenset[URIRef] = frozenset(

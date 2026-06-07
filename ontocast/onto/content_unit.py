@@ -14,7 +14,7 @@ from rdflib import URIRef
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.util import render_text_hash
+from ontocast.util.hash import render_text_hash
 
 
 class OutputType(StrEnum):

@@ -18,7 +18,12 @@ from ontocast.prompt.llm_json_schema import format_instructions_for_model
 
 T = TypeVar("T", bound=BaseModel)
 
-# --- Output instructions (moved from common.py; single-format per profile) ---
+# --- Output instructions (single-format per profile; graph-update = base + suffix) ---
+
+# Fresh render: one block per deployment format (Turtle ontology/facts, or JSON-LD).
+# Graph update: shared base (_OUTPUT_INSTRUCTION_GRAPH_UPDATE_BASE) plus a format suffix
+# (_OUTPUT_INSTRUCTION_GRAPH_UPDATE_TURTLE_GRAPH or _JSONLD_GRAPH) appended by
+# GraphFormatProfile.render_update_output_instruction().
 
 _OUTPUT_INSTRUCTION_ONTOLOGY_TTL = """\n\n
 # OUTPUT INSTRUCTION
@@ -60,8 +65,12 @@ Generate structured graph patch operations that modify the existing graph increm
 Do not replace the entire graph. Do not emit raw UPDATE query syntax or query-language keywords.
 
 Follow the Pydantic schema exactly. Use `triple_operations` only: each entry has `type`
-(`insert` or `delete`) and `graph` (the triples for that operation as Turtle or JSON-LD
-per format instructions below).
+(`insert` or `delete`) and `graph` (plain triples for that operation, encoded per the
+graph-format instructions below).
+
+IMPORTANT: The `type` field (`insert` or `delete`) signals which triples to add or remove.
+The `graph` field ALWAYS contains plain triples — never wrap them in DELETE DATA { } or
+INSERT DATA { } blocks. That is update-query syntax and will fail validation.
 """
 
 _OUTPUT_INSTRUCTION_GRAPH_UPDATE_TURTLE_GRAPH = """

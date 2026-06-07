@@ -1,12 +1,13 @@
 import logging
 import re
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
-from langchain_core.output_parsers import BaseOutputParser
+from langchain_core.output_parsers import BaseOutputParser, PydanticOutputParser
 from langchain_core.prompts import BasePromptTemplate
+from langchain_core.utils.json import parse_json_markdown
+from pydantic import BaseModel
 
 from ontocast.onto.enum import LLMGraphFormat, WorkflowNode
-from ontocast.onto.llm_graph_payload import llm_graph_format_ctx
 from ontocast.onto.model import Suggestions
 from ontocast.prompt.common import (
     suggestion_concrete_template,
@@ -23,7 +24,7 @@ from ontocast.tool.llm import _content_to_str
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar("T")
+T = TypeVar("T", bound=BaseModel)
 
 _JSON_COMMENT_RE = re.compile(r'"(?:[^"\\]|\\.)*"|//[^\n]*')
 _TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
@@ -117,8 +118,8 @@ async def call_llm_with_retry(
         prompt_kwargs: Keyword arguments to pass to prompt.format_prompt().
         max_retries: Maximum number of retry attempts (default: 3).
         retry_error_feedback: Whether to include error feedback in retry prompts (default: True).
-        llm_graph_format: When set, ``llm_graph_format_ctx`` is active for the whole retry loop
-            so canonical parsers coerce graph wire payloads to ``RDFGraph``.
+        llm_graph_format: When set, passed explicitly to ``model_validate`` as
+            ``context={"llm_graph_format": ...}`` so graph wire fields coerce correctly.
 
     Returns:
         The parsed output of type T.
@@ -129,68 +130,72 @@ async def call_llm_with_retry(
     last_error: Exception | None = None
     last_sanitized_content: str | None = None
     original_format_instructions = prompt_kwargs.get("format_instructions", "")
-    fmt_token = (
-        llm_graph_format_ctx.set(llm_graph_format)
-        if llm_graph_format is not None
-        else None
-    )
 
-    try:
-        for attempt in range(max_retries):
-            try:
-                # Create a copy of prompt_kwargs for this attempt
-                attempt_kwargs = prompt_kwargs.copy()
+    for attempt in range(max_retries):
+        try:
+            # Create a copy of prompt_kwargs for this attempt
+            attempt_kwargs = prompt_kwargs.copy()
 
-                # On retry, add error feedback to help LLM correct format
-                if attempt > 0 and retry_error_feedback and last_error is not None:
-                    # Use sanitized content in error feedback for consistency
-                    feedback_content = (
-                        last_sanitized_content if last_sanitized_content else ""
-                    )
-                    error_feedback = (
-                        f"\n\nIMPORTANT: The previous attempt failed to parse the response. "
-                        f"Error: {str(last_error)}\n"
-                        f"Previous response (for reference):\n{feedback_content}\n\n"
-                        f"Please ensure your response strictly follows the format instructions "
-                        f"and does not contain any control characters or invalid syntax."
-                    )
-                    # Add error feedback to format_instructions if present
-                    if "format_instructions" in attempt_kwargs:
-                        attempt_kwargs["format_instructions"] = (
-                            original_format_instructions + error_feedback
-                        )
-                    else:
-                        # If no format_instructions, add as a new field
-                        attempt_kwargs["parsing_error_feedback"] = error_feedback
-
-                # Call LLM
-                response = await llm_tool(prompt.format_prompt(**attempt_kwargs))
-                content_to_parse = strip_trailing_commas(
-                    strip_json_comments(_content_to_str(response.content))
+            # On retry, add error feedback to help LLM correct format
+            if attempt > 0 and retry_error_feedback and last_error is not None:
+                # Use sanitized content in error feedback for consistency
+                feedback_content = (
+                    last_sanitized_content if last_sanitized_content else ""
                 )
-                last_sanitized_content = content_to_parse
+                error_feedback = (
+                    f"\n\nIMPORTANT: The previous attempt failed to parse the response. "
+                    f"Error: {str(last_error)}\n"
+                    f"Previous response (for reference):\n{feedback_content}\n\n"
+                    f"Please ensure your response strictly follows the format instructions "
+                    f"and does not contain any control characters or invalid syntax."
+                )
+                # Add error feedback to format_instructions if present
+                if "format_instructions" in attempt_kwargs:
+                    attempt_kwargs["format_instructions"] = (
+                        original_format_instructions + error_feedback
+                    )
+                else:
+                    # If no format_instructions, add as a new field
+                    attempt_kwargs["parsing_error_feedback"] = error_feedback
 
+            # Call LLM
+            response = await llm_tool(prompt.format_prompt(**attempt_kwargs))
+            content_to_parse = strip_trailing_commas(
+                strip_json_comments(_content_to_str(response.content))
+            )
+            last_sanitized_content = content_to_parse
+
+            if llm_graph_format is not None and isinstance(
+                parser, PydanticOutputParser
+            ):
+                json_object = parse_json_markdown(content_to_parse)
+                model_cls = cast(type[BaseModel], parser.pydantic_object)
+                parsed = cast(
+                    T,
+                    model_cls.model_validate(
+                        json_object,
+                        context={"llm_graph_format": llm_graph_format},
+                    ),
+                )
+            else:
                 parsed = parser.parse(content_to_parse)
-                logger.debug(
-                    f"Successfully parsed LLM response on attempt {attempt + 1}/{max_retries}"
-                )
-                return parsed
+            logger.debug(
+                f"Successfully parsed LLM response on attempt {attempt + 1}/{max_retries}"
+            )
+            return parsed
 
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    f"Failed to parse LLM response on attempt {attempt + 1}/{max_retries}: {str(e)}"
-                )
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                f"Failed to parse LLM response on attempt {attempt + 1}/{max_retries}: {str(e)}"
+            )
 
-                # If this was the last attempt, raise the error
-                if attempt == max_retries - 1:
-                    logger.error(
-                        f"Failed to parse LLM response after {max_retries} attempts. "
-                        f"Last error: {str(e)}"
-                    )
-                    raise
-    finally:
-        if fmt_token is not None:
-            llm_graph_format_ctx.reset(fmt_token)
+            # If this was the last attempt, raise the error
+            if attempt == max_retries - 1:
+                logger.error(
+                    f"Failed to parse LLM response after {max_retries} attempts. "
+                    f"Last error: {str(e)}"
+                )
+                raise
 
     raise RuntimeError("Unexpected error in call_llm_with_retry")

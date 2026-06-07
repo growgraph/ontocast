@@ -7,7 +7,7 @@ from ontocast.onto.constants import DEFAULT_IRI, PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool import EmbeddingBasedAggregator
-from ontocast.util import render_text_hash
+from ontocast.util.hash import render_text_hash
 
 
 def make_fact_unit(

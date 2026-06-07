@@ -8,8 +8,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
-from ontocast.api.schemas import StatusErrorBody
-from ontocast.cli.http_parse import (
+from ontocast.api.parse import (
     parse_document_type_hint_param,
     parse_llm_graph_format_param,
     parse_max_visits_param,
@@ -21,7 +20,8 @@ from ontocast.cli.http_parse import (
     parse_summary_max_sentences_param,
     resolve_ontology_context_mode,
 )
-from ontocast.cli.http_responses import missing_fixed_catalog_ontology_id_response
+from ontocast.api.responses import missing_fixed_catalog_ontology_id_response
+from ontocast.api.schemas import StatusErrorBody
 from ontocast.config import ServerConfig
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.state import AgentState

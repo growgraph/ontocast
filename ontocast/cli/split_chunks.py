@@ -6,8 +6,8 @@ import sys
 import click
 from suthing import FileHandle
 
-from ontocast.cli.util import crawl_directories
 from ontocast.tool.chunk.chunker import ChunkerTool
+from ontocast.util.files import crawl_directories
 
 logger = logging.getLogger(__name__)
 

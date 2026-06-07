@@ -72,8 +72,7 @@ class TripleOp(BaseModel):
     graph: LLMGraphWire = Field(
         default_factory=RDFGraph,
         description=(
-            "Plain Turtle string or JSON-LD object with triples to insert or delete. "
-            "Never use UPDATE query syntax (INSERT DATA, DELETE DATA, PREFIX). "
+            "RDF triples for this insert or delete operation. "
             "Encoding is defined by deployment llm_graph_format and OUTPUT INSTRUCTION."
         ),
     )

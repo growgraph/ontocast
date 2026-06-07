@@ -9,7 +9,7 @@ import httpx
 
 from ontocast.config import QdrantConfig
 from ontocast.tool.vector_store.embedding import EmbeddingTool
-from ontocast.util import render_text_hash
+from ontocast.util.hash import render_text_hash
 
 
 @dataclass(frozen=True)

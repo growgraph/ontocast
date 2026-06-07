@@ -11,8 +11,8 @@ from rdflib import URIRef
 
 from ontocast.agent.chunk_text import chunk_text
 from ontocast.agent.summarize_chunks import should_summarize_unit
-from ontocast.cli.http_parse import parse_sections_list_param
-from ontocast.cli.server import expand_input_to_states
+from ontocast.api.parse import parse_sections_list_param
+from ontocast.api.process_helpers import expand_input_to_states
 from ontocast.config import Config
 from ontocast.config.section_labels import (
     load_section_label_schema,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 from typing import Annotated, Any
 
-from pydantic import BeforeValidator
+from pydantic import BeforeValidator, ValidationInfo
 
 from ontocast.onto.enum import LLMGraphFormat
 from ontocast.onto.rdfgraph import RDFGraph
@@ -49,9 +49,10 @@ def _coerce_jsonld_graph_payload(value: Any) -> RDFGraph:
     )
 
 
-def coerce_llm_graph_wire(value: Any) -> RDFGraph:
-    """Coerce LLM wire payloads to RDFGraph using ``llm_graph_format_ctx``."""
-    fmt = llm_graph_format_ctx.get()
+def coerce_llm_graph_wire(value: Any, info: ValidationInfo) -> RDFGraph:
+    """Coerce LLM wire payloads to RDFGraph using validation context or ContextVar."""
+    ctx = info.context if info.context else {}
+    fmt = ctx.get("llm_graph_format") or llm_graph_format_ctx.get()
     if fmt == LLMGraphFormat.TURTLE:
         return _coerce_turtle_graph_payload(value)
     return _coerce_jsonld_graph_payload(value)

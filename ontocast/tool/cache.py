@@ -11,7 +11,7 @@ import logging
 import os
 from pathlib import Path
 
-from ontocast.util import render_text_hash
+from ontocast.util.hash import render_text_hash
 
 logger = logging.getLogger(__name__)
 

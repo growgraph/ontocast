@@ -398,7 +398,7 @@ def mock_embeddings():
             if text in self._cache:
                 return self._cache[text]
 
-            from ontocast.util import render_text_hash
+            from ontocast.util.hash import render_text_hash
 
             hash_int = int(render_text_hash(text, digits=None), 16)
 

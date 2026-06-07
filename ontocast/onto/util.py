@@ -1,7 +1,8 @@
 import re
 from urllib.parse import urlparse
 
-from ontocast.util import CONVENTIONAL_MAPPINGS
+from rdflib import Graph
+from rdflib.namespace import NamespaceManager
 
 
 def derive_ontology_id(iri: str) -> str | None:
@@ -33,3 +34,12 @@ def _clean_derived_id(value: str) -> str | None:
         value = match.group(1)
     result = re.sub(r"[^a-zA-Z0-9_-]", "", value).lower()
     return result if result else None
+
+
+def get_rdflib_namespace_mappings() -> dict:
+    g = Graph()
+    ns_manager = NamespaceManager(g)
+    return {str(uri): prefix for prefix, uri in ns_manager.namespaces()}
+
+
+CONVENTIONAL_MAPPINGS = get_rdflib_namespace_mappings()

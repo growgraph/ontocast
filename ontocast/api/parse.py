@@ -1,4 +1,4 @@
-"""Shared HTTP query/body parsing for CLI server routes."""
+"""Shared HTTP query/body parsing for API server routes."""
 
 import json
 import logging

@@ -26,7 +26,7 @@ from ontocast.onto.model import BasePydanticModel, Suggestions
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
-from ontocast.util import render_text_hash
+from ontocast.util.hash import render_text_hash
 
 # Top-level SPARQL update keywords at line start (used to split compound LLM output).
 _TOP_LEVEL_UPDATE_START_RE = re.compile(r"(?m)^(?=(?:INSERT|DELETE|WITH)\b)")

@@ -1,17 +1,5 @@
 import hashlib
 
-from rdflib import Graph
-from rdflib.namespace import NamespaceManager
-
-
-def get_rdflib_namespace_mappings() -> dict:
-    g = Graph()
-    ns_manager = NamespaceManager(g)
-    return {str(uri): prefix for prefix, uri in ns_manager.namespaces()}
-
-
-CONVENTIONAL_MAPPINGS = get_rdflib_namespace_mappings()
-
 
 def render_text_hash(text: str, digits: int | None = 12) -> str:
     """Generate a SHA-256 hash for the given text.

@@ -5,7 +5,7 @@ import sys
 
 import click
 
-from ontocast.cli.util import crawl_directories, pdf2markdown
+from ontocast.util.files import crawl_directories, pdf2markdown
 
 logger = logging.getLogger(__name__)
 

@@ -1,4 +1,4 @@
-import logging.config
+import logging
 import pathlib
 
 from ontocast.tool.converter import ConverterTool
