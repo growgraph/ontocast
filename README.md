@@ -58,12 +58,12 @@ uv add ontocast[doc-processing]
 pip install ontocast
 ```
 
-### Optional features: document processing (PDFs, PPT, OCR, semantic chunking):
+### Optional features: document processing (PDFs, PPT, OCR, semantic chunking), vector mode for ontology retrieval:
 
 ```sh
-uv add "ontocast[doc-processing]"
+uv add "ontocast[doc-processing,lancedb]"
 # or
-pip install "ontocast[doc-processing]"
+pip install "ontocast[doc-processing,lancedb]"
 ```
 
 ---
