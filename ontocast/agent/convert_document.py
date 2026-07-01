@@ -153,7 +153,7 @@ def convert_document(state: AgentState, tools: ToolBox) -> AgentState:
         return blocked if blocked is not None else state
 
     if file_extension == ".txt":
-        text = json.loads(file_content.decode("utf-8"))
+        text = file_content.decode("utf-8")
         state.set_docling_doc(plain_text_to_docling_doc(text, filename))
         blocked = _fail_when_fixed_catalog_ontology_missing(state)
         return blocked if blocked is not None else state
