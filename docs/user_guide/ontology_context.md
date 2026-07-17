@@ -33,31 +33,40 @@ Also required: compatible `EMBEDDING_*` settings and indexed ontology atoms in t
 
 If vector infrastructure is unavailable, the API returns **409** with `error_code: VECTOR_STORE_UNAVAILABLE`.
 
-**Key budget settings:**
+**Key budget settings** (full reference: [Configuration — Ontology Patch Retrieval](configuration.md#ontology-patch-retrieval)):
 
-| Variable | Role |
-|----------|------|
-| `VECTOR_STORE_TOP_K` | Fused hits per proposition window (default `10`) |
-| `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | Global triple cap for context (default `550`) |
-| `VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH` | BFS depth for hub seed expansion (default `2`) |
-| `VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT` | Top seeds receiving full BFS budget (default `8`) |
-| `VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH` | `rdfs:subClassOf` hops included in schema shell (default `3`) |
-| `VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | Per-entity BFS quota hint |
-| `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `hybrid` (default), `max_score`, or `rrf` |
-| `ONTOLOGY_PATCH_MAX_ATOMS_TIER1` | Strong global seed cap for hybrid merge (default `12`) |
-| `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | Tier-2 seeds per ontology IRI (default `3`) |
-| `ONTOLOGY_PATCH_MIN_ENTITY_SCORE` | Tier-2 minimum fused score (default `0.3`) |
-| `ONTOLOGY_PATCH_MAX_ATOMS` | Total seed cap after merge/MMR (default `25`) |
-| `ONTOLOGY_PATCH_MERGED_SCORE_RATIO` | Trim weak seeds vs top score (default `0.45`) |
-| `ONTOLOGY_PATCH_MMR_LAMBDA` | MMR relevance vs diversity (default `0.9`) |
+| Variable | Default | Role |
+|----------|---------|------|
+| `VECTOR_STORE_TOP_K` | `10` | Fused hits per proposition window |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | `550` | Global triple cap for context |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH` | `2` | BFS depth for hub seed expansion |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT` | `8` | Top seeds receiving full BFS budget |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH` | `3` | `rdfs:subClassOf` hops in schema shell |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | `24` | Per-entity BFS quota hint |
+| `ONTOLOGY_PATCH_PER_QUERY_CORE_SCORE_RATIO` | `0.85` | Per-window core hit floor vs best core score |
+| `ONTOLOGY_PATCH_PER_QUERY_NEIGHBORHOOD_SCORE_RATIO` | `0.85` | Per-window neighborhood hit floor vs best neighborhood score |
+| `ONTOLOGY_PATCH_PER_QUERY_BM25_SCORE_RATIO` | `0.85` | Per-window BM25 hit floor vs best BM25 score |
+| `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` | `0.18` | Empty patch when merged top score is below this |
+| `ONTOLOGY_PATCH_MERGED_SCORE_RATIO` | `0.45` | Drop merged seeds below `top_score × ratio` |
+| `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `hybrid` | `hybrid`, `max_score`, or `rrf` |
+| `ONTOLOGY_PATCH_MAX_ATOMS_TIER1` | `12` | Strong global seed cap for hybrid merge |
+| `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | `3` | Tier-2 seeds per ontology IRI |
+| `ONTOLOGY_PATCH_MIN_ENTITY_SCORE` | `0.3` | Tier-2 minimum fused score |
+| `ONTOLOGY_PATCH_MAX_ATOMS` | `25` | Total seed cap after merge/MMR |
+| `ONTOLOGY_PATCH_MMR_LAMBDA` | `0.9` | MMR relevance vs diversity |
 
 ### Recommended preset for dense scientific text
 
-Use vector search mode with defaults above, or tighten further:
+Use vector search mode with the defaults above. For large catalogs or noisy retrieval, tighten:
 
-- `ONTOLOGY_PATCH_MAX_ATOMS=20`
-- `ONTOLOGY_PATCH_MERGED_SCORE_RATIO=0.5`
-- `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=600`
+```bash
+ONTOLOGY_PATCH_MAX_ATOMS=20
+ONTOLOGY_PATCH_MERGED_SCORE_RATIO=0.5
+ONTOLOGY_PATCH_MMR_LAMBDA=0.85
+VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=600
+```
+
+`ONTOLOGY_PATCH_MERGED_SCORE_RATIO=0.45` is the general-purpose default: it trims weak seeds that are less than 45% of the top merged score. Raise toward `0.5`–`0.6` for stricter recall control; set `0` to disable post-merge trimming.
 
 Retrieval expands ontology scope beyond hit sources when seeds reference classes
 in other catalog ontologies via `rdfs:subClassOf`, `rdfs:domain`, or `rdfs:range`.

@@ -117,11 +117,13 @@ def dedupe_terminal_ontologies(all_ontologies: list[Ontology]) -> list[Ontology]
 
         try:
             versions_with_created = [
-                v for v in terminal_versions if v.created_at is not None
+                (created_at, v)
+                for v in terminal_versions
+                if (created_at := v.created_at) is not None
             ]
             if versions_with_created:
-                versions_with_created.sort(key=lambda x: x.created_at, reverse=True)
-                ontologies.append(versions_with_created[0])
+                versions_with_created.sort(key=lambda pair: pair[0], reverse=True)
+                ontologies.append(versions_with_created[0][1])
                 continue
 
             versions_with_ver = [v for v in terminal_versions if v.version]

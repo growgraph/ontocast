@@ -280,6 +280,100 @@ class ChunkConfig(BaseSettings):
     )
 
 
+class ConverterConfig(BaseSettings):
+    """Document-conversion settings for Docling-backed inputs."""
+
+    profile: Literal["default", "born_digital"] = Field(
+        default="default",
+        description=(
+            "Conversion preset. 'born_digital' prefers embedded PDF text and enables "
+            "a temporary ligature-gap workaround for publisher PDFs."
+        ),
+    )
+    pdf_backend: Literal["docling_parse", "pypdfium2"] = Field(
+        default="docling_parse",
+        description="PDF backend used by Docling for standard pipeline conversion.",
+    )
+    do_ocr: bool = Field(
+        default=True,
+        description="Enable OCR in Docling's standard PDF pipeline.",
+    )
+    do_table_structure: bool = Field(
+        default=True,
+        description="Enable table structure extraction in Docling's standard pipeline.",
+    )
+    force_backend_text: bool = Field(
+        default=False,
+        description=(
+            "Prefer deterministic backend text extraction when available instead of "
+            "model-based page reconstruction."
+        ),
+    )
+    table_cell_matching: bool = Field(
+        default=True,
+        description="Enable Docling table cell matching during table extraction.",
+    )
+    layout_model: Literal[
+        "heron",
+        "heron_101",
+        "egret_medium",
+        "egret_large",
+        "egret_xlarge",
+        "v2",
+    ] = Field(
+        default="heron",
+        description="Docling layout model preset for the standard PDF pipeline.",
+    )
+    ocr_engine: Literal[
+        "auto",
+        "easyocr",
+        "rapidocr",
+        "tesseract_cli",
+        "tesseract",
+    ] = Field(
+        default="auto",
+        description="OCR engine used when OCR is enabled in the standard PDF pipeline.",
+    )
+    ocr_lang: list[str] = Field(
+        default_factory=list,
+        description=(
+            "OCR language codes passed to the selected Docling OCR engine; leave empty "
+            "to use engine defaults."
+        ),
+    )
+    force_full_page_ocr: bool = Field(
+        default=False,
+        description="Force full-page OCR instead of region-limited OCR.",
+    )
+    ocr_bitmap_area_threshold: float = Field(
+        default=0.05,
+        ge=0.0,
+        le=1.0,
+        description="Minimum bitmap area ratio before Docling runs OCR on a region.",
+    )
+    repair_ligature_gaps: bool = Field(
+        default=False,
+        description=(
+            "TEMP workaround: repair ASCII fi/fl/ff-style ligature gaps that some "
+            "publisher PDFs emit after Docling extraction."
+        ),
+    )
+
+    model_config = SettingsConfigDict(
+        env_prefix="CONVERTER_",
+        case_sensitive=False,
+    )
+
+    @model_validator(mode="after")
+    def _apply_profile_defaults(self) -> ConverterConfig:
+        if self.profile == "born_digital":
+            self.pdf_backend = "pypdfium2"
+            self.do_ocr = False
+            self.force_backend_text = True
+            self.repair_ligature_gaps = True
+        return self
+
+
 class ServerConfig(BaseSettings):
     """Server configuration settings."""
 
@@ -966,6 +1060,7 @@ class ToolConfig(BaseSettings):
 
     llm_config: LLMConfig = Field(default_factory=LLMConfig)
     chunk_config: ChunkConfig = Field(default_factory=ChunkConfig)
+    converter_config: ConverterConfig = Field(default_factory=ConverterConfig)
     path_config: PathConfig = Field(default_factory=PathConfig)
     fuseki: FusekiConfig = Field(default_factory=FusekiConfig)
     domain: DomainConfig = Field(default_factory=DomainConfig)

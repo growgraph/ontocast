@@ -16,6 +16,7 @@ Config
 ├── tool_config: ToolConfig
 │   ├── llm_config: LLMConfig
 │   ├── chunk_config: ChunkConfig
+│   ├── converter_config: ConverterConfig
 │   ├── path_config: PathConfig
 │   ├── fuseki: FusekiConfig
 │   ├── domain: DomainConfig
@@ -23,7 +24,6 @@ Config
 │   ├── aggregation: AggregationConfig
 │   ├── embedding: EmbeddingConfig
 │   ├── patch_retrieval: PatchRetrievalConfig
-│   ├── vector_store: VectorStoreConfig
 │   ├── vector_store: VectorStoreConfig
 │   ├── qdrant: QdrantConfig
 │   └── lancedb: LanceDBConfig
@@ -104,6 +104,46 @@ CHUNK_SECTION_TAG_MIN_CHARS=80   # min size for LLM section backfill; smaller hy
 
 Semantic chunking is configured here. **Section-aligned labels** and filtering are not chunker settings: they run when `/process` or CLI file mode passes `target_sections` and/or `summarize_sections` (see [Structured documents](concepts.md#structured-documents-optional)).
 
+### Docling converter
+
+Use these settings to tune Docling's standard document-conversion pipeline, especially for born-digital publisher PDFs where embedded ligatures can be split into patterns like `di ff usion`.
+
+```bash
+CONVERTER_PROFILE=default               # default | born_digital
+# CONVERTER_PDF_BACKEND=docling_parse   # docling_parse | pypdfium2
+# CONVERTER_DO_OCR=true
+# CONVERTER_DO_TABLE_STRUCTURE=true
+# CONVERTER_FORCE_BACKEND_TEXT=false
+# CONVERTER_TABLE_CELL_MATCHING=true
+# CONVERTER_LAYOUT_MODEL=heron          # heron | heron_101 | egret_medium | egret_large | egret_xlarge | v2
+# CONVERTER_OCR_ENGINE=auto             # auto | easyocr | rapidocr | tesseract_cli | tesseract
+# CONVERTER_OCR_LANG=
+# CONVERTER_FORCE_FULL_PAGE_OCR=false
+# CONVERTER_OCR_BITMAP_AREA_THRESHOLD=0.05
+# CONVERTER_REPAIR_LIGATURE_GAPS=false  # TEMP workaround
+```
+
+Recommended preset for publisher PDFs with selectable text:
+
+```bash
+CONVERTER_PROFILE=born_digital
+```
+
+That preset currently implies:
+
+| Setting | Value |
+|---------|-------|
+| `CONVERTER_PDF_BACKEND` | `pypdfium2` |
+| `CONVERTER_DO_OCR` | `false` |
+| `CONVERTER_FORCE_BACKEND_TEXT` | `true` |
+| `CONVERTER_REPAIR_LIGATURE_GAPS` | `true` |
+
+Notes:
+
+- `CONVERTER_REPAIR_LIGATURE_GAPS` is a **temporary workaround** in OntoCast for ASCII `fi` / `fl` / `ff` gap patterns that Docling still passes through on some publisher PDFs.
+- Prefer `CONVERTER_PROFILE=born_digital` for text-selectable PDFs before trying heavier OCR settings.
+- If OCR remains enabled and you pick `rapidocr`, set `CONVERTER_OCR_LANG=english` for English scans; RapidOCR's upstream default language is Chinese.
+
 ### Structured documents (per request)
 
 No environment variables. Pass on `POST /process`, multipart form, JSON body, or CLI batch mode:
@@ -113,6 +153,7 @@ No environment variables. Pass on `POST /process`, multipart form, JSON body, or
 | `target_sections` | `--target-sections` | Comma-separated or JSON list; enables tagging and keeps only these sections |
 | `summarize_sections` | `--summarize-sections` | Enables tagging + summarization; `*` or empty = all chunks |
 | `summary_max_sentences` | `--summary-max-sentences` | Max sentences per summary (default `5`) |
+| `max_visits` | `--max-visits` | Render/critic retry budget per loop (default from `MAX_VISITS`) |
 | `section_schema_id` | `--section-schema-id` | Section label schema (`academic`, `financial`, `legal`, …) |
 | `document_type_hint` | `--document-type-hint` | Free-text hint to resolve schema when `section_schema_id` is omitted |
 
@@ -164,14 +205,25 @@ Applies to both Qdrant and LanceDB:
 
 ```bash
 VECTOR_STORE_TOP_K=10
-VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH=1
-VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=300
+VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH=2
+VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=550
 VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
+# VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT=8
+# VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH=3
 # VECTOR_STORE_FUSION_CORE_WEIGHT=0.7
 # VECTOR_STORE_FUSION_NEIGHBORHOOD_WEIGHT=0.3
 # VECTOR_STORE_FUSION_BM25_WEIGHT=0.2
 # VECTOR_STORE_DEDUP_MODE=iri
 ```
+
+| Variable | Default | Role |
+|----------|---------|------|
+| `VECTOR_STORE_TOP_K` | `10` | Fused vector hits per proposition window |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH` | `2` | BFS depth for hub seed expansion |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT` | `8` | Top seeds that receive full BFS budget (`0` = all seeds) |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH` | `3` | `rdfs:subClassOf` hops in the schema shell |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | `550` | Global triple cap returned to the LLM |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | `24` | Per-entity BFS quota hint during retrieval |
 
 ### LanceDB (embedded alternative)
 
@@ -193,14 +245,43 @@ See [Ontology Context](ontology_context.md) for vector-search mode requirements.
 
 ### Ontology Patch Retrieval
 
-Post-vector scoring and capping (backend-agnostic; prefix `ONTOLOGY_PATCH_`):
+Post-vector scoring and capping (backend-agnostic; prefix `ONTOLOGY_PATCH_`). Applied after hybrid dense + BM25 retrieval, before induced-subgraph expansion.
+
+**Recommended defaults** (match `PatchRetrievalConfig` in code — start here, tune only after inspecting retrieval quality):
 
 ```bash
 ONTOLOGY_PATCH_PER_QUERY_CORE_SCORE_RATIO=0.85
 ONTOLOGY_PATCH_PER_QUERY_NEIGHBORHOOD_SCORE_RATIO=0.85
 ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE=0.18
-# ONTOLOGY_PATCH_MMR_LAMBDA=0.7
-# ONTOLOGY_PATCH_MAX_ATOMS=0
+ONTOLOGY_PATCH_MERGED_SCORE_RATIO=0.45
+ONTOLOGY_PATCH_MMR_LAMBDA=0.9
+ONTOLOGY_PATCH_MAX_ATOMS=25
+```
+
+| Variable | Default | Role |
+|----------|---------|------|
+| `ONTOLOGY_PATCH_PER_QUERY_CORE_SCORE_RATIO` | `0.85` | Per window: keep core hits ≥ this fraction of the window's best core score |
+| `ONTOLOGY_PATCH_PER_QUERY_NEIGHBORHOOD_SCORE_RATIO` | `0.85` | Per window: keep neighborhood hits ≥ this fraction of the window's best neighborhood score |
+| `ONTOLOGY_PATCH_PER_QUERY_BM25_SCORE_RATIO` | `0.85` | Per window: keep BM25 hits ≥ this fraction of the window's best BM25 score |
+| `ONTOLOGY_PATCH_MIN_CORE_QUERY_BEST_SCORE` | `0.0` | If `> 0`, windows whose top core score is below this contribute no core hits |
+| `ONTOLOGY_PATCH_MIN_NEIGHBORHOOD_QUERY_BEST_SCORE` | `0.0` | If `> 0`, windows whose top neighborhood score is below this contribute no neighborhood hits |
+| `ONTOLOGY_PATCH_MIN_BM25_QUERY_BEST_SCORE` | `0.0` | If `> 0`, windows whose top BM25 score is below this contribute no BM25 hits |
+| `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` | `0.18` | After cross-window merge, return empty patch if top score is below this (`0` disables) |
+| `ONTOLOGY_PATCH_MERGED_SCORE_RATIO` | `0.45` | After merge, drop seeds below `top_score × ratio` (`0` disables trimming) |
+| `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `hybrid` | `hybrid` (tier-1 + per-ontology tier-2), `max_score`, or `rrf` |
+| `ONTOLOGY_PATCH_MAX_ATOMS_TIER1` | `12` | Hybrid merge: global cap on strong tier-1 seeds (`0` = no cap) |
+| `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | `3` | Hybrid merge: tier-2 seeds per ontology IRI |
+| `ONTOLOGY_PATCH_MIN_ENTITY_SCORE` | `0.3` | Hybrid merge tier-2: minimum fused score to qualify as a seed |
+| `ONTOLOGY_PATCH_MMR_LAMBDA` | `0.9` | MMR relevance vs diversity (`1.0` = pure relevance, `0.0` = max diversity) |
+| `ONTOLOGY_PATCH_MAX_ATOMS` | `25` | Hard cap on retained seeds after merge/MMR (`0` = unlimited) |
+
+**Tighter preset** (dense scientific text with large catalogs — see [Ontology Context](ontology_context.md)):
+
+```bash
+ONTOLOGY_PATCH_MAX_ATOMS=20
+ONTOLOGY_PATCH_MERGED_SCORE_RATIO=0.5
+ONTOLOGY_PATCH_MMR_LAMBDA=0.85
+VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=600
 ```
 
 ### Paths and Domain

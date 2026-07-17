@@ -20,6 +20,17 @@ facts_instruction_shared = """\n\n
     - WRONG: `cd:patient_1 onto:underwentTrial onto:ClinicalTrial .` (Using a Class as a factual instance slot)
     - CORRECT: `cd:patient_1 onto:underwentTrial cd:trial_1 . cd:trial_1 a onto:ClinicalTrial .`
 
+1d. SPECIFICITY RULE (ancestor vs. descendant terms):
+    - The provided ontology context may include both an ancestor (abstract) term and one or more
+      `rdfs:subClassOf` / `rdfs:subPropertyOf` descendants of it. They appear together
+      deliberately so you can read domain/range context — not as interchangeable synonyms.
+    - Always use the most specific descendant class or property whose stated domain, range, and
+      restrictions fit the concrete entities in the fact. Fall back to the ancestor only when no
+      descendant fits or the source text is genuinely stated at the abstract level.
+    - WRONG: `cd:assembly_1 ex:hasPart cd:widget_1 .` when `ex:hasComponent` is a
+      `rdfs:subPropertyOf` of `ex:hasPart` and its domain/range fit the subject and object.
+    - CORRECT: `cd:assembly_1 ex:hasComponent cd:widget_1 .`
+
 2. Use the provided {domain_ontologies_clause} (below) and standard ontologies (RDFS, OWL, schema.org, etc.) to identify/infer entities, classes, types, and relationships
 3. Thoroughly Extract and Link: extract all possible text mentions that correspond to entities, classes, types, or relationships defined in {domain_ontologies_clause}
 4. Enforce typing: all `cd:` entities (facts) are data instances and must be linked via `rdf:type` to a valid operational Class from either {domain_ontologies_clause} or standard core vocabularies (e.g., `schema:Person`, `schema:Organization`, `onto:Trial`).

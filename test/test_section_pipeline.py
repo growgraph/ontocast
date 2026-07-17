@@ -169,6 +169,24 @@ def test_expand_input_to_states_passes_section_params(tmp_path: Path) -> None:
     assert state.use_summarization is True
 
 
+def test_expand_input_to_states_passes_max_visits(tmp_path: Path) -> None:
+    input_file = tmp_path / "doc.json"
+    input_file.write_text(json.dumps({"text": "hello"}), encoding="utf-8")
+    config = Config()
+    config.server.max_visits_per_node = 1
+    states = expand_input_to_states(
+        input_file,
+        config=config,
+        head_chunks=2,
+        ontology_context_mode_value=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
+        tenant="t",
+        project="p",
+        max_visits=4,
+    )
+    assert len(states) == 1
+    assert states[0].max_visits == 4
+
+
 @pytest.mark.parametrize(
     ("heading", "expected"),
     [

@@ -28,6 +28,7 @@ dependencies = [
   "langchain>=0.3.25",
   "langgraph>=0.2.35",
   "networkx>=3.0",
+  "numba>=0.59.0",
   "owlready2>=0.47",
   "oxrdflib>=0.5.0",
   "pydantic>=2.11.9",
@@ -43,7 +44,7 @@ dependencies = [
   "simsimd>=6.2.1",
   "suthing>=0.4.1",
   "torch<=2.10",
-  "umap-learn>=0.5.11",
+  "umap-learn>=0.5.12",
   "uvicorn[standard]>=0.32.0"
 ]
 description = "Agentic ontology and knowledge graph co-generation"

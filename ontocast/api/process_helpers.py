@@ -76,11 +76,15 @@ def expand_input_to_states(
     summary_max_sentences: int = 5,
     document_type_hint: str | None = None,
     section_schema_id: str | None = None,
+    max_visits: int | None = None,
 ) -> list[AgentState]:
     """Expand a local input file into one ``AgentState`` per logical record."""
     file_bytes = file_path.read_bytes()
+    resolved_max_visits = (
+        max_visits if max_visits is not None else config.server.max_visits_per_node
+    )
     base_state_kwargs = {
-        "max_visits": config.server.max_visits_per_node,
+        "max_visits": resolved_max_visits,
         "max_chunks": head_chunks,
         "render_mode": config.server.render_mode,
         "llm_graph_format": config.server.llm_graph_format,
@@ -168,8 +172,16 @@ async def process_files_input(
     summary_max_sentences: int = 5,
     document_type_hint: str | None = None,
     section_schema_id: str | None = None,
+    max_visits: int | None = None,
 ) -> None:
-    recursion_limit = calculate_recursion_limit(head_chunks, config.server)
+    resolved_max_visits = (
+        max_visits if max_visits is not None else config.server.max_visits_per_node
+    )
+    recursion_limit = calculate_recursion_limit(
+        head_chunks,
+        config.server,
+        max_visits_per_node=resolved_max_visits,
+    )
     for file_path in files:
         try:
             states = expand_input_to_states(
@@ -184,6 +196,7 @@ async def process_files_input(
                 summary_max_sentences=summary_max_sentences,
                 document_type_hint=document_type_hint,
                 section_schema_id=section_schema_id,
+                max_visits=resolved_max_visits,
             )
             for state in states:
                 if use_unit_pipeline:

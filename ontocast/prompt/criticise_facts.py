@@ -68,6 +68,15 @@ evaluation_instruction = f"""\n\n
    - Do NOT flag correct Q/P code IRIs as invented — verify against the provided ontology, not against intuition about what the IRI "should" look like
    - When checking property domain/range triples: resolve the referenced opaque IRI to its label before deciding whether the subject/object type is appropriate
 
+6b. Specificity (ancestor vs. descendant terms):
+   - The ontology context may include both an ancestor term and narrower `rdfs:subClassOf` /
+     `rdfs:subPropertyOf` descendants shown together for domain/range context.
+   - Flag any fact that uses a broader ancestor class or property when a narrower descendant is
+     present in the supplied ontology context and its stated domain/range/restrictions also fit
+     the subject and object.
+   - Suggest REPLACE with the narrower descendant term; keep the ancestor only when no descendant
+     fits or the source text is genuinely stated at the abstract level.
+
 # VERIFICATION CHECKLIST
 
 Before finalizing your critique:

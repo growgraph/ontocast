@@ -152,9 +152,9 @@ class EntityNormalizer:
             referenced as types in sparse per-sentence graphs but carry no
             ``a owl:Class`` declaration locally.
         """
-        types = []
-        properties = set()
-        labels = []
+        types: list[URIRef] = []
+        properties: set[URIRef] = set()
+        labels: list[str] = []
         alt_labels: list[str] = []
         is_predicate = False
         is_type_value = False
@@ -164,7 +164,8 @@ class EntityNormalizer:
         for s, p, o in graph:
             # When entity is subject
             if s == entity:
-                properties.add(p)
+                if isinstance(p, URIRef):
+                    properties.add(p)
 
                 # Collect types
                 if p == RDF.type and isinstance(o, URIRef):
@@ -184,7 +185,8 @@ class EntityNormalizer:
 
             # When entity is object
             elif o == entity:
-                properties.add(p)
+                if isinstance(p, URIRef):
+                    properties.add(p)
                 if p == RDF.type:
                     is_type_value = True
 

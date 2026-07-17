@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- CLI `--max-visits` flag for batch mode (`--input-path`) and to override the server default when starting the API.
+- Docling converter configuration via `CONVERTER_*` settings, including a `born_digital` preset for text-selectable publisher PDFs.
+
+### Changed
+- **Docs**: align `.env.example` and user-guide defaults for `VECTOR_STORE_*` and `ONTOLOGY_PATCH_*` with `PatchRetrievalConfig` / `VectorStoreConfig` code defaults; document full patch-retrieval parameter table and tuning presets.
+- **Conversion**: `ConverterTool` now builds Docling's standard PDF pipeline from typed config, includes config-aware cache keys, and offers a temporary ligature-gap workaround for publisher-PDF text like `di ff usion`.
+
 ## [0.4.3] - 2026-06-08
 
 ### Added

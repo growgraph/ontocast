@@ -123,7 +123,10 @@ class ToolBox:
             self.triple_store_manager = InMemoryTripleStoreManager()
 
         self.ontology_manager: OntologyManager = OntologyManager()
-        self.converter: ConverterTool = ConverterTool(cache=self.shared_cache)
+        self.converter: ConverterTool = ConverterTool(
+            cache=self.shared_cache,
+            converter_config=tool_config.converter_config,
+        )
         self.chunker: ChunkerTool = ChunkerTool(
             chunk_config=tool_config.chunk_config, cache=self.shared_cache
         )

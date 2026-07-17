@@ -45,6 +45,8 @@ When `target_sections` or `summarize_sections` is set, the **Chunk** node runs a
 4. **Filter** — `target_sections` allowlist, or `summarize_sections` allowlist when `target_sections` is omitted (not `*`).
 5. **Size** — split oversized segments (semantic when available), merge undersized consecutive same-label chunks to `min_size` / `max_size`.
 
+PDF extraction behavior before chunking is configurable through `CONVERTER_*` settings. For born-digital publisher PDFs, prefer `CONVERTER_PROFILE=born_digital` to favor embedded text and enable OntoCast's temporary ligature-gap workaround.
+
 **Schema selection:** `section_schema_id` (e.g. `academic`, `financial`, `legal`, `clinical`, `manual`, `fiction`, `general`) or `document_type_hint` (substring match in `manifest.yaml`, e.g. `10-Q` → financial). Default is `academic`.
 
 Recognized labels are canonical ids from the active schema (underscore form), e.g. `results`, `md_and_a`, `risk_factors`.

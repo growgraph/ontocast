@@ -255,14 +255,15 @@ async def merge_terminal_ontologies(
     # Merge pair-wise until only one remains
     while len(terminals) > 1:
         # Sort by created_at (oldest first)
-        terminals_with_time = [t for t in terminals if t.created_at is not None]
-        terminals_without_time = [t for t in terminals if t.created_at is None]
-
-        # Sort terminals with time by created_at
-        terminals_with_time.sort(key=lambda x: x.created_at)
-
-        # Combine: terminals with time (sorted) + terminals without time
-        sorted_terminals = terminals_with_time + terminals_without_time
+        timed = [
+            (created_at, t)
+            for t in terminals
+            if (created_at := t.created_at) is not None
+        ]
+        timed.sort(key=lambda pair: pair[0])
+        sorted_terminals = [t for _, t in timed] + [
+            t for t in terminals if t.created_at is None
+        ]
 
         if len(sorted_terminals) < 2:
             break

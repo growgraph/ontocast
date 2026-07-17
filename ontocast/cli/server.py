@@ -19,6 +19,7 @@ from langgraph.graph.state import CompiledStateGraph
 from ontocast.api.app import create_app
 from ontocast.api.parse import (
     parse_document_type_hint_param,
+    parse_max_visits_param,
     parse_section_schema_id_param,
     parse_sections_list_param,
     parse_summary_max_sentences_param,
@@ -100,6 +101,16 @@ def _prepare_path_config(config: Config) -> None:
 @click.option("--input-path", type=click.Path(path_type=pathlib.Path), default=None)
 @click.option("--head-chunks", type=int, default=None)
 @click.option(
+    "--max-visits",
+    type=int,
+    default=None,
+    help=(
+        "Render/critic retry budget per loop (default from MAX_VISITS / server config). "
+        "Applies to batch mode (--input-path) and sets the server default when starting "
+        "the API."
+    ),
+)
+@click.option(
     "--use-unit-pipeline/--no-use-unit-pipeline",
     default=False,
     help=(
@@ -171,6 +182,7 @@ def _prepare_path_config(config: Config) -> None:
 def run(
     input_path: pathlib.Path | None,
     head_chunks: int | None,
+    max_visits: int | None,
     use_unit_pipeline: bool,
     tenant: str | None,
     project: str | None,
@@ -240,6 +252,11 @@ def run(
     )
     parsed_document_type_hint = parse_document_type_hint_param(document_type_hint)
     parsed_section_schema_id = parse_section_schema_id_param(section_schema_id)
+    parsed_max_visits = parse_max_visits_param(
+        max_visits,
+        default=config.server.max_visits_per_node,
+    )
+    config.server.max_visits_per_node = parsed_max_visits
 
     workflow: CompiledStateGraph = create_agent_graph(tools)
 
@@ -267,6 +284,7 @@ def run(
                 summary_max_sentences=parsed_summary_max_sentences,
                 document_type_hint=parsed_document_type_hint,
                 section_schema_id=parsed_section_schema_id,
+                max_visits=parsed_max_visits,
             )
         )
     else:

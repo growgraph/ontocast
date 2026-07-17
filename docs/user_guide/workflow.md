@@ -92,6 +92,7 @@ Implementation: [`stategraph/atomic.py`](../../ontocast/stategraph/atomic.py).
 
 - Accepts text, JSON (`text` field), or file uploads via `/process`
 - Converts supported formats to Markdown while preserving structure
+- PDF conversion quality can be tuned via `CONVERTER_*` settings; use `CONVERTER_PROFILE=born_digital` for text-selectable publisher PDFs with ligature-gap artifacts
 
 ### 2. Chunking (and optional structured preprocessing)
 
@@ -163,6 +164,7 @@ Facts output uses the **`cd:` namespace** for text-derived instances; domain ont
 | `ENABLE_ONTOLOGY_CONSOLIDATION` | Optional post-normalization consolidation |
 | `ONTOLOGY_CONTEXT_MODE` | How per-unit ontology context is sourced |
 | `LLM_GRAPH_FORMAT` | `turtle` or `jsonld` LLM wire encoding |
+| `--max-visits` | CLI override for `MAX_VISITS` (batch mode and server default) |
 | `--head-chunks` | CLI limit on units processed |
 | `target_sections` / `summarize_sections` / `summary_max_sentences` | Per-request structured-document preprocessing (not env vars) |
 
