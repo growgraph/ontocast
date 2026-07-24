@@ -11,8 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI `--max-visits` flag for batch mode (`--input-path`) and to override the server default when starting the API.
 - Docling converter configuration via `CONVERTER_*` settings, including a `born_digital` preset for text-selectable publisher PDFs.
 - `Ontology.from_working_context` for locked multi-source prompt snapshots; catalog alias resolution (`ontology_id`, author prefix, or IRI) via `OntologyManager.resolve_ontology_ref`.
+- `OntologyManager.aadd_ontology` for non-blocking vector reindex from async callers (`merge_terminal_ontologies` updated).
 
 ### Changed
+- **OntologyManager async I/O**: patch retrieval sync wrappers now delegate to the async path (same `asyncio.run` / refuse-in-loop pattern as `OntologyPatchRetriever`); vector reindex uses `aadd_ontology` + `asyncio.to_thread`, and sync `add_ontology` refuses reindex when an event loop is running. Fallback patch graphs use `RDFGraph.copy()` instead of nested `deepcopy`.
 - **Ontology identity**: catalog key is the ontology IRI; `ontology_id` / author prefix are aliases (may differ). `derive_ontology_id` uses conventional rdflib prefix maps (SKOS → `skos`) and refuses pure-numeric IRI tails. Multi-ontology graphs no longer sync identity from an arbitrary `owl:Ontology` subject. Graph merges rename conflicting prefixes instead of silent override. `ontology_context_fixed_ontology_id` accepts IRI, `ontology_id`, or author prefix.
 - **Docs**: align `.env.example` and user-guide defaults for `VECTOR_STORE_*` and `ONTOLOGY_PATCH_*` with `PatchRetrievalConfig` / `VectorStoreConfig` code defaults; document full patch-retrieval parameter table and tuning presets.
 - **Conversion**: `ConverterTool` now builds Docling's standard PDF pipeline from typed config, includes config-aware cache keys, and offers a temporary ligature-gap workaround for publisher-PDF text like `di ff usion`.

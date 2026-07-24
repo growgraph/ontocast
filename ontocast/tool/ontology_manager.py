@@ -5,9 +5,10 @@ loading, updating, and retrieving ontologies by name or IRI. Tracks version
 lineage using hash-based identifiers.
 """
 
+import asyncio
 import logging
-from copy import deepcopy
-from typing import TYPE_CHECKING
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, cast
 
 from pydantic import Field
 
@@ -165,37 +166,22 @@ class OntologyManager(Tool):
         """
         return self.resolve_ontology_ref(str(item)) is not None
 
-    def add_ontology(
-        self, ontology: Ontology, *, skip_vector_index: bool = False
-    ) -> None:
-        """Add an ontology to the version tree for its IRI.
-
-        If an ontology with the same hash already exists, it is not added again.
-        The ontology is added to the version tree for its IRI.
-        Ensures that created_at is set if not already present.
-
-        Args:
-            ontology: The ontology to add.
-            skip_vector_index: If True, do not call the vector store (caller
-                already materialized embeddings, e.g. during ToolBox.initialize).
-        """
+    def _prepare_ontology_for_catalog(self, ontology: Ontology) -> bool:
+        """Validate and register ``ontology``; return True if a new hash was appended."""
         if not ontology.iri or ontology.iri == NULL_ONTOLOGY.iri:
             logger.warning(
                 f"Cannot add ontology without valid IRI (ontology_id: {ontology.ontology_id})"
             )
-            return
+            return False
 
         if not ontology.hash:
             logger.warning(f"Cannot add ontology without hash (IRI: {ontology.iri})")
-            return
+            return False
 
         self.validate_identity_uniqueness(ontology)
         self._register_identity(ontology)
 
-        # Ensure created_at is set
         if not ontology.created_at:
-            from datetime import datetime, timezone
-
             ontology.created_at = datetime.now(timezone.utc)
             logger.debug(
                 f"Set created_at for ontology {ontology.iri} with hash {ontology.hash[:8]}..."
@@ -204,23 +190,76 @@ class OntologyManager(Tool):
         if ontology.iri not in self.ontology_versions:
             self.ontology_versions[ontology.iri] = []
 
-        # Check if this hash already exists
         existing_hashes = {o.hash for o in self.ontology_versions[ontology.iri]}
-        if ontology.hash not in existing_hashes:
-            self.ontology_versions[ontology.iri].append(ontology)
-            if self._patch_retriever is not None and not skip_vector_index:
-                self._patch_retriever.vector_store.reindex_ontology(ontology)
-            # Update cache for this specific IRI (store hash only)
-            freshest = self.get_freshest_terminal_ontology_by_iri(ontology.iri)
-            if freshest and freshest.hash:
-                self._cached_ontologies[ontology.iri] = freshest.hash
-            logger.debug(
-                f"Added ontology {ontology.iri} with hash {ontology.hash[:8]}..."
-            )
-        else:
+        if ontology.hash in existing_hashes:
             logger.debug(
                 f"Ontology {ontology.iri} with hash {ontology.hash[:8]}... already exists"
             )
+            return False
+
+        self.ontology_versions[ontology.iri].append(ontology)
+        freshest = self.get_freshest_terminal_ontology_by_iri(ontology.iri)
+        if freshest and freshest.hash:
+            self._cached_ontologies[ontology.iri] = freshest.hash
+        logger.debug(f"Added ontology {ontology.iri} with hash {ontology.hash[:8]}...")
+        return True
+
+    def _reindex_ontology_sync(self, ontology: Ontology) -> None:
+        """Sync vector reindex (caller must ensure no running event loop)."""
+        if self._patch_retriever is None:
+            return
+        self._patch_retriever.vector_store.reindex_ontology(ontology)
+
+    def _ensure_sync_reindex_allowed(self, *, skip_vector_index: bool) -> None:
+        """Raise if sync reindex would block a running event loop."""
+        if skip_vector_index or self._patch_retriever is None:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        raise RuntimeError(
+            "add_ontology() cannot reindex inside async code; use await aadd_ontology()"
+        )
+
+    async def _reindex_ontology_async(self, ontology: Ontology) -> None:
+        if self._patch_retriever is None:
+            return
+        await asyncio.to_thread(
+            self._patch_retriever.vector_store.reindex_ontology, ontology
+        )
+
+    def add_ontology(
+        self, ontology: Ontology, *, skip_vector_index: bool = False
+    ) -> None:
+        """Add an ontology to the version tree for its IRI.
+
+        If an ontology with the same hash already exists, it is not added again.
+        Ensures that created_at is set if not already present.
+
+        Args:
+            ontology: The ontology to add.
+            skip_vector_index: If True, do not call the vector store (caller
+                already materialized embeddings, e.g. during ToolBox.initialize).
+
+        Raises:
+            RuntimeError: If vector reindex would run while an event loop is
+                already active. Use :meth:`aadd_ontology` from async code.
+        """
+        self._ensure_sync_reindex_allowed(skip_vector_index=skip_vector_index)
+        if not self._prepare_ontology_for_catalog(ontology):
+            return
+        if not skip_vector_index:
+            self._reindex_ontology_sync(ontology)
+
+    async def aadd_ontology(
+        self, ontology: Ontology, *, skip_vector_index: bool = False
+    ) -> None:
+        """Async variant of :meth:`add_ontology` (reindex off the event loop)."""
+        if not self._prepare_ontology_for_catalog(ontology):
+            return
+        if not skip_vector_index:
+            await self._reindex_ontology_async(ontology)
 
     def remove_ontology_by_iri(self, iri: str) -> None:
         """Drop all tracked versions for an ontology IRI and clear caches."""
@@ -251,6 +290,22 @@ class OntologyManager(Tool):
         if self._patch_retriever is not None:
             return self._patch_retriever.vector_store.store_config.top_k
         return 10
+
+    def _fallback_patch_results(
+        self, queries: list[str]
+    ) -> list[tuple[RDFGraph | None, list[str]]]:
+        """Per-query independent copies of the freshest terminal ontology graph."""
+        fallback = self.get_freshest_terminal_ontology_by_iri(None)
+        if fallback is None:
+            return [(None, []) for _ in queries]
+        sources = [fallback.iri]
+        return [(fallback.graph.copy(), sources) for _ in queries]
+
+    @staticmethod
+    def _normalize_patch_graph(
+        graph: RDFGraph, sources: list[str]
+    ) -> tuple[RDFGraph, list[str]]:
+        return (graph, sources) if len(graph) > 0 else (RDFGraph(), sources)
 
     def get_patch_context(
         self,
@@ -344,24 +399,27 @@ class OntologyManager(Tool):
 
         With a patch retriever, the list has length 1 (ensemble graph + sources).
         Without it, length matches ``queries`` (fallback ontology per query).
-        """
-        if not queries:
-            return []
-        if self._patch_retriever is not None:
-            graph, sources = self._patch_retriever.retrieve_ensemble(
-                queries=queries,
-                top_k=self._effective_patch_top_k(top_k),
-                subgraph_depth=subgraph_depth,
-                max_total_triples=max_total_triples,
-                estimated_triples_per_query=estimated_triples_per_query,
-            )
-            return [(graph, sources) if len(graph) > 0 else (RDFGraph(), sources)]
 
-        fallback = self.get_freshest_terminal_ontology_by_iri(None)
-        if fallback is None:
-            return [(None, []) for _ in queries]
-        fallback_graph = deepcopy(fallback.graph)
-        return [(deepcopy(fallback_graph), [fallback.iri]) for _ in queries]
+        Raises:
+            RuntimeError: If called while an event loop is running. Use
+                :meth:`aget_patch_contexts_with_sources` from async code.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(
+                self.aget_patch_contexts_with_sources(
+                    queries=queries,
+                    top_k=top_k,
+                    subgraph_depth=subgraph_depth,
+                    max_total_triples=max_total_triples,
+                    estimated_triples_per_query=estimated_triples_per_query,
+                )
+            )
+        raise RuntimeError(
+            "get_patch_contexts_with_sources() cannot be called from async code; "
+            "use await aget_patch_contexts_with_sources()"
+        )
 
     async def aget_patch_contexts_with_sources(
         self,
@@ -386,13 +444,9 @@ class OntologyManager(Tool):
                 max_total_triples=max_total_triples,
                 estimated_triples_per_query=estimated_triples_per_query,
             )
-            return [(graph, sources) if len(graph) > 0 else (RDFGraph(), sources)]
+            return [self._normalize_patch_graph(graph, sources)]
 
-        fallback = self.get_freshest_terminal_ontology_by_iri(None)
-        if fallback is None:
-            return [(None, []) for _ in queries]
-        fallback_graph = deepcopy(fallback.graph)
-        return [(deepcopy(fallback_graph), [fallback.iri]) for _ in queries]
+        return self._fallback_patch_results(queries)
 
     def get_terminal_ontologies_by_iri(self, iri: str | None = None) -> list[Ontology]:
         """Get terminal (leaf) ontologies in the version graph.
@@ -473,10 +527,6 @@ class OntologyManager(Tool):
 
         if with_timestamp:
             # Sort by created_at descending (most recent first)
-            # Type assertion: we know created_at is not None due to filter above
-            from datetime import datetime
-            from typing import cast
-
             freshest = max(
                 with_timestamp,
                 key=lambda o: cast(datetime, o.created_at),

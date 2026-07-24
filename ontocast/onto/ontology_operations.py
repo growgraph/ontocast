@@ -244,9 +244,9 @@ async def merge_terminal_ontologies(
 
     logger.info(f"Found {len(matching_ontologies)} ontologies for IRI: {iri}")
 
-    # Add all to ontology manager
+    # Add all to ontology manager (async reindex when a vector store is registered)
     for onto in matching_ontologies:
-        ontology_manager.add_ontology(onto)
+        await ontology_manager.aadd_ontology(onto)
 
     # Get terminal ontologies
     terminals = ontology_manager.get_terminal_ontologies_by_iri(iri)
@@ -281,7 +281,7 @@ async def merge_terminal_ontologies(
         merged = merge_ontologies(onto1, onto2)
 
         # Add merged ontology to manager
-        ontology_manager.add_ontology(merged)
+        await ontology_manager.aadd_ontology(merged)
 
         # Update terminals list
         terminals = ontology_manager.get_terminal_ontologies_by_iri(iri)
