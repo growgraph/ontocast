@@ -23,7 +23,7 @@ from ontocast.tool.vector_store.patch_retriever import _ranked_entity_weights
 
 BASE = "https://growgraph.dev/ontologies/"
 QQVAL = Namespace(f"{BASE}qqval#")
-MATSCI = Namespace(f"{BASE}matsci-ontology#")
+MATSCI = Namespace(f"{BASE}matsci#")
 PEROV = Namespace(f"{BASE}perovskitemat#")
 
 
@@ -53,13 +53,13 @@ def test_filter_overbroad_namespace_map_drops_parent_directory_uri() -> None:
     ns_map = {
         "qqval_ontologies": f"{BASE}",
         "qqval": str(QQVAL),
-        "matsci-ontology": str(MATSCI),
+        "matsci": str(MATSCI),
         "perovskitemat": str(PEROV),
     }
     filtered = _filter_overbroad_namespace_map(ns_map)
     assert "qqval_ontologies" not in filtered
     assert filtered["qqval"] == str(QQVAL)
-    assert filtered["matsci-ontology"] == str(MATSCI)
+    assert filtered["matsci"] == str(MATSCI)
 
 
 def test_prune_orphaned_bnode_subjects_removes_unreferenced_restrictions() -> None:
@@ -81,7 +81,7 @@ def test_ranked_entity_weights_preserves_entity_role() -> None:
     atoms = [
         GraphAtom(
             atom_id="a1",
-            ontology_iri=f"{BASE}matsci-ontology",
+            ontology_iri=f"{BASE}matsci",
             iri=str(MATSCI["usesMethod"]),
             entity_role=ROLE_PREDICATE,
             core_representation="uses method",
@@ -90,7 +90,7 @@ def test_ranked_entity_weights_preserves_entity_role() -> None:
         ),
         GraphAtom(
             atom_id="a2",
-            ontology_iri=f"{BASE}matsci-ontology",
+            ontology_iri=f"{BASE}matsci",
             iri=str(MATSCI["Material"]),
             entity_role=ROLE_RESOURCE,
             core_representation="Material",
@@ -107,7 +107,7 @@ def test_ranked_entity_weights_preserves_entity_role() -> None:
 
 def test_classify_promotes_named_individual_to_domain_class() -> None:
     graph = RDFGraph()
-    graph.bind("matsci-ontology", MATSCI)
+    graph.bind("matsci", MATSCI)
     individual = MATSCI["Photoluminescence"]
     method_class = MATSCI["OpticalCharacterizationMethod"]
     graph.add((individual, RDF.type, OWL.NamedIndividual))
@@ -129,7 +129,7 @@ def test_classify_promotes_named_individual_to_domain_class() -> None:
 
 def test_crosslink_adds_property_by_domain() -> None:
     graph = RDFGraph()
-    graph.bind("matsci-ontology", MATSCI)
+    graph.bind("matsci", MATSCI)
     method_class = MATSCI["OpticalCharacterizationMethod"]
     uses_method = MATSCI["usesMethod"]
     graph.add((method_class, RDF.type, OWL.Class))
@@ -161,10 +161,10 @@ def test_strip_redundant_named_individual_type() -> None:
 
 def test_build_induced_subgraph_schema_centric_connected_patch() -> None:
     matsci_graph = RDFGraph()
-    matsci_graph.bind("matsci-ontology", MATSCI)
-    matsci_graph.add((URIRef(f"{BASE}matsci-ontology"), RDF.type, OWL.Ontology))
+    matsci_graph.bind("matsci", MATSCI)
+    matsci_graph.add((URIRef(f"{BASE}matsci"), RDF.type, OWL.Ontology))
     matsci_graph.add(
-        (URIRef(f"{BASE}matsci-ontology"), DCTERMS.creator, Literal("growgraph.dev"))
+        (URIRef(f"{BASE}matsci"), DCTERMS.creator, Literal("growgraph.dev"))
     )
 
     method_class = MATSCI["OpticalCharacterizationMethod"]
@@ -188,7 +188,7 @@ def test_build_induced_subgraph_schema_centric_connected_patch() -> None:
     matsci_graph.add((uses_method, RDFS.domain, char_class))
     matsci_graph.add((uses_method, RDFS.range, method_class))
 
-    ontologies = [_ontology(f"{BASE}matsci-ontology", matsci_graph)]
+    ontologies = [_ontology(f"{BASE}matsci", matsci_graph)]
     entity_uris = [str(individual)]
     entity_roles = {str(individual): ROLE_RESOURCE}
 
@@ -214,7 +214,7 @@ def test_build_induced_subgraph_schema_centric_connected_patch() -> None:
     ) in result
     assert (individual, RDF.type, OWL.NamedIndividual) not in result
     assert not any(
-        str(s).endswith("matsci-ontology") and p == RDF.type
+        str(s).endswith("matsci") and p == RDF.type
         for s, p, o in result
         if o == OWL.Ontology
     )
@@ -224,7 +224,7 @@ def test_build_induced_subgraph_schema_centric_connected_patch() -> None:
 
 def test_build_concept_relevance_inherits_individual_score_to_class() -> None:
     graph = RDFGraph()
-    graph.bind("matsci-ontology", MATSCI)
+    graph.bind("matsci", MATSCI)
     individual = MATSCI["Photoluminescence"]
     method_class = MATSCI["OpticalCharacterizationMethod"]
     graph.add((individual, RDF.type, OWL.NamedIndividual))
@@ -241,8 +241,8 @@ def test_build_concept_relevance_inherits_individual_score_to_class() -> None:
 
 def test_build_induced_subgraph_class_seed_includes_label_and_subclass() -> None:
     graph = RDFGraph()
-    graph.bind("matsci-ontology", MATSCI)
-    graph.add((URIRef(f"{BASE}matsci-ontology"), RDF.type, OWL.Ontology))
+    graph.bind("matsci", MATSCI)
+    graph.add((URIRef(f"{BASE}matsci"), RDF.type, OWL.Ontology))
     bare_class = MATSCI["ActuatingEquipment"]
     parent = MATSCI["ProcessingEquipment"]
     graph.add((bare_class, RDF.type, OWL.Class))
@@ -251,7 +251,7 @@ def test_build_induced_subgraph_class_seed_includes_label_and_subclass() -> None
     graph.add((parent, RDF.type, OWL.Class))
     graph.add((parent, RDFS.label, Literal("Processing equipment")))
 
-    ontologies = [_ontology(f"{BASE}matsci-ontology", graph)]
+    ontologies = [_ontology(f"{BASE}matsci", graph)]
     result, _ = SPARQLTool._build_induced_subgraph(
         ontologies=ontologies,
         entity_uris=[str(bare_class)],
@@ -273,8 +273,8 @@ def test_build_induced_subgraph_class_seed_includes_label_and_subclass() -> None
 
 def test_build_induced_subgraph_shared_ancestor_connects_two_seeds() -> None:
     graph = RDFGraph()
-    graph.bind("matsci-ontology", MATSCI)
-    graph.add((URIRef(f"{BASE}matsci-ontology"), RDF.type, OWL.Ontology))
+    graph.bind("matsci", MATSCI)
+    graph.add((URIRef(f"{BASE}matsci"), RDF.type, OWL.Ontology))
     root = MATSCI["CharacterizationMethod"]
     child_a = MATSCI["OpticalCharacterizationMethod"]
     child_b = MATSCI["StructuralCharacterizationMethod"]
@@ -288,7 +288,7 @@ def test_build_induced_subgraph_shared_ancestor_connects_two_seeds() -> None:
     graph.add((child_a, RDFS.subClassOf, root))
     graph.add((child_b, RDFS.subClassOf, root))
 
-    ontologies = [_ontology(f"{BASE}matsci-ontology", graph)]
+    ontologies = [_ontology(f"{BASE}matsci", graph)]
     result, _ = SPARQLTool._build_induced_subgraph(
         ontologies=ontologies,
         entity_uris=[str(child_a), str(child_b)],
@@ -314,8 +314,8 @@ def test_build_induced_subgraph_shared_ancestor_connects_two_seeds() -> None:
 def test_build_induced_subgraph_late_seed_gets_subclass_under_tight_budget() -> None:
     """AssemblyProcess-like: label+comment must not appear without subClassOf."""
     graph = RDFGraph()
-    graph.bind("matsci-ontology", MATSCI)
-    graph.add((URIRef(f"{BASE}matsci-ontology"), RDF.type, OWL.Ontology))
+    graph.bind("matsci", MATSCI)
+    graph.add((URIRef(f"{BASE}matsci"), RDF.type, OWL.Ontology))
 
     process = MATSCI["Process"]
     assembly = MATSCI["AssemblyProcess"]
@@ -340,7 +340,7 @@ def test_build_induced_subgraph_late_seed_gets_subclass_under_tight_budget() -> 
         graph.add((parent, RDFS.label, Literal(f"Parent {idx}")))
         filler_seeds.append(str(cls))
 
-    ontologies = [_ontology(f"{BASE}matsci-ontology", graph)]
+    ontologies = [_ontology(f"{BASE}matsci", graph)]
     entity_uris = filler_seeds + [str(assembly)]
     entity_relevance = {uri: 1.0 - (idx * 0.05) for idx, uri in enumerate(entity_uris)}
     entity_relevance[str(assembly)] = 0.05
@@ -371,8 +371,8 @@ def test_build_induced_subgraph_late_seed_gets_subclass_under_tight_budget() -> 
 
 def test_build_induced_subgraph_bfs_class_node_includes_subclass() -> None:
     graph = RDFGraph()
-    graph.bind("matsci-ontology", MATSCI)
-    graph.add((URIRef(f"{BASE}matsci-ontology"), RDF.type, OWL.Ontology))
+    graph.bind("matsci", MATSCI)
+    graph.add((URIRef(f"{BASE}matsci"), RDF.type, OWL.Ontology))
 
     root = MATSCI["Process"]
     assembly = MATSCI["AssemblyProcess"]
@@ -385,7 +385,7 @@ def test_build_induced_subgraph_bfs_class_node_includes_subclass() -> None:
     )
     graph.add((assembly, RDFS.subClassOf, root))
 
-    ontologies = [_ontology(f"{BASE}matsci-ontology", graph)]
+    ontologies = [_ontology(f"{BASE}matsci", graph)]
     result, _ = SPARQLTool._build_induced_subgraph(
         ontologies=ontologies,
         entity_uris=[str(root)],
@@ -420,7 +420,7 @@ def test_strip_redundant_owl_class_when_subclass_present() -> None:
 
 def test_prune_disconnected_uri_literal_island() -> None:
     graph = RDFGraph()
-    graph.bind("matsci-ontology", MATSCI)
+    graph.bind("matsci", MATSCI)
     island = MATSCI["OrphanClass"]
     root = MATSCI["Process"]
     other = MATSCI["OtherClass"]
@@ -519,8 +519,8 @@ def test_prune_degenerate_restriction_bnodes_removes_stub() -> None:
 
 def test_domain_range_linker_connects_bare_class() -> None:
     graph = RDFGraph()
-    graph.bind("matsci-ontology", MATSCI)
-    graph.add((URIRef(f"{BASE}matsci-ontology"), RDF.type, OWL.Ontology))
+    graph.bind("matsci", MATSCI)
+    graph.add((URIRef(f"{BASE}matsci"), RDF.type, OWL.Ontology))
 
     method_class = MATSCI["OpticalCharacterizationMethod"]
     uses_method = MATSCI["usesMethod"]
@@ -531,7 +531,7 @@ def test_domain_range_linker_connects_bare_class() -> None:
     graph.add((uses_method, RDFS.domain, method_class))
     graph.add((uses_method, RDFS.range, MATSCI["CharacterizationMethod"]))
 
-    ontologies = [_ontology(f"{BASE}matsci-ontology", graph)]
+    ontologies = [_ontology(f"{BASE}matsci", graph)]
     result, _ = SPARQLTool._build_induced_subgraph(
         ontologies=ontologies,
         entity_uris=[str(method_class)],
@@ -553,8 +553,8 @@ def test_domain_range_linker_connects_bare_class() -> None:
 
 def test_property_only_path_runs_finalization() -> None:
     graph = RDFGraph()
-    graph.bind("matsci-ontology", MATSCI)
-    graph.add((URIRef(f"{BASE}matsci-ontology"), RDF.type, OWL.Ontology))
+    graph.bind("matsci", MATSCI)
+    graph.add((URIRef(f"{BASE}matsci"), RDF.type, OWL.Ontology))
 
     method_class = MATSCI["OpticalCharacterizationMethod"]
     uses_method = MATSCI["usesMethod"]
@@ -564,7 +564,7 @@ def test_property_only_path_runs_finalization() -> None:
     graph.add((uses_method, RDFS.label, Literal("uses method")))
     graph.add((uses_method, RDFS.domain, method_class))
 
-    ontologies = [_ontology(f"{BASE}matsci-ontology", graph)]
+    ontologies = [_ontology(f"{BASE}matsci", graph)]
     result, metrics = SPARQLTool._build_induced_subgraph(
         ontologies=ontologies,
         entity_uris=[str(uses_method)],

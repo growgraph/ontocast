@@ -17,6 +17,8 @@ from rdflib.namespace import XSD, NamespaceManager
 from ontocast.onto.constants import COMMON_PREFIXES, prefix_lookup_for_ingest
 from ontocast.onto.enum import LLMGraphFormat
 from ontocast.onto.iri_policy import normalize_namespace_iri, sanitize_prefix_map
+from ontocast.onto.namespace_merge import choose_best_prefix, merge_namespace_bindings
+from ontocast.onto.util import is_rdflib_default_namespace
 from ontocast.util.hash import render_text_hash
 
 logger = logging.getLogger(__name__)
@@ -370,14 +372,14 @@ class RDFGraph(Graph):
         for triple in other:
             result.add(triple)
 
-        # Copy namespace bindings from self
-        for prefix, uri in self.namespaces():
-            result.bind(prefix, uri)
-
-        # Copy namespace bindings from other if it's a Graph
+        existing = {prefix: str(uri) for prefix, uri in self.namespaces() if prefix}
+        incoming: dict[str, str] = {}
         if isinstance(other, Graph):
-            for prefix, uri in other.namespaces():
-                result.bind(prefix, uri)
+            incoming = {
+                prefix: str(uri) for prefix, uri in other.namespaces() if prefix
+            }
+        for prefix, uri in merge_namespace_bindings(existing, incoming).items():
+            result.bind(prefix, uri)
 
         return result
 
@@ -1346,14 +1348,19 @@ class RDFGraph(Graph):
         )
         return None
 
-    def sanitize_prefixes_namespaces(self):
+    def sanitize_prefixes_namespaces(
+        self,
+        preferred_namespace_prefixes: dict[str, str] | None = None,
+    ):
         """
         Rematches prefixes in an RDFLib graph to correct namespaces when a namespace
         with the same URI exists. Handles cases where prefixes might not be bound
         as namespaces.
 
         Args:
-            self (RDFGraph): The RDFLib graph to process
+            preferred_namespace_prefixes: Optional namespace URI → preferred prefix
+                name (e.g. catalog author prefixes). When multiple prefixes bind the
+                same namespace, the preferred name wins over shortest-name heuristics.
 
         Returns:
            RDFGraph: The graph with corrected prefix-namespace mappings
@@ -1365,8 +1372,21 @@ class RDFGraph(Graph):
         if not current_prefixes:
             return self
 
-        sanitized = sanitize_prefix_map(current_prefixes, context="auto")
-        for prefix, original_namespace in current_prefixes.items():
+        # Preserve rdflib built-in bindings (e.g. xml:) unchanged — normalizing
+        # them (appending /) invents a distinct URI and rdflib mints xml1:.
+        mutable_prefixes = {
+            prefix: uri
+            for prefix, uri in current_prefixes.items()
+            if not is_rdflib_default_namespace(uri)
+        }
+        preserved_prefixes = {
+            prefix: uri
+            for prefix, uri in current_prefixes.items()
+            if is_rdflib_default_namespace(uri)
+        }
+
+        sanitized = sanitize_prefix_map(mutable_prefixes, context="auto")
+        for prefix, original_namespace in mutable_prefixes.items():
             normalized_namespace = sanitized[prefix]
             if normalized_namespace != original_namespace:
                 self.remap_namespaces(
@@ -1374,18 +1394,23 @@ class RDFGraph(Graph):
                     new_namespace=normalized_namespace,
                 )
 
+        merged = {**sanitized, **preserved_prefixes}
         new_ns_manager = NamespaceManager(self)
         uri_to_prefixes = defaultdict(list)
-        for prefix, namespace in sanitized.items():
+        for prefix, namespace in merged.items():
             uri_to_prefixes[namespace].append(prefix)
 
         for namespace, prefixes in uri_to_prefixes.items():
-            best_prefix = sorted(prefixes, key=lambda p: (len(p), p))[0]
-            new_ns_manager.bind(
-                best_prefix,
-                Namespace(normalize_namespace_iri(namespace, context="auto")),
-                override=True,
+            best_prefix = choose_best_prefix(
+                namespace,
+                prefixes,
+                preferred_namespace_prefixes=preferred_namespace_prefixes,
             )
+            if is_rdflib_default_namespace(namespace):
+                bound_ns = Namespace(namespace)
+            else:
+                bound_ns = Namespace(normalize_namespace_iri(namespace, context="auto"))
+            new_ns_manager.bind(best_prefix, bound_ns, override=True)
         self.namespace_manager = new_ns_manager
         return self
 

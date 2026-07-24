@@ -13,6 +13,9 @@ def test_facts_guidelines_include_specificity_rule() -> None:
     assert "1d. SPECIFICITY RULE" in guidelines
     assert "rdfs:subPropertyOf" in guidelines
     assert "ex:hasComponent" in guidelines
+    # Clause stated once in 1a; later items refer back without re-interpolating.
+    assert guidelines.count("the domain ontologies") == 1
+    assert "domain ontology namespace(s) above" in guidelines
 
 
 def test_criticise_facts_include_specificity_checklist() -> None:

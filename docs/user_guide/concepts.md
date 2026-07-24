@@ -6,11 +6,14 @@ Main concepts in OntoCast, a framework for transforming documents into semantic 
 
 OntoCast manages ontologies with automatic versioning and timestamp tracking:
 
+- **Canonical identity**: catalog entries are keyed by ontology **IRI**; short `ontology_id` and author Turtle **prefix** are aliases (they may differ, e.g. `observation` / `obs`)
 - **Semantic Versioning**: MAJOR/MINOR/PATCH increments from change analysis
 - **Hash-Based Lineage**: Parent hashes track ontology evolution
 - **Multiple Versions**: Stored as separate named graphs in Fuseki
 - **Timestamp Tracking**: `updated_at` synced as `dcterms:modified`
 - **Versioned IRIs**: Unique IRIs with hash fragments for storage
+- **Working context**: multi-ontology prompt snapshots (merged artifacts / vector ensembles) lock the anchor IRI and track `source_iris` instead of inventing a single catalog identity from the union graph
+- **Prefixes**: graph merges rename conflicting prefixes rather than silently overriding bindings; serialization aliases remain sugar over absolute IRIs
 
 ## GraphUpdate System
 

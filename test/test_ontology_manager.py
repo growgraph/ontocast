@@ -272,17 +272,17 @@ class TestFreshestTerminalOntology:
 
     def test_freshest_handles_no_timestamps(self, ontology_manager, sample_ontology):
         """Test that freshest falls back when no timestamps."""
-        # This shouldn't happen in practice since add_ontology sets created_at,
-        # but test the fallback logic
         sample_ontology.created_at = None
-        # Manually add to bypass add_ontology's created_at setting
+        # Register identity/aliases without going through add_ontology's timestamp set.
+        ontology_manager.validate_identity_uniqueness(sample_ontology)
+        ontology_manager._register_identity(sample_ontology)
         if sample_ontology.iri not in ontology_manager.ontology_versions:
             ontology_manager.ontology_versions[sample_ontology.iri] = []
         ontology_manager.ontology_versions[sample_ontology.iri].append(sample_ontology)
 
         freshest = ontology_manager.get_freshest_terminal_ontology("test")
-        # Should still return something (fallback to first)
         assert freshest is not None
+        assert freshest.hash == sample_ontology.hash
 
     def test_freshest_returns_none_when_no_ontologies(self, ontology_manager):
         """Test that freshest returns None when no ontologies exist."""

@@ -122,9 +122,12 @@ def build_llm_prefix_map(
     return _add_semantic_aliases(merged)
 
 
-def known_prefixes_for_llm_parse(source: OntologyPromptSource) -> dict[str, str]:
+def known_prefixes_for_llm_parse(
+    source: OntologyPromptSource,
+    supplemental: Iterable[Ontology] = (),
+) -> dict[str, str]:
     """Collect namespace prefixes for TTL/JSON-LD repair during LLM output parsing."""
-    return build_llm_prefix_map(source.ontology_for_prefixes())
+    return build_llm_prefix_map(source.ontology_for_prefixes(), supplemental)
 
 
 class UnitOntologyAccess:

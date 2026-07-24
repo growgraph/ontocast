@@ -10,10 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - CLI `--max-visits` flag for batch mode (`--input-path`) and to override the server default when starting the API.
 - Docling converter configuration via `CONVERTER_*` settings, including a `born_digital` preset for text-selectable publisher PDFs.
+- `Ontology.from_working_context` for locked multi-source prompt snapshots; catalog alias resolution (`ontology_id`, author prefix, or IRI) via `OntologyManager.resolve_ontology_ref`.
 
 ### Changed
+- **Ontology identity**: catalog key is the ontology IRI; `ontology_id` / author prefix are aliases (may differ). `derive_ontology_id` uses conventional rdflib prefix maps (SKOS → `skos`) and refuses pure-numeric IRI tails. Multi-ontology graphs no longer sync identity from an arbitrary `owl:Ontology` subject. Graph merges rename conflicting prefixes instead of silent override. `ontology_context_fixed_ontology_id` accepts IRI, `ontology_id`, or author prefix.
 - **Docs**: align `.env.example` and user-guide defaults for `VECTOR_STORE_*` and `ONTOLOGY_PATCH_*` with `PatchRetrievalConfig` / `VectorStoreConfig` code defaults; document full patch-retrieval parameter table and tuning presets.
 - **Conversion**: `ConverterTool` now builds Docling's standard PDF pipeline from typed config, includes config-aware cache keys, and offers a temporary ligature-gap workaround for publisher-PDF text like `di ff usion`.
+- **Prefix / namespace hygiene for facts prompts**:
+  - Domain-ontology clause now excludes all rdflib default bindings (`brick`, `csvw`, `geo`, `xml`, …), not only the small `COMMON_PREFIXES` set.
+  - Author-declared short prefixes (e.g. `matsci:`) are kept canonical; IRI-tail `ontology_id` values no longer force a duplicate prefix binding. Degenerate `nsN` placeholders are still rebound and the old binding is removed.
+  - Test fixtures updated to the short growgraph ontology IRI stems (`matsci`, `qqval`, …) matching `matsci-perovskite-ontologies` naming.
+  - `sanitize_prefixes_namespaces` leaves rdflib reserved namespaces (notably `xml:`) untouched, so `xml1:` is no longer minted.
+  - Facts operational guidelines state the domain-ontologies clause once (in the TWO-NAMESPACE CONTRACT) instead of repeating it four times.
 
 ## [0.4.3] - 2026-06-08
 

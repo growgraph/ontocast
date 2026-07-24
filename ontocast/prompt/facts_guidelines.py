@@ -31,9 +31,9 @@ facts_instruction_shared = """\n\n
       `rdfs:subPropertyOf` of `ex:hasPart` and its domain/range fit the subject and object.
     - CORRECT: `cd:assembly_1 ex:hasComponent cd:widget_1 .`
 
-2. Use the provided {domain_ontologies_clause} (below) and standard ontologies (RDFS, OWL, schema.org, etc.) to identify/infer entities, classes, types, and relationships
-3. Thoroughly Extract and Link: extract all possible text mentions that correspond to entities, classes, types, or relationships defined in {domain_ontologies_clause}
-4. Enforce typing: all `cd:` entities (facts) are data instances and must be linked via `rdf:type` to a valid operational Class from either {domain_ontologies_clause} or standard core vocabularies (e.g., `schema:Person`, `schema:Organization`, `onto:Trial`).
+2. Use the provided domain ontology namespace(s) above and standard ontologies (RDFS, OWL, schema.org, etc.) to identify/infer entities, classes, types, and relationships
+3. Thoroughly Extract and Link: extract all possible text mentions that correspond to entities, classes, types, or relationships defined in the domain ontology namespace(s) above
+4. Enforce typing: all `cd:` entities (facts) are data instances and must be linked via `rdf:type` to a valid operational Class from either the domain ontology namespace(s) above or standard core vocabularies (e.g., `schema:Person`, `schema:Organization`, `onto:Trial`).
    - CRITICAL: NEVER type a `cd:` instance as `rdfs:Class` or `rdf:Property`. You are extracting data occurrences, not rewriting or defining the schema.
 5. Declare every namespace prefix you use (rdf, rdfs, owl, schema, domain ontologies, cd, etc.).
 5a. PREFIX HYGIENE: Use **only** prefix aliases declared in the ontology context above. Do not invent alternative aliases.

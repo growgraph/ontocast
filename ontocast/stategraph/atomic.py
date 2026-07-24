@@ -48,6 +48,49 @@ def _document_supplemental_ontologies(document_state: AgentState) -> list[Ontolo
     ]
 
 
+def _catalog_ontologies_for_patch_sources(
+    tools: ToolBox,
+    patch_sources: list[str],
+) -> list[Ontology]:
+    """Freshest catalog terminals for each working-context source IRI."""
+    if not patch_sources:
+        return []
+    mgr = tools.ontology_manager
+    result: list[Ontology] = []
+    seen: set[str] = set()
+    for ref in patch_sources:
+        iri = mgr.resolve_ontology_ref(ref) or ref
+        if iri in seen:
+            continue
+        onto = mgr.get_freshest_terminal_ontology_by_iri(iri)
+        if onto is None or onto.is_null():
+            continue
+        seen.add(onto.iri)
+        result.append(onto)
+    return result
+
+
+def _supplemental_ontologies_for_unit(
+    document_state: AgentState,
+    unit_state: UnitOntologyState | UnitFactsState,
+    tools: ToolBox,
+) -> list[Ontology]:
+    """Document artifacts plus catalog entries for the unit's patch sources."""
+    merged: list[Ontology] = []
+    seen: set[str] = set()
+    for ontology in (
+        *_document_supplemental_ontologies(document_state),
+        *_catalog_ontologies_for_patch_sources(
+            tools, list(unit_state.ontology_patch_sources)
+        ),
+    ):
+        if ontology.iri in seen:
+            continue
+        seen.add(ontology.iri)
+        merged.append(ontology)
+    return merged
+
+
 def _resolve_max_visits_limit(state_visits: int, override: int | None) -> int:
     """Return a safe visit limit while respecting explicit overrides."""
     visits = state_visits if override is None else override
@@ -155,7 +198,9 @@ async def facts_loop(
         for render_attempt in range(1, max_visits + 1):
             unit_state.node_visits[WorkflowNode.TEXT_TO_FACTS] += 1
             _reset_node_evidence_context(unit_state, WorkflowNode.TEXT_TO_FACTS)
-            supplemental = _document_supplemental_ontologies(document_state)
+            supplemental = _supplemental_ontologies_for_unit(
+                document_state, unit_state, tools
+            )
             unit_state = await render_facts(
                 unit_state, atomic, supplemental_ontologies=supplemental
             )
@@ -289,7 +334,9 @@ async def ontology_loop(
         for render_attempt in range(1, max_visits + 1):
             unit_state.node_visits[WorkflowNode.TEXT_TO_ONTOLOGY] += 1
             _reset_node_evidence_context(unit_state, WorkflowNode.TEXT_TO_ONTOLOGY)
-            supplemental = _document_supplemental_ontologies(document_state)
+            supplemental = _supplemental_ontologies_for_unit(
+                document_state, unit_state, tools
+            )
             unit_state = await render_ontology(
                 unit_state, atomic, supplemental_ontologies=supplemental
             )

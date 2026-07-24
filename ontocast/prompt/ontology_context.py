@@ -4,10 +4,16 @@ from rdflib import OWL, RDF, RDFS, Graph, URIRef
 
 from ontocast.onto.constants import COMMON_PREFIXES, DEFAULT_IRI
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.util import RDFLIB_DEFAULT_NAMESPACE_URIS
 
-_STANDARD_NAMESPACES: frozenset[str] = frozenset(
-    uri.strip("<>") for uri in COMMON_PREFIXES.values()
-) | {"https://schema.org/", DEFAULT_IRI}
+# Exclude every rdflib built-in binding (brick, csvw, xml, …) plus our COMMON
+# prefixes / DEFAULT_IRI so the prompt "domain ontologies" clause only lists
+# author-declared domain namespaces.
+_STANDARD_NAMESPACES: frozenset[str] = (
+    RDFLIB_DEFAULT_NAMESPACE_URIS
+    | frozenset(uri.strip("<>") for uri in COMMON_PREFIXES.values())
+    | {"https://schema.org/", "http://schema.org/", DEFAULT_IRI}
+)
 
 
 def extract_domain_prefix_pairs(ontology: Ontology) -> list[tuple[str, str]]:

@@ -2,7 +2,6 @@ import logging
 from collections import Counter
 
 from pydantic import BaseModel, Field
-from rdflib.namespace import OWL, RDF
 
 from ontocast.agent.select_ontology_catalog import select_catalog_ontology_for_excerpt
 from ontocast.onto.content_unit import SourceUnit
@@ -63,15 +62,15 @@ def build_merged_document_ontology_context(
     merged_graph.sanitize_prefixes_namespaces()
 
     anchor_iri = patch_sources[0] if patch_sources else NULL_ONTOLOGY.iri
-    snapshot = Ontology(
-        ontology_id=None,
+    snapshot = Ontology.from_working_context(
+        merged_graph,
+        source_iris=patch_sources,
+        anchor_iri=anchor_iri,
+        current_domain=state.current_domain,
         title="Merged document ontology context",
         description=(
             "Deterministic merge of reduced ontology artifacts used for facts context."
         ),
-        graph=merged_graph,
-        iri=anchor_iri,
-        current_domain=state.current_domain,
     )
     return UnitOntologyContext(
         anchor_iri=anchor_iri,
@@ -159,13 +158,14 @@ async def _resolve_ensemble_context(
     """Stitched induced subgraphs from vector retrieval."""
     queries = _unit_queries(unit, tools)
     if not queries:
-        empty = Ontology(
-            ontology_id=None,
+        empty = Ontology.from_working_context(
+            RDFGraph(),
+            source_iris=[],
+            anchor_iri=NULL_ONTOLOGY.iri,
+            current_domain=state.current_domain,
             title="Empty unit (no text queries for retrieval)",
             description="No proposition queries; ensemble graph is empty.",
-            graph=RDFGraph(),
-            iri=NULL_ONTOLOGY.iri,
-            current_domain=state.current_domain,
+            strip_headers=False,
         )
         return UnitOntologyContext(
             anchor_iri=NULL_ONTOLOGY.iri,
@@ -197,26 +197,16 @@ async def _resolve_ensemble_context(
             metrics.get("snapshot_triple_count"),
         )
     anchor_iri = source_iris[0] if source_iris else NULL_ONTOLOGY.iri
-    for onto_subject in {
-        s for s, _, _ in patch_graph.triples((None, RDF.type, OWL.Ontology))
-    }:
-        for triple in list(patch_graph.triples((onto_subject, None, None))):
-            patch_graph.remove(triple)
-    patch_graph.sanitize_prefixes_namespaces()
+    preferred = tools.ontology_manager.preferred_namespace_prefixes or None
+    patch_graph.sanitize_prefixes_namespaces(preferred_namespace_prefixes=preferred)
 
-    ontology_snapshot = Ontology(
-        ontology_id=None,
-        title=None,
-        description=None,
-        graph=patch_graph,
-        iri=anchor_iri,
+    ontology_snapshot = Ontology.from_working_context(
+        patch_graph,
+        source_iris=source_iris,
+        anchor_iri=anchor_iri,
         current_domain=state.current_domain,
+        strip_headers=True,
     )
-    for onto_subject in {
-        s for s, _, _ in ontology_snapshot.graph.triples((None, RDF.type, OWL.Ontology))
-    }:
-        for triple in list(ontology_snapshot.graph.triples((onto_subject, None, None))):
-            ontology_snapshot.graph.remove(triple)
 
     return UnitOntologyContext(
         anchor_iri=anchor_iri,

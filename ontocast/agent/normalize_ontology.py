@@ -6,13 +6,32 @@ from rdflib import OWL, RDF, BNode, Node, URIRef
 
 from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit
+from ontocast.onto.namespace_merge import merge_namespace_bindings
+from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.state import AgentState
+from ontocast.onto.util import is_rdflib_default_namespace
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
+
+
+def _working_anchor_from_graph(graph: RDFGraph) -> str | None:
+    """Pick a stable working-context IRI from the first non-standard namespace.
+
+    Used when aggregating unit deltas without a catalog base ontology. Does not
+    set ``ontology_id`` from the prefix name.
+    """
+    for prefix, namespace in graph.namespaces():
+        if not prefix:
+            continue
+        ns = str(namespace)
+        if is_rdflib_default_namespace(ns):
+            continue
+        return ns.rstrip("/#")
+    return None
 
 
 def split_ontology_and_provenance_graph(
@@ -171,21 +190,39 @@ def normalize_ontology_units(
         return result, applied, provenance_graph
 
     aggregated_delta = RDFGraph()
+    bindings: dict[str, str] = {}
     for unit in units:
         for triple in unit.graph:
             aggregated_delta.add(triple)
-        for prefix, namespace in unit.graph.namespaces():
-            if prefix:
-                aggregated_delta.bind(prefix, namespace)
+        incoming = {
+            prefix: str(namespace)
+            for prefix, namespace in unit.graph.namespaces()
+            if prefix
+        }
+        bindings = merge_namespace_bindings(bindings, incoming)
+    for prefix, namespace in bindings.items():
+        aggregated_delta.bind(prefix, namespace)
 
     cleaned_graph, provenance_graph = split_ontology_and_provenance_graph(
         aggregated_delta
     )
-    result = Ontology(
-        graph=cleaned_graph,
-        ontology_id=base_ontology.ontology_id if base_ontology else None,
-        title=base_ontology.title if base_ontology else None,
-        description=base_ontology.description if base_ontology else None,
-    )
+    if base_ontology is not None and not base_ontology.is_null():
+        result = Ontology(
+            graph=cleaned_graph,
+            ontology_id=base_ontology.ontology_id,
+            title=base_ontology.title,
+            description=base_ontology.description,
+            iri=base_ontology.iri,
+        )
+    else:
+        anchor = _working_anchor_from_graph(cleaned_graph) or NULL_ONTOLOGY.iri
+        result = Ontology.from_working_context(
+            cleaned_graph,
+            source_iris=[anchor] if anchor != NULL_ONTOLOGY.iri else [],
+            anchor_iri=anchor,
+            title=None,
+            description=None,
+            strip_headers=False,
+        )
     applied = [merged_update] if merged_update else []
     return result, applied, provenance_graph

@@ -14,6 +14,7 @@ from pydantic import Field
 from ..onto.null import NULL_ONTOLOGY
 from ..onto.ontology import Ontology
 from ..onto.rdfgraph import RDFGraph
+from ..onto.util import normalize_ontology_iri
 from .onto import Tool
 
 logger = logging.getLogger(__name__)
@@ -48,68 +49,121 @@ class OntologyManager(Tool):
         # Updated incrementally when ontologies are added.
         self._cached_ontologies: dict[str, str] = {}
         self._patch_retriever: OntologyPatchRetriever | None = None
-        self._iri_to_identity: dict[str, str] = {}
-        self._identity_to_iri: dict[str, str] = {}
+        # Canonical short handle per IRI (ontology_id); prefix may differ.
+        self._iri_to_ontology_id: dict[str, str] = {}
+        # Lowercased alias (ontology_id, author prefix, …) → IRI.
+        self._alias_to_iri: dict[str, str] = {}
+        # Preferred author prefix per namespace URI (for sanitize preference).
+        self._namespace_to_author_prefix: dict[str, str] = {}
 
     @staticmethod
-    def _build_identity_key(ontology: Ontology) -> str:
-        identity = (ontology.ontology_id or ontology.prefix or "").strip().lower()
+    def _primary_ontology_id(ontology: Ontology) -> str:
+        identity = (ontology.ontology_id or "").strip().lower()
         if not identity:
             raise ValueError(
-                "Ontology identity is missing: provide ontology_id or ontology prefix"
+                "Ontology identity is missing: ontology_id is required for catalog registration"
             )
         return identity
 
+    def _collect_aliases(self, ontology: Ontology) -> list[str]:
+        aliases: list[str] = []
+        for candidate in (ontology.ontology_id, ontology.prefix):
+            if not candidate:
+                continue
+            cleaned = candidate.strip().lower()
+            if cleaned and cleaned not in aliases:
+                aliases.append(cleaned)
+        return aliases
+
     def validate_identity_uniqueness(self, ontology: Ontology) -> None:
-        """Validate ontology IRI<->identity bijection across the manager."""
+        """Validate catalog IRI and alias uniqueness across the manager.
+
+        Same IRI may not change its primary ``ontology_id``. The same alias
+        may not point at two different IRIs. Author ``prefix`` may differ from
+        ``ontology_id`` (both register as aliases of the same IRI).
+        """
         iri = (ontology.iri or "").strip()
         if not iri:
             raise ValueError("Ontology IRI is missing")
         if iri == NULL_ONTOLOGY.iri:
             raise ValueError("Null ontology IRI cannot be registered")
 
-        identity = self._build_identity_key(ontology)
+        primary = self._primary_ontology_id(ontology)
 
-        existing_identity = self._iri_to_identity.get(iri)
-        if existing_identity is not None and existing_identity != identity:
+        existing_primary = self._iri_to_ontology_id.get(iri)
+        if existing_primary is not None and existing_primary != primary:
             raise ValueError(
                 "Ontology identity conflict: IRI "
-                f"'{iri}' is already bound to identity '{existing_identity}', "
-                f"received '{identity}'"
+                f"'{iri}' is already bound to identity '{existing_primary}', "
+                f"received '{primary}'"
             )
 
-        existing_iri = self._identity_to_iri.get(identity)
-        if existing_iri is not None and existing_iri != iri:
-            raise ValueError(
-                "Ontology identity conflict: identity "
-                f"'{identity}' is already bound to IRI '{existing_iri}', "
-                f"received '{iri}'"
-            )
+        for alias in self._collect_aliases(ontology):
+            existing_iri = self._alias_to_iri.get(alias)
+            if existing_iri is not None and existing_iri != iri:
+                raise ValueError(
+                    "Ontology identity conflict: identity "
+                    f"'{alias}' is already bound to IRI '{existing_iri}', "
+                    f"received '{iri}'"
+                )
 
     def _register_identity(self, ontology: Ontology) -> None:
         iri = ontology.iri.strip()
-        identity = self._build_identity_key(ontology)
-        self._iri_to_identity[iri] = identity
-        self._identity_to_iri[identity] = iri
+        primary = self._primary_ontology_id(ontology)
+        self._iri_to_ontology_id[iri] = primary
+        for alias in self._collect_aliases(ontology):
+            self._alias_to_iri[alias] = iri
+        # Also allow looking up by the raw IRI string and its normalized form.
+        self._alias_to_iri[iri.lower()] = iri
+        normalized = normalize_ontology_iri(iri).lower()
+        if normalized:
+            self._alias_to_iri[normalized] = iri
+        prefix = ontology.prefix
+        if prefix and ontology.namespace:
+            self._namespace_to_author_prefix[str(ontology.namespace)] = prefix
+
+    def resolve_ontology_ref(self, ref: str) -> str | None:
+        """Resolve an absolute IRI or registered alias to a catalog ontology IRI."""
+        if not ref or not str(ref).strip():
+            return None
+        cleaned = str(ref).strip()
+        if cleaned in self.ontology_versions:
+            return cleaned
+        normalized = normalize_ontology_iri(cleaned)
+        if normalized in self.ontology_versions:
+            return normalized
+        for key in (cleaned.lower(), normalized.lower()):
+            iri = self._alias_to_iri.get(key)
+            if iri is not None:
+                return iri
+        return None
+
+    def author_prefix_for_namespace(self, namespace: str) -> str | None:
+        """Return the catalog-registered author prefix for a namespace, if any."""
+        direct = self._namespace_to_author_prefix.get(namespace)
+        if direct is not None:
+            return direct
+        stripped = namespace.rstrip("/#")
+        for key, value in self._namespace_to_author_prefix.items():
+            if key.rstrip("/#") == stripped:
+                return value
+        return None
+
+    @property
+    def preferred_namespace_prefixes(self) -> dict[str, str]:
+        """Namespace URI → author prefix for sanitize preference."""
+        return dict(self._namespace_to_author_prefix)
 
     def __contains__(self, item):
-        """Check if an item (IRI or ontology_id) is in the ontology manager.
+        """Check if an item (IRI or alias) is in the ontology manager.
 
         Args:
-            item: The IRI or ontology_id to check.
+            item: The IRI, ontology_id, or author prefix to check.
 
         Returns:
-            bool: True if the item exists in any version of any ontology.
+            bool: True if the item resolves to a tracked ontology IRI.
         """
-        # Check by IRI (primary key)
-        if item in self.ontology_versions:
-            return True
-        # Check by ontology_id (fallback for backward compatibility)
-        for versions in self.ontology_versions.values():
-            for o in versions:
-                if o.ontology_id == item:
-                    return True
-        return False
+        return self.resolve_ontology_ref(str(item)) is not None
 
     def add_ontology(
         self, ontology: Ontology, *, skip_vector_index: bool = False
@@ -172,9 +226,20 @@ class OntologyManager(Tool):
         """Drop all tracked versions for an ontology IRI and clear caches."""
         self.ontology_versions.pop(iri, None)
         self._cached_ontologies.pop(iri, None)
-        removed_identity = self._iri_to_identity.pop(iri, None)
-        if removed_identity is not None:
-            self._identity_to_iri.pop(removed_identity, None)
+        self._iri_to_ontology_id.pop(iri, None)
+        # Drop all aliases pointing at this IRI.
+        stale = [alias for alias, bound in self._alias_to_iri.items() if bound == iri]
+        for alias in stale:
+            del self._alias_to_iri[alias]
+        # Drop author-prefix entries whose IRI matches (by scanning versions was already removed).
+        # Namespace map is best-effort; rebuild from remaining ontologies.
+        self._namespace_to_author_prefix = {}
+        for versions in self.ontology_versions.values():
+            if not versions:
+                continue
+            onto = versions[-1]
+            if onto.prefix and onto.namespace:
+                self._namespace_to_author_prefix[str(onto.namespace)] = onto.prefix
 
     def register_vector_store(self, retriever: "OntologyPatchRetriever") -> None:
         """Register a patch retriever for vector context lookups."""
@@ -365,30 +430,20 @@ class OntologyManager(Tool):
         return [o for o in ontologies if o.hash in terminal_hashes]
 
     def get_terminal_ontologies(self, ontology_id: str | None = None) -> list[Ontology]:
-        """Get terminal (leaf) ontologies by ontology_id (backward compatibility wrapper).
+        """Get terminal (leaf) ontologies by ontology_id or alias.
 
         Args:
-            ontology_id: Optional ontology_id to filter by.
+            ontology_id: Optional ontology_id / alias / IRI to filter by.
 
         Returns:
             list[Ontology]: List of terminal ontologies.
         """
         if ontology_id:
-            # Find IRI(s) matching this ontology_id
-            matching_iris = [
-                iri
-                for iri, versions in self.ontology_versions.items()
-                if any(o.ontology_id == ontology_id for o in versions)
-            ]
-            if not matching_iris:
+            iri = self.resolve_ontology_ref(ontology_id)
+            if iri is None:
                 return []
-            # Get terminals for all matching IRIs
-            all_terminals = []
-            for iri in matching_iris:
-                all_terminals.extend(self.get_terminal_ontologies_by_iri(iri))
-            return all_terminals
-        else:
-            return self.get_terminal_ontologies_by_iri(None)
+            return self.get_terminal_ontologies_by_iri(iri)
+        return self.get_terminal_ontologies_by_iri(None)
 
     def get_freshest_terminal_ontology_by_iri(
         self, iri: str | None = None
@@ -436,42 +491,21 @@ class OntologyManager(Tool):
     def get_freshest_terminal_ontology(
         self, ontology_id: str | None = None
     ) -> Ontology | None:
-        """Get the freshest terminal ontology by ontology_id (backward compatibility wrapper).
+        """Get the freshest terminal ontology by ontology_id, alias, or IRI.
 
         Args:
-            ontology_id: Optional ontology_id to filter by.
+            ontology_id: Optional ontology_id / alias / IRI to filter by.
 
         Returns:
             Ontology: The freshest terminal ontology, or None if no terminal
                 ontologies exist.
         """
         if ontology_id:
-            # Find IRI(s) matching this ontology_id
-            matching_iris = [
-                iri
-                for iri, versions in self.ontology_versions.items()
-                if any(o.ontology_id == ontology_id for o in versions)
-            ]
-            if not matching_iris:
+            iri = self.resolve_ontology_ref(ontology_id)
+            if iri is None:
                 return None
-            # Get freshest for all matching IRIs and return the most recent
-            candidates = []
-            for iri in matching_iris:
-                freshest = self.get_freshest_terminal_ontology_by_iri(iri)
-                if freshest:
-                    candidates.append(freshest)
-            if not candidates:
-                return None
-            # Return the most recent among all candidates
-            from datetime import datetime
-            from typing import cast
-
-            with_timestamp = [o for o in candidates if o.created_at is not None]
-            if with_timestamp:
-                return max(with_timestamp, key=lambda o: cast(datetime, o.created_at))
-            return candidates[0]
-        else:
-            return self.get_freshest_terminal_ontology_by_iri(None)
+            return self.get_freshest_terminal_ontology_by_iri(iri)
+        return self.get_freshest_terminal_ontology_by_iri(None)
 
     def get_ontology_versions_by_iri(self, iri: str) -> list[Ontology]:
         """Get all versions of an ontology by IRI.
@@ -485,20 +519,18 @@ class OntologyManager(Tool):
         return self.ontology_versions.get(iri, [])
 
     def get_ontology_versions(self, ontology_id: str) -> list[Ontology]:
-        """Get all versions of an ontology by ontology_id (backward compatibility wrapper).
+        """Get all versions of an ontology by ontology_id, alias, or IRI.
 
         Args:
-            ontology_id: The ontology_id to retrieve versions for.
+            ontology_id: The ontology_id / alias / IRI to retrieve versions for.
 
         Returns:
             list[Ontology]: List of all versions of the ontology.
         """
-        # Find all IRIs matching this ontology_id
-        all_versions = []
-        for iri, versions in self.ontology_versions.items():
-            if any(o.ontology_id == ontology_id for o in versions):
-                all_versions.extend(versions)
-        return all_versions
+        iri = self.resolve_ontology_ref(ontology_id)
+        if iri is None:
+            return []
+        return self.get_ontology_versions_by_iri(iri)
 
     def get_lineage_graph_by_iri(self, iri: str):
         """Get the lineage graph for a specific IRI.
@@ -515,19 +547,18 @@ class OntologyManager(Tool):
         return Ontology.build_lineage_graph(self.ontology_versions[iri])
 
     def get_lineage_graph(self, ontology_id: str):
-        """Get the lineage graph for a specific ontology_id (backward compatibility wrapper).
+        """Get the lineage graph for a specific ontology_id, alias, or IRI.
 
         Args:
-            ontology_id: The ontology_id to get the lineage graph for.
+            ontology_id: The ontology_id / alias / IRI to get the lineage graph for.
 
         Returns:
             networkx.DiGraph: The lineage graph for the ontology, or None if not found.
         """
-        # Find first IRI matching this ontology_id
-        for iri, versions in self.ontology_versions.items():
-            if any(o.ontology_id == ontology_id for o in versions):
-                return Ontology.build_lineage_graph(versions)
-        return None
+        iri = self.resolve_ontology_ref(ontology_id)
+        if iri is None:
+            return None
+        return self.get_lineage_graph_by_iri(iri)
 
     def get_ontology(
         self,
@@ -535,14 +566,14 @@ class OntologyManager(Tool):
         ontology_iri: str | None = None,
         hash: str | None = None,
     ) -> Ontology:
-        """Get an ontology by its IRI, ontology_id, or hash.
+        """Get an ontology by its IRI, ontology_id/alias, or hash.
 
         If hash is provided, returns the specific version. Otherwise, returns
         a terminal (most recent) version if multiple versions exist.
         IRI is preferred over ontology_id for lookup.
 
         Args:
-            ontology_id: The short name of the ontology to retrieve (optional, for backward compatibility).
+            ontology_id: Short name, author prefix, or IRI (optional).
             ontology_iri: The IRI of the ontology to retrieve (preferred).
             hash: The hash of a specific version to retrieve (optional).
 
@@ -556,57 +587,36 @@ class OntologyManager(Tool):
                     if o.hash == hash:
                         return o
 
-        # Try by IRI first (preferred method)
+        resolved_iri: str | None = None
         if ontology_iri is not None:
-            if ontology_iri in self.ontology_versions:
-                versions = self.ontology_versions[ontology_iri]
-                if hash:
-                    # Find specific version by hash
-                    for o in versions:
-                        if o.hash == hash:
-                            return o
-                else:
-                    # Return terminal version (most recent)
-                    terminals = self.get_terminal_ontologies_by_iri(ontology_iri)
-                    if terminals:
-                        return terminals[0]
-                    # Fallback to first version if no terminals
-                    if versions:
-                        return versions[0]
+            resolved_iri = self.resolve_ontology_ref(ontology_iri)
+        if resolved_iri is None and ontology_id is not None:
+            resolved_iri = self.resolve_ontology_ref(ontology_id)
 
-        # Try by ontology_id if provided (backward compatibility)
-        if ontology_id is not None:
-            # Find IRI(s) matching this ontology_id
-            matching_iris = [
-                iri
-                for iri, versions in self.ontology_versions.items()
-                if any(o.ontology_id == ontology_id for o in versions)
-            ]
-            if matching_iris:
-                # Use first matching IRI
-                iri = matching_iris[0]
-                versions = self.ontology_versions[iri]
-                if hash:
-                    # Find specific version by hash
-                    for o in versions:
-                        if o.hash == hash:
-                            return o
-                else:
-                    # Return terminal version (most recent)
-                    terminals = self.get_terminal_ontologies_by_iri(iri)
-                    if terminals:
-                        return terminals[0]
-                    # Fallback to first version if no terminals
-                    if versions:
-                        return versions[0]
+        if resolved_iri is not None and resolved_iri in self.ontology_versions:
+            versions = self.ontology_versions[resolved_iri]
+            if hash:
+                for o in versions:
+                    if o.hash == hash:
+                        return o
+            else:
+                terminals = self.get_terminal_ontologies_by_iri(resolved_iri)
+                if terminals:
+                    return terminals[0]
+                if versions:
+                    return versions[0]
 
-                # If IRI is also provided, check consistency
-                if ontology_iri and ontology_iri != iri:
-                    logger.warning(
-                        f"Ontology id '{ontology_id}' matches IRI '{iri}' but different IRI '{ontology_iri}' was provided"
-                    )
+            if (
+                ontology_iri
+                and ontology_id
+                and self.resolve_ontology_ref(ontology_id) not in (None, resolved_iri)
+            ):
+                logger.warning(
+                    "Ontology id '%s' resolves differently from IRI '%s'",
+                    ontology_id,
+                    ontology_iri,
+                )
 
-        # Not found
         return NULL_ONTOLOGY
 
     def get_ontology_iris(self) -> list[str]:
@@ -618,10 +628,10 @@ class OntologyManager(Tool):
         return list(self.ontology_versions.keys())
 
     def get_ontology_names(self) -> list[str]:
-        """Get a list of all ontology short names (backward compatibility wrapper).
+        """Return unique catalog ``ontology_id`` values currently tracked.
 
         Returns:
-            list[str]: List of unique ontology short names.
+            list[str]: Sorted unique ontology short names.
         """
         names = set()
         for versions in self.ontology_versions.values():
@@ -641,11 +651,7 @@ class OntologyManager(Tool):
 
     @property
     def ontologies(self) -> list[Ontology]:
-        """Get freshest terminal ontology for each IRI.
-
-        This property provides backward compatibility with code that expects
-        a list of ontologies. Returns the freshest (most recently created)
-        terminal version for each IRI.
+        """Return the freshest terminal ontology for each catalog IRI.
 
         The result is cached per IRI (as hashes) and updated incrementally
         when ontologies are added.

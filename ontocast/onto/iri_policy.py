@@ -11,7 +11,8 @@ _ONTOLOGY_HINT_PATTERN = re.compile(
 )
 
 
-def _strip_brackets(value: str) -> str:
+def strip_iri_brackets(value: str) -> str:
+    """Strip optional Turtle-style ``<...>`` wrappers from an IRI string."""
     text = value.strip()
     if text.startswith("<") and text.endswith(">") and len(text) > 2:
         return text[1:-1].strip()
@@ -33,7 +34,7 @@ def normalize_namespace_iri(namespace: str, *, context: URIContext = "auto") -> 
     Existing trailing ``#`` or ``/`` are preserved. When absent, we append ``#``
     for ontology contexts and ``/`` for facts/default contexts.
     """
-    text = _strip_brackets(namespace)
+    text = strip_iri_brackets(namespace)
     if text.endswith("#") or text.endswith("/"):
         return text
     resolved_context = _resolve_context(text, context)

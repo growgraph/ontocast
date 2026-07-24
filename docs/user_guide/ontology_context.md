@@ -84,7 +84,19 @@ ONTOCAST_RUN_MANUAL_TESTS=1 cd ontocast && uv run pytest \\
 
 Always uses one catalog ontology identified by `ontology_context_fixed_ontology_id` (env: `ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID` or per-request parameter).
 
+The value may be:
+
+- the catalog **ontology IRI** (canonical),
+- the short **`ontology_id`** (e.g. `observation`), or
+- the author **prefix** (e.g. `obs` when the Turtle binds `obs:` to that ontology namespace).
+
 Returns **400** if the mode is fixed but no ontology id is provided.
+
+## Ontology identity
+
+- **Canonical catalog key** is the ontology IRI (`owl:Ontology` subject).
+- **`ontology_id`** and author **`prefix`** are aliases registered on ingest; they may differ (e.g. `lifecycle` vs `life`).
+- **Multi-source working contexts** (merged document artifacts, vector ensembles) keep a locked anchor IRI and `source_iris` list; they do not re-derive a single fake `ontology_id` from an arbitrary `owl:Ontology` triple in the union graph.
 
 ## Per-Request Overrides
 

@@ -1467,13 +1467,13 @@ def test_max_score_merge_beats_rrf_frequency_bias() -> None:
 
 
 def test_expand_ontology_iris_by_reference_includes_cross_ontology_parent() -> None:
-    matsci_iri = "https://growgraph.dev/ontologies/matsci-ontology"
+    matsci_iri = "https://growgraph.dev/ontologies/matsci"
     perov_iri = "https://growgraph.dev/ontologies/perovskitemat"
     matsci_graph = RDFGraph._from_turtle_str(
         f"""
         @prefix owl: <http://www.w3.org/2002/07/owl#> .
         @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-        @prefix matsci: <https://growgraph.dev/ontologies/matsci-ontology#> .
+        @prefix matsci: <https://growgraph.dev/ontologies/matsci#> .
         @prefix perov: <https://growgraph.dev/ontologies/perovskitemat#> .
 
         <{matsci_iri}> a owl:Ontology .
@@ -1497,7 +1497,7 @@ def test_expand_ontology_iris_by_reference_includes_cross_ontology_parent() -> N
         Ontology(iri=perov_iri, graph=perov_graph, title="perov"),
     ]
     expanded = _expand_ontology_iris_by_reference(
-        ["https://growgraph.dev/ontologies/matsci-ontology#PerovskiteQD"],
+        ["https://growgraph.dev/ontologies/matsci#PerovskiteQD"],
         [matsci_iri],
         ontologies,
     )

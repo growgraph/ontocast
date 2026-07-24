@@ -122,15 +122,16 @@ def make_render_ontology_node(tools: ToolBox):
             if len(graph) == 0:
                 continue
             artifacts.append(
-                Ontology(
-                    ontology_id=None,
+                Ontology.from_working_context(
+                    graph,
+                    source_iris=[anchor_iri],
+                    anchor_iri=anchor_iri,
+                    current_domain=state.current_domain,
                     title=f"Anchor artifact {anchor_iri}",
                     description=(
                         "Per-anchor ontology artifact produced from unit-level map updates."
                     ),
-                    graph=graph,
-                    iri=anchor_iri,
-                    current_domain=state.current_domain,
+                    strip_headers=False,
                 )
             )
 

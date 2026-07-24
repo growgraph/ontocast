@@ -54,6 +54,7 @@ from ontocast.stategraph.routing import (
 from ontocast.tool import EmbeddingBasedAggregator
 from ontocast.tool.atomic import AtomicToolBox, SearchHit
 from ontocast.tool.chunk.prepare import PreparedChunk
+from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.toolbox import ToolBox
 
 render_ontology_module = importlib.import_module("ontocast.agent.render_ontology")
@@ -125,7 +126,10 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
     )
     toolbox = cast(
         ToolBox,
-        SimpleNamespace(get_atomic_tools=lambda: cast(AtomicToolBox, object())),
+        SimpleNamespace(
+            get_atomic_tools=lambda: cast(AtomicToolBox, object()),
+            ontology_manager=OntologyManager(),
+        ),
     )
     document_state = AgentState(render_mode=RenderMode.FACTS)
     result = await unit_loops.facts_loop(state, toolbox, document_state)
@@ -169,7 +173,10 @@ async def test_run_unit_ontology_loop_emits_updates(monkeypatch) -> None:
     )
     toolbox = cast(
         ToolBox,
-        SimpleNamespace(get_atomic_tools=lambda: cast(AtomicToolBox, object())),
+        SimpleNamespace(
+            get_atomic_tools=lambda: cast(AtomicToolBox, object()),
+            ontology_manager=OntologyManager(),
+        ),
     )
     document_state = AgentState(
         ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY
@@ -667,7 +674,10 @@ async def test_ontology_loop_runs_external_evidence_nodes(monkeypatch) -> None:
     )
     toolbox = cast(
         ToolBox,
-        SimpleNamespace(get_atomic_tools=lambda: cast(AtomicToolBox, object())),
+        SimpleNamespace(
+            get_atomic_tools=lambda: cast(AtomicToolBox, object()),
+            ontology_manager=OntologyManager(),
+        ),
     )
     document_state = AgentState(
         ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY
@@ -741,7 +751,10 @@ async def test_ontology_loop_plans_search_when_critic_requests_it(monkeypatch) -
     )
     toolbox = cast(
         ToolBox,
-        SimpleNamespace(get_atomic_tools=lambda: cast(AtomicToolBox, object())),
+        SimpleNamespace(
+            get_atomic_tools=lambda: cast(AtomicToolBox, object()),
+            ontology_manager=OntologyManager(),
+        ),
     )
     document_state = AgentState(
         ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY
