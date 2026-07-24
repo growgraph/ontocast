@@ -43,6 +43,10 @@ def _build_unit() -> ContentUnit:
     )
 
 
+def _stub_ontology_manager(**kwargs: object) -> SimpleNamespace:
+    return SimpleNamespace(preferred_namespace_prefixes={}, **kwargs)
+
+
 def _build_tools(
     *,
     patch_retriever: _StubPatchRetriever | None,
@@ -75,7 +79,7 @@ def test_resolver_vector_retrieval_prefers_ensemble() -> None:
     tools = _build_tools(
         patch_retriever=_StubPatchRetriever(graph=graph, sources=[ontology_iri]),
         vector_store=object(),
-        ontology_manager=SimpleNamespace(),
+        ontology_manager=_stub_ontology_manager(),
     )
     state = AgentState(
         ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
@@ -95,7 +99,7 @@ def test_resolver_vector_retrieval_raises_when_vector_stack_missing() -> None:
     tools = _build_tools(
         patch_retriever=None,
         vector_store=None,
-        ontology_manager=SimpleNamespace(),
+        ontology_manager=_stub_ontology_manager(),
     )
     with pytest.raises(OntologyContextConfigError):
         asyncio.run(resolve_unit_ontology_context(state, tools, _build_unit()))
@@ -123,7 +127,7 @@ def test_resolver_selected_single_ontology_uses_mocked_llm_selection(
     tools = _build_tools(
         patch_retriever=None,
         vector_store=None,
-        ontology_manager=SimpleNamespace(),
+        ontology_manager=_stub_ontology_manager(),
         llm=AsyncMock(),
     )
     state = AgentState(
@@ -194,7 +198,7 @@ async def test_resolve_effective_facts_ontology_context_prefers_merged_artifacts
     tools = _build_tools(
         patch_retriever=None,
         vector_store=None,
-        ontology_manager=SimpleNamespace(),
+        ontology_manager=_stub_ontology_manager(),
     )
 
     result = await resolve_effective_facts_ontology_context(state, tools, _build_unit())
@@ -216,6 +220,8 @@ def test_resolver_fixed_single_ontology_resolves_from_manager() -> None:
     )
 
     class _StubOntologyManager:
+        preferred_namespace_prefixes: dict[str, str] = {}
+
         def get_freshest_terminal_ontology(
             self, ontology_id: str | None = None
         ) -> Ontology | None:
