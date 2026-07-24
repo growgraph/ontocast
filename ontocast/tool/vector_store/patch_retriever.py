@@ -131,6 +131,70 @@ def _merge_hits_across_queries_max_score(
     )
 
 
+def _select_hits_round_robin_by_ontology(
+    ranked_hits: list[OntologySearchHit],
+    *,
+    per_ontology_seed_quota: int,
+    max_atoms: int,
+) -> list[OntologySearchHit]:
+    """Fair multi-ontology fill from a score-ranked unique-entity list.
+
+    Round-robin across ontology IRIs (sorted for stability), taking at most
+    ``per_ontology_seed_quota`` seeds each. If slots remain under ``max_atoms``,
+    fill from leftover hits in global score order. ``per_ontology_seed_quota <= 0``
+    or ``max_atoms <= 0`` means no per-ontology / no total cap respectively.
+    """
+    if not ranked_hits:
+        return []
+    limit = len(ranked_hits) if max_atoms <= 0 else min(max_atoms, len(ranked_hits))
+    if per_ontology_seed_quota <= 0:
+        return ranked_hits[:limit]
+
+    by_ontology: dict[str, list[OntologySearchHit]] = defaultdict(list)
+    for hit in ranked_hits:
+        onto = hit.atom.ontology_iri or ""
+        by_ontology[onto].append(hit)
+
+    queues: dict[str, list[OntologySearchHit]] = {
+        onto: list(hits) for onto, hits in by_ontology.items()
+    }
+    taken_count: dict[str, int] = defaultdict(int)
+    selected: list[OntologySearchHit] = []
+    selected_iris: set[str] = set()
+
+    progressed = True
+    while len(selected) < limit and progressed:
+        progressed = False
+        for onto in sorted(queues.keys()):
+            if len(selected) >= limit:
+                break
+            if taken_count[onto] >= per_ontology_seed_quota:
+                continue
+            queue = queues[onto]
+            while queue:
+                hit = queue.pop(0)
+                iri = hit.atom.iri
+                if not iri or iri in selected_iris:
+                    continue
+                selected.append(hit)
+                selected_iris.add(iri)
+                taken_count[onto] += 1
+                progressed = True
+                break
+
+    if len(selected) < limit:
+        for hit in ranked_hits:
+            if len(selected) >= limit:
+                break
+            iri = hit.atom.iri
+            if not iri or iri in selected_iris:
+                continue
+            selected.append(hit)
+            selected_iris.add(iri)
+
+    return selected
+
+
 def _merge_hits_across_queries_hybrid(
     collected: list[OntologySearchHit],
     *,
@@ -196,7 +260,7 @@ def _merge_hits_across_queries(
     max_atoms_total: int,
 ) -> list[OntologySearchHit]:
     if merge_mode == CrossQueryMergeMode.RRF:
-        return rank_fuse_channel_hits(
+        fused = rank_fuse_channel_hits(
             collected,
             [],
             [],
@@ -205,10 +269,17 @@ def _merge_hits_across_queries(
             bm25_weight=0.0,
             limit=max(len(collected), 1),
         )
+        if max_atoms_total > 0:
+            return fused[:max_atoms_total]
+        return fused
     if merge_mode == CrossQueryMergeMode.MAX_SCORE:
         merged = _merge_hits_across_queries_max_score(collected)
         if max_atoms_total > 0:
-            merged = merged[:max_atoms_total]
+            return _select_hits_round_robin_by_ontology(
+                merged,
+                per_ontology_seed_quota=per_ontology_seed_quota,
+                max_atoms=max_atoms_total,
+            )
         return merged
     return _merge_hits_across_queries_hybrid(
         collected,
@@ -217,6 +288,25 @@ def _merge_hits_across_queries(
         min_entity_score=min_entity_score,
         max_atoms_total=max_atoms_total,
     )
+
+
+def _select_atoms_round_robin_by_ontology(
+    ranked_atoms: list[GraphAtom],
+    *,
+    per_ontology_seed_quota: int,
+    max_atoms: int,
+) -> list[GraphAtom]:
+    """GraphAtom variant of :func:`_select_hits_round_robin_by_ontology`."""
+    as_hits = [
+        OntologySearchHit(atom=atom, score=float(atom.score or 0.0))
+        for atom in ranked_atoms
+    ]
+    selected = _select_hits_round_robin_by_ontology(
+        as_hits,
+        per_ontology_seed_quota=per_ontology_seed_quota,
+        max_atoms=max_atoms,
+    )
+    return [hit.atom for hit in selected]
 
 
 def _filter_and_merge_patch_hits(
@@ -231,6 +321,7 @@ def _filter_and_merge_patch_hits(
     min_neighborhood_query_best_score: float,
     min_bm25_query_best_score: float,
     min_merged_max_score: float,
+    max_atoms_total: int = 0,
 ) -> list[GraphAtom]:
     """Filter each channel per query, then merge across queries."""
     cw, nw, bw = normalized_fusion_weights(store_config)
@@ -277,7 +368,7 @@ def _filter_and_merge_patch_hits(
         max_atoms_tier1=patch_config.max_atoms_tier1,
         per_ontology_seed_quota=patch_config.per_ontology_seed_quota,
         min_entity_score=patch_config.min_entity_score,
-        max_atoms_total=0,
+        max_atoms_total=max_atoms_total,
     )
     if not merged_hits:
         return []
@@ -543,6 +634,7 @@ class OntologyPatchRetriever(Tool):
         )
         sc = self.vector_store.store_config
         pc = self.patch
+        eff_max_atoms = pc.effective_max_atoms(len(queries))
         merged = _filter_and_merge_patch_hits(
             hits_by_query,
             store_config=sc,
@@ -554,8 +646,9 @@ class OntologyPatchRetriever(Tool):
             min_neighborhood_query_best_score=pc.min_neighborhood_query_best_score,
             min_bm25_query_best_score=pc.min_bm25_query_best_score,
             min_merged_max_score=pc.min_merged_max_score,
+            max_atoms_total=0,
         )
-        atoms_after_merge = len(merged)
+        atoms_after_dedupe = len(merged)
         merged = [atom for atom in merged if not _is_ontology_declaration_atom(atom)]
 
         if merged and pc.merged_score_ratio > 0.0:
@@ -575,18 +668,25 @@ class OntologyPatchRetriever(Tool):
                 merged,
                 vectors,
                 mmr_lambda=pc.mmr_lambda,
-                max_atoms=pc.max_atoms,
+                max_atoms=eff_max_atoms,
                 core_weight=core_w,
                 neighborhood_weight=neigh_w,
             )
-        elif pc.max_atoms > 0:
-            merged = merged[: pc.max_atoms]
+        elif pc.cross_query_merge_mode == CrossQueryMergeMode.MAX_SCORE:
+            merged = _select_atoms_round_robin_by_ontology(
+                merged,
+                per_ontology_seed_quota=pc.per_ontology_seed_quota,
+                max_atoms=eff_max_atoms,
+            )
+        elif eff_max_atoms > 0:
+            merged = merged[:eff_max_atoms]
 
         if not merged:
             self._last_retrieval_metrics = {
                 "query_count": len(queries),
                 "top_k": eff_top_k,
-                "atoms_after_merge": atoms_after_merge,
+                "effective_max_atoms": eff_max_atoms,
+                "atoms_after_dedupe": atoms_after_dedupe,
                 "atoms_final": 0,
             }
             return RDFGraph(), []
@@ -600,8 +700,9 @@ class OntologyPatchRetriever(Tool):
         self._last_retrieval_metrics = {
             "query_count": len(queries),
             "top_k": eff_top_k,
+            "effective_max_atoms": eff_max_atoms,
             "merge_mode": pc.cross_query_merge_mode.value,
-            "atoms_after_merge": atoms_after_merge,
+            "atoms_after_dedupe": atoms_after_dedupe,
             "atoms_final": len(merged),
             "source_ontology_iris": source_iris,
             "seeds_by_ontology": dict(seeds_by_ontology),

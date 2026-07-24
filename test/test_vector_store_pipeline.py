@@ -38,6 +38,7 @@ from ontocast.tool.vector_store.patch_retriever import (
     _merge_hits_across_queries_hybrid,
     _merge_hits_across_queries_max_score,
     _mmr_rerank,
+    _select_hits_round_robin_by_ontology,
 )
 from ontocast.tool.vector_store.qdrant import QdrantVectorStoreManager
 from ontocast.tool.vector_store.util import (
@@ -1597,3 +1598,154 @@ async def test_aretrieve_ensemble_rrf_mode_regression() -> None:
         queries=["q1", "q2", "q3", "q4"], top_k=1, expand_sparql=True
     )
     assert sparql_tool.last_entity_uris[0].endswith("#A")
+
+
+def test_effective_max_atoms_scales_with_windows() -> None:
+    pc = PatchRetrievalConfig(
+        seeds_per_window=4,
+        max_atoms_base=16,
+        max_atoms=48,
+    )
+    assert pc.effective_max_atoms(1) == 16
+    assert pc.effective_max_atoms(7) == 28
+    assert pc.effective_max_atoms(20) == 48
+    unlimited = PatchRetrievalConfig(max_atoms=0, seeds_per_window=4, max_atoms_base=16)
+    assert unlimited.effective_max_atoms(7) == 0
+
+
+def test_round_robin_selects_secondary_ontology_from_shared_pool() -> None:
+    matsci = "https://example.org/matsci"
+    perov = "https://example.org/perov"
+
+    def _hit(entity: str, onto: str, score: float) -> OntologySearchHit:
+        atom = GraphAtom(
+            atom_id=entity,
+            ontology_iri=onto,
+            iri=f"{onto}#{entity}",
+            entity_role="resource",
+            core_representation=entity,
+            neighborhood_representation="",
+            score=score,
+        )
+        return OntologySearchHit(atom=atom, score=score)
+
+    ranked = _merge_hits_across_queries_max_score(
+        [
+            _hit("M1", matsci, 0.99),
+            _hit("M2", matsci, 0.98),
+            _hit("M3", matsci, 0.97),
+            _hit("M4", matsci, 0.96),
+            _hit("P1", perov, 0.40),
+            _hit("P2", perov, 0.39),
+        ]
+    )
+    # Pure top-3 by score would be all matsci; round-robin quota=1 keeps P1.
+    selected = _select_hits_round_robin_by_ontology(
+        ranked,
+        per_ontology_seed_quota=1,
+        max_atoms=3,
+    )
+    iris = {hit.atom.iri for hit in selected}
+    assert f"{matsci}#M1" in iris
+    assert f"{perov}#P1" in iris
+    assert len(selected) == 3
+
+
+@pytest.mark.anyio
+async def test_aretrieve_ensemble_round_robin_multi_ontology() -> None:
+    matsci = "https://example.org/matsci"
+    perov = "https://example.org/perov"
+
+    def _onto_atom(
+        atom_id: str, onto: str, local: str, score: float
+    ) -> OntologySearchHit:
+        atom = GraphAtom(
+            atom_id=atom_id,
+            ontology_iri=onto,
+            ontology_id=onto.rsplit("/", 1)[-1],
+            iri=f"{onto}#{local}",
+            entity_role="resource",
+            core_representation=local,
+            neighborhood_representation="",
+        )
+        return OntologySearchHit(atom=atom, score=score)
+
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    vector_store = StubVectorStore(
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
+        embedding=embedding,
+    )
+    vector_store.set_hits_by_query(
+        [
+            _channel_hits(
+                core_hits=[
+                    _onto_atom("m1", matsci, "M1", 0.99),
+                    _onto_atom("m2", matsci, "M2", 0.98),
+                    _onto_atom("m3", matsci, "M3", 0.97),
+                    _onto_atom("p1", perov, "P1", 0.50),
+                ]
+            )
+        ]
+    )
+    sparql_tool = StubSPARQLTool(triple_store_manager=None)
+    retriever = OntologyPatchRetriever(
+        vector_store=vector_store,
+        sparql_tool=sparql_tool,
+        patch=PatchRetrievalConfig(
+            cross_query_merge_mode=CrossQueryMergeMode.MAX_SCORE,
+            per_query_core_score_ratio=0.0,
+            min_merged_max_score=0.0,
+            merged_score_ratio=0.0,
+            mmr_lambda=1.0,
+            per_ontology_seed_quota=1,
+            seeds_per_window=4,
+            max_atoms_base=0,
+            max_atoms=3,
+        ),
+    )
+    await retriever.aretrieve_ensemble(queries=["q1"], top_k=4, expand_sparql=True)
+    iris = set(sparql_tool.last_entity_uris)
+    assert f"{perov}#P1" in iris
+    assert retriever.last_retrieval_metrics["atoms_after_dedupe"] == 4
+    assert retriever.last_retrieval_metrics["effective_max_atoms"] == 3
+    assert retriever.last_retrieval_metrics["atoms_final"] == 3
+    assert matsci in retriever.last_retrieval_metrics["seeds_by_ontology"]
+    assert perov in retriever.last_retrieval_metrics["seeds_by_ontology"]
+
+
+@pytest.mark.anyio
+async def test_aretrieve_ensemble_window_scaled_cap() -> None:
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    vector_store = StubVectorStore(
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
+        embedding=embedding,
+    )
+    hits = [
+        _channel_hits(core_hits=[_scored_atom(f"a{i}", f"E{i}", 0.9 - i * 0.01)])
+        for i in range(7)
+    ]
+    vector_store.set_hits_by_query(hits)
+    sparql_tool = StubSPARQLTool(triple_store_manager=None)
+    retriever = OntologyPatchRetriever(
+        vector_store=vector_store,
+        sparql_tool=sparql_tool,
+        patch=PatchRetrievalConfig(
+            cross_query_merge_mode=CrossQueryMergeMode.MAX_SCORE,
+            per_query_core_score_ratio=0.0,
+            min_merged_max_score=0.0,
+            merged_score_ratio=0.0,
+            mmr_lambda=1.0,
+            per_ontology_seed_quota=0,
+            seeds_per_window=4,
+            max_atoms_base=16,
+            max_atoms=48,
+        ),
+    )
+    await retriever.aretrieve_ensemble(
+        queries=[f"q{i}" for i in range(7)], top_k=1, expand_sparql=True
+    )
+    assert retriever.last_retrieval_metrics["effective_max_atoms"] == 28
+    assert retriever.last_retrieval_metrics["atoms_final"] == 7
+    assert len(sparql_tool.last_entity_uris) == 7

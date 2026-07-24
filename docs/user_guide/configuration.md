@@ -208,7 +208,7 @@ VECTOR_STORE_TOP_K=10
 VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH=2
 VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=550
 VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
-# VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT=8
+# VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT=16
 # VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH=3
 # VECTOR_STORE_FUSION_CORE_WEIGHT=0.7
 # VECTOR_STORE_FUSION_NEIGHBORHOOD_WEIGHT=0.3
@@ -222,9 +222,9 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 
 | Variable | Default | Role |
 |----------|---------|------|
-| `VECTOR_STORE_TOP_K` | `10` | Fused vector hits per proposition window |
+| `VECTOR_STORE_TOP_K` | `10` | Vector hits per channel per proposition window |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH` | `2` | BFS depth for hub seed expansion |
-| `VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT` | `8` | Top seeds that receive full BFS budget (`0` = all seeds) |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT` | `16` | Top seeds that receive full BFS budget (`0` = all seeds) |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH` | `3` | `rdfs:subClassOf` hops in the schema shell |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | `550` | Global triple cap returned to the LLM |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | `24` | Per-entity BFS quota hint during retrieval |
@@ -254,38 +254,49 @@ See [Ontology Context](ontology_context.md) for vector-search mode requirements.
 
 Post-vector scoring and capping (backend-agnostic; prefix `ONTOLOGY_PATCH_`). Applied after hybrid dense + BM25 retrieval, before induced-subgraph expansion.
 
-**Recommended defaults** (match `PatchRetrievalConfig` in code — start here, tune only after inspecting retrieval quality):
+**Default path** (simple): max-score IRI dedupe → per-ontology round-robin → window-scaled hard cap. Relative floors, hybrid tier merge, merged-score ratio, and MMR are advanced opt-in.
 
 ```bash
-ONTOLOGY_PATCH_PER_QUERY_CORE_SCORE_RATIO=0.85
-ONTOLOGY_PATCH_PER_QUERY_NEIGHBORHOOD_SCORE_RATIO=0.85
+ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE=max_score
+ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA=3
+ONTOLOGY_PATCH_SEEDS_PER_WINDOW=4
+ONTOLOGY_PATCH_MAX_ATOMS_BASE=16
+ONTOLOGY_PATCH_MAX_ATOMS=48
 ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE=0.18
-ONTOLOGY_PATCH_MERGED_SCORE_RATIO=0.45
-ONTOLOGY_PATCH_MMR_LAMBDA=0.9
-ONTOLOGY_PATCH_MAX_ATOMS=25
+ONTOLOGY_PATCH_MMR_LAMBDA=1.0
+# Advanced (off by default):
+# ONTOLOGY_PATCH_PER_QUERY_CORE_SCORE_RATIO=0.0
+# ONTOLOGY_PATCH_PER_QUERY_NEIGHBORHOOD_SCORE_RATIO=0.0
+# ONTOLOGY_PATCH_PER_QUERY_BM25_SCORE_RATIO=0.0
+# ONTOLOGY_PATCH_MERGED_SCORE_RATIO=0.0
+# ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE=hybrid
+# ONTOLOGY_PATCH_MAX_ATOMS_TIER1=12
+# ONTOLOGY_PATCH_MIN_ENTITY_SCORE=0.3
 ```
 
 | Variable | Default | Role |
 |----------|---------|------|
-| `ONTOLOGY_PATCH_PER_QUERY_CORE_SCORE_RATIO` | `0.85` | Per window: keep core hits ≥ this fraction of the window's best core score |
-| `ONTOLOGY_PATCH_PER_QUERY_NEIGHBORHOOD_SCORE_RATIO` | `0.85` | Per window: keep neighborhood hits ≥ this fraction of the window's best neighborhood score |
-| `ONTOLOGY_PATCH_PER_QUERY_BM25_SCORE_RATIO` | `0.85` | Per window: keep BM25 hits ≥ this fraction of the window's best BM25 score |
+| `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `max_score` | Default merge; `hybrid` (tier-1 + tier-2) and `rrf` are advanced |
+| `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | `3` | Max seeds per ontology in round-robin fill (`0` = no per-ontology cap) |
+| `ONTOLOGY_PATCH_SEEDS_PER_WINDOW` | `4` | Scales effective cap with proposition window count |
+| `ONTOLOGY_PATCH_MAX_ATOMS_BASE` | `16` | Floor for effective atom cap |
+| `ONTOLOGY_PATCH_MAX_ATOMS` | `48` | Hard cap: `min(max_atoms, max(base, seeds_per_window × n_queries))` (`0` = unlimited) |
+| `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` | `0.18` | After cross-window merge, return empty patch if top score is below this (`0` disables) |
+| `ONTOLOGY_PATCH_MMR_LAMBDA` | `1.0` | `1.0` skips MMR; lower values enable diversity rerank |
+| `ONTOLOGY_PATCH_PER_QUERY_CORE_SCORE_RATIO` | `0.0` | Advanced: per-window core relative floor (`0` disables) |
+| `ONTOLOGY_PATCH_PER_QUERY_NEIGHBORHOOD_SCORE_RATIO` | `0.0` | Advanced: per-window neighborhood relative floor |
+| `ONTOLOGY_PATCH_PER_QUERY_BM25_SCORE_RATIO` | `0.0` | Advanced: per-window BM25 relative floor |
 | `ONTOLOGY_PATCH_MIN_CORE_QUERY_BEST_SCORE` | `0.0` | If `> 0`, windows whose top core score is below this contribute no core hits |
 | `ONTOLOGY_PATCH_MIN_NEIGHBORHOOD_QUERY_BEST_SCORE` | `0.0` | If `> 0`, windows whose top neighborhood score is below this contribute no neighborhood hits |
 | `ONTOLOGY_PATCH_MIN_BM25_QUERY_BEST_SCORE` | `0.0` | If `> 0`, windows whose top BM25 score is below this contribute no BM25 hits |
-| `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` | `0.18` | After cross-window merge, return empty patch if top score is below this (`0` disables) |
-| `ONTOLOGY_PATCH_MERGED_SCORE_RATIO` | `0.45` | After merge, drop seeds below `top_score × ratio` (`0` disables trimming) |
-| `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `hybrid` | `hybrid` (tier-1 + per-ontology tier-2), `max_score`, or `rrf` |
-| `ONTOLOGY_PATCH_MAX_ATOMS_TIER1` | `12` | Hybrid merge: global cap on strong tier-1 seeds (`0` = no cap) |
-| `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | `3` | Hybrid merge: tier-2 seeds per ontology IRI |
-| `ONTOLOGY_PATCH_MIN_ENTITY_SCORE` | `0.3` | Hybrid merge tier-2: minimum fused score to qualify as a seed |
-| `ONTOLOGY_PATCH_MMR_LAMBDA` | `0.9` | MMR relevance vs diversity (`1.0` = pure relevance, `0.0` = max diversity) |
-| `ONTOLOGY_PATCH_MAX_ATOMS` | `25` | Hard cap on retained seeds after merge/MMR (`0` = unlimited) |
+| `ONTOLOGY_PATCH_MERGED_SCORE_RATIO` | `0.0` | Advanced: drop seeds below `top_score × ratio` (`0` disables) |
+| `ONTOLOGY_PATCH_MAX_ATOMS_TIER1` | `12` | Hybrid only: global tier-1 cap (`0` = no cap) |
+| `ONTOLOGY_PATCH_MIN_ENTITY_SCORE` | `0.3` | Hybrid only: tier-2 minimum fused score |
 
-**Tighter preset** (dense scientific text with large catalogs — see [Ontology Context](ontology_context.md)):
+**Tighter preset** (optional precision knobs for noisy catalogs — see [Ontology Context](ontology_context.md)):
 
 ```bash
-ONTOLOGY_PATCH_MAX_ATOMS=20
+ONTOLOGY_PATCH_MAX_ATOMS=32
 ONTOLOGY_PATCH_MERGED_SCORE_RATIO=0.5
 ONTOLOGY_PATCH_MMR_LAMBDA=0.85
 VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=600

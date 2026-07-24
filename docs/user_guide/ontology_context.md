@@ -40,38 +40,38 @@ If vector infrastructure is unavailable, the API returns **409** with `error_cod
 
 **Key budget settings** (full reference: [Configuration — Ontology Patch Retrieval](configuration.md#ontology-patch-retrieval)):
 
+Default path: per-window channel fusion → max-score IRI dedupe → per-ontology round-robin → window-scaled hard cap → expand.
+
 | Variable | Default | Role |
 |----------|---------|------|
-| `VECTOR_STORE_TOP_K` | `10` | Fused hits per proposition window |
+| `VECTOR_STORE_TOP_K` | `10` | Hits per channel per proposition window |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | `550` | Global triple cap for context |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH` | `2` | BFS depth for hub seed expansion |
-| `VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT` | `8` | Top seeds receiving full BFS budget |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT` | `16` | Top seeds receiving full BFS budget |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH` | `3` | `rdfs:subClassOf` hops in schema shell |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | `24` | Per-entity BFS quota hint |
-| `ONTOLOGY_PATCH_PER_QUERY_CORE_SCORE_RATIO` | `0.85` | Per-window core hit floor vs best core score |
-| `ONTOLOGY_PATCH_PER_QUERY_NEIGHBORHOOD_SCORE_RATIO` | `0.85` | Per-window neighborhood hit floor vs best neighborhood score |
-| `ONTOLOGY_PATCH_PER_QUERY_BM25_SCORE_RATIO` | `0.85` | Per-window BM25 hit floor vs best BM25 score |
+| `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `max_score` | Default merge; `hybrid` / `rrf` are advanced opt-in |
+| `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | `3` | Max seeds per ontology in round-robin fill |
+| `ONTOLOGY_PATCH_SEEDS_PER_WINDOW` | `4` | Scales effective atom cap with proposition windows |
+| `ONTOLOGY_PATCH_MAX_ATOMS_BASE` | `16` | Floor for the effective atom cap |
+| `ONTOLOGY_PATCH_MAX_ATOMS` | `48` | Hard cap: `min(max_atoms, max(base, seeds_per_window × n_queries))` |
 | `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` | `0.18` | Empty patch when merged top score is below this |
-| `ONTOLOGY_PATCH_MERGED_SCORE_RATIO` | `0.45` | Drop merged seeds below `top_score × ratio` |
-| `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `hybrid` | `hybrid`, `max_score`, or `rrf` |
-| `ONTOLOGY_PATCH_MAX_ATOMS_TIER1` | `12` | Strong global seed cap for hybrid merge |
-| `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | `3` | Tier-2 seeds per ontology IRI |
-| `ONTOLOGY_PATCH_MIN_ENTITY_SCORE` | `0.3` | Tier-2 minimum fused score |
-| `ONTOLOGY_PATCH_MAX_ATOMS` | `25` | Total seed cap after merge/MMR |
-| `ONTOLOGY_PATCH_MMR_LAMBDA` | `0.9` | MMR relevance vs diversity |
+| `ONTOLOGY_PATCH_MMR_LAMBDA` | `1.0` | `1.0` skips MMR (default); lower enables diversity rerank |
+
+Advanced (off by default): `ONTOLOGY_PATCH_PER_QUERY_*_SCORE_RATIO`, `ONTOLOGY_PATCH_MERGED_SCORE_RATIO`, hybrid tier-1/tier-2 (`MAX_ATOMS_TIER1`, `MIN_ENTITY_SCORE`).
 
 ### Recommended preset for dense scientific text
 
-Use vector search mode with the defaults above. For large catalogs or noisy retrieval, tighten:
+Use vector search mode with the defaults above. For noisy catalogs, optionally tighten with advanced knobs:
 
 ```bash
-ONTOLOGY_PATCH_MAX_ATOMS=20
+ONTOLOGY_PATCH_MAX_ATOMS=32
 ONTOLOGY_PATCH_MERGED_SCORE_RATIO=0.5
 ONTOLOGY_PATCH_MMR_LAMBDA=0.85
 VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=600
 ```
 
-`ONTOLOGY_PATCH_MERGED_SCORE_RATIO=0.45` is the general-purpose default: it trims weak seeds that are less than 45% of the top merged score. Raise toward `0.5`–`0.6` for stricter recall control; set `0` to disable post-merge trimming.
+Effective seed budget grows with proposition windows (`seeds_per_window × n_queries`, floored by `max_atoms_base`, capped by `max_atoms`). Set `ONTOLOGY_PATCH_MERGED_SCORE_RATIO` / per-query score ratios only when you need stricter precision.
 
 Retrieval expands ontology scope beyond hit sources when seeds reference classes
 in other catalog ontologies via `rdfs:subClassOf`, `rdfs:domain`, or `rdfs:range`.

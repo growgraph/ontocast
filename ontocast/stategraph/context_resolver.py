@@ -189,10 +189,14 @@ async def _resolve_ensemble_context(
     if metrics:
         state.retrieval_metrics["patch_retrieval"] = metrics
         logger.info(
-            "Patch retrieval: queries=%s atoms_final=%s source_iris=%s expanded=%s triples=%s",
+            "Patch retrieval: queries=%s atoms_final=%s after_dedupe=%s "
+            "eff_max=%s source_iris=%s seeds_by_ontology=%s expanded=%s triples=%s",
             metrics.get("query_count"),
             metrics.get("atoms_final"),
+            metrics.get("atoms_after_dedupe"),
+            metrics.get("effective_max_atoms"),
             metrics.get("source_ontology_iris"),
+            metrics.get("seeds_by_ontology"),
             metrics.get("expanded_ontology_iris"),
             metrics.get("snapshot_triple_count"),
         )

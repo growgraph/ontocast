@@ -685,24 +685,30 @@ class EmbeddingConfig(BaseSettings):
 
 
 class PatchRetrievalConfig(BaseSettings):
-    """Scoring, filtering, and capping of ontology atoms after vector search (backend-agnostic)."""
+    """Scoring, filtering, and capping of ontology atoms after vector search (backend-agnostic).
+
+    Default path is intentionally simple: per-window channel fusion → max-score IRI
+    dedupe → per-ontology round-robin → window-scaled hard cap. Relative floors,
+    hybrid tier merge, merged-score ratio, and MMR remain available as advanced
+    opt-in (non-default) controls.
+    """
 
     per_query_core_score_ratio: float = Field(
-        default=0.85,
+        default=0.0,
         ge=0.0,
         le=1.0,
         description=(
-            "Within each query, keep core hits whose score is at least this fraction "
-            "of that query's best core score."
+            "Advanced: within each query, keep core hits whose score is at least this "
+            "fraction of that query's best core score. 0 disables (default)."
         ),
     )
     per_query_neighborhood_score_ratio: float = Field(
-        default=0.85,
+        default=0.0,
         ge=0.0,
         le=1.0,
         description=(
-            "Within each query, keep neighborhood hits whose score is at least this "
-            "fraction of that query's best neighborhood score."
+            "Advanced: within each query, keep neighborhood hits whose score is at least "
+            "this fraction of that query's best neighborhood score. 0 disables (default)."
         ),
     )
     min_core_query_best_score: float = Field(
@@ -721,12 +727,12 @@ class PatchRetrievalConfig(BaseSettings):
         ),
     )
     per_query_bm25_score_ratio: float = Field(
-        default=0.85,
+        default=0.0,
         ge=0.0,
         le=1.0,
         description=(
-            "Within each query, keep BM25 hits whose score is at least this fraction "
-            "of that query's best BM25 score."
+            "Advanced: within each query, keep BM25 hits whose score is at least this "
+            "fraction of that query's best BM25 score. 0 disables (default)."
         ),
     )
     min_bm25_query_best_score: float = Field(
@@ -741,67 +747,98 @@ class PatchRetrievalConfig(BaseSettings):
         ge=0.0,
         description=(
             "After merging hits across queries, if the highest retained score is below this, "
-            "return an empty patch (no relevant ontology). Set to 0 to disable (fused "
-            "cosine-style scores; tune with your embedding model)."
+            "return an empty patch (no relevant ontology). Set to 0 to disable. Scores are "
+            "per-window fused rank scores (RRF-style), not raw cosine."
         ),
     )
     merged_score_ratio: float = Field(
-        default=0.45,
+        default=0.0,
         ge=0.0,
         le=1.0,
         description=(
-            "After merging hits across queries, keep atoms whose score is at least this "
-            "fraction of the merged top score. 0 disables."
+            "Advanced: after merging hits across queries, keep atoms whose score is at "
+            "least this fraction of the merged top score. 0 disables (default)."
         ),
     )
     cross_query_merge_mode: CrossQueryMergeMode = Field(
-        default=CrossQueryMergeMode.HYBRID,
+        default=CrossQueryMergeMode.MAX_SCORE,
         description=(
-            "Cross-window merge: hybrid (max-score tier-1 + per-ontology tier-2), "
-            "max_score (entity best per window), or rrf (legacy reciprocal rank sum)."
+            "Cross-window merge: max_score (default; entity best score then round-robin "
+            "fairness), hybrid (tier-1 + per-ontology tier-2), or rrf (legacy reciprocal "
+            "rank sum)."
         ),
     )
     max_atoms_tier1: int = Field(
         default=12,
         ge=0,
         description=(
-            "Hybrid merge: global cap on strong tier-1 seeds (max score per entity IRI). "
-            "0 means no tier-1 cap."
+            "Hybrid merge only: global cap on strong tier-1 seeds (max score per entity "
+            "IRI). 0 means no tier-1 cap. Unused in the default max_score path."
         ),
     )
     per_ontology_seed_quota: int = Field(
         default=3,
         ge=0,
         description=(
-            "Hybrid merge: additional seeds per ontology IRI in tier-2 (multi-ontology coverage)."
+            "Max seeds retained per ontology IRI when filling the final seed list "
+            "(round-robin under max_score; tier-2 under hybrid). 0 means no per-ontology "
+            "cap (global score order only)."
         ),
     )
     min_entity_score: float = Field(
         default=0.3,
         ge=0.0,
         description=(
-            "Hybrid merge tier-2: minimum per-entity max fused score to qualify as a seed."
+            "Hybrid merge tier-2 only: minimum per-entity max fused score to qualify. "
+            "Unused in the default max_score path."
         ),
     )
     mmr_lambda: float = Field(
-        default=0.9,
+        default=1.0,
         ge=0.0,
         le=1.0,
         description=(
-            "MMR trade-off over dense core+neighborhood vectors: 1.0 keeps pure relevance, "
-            "0.0 maximizes diversity."
+            "MMR trade-off over dense core+neighborhood vectors: 1.0 keeps pure relevance "
+            "(default; skips MMR), lower values increase diversity."
+        ),
+    )
+    seeds_per_window: int = Field(
+        default=4,
+        ge=1,
+        description=(
+            "Target seeds per proposition window when scaling the effective atom cap: "
+            "min(max_atoms, max(max_atoms_base, seeds_per_window * n_queries))."
+        ),
+    )
+    max_atoms_base: int = Field(
+        default=16,
+        ge=0,
+        description=(
+            "Minimum effective atom cap before window scaling (0 defers entirely to "
+            "seeds_per_window * n_queries)."
         ),
     )
     max_atoms: int = Field(
-        default=25,
+        default=48,
         ge=0,
-        description="Hard cap for retained atoms after filtering / MMR (0 means unlimited).",
+        description=(
+            "Hard cap for retained atoms after merge / optional MMR (0 means unlimited). "
+            "Effective cap is min(max_atoms, max(max_atoms_base, seeds_per_window * n_queries))."
+        ),
     )
 
     model_config = SettingsConfigDict(
         env_prefix="ONTOLOGY_PATCH_",
         case_sensitive=False,
     )
+
+    def effective_max_atoms(self, n_queries: int) -> int:
+        """Window-scaled atom budget: min(hard_cap, max(base, seeds_per_window * n))."""
+        if self.max_atoms <= 0:
+            return 0
+        windows = max(n_queries, 1)
+        scaled = max(self.max_atoms_base, self.seeds_per_window * windows)
+        return min(self.max_atoms, scaled)
 
 
 class VectorStoreConfig(BaseSettings):
@@ -822,7 +859,7 @@ class VectorStoreConfig(BaseSettings):
         description="Neighborhood expansion depth for induced subgraph retrieval.",
     )
     induced_subgraph_hub_seed_count: int = Field(
-        default=8,
+        default=16,
         ge=0,
         description=(
             "Induced subgraph: number of top-relevance seeds that receive full BFS hub "
