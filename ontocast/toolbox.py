@@ -348,17 +348,35 @@ class ToolBox:
         *,
         ontology_context_mode: OntologyContextMode | None = None,
         fail_on_vector_store_error: bool = True,
+        wipe_vector_store: bool | None = None,
+        prune_orphan_iris: bool | None = None,
     ) -> None:
         """Initialize the toolbox with ontologies and their properties.
 
         This method synchronizes ontologies between filesystem and triple store,
         then fetches ontologies from the triple store and updates their properties
         using the LLM tool.
+
+        Args:
+            ontology_context_mode: When vector search mode, ensure the vector store
+                is ready before materializing atoms.
+            fail_on_vector_store_error: Raise on vector init failure when True.
+            wipe_vector_store: Drop the current vector partition before init.
+                ``None`` uses ``VECTOR_STORE_WIPE_ON_INIT`` (default False).
+            prune_orphan_iris: Delete indexed IRIs absent from the sync catalog.
+                ``None`` uses ``VECTOR_STORE_PRUNE_ORPHAN_IRIS_ON_INIT`` (default True).
         """
         import asyncio
         import time
 
         init_started = time.perf_counter()
+        vsc = self.config.tool_config.vector_store
+        do_wipe = vsc.wipe_on_init if wipe_vector_store is None else wipe_vector_store
+        do_prune = (
+            vsc.prune_orphan_iris_on_init
+            if prune_orphan_iris is None
+            else prune_orphan_iris
+        )
 
         if self.triple_store_manager is not None:
             await self.triple_store_manager.async_init()
@@ -377,6 +395,12 @@ class ToolBox:
                 )
             else:
                 try:
+                    if do_wipe:
+                        logger.warning(
+                            "Wiping vector store partition before initialize "
+                            "(wipe_vector_store=True)"
+                        )
+                        await vector_store.wipe_store()
                     await vector_store.initialize()
                     self.vector_store_ready = True
                     self.vector_store_last_error = None
@@ -398,10 +422,22 @@ class ToolBox:
             time.perf_counter() - sync_started,
         )
 
+        if do_prune and self.is_vector_store_ready() and self.vector_store is not None:
+            keep_iris = {o.iri for o in synchronized_ontologies if o.iri}
+            orphans = await asyncio.to_thread(
+                self.vector_store.prune_orphan_ontology_iris, keep_iris
+            )
+            if orphans:
+                logger.info(
+                    "Pruned %d orphan ontology IRI(s) from vector store: %s",
+                    len(orphans),
+                    orphans,
+                )
+
         for ontology in synchronized_ontologies:
             self.ontology_manager.add_ontology(ontology, skip_vector_index=True)
 
-        concurrency = max(1, self.config.tool_config.vector_store.reindex_concurrency)
+        concurrency = max(1, vsc.reindex_concurrency)
         semaphore = asyncio.Semaphore(concurrency)
 
         async def _materialize_one(ontology: Ontology) -> None:

@@ -136,6 +136,21 @@ class LanceDBVectorStoreManager(VectorStoreManager):
         self.store_config.ontology_table = ontology_name
         self.store_config.facts_table = facts_name
 
+    async def wipe_store(self) -> None:
+        """Drop the currently configured ontology and facts tables (+ embedding meta)."""
+        await asyncio.to_thread(self._wipe_store_sync)
+
+    def _wipe_store_sync(self) -> None:
+        db = self._connect()
+        existing = self._list_tables(db)
+        for name in (self._ontology_table_name(), self._facts_table_name()):
+            if name in existing:
+                db.drop_table(name)
+                logger.info("Wiped LanceDB table %s", name)
+            meta = self._meta_path(name)
+            if meta.exists():
+                meta.unlink()
+
     async def clean_tenancy(
         self,
         tenant: str,
@@ -621,6 +636,19 @@ class LanceDBVectorStoreManager(VectorStoreManager):
             return
         table = db.open_table(table_name)
         table.delete(where)
+
+    def list_indexed_ontology_iris(self) -> set[str]:
+        """Return distinct ``ontology_iri`` values in the ontology table."""
+        db = self._connect()
+        table_name = self._ontology_table_name()
+        if table_name not in self._list_tables(db):
+            return set()
+        table = db.open_table(table_name)
+        n = table.count_rows()
+        if n == 0:
+            return set()
+        rows = table.search().select(["ontology_iri"]).limit(n).to_list()
+        return {str(row["ontology_iri"]) for row in rows if row.get("ontology_iri")}
 
     def _embed_texts_batched(self, texts: list[str]) -> list[list[float]]:
         if not texts:

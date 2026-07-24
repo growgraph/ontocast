@@ -884,6 +884,22 @@ class VectorStoreConfig(BaseSettings):
             "higher values mainly overlap triple-store I/O and BM25 with waits."
         ),
     )
+    wipe_on_init: bool = Field(
+        default=False,
+        description=(
+            "When true, ToolBox.initialize drops the current ontology/facts "
+            "vector partition before recreating schema and reindexing. Use for "
+            "clean-slate recovery (e.g. after embedding-model changes)."
+        ),
+    )
+    prune_orphan_iris_on_init: bool = Field(
+        default=True,
+        description=(
+            "When true, ToolBox.initialize deletes indexed ontology IRIs that "
+            "are not in the synchronized catalog (covers IRI renames without a "
+            "full wipe)."
+        ),
+    )
     fusion_core_weight: float = Field(
         default=0.7,
         ge=0.0,

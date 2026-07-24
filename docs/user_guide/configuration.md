@@ -216,6 +216,8 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 # VECTOR_STORE_DEDUP_MODE=iri
 # VECTOR_STORE_EMBEDDING_BATCH_SIZE=64
 # VECTOR_STORE_REINDEX_CONCURRENCY=2
+# VECTOR_STORE_WIPE_ON_INIT=false
+# VECTOR_STORE_PRUNE_ORPHAN_IRIS_ON_INIT=true
 ```
 
 | Variable | Default | Role |
@@ -228,6 +230,8 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | `24` | Per-entity BFS quota hint during retrieval |
 | `VECTOR_STORE_EMBEDDING_BATCH_SIZE` | `64` | Texts per embedding request during ontology indexing (raise for remote APIs; lower if VRAM-bound) |
 | `VECTOR_STORE_REINDEX_CONCURRENCY` | `2` | Max ontologies materialized/reindexed in parallel at `ToolBox.initialize` |
+| `VECTOR_STORE_WIPE_ON_INIT` | `false` | Drop the current tenant/project vector partition before recreate+reindex (clean slate; also CLI `--wipe-vector-store`) |
+| `VECTOR_STORE_PRUNE_ORPHAN_IRIS_ON_INIT` | `true` | Delete indexed ontology IRIs absent from the synchronized catalog (covers IRI renames without a full wipe) |
 ### LanceDB (embedded alternative)
 
 Enable when `QDRANT_URI` is unset. Requires the optional extra: `uv sync --extra lancedb`.

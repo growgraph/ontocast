@@ -29,6 +29,11 @@ Retrieves a stitched ontology ensemble from the configured vector store using hy
 
 Also required: compatible `EMBEDDING_*` settings and indexed ontology atoms in the active tenant/project partition (Qdrant collection or LanceDB table).
 
+On `ToolBox.initialize` in this mode:
+
+- Orphan ontology IRIs (indexed but absent from the synchronized catalog) are pruned by default (`VECTOR_STORE_PRUNE_ORPHAN_IRIS_ON_INIT=true`) so renamed ontologies do not linger in retrieval.
+- Optional clean slate: `VECTOR_STORE_WIPE_ON_INIT=true` or CLI `--wipe-vector-store` drops the current partition before recreate+reindex.
+
 `QDRANT_URI` and `LANCEDB_ENABLED=true` are mutually exclusive.
 
 If vector infrastructure is unavailable, the API returns **409** with `error_code: VECTOR_STORE_UNAVAILABLE`.

@@ -152,6 +152,16 @@ class QdrantVectorStoreManager(VectorStoreManager):
         )
         self._ensure_payload_index(collection_name=ontology_col, field_name="iri")
 
+    async def wipe_store(self) -> None:
+        """Drop the currently configured ontology and facts collections."""
+        for name in (
+            self.qdrant_config.ontology_collection,
+            self.qdrant_config.facts_collection,
+        ):
+            if name and self.client.collection_exists(collection_name=name):
+                self.client.delete_collection(collection_name=name)
+                logger.info("Wiped Qdrant collection %s", name)
+
     async def clean_tenancy(
         self,
         tenant: str,
@@ -767,6 +777,8 @@ class QdrantVectorStoreManager(VectorStoreManager):
     def count_points_by_ontology_iri(self, *, batch_size: int = 512) -> dict[str, int]:
         """Count indexed atoms grouped by ``ontology_iri`` payload (diagnostics)."""
         collection_name = self._ontology_collection_name()
+        if not self.client.collection_exists(collection_name=collection_name):
+            return {}
         counts: dict[str, int] = defaultdict(int)
         offset: Any = None
         while True:
@@ -788,6 +800,10 @@ class QdrantVectorStoreManager(VectorStoreManager):
                 break
             offset = next_offset
         return dict(counts)
+
+    def list_indexed_ontology_iris(self, *, batch_size: int = 512) -> set[str]:
+        """Return distinct ``ontology_iri`` values in the ontology collection."""
+        return set(self.count_points_by_ontology_iri(batch_size=batch_size))
 
     def _query_named_vector(
         self,

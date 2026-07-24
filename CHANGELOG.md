@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Ontology.from_working_context` for locked multi-source prompt snapshots; catalog alias resolution (`ontology_id`, author prefix, or IRI) via `OntologyManager.resolve_ontology_ref`.
 - `OntologyManager.aadd_ontology` for non-blocking vector reindex from async callers (`merge_terminal_ontologies` updated).
 - `VECTOR_STORE_REINDEX_CONCURRENCY` (default `2`) for bounded parallel ontology materialize/reindex during `ToolBox.initialize`.
+- Vector-store init hygiene: `VECTOR_STORE_WIPE_ON_INIT` / CLI `--wipe-vector-store` for a clean-slate drop of the current partition; `VECTOR_STORE_PRUNE_ORPHAN_IRIS_ON_INIT` (default `true`) deletes indexed IRIs absent from the synchronized catalog (e.g. renamed ontology IRIs).
 
 ### Changed
 - **Startup performance**: concatenate core+neighborhood dense embeds into one batched pass (LanceDB/Qdrant); overlap Qdrant BM25 sparse with dense; parallel LLM ontology-property enrich overlapping rematerialize; lazy Docling `DocumentConverter` (built on first convert); defer UMAP/torch/sklearn imports off the cold import path; slim `ontocast` package `__init__` lazy exports for unit loops. Document `VECTOR_STORE_EMBEDDING_BATCH_SIZE` and reindex concurrency in `.env.example` / user guide.

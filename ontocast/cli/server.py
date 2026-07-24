@@ -179,6 +179,16 @@ def _prepare_path_config(config: Config) -> None:
         "fiction, general). Overrides --document-type-hint when set."
     ),
 )
+@click.option(
+    "--wipe-vector-store/--no-wipe-vector-store",
+    default=None,
+    help=(
+        "Drop the current tenant/project vector partition before ontology "
+        "reindex (clean slate). Default follows VECTOR_STORE_WIPE_ON_INIT "
+        "(false). Orphan IRIs are still pruned by default via "
+        "VECTOR_STORE_PRUNE_ORPHAN_IRIS_ON_INIT."
+    ),
+)
 def run(
     input_path: pathlib.Path | None,
     head_chunks: int | None,
@@ -191,6 +201,7 @@ def run(
     summary_max_sentences: int,
     document_type_hint: str | None,
     section_schema_id: str | None,
+    wipe_vector_store: bool | None,
 ):
     """Start the OntoCast API server or process local files in batch mode."""
     config = Config()
@@ -232,6 +243,7 @@ def run(
         tools.initialize(
             ontology_context_mode=ontology_context_mode_value,
             fail_on_vector_store_error=vector_mode_enabled,
+            wipe_vector_store=wipe_vector_store,
         )
     )
     validate_ontology_context_mode(ontology_context_mode_value, tools)

@@ -204,6 +204,31 @@ class VectorStoreManager(Tool):
         self.delete_ontology(ontology.iri)
         return self.index_ontology(ontology)
 
+    def list_indexed_ontology_iris(self) -> set[str]:
+        """Return distinct ``ontology_iri`` values present in the ontology store."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support listing indexed ontology IRIs"
+        )
+
+    def prune_orphan_ontology_iris(self, keep_iris: set[str]) -> list[str]:
+        """Delete indexed atoms whose ``ontology_iri`` is not in ``keep_iris``.
+
+        Returns the orphan IRIs that were deleted (sorted).
+        """
+        orphans = sorted(self.list_indexed_ontology_iris() - keep_iris)
+        for iri in orphans:
+            self.delete_ontology(iri)
+        return orphans
+
+    async def wipe_store(self) -> None:
+        """Drop the currently configured ontology/facts collections or tables.
+
+        Call :meth:`initialize` afterwards to recreate empty schema.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support wiping the current store"
+        )
+
     def apply_tenancy(
         self,
         tenant: str,

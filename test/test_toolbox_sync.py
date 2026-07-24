@@ -103,6 +103,9 @@ def test_initialize_materializes_then_adds_with_skip_vector(monkeypatch, test_on
                 cast(ToolBox, self), ontology_context_mode
             )
 
+        def is_vector_store_ready(self):
+            return ToolBox.is_vector_store_ready(cast(ToolBox, self))
+
         _synchronize_ontologies = fake_sync
         _materialize_ontology = fake_mat
 
@@ -181,6 +184,9 @@ def test_initialize_skips_vector_store_in_full_ttl_mode(monkeypatch) -> None:
                 cast(ToolBox, self), ontology_context_mode
             )
 
+        def is_vector_store_ready(self):
+            return ToolBox.is_vector_store_ready(cast(ToolBox, self))
+
     st = Stub()
     asyncio.run(
         ToolBox.initialize(
@@ -225,6 +231,9 @@ def test_initialize_vector_store_failure_is_non_fatal_when_configured(
             return ToolBox.should_initialize_vector_store(
                 cast(ToolBox, self), ontology_context_mode
             )
+
+        def is_vector_store_ready(self):
+            return ToolBox.is_vector_store_ready(cast(ToolBox, self))
 
     st = Stub()
     asyncio.run(
@@ -330,6 +339,9 @@ def test_initialize_materializes_with_bounded_concurrency(
                 cast(ToolBox, self), ontology_context_mode
             )
 
+        def is_vector_store_ready(self):
+            return ToolBox.is_vector_store_ready(cast(ToolBox, self))
+
         _synchronize_ontologies = fake_sync
         _materialize_ontology = fake_mat
 
@@ -339,3 +351,107 @@ def test_initialize_materializes_with_bounded_concurrency(
     asyncio.run(ToolBox.initialize(cast(ToolBox, st)))
     assert max_active <= 2
     assert max_active >= 2
+
+
+def test_initialize_wipes_and_prunes_orphan_iris(monkeypatch, test_ontology) -> None:
+    monkeypatch.setattr(
+        "ontocast.toolbox.update_ontology_manager",
+        AsyncMock(),
+    )
+
+    class Stub:
+        triple_store_manager = None
+        llm = MagicMock()
+        ontology_manager: MagicMock
+        config = Config()
+
+        def __init__(self) -> None:
+            self.vector_store = MagicMock()
+            self.vector_store.initialize = AsyncMock()
+            self.vector_store.wipe_store = AsyncMock()
+            self.vector_store.prune_orphan_ontology_iris = MagicMock(
+                return_value=["https://example.org/legacy"]
+            )
+            self.vector_store_ready = False
+            self.vector_store_last_error = None
+            self.ontology_manager = MagicMock()
+
+        async def _synchronize_ontologies(self):
+            return [test_ontology]
+
+        async def _materialize_ontology(self, _):
+            return None
+
+        def should_initialize_vector_store(self, ontology_context_mode):
+            return ToolBox.should_initialize_vector_store(
+                cast(ToolBox, self), ontology_context_mode
+            )
+
+        def is_vector_store_ready(self):
+            return self.vector_store_ready
+
+    st = Stub()
+    asyncio.run(
+        ToolBox.initialize(
+            cast(ToolBox, st),
+            ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY,
+            wipe_vector_store=True,
+            prune_orphan_iris=True,
+        )
+    )
+    st.vector_store.wipe_store.assert_awaited_once()
+    st.vector_store.initialize.assert_awaited_once()
+    st.vector_store.prune_orphan_ontology_iris.assert_called_once_with(
+        {test_ontology.iri}
+    )
+    assert st.vector_store_ready is True
+
+
+def test_initialize_skips_wipe_and_prune_when_disabled(
+    monkeypatch, test_ontology
+) -> None:
+    monkeypatch.setattr(
+        "ontocast.toolbox.update_ontology_manager",
+        AsyncMock(),
+    )
+
+    class Stub:
+        triple_store_manager = None
+        llm = MagicMock()
+        ontology_manager: MagicMock
+        config = Config()
+
+        def __init__(self) -> None:
+            self.vector_store = MagicMock()
+            self.vector_store.initialize = AsyncMock()
+            self.vector_store.wipe_store = AsyncMock()
+            self.vector_store.prune_orphan_ontology_iris = MagicMock(return_value=[])
+            self.vector_store_ready = False
+            self.vector_store_last_error = None
+            self.ontology_manager = MagicMock()
+
+        async def _synchronize_ontologies(self):
+            return [test_ontology]
+
+        async def _materialize_ontology(self, _):
+            return None
+
+        def should_initialize_vector_store(self, ontology_context_mode):
+            return ToolBox.should_initialize_vector_store(
+                cast(ToolBox, self), ontology_context_mode
+            )
+
+        def is_vector_store_ready(self):
+            return self.vector_store_ready
+
+    st = Stub()
+    st.config.tool_config.vector_store.wipe_on_init = False
+    st.config.tool_config.vector_store.prune_orphan_iris_on_init = False
+    asyncio.run(
+        ToolBox.initialize(
+            cast(ToolBox, st),
+            ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY,
+        )
+    )
+    st.vector_store.wipe_store.assert_not_awaited()
+    st.vector_store.prune_orphan_ontology_iris.assert_not_called()
