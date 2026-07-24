@@ -875,6 +875,15 @@ class VectorStoreConfig(BaseSettings):
         ge=1,
         description="Batch size used for embedding requests during indexing.",
     )
+    reindex_concurrency: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "Max ontologies to materialize/reindex concurrently during ToolBox "
+            "initialize. Dense embeds are serialized via a process-wide lock; "
+            "higher values mainly overlap triple-store I/O and BM25 with waits."
+        ),
+    )
     fusion_core_weight: float = Field(
         default=0.7,
         ge=0.0,

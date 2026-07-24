@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -52,7 +53,7 @@ class CountingEmbeddingTool(EmbeddingTool):
     calls: int = 0
     truncate_by_one: bool = False
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def _embed_unlocked(self, texts: list[str]) -> list[list[float]]:
         self.calls += 1
         vectors: list[list[float]] = []
         for text in texts:
@@ -554,6 +555,65 @@ def test_embed_texts_batched_raises_on_mismatch() -> None:
         assert "mismatched vectors" in str(error)
     else:
         raise AssertionError("Expected ValueError for embedding/vector count mismatch")
+
+
+def test_index_ontology_concatenates_core_and_neighborhood_embeds(
+    tmp_path: Path,
+) -> None:
+    """Dense indexing embeds core+neighborhood in one batched pass (LanceDB)."""
+    from ontocast.config import LanceDBConfig
+    from ontocast.tool.vector_store.lancedb import LanceDBVectorStoreManager
+
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    store = LanceDBVectorStoreManager(
+        store_config=VectorStoreConfig(embedding_batch_size=64),
+        lancedb_config=LanceDBConfig(enabled=True, data_dir=str(tmp_path / "ldb")),
+        embedding=embedding,
+    )
+
+    atoms = [
+        GraphAtom(
+            atom_id="a1",
+            ontology_iri="https://example.org/smoke",
+            ontology_id="smoke",
+            ontology_hash="hash1",
+            ontology_version="1.0.0",
+            iri="https://example.org/smoke#Alpha",
+            entity_role="resource",
+            core_representation="core-a",
+            neighborhood_representation="neigh-a",
+            minimal_representation="min-a",
+        ),
+        GraphAtom(
+            atom_id="a2",
+            ontology_iri="https://example.org/smoke",
+            ontology_id="smoke",
+            ontology_hash="hash1",
+            ontology_version="1.0.0",
+            iri="https://example.org/smoke#Beta",
+            entity_role="resource",
+            core_representation="core-b",
+            neighborhood_representation="neigh-b",
+            minimal_representation="min-b",
+        ),
+    ]
+
+    class _Atomizer:
+        def atomize(self, source, depth: int = 1):
+            del source, depth
+            return atoms
+
+    object.__setattr__(store, "atomizer", _Atomizer())
+
+    ontology = Ontology(
+        graph=RDFGraph(),
+        iri="https://example.org/smoke",
+        ontology_id="smoke",
+    )
+    count = store.index_ontology(ontology)
+    assert count == 2
+    # One dense batch for 2 cores + 2 neighborhoods (batch_size 64 → 1 call)
+    assert embedding.calls == 1
 
 
 def test_bm25_sparse_vector_uses_dot_product_modifier_none() -> None:

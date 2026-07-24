@@ -15,6 +15,17 @@ The framework includes:
 For more information, see the documentation at https://growgraph.github.io/ontocast/
 """
 
-from ontocast.stategraph.atomic import facts_loop, ontology_loop
+from typing import Any
 
 __all__ = ["facts_loop", "ontology_loop"]
+
+
+def __getattr__(name: str) -> Any:
+    """Lazily export unit-loop entry points to keep ``import ontocast`` light."""
+    if name in ("facts_loop", "ontology_loop"):
+        from ontocast.stategraph.atomic import facts_loop, ontology_loop
+
+        exports = {"facts_loop": facts_loop, "ontology_loop": ontology_loop}
+        globals().update(exports)
+        return exports[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

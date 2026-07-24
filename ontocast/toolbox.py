@@ -53,18 +53,50 @@ async def update_ontology_properties(o: Ontology, llm_tool: LLMTool):
         o.set_properties(**props.model_dump())
 
 
-async def update_ontology_manager(om: OntologyManager, llm_tool: LLMTool):
+async def update_ontology_manager(
+    om: OntologyManager,
+    llm_tool: LLMTool,
+    *,
+    max_concurrency: int | None = None,
+):
     """Update properties for all ontologies in the manager.
 
-    This function iterates through all ontologies in the manager and updates
-    their properties using the LLM tool.
+    Ontologies that already have title, ontology_id, and description are skipped.
+    Remaining LLM calls run concurrently up to ``max_concurrency`` (defaults to
+    the LLM tool's ``llm_max_inflight``).
 
     Args:
         om: The ontology manager containing ontologies to update.
         llm_tool: The LLM tool instance for analysis.
+        max_concurrency: Optional override for parallel LLM enrich calls.
     """
-    for o in om.ontologies:
-        await update_ontology_properties(o, llm_tool)
+    import asyncio
+    import time
+
+    pending = [
+        o
+        for o in om.ontologies
+        if (o.title is None) or (o.ontology_id is None) or (o.description is None)
+    ]
+    if not pending:
+        return
+
+    limit = max_concurrency
+    if limit is None:
+        limit = max(1, getattr(llm_tool.config, "llm_max_inflight", 1))
+    semaphore = asyncio.Semaphore(max(1, limit))
+
+    async def _one(ontology: Ontology) -> None:
+        async with semaphore:
+            await update_ontology_properties(ontology, llm_tool)
+
+    started = time.perf_counter()
+    await asyncio.gather(*[_one(o) for o in pending])
+    logger.info(
+        "Ontology property enrich finished for %d ontolog(ies) in %.2fs",
+        len(pending),
+        time.perf_counter() - started,
+    )
 
 
 class ToolBox:
@@ -323,6 +355,11 @@ class ToolBox:
         then fetches ontologies from the triple store and updates their properties
         using the LLM tool.
         """
+        import asyncio
+        import time
+
+        init_started = time.perf_counter()
+
         if self.triple_store_manager is not None:
             await self.triple_store_manager.async_init()
 
@@ -353,13 +390,43 @@ class ToolBox:
                         exc,
                     )
 
-        # Synchronize ontologies, push to remote triple store + vector index, then register
+        sync_started = time.perf_counter()
         synchronized_ontologies = await self._synchronize_ontologies()
-        for ontology in synchronized_ontologies:
-            await self._materialize_ontology(ontology)
+        logger.info(
+            "Ontology sync finished: %d ontolog(ies) in %.2fs",
+            len(synchronized_ontologies),
+            time.perf_counter() - sync_started,
+        )
+
         for ontology in synchronized_ontologies:
             self.ontology_manager.add_ontology(ontology, skip_vector_index=True)
-        await update_ontology_manager(om=self.ontology_manager, llm_tool=self.llm)
+
+        concurrency = max(1, self.config.tool_config.vector_store.reindex_concurrency)
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def _materialize_one(ontology: Ontology) -> None:
+            async with semaphore:
+                onto_started = time.perf_counter()
+                await self._materialize_ontology(ontology)
+                logger.info(
+                    "Materialized ontology %s in %.2fs",
+                    ontology.iri,
+                    time.perf_counter() - onto_started,
+                )
+
+        materialize_started = time.perf_counter()
+        await asyncio.gather(
+            asyncio.gather(*[_materialize_one(o) for o in synchronized_ontologies]),
+            update_ontology_manager(om=self.ontology_manager, llm_tool=self.llm),
+        )
+        logger.info(
+            "Ontology materialize + enrich finished for %d ontolog(ies) in %.2fs "
+            "(reindex_concurrency=%d); initialize total %.2fs",
+            len(synchronized_ontologies),
+            time.perf_counter() - materialize_started,
+            concurrency,
+            time.perf_counter() - init_started,
+        )
 
     def _load_seed_ontologies_from_directory(self) -> list[Ontology]:
         """Load seed ontologies from ``ontology_directory`` (*.ttl)."""

@@ -117,9 +117,11 @@ def build_document_converter(config: ConverterConfig) -> Any:
         backend=backend_map[config.pdf_backend],
     )
 
-    default_converter = DocumentConverter()
-    format_options = dict(default_converter.format_to_options)
-    format_options[InputFormat.PDF] = pdf_format_option
+    # Build format map without constructing a throwaway DocumentConverter.
+    # Docling's DocumentConverter accepts a partial format_options dict and
+    # fills remaining formats from its defaults when omitted formats are needed;
+    # we only override PDF here.
+    format_options = {InputFormat.PDF: pdf_format_option}
     return DocumentConverter(format_options=format_options)
 
 
@@ -167,11 +169,6 @@ class ConverterTool(Tool):
             shared_cache = Cacher()
             self.cache = ToolCacher(shared_cache, "converter_v3")
 
-        try:
-            self._converter = build_document_converter(self.converter_config)
-        except ImportError as e:
-            logger.error(f"Could not import DocumentConverter: {e}")
-
     def __call__(self, file_input: bytes | str | pathlib.Path) -> DoclingDocument:
         """Convert a document to a DoclingDocument.
 
@@ -208,9 +205,17 @@ class ConverterTool(Tool):
 
         # Convert document (with thread-safe access to converter)
         with self._converter_lock:
+            converter = self._converter
+            if converter is None:
+                logger.info("Building Docling DocumentConverter (first conversion)")
+                try:
+                    converter = build_document_converter(self.converter_config)
+                except ImportError as e:
+                    logger.error("Could not import DocumentConverter: %s", e)
+                    raise
+                self._converter = converter
+
             if isinstance(file_input, bytes):
-                if self._converter is None:
-                    raise ImportError("DocumentConverter not available")
                 try:
                     base_models_module = importlib.import_module(
                         "docling.datamodel.base_models"
@@ -221,14 +226,10 @@ class ConverterTool(Tool):
                     raise ImportError(
                         f"Could not import DocumentConverter: {file_input}"
                     )
-                result = self._converter.convert(ds)
+                result = converter.convert(ds)
                 converted_result = result.document
             elif isinstance(file_input, pathlib.Path):
-                if self._converter is None:
-                    raise ImportError(
-                        f"Could not import DocumentConverter: {file_input}"
-                    )
-                result = self._converter.convert(file_input)
+                result = converter.convert(file_input)
                 converted_result = result.document
             else:
                 raise TypeError(

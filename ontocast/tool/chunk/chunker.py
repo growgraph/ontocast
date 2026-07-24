@@ -8,24 +8,36 @@ from pydantic import Field
 
 from ontocast.config import ChunkConfig
 from ontocast.tool.cache import Cacher, ToolCacher
+from ontocast.tool.chunk.proposition import SENTENCE_SPLIT_REGEX
 from ontocast.tool.chunk.sizing import size_bounded_text
-from ontocast.tool.chunk.util import SENTENCE_SPLIT_REGEX, SemanticChunker
 from ontocast.tool.onto import Tool
 
 logger = logging.getLogger(__name__)
 
-# Optional imports for semantic chunking
+# Resolved lazily in ``_probe_semantic_chunking`` / ``_init_model``.
 torch_module: Any | None = None
 embedding_model_cls: Any | None = None
-try:
-    torch_module = importlib.import_module("torch")
-    langchain_huggingface_module = importlib.import_module("langchain_huggingface")
-    embedding_model_cls = getattr(
-        langchain_huggingface_module, "HuggingFaceEmbeddings", None
-    )
-    SEMANTIC_CHUNKING_AVAILABLE = embedding_model_cls is not None
-except ImportError:
-    SEMANTIC_CHUNKING_AVAILABLE = False
+_semantic_deps_probed: bool = False
+SEMANTIC_CHUNKING_AVAILABLE: bool = False
+
+
+def _probe_semantic_chunking() -> bool:
+    """Import torch / HuggingFaceEmbeddings once; cache availability."""
+    global torch_module, embedding_model_cls, _semantic_deps_probed
+    global SEMANTIC_CHUNKING_AVAILABLE
+    if _semantic_deps_probed:
+        return SEMANTIC_CHUNKING_AVAILABLE
+    _semantic_deps_probed = True
+    try:
+        torch_module = importlib.import_module("torch")
+        langchain_huggingface_module = importlib.import_module("langchain_huggingface")
+        embedding_model_cls = getattr(
+            langchain_huggingface_module, "HuggingFaceEmbeddings", None
+        )
+        SEMANTIC_CHUNKING_AVAILABLE = embedding_model_cls is not None
+    except ImportError:
+        SEMANTIC_CHUNKING_AVAILABLE = False
+    return SEMANTIC_CHUNKING_AVAILABLE
 
 
 class ChunkerTool(Tool):
@@ -43,7 +55,7 @@ class ChunkerTool(Tool):
         default_factory=ChunkConfig, description="Chunking configuration parameters"
     )
     chunking_mode: Literal["semantic", "naive"] = Field(
-        default="semantic" if SEMANTIC_CHUNKING_AVAILABLE else "naive",
+        default="semantic",
         description="Chunking mode: semantic (requires sentence-transformers) or naive (fallback)",
     )
     cache: Any = Field(default=None, exclude=True)
@@ -77,8 +89,8 @@ class ChunkerTool(Tool):
         if chunk_config is not None:
             self.config = chunk_config
 
-        # Override chunking mode if semantic chunking is not available
-        if not SEMANTIC_CHUNKING_AVAILABLE and self.chunking_mode == "semantic":
+        # Probe heavy deps only when semantic mode is requested
+        if self.chunking_mode == "semantic" and not _probe_semantic_chunking():
             self.chunking_mode = "naive"
             logger.warning(
                 "Semantic chunking not available (sentence-transformers not installed). "
@@ -98,7 +110,7 @@ class ChunkerTool(Tool):
         # Acquire lock for thread-safe initialization
         with self._model_lock:
             # Double-check: another thread might have initialized it while we waited
-            if self._model is None and SEMANTIC_CHUNKING_AVAILABLE:
+            if self._model is None and _probe_semantic_chunking():
                 if embedding_model_cls is not None:
                     try:
                         self._model = embedding_model_cls(
@@ -193,7 +205,7 @@ class ChunkerTool(Tool):
         return chunks
 
     def __call__(self, doc: str) -> list[str]:
-        """Chunk the document using either semantic or naive chunking.
+        """Chunk a document into semantic segments.
 
         Args:
             doc: The document text to chunk.
@@ -221,10 +233,11 @@ class ChunkerTool(Tool):
         if self.chunking_mode == "naive":
             result = self._naive_chunk(doc)
         else:
-            # Semantic chunking (requires sentence-transformers)
-            if not SEMANTIC_CHUNKING_AVAILABLE:
+            # Semantic chunking (requires sentence-transformers + SemanticChunker)
+            if not _probe_semantic_chunking():
                 logger.warning(
-                    "Semantic chunking requested but not available. Falling back to naive chunking."
+                    "Semantic chunking requested but not available. "
+                    "Falling back to naive chunking."
                 )
                 result = self._naive_chunk(doc)
             else:
@@ -236,12 +249,9 @@ class ChunkerTool(Tool):
                         "Model not initialized. Falling back to naive chunking."
                     )
                     result = self._naive_chunk(doc)
-                elif SemanticChunker is None:
-                    logger.warning(
-                        "SemanticChunker not available. Falling back to naive chunking."
-                    )
-                    result = self._naive_chunk(doc)
                 else:
+                    from ontocast.tool.chunk.util import SemanticChunker
+
                     text_splitter = SemanticChunker(
                         embeddings=self._model,
                         chunk_config=self.config,
@@ -255,7 +265,8 @@ class ChunkerTool(Tool):
                     # Log chunk lengths for debugging
                     lens = [len(chunk) for chunk in result]
                     logger.info(
-                        f"Semantic chunking produced {len(result)} chunks with lengths: {lens}"
+                        f"Semantic chunking produced {len(result)} chunks "
+                        f"with lengths: {lens}"
                     )
 
         # Cache the result

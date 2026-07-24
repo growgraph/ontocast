@@ -30,7 +30,7 @@ from ontocast.onto.iri_policy import is_in_namespace
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.representation_text import normalize_uri_local_name
 
-from .clustering import ClusterRepresentativeSelector, EntityClusterer
+from .clustering import ClusterRepresentativeSelector
 from .normalizer import EntityNormalizer, EntityRepresentation
 from .rewriter import GraphRewriter
 from .uri_builder import EntityRole, URIBuilder
@@ -124,7 +124,9 @@ class EmbeddingBasedAggregator:
         self.base_iri = base_iri
         self.candidate_similarity_threshold = candidate_similarity_threshold
 
-        # Pipeline components
+        # Pipeline components (EntityClusterer imports sklearn/ST lazily)
+        from .clustering import EntityClusterer
+
         self.normalizer = EntityNormalizer(facts_iri=self.base_iri)
         self.clusterer = EntityClusterer(
             embedding_model=embedding_model,

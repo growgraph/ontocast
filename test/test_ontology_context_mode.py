@@ -18,7 +18,7 @@ from ontocast.onto.retrieval_capabilities import vector_retrieval_available
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import context_resolver as cr
 from ontocast.stategraph.context_resolver import resolve_unit_ontology_context
-from ontocast.tool.chunk.util import split_proposition_windows
+from ontocast.tool.chunk.proposition import split_proposition_windows
 from ontocast.toolbox import ToolBox
 
 

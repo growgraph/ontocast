@@ -12,8 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docling converter configuration via `CONVERTER_*` settings, including a `born_digital` preset for text-selectable publisher PDFs.
 - `Ontology.from_working_context` for locked multi-source prompt snapshots; catalog alias resolution (`ontology_id`, author prefix, or IRI) via `OntologyManager.resolve_ontology_ref`.
 - `OntologyManager.aadd_ontology` for non-blocking vector reindex from async callers (`merge_terminal_ontologies` updated).
+- `VECTOR_STORE_REINDEX_CONCURRENCY` (default `2`) for bounded parallel ontology materialize/reindex during `ToolBox.initialize`.
 
 ### Changed
+- **Startup performance**: concatenate core+neighborhood dense embeds into one batched pass (LanceDB/Qdrant); overlap Qdrant BM25 sparse with dense; parallel LLM ontology-property enrich overlapping rematerialize; lazy Docling `DocumentConverter` (built on first convert); defer UMAP/torch/sklearn imports off the cold import path; slim `ontocast` package `__init__` lazy exports for unit loops. Document `VECTOR_STORE_EMBEDDING_BATCH_SIZE` and reindex concurrency in `.env.example` / user guide.
 - **OntologyManager async I/O**: patch retrieval sync wrappers now delegate to the async path (same `asyncio.run` / refuse-in-loop pattern as `OntologyPatchRetriever`); vector reindex uses `aadd_ontology` + `asyncio.to_thread`, and sync `add_ontology` refuses reindex when an event loop is running. Fallback patch graphs use `RDFGraph.copy()` instead of nested `deepcopy`.
 - **Ontology identity**: catalog key is the ontology IRI; `ontology_id` / author prefix are aliases (may differ). `derive_ontology_id` uses conventional rdflib prefix maps (SKOS → `skos`) and refuses pure-numeric IRI tails. Multi-ontology graphs no longer sync identity from an arbitrary `owl:Ontology` subject. Graph merges rename conflicting prefixes instead of silent override. `ontology_context_fixed_ontology_id` accepts IRI, `ontology_id`, or author prefix.
 - **Docs**: align `.env.example` and user-guide defaults for `VECTOR_STORE_*` and `ONTOLOGY_PATCH_*` with `PatchRetrievalConfig` / `VectorStoreConfig` code defaults; document full patch-retrieval parameter table and tuning presets.
@@ -24,7 +26,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Test fixtures updated to the short growgraph ontology IRI stems (`matsci`, `qqval`, …) matching `matsci-perovskite-ontologies` naming.
   - `sanitize_prefixes_namespaces` leaves rdflib reserved namespaces (notably `xml:`) untouched, so `xml1:` is no longer minted.
   - Facts operational guidelines state the domain-ontologies clause once (in the TWO-NAMESPACE CONTRACT) instead of repeating it four times.
-
 ## [0.4.3] - 2026-06-08
 
 ### Added

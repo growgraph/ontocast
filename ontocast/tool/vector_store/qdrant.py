@@ -316,19 +316,27 @@ class QdrantVectorStoreManager(VectorStoreManager):
         atoms = self.atomizer.atomize(source=ontology, depth=1)
         if not atoms:
             return 0
-        core_texts = [atom.core_representation for atom in atoms]
-        neighborhood_texts = [atom.neighborhood_representation for atom in atoms]
+        n = len(atoms)
+        dense_texts = [atom.core_representation for atom in atoms] + [
+            atom.neighborhood_representation for atom in atoms
+        ]
         minimal_texts = [atom.minimal_representation for atom in atoms]
 
-        core_vectors = self._embed_texts_batched(core_texts)
-        neighborhood_vectors = self._embed_texts_batched(neighborhood_texts)
-        bm25_vectors = self._embed_texts_batched_sparse(minimal_texts)
+        # Dense and BM25 use different embedders — overlap them for wall-clock gain.
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            bm25_future = executor.submit(
+                self._embed_texts_batched_sparse, minimal_texts
+            )
+            dense_vectors = self._embed_texts_batched(dense_texts)
+            bm25_vectors = bm25_future.result()
 
-        if len(core_vectors) != len(atoms) or len(neighborhood_vectors) != len(atoms):
+        if len(dense_vectors) != 2 * n:
             raise ValueError(
                 "Embedding provider returned mismatched vector counts for atoms"
             )
-        if len(bm25_vectors) != len(atoms):
+        core_vectors = dense_vectors[:n]
+        neighborhood_vectors = dense_vectors[n:]
+        if len(bm25_vectors) != n:
             raise ValueError(
                 "BM25 embedder returned mismatched sparse vector counts for atoms"
             )

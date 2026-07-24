@@ -91,6 +91,7 @@ def test_initialize_materializes_then_adds_with_skip_vector(monkeypatch, test_on
         triple_store_manager = None
         llm = MagicMock()
         ontology_manager: MagicMock
+        config = Config()
 
         def __init__(self) -> None:
             self.ontology_manager = MagicMock()
@@ -115,6 +116,9 @@ def test_initialize_materializes_then_adds_with_skip_vector(monkeypatch, test_on
 
     assert materialized == [test_ontology]
     assert added == [(test_ontology, True)]
+    # Catalog registration happens before materialize so enrich can overlap.
+    assert added  # registration recorded
+    assert materialized
 
 
 def test_toolbox_rejects_mismatched_qdrant_vector_size_and_embedding_dim() -> None:
@@ -157,6 +161,7 @@ def test_initialize_skips_vector_store_in_full_ttl_mode(monkeypatch) -> None:
         triple_store_manager = None
         llm = MagicMock()
         ontology_manager: MagicMock
+        config = Config()
 
         def __init__(self) -> None:
             self.vector_store = MagicMock()
@@ -199,6 +204,7 @@ def test_initialize_vector_store_failure_is_non_fatal_when_configured(
         triple_store_manager = None
         llm = MagicMock()
         ontology_manager: MagicMock
+        config = Config()
 
         def __init__(self) -> None:
             self.vector_store = MagicMock()
@@ -271,3 +277,65 @@ def test_ingest_ontology_ttl_rejects_identity_conflict_before_persisting() -> No
             asyncio.run(ToolBox.ingest_ontology_ttl(cast(ToolBox, stub), incoming_ttl))
 
         stub._materialize_ontology.assert_not_awaited()
+
+
+def test_initialize_materializes_with_bounded_concurrency(
+    monkeypatch, test_ontology
+) -> None:
+    monkeypatch.setattr(
+        "ontocast.toolbox.update_ontology_manager",
+        AsyncMock(),
+    )
+
+    active = 0
+    max_active = 0
+    lock = asyncio.Lock()
+
+    ontologies = [
+        Ontology(
+            graph=RDFGraph(),
+            iri=f"https://example.org/o{i}",
+            ontology_id=f"o{i}",
+        )
+        for i in range(4)
+    ]
+
+    async def fake_sync(self):
+        return ontologies
+
+    async def fake_mat(self, o):
+        nonlocal active, max_active
+        async with lock:
+            active += 1
+            max_active = max(max_active, active)
+        await asyncio.sleep(0.05)
+        async with lock:
+            active -= 1
+
+    class Stub:
+        vector_store = None
+        triple_store_manager = None
+        llm = MagicMock()
+        ontology_manager: MagicMock
+        config = Config()
+
+        def __init__(self) -> None:
+            self.ontology_manager = MagicMock()
+            self.vector_store_ready = False
+            self.vector_store_last_error = None
+            self.config.tool_config.vector_store.reindex_concurrency = 2
+
+        def should_initialize_vector_store(self, ontology_context_mode):
+            return ToolBox.should_initialize_vector_store(
+                cast(ToolBox, self), ontology_context_mode
+            )
+
+        _synchronize_ontologies = fake_sync
+        _materialize_ontology = fake_mat
+
+    st = Stub()
+    st.ontology_manager.add_ontology = MagicMock()
+
+    asyncio.run(ToolBox.initialize(cast(ToolBox, st)))
+    assert max_active <= 2
+    assert max_active >= 2

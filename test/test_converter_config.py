@@ -124,3 +124,34 @@ def test_toolbox_wires_converter_config() -> None:
 
         assert toolbox.converter.converter_config.profile == "born_digital"
         assert toolbox.converter.converter_config.repair_ligature_gaps is True
+        # Docling converter is deferred until first conversion
+        assert toolbox.converter._converter is None
+
+
+def test_converter_tool_builds_document_converter_once(monkeypatch) -> None:
+    builds: list[ConverterConfig] = []
+
+    def fake_build(config: ConverterConfig):
+        builds.append(config)
+
+        class _Result:
+            document = plain_text_to_docling_doc("ok", "doc")
+
+        class _Converter:
+            def convert(self, _src):
+                return _Result()
+
+        return _Converter()
+
+    monkeypatch.setattr("ontocast.tool.converter.build_document_converter", fake_build)
+    with tempfile.TemporaryDirectory() as tmp:
+        tool = ConverterTool(
+            cache=Cacher(cache_dir=tmp),
+            converter_config=ConverterConfig(do_ocr=False),
+        )
+        assert tool._converter is None
+        doc1 = tool(b"%PDF-unique-lazy-1%")
+        doc2 = tool(b"%PDF-unique-lazy-2%")
+        assert doc1 is not None and doc2 is not None
+        assert len(builds) == 1
+        assert tool._converter is not None

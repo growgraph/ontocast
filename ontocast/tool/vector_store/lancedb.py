@@ -247,12 +247,17 @@ class LanceDBVectorStoreManager(VectorStoreManager):
         if not atoms:
             return 0
 
-        core_vectors = self._embed_texts_batched(
-            [atom.core_representation for atom in atoms]
-        )
-        neighborhood_vectors = self._embed_texts_batched(
-            [atom.neighborhood_representation for atom in atoms]
-        )
+        n = len(atoms)
+        dense_texts = [atom.core_representation for atom in atoms] + [
+            atom.neighborhood_representation for atom in atoms
+        ]
+        dense_vectors = self._embed_texts_batched(dense_texts)
+        if len(dense_vectors) != 2 * n:
+            raise ValueError(
+                "Embedding provider returned mismatched vector counts for atoms"
+            )
+        core_vectors = dense_vectors[:n]
+        neighborhood_vectors = dense_vectors[n:]
 
         records = [
             self._record_from_atom(atom, core_vectors[i], neighborhood_vectors[i])

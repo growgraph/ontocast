@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import abc
 import importlib
+import threading
 from typing import Any
 
 import httpx
@@ -16,6 +17,11 @@ from qdrant_client.http import models as qdrant_models
 from ontocast.config import EmbeddingConfig, EmbeddingProvider
 from ontocast.tool.onto import Tool
 
+# Shared across EmbeddingTool instances so parallel ontology reindex does not
+# race HuggingFace SentenceTransformer.encode / remote client state.
+_EMBED_LOCK = threading.Lock()
+_SPARSE_EMBED_LOCK = threading.Lock()
+
 
 class EmbeddingTool(Tool):
     """Base embedding tool with provider-specific implementations."""
@@ -23,8 +29,15 @@ class EmbeddingTool(Tool):
     config: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
 
     @abc.abstractmethod
+    def _embed_unlocked(self, texts: list[str]) -> list[list[float]]:
+        """Return vectors for all given texts (caller holds the embed lock)."""
+
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Return vectors for all given texts."""
+        """Return vectors for all given texts (thread-safe)."""
+        if not texts:
+            return []
+        with _EMBED_LOCK:
+            return self._embed_unlocked(texts)
 
     def embed_one(self, text: str) -> list[float]:
         """Return a vector for one text."""
@@ -65,9 +78,7 @@ class HuggingFaceEmbeddingTool(EmbeddingTool):
         )
         return self._embedder
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        if not texts:
-            return []
+    def _embed_unlocked(self, texts: list[str]) -> list[list[float]]:
         vectors = self._get_embedder().encode(
             texts, convert_to_numpy=True, show_progress_bar=len(texts) > 100
         )
@@ -88,9 +99,7 @@ class _LangChainEmbeddingTool(EmbeddingTool):
             self._embedder = self._build_embedder()
         return self._embedder
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        if not texts:
-            return []
+    def _embed_unlocked(self, texts: list[str]) -> list[list[float]]:
         return self._get_embedder().embed_documents(texts)
 
 
@@ -117,11 +126,9 @@ class OllamaEmbeddingTool(_LangChainEmbeddingTool):
             base_url=self.config.base_url,
         )
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        if not texts:
-            return []
+    def _embed_unlocked(self, texts: list[str]) -> list[list[float]]:
         try:
-            return super().embed(texts)
+            return super()._embed_unlocked(texts)
         except Exception:
             return self._embed_via_http(texts)
 
@@ -169,9 +176,15 @@ class FastembedBm25SparseTool(Tool):
         return self._embedder
 
     def embed_sparse(self, texts: list[str]) -> list[qdrant_models.SparseVector]:
-        """Return Qdrant sparse vectors for all given texts."""
+        """Return Qdrant sparse vectors for all given texts (thread-safe)."""
         if not texts:
             return []
+        with _SPARSE_EMBED_LOCK:
+            return self._embed_sparse_unlocked(texts)
+
+    def _embed_sparse_unlocked(
+        self, texts: list[str]
+    ) -> list[qdrant_models.SparseVector]:
         model = self._get_embedder()
         out: list[qdrant_models.SparseVector] = []
         for sparse_emb in model.embed(texts):

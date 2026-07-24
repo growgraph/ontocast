@@ -12,7 +12,7 @@ from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import require_vector_retrieval
 from ontocast.onto.state import AgentState
-from ontocast.tool.chunk.util import split_proposition_windows
+from ontocast.tool.chunk.proposition import split_proposition_windows
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)

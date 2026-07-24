@@ -214,6 +214,8 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 # VECTOR_STORE_FUSION_NEIGHBORHOOD_WEIGHT=0.3
 # VECTOR_STORE_FUSION_BM25_WEIGHT=0.2
 # VECTOR_STORE_DEDUP_MODE=iri
+# VECTOR_STORE_EMBEDDING_BATCH_SIZE=64
+# VECTOR_STORE_REINDEX_CONCURRENCY=2
 ```
 
 | Variable | Default | Role |
@@ -224,7 +226,8 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH` | `3` | `rdfs:subClassOf` hops in the schema shell |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | `550` | Global triple cap returned to the LLM |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | `24` | Per-entity BFS quota hint during retrieval |
-
+| `VECTOR_STORE_EMBEDDING_BATCH_SIZE` | `64` | Texts per embedding request during ontology indexing (raise for remote APIs; lower if VRAM-bound) |
+| `VECTOR_STORE_REINDEX_CONCURRENCY` | `2` | Max ontologies materialized/reindexed in parallel at `ToolBox.initialize` |
 ### LanceDB (embedded alternative)
 
 Enable when `QDRANT_URI` is unset. Requires the optional extra: `uv sync --extra lancedb`.
