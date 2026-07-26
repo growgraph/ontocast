@@ -249,8 +249,8 @@ def test_parsed_graph_update_applies_via_unit_facts_state() -> None:
     from rdflib import URIRef
 
     from ontocast.onto.content_unit import ContentUnit
-    from ontocast.onto.ontology import Ontology
     from ontocast.onto.unit_states import UnitFactsState
+    from test.snapshot_helpers import empty_snapshot
 
     profile = get_graph_format_profile(LLMGraphFormat.TURTLE)
     payload = {
@@ -277,7 +277,7 @@ def test_parsed_graph_update_applies_via_unit_facts_state() -> None:
             index=0,
             doc_iri=URIRef("https://example.com/doc/d1"),
         ),
-        ontology_snapshot=Ontology(iri="https://example.com/onto"),
+        ontology_snapshot=empty_snapshot(),
     )
     state.facts_updates.append(report.graph_update)
     state.update_facts()

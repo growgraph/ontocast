@@ -1,10 +1,12 @@
 import logging
 
-from ontocast.onto.ontology_access import ontology_access_for_unit_ontology
+from ontocast.onto.ontology_apply import complement_inserts
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import TripleOp
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitOntologyState
+
+logger = logging.getLogger(__name__)
 
 
 def all_unit_patch_source_iris(state: AgentState) -> list[str]:
@@ -19,22 +21,16 @@ def all_unit_patch_source_iris(state: AgentState) -> list[str]:
     return sorted(ordered)
 
 
-logger = logging.getLogger(__name__)
-
-
 def build_ontology_delta_graph(result: UnitOntologyState) -> RDFGraph:
-    """Build a delta graph from a unit ontology result.
+    """Build a complement-only insert delta from a unit ontology result.
 
     Only *insert* triples are retained — delete operations in GraphUpdate are
-    intentionally discarded. The reduce stage cannot safely apply deletions
-    across parallel unit results because the same triple may be "kept" by
-    another unit; preserving deletes would require a consensus policy that is
-    not yet implemented. Any unit that emits deletes should be reviewed for
-    whether its intent is achievable with inserts alone, or whether a future
-    per-anchor delete-reconciliation pass is required.
+    intentionally discarded (parallel-unit delete consensus is not implemented).
 
-    If no update operations exist the current ontology snapshot is used as the
-    delta (fresh-generation path).
+    Inserts already present in the prompt snapshot are subtracted so reduce
+    receives true complements (``U \\ S``), not restated context triples.
+
+    Fresh path (no GraphUpdates, empty seed): returns the full working graph.
     """
     if result.all_updates:
         delta_graph = RDFGraph()
@@ -57,13 +53,13 @@ def build_ontology_delta_graph(result: UnitOntologyState) -> RDFGraph:
             for prefix, namespace_uri in insert_graph.namespaces():
                 if prefix:
                     delta_graph.bind(prefix, namespace_uri)
-        return delta_graph
+        return complement_inserts(delta_graph, result.ontology_snapshot.graph)
 
-    return (
-        ontology_access_for_unit_ontology(result)
-        .effective_ontology_for_prompt()
-        .graph.copy()
-    )
+    # Fresh generation with no structured updates: emit the working graph only
+    # when the seed was empty (true create path).
+    if result.ontology_snapshot.is_empty() and len(result.working_graph) > 0:
+        return result.working_graph.copy()
+    return RDFGraph()
 
 
 def build_document_excerpt(state: AgentState) -> str:

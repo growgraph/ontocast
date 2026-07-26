@@ -18,6 +18,7 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.tool.atomic import AtomicToolBox
+from test.snapshot_helpers import snapshot_from_ontology
 
 criticise_facts_module = importlib.import_module("ontocast.agent.criticise_facts")
 render_facts_module = importlib.import_module("ontocast.agent.render_facts")
@@ -83,7 +84,7 @@ async def test_render_facts_routes_to_fresh_when_graph_is_empty(monkeypatch) -> 
 
     state = UnitFactsState(
         content_unit=_build_content_unit(with_graph=False),
-        ontology_snapshot=_build_ontology(),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
     )
     result = await render_facts_module.render_facts(state, tools=_build_tools())
 
@@ -115,7 +116,7 @@ async def test_render_facts_fresh_sets_success_and_budget(monkeypatch) -> None:
 
     state = UnitFactsState(
         content_unit=_build_content_unit(with_graph=False),
-        ontology_snapshot=_build_ontology(),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
     )
     result = await render_facts_module.render_facts_fresh(state, tools=_build_tools())
 
@@ -150,7 +151,7 @@ async def test_criticise_facts_marks_failed_and_sets_suggestions(monkeypatch) ->
 
     state = UnitFactsState(
         content_unit=_build_content_unit(with_graph=True),
-        ontology_snapshot=_build_ontology(),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
     )
     result = await criticise_facts_module.criticise_facts(state, tools=_build_tools())
 
@@ -191,7 +192,7 @@ async def test_render_facts_fresh_coerces_invalid_typed_literal_at_ingest(
 
     state = UnitFactsState(
         content_unit=_build_content_unit(with_graph=False),
-        ontology_snapshot=_build_ontology(),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
     )
     result = await render_facts_module.render_facts_fresh(state, tools=_build_tools())
 
@@ -236,7 +237,7 @@ async def test_render_facts_update_coerces_invalid_literal_in_update_graph(
     unit = _build_content_unit(with_graph=True)
     state = UnitFactsState(
         content_unit=unit,
-        ontology_snapshot=_build_ontology(),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
     )
     initial_len = len(state.content_unit.graph)
     result = await render_facts_module.render_facts_update(state, tools=_build_tools())
@@ -267,7 +268,7 @@ async def test_criticise_facts_prompt_includes_graph_format_instruction(
 
     state = UnitFactsState(
         content_unit=_build_content_unit(with_graph=True),
-        ontology_snapshot=_build_ontology(),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
         llm_graph_format=LLMGraphFormat.JSONLD,
     )
     await criticise_facts_module.criticise_facts(state, tools=_build_tools())
@@ -295,7 +296,7 @@ async def test_criticise_facts_accepts_high_score_even_when_success_false(
 
     state = UnitFactsState(
         content_unit=_build_content_unit(with_graph=True),
-        ontology_snapshot=_build_ontology(),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
     )
     result = await criticise_facts_module.criticise_facts(state, tools=_build_tools())
 

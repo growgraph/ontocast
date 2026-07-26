@@ -135,6 +135,18 @@ def _reset_node_evidence_context(
     state.load_external_evidence_for_node(node)
 
 
+def _apply_unit_ontology_context(
+    unit_state: UnitFactsState | UnitOntologyState,
+    ctx: UnitOntologyContext,
+) -> None:
+    """Copy assemble product onto unit state (snapshot + writable + sources)."""
+    unit_state.ontology_snapshot = deepcopy(ctx.snapshot)
+    unit_state.ontology_patch_sources = list(ctx.patch_sources)
+    unit_state.writable_iris = list(ctx.writable_iris)
+    unit_state.assembly_anchor_iri = ctx.primary_writable_iri
+    unit_state.assembly_mode_used = ctx.assembly_mode
+
+
 async def _apply_facts_ontology_context(
     unit_state: UnitFactsState,
     document_state: AgentState,
@@ -145,12 +157,12 @@ async def _apply_facts_ontology_context(
         document_state, tools, unit_state.content_unit
     )
     logger.info(
-        f"Ontology selected for mode {document_state.ontology_context_mode}: {ctx.ontology_snapshot.iri}",
+        "Ontology context for mode %s: sources=%s writable=%s",
+        document_state.ontology_context_mode,
+        ctx.patch_sources,
+        ctx.writable_iris,
     )
-    unit_state.ontology_snapshot = deepcopy(ctx.ontology_snapshot)
-    unit_state.ontology_patch_sources = list(ctx.patch_sources)
-    unit_state.assembly_anchor_iri = ctx.anchor_iri
-    unit_state.assembly_mode_used = ctx.assembly_mode
+    _apply_unit_ontology_context(unit_state, ctx)
     return unit_state
 
 
@@ -159,33 +171,18 @@ async def facts_loop(
     tools: ToolBox,
     document_state: AgentState,
     max_visits_per_node: int | None = None,
-    pre_resolved_ontology: Ontology | None = None,
     pre_resolved_context: UnitOntologyContext | None = None,
 ) -> UnitFactsState:
     """Run facts render/critic loop for one content unit.
 
     Ontology context is resolved per unit before rendering unless
-    ``pre_resolved_ontology`` is provided, in which case it is used directly
-    and the store-based context resolution is skipped. This is intended for
-    sequential unit-level pipelines where the ontology loop has already run
-    and its output should feed directly into fact extraction.
+    ``pre_resolved_context`` is provided (sequential unit pipelines).
     """
     atomic = tools.get_atomic_tools()
     unit_state = state.model_copy(deep=True)
     try:
-        if pre_resolved_context is not None and pre_resolved_ontology is not None:
-            raise ValueError(
-                "Provide either pre_resolved_context or pre_resolved_ontology, not both."
-            )
         if pre_resolved_context is not None:
-            unit_state.ontology_snapshot = deepcopy(
-                pre_resolved_context.ontology_snapshot
-            )
-            unit_state.ontology_patch_sources = list(pre_resolved_context.patch_sources)
-            unit_state.assembly_anchor_iri = pre_resolved_context.anchor_iri
-            unit_state.assembly_mode_used = pre_resolved_context.assembly_mode
-        elif pre_resolved_ontology is not None:
-            unit_state.ontology_snapshot = deepcopy(pre_resolved_ontology)
+            _apply_unit_ontology_context(unit_state, pre_resolved_context)
         else:
             unit_state = await _apply_facts_ontology_context(
                 unit_state, document_state, tools
@@ -320,11 +317,8 @@ async def ontology_loop(
         ctx = await resolve_unit_ontology_context(
             document_state, tools, unit_state.content_unit
         )
-        unit_state.ontology_snapshot = deepcopy(ctx.ontology_snapshot)
-        unit_state.ontology_patch_sources = list(ctx.patch_sources)
-        unit_state.current_ontology = deepcopy(unit_state.ontology_snapshot)
-        unit_state.assembly_anchor_iri = ctx.anchor_iri
-        unit_state.assembly_mode_used = ctx.assembly_mode
+        _apply_unit_ontology_context(unit_state, ctx)
+        unit_state.working_graph = unit_state.ontology_snapshot.graph.copy()
 
         max_visits = _resolve_max_visits_limit(
             unit_state.max_visits_per_node, max_visits_per_node

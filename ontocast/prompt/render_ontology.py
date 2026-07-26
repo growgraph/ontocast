@@ -29,16 +29,34 @@ intro_instruction_fresh = """
 """
 
 
-intro_instruction_update = """
-Update/modify the domain ontology {ontology_iri} provided below with abstract entities and relations that can be inferred from the document or known to hold in the domain the document pertains to.
+intro_instruction_update_single = """
+Complement the domain ontology {ontology_iri} provided below with abstract entities and relations that can be inferred from the document or known to hold in the domain the document pertains to.
 
 {ontology_desc}
 
-Feel free to update the description of the ontology to make it more accurate and complete, do not change ontology IRI, prefix, or ontology_id.
-{multi_source_note}
+Emit ONLY new abstract entities/relations as GraphUpdate inserts. Do NOT restate triples already present in the provided ontology graph. Do not change the ontology IRI, prefix, or ontology_id.
 """
 
-prefix_instruction = """Use {domain_ontologies_clause} for entities/properties placed in the domain ontologies. DECLARE all prefixes in preamble!"""
+
+intro_instruction_update_multi = """
+Complement the provided multi-source ontology context with abstract entities and relations inferred from the document.
+
+{ontology_desc}
+
+The context may combine patches from multiple catalog ontologies:
+{source_list}
+
+Rules:
+- Propose ONLY *new* schema (classes/properties/axioms). Do NOT restate triples already in the provided graph.
+- Place each new entity under the matching existing domain prefix from the domain-ontologies clause below.
+- Never invent a new domain ontology id/IRI; never collapse distinct source namespaces.
+- Cross-links to other listed ontologies via existing IRIs are fine; do not mint terms under foreign namespaces you do not own.
+"""
+
+# Back-compat name used by older imports during migration.
+intro_instruction_update = intro_instruction_update_single
+
+prefix_instruction = """Use {domain_ontologies_clause} for entities/properties placed in the domain ontologies. DECLARE all prefixes in preamble! New terms MUST use only those listed domain prefixes."""
 prefix_instruction_fresh = """Define a new prefix for the current domain ontology. DECLARE the prefix in preamble!"""
 
 
@@ -80,6 +98,8 @@ general_ontology_instruction = f"""
 9. **Never model ontology classes/properties under `cd:`.** The `cd:` namespace (`{DEFAULT_IRI}`) is reserved for factual instances only.
 
 10. **When introducing entities from other domain ontologies, declare their namespace prefixes** (e.g., `@prefix foaf: <http://xmlns.com/foaf/0.1/> .` or `@prefix dcterms: <http://purl.org/dc/terms/> .`).
+
+11. **Complement only:** do not re-emit schema triples that already appear in the provided ontology context; GraphUpdate inserts must be new.
 
 {{search_guidelines}}
 """

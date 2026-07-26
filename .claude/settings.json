@@ -1,0 +1,21 @@
+{
+    "permissions": {
+        "deny": [
+            "Read(./.env)",
+            "Read(./.env.*)",
+            "Edit(./.env)",
+            "Edit(./.env.*)",
+            "Read(./.venv/**)",
+            "Edit(./.venv/**)",
+            "Read(./site/**)",
+            "Edit(./site/**)",
+            "Read(./data/pdf/**)",
+            "Edit(./data/pdf/**)",
+            "Read(./docs/assets/**)",
+            "Edit(./docs/assets/**)"
+        ],
+        "allow": [
+            "Bash(uv *)"
+        ]
+    }
+}

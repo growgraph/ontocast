@@ -53,17 +53,18 @@ async def criticise_ontology(
         return state
 
     access = ontology_access_for_unit_ontology(state)
-    current = access.effective_ontology_for_prompt()
-    if current.is_null():
-        raise ValueError(
-            f"Null ontology cannot be criticised: {current.iri} is not a valid ontology"
-        )
+    if (
+        access.has_non_empty_seed() is False
+        and len(access.effective_graph_for_prompt()) == 0
+    ):
+        raise ValueError("Empty ontology context cannot be criticised")
+    current_graph = access.effective_graph_for_prompt()
 
     profile = get_graph_format_profile(state.llm_graph_format)
     parser = PydanticOutputParser(pydantic_object=OntologyCritiqueReport)
     llm_tool: LLMTool = await tools.get_llm_tool(state.budget_tracker)
 
-    ontology_chapter = profile.format_ontology_chapter(current.graph)
+    ontology_chapter = profile.format_ontology_chapter(current_graph)
 
     text_chapter = text_template.format(text=state.content_unit.extraction_text)
 

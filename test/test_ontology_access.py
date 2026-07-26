@@ -2,9 +2,8 @@
 
 from rdflib import Namespace, URIRef
 
-from ontocast.onto.constants import ONTOLOGY_NULL_IRI, WELL_KNOWN_PREFIXES
+from ontocast.onto.constants import WELL_KNOWN_PREFIXES
 from ontocast.onto.content_unit import ContentUnit, SourceUnit
-from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import (
     DocumentOntologyAccess,
@@ -18,6 +17,7 @@ from ontocast.onto.ontology_access import (
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
+from test.snapshot_helpers import empty_snapshot, snapshot_from_ontology
 
 
 def _source_unit() -> SourceUnit:
@@ -85,24 +85,26 @@ def test_agent_state_ontology_ids_exposes_all_artifact_ids() -> None:
 
 
 def test_unit_ontology_access_seed_and_effective() -> None:
-    snap = NULL_ONTOLOGY
     state = UnitOntologyState(
         content_unit=_source_unit(),
-        ontology_snapshot=snap,
+        ontology_snapshot=empty_snapshot(),
     )
     access = ontology_access_for_unit_ontology(state)
     assert not access.has_non_null_seed_snapshot()
-    assert access.effective_ontology_for_prompt() is state.current_ontology
-    assert access.ontology_for_prefixes() is access.effective_ontology_for_prompt()
+    assert access.has_non_empty_seed() is False
+    assert len(access.effective_graph_for_prompt()) == 0
 
     other = _real_ontology()
-    state.current_ontology = other
+    state.ontology_snapshot = snapshot_from_ontology(other)
+    state.working_graph = other.graph.copy()
     access2 = UnitOntologyAccess(state)
-    assert access2.effective_ontology_for_prompt() is other
+    assert access2.has_non_empty_seed()
+    assert len(access2.effective_graph_for_prompt()) > 0
 
 
 def test_unit_facts_access_uses_snapshot_only() -> None:
-    snap = _real_ontology("https://example.org/ctx")
+    onto = _real_ontology("https://example.org/ctx")
+    snap = snapshot_from_ontology(onto)
     unit = ContentUnit(
         text="t",
         index=0,
@@ -141,7 +143,7 @@ def test_unit_facts_access_null_snapshot() -> None:
     )
     state = UnitFactsState(
         content_unit=unit,
-        ontology_snapshot=Ontology(iri=ONTOLOGY_NULL_IRI),
+        ontology_snapshot=empty_snapshot(),
     )
     access = UnitFactsOntologyAccess(state)
     assert not access.has_non_null_seed_snapshot()

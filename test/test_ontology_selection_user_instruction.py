@@ -118,5 +118,5 @@ async def test_context_resolver_forwards_selection_instruction(monkeypatch) -> N
 
     result = await resolve_unit_ontology_context(state, tools, unit)
 
-    assert result.anchor_iri == selected.iri
+    assert result.primary_writable_iri == selected.iri
     assert captured_instruction["value"] == "Prefer healthcare ontologies"

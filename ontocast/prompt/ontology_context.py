@@ -16,11 +16,16 @@ _STANDARD_NAMESPACES: frozenset[str] = (
 )
 
 
-def extract_domain_prefix_pairs(ontology: Ontology) -> list[tuple[str, str]]:
-    """Return domain prefix/namespace pairs present in ontology graph."""
+def extract_domain_prefix_pairs_from_graph(
+    graph: Graph,
+    *,
+    fallback_prefix: str | None = None,
+    fallback_namespace: str | None = None,
+) -> list[tuple[str, str]]:
+    """Return domain prefix/namespace pairs present in *graph* bindings."""
     pairs: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    for prefix, namespace_uri in ontology.graph.namespaces():
+    for prefix, namespace_uri in graph.namespaces():
         if not prefix:
             continue
         namespace = str(namespace_uri)
@@ -35,9 +40,18 @@ def extract_domain_prefix_pairs(ontology: Ontology) -> list[tuple[str, str]]:
     if pairs:
         return pairs
 
-    if ontology.prefix and ontology.namespace:
-        return [(ontology.prefix, ontology.namespace)]
+    if fallback_prefix and fallback_namespace:
+        return [(fallback_prefix, fallback_namespace)]
     return []
+
+
+def extract_domain_prefix_pairs(ontology: Ontology) -> list[tuple[str, str]]:
+    """Return domain prefix/namespace pairs present in ontology graph."""
+    return extract_domain_prefix_pairs_from_graph(
+        ontology.graph,
+        fallback_prefix=ontology.prefix,
+        fallback_namespace=ontology.namespace,
+    )
 
 
 def format_ontologies_clause(pairs: list[tuple[str, str]]) -> str:

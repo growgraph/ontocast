@@ -12,7 +12,8 @@ OntoCast manages ontologies with automatic versioning and timestamp tracking:
 - **Multiple Versions**: Stored as separate named graphs in Fuseki
 - **Timestamp Tracking**: `updated_at` synced as `dcterms:modified`
 - **Versioned IRIs**: Unique IRIs with hash fragments for storage
-- **Working context**: multi-ontology prompt snapshots (merged artifacts / vector ensembles) lock the anchor IRI and track `source_iris` instead of inventing a single catalog identity from the union graph
+- **Working context**: multi-ontology prompt snapshots use `OntologySnapshot` (graph + `source_iris`, no catalog id) instead of inventing a single catalog identity from a union graph
+- **Writeback**: ontology complements are applied to catalog terminals by namespace ownership after subtracting triples already present in the prompt snapshot
 - **Prefixes**: graph merges rename conflicting prefixes rather than silently overriding bindings; serialization aliases remain sugar over absolute IRIs
 
 ## GraphUpdate System

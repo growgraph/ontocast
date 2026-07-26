@@ -101,7 +101,18 @@ Returns **400** if the mode is fixed but no ontology id is provided.
 
 - **Canonical catalog key** is the ontology IRI (`owl:Ontology` subject).
 - **`ontology_id`** and author **`prefix`** are aliases registered on ingest; they may differ (e.g. `lifecycle` vs `life`).
-- **Multi-source working contexts** (merged document artifacts, vector ensembles) keep a locked anchor IRI and `source_iris` list; they do not re-derive a single fake `ontology_id` from an arbitrary `owl:Ontology` triple in the union graph.
+- **Prompt snapshots** (`OntologySnapshot`) are views of catalog graphs (or stitched ensembles) with `source_iris` / `writable_iris` provenance — they have **no** catalog id. Single/fixed modes wrap one ontology; vector/merged modes assemble a multi-source graph.
+- **Writeback** (`U → O*`): insert complements (`U \\ S`) are partitioned by namespace ownership onto writable catalog IRIs and merged onto each ontology's freshest terminal. Snapshots are never registered in the catalog.
+
+## Assemble → propose → apply
+
+```text
+assemble:  catalog ontologies O*  →  OntologySnapshot S
+propose:   (S, text) → GraphUpdate U   (complement only; do not restate S)
+apply:     (U, O*) → versioned catalog ontologies O*'
+```
+
+Ontology-update prompts use **complement** framing (single writable IRI or multi-source). Facts prompts treat S as read-only schema (`cd:` for instances).
 
 ## Per-Request Overrides
 

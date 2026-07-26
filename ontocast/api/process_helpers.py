@@ -129,12 +129,17 @@ def select_unit_facts_ontology_graph(onto_result, facts_result) -> RDFGraph:
     """Return ontology graph for facts post-processing in unit pipeline flows."""
     if facts_result is not None:
         return facts_result.ontology_snapshot.graph
-    if (
-        onto_result is not None
-        and not onto_result.current_ontology.is_null()
-        and len(onto_result.current_ontology.graph) > 0
-    ):
-        return onto_result.current_ontology.graph
+    if onto_result is not None:
+        if (
+            onto_result.fresh_ontology is not None
+            and not onto_result.fresh_ontology.is_null()
+            and len(onto_result.fresh_ontology.graph) > 0
+        ):
+            return onto_result.fresh_ontology.graph
+        if len(onto_result.working_graph) > 0:
+            return onto_result.working_graph
+        if not onto_result.ontology_snapshot.is_empty():
+            return onto_result.ontology_snapshot.graph
     return RDFGraph()
 
 
@@ -145,8 +150,12 @@ async def persist_unit_pipeline_outputs(
     tools: ToolBox,
 ) -> None:
     """Serialize unit-pipeline outputs using the standard document serializer."""
-    if onto_result is not None and not onto_result.current_ontology.is_null():
-        state.reduced_ontology_artifacts = [onto_result.current_ontology]
+    if onto_result is not None:
+        if (
+            onto_result.fresh_ontology is not None
+            and not onto_result.fresh_ontology.is_null()
+        ):
+            state.reduced_ontology_artifacts = [onto_result.fresh_ontology]
     if facts_result is not None:
         ontology_graph = select_unit_facts_ontology_graph(onto_result, facts_result)
         state.aggregated_facts = tools.aggregator.postprocess_facts_units(

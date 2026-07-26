@@ -215,14 +215,15 @@ def normalize_ontology_units(
             iri=base_ontology.iri,
         )
     else:
+        # No catalog base: provisional Ontology from first domain namespace stem.
         anchor = _working_anchor_from_graph(cleaned_graph) or NULL_ONTOLOGY.iri
-        result = Ontology.from_working_context(
-            cleaned_graph,
-            source_iris=[anchor] if anchor != NULL_ONTOLOGY.iri else [],
-            anchor_iri=anchor,
+        result = Ontology(
+            graph=cleaned_graph,
+            ontology_id=None,
+            iri=anchor if anchor != NULL_ONTOLOGY.iri else NULL_ONTOLOGY.iri,
             title=None,
             description=None,
-            strip_headers=False,
+            skip_graph_identity_sync=True,
         )
     applied = [merged_update] if merged_update else []
     return result, applied, provenance_graph

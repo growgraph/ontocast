@@ -61,4 +61,6 @@ Provide a constructive, actionable critique following these priorities:
 - For redundancies: suggest consolidation strategy
 - Prioritize fixes that have cascading impact
 - Enforce namespace hygiene: ontology classes/properties MUST NOT be modeled in `cd:` (`{DEFAULT_IRI}`), since `cd:` is reserved for facts/instances
+- Flag restated context triples: GraphUpdate inserts that merely repeat triples already in the provided ontology context are errors — complements only
+- Flag terms minted under undeclared domain prefixes or under a namespace that is not one of the listed domain ontologies
 """

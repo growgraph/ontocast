@@ -196,41 +196,59 @@ def _graph_with_one_triple(suffix: str) -> RDFGraph:
 
 
 def test_select_unit_facts_ontology_graph_prefers_facts_snapshot() -> None:
+    from ontocast.onto.enum import OntologyAssemblyMode
+    from ontocast.onto.ontology_snapshot import OntologySnapshot
+
     facts_graph = _graph_with_one_triple("facts")
     onto_graph = _graph_with_one_triple("onto")
     facts_result = SimpleNamespace(
-        ontology_snapshot=Ontology(
-            graph=facts_graph, iri="https://example.org/facts-onto"
+        ontology_snapshot=OntologySnapshot.from_graph(
+            facts_graph,
+            source_iris=["https://example.org/facts-onto"],
+            assembly_mode=OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY,
+            strip_headers=False,
         ),
     )
     onto_result = SimpleNamespace(
-        current_ontology=Ontology(graph=onto_graph, iri="https://example.org/onto"),
+        fresh_ontology=Ontology(graph=onto_graph, iri="https://example.org/onto"),
+        working_graph=RDFGraph(),
+        ontology_snapshot=OntologySnapshot.empty(),
     )
 
     selected = select_unit_facts_ontology_graph(onto_result, facts_result)
 
-    assert selected is facts_graph
+    assert selected is facts_result.ontology_snapshot.graph
 
 
 def test_select_unit_facts_ontology_graph_falls_back_to_onto_result() -> None:
+    from ontocast.onto.ontology_snapshot import OntologySnapshot
+
     onto_graph = _graph_with_one_triple("onto")
     onto_result = SimpleNamespace(
-        current_ontology=Ontology(graph=onto_graph, iri="https://example.org/onto"),
+        fresh_ontology=Ontology(graph=onto_graph, iri="https://example.org/onto"),
+        working_graph=RDFGraph(),
+        ontology_snapshot=OntologySnapshot.empty(),
     )
 
     selected = select_unit_facts_ontology_graph(onto_result, None)
 
     assert len(selected) > 0
-    assert set(selected) == set(onto_result.current_ontology.graph)
+    assert set(selected) == set(onto_result.fresh_ontology.graph)
 
 
 def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from ontocast.onto.enum import OntologyAssemblyMode
+    from ontocast.onto.ontology_snapshot import OntologySnapshot
+
     facts_graph = _graph_with_one_triple("facts")
     facts_result = SimpleNamespace(
-        ontology_snapshot=Ontology(
-            graph=facts_graph, iri="https://example.org/facts-onto"
+        ontology_snapshot=OntologySnapshot.from_graph(
+            facts_graph,
+            source_iris=["https://example.org/facts-onto"],
+            assembly_mode=OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY,
+            strip_headers=False,
         ),
         content_unit=ContentUnit(
             text="unit",
@@ -239,7 +257,9 @@ def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
         ),
     )
     onto_result = SimpleNamespace(
-        current_ontology=Ontology(graph=RDFGraph(), iri="https://example.org/onto"),
+        fresh_ontology=None,
+        working_graph=RDFGraph(),
+        ontology_snapshot=OntologySnapshot.empty(),
     )
     state = AgentState(docling_doc=plain_text_to_docling_doc("x", "doc"))
     captured: dict[str, RDFGraph] = {}
@@ -269,7 +289,7 @@ def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
         )
     )
 
-    assert captured["ontology_graph"] is facts_graph
+    assert set(captured["ontology_graph"]) == set(facts_graph)
 
 
 def _match_test_app(monkeypatch: pytest.MonkeyPatch):

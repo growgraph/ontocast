@@ -1124,38 +1124,15 @@ class Ontology(OntologyPropertiesWithLineage):
         return graph
 
     @classmethod
-    def from_working_context(
-        cls,
-        graph: RDFGraph,
-        *,
-        source_iris: list[str],
-        anchor_iri: str,
-        current_domain: str = DEFAULT_DOMAIN,
-        title: str | None = None,
-        description: str | None = None,
-        strip_headers: bool = True,
-    ) -> "Ontology":
-        """Build a locked multi-source working-context snapshot.
+    def from_working_context(cls, *args, **kwargs):  # pragma: no cover
+        """Removed: use :class:`~ontocast.onto.ontology_snapshot.OntologySnapshot`.
 
-        Does not derive ``ontology_id`` from graph contents and never overwrites
-        ``iri`` from an arbitrary ``owl:Ontology`` subject. ``source_iris`` is
-        authoritative for which catalog ontologies contributed to the graph;
-        ``anchor_iri`` is a stable primary reference (often the first source).
+        Raises:
+            RuntimeError: Always — callers must migrate to OntologySnapshot.
         """
-        _ = source_iris  # documented for callers; stored on UnitOntologyContext
-        working_graph = graph.copy()
-        if strip_headers:
-            cls.strip_ontology_header_triples(working_graph)
-
-        return cls(
-            graph=working_graph,
-            ontology_id=None,
-            title=title,
-            description=description,
-            iri=anchor_iri,
-            current_domain=current_domain,
-            identity_locked=True,
-            skip_graph_identity_sync=True,
+        raise RuntimeError(
+            "Ontology.from_working_context was removed; use "
+            "OntologySnapshot.from_graph / from_ontology instead."
         )
 
     def describe(self) -> str:

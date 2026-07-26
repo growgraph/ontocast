@@ -68,7 +68,7 @@ async def test_full_ttl_does_not_invoke_ensemble_path(monkeypatch) -> None:
     unit = state.content_units[0]
     result = await resolve_unit_ontology_context(state, tools, unit)
     assert result.assembly_mode == OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM
-    assert result.ontology_snapshot.iri == finance_iri
+    assert result.snapshot.source_iris == [finance_iri]
 
 
 def test_split_proposition_windows_is_sentence_bounded() -> None:

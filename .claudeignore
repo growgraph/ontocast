@@ -1,4 +1,4 @@
-# .cursorignore — keep in sync with .claudeignore
+# .claudeignore — keep in sync with .cursorignore
 #
 # Deny-all at repo root, then allowlist what agents should see.
 # `*` matches one path segment (not `/`), so directories must be

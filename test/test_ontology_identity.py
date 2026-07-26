@@ -86,7 +86,10 @@ def test_rdfgraph_add_preserves_conflicting_prefixes() -> None:
     assert "https://example.org/b#" in bindings.values()
 
 
-def test_from_working_context_locks_identity_on_matsci_merge() -> None:
+def test_ontology_snapshot_preserves_sources_on_matsci_merge() -> None:
+    from ontocast.onto.enum import OntologyAssemblyMode
+    from ontocast.onto.ontology_snapshot import OntologySnapshot
+
     base = Path(
         "/home/alexander/work/codes/gg-core/ontocast/matsci-perovskite-ontologies/ontologies"
     )
@@ -102,16 +105,14 @@ def test_from_working_context_locks_identity_on_matsci_merge() -> None:
         if ontology.iri:
             sources.append(ontology.iri)
     merged.sanitize_prefixes_namespaces()
-    anchor = sources[0]
-    snap = Ontology.from_working_context(
+    snap = OntologySnapshot.from_graph(
         merged,
         source_iris=sources,
-        anchor_iri=anchor,
+        assembly_mode=OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED,
         title="Merged",
     )
-    assert snap.iri == anchor
-    assert snap.ontology_id is None
-    assert snap._identity_locked is True
+    assert snap.source_iris == sources
+    assert len(snap.graph) > 0
 
 
 def test_ontology_manager_aliases_prefix_and_id() -> None:

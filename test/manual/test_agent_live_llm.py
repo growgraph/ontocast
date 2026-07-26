@@ -15,6 +15,7 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.toolbox import ToolBox
+from test.snapshot_helpers import empty_snapshot, snapshot_from_ontology
 
 RUN_MANUAL_TESTS = os.getenv("ONTOCAST_RUN_MANUAL_TESTS", "0") == "1"
 
@@ -132,7 +133,7 @@ def _build_content_unit(text: str, with_seed_facts: bool = False) -> ContentUnit
 async def test_render_facts_live_llm(live_tools: ToolBox, realistic_text: str) -> None:
     state = UnitFactsState(
         content_unit=_build_content_unit(realistic_text),
-        ontology_snapshot=_build_seed_ontology(),
+        ontology_snapshot=snapshot_from_ontology(_build_seed_ontology()),
         facts_user_instruction=(
             "Extract organizations, people, timeline details, and measurable targets."
         ),
@@ -152,7 +153,7 @@ async def test_criticise_facts_live_llm(
 ) -> None:
     state = UnitFactsState(
         content_unit=_build_content_unit(realistic_text),
-        ontology_snapshot=_build_seed_ontology(),
+        ontology_snapshot=snapshot_from_ontology(_build_seed_ontology()),
         facts_user_instruction=(
             "Prioritize correct entities, relations, and measurable outcomes."
         ),
@@ -174,10 +175,9 @@ async def test_criticise_facts_live_llm(
 async def test_render_ontology_live_llm(
     live_tools: ToolBox, realistic_text: str
 ) -> None:
-    null_ontology = Ontology()
     state = UnitOntologyState(
         content_unit=_build_content_unit(realistic_text),
-        ontology_snapshot=null_ontology,
+        ontology_snapshot=empty_snapshot(),
         ontology_user_instruction=(
             "Create a compact ontology for healthcare logistics collaboration."
         ),
@@ -187,8 +187,8 @@ async def test_render_ontology_live_llm(
 
     assert result.failure_stage is None
     assert result.status == Status.SUCCESS
-    assert not result.current_ontology.is_null()
-    assert len(result.current_ontology.graph) > 0
+    assert result.fresh_ontology is not None and not result.fresh_ontology.is_null()
+    assert len(result.working_graph) > 0
     assert result.budget_tracker.calls_count > 0
 
 
@@ -196,17 +196,16 @@ async def test_render_ontology_live_llm(
 async def test_criticise_ontology_live_llm(
     live_tools: ToolBox, realistic_text: str
 ) -> None:
-    null_ontology = Ontology()
     state = UnitOntologyState(
         content_unit=_build_content_unit(realistic_text),
-        ontology_snapshot=null_ontology,
+        ontology_snapshot=empty_snapshot(),
         ontology_user_instruction=(
             "Keep class hierarchy minimal and ensure relation naming consistency."
         ),
     )
     rendered = await render_ontology(state, live_tools.get_atomic_tools())
-    assert not rendered.current_ontology.is_null()
-    assert len(rendered.current_ontology.graph) > 0
+    assert rendered.fresh_ontology is not None and not rendered.fresh_ontology.is_null()
+    assert len(rendered.working_graph) > 0
 
     critiqued = await criticise_ontology(rendered, live_tools.get_atomic_tools())
 
