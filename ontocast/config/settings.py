@@ -777,12 +777,14 @@ class PatchRetrievalConfig(BaseSettings):
         ),
     )
     per_ontology_seed_quota: int = Field(
-        default=3,
+        default=0,
         ge=0,
         description=(
             "Max seeds retained per ontology IRI when filling the final seed list "
             "(round-robin under max_score; tier-2 under hybrid). 0 means no per-ontology "
-            "cap (global score order only)."
+            "cap (global score order only), which is the default: a quota spreads the "
+            "seed budget across ontologies that merely scored something, and measured "
+            "worse on both recall and precision than plain global score order."
         ),
     )
     min_entity_score: float = Field(
@@ -811,11 +813,14 @@ class PatchRetrievalConfig(BaseSettings):
         ),
     )
     max_atoms_base: int = Field(
-        default=16,
+        default=32,
         ge=0,
         description=(
             "Minimum effective atom cap before window scaling (0 defers entirely to "
-            "seeds_per_window * n_queries)."
+            "seeds_per_window * n_queries). The cap does not grow with catalog size, so "
+            "a low floor silently clipped candidates on multi-ontology catalogs; 32 is "
+            "above the measured candidate pool for a single-window query, which makes "
+            "per-channel top_k the binding constraint instead."
         ),
     )
     max_atoms: int = Field(

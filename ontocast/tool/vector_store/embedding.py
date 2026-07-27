@@ -176,18 +176,32 @@ class FastembedBm25SparseTool(Tool):
         return self._embedder
 
     def embed_sparse(self, texts: list[str]) -> list[qdrant_models.SparseVector]:
-        """Return Qdrant sparse vectors for all given texts (thread-safe)."""
+        """Return Qdrant sparse vectors for indexing all given texts (thread-safe)."""
         if not texts:
             return []
         with _SPARSE_EMBED_LOCK:
             return self._embed_sparse_unlocked(texts)
 
+    def embed_sparse_query(self, texts: list[str]) -> list[qdrant_models.SparseVector]:
+        """Return Qdrant sparse vectors for *querying* with all given texts.
+
+        BM25 is asymmetric: documents carry term-frequency saturation weights, queries
+        carry flat per-term weights, and the IDF factor is applied by the store. Encoding
+        queries with the document encoder instead squares the term-frequency weighting and
+        drops the query/document distinction entirely.
+        """
+        if not texts:
+            return []
+        with _SPARSE_EMBED_LOCK:
+            return self._embed_sparse_unlocked(texts, query=True)
+
     def _embed_sparse_unlocked(
-        self, texts: list[str]
+        self, texts: list[str], *, query: bool = False
     ) -> list[qdrant_models.SparseVector]:
         model = self._get_embedder()
+        encode = model.query_embed if query else model.embed
         out: list[qdrant_models.SparseVector] = []
-        for sparse_emb in model.embed(texts):
+        for sparse_emb in encode(texts):
             payload = sparse_emb.as_object()
             indices_raw = payload["indices"]
             values_raw = payload["values"]
@@ -204,7 +218,7 @@ class FastembedBm25SparseTool(Tool):
         return out
 
     def embed_one_sparse(self, text: str) -> qdrant_models.SparseVector:
-        vectors = self.embed_sparse([text])
+        vectors = self.embed_sparse_query([text])
         if not vectors:
             raise ValueError("BM25 embedder returned no sparse vector for query text")
         return vectors[0]

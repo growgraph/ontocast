@@ -258,9 +258,9 @@ Post-vector scoring and capping (backend-agnostic; prefix `ONTOLOGY_PATCH_`). Ap
 
 ```bash
 ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE=max_score
-ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA=3
+ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA=0
 ONTOLOGY_PATCH_SEEDS_PER_WINDOW=4
-ONTOLOGY_PATCH_MAX_ATOMS_BASE=16
+ONTOLOGY_PATCH_MAX_ATOMS_BASE=32
 ONTOLOGY_PATCH_MAX_ATOMS=48
 ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE=0.18
 ONTOLOGY_PATCH_MMR_LAMBDA=1.0
@@ -277,9 +277,9 @@ ONTOLOGY_PATCH_MMR_LAMBDA=1.0
 | Variable | Default | Role |
 |----------|---------|------|
 | `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `max_score` | Default merge; `hybrid` (tier-1 + tier-2) and `rrf` are advanced |
-| `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | `3` | Max seeds per ontology in round-robin fill (`0` = no per-ontology cap) |
+| `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | `0` | Max seeds per ontology in round-robin fill; `0` (default) means global score order, which measured better on both recall and precision |
 | `ONTOLOGY_PATCH_SEEDS_PER_WINDOW` | `4` | Scales effective cap with proposition window count |
-| `ONTOLOGY_PATCH_MAX_ATOMS_BASE` | `16` | Floor for effective atom cap |
+| `ONTOLOGY_PATCH_MAX_ATOMS_BASE` | `32` | Floor for effective atom cap; below the candidate pool it silently clips seeds on multi-ontology catalogs |
 | `ONTOLOGY_PATCH_MAX_ATOMS` | `48` | Hard cap: `min(max_atoms, max(base, seeds_per_window × n_queries))` (`0` = unlimited) |
 | `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` | `0.18` | After cross-window merge, return empty patch if top score is below this (`0` disables) |
 | `ONTOLOGY_PATCH_MMR_LAMBDA` | `1.0` | `1.0` skips MMR; lower values enable diversity rerank |

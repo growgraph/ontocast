@@ -942,30 +942,40 @@ def _prune_disconnected_uri_entities(
     result: RDFGraph,
     protected_uris: set[str],
 ) -> int:
-    """Drop URI subjects in schema components that do not intersect protected seeds."""
+    """Drop URI subjects in schema components that do not intersect protected seeds.
+
+    Every component containing a retrieved seed is kept. Seeds legitimately span
+    ontologies that share no schema path, so collapsing to a single component discarded
+    whole ontologies' worth of high-scoring seeds. Protected seeds are always kept, even
+    when they carry no schema edge and therefore belong to no component at all.
+
+    References *to* a dropped IRI are removed along with its definition, whatever the
+    predicate. The snapshot is meant to be self-contained: an IRI mentioned but never
+    defined invites the model to invent its own bridge to a term it cannot see.
+    """
     components = _find_schema_uri_connected_components(result)
-    if not components:
-        return 0
     protected_refs = {URIRef(uri) for uri in protected_uris}
     seed_components = [c for c in components if c & protected_refs]
-    if not seed_components:
+    if components and not seed_components:
         return 0
-    if len(seed_components) == 1:
-        keep = seed_components[0]
-    else:
-        keep = max(seed_components, key=lambda c: len(c & protected_refs))
+
+    keep: set[URIRef] = set(protected_refs)
+    for component in seed_components:
+        keep |= component
 
     all_uri_subjects = {s for s, _, _ in result if isinstance(s, URIRef)}
     drop_uris = all_uri_subjects - keep
+    if not drop_uris:
+        return 0
 
     pruned = 0
     for uri in sorted(drop_uris, key=str):
         pruned += 1
         for triple in list(result.triples((uri, None, None))):
             result.remove(triple)
-        for subj, pred, obj in list(result):
-            if obj == uri and pred in _SCHEMA_URI_CONNECTIVITY_PREDICATES:
-                result.remove((subj, pred, obj))
+    for subj, pred, obj in list(result):
+        if isinstance(obj, URIRef) and obj in drop_uris:
+            result.remove((subj, pred, obj))
     return pruned
 
 

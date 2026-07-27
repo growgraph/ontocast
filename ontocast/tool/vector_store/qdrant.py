@@ -98,7 +98,7 @@ class QdrantVectorStoreManager(VectorStoreManager):
             )
         for i, vec in enumerate(dense_vecs):
             self._require_embedding_vector_length(vec, role=f"Query embedding[{i}]")
-        sparse_vecs = self._require_sparse_embedding_tool().embed_sparse(queries)
+        sparse_vecs = self._require_sparse_embedding_tool().embed_sparse_query(queries)
         if len(sparse_vecs) != n:
             raise ValueError(
                 "BM25 embedder returned mismatched sparse vectors for queries"
@@ -240,8 +240,13 @@ class QdrantVectorStoreManager(VectorStoreManager):
                 size=dense_dim, distance=distance
             ),
         }
+        # BM25 without IDF degenerates to a term-frequency dot product, where common
+        # tokens dominate and a distinctive technical term carries no more weight than
+        # "the". Qdrant applies the IDF factor at query time via this modifier.
         sparse: dict[str, qdrant_models.SparseVectorParams] = {
-            BM25_VECTOR_NAME: qdrant_models.SparseVectorParams(modifier=None)
+            BM25_VECTOR_NAME: qdrant_models.SparseVectorParams(
+                modifier=qdrant_models.Modifier.IDF
+            )
         }
         return (vectors, sparse)
 
@@ -288,11 +293,13 @@ class QdrantVectorStoreManager(VectorStoreManager):
                 f"Qdrant collection '{collection}' missing sparse vector "
                 f"{BM25_VECTOR_NAME!r}; have sparse keys {set(sparse_map.keys())}"
             )
-        if bm25_cfg.modifier is not None:
-            raise ValueError(
+        if bm25_cfg.modifier != qdrant_models.Modifier.IDF:
+            raise EmbeddingContractMismatchError(
                 f"Qdrant collection '{collection}' sparse vector {BM25_VECTOR_NAME!r} "
-                f"uses modifier {bm25_cfg.modifier!r}; expected no modifier "
-                "(dot-product sparse scoring). Recreate the collection."
+                f"uses modifier {bm25_cfg.modifier!r}; expected "
+                f"{qdrant_models.Modifier.IDF!r}. Collections created before BM25 IDF "
+                "scoring was enabled must be recreated — drop the collection or start "
+                "with VECTOR_STORE_WIPE_ON_INIT=true / --wipe-vector-store."
             )
 
     def _ensure_named_vector_collection(self, collection: str) -> None:

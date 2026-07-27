@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 from pydantic import PrivateAttr
+from qdrant_client.http import models as qdrant_models
 
 from ontocast.config import (
     CrossQueryMergeMode,
@@ -495,7 +496,7 @@ def test_atomizer_core_representation_includes_skos_alt_label() -> None:
     assert "synonym b" in core
 
 
-def test_atomizer_minimal_representation_splits_iri_local_name() -> None:
+def test_atomizer_minimal_representation_has_local_name_and_labels() -> None:
     graph = RDFGraph._from_turtle_str(
         """
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
@@ -510,7 +511,9 @@ def test_atomizer_minimal_representation_splits_iri_local_name() -> None:
     atoms = GraphAtomizer().atomize(source=ontology, depth=1)
     cool = next(a for a in atoms if a.iri.endswith("MyVeryCoolClass"))
     assert cool.core_representation.lower().startswith("a label")
-    assert cool.minimal_representation == "my very cool class"
+    # The BM25 lane indexes the split local name *and* the labels: an IRI local name is
+    # often an opaque identifier that carries no searchable token at all.
+    assert cool.minimal_representation == "my very cool class a label"
 
 
 def test_embedding_config_default_bm25_model() -> None:
@@ -617,7 +620,7 @@ def test_index_ontology_concatenates_core_and_neighborhood_embeds(
     assert embedding.calls == 1
 
 
-def test_bm25_sparse_vector_uses_dot_product_modifier_none() -> None:
+def test_bm25_sparse_vector_uses_idf_modifier() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     store = QdrantVectorStoreManager(
         store_config=VectorStoreConfig(embedding_batch_size=2),
@@ -628,7 +631,9 @@ def test_bm25_sparse_vector_uses_dot_product_modifier_none() -> None:
     _, sparse_cfg = store._vectors_and_sparse_for_create()
     assert sparse_cfg is not None
     assert BM25_VECTOR_NAME in sparse_cfg
-    assert sparse_cfg[BM25_VECTOR_NAME].modifier is None
+    # Without IDF, BM25 degenerates to a term-frequency dot product in which a
+    # distinctive technical term is weighted no higher than a stopword.
+    assert sparse_cfg[BM25_VECTOR_NAME].modifier == qdrant_models.Modifier.IDF
 
 
 def test_retriever_expands_graph_via_sparql_tool() -> None:

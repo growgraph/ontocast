@@ -139,10 +139,14 @@ def _select_hits_round_robin_by_ontology(
 ) -> list[OntologySearchHit]:
     """Fair multi-ontology fill from a score-ranked unique-entity list.
 
-    Round-robin across ontology IRIs (sorted for stability), taking at most
-    ``per_ontology_seed_quota`` seeds each. If slots remain under ``max_atoms``,
-    fill from leftover hits in global score order. ``per_ontology_seed_quota <= 0``
-    or ``max_atoms <= 0`` means no per-ontology / no total cap respectively.
+    Round-robin across ontology IRIs, taking at most ``per_ontology_seed_quota`` seeds
+    each. If slots remain under ``max_atoms``, fill from leftover hits in global score
+    order. ``per_ontology_seed_quota <= 0`` or ``max_atoms <= 0`` means no per-ontology /
+    no total cap respectively.
+
+    Ontologies are visited best-scoring first. Visiting them in IRI order instead made
+    allocation alphabetical whenever the cap bound before every ontology was served —
+    which is the common case, since the cap does not grow with catalog size.
     """
     if not ranked_hits:
         return []
@@ -158,6 +162,8 @@ def _select_hits_round_robin_by_ontology(
     queues: dict[str, list[OntologySearchHit]] = {
         onto: list(hits) for onto, hits in by_ontology.items()
     }
+    # ``ranked_hits`` is score-descending, so first-seen order is best-score-first.
+    ontology_order: list[str] = list(by_ontology.keys())
     taken_count: dict[str, int] = defaultdict(int)
     selected: list[OntologySearchHit] = []
     selected_iris: set[str] = set()
@@ -165,7 +171,7 @@ def _select_hits_round_robin_by_ontology(
     progressed = True
     while len(selected) < limit and progressed:
         progressed = False
-        for onto in sorted(queues.keys()):
+        for onto in ontology_order:
             if len(selected) >= limit:
                 break
             if taken_count[onto] >= per_ontology_seed_quota:
@@ -688,6 +694,7 @@ class OntologyPatchRetriever(Tool):
                 "effective_max_atoms": eff_max_atoms,
                 "atoms_after_dedupe": atoms_after_dedupe,
                 "atoms_final": 0,
+                "seed_iris": [],
             }
             return RDFGraph(), []
 
@@ -704,6 +711,7 @@ class OntologyPatchRetriever(Tool):
             "merge_mode": pc.cross_query_merge_mode.value,
             "atoms_after_dedupe": atoms_after_dedupe,
             "atoms_final": len(merged),
+            "seed_iris": [atom.iri for atom in merged if atom.iri],
             "source_ontology_iris": source_iris,
             "seeds_by_ontology": dict(seeds_by_ontology),
         }

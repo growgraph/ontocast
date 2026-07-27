@@ -40,7 +40,7 @@ If vector infrastructure is unavailable, the API returns **409** with `error_cod
 
 **Key budget settings** (full reference: [Configuration — Ontology Patch Retrieval](configuration.md#ontology-patch-retrieval)):
 
-Default path: per-window channel fusion → max-score IRI dedupe → per-ontology round-robin → window-scaled hard cap → expand.
+Default path: per-window channel fusion → max-score IRI dedupe → global score order → window-scaled hard cap → expand. Setting a non-zero `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` inserts a per-ontology round-robin (visiting ontologies best-scoring first) in place of plain score order.
 
 | Variable | Default | Role |
 |----------|---------|------|
@@ -51,9 +51,9 @@ Default path: per-window channel fusion → max-score IRI dedupe → per-ontolog
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH` | `3` | `rdfs:subClassOf` hops in schema shell |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | `24` | Per-entity BFS quota hint |
 | `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `max_score` | Default merge; `hybrid` / `rrf` are advanced opt-in |
-| `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | `3` | Max seeds per ontology in round-robin fill |
+| `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | `0` | Max seeds per ontology; `0` (default) uses global score order |
 | `ONTOLOGY_PATCH_SEEDS_PER_WINDOW` | `4` | Scales effective atom cap with proposition windows |
-| `ONTOLOGY_PATCH_MAX_ATOMS_BASE` | `16` | Floor for the effective atom cap |
+| `ONTOLOGY_PATCH_MAX_ATOMS_BASE` | `32` | Floor for the effective atom cap |
 | `ONTOLOGY_PATCH_MAX_ATOMS` | `48` | Hard cap: `min(max_atoms, max(base, seeds_per_window × n_queries))` |
 | `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` | `0.18` | Empty patch when merged top score is below this |
 | `ONTOLOGY_PATCH_MMR_LAMBDA` | `1.0` | `1.0` skips MMR (default); lower enables diversity rerank |
@@ -65,11 +65,15 @@ Advanced (off by default): `ONTOLOGY_PATCH_PER_QUERY_*_SCORE_RATIO`, `ONTOLOGY_P
 Use vector search mode with the defaults above. For noisy catalogs, optionally tighten with advanced knobs:
 
 ```bash
-ONTOLOGY_PATCH_MAX_ATOMS=32
+ONTOLOGY_PATCH_MAX_ATOMS=24
 ONTOLOGY_PATCH_MERGED_SCORE_RATIO=0.5
 ONTOLOGY_PATCH_MMR_LAMBDA=0.85
 VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=600
 ```
+
+Tighten only against measured output — see [Diagnostics](#diagnostics). Lowering the seed
+budget trades recall away directly, and on a large catalog the defaults are already the
+recall-favouring choice.
 
 Effective seed budget grows with proposition windows (`seeds_per_window × n_queries`, floored by `max_atoms_base`, capped by `max_atoms`). Set `ONTOLOGY_PATCH_MERGED_SCORE_RATIO` / per-query score ratios only when you need stricter precision.
 
@@ -78,12 +82,30 @@ in other catalog ontologies via `rdfs:subClassOf`, `rdfs:domain`, or `rdfs:range
 
 ### Diagnostics
 
-Manual staged logging for matsci / perovskitemat coverage:
+Retrieval quality is measured by `test/test_retrieval_recall.py`, which runs real
+embeddings against a real Qdrant collection and reports a per-stage funnel:
 
 ```bash
-ONTOCAST_RUN_MANUAL_TESTS=1 cd ontocast && uv run pytest \\
-  test/manual/test_perovskite_retrieval_diagnostics.py -v --log-cli-level=INFO
+cd ontocast
+bash -c 'set -a; source .env; set +a; uv run pytest test/test_retrieval_recall.py -v -s'
 ```
+
+Two numbers are reported. **Seed recall** is the share of cases whose expected term
+reached `atoms_final` — it scores vector search, cross-window merge, per-ontology
+round-robin, and the atom cap. **Snapshot recall** is the share whose expected term is
+*defined* in the returned graph — it additionally scores induced-subgraph expansion. A
+gap between them localises the loss to the graph stage.
+
+Scale the run with `ONTOCAST_RECALL_ONTOLOGIES` and `ONTOCAST_RECALL_CASES`; catalog size
+matters most, because the atom cap does not grow with it. Point `ONTOCAST_RECALL_ROOT` at
+a Text2KGBench-style corpus (`a_ontologies/` + `b_gt_text/`) to use derived ground truth;
+without it, the in-repo anchor fixtures still run. The test skips when Qdrant is
+unreachable.
+
+Per-run metrics are also available in production on
+`state.retrieval_metrics["patch_retrieval"]`: `atoms_after_dedupe`, `atoms_final`,
+`seed_iris`, `seeds_by_ontology`, `snapshot_triple_count`, `snapshot_pruned_uri_count`,
+`snapshot_uri_components`.
 
 ### `fixed_single_ontology`
 

@@ -175,7 +175,9 @@ class GraphAtomizer(Tool):
             core_representation = self._build_core_representation(
                 entity=entity, graph=patch_graph, role=role
             )
-            minimal_representation = self._build_minimal_representation(entity)
+            minimal_representation = self._build_minimal_representation(
+                entity, embedding_graph
+            )
             neighborhood_variants = self._build_neighborhood_variants(
                 entity=entity, graph=patch_graph, entity_role=role
             )
@@ -423,13 +425,37 @@ class GraphAtomizer(Tool):
                 clues.append(f"{d_label} {prop_verb} it")
             self._append_inverse_of_clues_for_property(prop, graph, clues)
 
-    def _build_minimal_representation(self, entity: URIRef) -> str:
-        """IRI local name as keyword-oriented tokens: split camelCase/PascalCase, etc.
+    def _build_minimal_representation(
+        self, entity: URIRef, graph: RDFGraph | None = None
+    ) -> str:
+        """Keyword-oriented text for the sparse BM25 lane.
 
-        Compact text for sparse BM25 (no labels or gloss); only the focal entity IRI
-        is tokenized (see ``normalize_uri_local_name``).
+        The IRI local name (camelCase/PascalCase split, see ``normalize_uri_local_name``)
+        plus any human labels. Lexical match is the strongest available signal for
+        technical vocabulary that appears near-verbatim in source text, but an IRI local
+        name is often an opaque identifier — Wikidata-derived ``Q36834`` carries no
+        tokens at all, and the term is only findable through its ``rdfs:label``.
+        Descriptions are deliberately excluded: they would dominate term frequency
+        without naming the entity.
         """
-        return normalize_uri_local_name(entity)
+        local_name = normalize_uri_local_name(entity)
+        if graph is None:
+            return local_name
+        labels = self._collect_literals(
+            graph,
+            entity,
+            [RDFS.label, SKOS.prefLabel, DCTERMS.title, SKOS.altLabel],
+            5,
+        )
+        parts = [local_name, *labels]
+        seen: set[str] = set()
+        tokens: list[str] = []
+        for part in parts:
+            normalized = normalize_text(part)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                tokens.append(normalized)
+        return " ".join(tokens)
 
     def _build_core_representation(
         self, entity: URIRef, graph: RDFGraph, role: str
