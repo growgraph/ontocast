@@ -91,7 +91,7 @@ class QdrantVectorStoreManager(VectorStoreManager):
         n = len(queries)
         if n == 0:
             return []
-        dense_vecs = self.embedding.embed(queries)
+        dense_vecs = self.embedding.embed_query(queries)
         if len(dense_vecs) != n:
             raise ValueError(
                 "Embedding provider returned mismatched vectors for queries"

@@ -84,12 +84,33 @@ Place `.ttl` files in `ONTOCAST_ONTOLOGY_DIRECTORY`. On startup, `ToolBox` scans
 
 ---
 
+## Targeted Catalog Reads
+
+`fetch_ontologies()` materializes every stored ontology into rdflib. That is the right call at startup, but it is far too much for the per-content-unit retrieval path, which only needs to know *which* ontologies to pull. `TripleStoreManager` therefore exposes three narrower reads:
+
+| Method | Returns | Cost |
+|---|---|---|
+| `aselect(query, *, use_ontologies_dataset=True)` | `list[dict[str, str]]` — one dict per SPARQL SELECT solution | One query |
+| `afetch_ontology_catalog()` | `list[OntologyHeader]` — `iri`, `version`, `hash`, `parent_hashes`, `created_at`, `graph_uri` per stored version | One query, no graphs |
+| `afetch_ontologies_by_iri(iris)` | `list[Ontology]` with graphs, restricted to `iris` (empty means no restriction) | Only the named graphs requested |
+
+`aselect` rows carry each term's **lexical value** only — term kind and datatype are dropped, so constrain kinds in the query itself (`FILTER(isIRI(?x))`). Unbound variables are simply absent from the row. Failures raise rather than returning `[]`, because an empty result set is indistinguishable from "nothing matched".
+
+`OntologyHeader` is deliberately not an `Ontology`: constructing an `Ontology` recomputes its hash from the graph, so a graph-less one would carry fabricated lineage. Run `dedupe_terminal_ontologies()` over headers to pick terminal versions without downloading anything — it accepts headers and ontologies alike.
+
+### Custom Backends
+
+Implementing a `TripleStoreManager` subclass still requires only `fetch_ontologies()`. The three methods above have working base-class defaults expressed in terms of it, so a custom backend keeps working unchanged — it just fetches more than it needs. To opt into the fast path, override `supports_sparql_select()` to return `True` and implement `aselect()`; callers branch on that predicate, never on the concrete type.
+
+---
+
 ## Backend Comparison
 
 | Feature | Fuseki | In-Memory |
 |---------|--------|-----------|
 | **Persistence** | Yes | No (process lifetime) |
-| **SPARQL** | Full 1.1 | Internal only |
+| **SPARQL** | Full 1.1 | Full 1.1 (pyoxigraph) |
+| **`aselect` fast path** | Yes | Yes |
 | **Tenancy partitions** | Yes | Yes |
 | **Setup** | Docker + env | Automatic |
 

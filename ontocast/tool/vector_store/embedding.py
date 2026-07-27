@@ -33,15 +33,32 @@ class EmbeddingTool(Tool):
         """Return vectors for all given texts (caller holds the embed lock)."""
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Return vectors for all given texts (thread-safe)."""
+        """Return vectors for all given texts as *documents* (thread-safe)."""
         if not texts:
             return []
         with _EMBED_LOCK:
-            return self._embed_unlocked(texts)
+            return self._embed_unlocked(self._apply(self.config.document_prefix, texts))
+
+    def embed_query(self, texts: list[str]) -> list[list[float]]:
+        """Return vectors for all given texts as *queries* (thread-safe).
+
+        Asymmetric retrieval models are trained with distinct query and document
+        instructions and lose accuracy when both sides are encoded identically. With
+        empty prefixes — the default, suiting a symmetric paraphrase model — this is
+        exactly :meth:`embed`.
+        """
+        if not texts:
+            return []
+        with _EMBED_LOCK:
+            return self._embed_unlocked(self._apply(self.config.query_prefix, texts))
+
+    @staticmethod
+    def _apply(prefix: str, texts: list[str]) -> list[str]:
+        return texts if not prefix else [f"{prefix}{text}" for text in texts]
 
     def embed_one(self, text: str) -> list[float]:
-        """Return a vector for one text."""
-        vectors = self.embed([text])
+        """Return a vector for one query text."""
+        vectors = self.embed_query([text])
         if not vectors:
             raise ValueError("Embedding provider returned no vectors for query text")
         return vectors[0]

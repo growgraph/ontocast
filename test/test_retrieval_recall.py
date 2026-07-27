@@ -20,9 +20,15 @@ regression can be localised without bisecting.
 Scale and corpus are environment-controlled so the same harness serves CI (small, fast)
 and tuning sweeps / embedding bake-offs (large):
 
+* ``ONTOCAST_RECALL_CORPUS``      — prebuilt corpus directory (``cases.jsonl`` +
+  ``ontologies/``), the domain-neutral tier; build one with
+  ``ontocast-validation/run/build_recall_corpus.py``
 * ``ONTOCAST_RECALL_ROOT``        — Text2KGBench corpus root
 * ``ONTOCAST_RECALL_ONTOLOGIES``  — ontologies loaded into the catalog (default 6)
 * ``ONTOCAST_RECALL_CASES``       — cases per ontology (default 15)
+
+Case text is split into proposition windows exactly as production does, so a passage
+spanning several sentences issues several queries rather than one.
 """
 
 from __future__ import annotations
@@ -45,13 +51,15 @@ from ontocast.config import (
     ToolConfig,
 )
 from ontocast.onto.ontology import Ontology
+from ontocast.tool.chunk.proposition import split_proposition_windows
 from ontocast.toolbox import ToolBox
 from test.qdrant_util import qdrant_reachable
 from test.retrieval_gt import (
     RecallCase,
     StageCounts,
-    graph_defines,
+    corpus_root,
     load_anchor_cases,
+    load_corpus,
     load_text2kgbench,
     text2kgbench_root,
 )
@@ -149,8 +157,16 @@ async def _score(tools: ToolBox, cases: list[RecallCase]) -> StageCounts:
     counts = StageCounts()
 
     for case in cases:
+        # Window exactly as production does, so multi-sentence cases exercise the
+        # cross-window merge and the window budget. A single sentence yields one
+        # window, leaving the sentence-level tiers unchanged.
+        queries = split_proposition_windows(
+            case.text,
+            max_sentences=store_config.proposition_window_sentences,
+            max_windows=store_config.proposition_max_windows,
+        )
         graph, _sources = await retriever.aretrieve_ensemble(
-            queries=[case.text],
+            queries=queries,
             top_k=store_config.top_k,
             expand_sparql=True,
             subgraph_depth=store_config.induced_subgraph_depth,
@@ -161,20 +177,18 @@ async def _score(tools: ToolBox, cases: list[RecallCase]) -> StageCounts:
         )
         metrics = dict(retriever.last_retrieval_metrics)
         seed_iris = {str(iri) for iri in metrics.get("seed_iris", [])}
-        seed_hit = bool(seed_iris & set(case.expected_iris))
-        snapshot_hit = graph_defines(graph, case.expected_iris)
-        subjects = {
-            str(subject)
-            for subject in graph.subjects()
-            if str(subject).startswith("http")
-        }
-        on_topic = sum(1 for s in subjects if s.startswith(case.ontology_iri))
+        # Subject position, not mere mention: pruning drops triples by subject but leaves
+        # object-position references, so a named term may carry no usable definition.
+        subjects = {str(subject) for subject in graph.subjects()}
+        http_subjects = {s for s in subjects if s.startswith("http")}
+        on_topic = sum(1 for s in http_subjects if s.startswith(case.ontology_iri))
         counts.observe(
-            seed_hit=seed_hit,
-            snapshot_hit=snapshot_hit,
+            expected=case.expected_iris,
+            seed_iris=seed_iris,
+            snapshot_subjects=subjects,
             metrics=metrics,
             on_topic_subjects=on_topic,
-            total_subjects=len(subjects),
+            total_subjects=len(http_subjects),
         )
 
     return counts
@@ -212,6 +226,42 @@ def test_anchor_recall(
     assert counts.seed_recall > 0.0, (
         "no anchor term reached the seed set; retrieval is not functioning at all\n"
         + report
+    )
+
+
+@pytest.mark.slow
+def test_corpus_recall(
+    recall_qdrant_config: QdrantConfig,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """A prebuilt domain corpus: multi-sentence passages against a linked catalog.
+
+    The other two tiers score one sentence at a time against mutually disjoint
+    ontologies, which makes the cross-window merge a no-op and hides both the window
+    budget and cross-ontology expansion. A corpus built by
+    ``ontocast-validation/run/build_recall_corpus.py`` supplies passages long enough to
+    produce several proposition windows and a catalog whose ontologies reference each
+    other.
+    """
+    root = corpus_root()
+    if root is None:
+        pytest.skip(
+            "no recall corpus; set ONTOCAST_RECALL_CORPUS to a directory holding "
+            "cases.jsonl and ontologies/"
+        )
+
+    cases, ontologies = load_corpus(root)
+    tools = _build_toolbox(recall_qdrant_config, tmp_path_factory)
+    counts = _run(tools, ontologies, cases)
+
+    report = counts.render(
+        f"corpus recall: {root.name} ({len(ontologies)} ontologies, {len(cases)} cases)"
+    )
+    print(f"\n{report}")
+
+    assert counts.cases > 0
+    assert counts.seed_recall > 0.0, (
+        "no expected term reached the seed set across the whole corpus\n" + report
     )
 
 

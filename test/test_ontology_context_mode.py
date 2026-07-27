@@ -83,6 +83,16 @@ def test_split_proposition_windows_is_sentence_bounded() -> None:
     ]
 
 
+def test_split_proposition_windows_strides_instead_of_dropping_the_tail() -> None:
+    """Over budget, windows are sampled across the whole text, not truncated."""
+    text = " ".join(f"Sentence {index}." for index in range(20))
+    windows = split_proposition_windows(text, max_sentences=2, max_windows=3)
+    assert len(windows) == 3
+    assert windows[0].startswith("Sentence 0.")
+    # The closing sentences must still be represented; truncation lost them entirely.
+    assert "Sentence 18." in windows[-1]
+
+
 def test_vector_store_config_proposition_fields_exist() -> None:
     cfg = VectorStoreConfig()
     assert cfg.proposition_window_sentences >= 1

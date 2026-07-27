@@ -1,10 +1,9 @@
 """convert_document handles .txt uploads as plain text (regression for #67)."""
 
-from types import SimpleNamespace
-
 from ontocast.agent.convert_document import convert_document
 from ontocast.onto.enum import Status
 from ontocast.onto.state import AgentState
+from ontocast.tool.converter import ConverterTool
 from ontocast.toolbox import ToolBox
 
 
@@ -14,7 +13,7 @@ def test_convert_document_txt_is_plain_text_not_json() -> None:
         raw_input={"note.txt": b"Hello world. This is plain text, not JSON."}
     )
     tools = ToolBox.__new__(ToolBox)
-    tools.converter = SimpleNamespace(supported_extensions=())
+    tools.converter = ConverterTool.model_construct(supported_extensions=set())
 
     result = convert_document(state, tools)
 

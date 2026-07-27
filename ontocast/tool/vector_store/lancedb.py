@@ -230,18 +230,19 @@ class LanceDBVectorStoreManager(VectorStoreManager):
             self._write_embedding_meta()
 
     def _ensure_indexes(self, table: Any) -> None:
+        from lancedb.index import FTS, IvfPq
+
+        cosine = IvfPq(distance_type="cosine")
         try:
-            table.create_index(metric="cosine", vector_column_name="core_vector")
+            table.create_index("core_vector", config=cosine)
         except Exception:
             logger.debug("LanceDB core_vector index already exists or skipped")
         try:
-            table.create_index(
-                metric="cosine", vector_column_name="neighborhood_vector"
-            )
+            table.create_index("neighborhood_vector", config=cosine)
         except Exception:
             logger.debug("LanceDB neighborhood_vector index already exists or skipped")
         try:
-            table.create_fts_index("minimal_representation")
+            table.create_index("minimal_representation", config=FTS())
         except Exception:
             logger.debug("LanceDB FTS index already exists or skipped")
 
@@ -309,7 +310,7 @@ class LanceDBVectorStoreManager(VectorStoreManager):
         n = len(queries)
         if n == 0:
             return []
-        dense_vecs = self.embedding.embed(queries)
+        dense_vecs = self.embedding.embed_query(queries)
         if len(dense_vecs) != n:
             raise ValueError(
                 "Embedding provider returned mismatched vectors for queries"

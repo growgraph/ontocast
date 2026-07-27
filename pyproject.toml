@@ -108,6 +108,7 @@ addopts = [
   "--tb=short",
   "-v"
 ]
+env_files = [".env"]
 markers = [
   "integration: marks tests as integration tests",
   "slow: marks tests as slow (deselect with '-m \"not slow\"')",

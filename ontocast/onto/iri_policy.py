@@ -19,6 +19,31 @@ def strip_iri_brackets(value: str) -> str:
     return text
 
 
+# Codepoints the SPARQL ``IRIREF`` production forbids inside ``<...>``.
+_IRIREF_FORBIDDEN = frozenset('<>"{}|^`\\')
+
+
+def as_sparql_iriref(value: str) -> str | None:
+    """Render an IRI for a SPARQL ``IRIREF`` slot, or ``None`` if it cannot be one.
+
+    Callers should log-and-skip on ``None`` rather than raising: a single
+    malformed IRI must not fail a whole query.
+
+    Args:
+        value: IRI text, optionally wrapped in Turtle-style angle brackets.
+
+    Returns:
+        str | None: ``<iri>`` ready for interpolation, or ``None`` when ``value``
+        is empty or contains a codepoint ``IRIREF`` forbids.
+    """
+    text = strip_iri_brackets(value).strip()
+    if not text:
+        return None
+    if any(char in _IRIREF_FORBIDDEN or ord(char) <= 0x20 for char in text):
+        return None
+    return f"<{text}>"
+
+
 def _resolve_context(namespace: str, context: URIContext) -> URIContext:
     if context != "auto":
         return context

@@ -145,7 +145,7 @@ class CrossQueryMergeMode(StrEnum):
 
     HYBRID = "hybrid"
     MAX_SCORE = "max_score"
-    RRF = "rrf"
+    SUM_SCORE = "sum_score"
 
 
 class VectorStoreDedupMode(StrEnum):
@@ -677,6 +677,24 @@ class EmbeddingConfig(BaseSettings):
         default="Qdrant/bm25",
         description="fastembed SparseTextEmbedding model id for the BM25 sparse lane.",
     )
+    query_prefix: str = Field(
+        default="",
+        description=(
+            "Prefix prepended to text embedded as a *query*. Asymmetric retrieval models "
+            "underperform their spec without it — BGE wants "
+            "'Represent this sentence for searching relevant passages: ', E5 wants "
+            "'query: '. Empty (default) suits the symmetric paraphrase model. Part of "
+            "the stored embedding contract: changing it requires a reindex."
+        ),
+    )
+    document_prefix: str = Field(
+        default="",
+        description=(
+            "Prefix prepended to text embedded as a *document* during indexing "
+            "(E5 wants 'passage: '; BGE wants nothing). Part of the stored embedding "
+            "contract: changing it requires a reindex."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="EMBEDDING_",
@@ -763,9 +781,11 @@ class PatchRetrievalConfig(BaseSettings):
     cross_query_merge_mode: CrossQueryMergeMode = Field(
         default=CrossQueryMergeMode.MAX_SCORE,
         description=(
-            "Cross-window merge: max_score (default; entity best score then round-robin "
-            "fairness), hybrid (tier-1 + per-ontology tier-2), or rrf (legacy reciprocal "
-            "rank sum)."
+            "Cross-window merge: max_score (default; entity best score across windows), "
+            "sum_score (sum of per-window scores, so a term several windows agree on "
+            "outranks one window's top hit), or hybrid (tier-1 global seeds + "
+            "per-ontology tier-2 coverage). All three are followed by the same "
+            "round-robin / cap stage. Single-window retrieval makes max and sum identical."
         ),
     )
     max_atoms_tier1: int = Field(
@@ -813,22 +833,25 @@ class PatchRetrievalConfig(BaseSettings):
         ),
     )
     max_atoms_base: int = Field(
-        default=32,
+        default=96,
         ge=0,
         description=(
             "Minimum effective atom cap before window scaling (0 defers entirely to "
-            "seeds_per_window * n_queries). The cap does not grow with catalog size, so "
-            "a low floor silently clipped candidates on multi-ontology catalogs; 32 is "
-            "above the measured candidate pool for a single-window query, which makes "
-            "per-channel top_k the binding constraint instead."
+            "seeds_per_window * n_queries). Raised to match max_atoms: the cap does not "
+            "grow with catalog size, and a lower floor was discarding candidates that "
+            "per-channel top_k had already paid to retrieve."
         ),
     )
     max_atoms: int = Field(
-        default=48,
+        default=96,
         ge=0,
         description=(
             "Hard cap for retained atoms after merge / optional MMR (0 means unlimited). "
-            "Effective cap is min(max_atoms, max(max_atoms_base, seeds_per_window * n_queries))."
+            "Effective cap is min(max_atoms, max(max_atoms_base, seeds_per_window * n_queries)). "
+            "Measured the single largest recall lever on multi-window input, where the "
+            "candidate pool reaches ~170 atoms: raising 48 -> 96 moved seed term recall "
+            "36% -> 64% on a linked 6-ontology catalog while improving precision. Beyond "
+            "this the induced-subgraph triple budget, not the seed count, is the limit."
         ),
     )
 
@@ -850,12 +873,15 @@ class VectorStoreConfig(BaseSettings):
     """Backend-agnostic vector store retrieval and indexing settings."""
 
     top_k: int = Field(
-        default=10,
+        default=20,
         ge=1,
         description=(
             "Default number of fused vector hits per query for ontology-patch retrieval. "
             "Call sites may pass an explicit ``top_k`` to override this for a single "
-            "retrieval; when omitted, patch search uses this value."
+            "retrieval; when omitted, patch search uses this value. Raising it past 20 "
+            "measured no further seed-recall gain: the retained-atom cap "
+            "(ONTOLOGY_PATCH_MAX_ATOMS_BASE) binds first, so the extra candidates are "
+            "fetched and then discarded."
         ),
     )
     induced_subgraph_depth: int = Field(
@@ -906,11 +932,19 @@ class VectorStoreConfig(BaseSettings):
         default=True,
         description="Enable proposition-level multi-query retrieval for induced graph mode.",
     )
-    consistency_critic_similarity_threshold: float = Field(
-        default=0.7,
+    consistency_critic_min_fused_score: float = Field(
+        default=0.5,
         ge=0.0,
         le=1.0,
-        description="Minimum vector retrieval score to report potential cross-ontology conflicts.",
+        description=(
+            "Minimum fused retrieval score for the consistency critic to report a "
+            "potential cross-ontology conflict. This is a weighted reciprocal-rank score "
+            "(sum of weight/rank over the core, neighborhood and BM25 channels), not a "
+            "cosine similarity: with default fusion weights a rank-1 core hit alone "
+            "scores 0.583 and rank-2 scores 0.292, so 0.5 means 'top-ranked in the "
+            "dominant dense channel'. The former name and 0.7 default read as a "
+            "similarity and silently required rank-1 in two channels at once."
+        ),
     )
     embedding_batch_size: int = Field(
         default=64,

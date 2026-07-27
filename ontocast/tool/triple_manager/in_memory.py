@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import pyoxigraph as ox
@@ -11,6 +12,7 @@ from oxrdflib._converter import to_ox
 from rdflib import Graph
 
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_header import OntologyHeader
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.tenancy import (
     DEFAULT_PROJECT,
@@ -19,7 +21,9 @@ from ontocast.onto.tenancy import (
 )
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.tool.triple_manager.util import (
+    ONTOLOGY_HEADER_QUERY,
     dedupe_terminal_ontologies,
+    headers_from_select_rows,
     ontology_from_named_graph,
 )
 
@@ -69,6 +73,23 @@ def _export_named_graph(store: ox.Store, graph_uri: str) -> RDFGraph:
     return result
 
 
+def _run_select(store: ox.Store, query: str) -> list[dict[str, str]]:
+    """Evaluate a SPARQL SELECT against ``store``, returning lexical values."""
+    solutions = store.query(query)
+    if not isinstance(solutions, ox.QuerySolutions):
+        raise TypeError("aselect() requires a SPARQL SELECT query")
+    variables = [str(variable)[1:] for variable in solutions.variables]
+    rows: list[dict[str, str]] = []
+    for solution in solutions:
+        row: dict[str, str] = {}
+        for name in variables:
+            term = solution[name]
+            if term is not None:
+                row[name] = term.value
+        rows.append(row)
+    return rows
+
+
 def _list_named_graph_uris(store: ox.Store) -> list[str]:
     uris: set[str] = set()
     for quad in store:
@@ -88,6 +109,9 @@ class InMemoryTripleStoreManager(TripleStoreManager):
         self._partitions: dict[tuple[str, str], _TenantPartition] = {}
         self._active: tuple[str, str] = (DEFAULT_TENANT, DEFAULT_PROJECT)
         self._lock = asyncio.Lock()
+        self._full_catalog_fetches = 0
+        self._graph_fetches = 0
+        self._select_queries = 0
         self._ensure_partition(self._active[0], self._active[1])
 
     def _ensure_partition(self, tenant: str, project: str) -> _TenantPartition:
@@ -155,15 +179,61 @@ class InMemoryTripleStoreManager(TripleStoreManager):
                 if graph_uri == ontology_iri or graph_uri.startswith(prefix):
                     _clear_named_graph(partition.ontologies, _to_ox_graph(graph_uri))
 
-    def fetch_ontologies(self) -> list[Ontology]:
+    def supports_sparql_select(self) -> bool:
+        return True
+
+    async def aselect(
+        self, query: str, *, use_ontologies_dataset: bool = True
+    ) -> list[dict[str, str]]:
+        """Evaluate a SPARQL SELECT against the active partition."""
+        async with self._lock:
+            partition = self._active_partition()
+            store = partition.ontologies if use_ontologies_dataset else partition.facts
+        self._select_queries += 1
+        return await asyncio.to_thread(_run_select, store, query)
+
+    async def afetch_ontology_catalog(self) -> list[OntologyHeader]:
+        """Read one header per stored ontology version via a single SELECT."""
+        rows = await self.aselect(ONTOLOGY_HEADER_QUERY)
+        return headers_from_select_rows(rows)
+
+    async def afetch_ontologies_by_iri(self, iris: Sequence[str]) -> list[Ontology]:
+        """Materialize only the named graphs backing ``iris``."""
+        if not iris:
+            return await self.afetch_ontologies()
+        wanted = set(iris)
+        headers = dedupe_terminal_ontologies(await self.afetch_ontology_catalog())
+        graph_uris = [header.graph_uri for header in headers if header.iri in wanted]
+        if not graph_uris:
+            return []
+        return await asyncio.to_thread(self._materialize_graphs, graph_uris)
+
+    def _materialize_graphs(self, graph_uris: Sequence[str]) -> list[Ontology]:
+        """Build ontologies from an explicit list of named graph URIs."""
         partition = self._active_partition()
-        all_ontologies: list[Ontology] = []
-        for graph_uri in _list_named_graph_uris(partition.ontologies):
+        ontologies: list[Ontology] = []
+        for graph_uri in graph_uris:
+            self._graph_fetches += 1
             graph = _export_named_graph(partition.ontologies, graph_uri)
             onto = ontology_from_named_graph(graph_uri, graph)
             if onto is not None:
-                all_ontologies.append(onto)
-        result = dedupe_terminal_ontologies(all_ontologies)
+                ontologies.append(onto)
+        return ontologies
+
+    def catalog_io_stats(self) -> dict[str, int]:
+        """Counters for catalog I/O, for tests and diagnostics."""
+        return {
+            "full_catalog_fetches": self._full_catalog_fetches,
+            "graph_fetches": self._graph_fetches,
+            "select_queries": self._select_queries,
+        }
+
+    def fetch_ontologies(self) -> list[Ontology]:
+        self._full_catalog_fetches += 1
+        partition = self._active_partition()
+        result = dedupe_terminal_ontologies(
+            self._materialize_graphs(_list_named_graph_uris(partition.ontologies))
+        )
         logger.info("Loaded %d unique ontologies from in-memory store", len(result))
         return result
 

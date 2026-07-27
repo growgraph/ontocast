@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import unicodedata
+import warnings
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from contextvars import ContextVar
@@ -1058,7 +1059,16 @@ class RDFGraph(Graph):
         normalized_str = cls._coerce_invalid_nquads_typed_literals(normalized_str)
 
         g = cls()
-        g.parse(data=normalized_str, format="nquads")
+        # RDFLib 7.6's NQuadsParser still touches Dataset.default_context after
+        # that attribute was deprecated in favour of default_graph
+        # (RDFLib/rdflib#3409). Filter only that library-internal warning.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                category=DeprecationWarning,
+                message=r"Dataset\.default_context is deprecated.*",
+            )
+            g.parse(data=normalized_str, format="nquads")
         cls._bind_context_prefixes(g, jsonld_data)
         return g
 

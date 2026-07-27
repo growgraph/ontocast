@@ -31,9 +31,16 @@ def embedding_contract_help(*, backend: str = "vector store") -> str:
 
 
 def embedding_model_fingerprint(embedding_config: EmbeddingConfig) -> str:
+    """Identity of the vectors a config produces, stored alongside the collection.
+
+    Query/document prefixes belong here: they change the embedded text, so an index
+    built without them is not comparable to queries issued with them, and the mismatch
+    would otherwise show up only as quietly degraded retrieval.
+    """
     ec = embedding_config
     dense_part = f"dense:{ec.provider.value}:{ec.model_name}"
-    return f"{dense_part}|bm25={ec.bm25_model_name}"
+    affixes = f"|q={ec.query_prefix}|d={ec.document_prefix}"
+    return f"{dense_part}|bm25={ec.bm25_model_name}{affixes}"
 
 
 def embedding_fingerprint_matches(

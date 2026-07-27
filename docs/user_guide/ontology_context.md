@@ -44,18 +44,18 @@ Default path: per-window channel fusion → max-score IRI dedupe → global scor
 
 | Variable | Default | Role |
 |----------|---------|------|
-| `VECTOR_STORE_TOP_K` | `10` | Hits per channel per proposition window |
+| `VECTOR_STORE_TOP_K` | `20` | Hits per channel per proposition window |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | `550` | Global triple cap for context |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH` | `2` | BFS depth for hub seed expansion |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT` | `16` | Top seeds receiving full BFS budget |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH` | `3` | `rdfs:subClassOf` hops in schema shell |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | `24` | Per-entity BFS quota hint |
-| `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `max_score` | Default merge; `hybrid` / `rrf` are advanced opt-in |
+| `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `max_score` | Default merge; `sum_score` (rewards multi-window agreement) and `hybrid` are opt-in |
 | `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | `0` | Max seeds per ontology; `0` (default) uses global score order |
 | `ONTOLOGY_PATCH_SEEDS_PER_WINDOW` | `4` | Scales effective atom cap with proposition windows |
-| `ONTOLOGY_PATCH_MAX_ATOMS_BASE` | `32` | Floor for the effective atom cap |
-| `ONTOLOGY_PATCH_MAX_ATOMS` | `48` | Hard cap: `min(max_atoms, max(base, seeds_per_window × n_queries))` |
-| `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` | `0.18` | Empty patch when merged top score is below this |
+| `ONTOLOGY_PATCH_MAX_ATOMS_BASE` | `96` | Floor for the effective atom cap |
+| `ONTOLOGY_PATCH_MAX_ATOMS` | `96` | Hard cap: `min(max_atoms, max(base, seeds_per_window × n_queries))` |
+| `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` | `0.18` | Empty patch when the best per-window fused score is below this |
 | `ONTOLOGY_PATCH_MMR_LAMBDA` | `1.0` | `1.0` skips MMR (default); lower enables diversity rerank |
 
 Advanced (off by default): `ONTOLOGY_PATCH_PER_QUERY_*_SCORE_RATIO`, `ONTOLOGY_PATCH_MERGED_SCORE_RATIO`, hybrid tier-1/tier-2 (`MAX_ATOMS_TIER1`, `MIN_ENTITY_SCORE`).
@@ -90,22 +90,59 @@ cd ontocast
 bash -c 'set -a; source .env; set +a; uv run pytest test/test_retrieval_recall.py -v -s'
 ```
 
-Two numbers are reported. **Seed recall** is the share of cases whose expected term
-reached `atoms_final` — it scores vector search, cross-window merge, per-ontology
-round-robin, and the atom cap. **Snapshot recall** is the share whose expected term is
-*defined* in the returned graph — it additionally scores induced-subgraph expansion. A
-gap between them localises the loss to the graph stage.
+**Seed recall** covers vector search, cross-window merge, per-ontology round-robin, and
+the atom cap: the expected term reached `atoms_final`. **Snapshot recall** additionally
+covers induced-subgraph expansion: the term is *defined* in the returned graph. A gap
+between them localises the loss to the graph stage.
 
-Scale the run with `ONTOCAST_RECALL_ONTOLOGIES` and `ONTOCAST_RECALL_CASES`; catalog size
-matters most, because the atom cap does not grow with it. Point `ONTOCAST_RECALL_ROOT` at
-a Text2KGBench-style corpus (`a_ontologies/` + `b_gt_text/`) to use derived ground truth;
-without it, the in-repo anchor fixtures still run. The test skips when Qdrant is
-unreachable.
+Each is reported at two granularities. The **case** figures ask whether *any* expected
+term survived, and saturate as soon as cases carry several expected terms — a corpus can
+show 100% snapshot recall while under half its terms are actually present. The **TERM**
+figures count every expected term and are the numbers to compare configurations on.
+Treat differences under roughly one percentage point as run-to-run noise: approximate
+nearest-neighbour search is not bit-reproducible across index builds.
+
+Ground truth is supplied externally so the core stays domain-agnostic. Point
+`ONTOCAST_RECALL_CORPUS` at a prebuilt corpus directory:
+
+```text
+<corpus>/ontologies/*.ttl
+<corpus>/cases.jsonl     # {"id", "text", "expected_iris": [...], "ontology_iri"}
+```
+
+Case text is split into proposition windows exactly as production does, so multi-sentence
+passages issue several queries. `ontocast-validation/run/build_recall_corpus.py` builds a
+corpus in this layout from an ontology directory and document chunks.
+
+`ONTOCAST_RECALL_ROOT` additionally accepts a Text2KGBench-style corpus (`a_ontologies/` +
+`b_gt_text/`), scaled with `ONTOCAST_RECALL_ONTOLOGIES` and `ONTOCAST_RECALL_CASES`;
+catalog size matters most, because the atom cap does not grow with it. Without either, the
+in-repo anchor fixtures still run. The test skips when Qdrant is unreachable.
 
 Per-run metrics are also available in production on
 `state.retrieval_metrics["patch_retrieval"]`: `atoms_after_dedupe`, `atoms_final`,
 `seed_iris`, `seeds_by_ontology`, `snapshot_triple_count`, `snapshot_pruned_uri_count`,
 `snapshot_uri_components`.
+
+#### Catalog I/O
+
+Ensemble retrieval runs once per content unit, so how it reads the ontology catalog
+dominates its cost. It never materializes the whole catalog: the seeds' cross-ontology
+`rdfs:subClassOf` / `domain` / `range` references are resolved with targeted SPARQL
+SELECTs, and only the ontologies that survive that filter are then fetched as graphs.
+Backends without SPARQL (see [Triple Stores](triple_stores.md#custom-backends)) fall back
+to the full-catalog scan and return identical results, just more slowly.
+
+Three metrics report which path ran:
+
+| Key | Meaning |
+|---|---|
+| `catalog_access_mode` | `sparql`, or `full_fetch_fallback` when the backend has no SPARQL or a query failed |
+| `catalog_select_queries` | SELECTs issued (header catalog + reference hops) |
+| `catalog_graphs_fetched` | Ontology graphs materialized for the expansion step |
+
+A `full_fetch_fallback` on a Fuseki deployment means queries are failing — retrieval is
+degrading to slow rather than failing outright, which is worth investigating.
 
 ### `fixed_single_ontology`
 

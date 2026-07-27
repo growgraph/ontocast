@@ -22,8 +22,8 @@ from ontocast.agent.render_facts import render_facts
 from ontocast.api.tenancy_resolution import stores_use_tenancy_partitions
 from ontocast.config import Config, LLMProvider
 from ontocast.onto.content_unit import ContentUnit
-from ontocast.onto.enum import Status
-from ontocast.onto.ontology import Ontology
+from ontocast.onto.enum import OntologyAssemblyMode, Status
+from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.onto.unit_states import UnitFactsState
@@ -398,13 +398,15 @@ async def test_ingest_retrieve_micro_chunks_render_facts(
         f"(missing triples mentioning {FINANCE_ANCHOR_ENTITY_IRI!r})."
     )
 
-    snapshot = Ontology(
-        ontology_id=None,
+    snapshot = OntologySnapshot.from_graph(
+        stitched,
+        source_iris=[fin_onto.iri] if fin_onto.iri else [],
+        assembly_mode=OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE,
         title="Stitched patch context (manual finance test)",
-        description="Composite induced subgraph from vector-retrieved ontology atoms (ensemble over sentences).",
-        graph=stitched,
-        iri=fin_onto.iri,
-        current_domain=tools.config.tool_config.domain.current_domain,
+        description=(
+            "Composite induced subgraph from vector-retrieved ontology atoms "
+            "(ensemble over sentences)."
+        ),
     )
 
     unit = ContentUnit(

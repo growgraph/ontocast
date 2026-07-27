@@ -221,7 +221,7 @@ def test_reduce_ontology_units_merges_unit_graphs_without_aggregator() -> None:
 
 
 def test_reduce_ontology_units_creates_base_when_required() -> None:
-    tools = cast(ToolBox, ToolBox.__new__(ToolBox))
+    tools = ToolBox.__new__(ToolBox)
     tools.aggregator = EmbeddingBasedAggregator()
     delta_graph = RDFGraph()
     delta_graph.parse(

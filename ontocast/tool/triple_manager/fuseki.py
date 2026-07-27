@@ -7,6 +7,7 @@ and facts, with proper authentication and dataset management.
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from urllib.parse import quote, urlparse, urlunparse
 
 import httpx
@@ -15,6 +16,7 @@ from rdflib import Graph
 
 from ontocast.onto.constants import DEFAULT_DATASET, DEFAULT_ONTOLOGIES_DATASET
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_header import OntologyHeader
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.tenancy import (
     TENANCY_SEP,
@@ -23,7 +25,10 @@ from ontocast.onto.tenancy import (
 )
 from ontocast.tool.triple_manager.core import TripleStoreManagerWithAuth
 from ontocast.tool.triple_manager.util import (
+    LIST_NAMED_GRAPHS_QUERY,
+    ONTOLOGY_HEADER_QUERY,
     dedupe_terminal_ontologies,
+    headers_from_select_rows,
     ontology_from_named_graph,
 )
 
@@ -133,6 +138,10 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         # httpx.AsyncClient is bound to the loop it was created on).
         self._client: httpx.AsyncClient | None = None
         self._client_loop: asyncio.AbstractEventLoop | None = None
+
+        self._full_catalog_fetches = 0
+        self._graph_fetches = 0
+        self._select_queries = 0
 
     async def async_init(self) -> None:
         """Initialize configured Fuseki datasets explicitly.
@@ -484,54 +493,88 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                 # Restore original client
                 self._client = original_client
 
-    async def _fetch_ontologies_async(self) -> list[Ontology]:
-        """Fetch all ontologies from their corresponding named graphs.
-
-        This method discovers all ontologies in the Fuseki ontologies dataset and
-        fetches each one from its corresponding named graph. For versioned ontologies,
-        it returns only the latest version for each unique ontology IRI.
-
-        1. Discovery: List all named graphs (which may be versioned URIs)
-        2. Fetching: Retrieve each ontology from its named graph (in parallel)
-        3. Deduplication: For versioned ontologies, keep only the latest version
-
-        Returns:
-            list[Ontology]: List of the latest version of each ontology found.
-
-        Example:
-            >>> ontologies = await manager.fetch_ontologies()
-            >>> for onto in ontologies:
-            ...     print(f"Found ontology: {onto.iri} v{onto.version}")
-        """
-        client = await self._get_client()
-        sparql_url = f"{self._get_ontologies_dataset_url()}/sparql"
-
-        # Step 1: List all named graphs
-        list_query = """
-        SELECT DISTINCT ?g WHERE {
-          GRAPH ?g { ?s ?p ?o }
-        }
-        """
+    async def _sparql_select_rows(
+        self, client: httpx.AsyncClient, sparql_url: str, query: str
+    ) -> list[dict[str, str]]:
+        """POST a SPARQL SELECT and flatten its JSON bindings to lexical values."""
+        self._select_queries += 1
         response = await client.post(
             sparql_url,
-            data={"query": list_query, "format": "application/sparql-results+json"},
+            data={"query": query, "format": "application/sparql-results+json"},
         )
-        if response.status_code != 200:
-            logger.error(f"Failed to list graphs from Fuseki: {response.text}")
+        response.raise_for_status()
+        return [
+            {var: binding[var]["value"] for var in binding}
+            for binding in response.json().get("results", {}).get("bindings", [])
+        ]
+
+    def supports_sparql_select(self) -> bool:
+        return True
+
+    async def aselect(
+        self, query: str, *, use_ontologies_dataset: bool = True
+    ) -> list[dict[str, str]]:
+        """Run a SPARQL SELECT against the active dataset.
+
+        Tenancy is implicit: :meth:`update_tenancy` rewrites the dataset names this
+        resolves through.
+        """
+        dataset_url = (
+            self._get_ontologies_dataset_url()
+            if use_ontologies_dataset
+            else self._get_dataset_url()
+        )
+        client = await self._get_client()
+        return await self._sparql_select_rows(client, f"{dataset_url}/sparql", query)
+
+    async def afetch_ontology_catalog(self) -> list[OntologyHeader]:
+        """Read one header per stored ontology version via a single SELECT."""
+        rows = await self.aselect(ONTOLOGY_HEADER_QUERY)
+        return headers_from_select_rows(rows)
+
+    async def afetch_ontologies_by_iri(self, iris: Sequence[str]) -> list[Ontology]:
+        """Fetch only the named graphs backing ``iris``, skipping the rest."""
+        if not iris:
+            return await self.afetch_ontologies()
+        wanted = set(iris)
+        headers = dedupe_terminal_ontologies(await self.afetch_ontology_catalog())
+        graph_uris = [header.graph_uri for header in headers if header.iri in wanted]
+        if not graph_uris:
             return []
+        client = await self._get_client()
+        return await self._fetch_ontology_graphs(client, graph_uris)
 
-        results = response.json()
-        graph_uris = []
-        for binding in results.get("results", {}).get("bindings", []):
-            graph_uri = binding["g"]["value"]
-            graph_uris.append(graph_uri)
+    def catalog_io_stats(self) -> dict[str, int]:
+        """Counters for catalog I/O, for tests and diagnostics."""
+        return {
+            "full_catalog_fetches": self._full_catalog_fetches,
+            "graph_fetches": self._graph_fetches,
+            "select_queries": self._select_queries,
+        }
 
-        logger.debug(f"Found {len(graph_uris)} named graphs: {graph_uris}")
+    async def _list_ontology_graph_uris(self, client: httpx.AsyncClient) -> list[str]:
+        """List every named graph in the ontologies dataset."""
+        sparql_url = f"{self._get_ontologies_dataset_url()}/sparql"
+        try:
+            rows = await self._sparql_select_rows(
+                client, sparql_url, LIST_NAMED_GRAPHS_QUERY
+            )
+        except httpx.HTTPError as exc:
+            logger.error("Failed to list graphs from Fuseki: %s", exc)
+            return []
+        graph_uris = [row["g"] for row in rows if "g" in row]
+        logger.debug("Found %d named graphs: %s", len(graph_uris), graph_uris)
+        return graph_uris
 
-        # Step 2: Fetch each ontology from its corresponding named graph (in parallel)
+    async def _fetch_ontology_graphs(
+        self, client: httpx.AsyncClient, graph_uris: Sequence[str]
+    ) -> list[Ontology]:
+        """Materialize the named graphs in ``graph_uris`` in parallel."""
+
         async def fetch_single_ontology(graph_uri: str) -> Ontology | None:
             """Fetch a single ontology from a graph URI."""
             try:
+                self._graph_fetches += 1
                 graph = RDFGraph()
                 # URL encode the graph URI to handle special characters like #
                 encoded_graph_uri = quote(str(graph_uri), safe="/:")
@@ -551,19 +594,43 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                 logger.warning(f"Error fetching ontology from {graph_uri}: {e}")
             return None
 
-        # Fetch all ontologies in parallel
-        all_ontologies_results = await asyncio.gather(
+        results = await asyncio.gather(
             *[fetch_single_ontology(uri) for uri in graph_uris], return_exceptions=True
         )
 
-        # Filter out None and exceptions
-        all_ontologies: list[Ontology] = []
-        for result in all_ontologies_results:
+        ontologies: list[Ontology] = []
+        for result in results:
             if isinstance(result, Exception):
                 logger.warning(f"Exception fetching ontology: {result}")
             elif isinstance(result, Ontology):
-                all_ontologies.append(result)
+                ontologies.append(result)
+        return ontologies
 
+    async def _fetch_ontologies_async(self) -> list[Ontology]:
+        """Fetch all ontologies from their corresponding named graphs.
+
+        This method discovers all ontologies in the Fuseki ontologies dataset and
+        fetches each one from its corresponding named graph. For versioned ontologies,
+        it returns only the latest version for each unique ontology IRI.
+
+        1. Discovery: List all named graphs (which may be versioned URIs)
+        2. Fetching: Retrieve each ontology from its named graph (in parallel)
+        3. Deduplication: For versioned ontologies, keep only the latest version
+
+        Returns:
+            list[Ontology]: List of the latest version of each ontology found.
+
+        Example:
+            >>> ontologies = await manager.fetch_ontologies()
+            >>> for onto in ontologies:
+            ...     print(f"Found ontology: {onto.iri} v{onto.version}")
+        """
+        self._full_catalog_fetches += 1
+        client = await self._get_client()
+        graph_uris = await self._list_ontology_graph_uris(client)
+        if not graph_uris:
+            return []
+        all_ontologies = await self._fetch_ontology_graphs(client, graph_uris)
         ontologies = dedupe_terminal_ontologies(all_ontologies)
         logger.info(
             "Successfully loaded %d unique ontologies from Fuseki", len(ontologies)

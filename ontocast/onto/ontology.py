@@ -27,6 +27,55 @@ SemanticVersion = Annotated[
 ]
 
 
+def normalize_semantic_version(version: str) -> str:
+    """Normalize a version string to semantic versioning format.
+
+    Handles various version formats and converts them to MAJOR.MINOR.PATCH:
+    - "3.5.1" -> "3.5.1" (already valid)
+    - "3.5" -> "3.5.0" (adds missing PATCH)
+    - "3" -> "3.0.0" (adds missing MINOR and PATCH)
+    - Invalid formats -> "1.0.0"
+
+    Args:
+        version: The version string to normalize.
+
+    Returns:
+        str: A valid semantic version string (MAJOR.MINOR.PATCH).
+    """
+    # Already valid semantic version
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)$", version)
+    if match:
+        return version
+
+    # Try to parse as MAJOR.MINOR (missing PATCH)
+    match = re.match(r"^(\d+)\.(\d+)$", version)
+    if match:
+        major, minor = match.groups()
+        normalized = f"{major}.{minor}.0"
+        logger.info(
+            f"Version '{version}' missing PATCH component, normalized to '{normalized}'"
+        )
+        return normalized
+
+    # Try to parse as just MAJOR (missing MINOR and PATCH)
+    match = re.match(r"^(\d+)$", version)
+    if match:
+        major = match.group(1)
+        normalized = f"{major}.0.0"
+        logger.info(
+            f"Version '{version}' missing MINOR and PATCH components, "
+            f"normalized to '{normalized}'"
+        )
+        return normalized
+
+    # Invalid format, use default
+    logger.warning(
+        f"Version '{version}' does not match any recognized format, "
+        f"normalizing to '1.0.0'"
+    )
+    return "1.0.0"
+
+
 class OntologyProperties(BaseModel):
     """Properties of an ontology.
 
@@ -601,51 +650,8 @@ class Ontology(OntologyPropertiesWithLineage):
                 self.hash = None
 
     def _normalize_version(self, version: str) -> str:
-        """Normalize version string to semantic versioning format.
-
-        Handles various version formats and converts them to MAJOR.MINOR.PATCH:
-        - "3.5.1" -> "3.5.1" (already valid)
-        - "3.5" -> "3.5.0" (adds missing PATCH)
-        - "3" -> "3.0.0" (adds missing MINOR and PATCH)
-        - Invalid formats -> "1.0.0"
-
-        Args:
-            version: The version string to normalize
-
-        Returns:
-            A valid semantic version string (MAJOR.MINOR.PATCH)
-        """
-        # Already valid semantic version
-        match = re.match(r"^(\d+)\.(\d+)\.(\d+)$", version)
-        if match:
-            return version
-
-        # Try to parse as MAJOR.MINOR (missing PATCH)
-        match = re.match(r"^(\d+)\.(\d+)$", version)
-        if match:
-            major, minor = match.groups()
-            normalized = f"{major}.{minor}.0"
-            logger.info(
-                f"Version '{version}' missing PATCH component, normalized to '{normalized}'"
-            )
-            return normalized
-
-        # Try to parse as just MAJOR (missing MINOR and PATCH)
-        match = re.match(r"^(\d+)$", version)
-        if match:
-            major = match.group(1)
-            normalized = f"{major}.0.0"
-            logger.info(
-                f"Version '{version}' missing MINOR and PATCH components, normalized to '{normalized}'"
-            )
-            return normalized
-
-        # Invalid format, use default
-        logger.warning(
-            f"Version '{version}' does not match any recognized format, "
-            f"normalizing to '1.0.0'"
-        )
-        return "1.0.0"
+        """Normalize a version string to semantic versioning format."""
+        return normalize_semantic_version(version)
 
     def _analyze_version_increment_type(
         self, updates: list[GraphUpdate]

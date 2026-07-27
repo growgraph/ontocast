@@ -186,7 +186,24 @@ EMBEDDING_MODEL_NAME=paraphrase-multilingual-MiniLM-L12-v2
 # EMBEDDING_API_KEY=
 # EMBEDDING_BASE_URL=http://localhost:11434
 EMBEDDING_DIMENSION=384
+# EMBEDDING_QUERY_PREFIX=
+# EMBEDDING_DOCUMENT_PREFIX=
 ```
+
+**Query/document prefixes.** Asymmetric retrieval models are trained with a distinct
+instruction on each side and lose accuracy when query and document are encoded
+identically. The default paraphrase model is symmetric and wants neither prefix.
+
+| Model family | `EMBEDDING_QUERY_PREFIX` | `EMBEDDING_DOCUMENT_PREFIX` |
+|---|---|---|
+| `paraphrase-*` (default) | *(empty)* | *(empty)* |
+| `BAAI/bge-*` | `Represent this sentence for searching relevant passages: ` | *(empty)* |
+| `intfloat/e5-*` | `query: ` | `passage: ` |
+
+Both prefixes are part of the stored embedding contract, so changing either invalidates
+an existing index: rerun with `--wipe-vector-store` (or `VECTOR_STORE_WIPE_ON_INIT=true`).
+A mismatch fails loudly with `EmbeddingContractMismatchError` rather than quietly
+degrading retrieval.
 
 ### Qdrant
 
@@ -204,7 +221,7 @@ QDRANT_USE_GRPC=false
 Applies to both Qdrant and LanceDB:
 
 ```bash
-VECTOR_STORE_TOP_K=10
+VECTOR_STORE_TOP_K=20
 VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH=2
 VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=550
 VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
@@ -222,7 +239,7 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 
 | Variable | Default | Role |
 |----------|---------|------|
-| `VECTOR_STORE_TOP_K` | `10` | Vector hits per channel per proposition window |
+| `VECTOR_STORE_TOP_K` | `20` | Vector hits per channel per proposition window |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH` | `2` | BFS depth for hub seed expansion |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT` | `16` | Top seeds that receive full BFS budget (`0` = all seeds) |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH` | `3` | `rdfs:subClassOf` hops in the schema shell |
@@ -260,8 +277,8 @@ Post-vector scoring and capping (backend-agnostic; prefix `ONTOLOGY_PATCH_`). Ap
 ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE=max_score
 ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA=0
 ONTOLOGY_PATCH_SEEDS_PER_WINDOW=4
-ONTOLOGY_PATCH_MAX_ATOMS_BASE=32
-ONTOLOGY_PATCH_MAX_ATOMS=48
+ONTOLOGY_PATCH_MAX_ATOMS_BASE=96
+ONTOLOGY_PATCH_MAX_ATOMS=96
 ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE=0.18
 ONTOLOGY_PATCH_MMR_LAMBDA=1.0
 # Advanced (off by default):
@@ -276,11 +293,11 @@ ONTOLOGY_PATCH_MMR_LAMBDA=1.0
 
 | Variable | Default | Role |
 |----------|---------|------|
-| `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `max_score` | Default merge; `hybrid` (tier-1 + tier-2) and `rrf` are advanced |
+| `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `max_score` | Default merge; `sum_score` sums per-window scores; `hybrid` is tier-1 + tier-2 |
 | `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | `0` | Max seeds per ontology in round-robin fill; `0` (default) means global score order, which measured better on both recall and precision |
 | `ONTOLOGY_PATCH_SEEDS_PER_WINDOW` | `4` | Scales effective cap with proposition window count |
-| `ONTOLOGY_PATCH_MAX_ATOMS_BASE` | `32` | Floor for effective atom cap; below the candidate pool it silently clips seeds on multi-ontology catalogs |
-| `ONTOLOGY_PATCH_MAX_ATOMS` | `48` | Hard cap: `min(max_atoms, max(base, seeds_per_window × n_queries))` (`0` = unlimited) |
+| `ONTOLOGY_PATCH_MAX_ATOMS_BASE` | `96` | Floor for effective atom cap; below the candidate pool it silently clips seeds on multi-ontology catalogs |
+| `ONTOLOGY_PATCH_MAX_ATOMS` | `96` | Hard cap: `min(max_atoms, max(base, seeds_per_window × n_queries))` (`0` = unlimited) |
 | `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` | `0.18` | After cross-window merge, return empty patch if top score is below this (`0` disables) |
 | `ONTOLOGY_PATCH_MMR_LAMBDA` | `1.0` | `1.0` skips MMR; lower values enable diversity rerank |
 | `ONTOLOGY_PATCH_PER_QUERY_CORE_SCORE_RATIO` | `0.0` | Advanced: per-window core relative floor (`0` disables) |

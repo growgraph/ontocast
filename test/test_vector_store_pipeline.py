@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import PrivateAttr
+from pydantic import Field, PrivateAttr
 from qdrant_client.http import models as qdrant_models
 
 from ontocast.config import (
@@ -21,6 +21,8 @@ from ontocast.config import (
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.sparql import SPARQLTool
+from ontocast.tool.triple_manager.in_memory import InMemoryTripleStoreManager
+from ontocast.tool.triple_manager.mock import MockTripleStoreManager
 from ontocast.tool.vector_store.atomizer import (
     STANDARD_VOCABULARY_NAMESPACE_PREFIXES,
     GraphAtomizer,
@@ -35,9 +37,13 @@ from ontocast.tool.vector_store.core import (
 from ontocast.tool.vector_store.embedding import EmbeddingTool, FastembedBm25SparseTool
 from ontocast.tool.vector_store.patch_retriever import (
     OntologyPatchRetriever,
+    _aexpand_ontology_iris,
+    _aexpand_ontology_iris_by_reference,
     _expand_ontology_iris_by_reference,
+    _filter_hits_by_relative_floor,
     _merge_hits_across_queries_hybrid,
     _merge_hits_across_queries_max_score,
+    _merge_hits_across_queries_sum_score,
     _mmr_rerank,
     _select_hits_round_robin_by_ontology,
 )
@@ -54,9 +60,11 @@ class CountingEmbeddingTool(EmbeddingTool):
 
     calls: int = 0
     truncate_by_one: bool = False
+    seen_texts: list[list[str]] = Field(default_factory=list)
 
     def _embed_unlocked(self, texts: list[str]) -> list[list[float]]:
         self.calls += 1
+        self.seen_texts.append(list(texts))
         vectors: list[list[float]] = []
         for text in texts:
             digest = render_text_hash(text, digits=None)
@@ -181,7 +189,12 @@ class StubSPARQLTool(SPARQLTool):
         self._last_ontology_hash_filters: dict[str, set[str]] | None = None
         self._last_max_total_triples: int | None = None
         self._last_estimated_triples_per_query: int | None = None
+        self._last_ontologies: list[Ontology] | None = None
         self.induced_subgraph_calls: int = 0
+
+    @property
+    def last_ontologies(self) -> list[Ontology] | None:
+        return self._last_ontologies
 
     @property
     def last_entity_uris(self) -> list[str]:
@@ -224,8 +237,10 @@ class StubSPARQLTool(SPARQLTool):
         ontology_hash_filters: dict[str, set[str]] | None = None,
         hub_seed_count: int = 8,
         ancestor_closure_depth: int = 3,
+        ontologies: list[Ontology] | None = None,
     ) -> RDFGraph:
         del depth, hub_seed_count, ancestor_closure_depth
+        self._last_ontologies = ontologies
         self.induced_subgraph_calls += 1
         self._last_entity_uris = entity_uris
         self._last_entity_relevance = entity_relevance
@@ -1516,20 +1531,44 @@ def test_hybrid_merge_tier2_adds_per_ontology_coverage() -> None:
     assert f"{perov}#P1" in iris
 
 
-def test_max_score_merge_beats_rrf_frequency_bias() -> None:
-    """Entity with one strong window outranks entity appearing weakly in many windows."""
-    weak_repeated = [
+def _weak_repeated(count: int) -> list[OntologySearchHit]:
+    return [
         OntologySearchHit(
             atom=_scored_atom(f"w{i}", "Repeated", 0.31 + i * 0.01).atom,
             score=0.31 + i * 0.01,
         )
-        for i in range(3)
+        for i in range(count)
     ]
-    strong_once = [
-        OntologySearchHit(atom=_scored_atom("s", "Strong", 1.0).atom, score=1.0),
+
+
+_STRONG_ONCE = [
+    OntologySearchHit(atom=_scored_atom("s", "Strong", 1.0).atom, score=1.0)
+]
+
+
+def test_max_score_merge_ignores_window_frequency() -> None:
+    """Entity with one strong window outranks entity appearing weakly in many windows."""
+    merged = _merge_hits_across_queries_max_score(_weak_repeated(4) + _STRONG_ONCE)
+    assert merged[0].atom.iri.endswith("#Strong")
+
+
+def test_sum_score_merge_rewards_agreement_across_windows() -> None:
+    """The same input flips under sum: four weak windows outweigh one strong one."""
+    merged = _merge_hits_across_queries_sum_score(_weak_repeated(4) + _STRONG_ONCE)
+    assert merged[0].atom.iri.endswith("#Repeated")
+    assert merged[0].score == pytest.approx(0.31 + 0.32 + 0.33 + 0.34)
+
+
+def test_sum_score_merge_matches_max_for_a_single_window() -> None:
+    """With one window per entity the two modes must be indistinguishable."""
+    hits = [
+        _scored_atom("a", "A", 0.8),
+        _scored_atom("b", "B", 0.5),
     ]
-    max_score = _merge_hits_across_queries_max_score(weak_repeated + strong_once)
-    assert max_score[0].atom.iri.endswith("#Strong")
+    by_max = _merge_hits_across_queries_max_score(hits)
+    by_sum = _merge_hits_across_queries_sum_score(hits)
+    assert [h.atom.iri for h in by_max] == [h.atom.iri for h in by_sum]
+    assert [h.score for h in by_max] == [h.score for h in by_sum]
 
 
 def test_expand_ontology_iris_by_reference_includes_cross_ontology_parent() -> None:
@@ -1570,39 +1609,246 @@ def test_expand_ontology_iris_by_reference_includes_cross_ontology_parent() -> N
     assert perov_iri in expanded
 
 
+_MATSCI_IRI = "https://growgraph.dev/ontologies/matsci"
+_PEROV_IRI = "https://growgraph.dev/ontologies/perovskitemat"
+
+
+def _cross_ontology_fixture(*, dangling: bool) -> list[Ontology]:
+    """Two ontologies linked by a cross-ontology ``rdfs:subClassOf``.
+
+    When ``dangling`` the parent class is *not* declared in the perovskite graph,
+    so only namespace containment can attribute it.
+    """
+    parent = "perov:PerovskiteNanocrystal"
+    matsci_graph = RDFGraph._from_turtle_str(
+        f"""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix matsci: <{_MATSCI_IRI}#> .
+        @prefix perov: <{_PEROV_IRI}#> .
+
+        <{_MATSCI_IRI}> a owl:Ontology .
+        matsci:PerovskiteQD a owl:Class ;
+            rdfs:subClassOf {parent} .
+        """
+    )
+    declaration = (
+        ""
+        if dangling
+        else """
+        perov:PerovskiteNanocrystal a owl:Class ;
+            rdfs:label "Perovskite nanocrystal" .
+        """
+    )
+    perov_graph = RDFGraph._from_turtle_str(
+        f"""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix perov: <{_PEROV_IRI}#> .
+
+        <{_PEROV_IRI}> a owl:Ontology ;
+            rdfs:label "Perovskite materials" .
+{declaration}
+        """
+    )
+    return [
+        Ontology(iri=_MATSCI_IRI, graph=matsci_graph, title="matsci"),
+        Ontology(iri=_PEROV_IRI, graph=perov_graph, title="perov"),
+    ]
+
+
 @pytest.mark.anyio
-async def test_aretrieve_ensemble_rrf_mode_regression() -> None:
+async def test_sparql_expansion_matches_in_python_expansion() -> None:
+    """The SPARQL path must reach the same ontologies as the catalog scan."""
+    manager = InMemoryTripleStoreManager()
+    ontologies = _cross_ontology_fixture(dangling=False)
+    for ontology in ontologies:
+        manager.serialize(ontology)
+
+    seeds = [f"{_MATSCI_IRI}#PerovskiteQD"]
+    expanded, metrics = await _aexpand_ontology_iris_by_reference(
+        manager, seeds, [_MATSCI_IRI]
+    )
+
+    assert _PEROV_IRI in expanded
+    assert expanded == _expand_ontology_iris_by_reference(
+        seeds, [_MATSCI_IRI], ontologies
+    )
+    assert metrics["catalog_access_mode"] == "sparql"
+    assert metrics["catalog_graphs_fetched"] == 0
+    # No ontology graph was materialized to answer the question.
+    assert manager.catalog_io_stats()["full_catalog_fetches"] == 0
+
+
+@pytest.mark.anyio
+async def test_sparql_expansion_resolves_dangling_reference() -> None:
+    """A reference no graph declares is still attributed by namespace containment.
+
+    This is what regresses if the two hops are ever collapsed into pure graph
+    membership.
+    """
+    manager = InMemoryTripleStoreManager()
+    for ontology in _cross_ontology_fixture(dangling=True):
+        manager.serialize(ontology)
+
+    expanded, _ = await _aexpand_ontology_iris_by_reference(
+        manager, [f"{_MATSCI_IRI}#PerovskiteQD"], [_MATSCI_IRI]
+    )
+    assert _PEROV_IRI in expanded
+
+
+@pytest.mark.anyio
+async def test_expansion_falls_back_when_backend_lacks_sparql() -> None:
+    """A backend without SPARQL yields identical IRIs via the catalog path."""
+    ontologies = _cross_ontology_fixture(dangling=False)
+    sparql_manager = InMemoryTripleStoreManager()
+    for ontology in ontologies:
+        sparql_manager.serialize(ontology)
+
+    mock_manager = MockTripleStoreManager()
+    mock_manager.ontologies = list(ontologies)
+    assert mock_manager.supports_sparql_select() is False
+
+    seeds = [f"{_MATSCI_IRI}#PerovskiteQD"]
+    sparql_iris, _, _ = await _aexpand_ontology_iris(
+        sparql_manager, seeds, [_MATSCI_IRI]
+    )
+    fallback_iris, catalog, metrics = await _aexpand_ontology_iris(
+        mock_manager, seeds, [_MATSCI_IRI]
+    )
+
+    assert fallback_iris == sparql_iris
+    assert metrics["catalog_access_mode"] == "full_fetch_fallback"
+    # The fallback hands its catalog back so the caller need not fetch it again.
+    assert catalog is not None
+
+
+@pytest.mark.anyio
+async def test_expansion_falls_back_when_select_raises() -> None:
+    """A failing query degrades to slow retrieval rather than failing the unit."""
+
+    class BrokenSelectManager(InMemoryTripleStoreManager):
+        async def aselect(self, query, *, use_ontologies_dataset=True):
+            raise RuntimeError("backend unavailable")
+
+    manager = BrokenSelectManager()
+    for ontology in _cross_ontology_fixture(dangling=False):
+        manager.serialize(ontology)
+
+    expanded, catalog, metrics = await _aexpand_ontology_iris(
+        manager, [f"{_MATSCI_IRI}#PerovskiteQD"], [_MATSCI_IRI]
+    )
+    assert _PEROV_IRI in expanded
+    assert metrics["catalog_access_mode"] == "full_fetch_fallback"
+    assert catalog is not None
+
+
+@pytest.mark.anyio
+async def test_ensemble_fanout_never_fetches_full_catalog() -> None:
+    """Per-unit retrieval must not re-materialize the catalog once per unit.
+
+    Guards the regression this change fixes: two full fetches per call, once per
+    content unit.
+    """
+    manager = InMemoryTripleStoreManager()
+    for ontology in _cross_ontology_fixture(dangling=False):
+        manager.serialize(ontology)
+
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
         store_config=VectorStoreConfig(embedding_batch_size=2),
         qdrant_config=QdrantConfig(upsert_batch_size=2),
         embedding=embedding,
     )
-    vector_store.set_hits_by_query(
+    vector_store.set_atoms(
         [
-            _channel_hits(core_hits=[_scored_atom("a", "A", 0.95)]),
-            _channel_hits(core_hits=[_scored_atom("a", "A", 0.94)]),
-            _channel_hits(core_hits=[_scored_atom("a", "A", 0.93)]),
-            _channel_hits(core_hits=[_scored_atom("b", "B", 0.99)]),
+            GraphAtom(
+                atom_id="a1",
+                ontology_iri=_MATSCI_IRI,
+                ontology_id="matsci",
+                iri=f"{_MATSCI_IRI}#PerovskiteQD",
+                entity_role="resource",
+                core_representation="perovskite quantum dot",
+                neighborhood_representation="perovskite quantum dot nanocrystal",
+            )
         ]
     )
-    sparql_tool = StubSPARQLTool(triple_store_manager=None)
     retriever = OntologyPatchRetriever(
         vector_store=vector_store,
-        sparql_tool=sparql_tool,
-        patch=PatchRetrievalConfig(
-            cross_query_merge_mode=CrossQueryMergeMode.RRF,
-            per_query_core_score_ratio=0.0,
-            min_merged_max_score=0.0,
-            merged_score_ratio=0.0,
-            mmr_lambda=1.0,
-            max_atoms=2,
-        ),
+        sparql_tool=SPARQLTool(triple_store_manager=manager),
     )
-    await retriever.aretrieve_ensemble(
-        queries=["q1", "q2", "q3", "q4"], top_k=1, expand_sparql=True
+
+    for _ in range(5):
+        await retriever.aretrieve_ensemble(
+            queries=["perovskite"], top_k=2, expand_sparql=True
+        )
+
+    stats = manager.catalog_io_stats()
+    assert stats["full_catalog_fetches"] == 0
+    # Only the two ontologies actually referenced are materialized per call.
+    assert stats["graph_fetches"] <= 5 * 2
+    assert retriever.last_retrieval_metrics["catalog_access_mode"] == "sparql"
+
+
+def test_embedding_prefixes_separate_query_and_document_encoding() -> None:
+    """Asymmetric models need distinct instructions on each side of the comparison."""
+    embedding = CountingEmbeddingTool(
+        config=EmbeddingConfig(
+            dimension=8,
+            query_prefix="query: ",
+            document_prefix="passage: ",
+        )
     )
-    assert sparql_tool.last_entity_uris[0].endswith("#A")
+    embedding.embed_query(["what is a perovskite"])
+    embedding.embed(["a perovskite is a crystal structure"])
+
+    assert embedding.seen_texts == [
+        ["query: what is a perovskite"],
+        ["passage: a perovskite is a crystal structure"],
+    ]
+
+
+def test_embedding_prefixes_default_to_symmetric_encoding() -> None:
+    """Empty prefixes must leave text untouched on both sides."""
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    embedding.embed_query(["abc"])
+    embedding.embed(["abc"])
+    assert embedding.seen_texts == [["abc"], ["abc"]]
+
+
+def test_relative_floor_disabled_keeps_negative_scores() -> None:
+    """A ratio of 0 is documented as "disables"; it must not act as a floor of 0.0."""
+    hits = [_scored_atom("a", "A", 0.4), _scored_atom("b", "B", -0.1)]
+    assert (
+        _filter_hits_by_relative_floor(hits, score_ratio=0.0, min_query_best_score=0.0)
+        == hits
+    )
+
+
+def test_relative_floor_keeps_best_hit_when_scores_are_negative() -> None:
+    """Qdrant cosine can return negative scores; the best hit must always survive."""
+    hits = [_scored_atom("a", "A", -0.2), _scored_atom("b", "B", -0.9)]
+    kept = _filter_hits_by_relative_floor(
+        hits, score_ratio=0.8, min_query_best_score=0.0
+    )
+    assert [hit.atom.atom_id for hit in kept] == ["a"]
+
+
+def test_relative_floor_matches_multiplicative_form_when_positive() -> None:
+    """The sign-safe form must not change behaviour on the ordinary positive path.
+
+    Scores stay off the ``best * ratio`` boundary: both forms land there within a float
+    ulp of each other, so a test pinned to it would assert rounding, not semantics.
+    """
+    hits = [
+        _scored_atom("a", "A", 0.8),  # best
+        _scored_atom("b", "B", 0.70),  # above the 0.64 floor
+        _scored_atom("c", "C", 0.50),  # below it
+    ]
+    kept = _filter_hits_by_relative_floor(
+        hits, score_ratio=0.8, min_query_best_score=0.0
+    )
+    assert [hit.atom.atom_id for hit in kept] == ["a", "b"]
 
 
 def test_effective_max_atoms_scales_with_windows() -> None:

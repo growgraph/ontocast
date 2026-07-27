@@ -15,9 +15,13 @@ from rdflib.namespace import RDFS
 
 from ontocast.config import CrossQueryMergeMode, PatchRetrievalConfig, VectorStoreConfig
 from ontocast.onto.constants import COMMON_PREFIXES
+from ontocast.onto.iri_policy import as_sparql_iriref
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_header import OntologyHeader
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.onto import Tool
+from ontocast.tool.triple_manager.core import TripleStoreManager
+from ontocast.tool.triple_manager.util import dedupe_terminal_ontologies
 from ontocast.tool.vector_store.core import (
     GraphAtom,
     OntologySearchHit,
@@ -33,6 +37,10 @@ from ontocast.tool.vector_store.util import (
 logger = logging.getLogger(__name__)
 
 _STRUCTURAL_REFERENCE_PREDICATES = frozenset({RDFS.subClassOf, RDFS.domain, RDFS.range})
+
+# Cap on terms per SPARQL ``VALUES`` clause. Seed counts are already bounded by
+# the retrieval config; this keeps a runaway list from becoming one huge query.
+_MAX_VALUES_TERMS = 128
 
 
 def _bind_common_vocab_prefixes(graph: RDFGraph) -> None:
@@ -81,7 +89,15 @@ def _filter_hits_by_relative_floor(
     score_ratio: float,
     min_query_best_score: float,
 ) -> list[OntologySearchHit]:
-    """Relative score gating within one channel/query hit list."""
+    """Relative score gating within one channel/query hit list.
+
+    The floor is expressed as a distance below the best score rather than as
+    ``best * score_ratio``. The multiplicative form is equivalent for positive scores but
+    inverts once ``best`` is negative, which Qdrant cosine can return: at ``best = -0.2``
+    it puts the floor at ``-0.16``, *above* the best hit, so the channel returns nothing.
+    A ratio of 0 also has to short-circuit — otherwise the documented "0 disables" default
+    computes a floor of exactly 0.0 and silently drops every negative-scoring hit.
+    """
     if score_ratio < 0.0 or score_ratio > 1.0:
         raise ValueError("score_ratio must be in [0, 1]")
     if not hits:
@@ -89,7 +105,9 @@ def _filter_hits_by_relative_floor(
     best = max(h.score for h in hits)
     if min_query_best_score > 0.0 and best < min_query_best_score:
         return []
-    floor = best * score_ratio
+    if score_ratio <= 0.0:
+        return list(hits)
+    floor = best - ((1.0 - score_ratio) * abs(best))
     return [hit for hit in hits if hit.score >= floor]
 
 
@@ -126,6 +144,39 @@ def _merge_hits_across_queries_max_score(
     best_by_iri = _best_hit_by_entity_iri(collected)
     return sorted(
         best_by_iri.values(),
+        key=lambda hit: (hit.score, hit.atom.iri or ""),
+        reverse=True,
+    )
+
+
+def _merge_hits_across_queries_sum_score(
+    collected: list[OntologySearchHit],
+) -> list[OntologySearchHit]:
+    """Sum per-window fused scores per entity IRI, so corroboration counts.
+
+    Under max-score an entity ranked second in eight windows loses to one ranked first in
+    a single window, discarding the agreement between windows. Summing rewards a term the
+    whole passage keeps pointing at. Scores here are unbounded in the window count, so
+    absolute thresholds must not be applied to them (see ``_filter_and_merge_patch_hits``,
+    which gates on per-window scores instead).
+    """
+    total_by_iri: dict[str, float] = defaultdict(float)
+    best_by_iri: dict[str, OntologySearchHit] = {}
+    for hit in collected:
+        iri = hit.atom.iri
+        if not iri:
+            continue
+        total_by_iri[iri] += hit.score
+        previous = best_by_iri.get(iri)
+        if previous is None or hit.score > previous.score:
+            best_by_iri[iri] = hit
+
+    merged: list[OntologySearchHit] = []
+    for iri, total in total_by_iri.items():
+        atom = best_by_iri[iri].atom.model_copy(update={"score": total})
+        merged.append(OntologySearchHit(atom=atom, score=total))
+    return sorted(
+        merged,
         key=lambda hit: (hit.score, hit.atom.iri or ""),
         reverse=True,
     )
@@ -265,21 +316,12 @@ def _merge_hits_across_queries(
     min_entity_score: float,
     max_atoms_total: int,
 ) -> list[OntologySearchHit]:
-    if merge_mode == CrossQueryMergeMode.RRF:
-        fused = rank_fuse_channel_hits(
-            collected,
-            [],
-            [],
-            core_weight=1.0,
-            neighborhood_weight=0.0,
-            bm25_weight=0.0,
-            limit=max(len(collected), 1),
+    if merge_mode in (CrossQueryMergeMode.MAX_SCORE, CrossQueryMergeMode.SUM_SCORE):
+        merged = (
+            _merge_hits_across_queries_max_score(collected)
+            if merge_mode == CrossQueryMergeMode.MAX_SCORE
+            else _merge_hits_across_queries_sum_score(collected)
         )
-        if max_atoms_total > 0:
-            return fused[:max_atoms_total]
-        return fused
-    if merge_mode == CrossQueryMergeMode.MAX_SCORE:
-        merged = _merge_hits_across_queries_max_score(collected)
         if max_atoms_total > 0:
             return _select_hits_round_robin_by_ontology(
                 merged,
@@ -368,6 +410,14 @@ def _filter_and_merge_patch_hits(
     if not collected:
         return []
 
+    # Gate on the best *per-window* fused score, before the cross-window merge. Under
+    # max-score merging the merged top score is that same number, so this is unchanged;
+    # under sum-score merging the merged total grows with window count and an absolute
+    # threshold against it would be meaningless.
+    best_window_score = max(hit.score for hit in collected)
+    if min_merged_max_score > 0.0 and best_window_score < min_merged_max_score:
+        return []
+
     merged_hits = _merge_hits_across_queries(
         collected,
         merge_mode=patch_config.cross_query_merge_mode,
@@ -377,10 +427,6 @@ def _filter_and_merge_patch_hits(
         max_atoms_total=max_atoms_total,
     )
     if not merged_hits:
-        return []
-
-    merged_max = merged_hits[0].score
-    if min_merged_max_score > 0.0 and merged_max < min_merged_max_score:
         return []
 
     out: list[GraphAtom] = []
@@ -441,6 +487,245 @@ def _expand_ontology_iris_by_reference(
             expanded.add(owner)
 
     return sorted(expanded)
+
+
+def _namespace_candidates(headers: Iterable[OntologyHeader]) -> list[tuple[str, str]]:
+    """Return ``(namespace, ontology_iri)`` pairs, longest namespace first.
+
+    Sorting by descending length makes nested namespaces (``…/matsci`` versus
+    ``…/matsci/sub``) resolve to the most specific owner deterministically.
+    """
+    candidates = [
+        (namespace.rstrip("#/"), header.iri)
+        for header in headers
+        if (namespace := header.namespace or header.iri)
+    ]
+    return sorted(
+        (pair for pair in candidates if pair[0]),
+        key=lambda pair: (-len(pair[0]), pair[0]),
+    )
+
+
+def _owner_by_namespace(ref_iri: str, candidates: list[tuple[str, str]]) -> str | None:
+    """Resolve the ontology whose namespace encloses ``ref_iri``, if any."""
+    for namespace, ontology_iri in candidates:
+        if (
+            ref_iri == namespace
+            or ref_iri.startswith(f"{namespace}#")
+            or ref_iri.startswith(f"{namespace}/")
+        ):
+            return ontology_iri
+    return None
+
+
+def _unresolved_by_namespace(
+    referenced_iris: Iterable[str],
+    headers: list[OntologyHeader],
+) -> list[str]:
+    """IRIs that no catalog namespace encloses, needing a declaring-graph lookup."""
+    candidates = _namespace_candidates(headers)
+    return sorted(
+        ref for ref in referenced_iris if _owner_by_namespace(ref, candidates) is None
+    )
+
+
+def _resolve_reference_owners(
+    referenced_iris: Iterable[str],
+    headers: list[OntologyHeader],
+    owners_by_ref: dict[str, list[str]],
+) -> set[str]:
+    """Map referenced IRIs to the ontologies that own them.
+
+    Namespace containment is tried first and is what catches *dangling*
+    references -- an IRI inside ontology X's namespace that X declares no triples
+    about. Only IRIs no namespace encloses fall back to the ontology whose named
+    graph declares them.
+
+    Args:
+        referenced_iris: IRIs reachable from the seeds via structural predicates.
+        headers: Catalog headers supplying namespaces and IRIs.
+        owners_by_ref: Declaring ontology IRIs per reference, from the second hop.
+
+    Returns:
+        set[str]: Owning ontology IRIs.
+    """
+    candidates = _namespace_candidates(headers)
+    owners: set[str] = set()
+    for ref_iri in referenced_iris:
+        owner = _owner_by_namespace(ref_iri, candidates)
+        if owner is None:
+            declaring = owners_by_ref.get(ref_iri)
+            # Parity with the in-Python path, which attributes one owner per
+            # reference; smallest IRI keeps that choice deterministic.
+            owner = min(declaring) if declaring else None
+        if owner:
+            owners.add(owner)
+    return owners
+
+
+def _chunked(values: list[str], size: int) -> list[list[str]]:
+    """Split ``values`` into chunks of at most ``size`` items."""
+    return [values[start : start + size] for start in range(0, len(values), size)]
+
+
+def _seed_reference_query(seed_irefs: list[str]) -> str:
+    """Build the hop-1 SELECT: IRIs the seeds reach via structural predicates."""
+    predicates = " ".join(
+        f"<{predicate}>" for predicate in sorted(_STRUCTURAL_REFERENCE_PREDICATES)
+    )
+    seeds = " ".join(seed_irefs)
+    return f"""
+SELECT DISTINCT ?g ?ref WHERE {{
+  VALUES ?seed {{ {seeds} }}
+  VALUES ?p {{ {predicates} }}
+  GRAPH ?g {{ {{ ?seed ?p ?ref }} UNION {{ ?ref ?p ?seed }} }}
+  FILTER(isIRI(?ref))
+}}
+"""
+
+
+def _declaring_graph_query(ref_irefs: list[str]) -> str:
+    """Build the hop-2 SELECT: which named graph declares each reference.
+
+    ``?ref`` appears as subject only, matching the in-Python fallback's
+    ``graph.triples((ref, None, None))``; matching both directions would silently
+    widen expansion.
+    """
+    refs = " ".join(ref_irefs)
+    return f"""
+SELECT DISTINCT ?g ?ref WHERE {{
+  VALUES ?ref {{ {refs} }}
+  GRAPH ?g {{ ?ref ?p ?o }}
+}}
+"""
+
+
+def _sparql_irefs(iris: Iterable[str]) -> list[str]:
+    """Render IRIs for SPARQL ``VALUES``, dropping (and logging) unusable ones."""
+    irefs: list[str] = []
+    for iri in iris:
+        iref = as_sparql_iriref(iri)
+        if iref is None:
+            logger.warning("Skipping IRI that cannot be a SPARQL IRIREF: %r", iri)
+            continue
+        irefs.append(iref)
+    return irefs
+
+
+async def _aselect_union(
+    triple_store_manager: TripleStoreManager,
+    queries: list[str],
+) -> list[dict[str, str]]:
+    """Run SELECTs concurrently and concatenate their rows."""
+    if not queries:
+        return []
+    results = await asyncio.gather(
+        *(triple_store_manager.aselect(query) for query in queries)
+    )
+    return [row for rows in results for row in rows]
+
+
+async def _aexpand_ontology_iris_by_reference(
+    triple_store_manager: TripleStoreManager,
+    entity_uris: list[str],
+    hit_ontology_iris: list[str],
+) -> tuple[list[str], dict[str, int | str]]:
+    """Expand the ontology filter using targeted SELECTs instead of the catalog.
+
+    Answers the same question as :func:`_expand_ontology_iris_by_reference` --
+    which ontologies do the seeds reach through ``rdfs:subClassOf`` / ``domain`` /
+    ``range`` -- without materializing any ontology graph.
+
+    Args:
+        triple_store_manager: A backend whose ``supports_sparql_select()`` is true.
+        entity_uris: Seed entity IRIs from the merged vector hits.
+        hit_ontology_iris: Ontology IRIs the hits themselves came from.
+
+    Returns:
+        tuple: ``(ontology_iris, metrics)``, where ``ontology_iris`` is the sorted
+        union of hit and referenced ontologies.
+    """
+    headers = await triple_store_manager.afetch_ontology_catalog()
+    terminal_headers = dedupe_terminal_ontologies(headers)
+    # Both hops see every stored version; restricting to terminal graphs keeps
+    # parity with the fallback, which iterates the deduped catalog.
+    terminal_graph_uris = {header.graph_uri for header in terminal_headers}
+
+    seed_irefs = _sparql_irefs(entity_uris)
+    seed_queries = [
+        _seed_reference_query(chunk)
+        for chunk in _chunked(seed_irefs, _MAX_VALUES_TERMS)
+    ]
+    referenced_iris = {
+        ref
+        for row in await _aselect_union(triple_store_manager, seed_queries)
+        if row.get("g") in terminal_graph_uris and (ref := row.get("ref"))
+    }
+
+    owners_by_ref: dict[str, list[str]] = defaultdict(list)
+    unresolved = _unresolved_by_namespace(referenced_iris, terminal_headers)
+    declaring_queries: list[str] = []
+    if unresolved:
+        graph_uri_to_iri = {h.graph_uri: h.iri for h in terminal_headers}
+        declaring_queries = [
+            _declaring_graph_query(chunk)
+            for chunk in _chunked(_sparql_irefs(unresolved), _MAX_VALUES_TERMS)
+        ]
+        for row in await _aselect_union(triple_store_manager, declaring_queries):
+            owner = graph_uri_to_iri.get(row.get("g", ""))
+            ref = row.get("ref")
+            if owner and ref and owner not in owners_by_ref[ref]:
+                owners_by_ref[ref].append(owner)
+
+    expanded = set(hit_ontology_iris)
+    expanded |= _resolve_reference_owners(
+        referenced_iris, terminal_headers, owners_by_ref
+    )
+    metrics: dict[str, int | str] = {
+        "catalog_access_mode": "sparql",
+        "catalog_select_queries": 1 + len(seed_queries) + len(declaring_queries),
+        "catalog_graphs_fetched": 0,
+    }
+    return sorted(expanded), metrics
+
+
+async def _aexpand_ontology_iris(
+    triple_store_manager: TripleStoreManager,
+    entity_uris: list[str],
+    hit_ontology_iris: list[str],
+) -> tuple[list[str], list[Ontology] | None, dict[str, int | str]]:
+    """Expand the ontology filter, preferring SPARQL over a full catalog fetch.
+
+    Returns:
+        tuple: ``(ontology_iris, catalog, metrics)``. ``catalog`` is the
+        materialized catalog when one had to be fetched, so the caller can hand it
+        to the induced-subgraph step instead of paying for it twice; it is ``None``
+        on the SPARQL path, where only the needed graphs are fetched later.
+    """
+    if triple_store_manager.supports_sparql_select():
+        try:
+            ontology_iris, metrics = await _aexpand_ontology_iris_by_reference(
+                triple_store_manager, entity_uris, hit_ontology_iris
+            )
+            return ontology_iris, None, metrics
+        except Exception as exc:
+            # Slow retrieval beats a failed document; the metric makes a
+            # persistently degraded backend visible rather than merely sluggish.
+            logger.warning(
+                "SPARQL ontology expansion failed (%s); falling back to full catalog",
+                exc,
+            )
+
+    catalog = await triple_store_manager.afetch_ontologies()
+    ontology_iris = _expand_ontology_iris_by_reference(
+        entity_uris, hit_ontology_iris, catalog
+    )
+    metrics: dict[str, int | str] = {
+        "catalog_access_mode": "full_fetch_fallback",
+        "catalog_select_queries": 0,
+        "catalog_graphs_fetched": len(catalog),
+    }
+    return ontology_iris, catalog, metrics
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -678,7 +963,10 @@ class OntologyPatchRetriever(Tool):
                 core_weight=core_w,
                 neighborhood_weight=neigh_w,
             )
-        elif pc.cross_query_merge_mode == CrossQueryMergeMode.MAX_SCORE:
+        elif pc.cross_query_merge_mode in (
+            CrossQueryMergeMode.MAX_SCORE,
+            CrossQueryMergeMode.SUM_SCORE,
+        ):
             merged = _select_atoms_round_robin_by_ontology(
                 merged,
                 per_ontology_seed_quota=pc.per_ontology_seed_quota,
@@ -736,21 +1024,22 @@ class OntologyPatchRetriever(Tool):
                 )
 
         ontology_iris = hit_ontology_iris
-        if self.sparql_tool.triple_store_manager is not None:
-            catalog = await self.sparql_tool.triple_store_manager.afetch_ontologies()
-            ontology_iris = _expand_ontology_iris_by_reference(
-                entity_uris,
-                hit_ontology_iris,
-                catalog,
+        catalog: list[Ontology] | None = None
+        triple_store_manager = self.sparql_tool.triple_store_manager
+        if triple_store_manager is not None:
+            ontology_iris, catalog, expansion_metrics = await _aexpand_ontology_iris(
+                triple_store_manager, entity_uris, hit_ontology_iris
             )
             expanded = sorted(set(ontology_iris) - set(hit_ontology_iris))
             if expanded:
                 self._last_retrieval_metrics["expanded_ontology_iris"] = expanded
+            self._last_retrieval_metrics.update(expansion_metrics)
 
         hub_seed_count = sc.induced_subgraph_hub_seed_count
         ancestor_depth = sc.induced_subgraph_ancestor_closure_depth
 
         graph = await self.sparql_tool.aget_induced_subgraph(
+            ontologies=catalog,
             entity_uris=entity_uris,
             entity_relevance=entity_relevance,
             entity_roles=entity_roles,

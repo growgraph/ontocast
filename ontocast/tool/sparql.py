@@ -116,6 +116,27 @@ _OWL_RESTRICTION_SHELL_PREDICATES: frozenset[URIRef] = (
     _OWL_RESTRICTION_MEANINGFUL_PREDICATES | frozenset({RDF.type})
 )
 
+# Order in which triples are admitted when a seed's BFS quota cannot hold all of them.
+# Ordering by str(triple) instead made the surviving facts effectively alphabetical: a
+# term could arrive labelled but unplaced in the hierarchy, or placed but unnamed.
+_BFS_PREDICATE_PRIORITY: tuple[frozenset[URIRef], ...] = (
+    frozenset({RDFS.label, SKOS.prefLabel}),  # name it
+    frozenset({RDF.type}),  # say what it is
+    frozenset({RDFS.subClassOf, OWL.equivalentClass}),  # place it in the hierarchy
+    frozenset({RDFS.domain, RDFS.range, RDFS.subPropertyOf}),  # connect properties
+    frozenset({RDFS.comment, SKOS.definition, SKOS.altLabel}),  # describe it
+)
+
+
+def _bfs_triple_rank(triple: tuple) -> tuple[int, str]:
+    """Sort key admitting defining triples before incidental ones, ties lexicographic."""
+    predicate = triple[1]
+    for rank, predicates in enumerate(_BFS_PREDICATE_PRIORITY):
+        if predicate in predicates:
+            return (rank, str(triple))
+    return (len(_BFS_PREDICATE_PRIORITY), str(triple))
+
+
 _RESTRICTION_SHELL_MAX_TRIPLES = 16
 _SCHEMA_PATH_MAX_DEPTH = 4
 _MIN_MEANINGFUL_RESTRICTION_PREDICATES = 2
@@ -187,7 +208,13 @@ def _classify_and_promote_seeds(
     entity_roles: Mapping[str, str | None],
     ontology_subjects: frozenset[str],
 ) -> tuple[list[str], list[str]]:
-    """Split retrieval seeds into concept (class) and property seeds; promote individuals."""
+    """Split retrieval seeds into concept (class) and property seeds; promote individuals.
+
+    An individual seed keeps its own place *and* contributes its classes. Substituting the
+    class for the individual discarded the very node retrieval had matched: the facts
+    two-namespace contract expects pre-declared reference individuals to be reusable, and
+    a snapshot naming only their class cannot support that.
+    """
     concept_seeds: list[str] = []
     property_seeds: list[str] = []
     for uri in seed_uris_ranked:
@@ -198,11 +225,8 @@ def _classify_and_promote_seeds(
         if role == ROLE_PREDICATE or (has_incoming and not has_outgoing):
             property_seeds.append(uri)
             continue
-        promoted = _promoted_type_iris(merged_graph, ref, ontology_subjects)
-        if promoted:
-            concept_seeds.extend(promoted)
-        else:
-            concept_seeds.append(uri)
+        concept_seeds.append(uri)
+        concept_seeds.extend(_promoted_type_iris(merged_graph, ref, ontology_subjects))
     return list(dict.fromkeys(concept_seeds)), list(dict.fromkeys(property_seeds))
 
 
@@ -733,11 +757,11 @@ def _bfs_expand_from_seed(
             )
             outgoing = sorted(
                 merged_graph.triples((node, None, None)),
-                key=lambda triple: str(triple),
+                key=_bfs_triple_rank,
             )
             incoming = sorted(
                 merged_graph.triples((None, None, node)),
-                key=lambda triple: str(triple),
+                key=_bfs_triple_rank,
             )
             for triple in outgoing + incoming:
                 subj, pred, obj = triple
@@ -1643,8 +1667,15 @@ class SPARQLTool:
         ontology_hash_filters: dict[str, set[str]] | None = None,
         hub_seed_count: int = 8,
         ancestor_closure_depth: int = 3,
+        ontologies: list[Ontology] | None = None,
     ) -> RDFGraph:
-        """Fetch a deterministic induced subgraph around selected entities."""
+        """Fetch a deterministic induced subgraph around selected entities.
+
+        Args:
+            ontologies: Pre-fetched catalog to build from. When ``None`` the
+                catalog is read from the triple store. Callers that already hold
+                a catalog should pass it to avoid a redundant fetch.
+        """
         if self.triple_store_manager is None:
             return RDFGraph()
         if depth < 0:
@@ -1654,7 +1685,8 @@ class SPARQLTool:
         if estimated_triples_per_query <= 0:
             return RDFGraph()
 
-        ontologies = self.triple_store_manager.fetch_ontologies()
+        if ontologies is None:
+            ontologies = self.triple_store_manager.fetch_ontologies()
         result, metrics = SPARQLTool._build_induced_subgraph(
             ontologies,
             entity_uris,
@@ -1685,8 +1717,15 @@ class SPARQLTool:
         ontology_hash_filters: dict[str, set[str]] | None = None,
         hub_seed_count: int = 8,
         ancestor_closure_depth: int = 3,
+        ontologies: list[Ontology] | None = None,
     ) -> RDFGraph:
-        """Like ``get_induced_subgraph`` but uses ``afetch_ontologies`` for I/O."""
+        """Like ``get_induced_subgraph`` but uses ``afetch_ontologies`` for I/O.
+
+        Args:
+            ontologies: Pre-fetched catalog to build from. When ``None`` only the
+                ontologies named by ``ontology_iris`` are read from the triple
+                store (the whole catalog when ``ontology_iris`` is empty).
+        """
         if self.triple_store_manager is None:
             return self.get_induced_subgraph(
                 entity_uris=entity_uris,
@@ -1700,6 +1739,7 @@ class SPARQLTool:
                 ontology_hash_filters=ontology_hash_filters,
                 hub_seed_count=hub_seed_count,
                 ancestor_closure_depth=ancestor_closure_depth,
+                ontologies=ontologies,
             )
         if depth < 0:
             raise ValueError("depth must be >= 0")
@@ -1708,7 +1748,10 @@ class SPARQLTool:
         if estimated_triples_per_query <= 0:
             return RDFGraph()
 
-        ontologies = await self.triple_store_manager.afetch_ontologies()
+        if ontologies is None:
+            ontologies = await self.triple_store_manager.afetch_ontologies_by_iri(
+                ontology_iris or []
+            )
         result, metrics = await asyncio.to_thread(
             SPARQLTool._build_induced_subgraph,
             ontologies,

@@ -42,6 +42,8 @@ from ontocast.onto.rdfgraph import RDFGraph
 DEFAULT_TEXT2KGBENCH_ROOT = Path.home() / "data" / "ontocast" / "validation"
 TEXT2KGBENCH_ROOT_ENV = "ONTOCAST_RECALL_ROOT"
 
+CORPUS_ROOT_ENV = "ONTOCAST_RECALL_CORPUS"
+
 FIXTURES_DIR = Path(__file__).parent / "manual" / "fixtures"
 
 _GT_TEXT_SUBDIRS = ("wikidata_tekgen", "dbpedia_webnlg")
@@ -76,6 +78,9 @@ class StageCounts:
     cases: int = 0
     seed_hits: int = 0
     snapshot_hits: int = 0
+    expected_terms: int = 0
+    seed_terms: int = 0
+    snapshot_terms: int = 0
     atoms_after_dedupe: int = 0
     atoms_final: int = 0
     snapshot_triple_count: int = 0
@@ -90,18 +95,31 @@ class StageCounts:
     def observe(
         self,
         *,
-        seed_hit: bool,
-        snapshot_hit: bool,
+        expected: frozenset[str],
+        seed_iris: set[str],
+        snapshot_subjects: set[str],
         metrics: dict[str, Any],
         on_topic_subjects: int = 0,
         total_subjects: int = 0,
     ) -> None:
-        """Fold one case's outcome and retrieval metrics into the running totals."""
+        """Fold one case's outcome and retrieval metrics into the running totals.
+
+        Both a case-level and a term-level view are accumulated. Case level asks whether
+        *any* expected term survived, which saturates once a case carries several expected
+        terms; term level counts each one, and is the sensitive measure.
+        """
         self.cases += 1
         self.on_topic_subjects += on_topic_subjects
         self.total_subjects += total_subjects
-        self.seed_hits += int(seed_hit)
-        self.snapshot_hits += int(snapshot_hit)
+
+        seed_found = expected & seed_iris
+        snapshot_found = expected & snapshot_subjects
+        self.seed_hits += int(bool(seed_found))
+        self.snapshot_hits += int(bool(snapshot_found))
+        self.expected_terms += len(expected)
+        self.seed_terms += len(seed_found)
+        self.snapshot_terms += len(snapshot_found)
+
         self.atoms_after_dedupe += int(metrics.get("atoms_after_dedupe", 0))
         self.atoms_final += int(metrics.get("atoms_final", 0))
         triple_count = int(metrics.get("snapshot_triple_count", 0))
@@ -126,6 +144,16 @@ class StageCounts:
     def snapshot_recall(self) -> float:
         """Fraction of cases whose expected term is defined in the returned graph."""
         return self.snapshot_hits / self.cases if self.cases else 0.0
+
+    @property
+    def seed_term_recall(self) -> float:
+        """Share of *all* expected terms that reached the final seed set."""
+        return self.seed_terms / self.expected_terms if self.expected_terms else 0.0
+
+    @property
+    def snapshot_term_recall(self) -> float:
+        """Share of *all* expected terms defined in the returned graph."""
+        return self.snapshot_terms / self.expected_terms if self.expected_terms else 0.0
 
     @property
     def on_topic_precision(self) -> float:
@@ -153,9 +181,13 @@ class StageCounts:
             f"cases                     {self.cases}",
             f"seed recall               {self.seed_recall:.1%}  ({self.seed_hits}/{self.cases})",
             f"snapshot recall           {self.snapshot_recall:.1%}  ({self.snapshot_hits}/{self.cases})",
+            # Case level saturates as soon as cases carry several expected terms; these
+            # two are the numbers to compare variants on.
+            f"seed TERM recall          {self.seed_term_recall:.1%}  ({self.seed_terms}/{self.expected_terms})",
+            f"snapshot TERM recall      {self.snapshot_term_recall:.1%}  ({self.snapshot_terms}/{self.expected_terms})",
             # Expansion can also *recover* a term that was never a seed, by pulling it in
             # over subClassOf/domain/range, so this delta is signed rather than a pure loss.
-            f"graph stage net           {self.snapshot_hits - self.seed_hits:+d} cases",
+            f"graph stage net           {self.snapshot_terms - self.seed_terms:+d} terms",
             f"on-topic precision        {self.on_topic_precision:.1%}  (snapshot subjects from the case ontology)",
             f"mean atoms_after_dedupe   {self._mean(self.atoms_after_dedupe):.1f}",
             f"mean atoms_final          {self._mean(self.atoms_final):.1f}",
@@ -273,6 +305,71 @@ def load_text2kgbench(
     return cases, ontologies
 
 
+def corpus_root() -> Path | None:
+    """Prebuilt corpus directory from ``ONTOCAST_RECALL_CORPUS``, if it looks valid."""
+    raw = os.getenv(CORPUS_ROOT_ENV)
+    if not raw:
+        return None
+    root = Path(raw).expanduser()
+    return root if (root / "cases.jsonl").is_file() else None
+
+
+def load_corpus(root: Path) -> tuple[list[RecallCase], list[Ontology]]:
+    """Load ``(cases, ontologies)`` from a prebuilt, domain-neutral recall corpus.
+
+    Layout, as emitted by ``ontocast-validation/run/build_recall_corpus.py``::
+
+        <root>/ontologies/*.ttl
+        <root>/cases.jsonl   # {"id", "text", "expected_iris": [...], "ontology_iri"}
+
+    Rows may carry extra keys (the builder writes a ``review`` block); they are ignored.
+    Ground-truth defects raise rather than deflating recall silently: a case naming an
+    ontology absent from the catalog would otherwise look like a retrieval miss.
+
+    Args:
+        root: Corpus directory containing ``ontologies/`` and ``cases.jsonl``.
+    """
+    ontology_dir = root / "ontologies"
+    if not ontology_dir.is_dir():
+        raise ValueError(f"{root}: missing ontologies/ directory")
+
+    ontologies: list[Ontology] = []
+    for path in sorted(ontology_dir.glob("*.ttl")):
+        graph = RDFGraph()
+        graph.parse(str(path), format="turtle")
+        ontologies.append(Ontology(graph=graph))
+    if not ontologies:
+        raise ValueError(f"{ontology_dir}: no .ttl ontologies found")
+
+    known_iris = {ontology.iri for ontology in ontologies}
+    cases: list[RecallCase] = []
+    with (root / "cases.jsonl").open() as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            case_id = str(row.get("id") or f"case_{line_number}")
+            text = (row.get("text") or "").strip()
+            expected = {str(iri) for iri in row.get("expected_iris") or []}
+            ontology_iri = str(row.get("ontology_iri") or "")
+            if not text or not expected:
+                raise ValueError(f"{case_id}: needs both 'text' and 'expected_iris'")
+            if ontology_iri not in known_iris:
+                raise ValueError(
+                    f"{case_id}: ontology_iri {ontology_iri!r} is not in the catalog"
+                )
+            cases.append(
+                RecallCase(
+                    case_id=case_id,
+                    text=text,
+                    expected_iris=frozenset(expected),
+                    ontology_iri=ontology_iri,
+                )
+            )
+
+    return cases, ontologies
+
+
 def load_anchor_cases() -> tuple[list[RecallCase], list[Ontology]]:
     """Load in-repo anchor fixtures as ``(cases, ontologies)``.
 
@@ -315,14 +412,3 @@ def load_anchor_cases() -> tuple[list[RecallCase], list[Ontology]]:
                 )
 
     return cases, ontologies
-
-
-def graph_defines(graph: RDFGraph, iris: frozenset[str]) -> bool:
-    """True when any IRI appears as a subject, i.e. is actually defined in the snapshot.
-
-    Subject position matters: ``_prune_disconnected_uri_entities`` drops triples by
-    subject but leaves object-position references behind, so an IRI can be mentioned in
-    the snapshot while carrying no definition the model can use.
-    """
-    subjects = {str(subject) for subject in graph.subjects()}
-    return bool(subjects & set(iris))

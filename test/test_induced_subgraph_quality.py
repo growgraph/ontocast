@@ -105,7 +105,7 @@ def test_ranked_entity_weights_preserves_entity_role() -> None:
     assert scores[str(MATSCI["usesMethod"])] == 0.9
 
 
-def test_classify_promotes_named_individual_to_domain_class() -> None:
+def test_classify_keeps_named_individual_alongside_its_domain_class() -> None:
     graph = RDFGraph()
     graph.bind("matsci", MATSCI)
     individual = MATSCI["Photoluminescence"]
@@ -122,8 +122,10 @@ def test_classify_promotes_named_individual_to_domain_class() -> None:
         {str(individual): ROLE_RESOURCE},
         ontology_subjects,
     )
+    # The class is added, but the individual retrieval actually matched is retained:
+    # the facts contract expects pre-declared reference individuals to stay reusable.
     assert str(method_class) in concept
-    assert str(individual) not in concept
+    assert str(individual) in concept
     assert not props
 
 

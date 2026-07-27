@@ -33,11 +33,24 @@ def split_proposition_windows(
         return [cleaned[:1000]] if cleaned else []
 
     windows: list[str] = []
-    step = max_sentences
-    for index in range(0, len(sentence_parts), step):
+    for index in range(0, len(sentence_parts), max_sentences):
         window = " ".join(sentence_parts[index : index + max_sentences]).strip()
         if window:
             windows.append(window)
-        if len(windows) >= max_windows:
-            break
+
+    if len(windows) > max_windows:
+        # Sample evenly across the text rather than keeping the first ``max_windows``.
+        # Truncating dropped the tail of a long chunk entirely, so its closing sections
+        # never contributed a retrieval query at all. Positions span both endpoints, so
+        # the final window is always represented.
+        if max_windows == 1:
+            windows = windows[:1]
+        else:
+            last = len(windows) - 1
+            picked = {
+                round(position * last / (max_windows - 1))
+                for position in range(max_windows)
+            }
+            windows = [windows[index] for index in sorted(picked)]
+
     return windows or [cleaned[:1000]]
