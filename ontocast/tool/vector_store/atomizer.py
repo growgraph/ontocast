@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Protocol
 
 from pydantic import Field
-from rdflib import DCTERMS, OWL, RDF, RDFS, SKOS, BNode, Literal, URIRef
+from rdflib import DCTERMS, OWL, RDF, RDFS, SKOS, BNode, Literal, Namespace, URIRef
 from rdflib.term import Node
 
 from ontocast.onto.embedding_policy import (
@@ -52,6 +52,44 @@ _GENERIC_TYPE_IRIS: frozenset[URIRef] = frozenset(
     }
 )
 
+QUDT = Namespace("http://qudt.org/schema/qudt/")
+
+# Declared surface forms, in descending priority.
+_LABEL_PREDICATES: list[URIRef] = [
+    RDFS.label,
+    SKOS.prefLabel,
+    DCTERMS.title,
+    SKOS.altLabel,
+]
+
+# QUDT publishes an authoritative symbol and UCUM code per unit. Those are the forms
+# prose actually uses — "meV", not "millielectronvolt" — so a corpus reporting
+# measurements is queried by symbol. They are collected against their own budget rather
+# than queued behind labels: a QUDT unit may declare a dozen labels (one per language),
+# which would exhaust the surface-form cap before any symbol is reached.
+_SYMBOL_PREDICATES: list[URIRef] = [QUDT.symbol, QUDT.ucumCode]
+
+
+def _language_rank(value: Literal) -> int:
+    """Sort key putting English and untagged literals ahead of other languages.
+
+    Sorting literals alphabetically makes atomization reproducible, but it also picks
+    the display name: a term declaring one label per language is named by whichever
+    language happens to sort first (QUDT's ``unit:DEG_C`` declares 23 and would be named
+    in Hungarian). Ranking by language first keeps the ordering total and deterministic
+    while giving an English-language corpus a readable name, and spends the
+    surface-form cap on forms a reader might actually type.
+
+    Args:
+        value: Literal whose language tag is inspected.
+
+    Returns:
+        int: ``0`` for untagged or English literals, ``1`` otherwise.
+    """
+    language = value.language
+    return 0 if not language or language.lower().startswith("en") else 1
+
+
 # Predicates whose objects are usually literal glosses — kept out of neighborhood clues.
 _ANNOTATION_PREDICATES: frozenset[URIRef] = frozenset(
     {
@@ -67,6 +105,8 @@ _ANNOTATION_PREDICATES: frozenset[URIRef] = frozenset(
         DCTERMS.title,
         DCTERMS.description,
         DCTERMS.abstract,
+        QUDT.symbol,
+        QUDT.ucumCode,
     }
 )
 
@@ -297,12 +337,7 @@ class GraphAtomizer(Tool):
     def _parent_resource_phrase(self, graph: RDFGraph, parent: URIRef) -> str:
         """Local name plus optional label gloss when it adds information."""
         base = self._normalize_uri(parent)
-        literals = self._collect_literals(
-            graph,
-            parent,
-            [RDFS.label, SKOS.prefLabel, DCTERMS.title, SKOS.altLabel],
-            1,
-        )
+        literals = self._collect_surface_forms(graph, parent, 1)
         if not literals:
             return base
         gloss = literals[0]
@@ -452,11 +487,11 @@ class GraphAtomizer(Tool):
         local_name = normalize_uri_local_name(entity)
         if graph is None:
             return local_name
-        labels = self._collect_literals(
+        labels = self._collect_surface_forms(
             graph,
             entity,
-            [RDFS.label, SKOS.prefLabel, DCTERMS.title, SKOS.altLabel],
             self.minimal_representation_label_limit,
+            lead_with_symbol=True,
         )
         parts = [local_name, *labels]
         seen: set[str] = set()
@@ -471,12 +506,7 @@ class GraphAtomizer(Tool):
     def _build_core_representation(
         self, entity: URIRef, graph: RDFGraph, role: str
     ) -> str:
-        labels = self._collect_literals(
-            graph,
-            entity,
-            [RDFS.label, SKOS.prefLabel, DCTERMS.title, SKOS.altLabel],
-            5,
-        )
+        labels = self._collect_surface_forms(graph, entity, 5)
         descriptions = self._collect_literals(
             graph, entity, [RDFS.comment, DCTERMS.description, SKOS.definition], 2
         )
@@ -686,13 +716,13 @@ class GraphAtomizer(Tool):
         for predicate in predicates:
             candidates = sorted(
                 {
-                    normalized
+                    (_language_rank(obj), normalized)
                     for _, _, obj in graph.triples((subject, predicate, None))
                     if isinstance(obj, Literal)
                     and (normalized := self._normalize_string(str(obj)))
                 }
             )
-            for normalized in candidates:
+            for _, normalized in candidates:
                 if normalized in seen:
                     continue
                 values.append(normalized)
@@ -700,6 +730,52 @@ class GraphAtomizer(Tool):
                 if len(values) >= max_items:
                     return values
         return values
+
+    def _collect_surface_forms(
+        self,
+        graph: RDFGraph,
+        subject: URIRef,
+        max_items: int,
+        *,
+        lead_with_symbol: bool = False,
+    ) -> list[str]:
+        """Declared labels plus QUDT symbols, with symbols guaranteed a slot.
+
+        ``_collect_literals`` honours predicate priority, so appending the symbol
+        predicates to the label list would let a term that declares many labels crowd
+        the symbols out entirely — and QUDT units routinely declare one label per
+        language. The two families are therefore collected against separate budgets and
+        merged, so a unit stays findable by the symbol a reader actually types.
+
+        Args:
+            graph: Graph to read literals from.
+            subject: Entity whose surface forms are collected.
+            max_items: Maximum number of distinct values to return.
+            lead_with_symbol: Put symbols first, for the sparse lexical lane. When
+                ``False`` the primary label leads so the entity keeps a readable name.
+
+        Returns:
+            list[str]: Normalized surface forms, at most ``max_items``.
+        """
+        labels = self._collect_literals(graph, subject, _LABEL_PREDICATES, max_items)
+        symbols = self._collect_literals(graph, subject, _SYMBOL_PREDICATES, max_items)
+        if not symbols:
+            return labels[:max_items]
+        if lead_with_symbol:
+            ordered = [*symbols, *labels]
+        else:
+            ordered = [*labels[:1], *symbols, *labels[1:]]
+
+        merged: list[str] = []
+        seen: set[str] = set()
+        for value in ordered:
+            if value in seen:
+                continue
+            seen.add(value)
+            merged.append(value)
+            if len(merged) >= max_items:
+                break
+        return merged
 
     def _normalize_uri(self, uri: URIRef) -> str:
         return normalize_uri_local_name(uri)

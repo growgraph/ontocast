@@ -193,9 +193,26 @@ After seeds are chosen, expansion builds a budgeted snapshot:
 ### BM25 / index recreate
 
 Lexical retrieval uses Qdrant's BM25 with IDF and indexes split local names plus
-`rdfs:label` / `skos:prefLabel` / `dcterms:title` / `skos:altLabel`. Collections built
+`rdfs:label` / `skos:prefLabel` / `dcterms:title` / `skos:altLabel`, and — for
+quantity vocabularies — `qudt:symbol` / `qudt:ucumCode`. Collections built
 before that contract fail loudly with `EmbeddingContractMismatchError` — wipe and reindex
 (`VECTOR_STORE_WIPE_ON_INIT` or `--wipe-vector-store`).
+
+Surface forms are capped per atom (`VECTOR_STORE_MINIMAL_LABEL_LIMIT`, default 5) and
+selected deterministically, ranked by predicate and then by language. Two consequences
+are worth knowing when indexing an external vocabulary:
+
+- **Symbols get their own budget.** They are not queued behind labels, so a term
+  declaring many labels cannot crowd them out — QUDT's `unit:DEG_C` carries 23 labels
+  against a cap of 5. Symbols lead the sparse lane and follow the primary label in the
+  core representation, so the entity keeps a readable name.
+- **Untagged and `en*` literals rank first.** Other languages are demoted, not dropped.
+  Without this a term is named by whichever language sorts first alphabetically, and the
+  cap fills with translations no English-language query matches.
+
+This is what makes indexing a full external unit vocabulary practical: QUDT publishes an
+authoritative symbol and UCUM code per unit, so a corpus need not restate them as
+`skos:altLabel` to stay findable by the form its prose actually uses.
 
 ### `fixed_single_ontology`
 

@@ -20,6 +20,12 @@ META_EMBEDDING_MODEL = "embedding_model"
 # Mirrors VectorStoreConfig.minimal_label_limit; only a divergence is fingerprinted.
 _DEFAULT_MINIMAL_LABEL_LIMIT = 5
 
+# Bumped whenever the atomizer changes *which* literals become surface forms. Unlike the
+# cap, such a change alters the stored text for every term at the default setting, so it
+# is fingerprinted unconditionally. ``sf2``: added qudt:symbol / qudt:ucumCode, and
+# ranked untagged and English literals ahead of other languages.
+_SURFACE_FORM_CONTRACT = "sf2"
+
 
 class EmbeddingContractMismatchError(ValueError):
     """Embedding vectors or store metadata disagree with the active embedding config."""
@@ -47,6 +53,10 @@ def embedding_model_fingerprint(
     the BM25 text. It contributes only when set to a non-default value, so collections
     built under the default keep their existing fingerprint.
 
+    The surface-form contract (``sf=``) is separate and always contributes: it records
+    *which* literals become surface forms, which changes the stored text for every term
+    even at default settings.
+
     Args:
         embedding_config: Dense/sparse model configuration.
         minimal_label_limit: Sparse surface-form cap, when it differs from the default.
@@ -57,7 +67,9 @@ def embedding_model_fingerprint(
     ec = embedding_config
     dense_part = f"dense:{ec.provider.value}:{ec.model_name}"
     affixes = f"|q={ec.query_prefix}|d={ec.document_prefix}"
-    fingerprint = f"{dense_part}|bm25={ec.bm25_model_name}{affixes}"
+    fingerprint = (
+        f"{dense_part}|bm25={ec.bm25_model_name}{affixes}|sf={_SURFACE_FORM_CONTRACT}"
+    )
     if (
         minimal_label_limit is not None
         and minimal_label_limit != _DEFAULT_MINIMAL_LABEL_LIMIT

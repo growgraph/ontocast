@@ -1,4 +1,8 @@
 {
+    "policy": {
+        "env": "Deny all .env* files except .env.example. Enforced by PreToolUse Read/Edit/Bash hooks (a permissions.deny glob of .env.* would also block .env.example).",
+        "git": "Deny git and g-alias commit/push/merge, plus gh pr create/merge. Enforced by permissions.deny and the Bash PreToolUse hook."
+    },
     "permissions": {
         "deny": [
             "Read(./.venv/**)",
@@ -41,9 +45,9 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "path=$(jq -r '.tool_input.file_path // .tool_input.path // \"\"'); deny(){ printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"%s\"}}' \"$1\"; exit 0; }; printf '%s' \"$path\" | grep -Eq '(^|/)[.]env($|[^/]+)' && ! printf '%s' \"$path\" | grep -Eq '(^|/)[.]env[.]example$' && deny \"Project policy: only .env.example may be read. Other .env files may contain live secrets and must stay hidden from Claude.\"; exit 0",
+                        "command": "path=$(jq -r '.tool_input.file_path // .tool_input.path // \"\"'); deny(){ printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"%s\"}}' \"$1\"; exit 0; }; printf '%s' \"$path\" | grep -Eq '(^|/)[.]env($|[^/]+)' && ! printf '%s' \"$path\" | grep -Eq '(^|/)[.]env[.]example$' && deny \"Project policy: only .env.example may be read. Other .env* files may contain live secrets and must stay hidden from Claude.\"; exit 0",
                         "timeout": 10,
-                        "statusMessage": "Checking project policy"
+                        "statusMessage": "Checking Claude policy"
                     }
                 ]
             },
@@ -52,9 +56,9 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "path=$(jq -r '.tool_input.file_path // .tool_input.path // \"\"'); deny(){ printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"%s\"}}' \"$1\"; exit 0; }; printf '%s' \"$path\" | grep -Eq '(^|/)[.]env($|[^/]+)' && ! printf '%s' \"$path\" | grep -Eq '(^|/)[.]env[.]example$' && deny \"Project policy: only .env.example may be edited by Claude. Other .env files may contain live secrets and must stay hidden.\"; exit 0",
+                        "command": "path=$(jq -r '.tool_input.file_path // .tool_input.path // \"\"'); deny(){ printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"%s\"}}' \"$1\"; exit 0; }; printf '%s' \"$path\" | grep -Eq '(^|/)[.]env($|[^/]+)' && ! printf '%s' \"$path\" | grep -Eq '(^|/)[.]env[.]example$' && deny \"Project policy: only .env.example may be edited by Claude. Other .env* files may contain live secrets and must stay hidden.\"; exit 0",
                         "timeout": 10,
-                        "statusMessage": "Checking project policy"
+                        "statusMessage": "Checking Claude policy"
                     }
                 ]
             },
@@ -63,9 +67,9 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "cmd=$(jq -r '.tool_input.command // \"\"'); deny(){ printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"%s\"}}' \"$1\"; exit 0; }; printf '%s' \"$cmd\" | grep -Eq '(^|[^[:alnum:]_-])((git|g)[^;&|]*[[:space:]](commit|push|merge)([[:space:]]|$)|gh[[:space:]]+pr[[:space:]]+(create|merge))' && deny \"Project policy: Claude must not run git or git-alias commit, push, merge, or open PRs. Leave the work as uncommitted changes for the user to review and commit.\"; scrubbed=$(printf '%s' \"$cmd\" | sed 's/[.]env[.]example//g'); printf '%s' \"$scrubbed\" | grep -Eq '[.]env' && printf '%s' \"$scrubbed\" | grep -Eq '(^|[;&|()[:space:]])(cat|less|more|head|tail|grep|egrep|fgrep|rg|awk|sed|strings|nl|xxd|od|cut|tee|printenv|env|dotenv)([[:space:]]|$)' && deny \"Project policy: .env holds live secrets and must never be printed into the transcript. Read .env.example instead, or pass the file to the tool that needs it without displaying its contents.\"; exit 0",
+                        "command": "cmd=$(jq -r '.tool_input.command // \"\"'); deny(){ printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"%s\"}}' \"$1\"; exit 0; }; printf '%s' \"$cmd\" | grep -Eq '(^|[^[:alnum:]_-])((git|g)[^;&|]*[[:space:]](commit|push|merge)([[:space:]]|$)|gh[[:space:]]+pr[[:space:]]+(create|merge))' && deny \"Project policy: Claude must not run git or git-alias commit, push, merge, or open PRs. Leave the work as uncommitted changes for the user to review and commit.\"; scrubbed=$(printf '%s' \"$cmd\" | sed 's/[.]env[.]example//g'); printf '%s' \"$scrubbed\" | grep -Eq '[.]env' && printf '%s' \"$scrubbed\" | grep -Eq '(^|[;&|()[:space:]])(cat|less|more|head|tail|grep|egrep|fgrep|rg|awk|sed|strings|nl|xxd|od|cut|tee|printenv|env|dotenv)([[:space:]]|$)' && deny \"Project policy: .env* holds live secrets and must never be printed into the transcript. Read .env.example instead, or pass the file to the tool that needs it without displaying its contents.\"; exit 0",
                         "timeout": 10,
-                        "statusMessage": "Checking project policy"
+                        "statusMessage": "Checking Claude policy"
                     }
                 ]
             }
