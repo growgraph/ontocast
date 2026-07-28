@@ -33,6 +33,9 @@ from ontocast.tool.vector_store.core import (
     OntologySearchHitsByChannel,
     VectorStoreManager,
 )
+from ontocast.tool.vector_store.diagnostics import (
+    build_ontology_rank_diagnostics,
+)
 from ontocast.tool.vector_store.util import (
     normalized_core_neighborhood_weights,
     normalized_fusion_weights,
@@ -1080,6 +1083,8 @@ class OntologyPatchRetriever(Tool):
                 atom for atom in merged if float(atom.score or 0.0) >= merged_floor
             ]
 
+        ranked_before_cut = list(merged)
+
         if merged and pc.mmr_lambda < 1.0:
             merged = _normalize_relevance_scores(merged)
             vectors = await self.vector_store.afetch_vectors(
@@ -1115,6 +1120,12 @@ class OntologyPatchRetriever(Tool):
                 "atoms_final": 0,
                 "seed_iris": [],
             }
+            if pc.dump_ontology_ranks:
+                self._last_retrieval_metrics["ontology_rank_diagnostics"] = (
+                    build_ontology_rank_diagnostics(
+                        hits_by_query, ranked_before_cut, []
+                    )
+                )
             return RDFGraph(), []
 
         source_iris = _source_iris_from_atoms(merged)
@@ -1134,6 +1145,12 @@ class OntologyPatchRetriever(Tool):
             "source_ontology_iris": source_iris,
             "seeds_by_ontology": dict(seeds_by_ontology),
         }
+        if pc.dump_ontology_ranks:
+            self._last_retrieval_metrics["ontology_rank_diagnostics"] = (
+                build_ontology_rank_diagnostics(
+                    hits_by_query, ranked_before_cut, merged
+                )
+            )
 
         if not expand_sparql or self.sparql_tool is None:
             return RDFGraph(), source_iris

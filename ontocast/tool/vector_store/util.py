@@ -17,6 +17,9 @@ from ontocast.tool.vector_store.core import (
 META_EMBEDDING_DIMENSION = "embedding_dimension"
 META_EMBEDDING_MODEL = "embedding_model"
 
+# Mirrors VectorStoreConfig.minimal_label_limit; only a divergence is fingerprinted.
+_DEFAULT_MINIMAL_LABEL_LIMIT = 5
+
 
 class EmbeddingContractMismatchError(ValueError):
     """Embedding vectors or store metadata disagree with the active embedding config."""
@@ -30,17 +33,37 @@ def embedding_contract_help(*, backend: str = "vector store") -> str:
     )
 
 
-def embedding_model_fingerprint(embedding_config: EmbeddingConfig) -> str:
+def embedding_model_fingerprint(
+    embedding_config: EmbeddingConfig,
+    *,
+    minimal_label_limit: int | None = None,
+) -> str:
     """Identity of the vectors a config produces, stored alongside the collection.
 
     Query/document prefixes belong here: they change the embedded text, so an index
     built without them is not comparable to queries issued with them, and the mismatch
-    would otherwise show up only as quietly degraded retrieval.
+    would otherwise show up only as quietly degraded retrieval. The sparse surface-form
+    cap is included for the same reason -- it decides how many of a term's aliases enter
+    the BM25 text. It contributes only when set to a non-default value, so collections
+    built under the default keep their existing fingerprint.
+
+    Args:
+        embedding_config: Dense/sparse model configuration.
+        minimal_label_limit: Sparse surface-form cap, when it differs from the default.
+
+    Returns:
+        str: Stable fingerprint stored alongside the collection.
     """
     ec = embedding_config
     dense_part = f"dense:{ec.provider.value}:{ec.model_name}"
     affixes = f"|q={ec.query_prefix}|d={ec.document_prefix}"
-    return f"{dense_part}|bm25={ec.bm25_model_name}{affixes}"
+    fingerprint = f"{dense_part}|bm25={ec.bm25_model_name}{affixes}"
+    if (
+        minimal_label_limit is not None
+        and minimal_label_limit != _DEFAULT_MINIMAL_LABEL_LIMIT
+    ):
+        fingerprint += f"|minlabels={minimal_label_limit}"
+    return fingerprint
 
 
 def embedding_fingerprint_matches(
@@ -53,10 +76,13 @@ def collection_embedding_metadata(
     embedding_config: EmbeddingConfig,
     *,
     metadata_dim: int,
+    minimal_label_limit: int | None = None,
 ) -> dict[str, Any]:
     return {
         META_EMBEDDING_DIMENSION: metadata_dim,
-        META_EMBEDDING_MODEL: embedding_model_fingerprint(embedding_config),
+        META_EMBEDDING_MODEL: embedding_model_fingerprint(
+            embedding_config, minimal_label_limit=minimal_label_limit
+        ),
     }
 
 
@@ -85,6 +111,7 @@ def validate_embedding_contract_metadata(
     *,
     embedding_config: EmbeddingConfig,
     expected_meta_dim: int,
+    minimal_label_limit: int | None = None,
 ) -> None:
     if raw_metadata is None:
         meta: dict[str, Any] = {}
@@ -106,15 +133,15 @@ def validate_embedding_contract_metadata(
         raise ValueError(
             f"Vector store '{collection}' metadata {model_key!r} must be a string"
         )
-    if stored_dim != expected_meta_dim or not embedding_fingerprint_matches(
-        stored_model, embedding_config
-    ):
+    expected_model = embedding_model_fingerprint(
+        embedding_config, minimal_label_limit=minimal_label_limit
+    )
+    if stored_dim != expected_meta_dim or stored_model != expected_model:
         raise EmbeddingContractMismatchError(
             f"Vector store '{collection}' embedding contract mismatch: "
             f"store has dimension={stored_dim}, model={stored_model!r}; "
             f"current config expects dimension={expected_meta_dim}, "
-            f"model={embedding_model_fingerprint(embedding_config)!r}. "
-            + embedding_contract_help()
+            f"model={expected_model!r}. " + embedding_contract_help()
         )
 
 

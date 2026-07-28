@@ -30,6 +30,7 @@ import json
 import os
 import re
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,50 @@ CORPUS_ROOT_ENV = "ONTOCAST_RECALL_CORPUS"
 FIXTURES_DIR = Path(__file__).parent / "manual" / "fixtures"
 
 _GT_TEXT_SUBDIRS = ("wikidata_tekgen", "dbpedia_webnlg")
+
+
+def owner_index(ontologies: list[Ontology]) -> list[tuple[str, str]]:
+    """Namespace-to-ontology-IRI index, longest namespace first.
+
+    Mirrors the namespace-containment step production uses to attribute an entity to a
+    catalog ontology (``patch_retriever._ontology_iri_for_entity``). Duplicated rather
+    than imported: the harness must keep measuring term ownership the same way even if
+    the production resolver changes, otherwise a recall regression and an attribution
+    change would be indistinguishable.
+
+    Args:
+        ontologies: Catalog ontologies loaded for the run.
+
+    Returns:
+        list[tuple[str, str]]: ``(namespace_stem, ontology_iri)`` pairs, longest first
+        so a nested namespace wins over its parent.
+    """
+    pairs = {
+        (ontology.namespace or ontology.iri or "").rstrip("#/"): ontology.iri
+        for ontology in ontologies
+        if (ontology.namespace or ontology.iri)
+    }
+    return sorted(pairs.items(), key=lambda kv: -len(kv[0]))
+
+
+def owner_of(iri: str, candidates: list[tuple[str, str]]) -> str | None:
+    """Resolve which ontology owns ``iri`` by namespace containment.
+
+    Args:
+        iri: Entity IRI to attribute.
+        candidates: Output of :func:`owner_index`.
+
+    Returns:
+        str | None: Owning ontology IRI, or None when no namespace matches.
+    """
+    for namespace, ontology_iri in candidates:
+        if (
+            iri == namespace
+            or iri.startswith(f"{namespace}#")
+            or iri.startswith(f"{namespace}/")
+        ):
+            return ontology_iri
+    return None
 
 
 @dataclass(frozen=True)
@@ -91,6 +136,15 @@ class StageCounts:
     on_topic_subjects: int = 0
     total_subjects: int = 0
     seeds_by_ontology: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    expected_terms_by_ontology: dict[str, int] = field(
+        default_factory=lambda: defaultdict(int)
+    )
+    seed_terms_by_ontology: dict[str, int] = field(
+        default_factory=lambda: defaultdict(int)
+    )
+    snapshot_terms_by_ontology: dict[str, int] = field(
+        default_factory=lambda: defaultdict(int)
+    )
 
     def observe(
         self,
@@ -101,6 +155,7 @@ class StageCounts:
         metrics: dict[str, Any],
         on_topic_subjects: int = 0,
         total_subjects: int = 0,
+        expected_owner: Mapping[str, str] | None = None,
     ) -> None:
         """Fold one case's outcome and retrieval metrics into the running totals.
 
@@ -119,6 +174,20 @@ class StageCounts:
         self.expected_terms += len(expected)
         self.seed_terms += len(seed_found)
         self.snapshot_terms += len(snapshot_found)
+
+        # Aggregate recall hides a vocabulary that is never retrieved: a cross-cutting
+        # ontology contributes few expected terms, so losing all of them barely moves
+        # the total. Attribute each term to its owning ontology to expose that.
+        if expected_owner:
+            for iri in expected:
+                owner = expected_owner.get(iri)
+                if not owner:
+                    continue
+                self.expected_terms_by_ontology[owner] += 1
+                if iri in seed_found:
+                    self.seed_terms_by_ontology[owner] += 1
+                if iri in snapshot_found:
+                    self.snapshot_terms_by_ontology[owner] += 1
 
         self.atoms_after_dedupe += int(metrics.get("atoms_after_dedupe", 0))
         self.atoms_final += int(metrics.get("atoms_final", 0))
@@ -167,6 +236,19 @@ class StageCounts:
             self.on_topic_subjects / self.total_subjects if self.total_subjects else 0.0
         )
 
+    def ontologies_with_expected_but_no_seed_terms(self) -> set[str]:
+        """Ontologies that were expected to contribute a term and contributed none.
+
+        The stable signal in this harness. Recall percentages move run to run, but
+        "this vocabulary was never once retrieved" does not, so it is the condition
+        worth asserting on and the one that survives comparison across ablation arms.
+        """
+        return {
+            iri
+            for iri, expected in self.expected_terms_by_ontology.items()
+            if expected > 0 and self.seed_terms_by_ontology.get(iri, 0) == 0
+        }
+
     def _mean(self, total: int) -> float:
         return total / self.cases if self.cases else 0.0
 
@@ -201,6 +283,23 @@ class StageCounts:
             top = sorted(self.seeds_by_ontology.items(), key=lambda kv: -kv[1])[:8]
             lines.append("seeds by ontology (top 8):")
             lines.extend(f"    {count:6d}  {iri}" for iri, count in top)
+        if self.expected_terms_by_ontology:
+            lines.append("per-ontology TERM recall (expected terms owned by each):")
+            lines.append(f"    {'ontology':<48}{'seed':>14}{'snapshot':>14}   status")
+            ordered = sorted(
+                self.expected_terms_by_ontology.items(), key=lambda kv: -kv[1]
+            )
+            starved = self.ontologies_with_expected_but_no_seed_terms()
+            for iri, expected_count in ordered:
+                seeded = self.seed_terms_by_ontology.get(iri, 0)
+                snapped = self.snapshot_terms_by_ontology.get(iri, 0)
+                seed_cell = f"{seeded}/{expected_count} {seeded / expected_count:.0%}"
+                snap_cell = f"{snapped}/{expected_count} {snapped / expected_count:.0%}"
+                status = "NO TERMS RETRIEVED" if iri in starved else ""
+                short = iri if len(iri) <= 47 else "…" + iri[-46:]
+                lines.append(
+                    f"    {short:<48}{seed_cell:>14}{snap_cell:>14}   {status}"
+                )
         return "\n".join(lines)
 
 

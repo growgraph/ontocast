@@ -126,6 +126,17 @@ class GraphAtomizer(Tool):
         default_factory=list,
         description="Additional IRI prefixes excluded from focal entities (ontology sources).",
     )
+    minimal_representation_label_limit: int = Field(
+        default=5,
+        ge=0,
+        description=(
+            "Maximum declared surface forms (label/prefLabel/title/altLabel) folded "
+            "into the sparse BM25 representation. A vocabulary may declare more "
+            "aliases than this -- symbol aliases in particular sort last and are the "
+            "first to be dropped -- so raising it widens what the sparse lane can "
+            "match. Changing it changes stored vectors and requires a reindex."
+        ),
+    )
 
     class _VectorizationSource(Protocol):
         graph: RDFGraph
@@ -445,7 +456,7 @@ class GraphAtomizer(Tool):
             graph,
             entity,
             [RDFS.label, SKOS.prefLabel, DCTERMS.title, SKOS.altLabel],
-            5,
+            self.minimal_representation_label_limit,
         )
         parts = [local_name, *labels]
         seen: set[str] = set()
@@ -652,14 +663,37 @@ class GraphAtomizer(Tool):
     def _collect_literals(
         self, graph: RDFGraph, subject: URIRef, predicates: list[URIRef], max_items: int
     ) -> list[str]:
+        """Collect literal surface forms, deterministically, in predicate priority order.
+
+        ``graph.triples`` yields in unspecified order, so truncating its output at
+        ``max_items`` picked an arbitrary subset of a term's labels: a term declaring
+        more aliases than the cap allows would embed differently between runs over
+        identical input, which makes retrieval measurements irreproducible. Values are
+        sorted within each predicate before truncation; predicate order is still
+        honoured, keeping ``rdfs:label`` ahead of ``skos:altLabel``.
+
+        Args:
+            graph: Graph to read literals from.
+            subject: Subject whose literals are collected.
+            predicates: Predicates to read, in descending priority.
+            max_items: Maximum number of distinct values to return.
+
+        Returns:
+            list[str]: Normalized literal values, at most ``max_items``.
+        """
         values: list[str] = []
         seen: set[str] = set()
         for predicate in predicates:
-            for _, _, obj in graph.triples((subject, predicate, None)):
-                if not isinstance(obj, Literal):
-                    continue
-                normalized = self._normalize_string(str(obj))
-                if not normalized or normalized in seen:
+            candidates = sorted(
+                {
+                    normalized
+                    for _, _, obj in graph.triples((subject, predicate, None))
+                    if isinstance(obj, Literal)
+                    and (normalized := self._normalize_string(str(obj)))
+                }
+            )
+            for normalized in candidates:
+                if normalized in seen:
                     continue
                 values.append(normalized)
                 seen.add(normalized)

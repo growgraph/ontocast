@@ -61,6 +61,8 @@ from test.retrieval_gt import (
     load_anchor_cases,
     load_corpus,
     load_text2kgbench,
+    owner_index,
+    owner_of,
     text2kgbench_root,
 )
 
@@ -149,12 +151,15 @@ async def _index(tools: ToolBox, ontologies: list[Ontology]) -> None:
         await tools.ingest_ontology_ttl(ttl)
 
 
-async def _score(tools: ToolBox, cases: list[RecallCase]) -> StageCounts:
+async def _score(
+    tools: ToolBox, ontologies: list[Ontology], cases: list[RecallCase]
+) -> StageCounts:
     """Run every case through the production retrieval path and fold the outcomes."""
     retriever = tools.patch_retriever
     assert retriever is not None
     store_config = tools.config.tool_config.vector_store
     counts = StageCounts()
+    owners = owner_index(ontologies)
 
     for case in cases:
         # Window exactly as production does, so multi-sentence cases exercise the
@@ -189,6 +194,11 @@ async def _score(tools: ToolBox, cases: list[RecallCase]) -> StageCounts:
             metrics=metrics,
             on_topic_subjects=on_topic,
             total_subjects=len(http_subjects),
+            expected_owner={
+                iri: owner
+                for iri in case.expected_iris
+                if (owner := owner_of(iri, owners))
+            },
         )
 
     return counts
@@ -197,7 +207,7 @@ async def _score(tools: ToolBox, cases: list[RecallCase]) -> StageCounts:
 def _run(tools: ToolBox, ontologies: list[Ontology], cases: list[RecallCase]):
     async def _main() -> StageCounts:
         await _index(tools, ontologies)
-        return await _score(tools, cases)
+        return await _score(tools, ontologies, cases)
 
     return asyncio.run(_main())
 

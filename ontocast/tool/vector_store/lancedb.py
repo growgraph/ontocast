@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from ontocast.config import EmbeddingConfig, LanceDBConfig, VectorStoreConfig
 from ontocast.onto.ontology import Ontology
@@ -66,6 +66,19 @@ class LanceDBVectorStoreManager(VectorStoreManager):
     embedding: EmbeddingTool = Field(..., exclude=True)
     sparse_embedding: FastembedBm25SparseTool | None = Field(default=None, exclude=True)
     atomizer: GraphAtomizer = Field(default_factory=GraphAtomizer, exclude=True)
+
+    @model_validator(mode="after")
+    def _sync_atomizer_with_store_config(self) -> "LanceDBVectorStoreManager":
+        """Mirror representation settings from store config onto the atomizer.
+
+        The atomizer decides what text is embedded, but its knobs are configured
+        alongside the rest of the vector store, so they are propagated here rather
+        than requiring every construction site to build a matching atomizer.
+        """
+        self.atomizer.minimal_representation_label_limit = (
+            self.store_config.minimal_label_limit
+        )
+        return self
 
     @property
     def embedding_config(self) -> EmbeddingConfig:
@@ -181,6 +194,7 @@ class LanceDBVectorStoreManager(VectorStoreManager):
         meta = collection_embedding_metadata(
             self.embedding_config,
             metadata_dim=self._dense_dimension(),
+            minimal_label_limit=self.store_config.minimal_label_limit,
         )
         self._meta_path().write_text(json.dumps(meta), encoding="utf-8")
 
@@ -197,6 +211,7 @@ class LanceDBVectorStoreManager(VectorStoreManager):
             self._read_embedding_meta() or None,
             embedding_config=self.embedding_config,
             expected_meta_dim=self._dense_dimension(),
+            minimal_label_limit=self.store_config.minimal_label_limit,
         )
 
     async def initialize(self) -> None:

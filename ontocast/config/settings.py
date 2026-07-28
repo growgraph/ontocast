@@ -855,6 +855,16 @@ class PatchRetrievalConfig(BaseSettings):
         ),
     )
 
+    dump_ontology_ranks: bool = Field(
+        default=False,
+        description=(
+            "Collect per-ontology rank diagnostics (best rank/score per channel, fused "
+            "rank, whether the ontology survived the atom cut) into retrieval metrics "
+            "under 'ontology_rank_diagnostics'. Diagnostic only: it walks every channel "
+            "hit list per query and does not change retrieval behaviour."
+        ),
+    )
+
     model_config = SettingsConfigDict(
         env_prefix="ONTOLOGY_PATCH_",
         case_sensitive=False,
@@ -1005,6 +1015,17 @@ class VectorStoreConfig(BaseSettings):
         description=(
             "BM25 sparse-lane weight for rank fusion (normalized with core and "
             "neighborhood weights when BM25 retrieval is enabled)."
+        ),
+    )
+    minimal_label_limit: int = Field(
+        default=5,
+        ge=0,
+        description=(
+            "Maximum declared surface forms (rdfs:label, skos:prefLabel, dcterms:title, "
+            "skos:altLabel) folded into each atom's sparse BM25 text. A vocabulary may "
+            "declare more aliases than this; symbol aliases sort last and are dropped "
+            "first, so raising this widens what the sparse lane can match. Changing it "
+            "changes stored sparse vectors and requires a reindex."
         ),
     )
     dedup_mode: VectorStoreDedupMode = Field(

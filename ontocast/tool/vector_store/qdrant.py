@@ -8,7 +8,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeAlias, cast
 
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, model_validator
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
 
@@ -66,6 +66,19 @@ class QdrantVectorStoreManager(VectorStoreManager):
     sparse_embedding: FastembedBm25SparseTool | None = Field(default=None, exclude=True)
     atomizer: GraphAtomizer = Field(default_factory=GraphAtomizer, exclude=True)
     _client: QdrantClient | None = PrivateAttr(default=None)
+
+    @model_validator(mode="after")
+    def _sync_atomizer_with_store_config(self) -> "QdrantVectorStoreManager":
+        """Mirror representation settings from store config onto the atomizer.
+
+        The atomizer decides what text is embedded, but its knobs are configured
+        alongside the rest of the vector store, so they are propagated here rather
+        than requiring every construction site to build a matching atomizer.
+        """
+        self.atomizer.minimal_representation_label_limit = (
+            self.store_config.minimal_label_limit
+        )
+        return self
 
     @property
     def embedding_config(self) -> EmbeddingConfig:
@@ -222,6 +235,7 @@ class QdrantVectorStoreManager(VectorStoreManager):
             meta,
             embedding_config=self.embedding_config,
             expected_meta_dim=self._metadata_embedding_dimension(),
+            minimal_label_limit=self.store_config.minimal_label_limit,
         )
 
     def _vectors_and_sparse_for_create(
@@ -307,6 +321,7 @@ class QdrantVectorStoreManager(VectorStoreManager):
         embedding_meta = collection_embedding_metadata(
             self.embedding_config,
             metadata_dim=metadata_dim,
+            minimal_label_limit=self.store_config.minimal_label_limit,
         )
         vectors_cfg, sparse_cfg = self._vectors_and_sparse_for_create()
         if not self.client.collection_exists(collection_name=collection):
