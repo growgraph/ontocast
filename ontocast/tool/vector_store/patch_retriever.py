@@ -20,6 +20,11 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_header import OntologyHeader
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.onto import Tool
+from ontocast.tool.sparql import (
+    build_candidate_subgraph_query,
+    filter_overbroad_namespace_map,
+    select_relevant_ontologies,
+)
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.tool.triple_manager.util import dedupe_terminal_ontologies
 from ontocast.tool.vector_store.core import (
@@ -816,6 +821,9 @@ class OntologyPatchRetriever(Tool):
 
     vector_store: VectorStoreManager = Field(exclude=True)
     sparql_tool: Any | None = Field(default=None, exclude=True)
+    # Typed ``Any`` for the same reason as ``sparql_tool``: OntologyManager holds a
+    # back-reference to this class, so a concrete annotation would be a cycle.
+    ontology_manager: Any | None = Field(default=None, exclude=True)
     patch: PatchRetrievalConfig = Field(
         default_factory=PatchRetrievalConfig,
         exclude=True,
@@ -825,6 +833,129 @@ class OntologyPatchRetriever(Tool):
     @property
     def last_retrieval_metrics(self) -> dict[str, Any]:
         return self._last_retrieval_metrics
+
+    async def _acandidate_context(
+        self,
+        *,
+        entity_uris: list[str],
+        ontology_iris: list[str],
+        ontology_version_filters: dict[str, set[str]] | None,
+        ontology_hash_filters: dict[str, set[str]] | None,
+        depth: int,
+    ) -> tuple[RDFGraph, dict[str, str]]:
+        """Build the working graph from a CONSTRUCT instead of merging catalogs.
+
+        Version and hash filters are applied to the *headers*, so the CONSTRUCT is
+        restricted to exactly the named graphs the merge path would have selected.
+
+        Prefix bindings cannot come from a CONSTRUCT, so they are rebuilt from the
+        catalog's author-prefix table; standard vocabulary prefixes are bound
+        downstream by :func:`_bind_common_vocab_prefixes` as on the merge path.
+
+        Returns:
+            tuple: ``(candidate_graph, prefix_map)``.
+        """
+        manager = self.ontology_manager
+        assert manager is not None and self.sparql_tool is not None
+        store = self.sparql_tool.triple_store_manager
+        headers = select_relevant_ontologies(
+            dedupe_terminal_ontologies(await manager.aget_catalog_headers()),
+            ontology_iris,
+            ontology_version_filters,
+            ontology_hash_filters,
+        )
+        if not headers:
+            return RDFGraph(), {}
+
+        graph_irefs = _sparql_irefs([header.graph_uri for header in headers])
+        seed_irefs = _sparql_irefs(entity_uris)
+        if not graph_irefs or not seed_irefs:
+            return RDFGraph(), {}
+
+        candidate = RDFGraph()
+        for chunk in _chunked(seed_irefs, _MAX_VALUES_TERMS):
+            partial = await store.aconstruct(
+                build_candidate_subgraph_query(chunk, graph_irefs, depth=depth)
+            )
+            candidate += partial
+
+        prefix_map: dict[str, str] = {}
+        for header in headers:
+            namespace = str(header.namespace)
+            prefix = manager.author_prefix_for_namespace(namespace)
+            if prefix:
+                prefix_map[prefix] = namespace
+        prefix_map = filter_overbroad_namespace_map(prefix_map)
+        for prefix, namespace in prefix_map.items():
+            candidate.bind(prefix, Namespace(namespace))
+        return candidate, prefix_map
+
+    async def _aresolve_merged_context(
+        self,
+        *,
+        entity_uris: list[str],
+        ontology_iris: list[str],
+        catalog: list[Ontology] | None,
+        ontology_version_filters: dict[str, set[str]] | None,
+        ontology_hash_filters: dict[str, set[str]] | None,
+        depth: int,
+        candidate_pushdown: bool,
+    ) -> tuple[RDFGraph, dict[str, str]] | None:
+        """Resolve the merged ontology context through the catalog, or ``None``.
+
+        Returning ``None`` leaves the induced-subgraph call on its own fetch path,
+        which is what happens when no catalog is registered or a read fails.
+        ``catalog`` being set means the reference-expansion fallback already
+        materialized everything, so there is nothing left to save here.
+
+        Args:
+            ontology_iris: Ontology IRIs surviving reference expansion.
+            catalog: Ontologies already materialized by the fallback path, if any.
+            ontology_version_filters: Allowed versions per ontology IRI.
+            ontology_hash_filters: Allowed hashes per ontology IRI.
+
+        Returns:
+            tuple | None: ``(merged_graph, prefix_map)``, or ``None`` to fall back.
+        """
+        manager = self.ontology_manager
+        if manager is None or catalog is not None:
+            return None
+        store = self.sparql_tool.triple_store_manager if self.sparql_tool else None
+        use_pushdown = (
+            candidate_pushdown
+            and store is not None
+            and store.supports_sparql_construct()
+        )
+        try:
+            if use_pushdown:
+                merged = await self._acandidate_context(
+                    entity_uris=entity_uris,
+                    ontology_iris=ontology_iris,
+                    ontology_version_filters=ontology_version_filters,
+                    ontology_hash_filters=ontology_hash_filters,
+                    depth=depth,
+                )
+                mode = "sparql_candidate"
+            else:
+                selected = select_relevant_ontologies(
+                    await manager.aget_ontologies_by_iri(ontology_iris),
+                    ontology_iris,
+                    ontology_version_filters,
+                    ontology_hash_filters,
+                )
+                merged = await manager.aget_merged_graph(selected)
+                mode = "merged_catalog"
+        except Exception as exc:
+            logger.warning(
+                "Catalog context via OntologyManager failed (%s); "
+                "falling back to a direct triple-store read",
+                exc,
+            )
+            return None
+        self._last_retrieval_metrics.update(manager.catalog_cache_stats())
+        self._last_retrieval_metrics["catalog_context_mode"] = mode
+        self._last_retrieval_metrics["catalog_context_triples"] = len(merged[0])
+        return merged
 
     def _effective_top_k(self, top_k: int | None) -> int:
         if top_k is not None:
@@ -1035,11 +1166,22 @@ class OntologyPatchRetriever(Tool):
                 self._last_retrieval_metrics["expanded_ontology_iris"] = expanded
             self._last_retrieval_metrics.update(expansion_metrics)
 
+        merged_context = await self._aresolve_merged_context(
+            entity_uris=entity_uris,
+            ontology_iris=ontology_iris,
+            catalog=catalog,
+            ontology_version_filters=ontology_version_filters or None,
+            ontology_hash_filters=ontology_hash_filters or None,
+            depth=subgraph_depth,
+            candidate_pushdown=sc.induced_subgraph_candidate_pushdown,
+        )
+
         hub_seed_count = sc.induced_subgraph_hub_seed_count
         ancestor_depth = sc.induced_subgraph_ancestor_closure_depth
 
         graph = await self.sparql_tool.aget_induced_subgraph(
             ontologies=catalog,
+            merged=merged_context,
             entity_uris=entity_uris,
             entity_relevance=entity_relevance,
             entity_roles=entity_roles,

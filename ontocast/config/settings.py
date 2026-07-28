@@ -917,6 +917,16 @@ class VectorStoreConfig(BaseSettings):
             "allocation in induced subgraph retrieval."
         ),
     )
+    induced_subgraph_candidate_pushdown: bool = Field(
+        default=False,
+        description=(
+            "Build the induced-subgraph working graph from a SPARQL CONSTRUCT of the "
+            "seeds' bounded neighborhood instead of the merged ontology graphs. Bounds "
+            "memory and wire volume on large catalogs; on small ones the neighborhood is "
+            "essentially the whole ontology and there is nothing to gain. Requires a "
+            "backend with supports_sparql_construct(); falls back silently otherwise."
+        ),
+    )
     proposition_window_sentences: int = Field(
         default=2,
         ge=1,

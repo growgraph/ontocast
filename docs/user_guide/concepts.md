@@ -9,12 +9,13 @@ OntoCast manages ontologies with automatic versioning and timestamp tracking:
 - **Canonical identity**: catalog entries are keyed by ontology **IRI**; short `ontology_id` and author Turtle **prefix** are aliases (they may differ, e.g. `observation` / `obs`)
 - **Semantic Versioning**: MAJOR/MINOR/PATCH increments from change analysis
 - **Hash-Based Lineage**: Parent hashes track ontology evolution
-- **Multiple Versions**: Stored as separate named graphs in Fuseki
+- **Multiple Versions**: Stored as separate named graphs (Fuseki or in-memory pyoxigraph)
 - **Timestamp Tracking**: `updated_at` synced as `dcterms:modified`
 - **Versioned IRIs**: Unique IRIs with hash fragments for storage
 - **Working context**: multi-ontology prompt snapshots use `OntologySnapshot` (graph + `source_iris`, no catalog id) instead of inventing a single catalog identity from a union graph
 - **Writeback**: ontology complements are applied to catalog terminals by namespace ownership after subtracting triples already present in the prompt snapshot
 - **Prefixes**: graph merges rename conflicting prefixes rather than silently overriding bindings; serialization aliases remain sugar over absolute IRIs
+- **Catalog reads**: `OntologyManager` owns identity/aliases, terminal selection, and the content-addressed graph cache — see [Ontology Catalog](../architecture/ontology_catalog.md)
 
 ## GraphUpdate System
 
@@ -93,6 +94,8 @@ Rules the model is steered to follow:
 - A matching **class** does not mean a matching **individual** — text occurrences become new `cd:` nodes typed with that class.
 - Do not place ontology class IRIs in subject/object slots; do not type `cd:` entities as `rdfs:Class` or `rdf:Property`.
 
+**Prefix hygiene in facts prompts:** the domain-ontologies clause excludes rdflib’s default bindings (`brick`, `csvw`, `geo`, `xml`, …). Author-declared short prefixes (e.g. `matsci:`) stay canonical; IRI-tail `ontology_id` values do not force a duplicate prefix. Reserved namespaces such as `xml:` are left untouched (no `xml1:` minting).
+
 Details and examples: [User Instructions](user_instructions.md#facts-extraction-guidelines).
 
 ## Entity Disambiguation
@@ -115,7 +118,7 @@ Before rendering, each unit receives ontology context from one of three modes:
 |------|--------|
 | `selected_single_ontology` | LLM picks a catalog TTL per unit |
 | `selected_vector_search_ontology` | Qdrant or LanceDB hybrid retrieval + induced subgraph |
-| `fixed_single_ontology` | Pinned catalog `ontology_id` |
+| `fixed_single_ontology` | Pinned catalog ontology (IRI, `ontology_id`, or author prefix) |
 
 Details: [Ontology Context](ontology_context.md).
 
@@ -147,7 +150,10 @@ Details: [Tenancy](tenancy.md).
 
 | Component | Role |
 |-----------|------|
-| `Ontology` | Versioned RDF graph with metadata (id, hash, lineage) |
+| `Ontology` | Versioned RDF graph with metadata (IRI, id, hash, lineage) |
+| `OntologyHeader` | Graph-less catalog metadata (iri, version, hash, graph_uri) |
+| `OntologySnapshot` | Prompt view of one or more catalog graphs (`source_iris`, no catalog id) |
+| `OntologyManager` | Catalog identity, aliases, terminal selection, content-addressed graph cache |
 | `RDFGraph` | RDF 1.2-aware graph wrapper (Turtle + JSON-LD) |
 | `AgentState` | Document-level workflow state |
 | `UnitOntologyState` / `UnitFactsState` | Per-unit loop state |

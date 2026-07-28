@@ -192,6 +192,42 @@ class TripleStoreManager(Tool):
         """
         raise NotImplementedError(f"{type(self).__name__} does not support aselect()")
 
+    def supports_sparql_construct(self) -> bool:
+        """True when :meth:`aconstruct` reaches a real SPARQL engine.
+
+        Separate from :meth:`supports_sparql_select` because a backend can answer
+        row queries without being able to return triples: the Fuseki SELECT path
+        speaks ``application/sparql-results+json`` only.
+        """
+        return False
+
+    async def aconstruct(
+        self, query: str, *, use_ontologies_dataset: bool = True
+    ) -> RDFGraph:
+        """Run a SPARQL CONSTRUCT against the active partition.
+
+        Unlike :meth:`aselect`, the result carries real RDF terms, so blank nodes
+        and datatypes survive. Prefix bindings do **not** -- they are serialization
+        metadata rather than triples, and must be re-sourced by the caller.
+
+        Implementations must raise rather than return an empty graph on failure,
+        for the same reason :meth:`aselect` must raise: an empty result is
+        indistinguishable from "nothing matched".
+
+        Args:
+            query: A SPARQL CONSTRUCT (or DESCRIBE) query.
+            use_ontologies_dataset: Query the ontologies partition rather than facts.
+
+        Returns:
+            RDFGraph: The constructed triples, without prefix bindings.
+
+        Raises:
+            NotImplementedError: If the backend has no SPARQL engine.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support aconstruct()"
+        )
+
     async def afetch_ontology_catalog(self) -> list[OntologyHeader]:
         """Fetch per-named-graph ontology header metadata.
 

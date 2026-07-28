@@ -7,7 +7,7 @@ enabling incremental updates instead of full graph replacement.
 import asyncio
 import logging
 from collections import defaultdict, deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from rdflib import BNode, Literal, Namespace, URIRef
 from rdflib.namespace import DCTERMS, OWL, RDF, RDFS, SKOS
@@ -19,6 +19,7 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import SPARQLOperationModel
 from ontocast.tool.representation_text import ROLE_PREDICATE
 from ontocast.tool.triple_manager.core import TripleStoreManager
+from ontocast.tool.triple_manager.util import LineageT
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +147,7 @@ _PROPERTY_TYPES: frozenset[URIRef] = frozenset(
 )
 
 
-def _filter_overbroad_namespace_map(ns_map: dict[str, str]) -> dict[str, str]:
+def filter_overbroad_namespace_map(ns_map: dict[str, str]) -> dict[str, str]:
     """Drop namespace bindings whose URI is a strict prefix of another in the map."""
     all_ns_uris = set(ns_map.values())
     return {
@@ -154,6 +155,176 @@ def _filter_overbroad_namespace_map(ns_map: dict[str, str]) -> dict[str, str]:
         for prefix, uri in ns_map.items()
         if not any(other != uri and other.startswith(uri) for other in all_ns_uris)
     }
+
+
+def _bidirectional_non_noisy_step() -> str:
+    """SPARQL path matching one hop over any predicate the builder would traverse.
+
+    A negated property set may mix forward and inverse IRIs, so listing both
+    directions of every noisy predicate yields "one hop either way, excluding the
+    predicates :data:`_NOISY_EXPANSION_PREDICATES` names".
+    """
+    terms = [f"<{predicate}>" for predicate in sorted(_NOISY_EXPANSION_PREDICATES)]
+    terms += [f"^<{predicate}>" for predicate in sorted(_NOISY_EXPANSION_PREDICATES)]
+    return "!({})".format("|".join(terms))
+
+
+def build_candidate_subgraph_query(
+    seed_irefs: Sequence[str],
+    graph_irefs: Sequence[str],
+    *,
+    depth: int,
+) -> str:
+    """Build a CONSTRUCT for everything :func:`_build_induced_subgraph` may read.
+
+    Four branches, each a direct translation of a read pattern in the builder:
+
+    1. ``owl:Ontology`` header triples, which populate the ``ontology_subjects``
+       exclusion set.
+    2. Triples incident to any node within ``depth`` hops of a seed -- what
+       :func:`_bfs_expand_from_seed` visits and materializes.
+    3. Triples incident to the ``rdfs:subClassOf`` ancestors of the seeds and of
+       their types -- :func:`_add_subclass_ancestor_closure` after seed promotion.
+       Unbounded ``*`` rather than the configured hop limit, deliberately: a
+       superset is safe, a subset is not.
+    4. Definition triples of properties whose ``rdfs:domain``/``rdfs:range`` is a
+       seed or a seed's type -- :func:`_crosslink_property_seeds`.
+
+    Not covered: the cross-component schema-path repair
+    (:func:`_find_schema_path_in_merged_graph`) can search up to
+    ``_SCHEMA_PATH_MAX_DEPTH`` hops from nodes that are themselves ``depth + 1``
+    hops out, so a bridge may lie outside this candidate set. The consequence is a
+    *missing* bridge -- a smaller, still-correct snapshot -- never a wrong triple.
+
+    Args:
+        seed_irefs: Seed IRIs, already escaped as ``<iri>`` IRIREFs.
+        graph_irefs: Named graph IRIs to restrict to, escaped as IRIREFs.
+        depth: Neighborhood hop count, matching the builder's ``depth``.
+
+    Returns:
+        str: A SPARQL CONSTRUCT query.
+    """
+    step = _bidirectional_non_noisy_step()
+    # Hop 0 repeats the seeds as ``VALUES ?node`` rather than ``BIND(?seed AS ?node)``:
+    # a BIND in its own group cannot see ``?seed`` from the enclosing group, so it
+    # would leave ``?node`` unbound and the incident pattern would match every
+    # triple in the dataset.
+    ball_branches = ["{{ VALUES ?node {{ {} }} }}".format(" ".join(seed_irefs))]
+    ball_branches += [
+        "{{ ?seed {} ?node }}".format("/".join([step] * hops))
+        for hops in range(1, max(0, depth) + 1)
+    ]
+    incident = (
+        "{ { ?node ?p ?o . BIND(?node AS ?s) } UNION "
+        "{ ?s ?p ?node . BIND(?node AS ?o) } }"
+    )
+    # ``FROM``, not ``GRAPH ?g``: a GRAPH block binds one graph for the whole
+    # pattern, so a path could never cross an ontology boundary -- which is exactly
+    # the cross-ontology ``rdfs:subClassOf`` case this retrieval exists to follow.
+    # ``FROM`` merges the selected graphs into the default graph first, matching
+    # what :func:`merge_ontology_graphs` does in Python.
+    from_clause = "\n".join(f"FROM {iref}" for iref in graph_irefs)
+    return f"""
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+CONSTRUCT {{ ?s ?p ?o }}
+{from_clause}
+WHERE {{
+  VALUES ?seed {{ {" ".join(seed_irefs)} }}
+  {{ ?s a owl:Ontology . ?s ?p ?o }}
+  UNION
+  {{ {" UNION ".join(ball_branches)} {incident} }}
+  UNION
+  {{ ?seed rdf:type?/rdfs:subClassOf* ?anc .
+     {{ {{ ?anc ?p ?o . BIND(?anc AS ?s) }} UNION
+       {{ ?s ?p ?anc . BIND(?anc AS ?o) }} }} }}
+  UNION
+  {{ ?seed rdf:type? ?cls .
+     ?prop rdfs:domain|rdfs:range ?cls .
+     ?prop ?p ?o . BIND(?prop AS ?s) }}
+}}
+"""
+
+
+def select_relevant_ontologies(
+    ontologies: Sequence[LineageT],
+    ontology_iris: list[str] | None,
+    ontology_version_filters: dict[str, set[str]] | None,
+    ontology_hash_filters: dict[str, set[str]] | None,
+) -> list[LineageT]:
+    """Filter a catalog down to the ontologies an induced subgraph may draw on.
+
+    An empty ``ontology_iris`` means "no restriction". Version and hash filters
+    only apply to IRIs they mention, so an ontology absent from both passes
+    through untouched.
+
+    Generic over lineage-bearing records so the same predicate runs on graph-less
+    :class:`~ontocast.onto.ontology_header.OntologyHeader` values -- which is what
+    the SPARQL candidate path filters, having no graphs to filter.
+
+    Args:
+        ontologies: Candidate catalog ontologies or headers.
+        ontology_iris: Allowed ontology IRIs, or empty/None for all.
+        ontology_version_filters: Allowed semantic versions per ontology IRI.
+        ontology_hash_filters: Allowed content hashes per ontology IRI.
+
+    Returns:
+        list: The surviving records, in input order.
+    """
+    ontology_filter = set(ontology_iris or [])
+    relevant: list[LineageT] = []
+    for ontology in ontologies:
+        if ontology_filter and ontology.iri not in ontology_filter:
+            continue
+        if ontology_version_filters and ontology.iri in ontology_version_filters:
+            ontology_version = (
+                str(ontology.version) if ontology.version is not None else None
+            )
+            if ontology_version not in ontology_version_filters[ontology.iri]:
+                continue
+        if ontology_hash_filters and ontology.iri in ontology_hash_filters:
+            if ontology.hash not in ontology_hash_filters[ontology.iri]:
+                continue
+        relevant.append(ontology)
+    return relevant
+
+
+def merge_ontology_graphs(
+    ontologies: Sequence[Ontology],
+) -> tuple[RDFGraph, dict[str, str]]:
+    """Union ontology graphs into one graph carrying their prefix bindings.
+
+    Prefix bindings are harvested from each source graph's namespace manager --
+    they are serialization metadata rather than triples, so they only exist here
+    because the sources were parsed from Turtle.
+
+    The result is treated as read-only by every consumer: the induced-subgraph
+    builder reads it as an oracle and writes exclusively to its own result graph.
+    That is what makes the merge safe to cache and share across content units.
+
+    Args:
+        ontologies: Ontology versions to merge.
+
+    Returns:
+        tuple: The merged graph and the surviving prefix → namespace map, which
+        the caller binds onto the snapshot it builds. The map is returned rather
+        than re-read from the merged graph so callers see exactly the author
+        bindings, not rdflib's built-in ones.
+    """
+    all_ns_map: dict[str, str] = {}
+    for ontology in ontologies:
+        for prefix, namespace in ontology.graph.namespaces():
+            if prefix:
+                all_ns_map[prefix] = str(namespace)
+    filtered_ns = filter_overbroad_namespace_map(all_ns_map)
+
+    merged_graph = RDFGraph()
+    for prefix, uri in filtered_ns.items():
+        merged_graph.bind(prefix, Namespace(uri))
+    for ontology in ontologies:
+        merged_graph += ontology.graph
+    return merged_graph, filtered_ns
 
 
 def _prune_orphaned_bnode_subjects(graph: RDFGraph) -> None:
@@ -1448,39 +1619,30 @@ class SPARQLTool:
         entity_roles: Mapping[str, str | None] | None = None,
         hub_seed_count: int = 8,
         ancestor_closure_depth: int = 3,
+        merged: tuple[RDFGraph, dict[str, str]] | None = None,
     ) -> tuple[RDFGraph, dict[str, int]]:
-        """Merge filtered graphs; schema shell, hub BFS, and connectivity repair."""
+        """Merge filtered graphs; schema shell, hub BFS, and connectivity repair.
 
-        ontology_filter = set(ontology_iris or [])
-        relevant_graphs: list[RDFGraph] = []
-        for ontology in ontologies:
-            if ontology_filter and ontology.iri not in ontology_filter:
-                continue
-            if ontology_version_filters and ontology.iri in ontology_version_filters:
-                ontology_version = (
-                    str(ontology.version) if ontology.version is not None else None
-                )
-                if ontology_version not in ontology_version_filters[ontology.iri]:
-                    continue
-            if ontology_hash_filters and ontology.iri in ontology_hash_filters:
-                if ontology.hash not in ontology_hash_filters[ontology.iri]:
-                    continue
-            relevant_graphs.append(ontology.graph)
-        if not relevant_graphs:
-            return RDFGraph(), {}
+        Args:
+            merged: Pre-merged ``(graph, prefix_map)`` for the already-filtered
+                ontologies. When supplied, ``ontologies`` and the three filter
+                arguments are not consulted -- the caller has resolved them.
+        """
 
-        all_ns_map: dict[str, str] = {}
-        for graph in relevant_graphs:
-            for prefix, namespace in graph.namespaces():
-                if prefix:
-                    all_ns_map[prefix] = str(namespace)
-        filtered_ns = _filter_overbroad_namespace_map(all_ns_map)
-
-        merged_graph = RDFGraph()
-        for prefix, uri in filtered_ns.items():
-            merged_graph.bind(prefix, Namespace(uri))
-        for graph in relevant_graphs:
-            merged_graph += graph
+        if merged is None:
+            relevant = select_relevant_ontologies(
+                ontologies,
+                ontology_iris,
+                ontology_version_filters,
+                ontology_hash_filters,
+            )
+            if not relevant:
+                return RDFGraph(), {}
+            merged_graph, filtered_ns = merge_ontology_graphs(relevant)
+        else:
+            merged_graph, filtered_ns = merged
+            if len(merged_graph) == 0:
+                return RDFGraph(), {}
 
         ontology_subjects: frozenset[str] = frozenset(
             str(s) for s, _, _ in merged_graph.triples((None, RDF.type, OWL.Ontology))
@@ -1654,6 +1816,24 @@ class SPARQLTool:
         )
         return result, metrics
 
+    def _fetch_ontologies_sync(self, ontology_iris: list[str] | None) -> list[Ontology]:
+        """Read only the requested ontologies, from synchronous context.
+
+        Raises:
+            RuntimeError: If called while an event loop is running. Use
+                :meth:`aget_induced_subgraph` from async code.
+        """
+        manager = self.triple_store_manager
+        assert manager is not None
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(manager.afetch_ontologies_by_iri(ontology_iris or []))
+        raise RuntimeError(
+            "get_induced_subgraph() cannot fetch inside async code; "
+            "use await aget_induced_subgraph()"
+        )
+
     def get_induced_subgraph(
         self,
         entity_uris: list[str],
@@ -1668,13 +1848,16 @@ class SPARQLTool:
         hub_seed_count: int = 8,
         ancestor_closure_depth: int = 3,
         ontologies: list[Ontology] | None = None,
+        merged: tuple[RDFGraph, dict[str, str]] | None = None,
     ) -> RDFGraph:
         """Fetch a deterministic induced subgraph around selected entities.
 
         Args:
-            ontologies: Pre-fetched catalog to build from. When ``None`` the
-                catalog is read from the triple store. Callers that already hold
-                a catalog should pass it to avoid a redundant fetch.
+            ontologies: Pre-fetched catalog to build from. When ``None`` only the
+                ontologies named by ``ontology_iris`` are read from the triple
+                store (the whole catalog when ``ontology_iris`` is empty).
+            merged: Pre-merged ``(graph, prefix_map)``. Supplying it skips both
+                the fetch and the merge entirely.
         """
         if self.triple_store_manager is None:
             return RDFGraph()
@@ -1685,10 +1868,10 @@ class SPARQLTool:
         if estimated_triples_per_query <= 0:
             return RDFGraph()
 
-        if ontologies is None:
-            ontologies = self.triple_store_manager.fetch_ontologies()
+        if merged is None and ontologies is None:
+            ontologies = self._fetch_ontologies_sync(ontology_iris)
         result, metrics = SPARQLTool._build_induced_subgraph(
-            ontologies,
+            ontologies or [],
             entity_uris,
             entity_relevance,
             ontology_iris,
@@ -1700,6 +1883,7 @@ class SPARQLTool:
             entity_roles,
             hub_seed_count,
             ancestor_closure_depth,
+            merged,
         )
         self.last_finalize_metrics = metrics
         return result
@@ -1718,6 +1902,7 @@ class SPARQLTool:
         hub_seed_count: int = 8,
         ancestor_closure_depth: int = 3,
         ontologies: list[Ontology] | None = None,
+        merged: tuple[RDFGraph, dict[str, str]] | None = None,
     ) -> RDFGraph:
         """Like ``get_induced_subgraph`` but uses ``afetch_ontologies`` for I/O.
 
@@ -1725,6 +1910,8 @@ class SPARQLTool:
             ontologies: Pre-fetched catalog to build from. When ``None`` only the
                 ontologies named by ``ontology_iris`` are read from the triple
                 store (the whole catalog when ``ontology_iris`` is empty).
+            merged: Pre-merged ``(graph, prefix_map)``. Supplying it skips both
+                the fetch and the merge entirely.
         """
         if self.triple_store_manager is None:
             return self.get_induced_subgraph(
@@ -1740,6 +1927,7 @@ class SPARQLTool:
                 hub_seed_count=hub_seed_count,
                 ancestor_closure_depth=ancestor_closure_depth,
                 ontologies=ontologies,
+                merged=merged,
             )
         if depth < 0:
             raise ValueError("depth must be >= 0")
@@ -1748,13 +1936,13 @@ class SPARQLTool:
         if estimated_triples_per_query <= 0:
             return RDFGraph()
 
-        if ontologies is None:
+        if merged is None and ontologies is None:
             ontologies = await self.triple_store_manager.afetch_ontologies_by_iri(
                 ontology_iris or []
             )
         result, metrics = await asyncio.to_thread(
             SPARQLTool._build_induced_subgraph,
-            ontologies,
+            ontologies or [],
             entity_uris,
             entity_relevance,
             ontology_iris,
@@ -1766,6 +1954,7 @@ class SPARQLTool:
             entity_roles,
             hub_seed_count,
             ancestor_closure_depth,
+            merged,
         )
         self.last_finalize_metrics = metrics
         return result

@@ -155,6 +155,9 @@ class ToolBox:
             self.triple_store_manager = InMemoryTripleStoreManager()
 
         self.ontology_manager: OntologyManager = OntologyManager()
+        self.ontology_manager.register_triple_store(self.triple_store_manager)
+        # Tenancy the in-memory catalog currently reflects; None until first set.
+        self._active_tenancy: tuple[str, str] | None = None
         self.converter: ConverterTool = ConverterTool(
             cache=self.shared_cache,
             converter_config=tool_config.converter_config,
@@ -197,6 +200,7 @@ class ToolBox:
                 vector_store=vector_store,
                 sparql_tool=self.sparql_tool,
                 patch=tool_config.patch_retrieval,
+                ontology_manager=self.ontology_manager,
             )
             self.ontology_manager.register_vector_store(self.patch_retriever)
 
@@ -264,6 +268,8 @@ class ToolBox:
         if not t or not p:
             raise ValueError("tenant and project must be non-empty")
 
+        tenancy_changed = (t, p) != self._active_tenancy
+
         triple = self.triple_store_manager
         if triple is not None and triple.supports_tenancy_partition():
             await triple.update_tenancy(t, p)
@@ -271,6 +277,24 @@ class ToolBox:
                 fuseki_cfg = self.config.tool_config.fuseki
                 fuseki_cfg.dataset = triple.dataset
                 fuseki_cfg.ontologies_dataset = triple.ontologies_dataset
+
+        if tenancy_changed:
+            # The catalog, its alias-collision ledger, and the graph caches are all
+            # partition-scoped. Carrying them across a switch leaks one tenant's
+            # ontologies into another's requests -- and its alias ledger can reject
+            # a legitimately distinct ontology that reuses an ontology_id.
+            # ``None`` means this is the first assignment, which happens at startup
+            # before ``initialize()``; leave the population to it rather than
+            # fetching twice. Any later switch must repopulate -- including when the
+            # partition we are leaving was empty. Seed TTLs are deliberately not
+            # replayed here: writing them into a different tenant as a side effect
+            # of a query parameter would be a surprise.
+            is_first_assignment = self._active_tenancy is None
+            self.ontology_manager.reset_catalog()
+            self._active_tenancy = (t, p)
+            if not is_first_assignment and triple is not None:
+                for ontology in await triple.afetch_ontologies():
+                    self.ontology_manager.add_ontology(ontology, skip_vector_index=True)
 
         if self.vector_store is not None:
             self.vector_store.apply_tenancy(t, p)

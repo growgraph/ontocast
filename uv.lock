@@ -3242,7 +3242,7 @@ dependencies = [
 ]
 name = "ontocast"
 source = {editable = "."}
-version = "0.4.3"
+version = "0.4.4"
 
 [package.metadata]
 provides-extras = ["all", "dev", "docs", "lancedb", "plot"]

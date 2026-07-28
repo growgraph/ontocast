@@ -30,6 +30,8 @@ Tenant and project are **runtime parameters**, not environment variables. They m
 
 When `tenant` or `project` appears in the **query string**, the server retargets Fuseki datasets and vector-store partitions to the resolved scope. Requests without tenancy query parameters use the server's active tenant/project from startup (defaults: `ontocast` / `test`).
 
+A tenancy switch also **resets the in-memory ontology catalog** (`OntologyManager.reset_catalog()` + reload from the retargeted store). Seed TTLs from `ONTOCAST_ONTOLOGY_DIRECTORY` are **not** replayed into the new tenant — they are startup bootstrap only. Details: [Ontology Catalog](../architecture/ontology_catalog.md#why-it-resets-on-a-tenancy-switch).
+
 ## Configuration Interaction
 
 When `FUSEKI_DATASET` or `FUSEKI_ONTOLOGIES_DATASET` are **unset**, Fuseki config derives names from the default tenant/project at startup. Per-request `tenant`/`project` overrides route to the corresponding datasets at runtime.
@@ -64,5 +66,6 @@ When Fuseki is not configured, OntoCast uses an in-memory pyoxigraph backend wit
 ## Related
 
 - [Triple Store Configuration](triple_stores.md)
+- [Ontology Catalog](../architecture/ontology_catalog.md)
 - [API Endpoints](api.md)
 - [Ontology Context](ontology_context.md)

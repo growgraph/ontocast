@@ -32,26 +32,32 @@ ontocast --env-path .env --input-path ./document.pdf
 
 # Process with chunk limit (for testing)
 ontocast --env-path .env --head-chunks 5
+
+# Override render/critic retry budget
+ontocast --env-path .env --input-path ./document.pdf --max-visits 2
+
+# Clean-slate vector reindex (embedding-contract / BM25 schema changes)
+ontocast --env-path .env --wipe-vector-store
 ```
 
-- Backend selection is **fully automatic** based on available configuration
-- No explicit backend flags needed - just provide the required credentials/paths in .env
-- All paths and directories are configured via .env file
+- Triple store: Fuseki when `FUSEKI_URI` is set; otherwise in-memory pyoxigraph
+- Vector store: Qdrant (`QDRANT_URI`) or LanceDB (`LANCEDB_ENABLED=true`), not both
+- Paths and directories are configured via `.env`
 
 ### Configuration
 
-OntoCast uses a hierarchical configuration system with environment variables. Create a `.env` file in your project directory:
+OntoCast uses a hierarchical configuration system with environment variables. Create a `.env` file in your project directory (or copy `.env.example`):
 
 ```bash
-# Domain configuration (used for URI generation) 
+# Domain configuration (used for URI generation)
 CURRENT_DOMAIN=https://example.com
 PORT=8999
-LLM_TEMPERATURE=0.0
 
 # LLM Configuration
 LLM_PROVIDER=openai
 LLM_API_KEY=your-api-key-here
 LLM_MODEL_NAME=gpt-4o-mini
+LLM_TEMPERATURE=0.0
 
 # Server Configuration
 MAX_VISITS=1
@@ -64,22 +70,14 @@ PARALLEL_FACTS_RETRIES=3
 PARALLEL_ONTOLOGY_RETRIES=3
 ENABLE_ONTOLOGY_CONSOLIDATION=false
 
-# Backend Configuration (auto-detected)
-FUSEKI_URI=http://localhost:3032
-FUSEKI_AUTH=admin:password
-ONTOCAST_WORKING_DIRECTORY=/path/to/working
-
-# Path Configuration (required for filesystem backends)
+# Paths
 ONTOCAST_WORKING_DIRECTORY=/path/to/working/directory
 ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files
-ONTOCAST_CACHE_DIR=/path/to/cache/directory
+# ONTOCAST_CACHE_DIR=/path/to/cache/directory
 
-# Triple Store Configuration (optional)
-# Fuseki for persistence; omit both for in-memory pyoxigraph (default)
-FUSEKI_URI=http://localhost:3030
-FUSEKI_AUTH=username:password
-#FUSEKI_DATASET=ontocast--test--facts
-#FUSEKI_ONTOLOGIES_DATASET=ontocast--test--ontologies
+# Triple store (optional — omit FUSEKI_URI for in-memory pyoxigraph)
+# FUSEKI_URI=http://localhost:3030
+# FUSEKI_AUTH=admin:password
 
 # Optional aggregation controls
 AGG_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
@@ -116,8 +114,6 @@ LLM_API_KEY=your-google-api-key
 
 ### CLI Parameters
 
-You can use these CLI parameters:
-
 ```bash
 # Use custom .env file
 ontocast --env-path /path/to/custom.env
@@ -127,9 +123,15 @@ ontocast --env-path .env --input-path /path/to/document.pdf
 
 # Process only first 5 chunks (for testing)
 ontocast --env-path .env --head-chunks 5
+
+# Override MAX_VISITS for this run
+ontocast --env-path .env --input-path /path/to/document.pdf --max-visits 2
+
+# Drop and recreate the vector partition before reindex
+ontocast --env-path .env --wipe-vector-store
 ```
 
-**Note:** All paths and directories are configured via the `.env` file - no CLI overrides needed.
+**Note:** Paths and directories are configured via the `.env` file.
 
 ### Receive Results
 
@@ -157,15 +159,17 @@ OntoCast uses a hierarchical configuration system:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `LLM_API_KEY` | API key for LLM provider | Required |
-| `LLM_PROVIDER` | LLM provider (openai, ollama) | openai |
+| `LLM_API_KEY` | API key for LLM provider | Required for openai / anthropic / google |
+| `LLM_PROVIDER` | `openai`, `ollama`, `anthropic`, or `google` | openai |
 | `LLM_MODEL_NAME` | Model name | gpt-4o-mini |
-| `FUSEKI_URI` + `FUSEKI_AUTH` | Use Fuseki for persistent triple store | Omit for in-memory (default) |
+| `FUSEKI_URI` + `FUSEKI_AUTH` | Persistent triple store | Omit for in-memory (default) |
 | `ONTOCAST_ONTOLOGY_DIRECTORY` | Seed ontology TTL files | Optional bootstrap |
 | `MAX_VISITS` | Maximum visits per node | 1 |
 | `BASE_RECURSION_LIMIT` | Base recursion limit for workflow | 1000 |
 | `ONTOLOGY_MAX_TRIPLES` | Maximum triples allowed in ontology graph | 50000 |
 | `ENABLE_ONTOLOGY_CONSOLIDATION` | Run ontology consolidation pass | false |
+
+Full reference: [Configuration](../user_guide/configuration.md).
 
 ## Next Steps
 

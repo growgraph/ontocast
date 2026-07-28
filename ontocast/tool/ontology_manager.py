@@ -7,6 +7,8 @@ lineage using hash-based identifiers.
 
 import asyncio
 import logging
+from collections import OrderedDict
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, cast
 
@@ -14,11 +16,20 @@ from pydantic import Field
 
 from ..onto.null import NULL_ONTOLOGY
 from ..onto.ontology import Ontology
+from ..onto.ontology_header import OntologyHeader
 from ..onto.rdfgraph import RDFGraph
 from ..onto.util import normalize_ontology_iri
 from .onto import Tool
+from .triple_manager.core import TripleStoreManager
+from .triple_manager.util import dedupe_terminal_ontologies
 
 logger = logging.getLogger(__name__)
+
+#: Distinct ontology selections whose merged graphs stay resident. Content units
+#: within a document overwhelmingly repeat the same selection, so a handful of
+#: entries absorbs the whole fan-out; the bound only exists to stop a pathological
+#: document from pinning one merged graph per unit.
+_MERGED_CACHE_MAX_ENTRIES = 8
 
 if TYPE_CHECKING:
     from ontocast.tool.vector_store.patch_retriever import OntologyPatchRetriever
@@ -50,12 +61,24 @@ class OntologyManager(Tool):
         # Updated incrementally when ontologies are added.
         self._cached_ontologies: dict[str, str] = {}
         self._patch_retriever: OntologyPatchRetriever | None = None
+        self._triple_store_manager: TripleStoreManager | None = None
         # Canonical short handle per IRI (ontology_id); prefix may differ.
         self._iri_to_ontology_id: dict[str, str] = {}
         # Lowercased alias (ontology_id, author prefix, …) → IRI.
         self._alias_to_iri: dict[str, str] = {}
         # Preferred author prefix per namespace URI (for sanitize preference).
         self._namespace_to_author_prefix: dict[str, str] = {}
+        # Content-addressed caches. Keyed by ``versioned_iri`` (``{iri}#{sha256}``),
+        # so an entry can never go stale: a concurrent writer produces a *new*
+        # versioned IRI, which is a miss, never an incorrect hit.
+        self._graph_cache: dict[str, Ontology] = {}
+        self._merged_cache: OrderedDict[
+            frozenset[str], tuple[RDFGraph, dict[str, str]]
+        ] = OrderedDict()
+        self._graph_cache_hits = 0
+        self._graph_cache_misses = 0
+        self._merged_cache_hits = 0
+        self._merged_cache_misses = 0
 
     @staticmethod
     def _primary_ontology_id(ontology: Ontology) -> str:
@@ -263,6 +286,15 @@ class OntologyManager(Tool):
 
     def remove_ontology_by_iri(self, iri: str) -> None:
         """Drop all tracked versions for an ontology IRI and clear caches."""
+        for ontology in self.ontology_versions.get(iri, []):
+            self._graph_cache.pop(ontology.versioned_iri, None)
+        stale_merges = [
+            key
+            for key in self._merged_cache
+            if any(versioned.startswith(f"{iri}#") for versioned in key)
+        ]
+        for key in stale_merges:
+            del self._merged_cache[key]
         self.ontology_versions.pop(iri, None)
         self._cached_ontologies.pop(iri, None)
         self._iri_to_ontology_id.pop(iri, None)
@@ -283,6 +315,141 @@ class OntologyManager(Tool):
     def register_vector_store(self, retriever: "OntologyPatchRetriever") -> None:
         """Register a patch retriever for vector context lookups."""
         self._patch_retriever = retriever
+
+    def register_triple_store(self, manager: TripleStoreManager | None) -> None:
+        """Register the triple store this catalog reads through on a cache miss."""
+        self._triple_store_manager = manager
+
+    def reset_catalog(self) -> None:
+        """Drop every tracked ontology, identity binding, and cached graph.
+
+        Called when the active tenant/project changes: the catalog, the alias
+        collision ledger, and the graph caches are all partition-scoped, and
+        carrying them across a switch leaks one tenant's ontologies into another's
+        requests.
+        """
+        self.ontology_versions.clear()
+        self._cached_ontologies.clear()
+        self._iri_to_ontology_id.clear()
+        self._alias_to_iri.clear()
+        self._namespace_to_author_prefix.clear()
+        self._graph_cache.clear()
+        self._merged_cache.clear()
+
+    def _require_triple_store(self) -> TripleStoreManager:
+        if self._triple_store_manager is None:
+            raise RuntimeError(
+                "OntologyManager has no triple store registered; "
+                "call register_triple_store() before reading the catalog"
+            )
+        return self._triple_store_manager
+
+    async def aget_catalog_headers(self) -> list[OntologyHeader]:
+        """Read ontology header metadata for every stored version.
+
+        Deliberately **not** cached. Headers are what terminal-version selection
+        runs on, so caching them would let this process miss another worker's
+        writes to a shared store -- the one thing the graph cache cannot go wrong
+        about, and the one thing this would.
+
+        Returns:
+            list[OntologyHeader]: One header per stored ontology version.
+        """
+        return await self._require_triple_store().afetch_ontology_catalog()
+
+    async def aget_ontologies_by_iri(self, iris: Sequence[str]) -> list[Ontology]:
+        """Return terminal ontologies for ``iris``, fetching only cache misses.
+
+        Terminal selection always runs against freshly read headers; only the
+        graph bytes come from cache, keyed by the content-addressed
+        ``versioned_iri``.
+
+        Args:
+            iris: Ontology IRIs to resolve. Empty means "no restriction", matching
+                :meth:`~ontocast.tool.triple_manager.core.TripleStoreManager.afetch_ontologies_by_iri`.
+
+        Returns:
+            list[Ontology]: Terminal ontologies with graphs. Callers must treat
+            these as shared read-only references.
+        """
+        store = self._require_triple_store()
+        headers = dedupe_terminal_ontologies(await self.aget_catalog_headers())
+        if iris:
+            wanted = set(iris)
+            headers = [header for header in headers if header.iri in wanted]
+
+        resolved: list[Ontology] = []
+        missing_iris: list[str] = []
+        for header in headers:
+            cached = self._graph_cache.get(header.graph_uri)
+            if cached is not None:
+                self._graph_cache_hits += 1
+                resolved.append(cached)
+            else:
+                self._graph_cache_misses += 1
+                missing_iris.append(header.iri)
+
+        if missing_iris:
+            fetched = await store.afetch_ontologies_by_iri(missing_iris)
+            for ontology in fetched:
+                self._cache_graph(ontology)
+            resolved.extend(fetched)
+        return resolved
+
+    async def aget_merged_graph(
+        self, ontologies: Sequence[Ontology]
+    ) -> tuple[RDFGraph, dict[str, str]]:
+        """Return the prefix-bound union of ``ontologies``, cached by version set.
+
+        The induced-subgraph builder reads this union without mutating it, so one
+        merge can be shared by every content unit that selects the same ontology
+        versions -- which is the common case inside a document.
+
+        Args:
+            ontologies: Ontology versions to merge.
+
+        Returns:
+            tuple: ``(merged_graph, prefix_map)``. The graph **must not be mutated
+            by callers**; it is shared.
+        """
+        from .sparql import merge_ontology_graphs
+
+        key = frozenset(onto.versioned_iri for onto in ontologies)
+        cached = self._merged_cache.get(key)
+        if cached is not None:
+            self._merged_cache_hits += 1
+            self._merged_cache.move_to_end(key)
+            return cached
+
+        self._merged_cache_misses += 1
+        merged = await asyncio.to_thread(merge_ontology_graphs, list(ontologies))
+        self._merged_cache[key] = merged
+        while len(self._merged_cache) > _MERGED_CACHE_MAX_ENTRIES:
+            self._merged_cache.popitem(last=False)
+        return merged
+
+    def catalog_cache_stats(self) -> dict[str, int]:
+        """Cache hit/miss counters, for tests and retrieval diagnostics."""
+        return {
+            "catalog_graph_cache_hits": self._graph_cache_hits,
+            "catalog_graph_cache_misses": self._graph_cache_misses,
+            "catalog_merge_cache_hits": self._merged_cache_hits,
+            "catalog_merge_cache_misses": self._merged_cache_misses,
+        }
+
+    def _cache_graph(self, ontology: Ontology) -> None:
+        """Register a store-read ``ontology`` under its content-addressed versioned IRI.
+
+        Only ever called with graphs that came *from* the triple store. Seeding the
+        cache from :meth:`add_ontology` instead would be tempting -- those graphs are
+        already in memory -- but a registered ontology and its persisted form are not
+        byte-identical: writing round-trips through deterministic Turtle, which
+        relabels blank nodes. Snapshot expansion tie-breaks on ``str(triple)``, so
+        mixing the two makes retrieval depend on whether a graph happened to be
+        written by this process.
+        """
+        if ontology.hash:
+            self._graph_cache.setdefault(ontology.versioned_iri, ontology)
 
     def _effective_patch_top_k(self, top_k: int | None) -> int:
         if top_k is not None:

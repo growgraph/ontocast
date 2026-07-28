@@ -142,6 +142,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         self._full_catalog_fetches = 0
         self._graph_fetches = 0
         self._select_queries = 0
+        self._construct_queries = 0
 
     async def async_init(self) -> None:
         """Initialize configured Fuseki datasets explicitly.
@@ -508,8 +509,41 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             for binding in response.json().get("results", {}).get("bindings", [])
         ]
 
+    def _sparql_endpoint(self, *, use_ontologies_dataset: bool) -> str:
+        """Resolve the SPARQL query endpoint for the active tenancy partition."""
+        dataset_url = (
+            self._get_ontologies_dataset_url()
+            if use_ontologies_dataset
+            else self._get_dataset_url()
+        )
+        return f"{dataset_url}/sparql"
+
     def supports_sparql_select(self) -> bool:
         return True
+
+    def supports_sparql_construct(self) -> bool:
+        return True
+
+    async def aconstruct(
+        self, query: str, *, use_ontologies_dataset: bool = True
+    ) -> RDFGraph:
+        """Run a SPARQL CONSTRUCT against the active dataset, parsing Turtle back.
+
+        Tenancy is implicit, as for :meth:`aselect`.
+        """
+        client = await self._get_client()
+        self._construct_queries += 1
+        response = await client.post(
+            self._sparql_endpoint(use_ontologies_dataset=use_ontologies_dataset),
+            data={"query": query},
+            headers={"Accept": "text/turtle"},
+        )
+        response.raise_for_status()
+        result = RDFGraph()
+        text = response.text
+        if text.strip():
+            result.parse(data=text, format="turtle")
+        return result
 
     async def aselect(
         self, query: str, *, use_ontologies_dataset: bool = True
@@ -519,13 +553,12 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         Tenancy is implicit: :meth:`update_tenancy` rewrites the dataset names this
         resolves through.
         """
-        dataset_url = (
-            self._get_ontologies_dataset_url()
-            if use_ontologies_dataset
-            else self._get_dataset_url()
-        )
         client = await self._get_client()
-        return await self._sparql_select_rows(client, f"{dataset_url}/sparql", query)
+        return await self._sparql_select_rows(
+            client,
+            self._sparql_endpoint(use_ontologies_dataset=use_ontologies_dataset),
+            query,
+        )
 
     async def afetch_ontology_catalog(self) -> list[OntologyHeader]:
         """Read one header per stored ontology version via a single SELECT."""
@@ -550,6 +583,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             "full_catalog_fetches": self._full_catalog_fetches,
             "graph_fetches": self._graph_fetches,
             "select_queries": self._select_queries,
+            "construct_queries": self._construct_queries,
         }
 
     async def _list_ontology_graph_uris(self, client: httpx.AsyncClient) -> list[str]:

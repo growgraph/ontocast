@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from rdflib import Literal, URIRef
+from rdflib.namespace import RDFS
 
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
@@ -278,5 +280,56 @@ def test_catalog_normalizes_non_semantic_version() -> None:
 
         headers = await manager.afetch_ontology_catalog()
         assert [header.version for header in headers] == ["1.0.0"]
+
+    asyncio.run(main())
+
+
+def test_in_memory_supports_sparql_construct() -> None:
+    assert InMemoryTripleStoreManager().supports_sparql_construct() is True
+
+
+def test_aconstruct_returns_typed_terms() -> None:
+    """Unlike aselect rows, a CONSTRUCT result carries real RDF terms."""
+
+    async def main() -> None:
+        manager = InMemoryTripleStoreManager()
+        manager.serialize(_sample_ontology())
+
+        graph = await manager.aconstruct(
+            "CONSTRUCT { ?s ?p ?o } WHERE { GRAPH ?g { ?s ?p ?o } }"
+        )
+        assert len(graph) == len(_sample_ontology().graph)
+        labels = list(
+            graph.objects(
+                URIRef("https://example.org/test#Thing"),
+                RDFS.label,
+            )
+        )
+        assert labels == [Literal("Thing")]
+
+    asyncio.run(main())
+
+
+def test_aconstruct_rejects_select_query() -> None:
+    """A wrong query kind must fail cleanly, not leak an unsendable result handle."""
+
+    async def main() -> None:
+        manager = InMemoryTripleStoreManager()
+        manager.serialize(_sample_ontology())
+        with pytest.raises(TypeError):
+            await manager.aconstruct("SELECT ?s WHERE { GRAPH ?g { ?s ?p ?o } }")
+
+    asyncio.run(main())
+
+
+def test_aconstruct_respects_tenancy() -> None:
+    async def main() -> None:
+        manager = InMemoryTripleStoreManager()
+        manager.serialize(_sample_ontology())
+        query = "CONSTRUCT { ?s ?p ?o } WHERE { GRAPH ?g { ?s ?p ?o } }"
+        assert len(await manager.aconstruct(query)) > 0
+
+        await manager.update_tenancy("other", "project")
+        assert len(await manager.aconstruct(query)) == 0
 
     asyncio.run(main())

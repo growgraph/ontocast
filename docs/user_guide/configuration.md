@@ -83,7 +83,7 @@ MAX_VISITS=1                             # alias for max_visits_per_node
 RENDER_MODE=ontology_and_facts           # ontology | facts | ontology_and_facts
 LLM_GRAPH_FORMAT=turtle                  # turtle | jsonld
 ONTOLOGY_CONTEXT_MODE=selected_single_ontology
-#ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID=catalog_id
+#ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID=catalog_iri_or_id_or_prefix
 ONTOLOGY_MAX_TRIPLES=50000               # empty/unset for unlimited
 PARALLEL_WORKERS=4
 PARALLEL_FACTS_RETRIES=3
@@ -227,6 +227,11 @@ VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=550
 VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 # VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT=16
 # VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH=3
+# VECTOR_STORE_INDUCED_SUBGRAPH_CANDIDATE_PUSHDOWN=false
+# VECTOR_STORE_PROPOSITION_WINDOW_SENTENCES=2
+# VECTOR_STORE_PROPOSITION_MAX_WINDOWS=16
+# VECTOR_STORE_PROPOSITION_RETRIEVAL_ENABLED=true
+# VECTOR_STORE_CONSISTENCY_CRITIC_MIN_FUSED_SCORE=0.5
 # VECTOR_STORE_FUSION_CORE_WEIGHT=0.7
 # VECTOR_STORE_FUSION_NEIGHBORHOOD_WEIGHT=0.3
 # VECTOR_STORE_FUSION_BM25_WEIGHT=0.2
@@ -245,10 +250,22 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH` | `3` | `rdfs:subClassOf` hops in the schema shell |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | `550` | Global triple cap returned to the LLM |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | `24` | Per-entity BFS quota hint during retrieval |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_CANDIDATE_PUSHDOWN` | `false` | Opt-in SPARQL `CONSTRUCT` neighborhood instead of merging whole ontology graphs (see [Ontology Context](ontology_context.md#candidate-pushdown-opt-in)) |
+| `VECTOR_STORE_PROPOSITION_WINDOW_SENTENCES` | `2` | Sentences per proposition window for multi-query retrieval |
+| `VECTOR_STORE_PROPOSITION_MAX_WINDOWS` | `16` | Cap on windows per excerpt; when a chunk has more, windows are sampled at an even stride spanning both endpoints (not “first N only”) |
+| `VECTOR_STORE_PROPOSITION_RETRIEVAL_ENABLED` | `true` | Multi-query proposition retrieval for induced-graph mode |
+| `VECTOR_STORE_CONSISTENCY_CRITIC_MIN_FUSED_SCORE` | `0.5` | Min weighted reciprocal-rank score for the consistency critic to flag a cross-ontology conflict (not cosine). Renamed from `VECTOR_STORE_CONSISTENCY_CRITIC_SIMILARITY_THRESHOLD` (old default `0.7`) |
 | `VECTOR_STORE_EMBEDDING_BATCH_SIZE` | `64` | Texts per embedding request during ontology indexing (raise for remote APIs; lower if VRAM-bound) |
 | `VECTOR_STORE_REINDEX_CONCURRENCY` | `2` | Max ontologies materialized/reindexed in parallel at `ToolBox.initialize` |
 | `VECTOR_STORE_WIPE_ON_INIT` | `false` | Drop the current tenant/project vector partition before recreate+reindex (clean slate; also CLI `--wipe-vector-store`) |
 | `VECTOR_STORE_PRUNE_ORPHAN_IRIS_ON_INIT` | `true` | Delete indexed ontology IRIs absent from the synchronized catalog (covers IRI renames without a full wipe) |
+
+**Migration note:** retrieval knobs formerly named `QDRANT_TOP_K`, `QDRANT_INDUCED_SUBGRAPH_*`, etc. are **ignored**. Use `VECTOR_STORE_*`. `QDRANT_*` covers connection/transport only.
+
+**BM25 / sparse schema:** Qdrant collections must declare IDF sparse vectors and index label-enriched text. A stale collection fails with `EmbeddingContractMismatchError` — recreate via `VECTOR_STORE_WIPE_ON_INIT=true` or `--wipe-vector-store`.
+
+Catalog graphs are served through `OntologyManager` (see [Ontology Catalog](../architecture/ontology_catalog.md)).
+
 ### LanceDB (embedded alternative)
 
 Enable when `QDRANT_URI` is unset. Requires the optional extra: `uv sync --extra lancedb`.
@@ -271,7 +288,7 @@ See [Ontology Context](ontology_context.md) for vector-search mode requirements.
 
 Post-vector scoring and capping (backend-agnostic; prefix `ONTOLOGY_PATCH_`). Applied after hybrid dense + BM25 retrieval, before induced-subgraph expansion.
 
-**Default path** (simple): max-score IRI dedupe → per-ontology round-robin → window-scaled hard cap. Relative floors, hybrid tier merge, merged-score ratio, and MMR are advanced opt-in.
+**Default path** (simple): max-score IRI dedupe → global score order → window-scaled hard cap. A non-zero `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` inserts per-ontology round-robin (best-scoring ontologies first) instead of plain score order. Relative floors, hybrid tier merge, merged-score ratio, and MMR are advanced opt-in.
 
 ```bash
 ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE=max_score
@@ -298,7 +315,7 @@ ONTOLOGY_PATCH_MMR_LAMBDA=1.0
 | `ONTOLOGY_PATCH_SEEDS_PER_WINDOW` | `4` | Scales effective cap with proposition window count |
 | `ONTOLOGY_PATCH_MAX_ATOMS_BASE` | `96` | Floor for effective atom cap; below the candidate pool it silently clips seeds on multi-ontology catalogs |
 | `ONTOLOGY_PATCH_MAX_ATOMS` | `96` | Hard cap: `min(max_atoms, max(base, seeds_per_window × n_queries))` (`0` = unlimited) |
-| `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` | `0.18` | After cross-window merge, return empty patch if top score is below this (`0` disables) |
+| `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` | `0.18` | Empty patch when the best **per-window** fused score is below this (`0` disables); evaluated before cross-window merge |
 | `ONTOLOGY_PATCH_MMR_LAMBDA` | `1.0` | `1.0` skips MMR; lower values enable diversity rerank |
 | `ONTOLOGY_PATCH_PER_QUERY_CORE_SCORE_RATIO` | `0.0` | Advanced: per-window core relative floor (`0` disables) |
 | `ONTOLOGY_PATCH_PER_QUERY_NEIGHBORHOOD_SCORE_RATIO` | `0.0` | Advanced: per-window neighborhood relative floor |
@@ -379,11 +396,11 @@ LOGGING_LEVEL=info                       # debug | info | warning | error
 
 - `selected_single_ontology` (default): LLM picks one catalog ontology per content unit; no vector store required.
 - `selected_vector_search_ontology`: hybrid vector retrieval + induced subgraph; requires `QDRANT_URI` **or** `LANCEDB_ENABLED=true` plus embedding settings.
-- `fixed_single_ontology`: pin one catalog `ontology_id` via `ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`.
+- `fixed_single_ontology`: pin one catalog ontology via `ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID` — ontology **IRI**, short `ontology_id`, or author **prefix**.
 
 If vector mode is requested while no vector backend is available, the API returns `409` with `error_code: VECTOR_STORE_UNAVAILABLE`.
 
-Details: [Ontology Context](ontology_context.md).
+Details: [Ontology Context](ontology_context.md). Catalog read path: [Ontology Catalog](../architecture/ontology_catalog.md).
 
 ## Usage
 

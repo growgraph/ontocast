@@ -50,6 +50,8 @@ Default path: per-window channel fusion → max-score IRI dedupe → global scor
 | `VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT` | `16` | Top seeds receiving full BFS budget |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH` | `3` | `rdfs:subClassOf` hops in schema shell |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | `24` | Per-entity BFS quota hint |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_CANDIDATE_PUSHDOWN` | `false` | Opt-in SPARQL neighborhood CONSTRUCT (see below) |
+| `VECTOR_STORE_PROPOSITION_MAX_WINDOWS` | `16` | Window cap; long chunks sample evenly across the text |
 | `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `max_score` | Default merge; `sum_score` (rewards multi-window agreement) and `hybrid` are opt-in |
 | `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | `0` | Max seeds per ontology; `0` (default) uses global score order |
 | `ONTOLOGY_PATCH_SEEDS_PER_WINDOW` | `4` | Scales effective atom cap with proposition windows |
@@ -90,10 +92,11 @@ cd ontocast
 bash -c 'set -a; source .env; set +a; uv run pytest test/test_retrieval_recall.py -v -s'
 ```
 
-**Seed recall** covers vector search, cross-window merge, per-ontology round-robin, and
-the atom cap: the expected term reached `atoms_final`. **Snapshot recall** additionally
-covers induced-subgraph expansion: the term is *defined* in the returned graph. A gap
-between them localises the loss to the graph stage.
+**Seed recall** covers vector search, cross-window merge, seed allocation (global score
+order by default; optional per-ontology round-robin), and the atom cap: the expected term
+reached `atoms_final`. **Snapshot recall** additionally covers induced-subgraph expansion:
+the term is *defined* in the returned graph. A gap between them localises the loss to the
+graph stage.
 
 Each is reported at two granularities. The **case** figures ask whether *any* expected
 term survived, and saturate as soon as cases carry several expected terms — a corpus can
@@ -133,16 +136,66 @@ SELECTs, and only the ontologies that survive that filter are then fetched as gr
 Backends without SPARQL (see [Triple Stores](triple_stores.md#custom-backends)) fall back
 to the full-catalog scan and return identical results, just more slowly.
 
-Three metrics report which path ran:
+Graphs and their merged union are then served from `OntologyManager`, which is the single
+read path for ontology graphs — see [Ontology Catalog](../architecture/ontology_catalog.md)
+for why that is sound and where the responsibility boundary sits. In practice a document
+pays for each ontology once, not once per content unit.
 
 | Key | Meaning |
 |---|---|
 | `catalog_access_mode` | `sparql`, or `full_fetch_fallback` when the backend has no SPARQL or a query failed |
 | `catalog_select_queries` | SELECTs issued (header catalog + reference hops) |
 | `catalog_graphs_fetched` | Ontology graphs materialized for the expansion step |
+| `catalog_context_mode` | `merged_catalog` (default) or `sparql_candidate` (pushdown) |
+| `catalog_context_triples` | Size of the working graph the snapshot was built from |
+| `catalog_graph_cache_hits` / `_misses` | Per-version ontology graph cache |
+| `catalog_merge_cache_hits` / `_misses` | Merged working-graph cache, keyed by version set |
 
 A `full_fetch_fallback` on a Fuseki deployment means queries are failing — retrieval is
 degrading to slow rather than failing outright, which is worth investigating.
+
+#### Candidate pushdown (opt-in)
+
+`VECTOR_STORE_INDUCED_SUBGRAPH_CANDIDATE_PUSHDOWN=true` builds the working graph from a
+single SPARQL `CONSTRUCT` of the seeds' bounded neighborhood instead of merging whole
+ontology graphs. It requires a backend with `supports_sparql_construct()`, and silently
+uses the merge path otherwise.
+
+Only *candidate generation* moves into the engine. The budgeted admission that follows —
+per-seed quotas, the global triple cap, connectivity repair, component pruning — stays in
+Python, because every triple it admits depends on how many have been admitted already.
+
+**It is off by default, and you should measure before turning it on.** Compare
+`catalog_context_triples` between the two modes on your own corpus. On the Text2KGBench
+benchmark set — 6 ontologies, 976 triples merged, 36 seeds — the candidate graph is **83%
+of the merged graph**, so there is nothing to gain there. The value is bounding memory and
+wire volume on a *large* catalog, where the seeds' neighborhood is a small fraction of what
+is stored.
+
+One known asymmetry: the cross-component schema-path repair can search past the fetched
+neighborhood, so a rare connectivity bridge may be missing. That makes a snapshot
+*smaller*, never wrong.
+
+### Induced-subgraph behavior (defaults)
+
+After seeds are chosen, expansion builds a budgeted snapshot:
+
+- **All seed-bearing components are kept.** Seedless components are dropped; references to
+  dropped IRIs are removed so the snapshot never names a term it does not define.
+- **Individual seeds stay alongside their classes.** An individual's `rdf:type` classes are
+  promoted into the seed set without discarding the individual (needed for the facts
+  two-namespace contract's reference individuals).
+- **BFS admission prefers schema role** (label, `rdf:type`, hierarchy, domain/range, then
+  descriptions) when a seed's quota cannot hold a full level — not alphabetical order.
+- **Long chunks** split into up to `VECTOR_STORE_PROPOSITION_MAX_WINDOWS` windows sampled
+  at an even stride from start to end, so the tail of a long passage still issues queries.
+
+### BM25 / index recreate
+
+Lexical retrieval uses Qdrant's BM25 with IDF and indexes split local names plus
+`rdfs:label` / `skos:prefLabel` / `dcterms:title` / `skos:altLabel`. Collections built
+before that contract fail loudly with `EmbeddingContractMismatchError` — wipe and reindex
+(`VECTOR_STORE_WIPE_ON_INIT` or `--wipe-vector-store`).
 
 ### `fixed_single_ontology`
 
@@ -210,5 +263,6 @@ Dedup policy (`VECTOR_STORE_DEDUP_MODE`): `iri` (one point per entity key) or `a
 ## Related
 
 - [Configuration](configuration.md) — full env var reference
-- [Tenancy](tenancy.md) — collection naming
+- [Ontology Catalog](../architecture/ontology_catalog.md) — `OntologyManager` read path and cache
+- [Tenancy](tenancy.md) — collection naming and catalog reset on tenant switch
 - [User Instructions](user_instructions.md) — selection and extraction guidance

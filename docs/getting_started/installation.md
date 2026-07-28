@@ -15,9 +15,18 @@ uv add ontocast
 
 or
 
-
 ```bash
 pip install ontocast
+```
+
+Optional extras:
+
+```bash
+# PDF / DOCX conversion (Docling)
+uv add "ontocast[doc-processing]"
+
+# Embedded LanceDB vector store
+uv add "ontocast[lancedb]"
 ```
 
 ## Next Steps
@@ -25,4 +34,5 @@ pip install ontocast
 After installation, you can:
 
 1. Read the [Quick Start](quickstart.md) guide
-3. Check the [API Reference](../reference/onto.md) for detailed documentation 
+2. Check the [Configuration](../user_guide/configuration.md) reference
+3. Browse the generated [API Reference](../reference/) after `uv run mkdocs build`

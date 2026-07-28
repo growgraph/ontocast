@@ -165,6 +165,7 @@ Facts output uses the **`cd:` namespace** for text-derived instances; domain ont
 | `ONTOLOGY_CONTEXT_MODE` | How per-unit ontology context is sourced |
 | `LLM_GRAPH_FORMAT` | `turtle` or `jsonld` LLM wire encoding |
 | `--max-visits` | CLI override for `MAX_VISITS` (batch mode and server default) |
+| `--wipe-vector-store` | Drop the current vector partition before recreate+reindex |
 | `--head-chunks` | CLI limit on units processed |
 | `target_sections` / `summarize_sections` / `summary_max_sentences` | Per-request structured-document preprocessing (not env vars) |
 

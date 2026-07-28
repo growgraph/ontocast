@@ -9,6 +9,8 @@ from typing import Any
 import pytest
 from pydantic import Field, PrivateAttr
 from qdrant_client.http import models as qdrant_models
+from rdflib import OWL, RDF, Literal, URIRef
+from rdflib.namespace import RDFS
 
 from ontocast.config import (
     CrossQueryMergeMode,
@@ -20,6 +22,7 @@ from ontocast.config import (
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.sparql import SPARQLTool
 from ontocast.tool.triple_manager.in_memory import InMemoryTripleStoreManager
 from ontocast.tool.triple_manager.mock import MockTripleStoreManager
@@ -190,6 +193,7 @@ class StubSPARQLTool(SPARQLTool):
         self._last_max_total_triples: int | None = None
         self._last_estimated_triples_per_query: int | None = None
         self._last_ontologies: list[Ontology] | None = None
+        self._last_merged: tuple[RDFGraph, dict[str, str]] | None = None
         self.induced_subgraph_calls: int = 0
 
     @property
@@ -217,6 +221,10 @@ class StubSPARQLTool(SPARQLTool):
         return self._last_estimated_triples_per_query
 
     @property
+    def last_merged(self) -> tuple[RDFGraph, dict[str, str]] | None:
+        return self._last_merged
+
+    @property
     def last_ontology_version_filters(self) -> dict[str, set[str]] | None:
         return self._last_ontology_version_filters
 
@@ -238,9 +246,11 @@ class StubSPARQLTool(SPARQLTool):
         hub_seed_count: int = 8,
         ancestor_closure_depth: int = 3,
         ontologies: list[Ontology] | None = None,
+        merged: tuple[RDFGraph, dict[str, str]] | None = None,
     ) -> RDFGraph:
         del depth, hub_seed_count, ancestor_closure_depth
         self._last_ontologies = ontologies
+        self._last_merged = merged
         self.induced_subgraph_calls += 1
         self._last_entity_uris = entity_uris
         self._last_entity_relevance = entity_relevance
@@ -1788,6 +1798,244 @@ async def test_ensemble_fanout_never_fetches_full_catalog() -> None:
     # Only the two ontologies actually referenced are materialized per call.
     assert stats["graph_fetches"] <= 5 * 2
     assert retriever.last_retrieval_metrics["catalog_access_mode"] == "sparql"
+
+
+def _catalog_retriever(
+    manager: InMemoryTripleStoreManager,
+    *,
+    ontology_manager: OntologyManager | None = None,
+    candidate_pushdown: bool = False,
+) -> OntologyPatchRetriever:
+    """A retriever wired to ``manager``, seeded with the cross-ontology fixture atom."""
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    vector_store = StubVectorStore(
+        store_config=VectorStoreConfig(
+            embedding_batch_size=2,
+            induced_subgraph_candidate_pushdown=candidate_pushdown,
+        ),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
+        embedding=embedding,
+    )
+    vector_store.set_atoms(
+        [
+            GraphAtom(
+                atom_id="a1",
+                ontology_iri=_MATSCI_IRI,
+                ontology_id="matsci",
+                iri=f"{_MATSCI_IRI}#PerovskiteQD",
+                entity_role="resource",
+                core_representation="perovskite quantum dot",
+                neighborhood_representation="perovskite quantum dot nanocrystal",
+            )
+        ]
+    )
+    return OntologyPatchRetriever(
+        vector_store=vector_store,
+        sparql_tool=SPARQLTool(triple_store_manager=manager),
+        ontology_manager=ontology_manager,
+    )
+
+
+def _catalog_manager(
+    ontologies: list[Ontology],
+) -> tuple[InMemoryTripleStoreManager, OntologyManager]:
+    store = InMemoryTripleStoreManager()
+    for ontology in ontologies:
+        store.serialize(ontology)
+    catalog = OntologyManager()
+    catalog.register_triple_store(store)
+    return store, catalog
+
+
+@pytest.mark.anyio
+async def test_catalog_reuses_graphs_across_units() -> None:
+    """Repeated units must materialize each ontology graph once, not once per unit."""
+    store, catalog = _catalog_manager(_cross_ontology_fixture(dangling=False))
+    retriever = _catalog_retriever(store, ontology_manager=catalog)
+
+    for _ in range(5):
+        await retriever.aretrieve_ensemble(
+            queries=["perovskite"], top_k=2, expand_sparql=True
+        )
+
+    stats = store.catalog_io_stats()
+    assert stats["full_catalog_fetches"] == 0
+    # Two ontologies, fetched once each for the whole fan-out.
+    assert stats["graph_fetches"] == 2
+    metrics = retriever.last_retrieval_metrics
+    assert metrics["catalog_context_mode"] == "merged_catalog"
+    assert metrics["catalog_merge_cache_hits"] == 4
+    assert metrics["catalog_merge_cache_misses"] == 1
+
+
+@pytest.mark.anyio
+async def test_catalog_cache_sees_a_new_terminal_version() -> None:
+    """Headers are read fresh, so a newly written version supersedes the cached one."""
+    ontologies = _cross_ontology_fixture(dangling=False)
+    store, catalog = _catalog_manager(ontologies)
+
+    first = await catalog.aget_ontologies_by_iri([_PEROV_IRI])
+    assert len(first) == 1
+    original_hash = first[0].hash
+
+    next_graph = RDFGraph()
+    next_graph += ontologies[1].graph
+    next_graph.add((URIRef(f"{_PEROV_IRI}#Extra"), RDFS.label, Literal("extra")))
+    store.serialize(ontologies[1].derive_updated_version(next_graph))
+
+    second = await catalog.aget_ontologies_by_iri([_PEROV_IRI])
+    assert len(second) == 1
+    assert second[0].hash != original_hash
+    # The superseded version stays cached under its own content address.
+    assert first[0].versioned_iri in catalog._graph_cache
+
+
+@pytest.mark.anyio
+async def test_merged_graph_is_not_mutated_by_the_builder() -> None:
+    """The merge cache is only safe because the builder treats its input read-only."""
+    _, catalog = _catalog_manager(_cross_ontology_fixture(dangling=False))
+    ontologies = await catalog.aget_ontologies_by_iri([])
+    merged, prefix_map = await catalog.aget_merged_graph(ontologies)
+
+    before = merged.hash()
+    SPARQLTool._build_induced_subgraph(
+        [],
+        [f"{_MATSCI_IRI}#PerovskiteQD"],
+        None,
+        None,
+        2,
+        550,
+        24,
+        None,
+        None,
+        None,
+        16,
+        3,
+        (merged, prefix_map),
+    )
+    assert merged.hash() == before
+
+
+@pytest.mark.anyio
+async def test_catalog_read_path_matches_direct_store_reads() -> None:
+    """Routing catalog reads through OntologyManager must not change the snapshot.
+
+    The recall harness cannot show this: approximate nearest-neighbour search is
+    not bit-reproducible across index builds, so its snapshot sizes move by a few
+    triples run to run on identical code. This comparison has no ANN in it.
+    """
+    ontologies = _cross_ontology_fixture(dangling=False)
+
+    snapshots = {}
+    for via_manager in (False, True):
+        store, catalog = _catalog_manager(ontologies)
+        retriever = _catalog_retriever(
+            store, ontology_manager=catalog if via_manager else None
+        )
+        graph, _ = await retriever.aretrieve_ensemble(
+            queries=["perovskite"], top_k=2, expand_sparql=True, subgraph_depth=2
+        )
+        snapshots[via_manager] = graph
+
+    assert snapshots[True].serialize(format="turtle") == snapshots[False].serialize(
+        format="turtle"
+    )
+
+
+@pytest.mark.anyio
+async def test_candidate_pushdown_matches_the_merged_catalog_path() -> None:
+    """The CONSTRUCT path must produce the same snapshot as merging whole graphs."""
+    ontologies = _cross_ontology_fixture(dangling=False)
+
+    snapshots = {}
+    for pushdown in (False, True):
+        store, catalog = _catalog_manager(ontologies)
+        retriever = _catalog_retriever(
+            store, ontology_manager=catalog, candidate_pushdown=pushdown
+        )
+        graph, _ = await retriever.aretrieve_ensemble(
+            queries=["perovskite"], top_k=2, expand_sparql=True, subgraph_depth=2
+        )
+        snapshots[pushdown] = graph
+        expected = "sparql_candidate" if pushdown else "merged_catalog"
+        assert retriever.last_retrieval_metrics["catalog_context_mode"] == expected
+
+    assert set(snapshots[True]) == set(snapshots[False])
+    assert snapshots[True].serialize(format="turtle") == snapshots[False].serialize(
+        format="turtle"
+    )
+
+
+@pytest.mark.anyio
+async def test_candidate_pushdown_preserves_owl_restrictions() -> None:
+    """Restriction shells hang off blank nodes; a CONSTRUCT must carry them intact."""
+    restriction_graph = RDFGraph._from_turtle_str(
+        f"""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix matsci: <{_MATSCI_IRI}#> .
+
+        <{_MATSCI_IRI}> a owl:Ontology .
+        matsci:hasEmission a owl:ObjectProperty ;
+            rdfs:domain matsci:PerovskiteQD ;
+            rdfs:range matsci:Emission .
+        matsci:Emission a owl:Class ; rdfs:label "Emission" .
+        matsci:PerovskiteQD a owl:Class ;
+            rdfs:label "Perovskite QD" ;
+            rdfs:subClassOf [
+                a owl:Restriction ;
+                owl:onProperty matsci:hasEmission ;
+                owl:someValuesFrom matsci:Emission
+            ] .
+        """
+    )
+    ontologies = [Ontology(iri=_MATSCI_IRI, graph=restriction_graph, title="matsci")]
+
+    snapshots = {}
+    for pushdown in (False, True):
+        store, catalog = _catalog_manager(ontologies)
+        retriever = _catalog_retriever(
+            store, ontology_manager=catalog, candidate_pushdown=pushdown
+        )
+        graph, _ = await retriever.aretrieve_ensemble(
+            queries=["perovskite"], top_k=2, expand_sparql=True, subgraph_depth=2
+        )
+        snapshots[pushdown] = graph
+
+    restrictions = {
+        pushdown: len(list(graph.subjects(RDF.type, OWL.Restriction)))
+        for pushdown, graph in snapshots.items()
+    }
+    # Guard against both paths simply dropping the restriction, which would make
+    # the equality below vacuous.
+    assert restrictions[False] == 1
+    assert restrictions[True] == restrictions[False]
+    assert snapshots[True].serialize(format="turtle") == snapshots[False].serialize(
+        format="turtle"
+    )
+
+
+@pytest.mark.anyio
+async def test_candidate_pushdown_falls_back_without_construct_support() -> None:
+    """A backend that cannot CONSTRUCT still returns a snapshot, via the merge path."""
+
+    class NoConstructManager(InMemoryTripleStoreManager):
+        def supports_sparql_construct(self) -> bool:
+            return False
+
+    store = NoConstructManager()
+    for ontology in _cross_ontology_fixture(dangling=False):
+        store.serialize(ontology)
+    catalog = OntologyManager()
+    catalog.register_triple_store(store)
+
+    retriever = _catalog_retriever(
+        store, ontology_manager=catalog, candidate_pushdown=True
+    )
+    await retriever.aretrieve_ensemble(
+        queries=["perovskite"], top_k=2, expand_sparql=True
+    )
+    assert retriever.last_retrieval_metrics["catalog_context_mode"] == "merged_catalog"
 
 
 def test_embedding_prefixes_separate_query_and_document_encoding() -> None:

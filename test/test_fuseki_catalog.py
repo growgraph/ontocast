@@ -197,3 +197,69 @@ async def test_afetch_ontologies_by_iri_skips_io_when_nothing_matches(
 
     assert await manager.afetch_ontologies_by_iri(["https://example.org/absent"]) == []
     assert transport.fetched_graph_urls == []
+
+
+@pytest.mark.anyio
+async def test_aconstruct_requests_turtle_and_parses_it(
+    manager_and_transport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CONSTRUCT goes to /sparql with a Turtle Accept header, not the JSON one."""
+    manager, _ = manager_and_transport([])
+    seen: dict[str, Any] = {}
+
+    async def post(
+        _self: Any, url: str, data: dict[str, str], **kwargs: Any
+    ) -> httpx.Response:
+        seen["url"] = url
+        seen["query"] = data["query"]
+        seen["headers"] = kwargs.get("headers")
+        assert "format" not in data
+        return httpx.Response(200, text=_TURTLE, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+
+    graph = await manager.aconstruct("CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }")
+
+    assert seen["url"] == "http://fuseki.invalid:3030/ontologies/sparql"
+    assert seen["headers"] == {"Accept": "text/turtle"}
+    assert len(graph) == 4
+    assert manager.catalog_io_stats()["construct_queries"] == 1
+
+
+@pytest.mark.anyio
+async def test_aconstruct_targets_the_facts_dataset_when_asked(
+    manager_and_transport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, _ = manager_and_transport([])
+    seen: dict[str, Any] = {}
+
+    async def post(
+        _self: Any, url: str, data: dict[str, str], **kwargs: Any
+    ) -> httpx.Response:
+        seen["url"] = url
+        return httpx.Response(200, text="", request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+
+    await manager.aconstruct(
+        "CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }", use_ontologies_dataset=False
+    )
+    assert seen["url"] == "http://fuseki.invalid:3030/facts/sparql"
+
+
+@pytest.mark.anyio
+async def test_aconstruct_raises_on_http_error(
+    manager_and_transport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty graph would be indistinguishable from 'nothing matched'."""
+    manager, _ = manager_and_transport([])
+
+    async def post(
+        _self: Any, url: str, data: dict[str, str], **kwargs: Any
+    ) -> httpx.Response:
+        return httpx.Response(500, text="boom", request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await manager.aconstruct("CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }")

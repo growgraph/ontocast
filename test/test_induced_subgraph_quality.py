@@ -11,12 +11,12 @@ from ontocast.tool.sparql import (
     _build_concept_relevance,
     _classify_and_promote_seeds,
     _crosslink_property_seeds,
-    _filter_overbroad_namespace_map,
     _find_schema_uri_connected_components,
     _prune_degenerate_restriction_bnodes,
     _prune_disconnected_uri_entities,
     _prune_orphaned_bnode_subjects,
     _strip_redundant_generic_types,
+    filter_overbroad_namespace_map,
 )
 from ontocast.tool.vector_store.core import GraphAtom
 from ontocast.tool.vector_store.patch_retriever import _ranked_entity_weights
@@ -56,7 +56,7 @@ def test_filter_overbroad_namespace_map_drops_parent_directory_uri() -> None:
         "matsci": str(MATSCI),
         "perovskitemat": str(PEROV),
     }
-    filtered = _filter_overbroad_namespace_map(ns_map)
+    filtered = filter_overbroad_namespace_map(ns_map)
     assert "qqval_ontologies" not in filtered
     assert filtered["qqval"] == str(QQVAL)
     assert filtered["matsci"] == str(MATSCI)

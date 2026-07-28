@@ -36,7 +36,7 @@ Runs the full document pipeline: convert → chunk → ontology map/reduce → f
 | `strip_provenance` | When true, omit reification/provenance from returned Turtle |
 | `llm_graph_format` | `turtle` or `jsonld` for this request |
 | `ontology_context_mode` | Per-request ontology context mode |
-| `ontology_context_fixed_ontology_id` | Required when mode is `fixed_single_ontology` |
+| `ontology_context_fixed_ontology_id` | Required when mode is `fixed_single_ontology` (IRI, `ontology_id`, or author prefix) |
 | `ontology_user_instruction` | Guide ontology extraction |
 | `ontology_selection_user_instruction` | Guide catalog ontology selection |
 | `facts_user_instruction` | Guide facts extraction |

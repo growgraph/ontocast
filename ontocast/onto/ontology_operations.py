@@ -234,10 +234,10 @@ async def merge_terminal_ontologies(
         Ontology: The final merged ontology, or None if no ontologies found
     """
     logger.info(f"Fetching ontologies for IRI: {iri}")
-    all_ontologies = await triple_store_manager.afetch_ontologies()
-
-    # Filter by IRI and add to ontology manager
-    matching_ontologies = [o for o in all_ontologies if o.iri == iri]
+    # ``afetch_ontologies_by_iri`` returns terminal versions only, which is exactly
+    # what pair-wise terminal merging consumes -- superseded versions would be
+    # re-merged into their own descendants.
+    matching_ontologies = await triple_store_manager.afetch_ontologies_by_iri([iri])
     if not matching_ontologies:
         logger.warning(f"No ontologies found for IRI: {iri}")
         return None

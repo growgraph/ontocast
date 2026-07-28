@@ -11,6 +11,7 @@ import pytest
 from ontocast.config import (
     Config,
     EmbeddingConfig,
+    FusekiConfig,
     PathConfig,
     QdrantConfig,
     ToolConfig,
@@ -455,3 +456,89 @@ def test_initialize_skips_wipe_and_prune_when_disabled(
     )
     st.vector_store.wipe_store.assert_not_awaited()
     st.vector_store.prune_orphan_ontology_iris.assert_not_called()
+
+
+def _tenancy_toolbox(tmp: str) -> ToolBox:
+    wd = Path(tmp)
+    od = wd / "ontologies"
+    od.mkdir()
+    # Force the in-memory backend: the test environment may define FUSEKI_URI.
+    return ToolBox(
+        Config(
+            tool_config=ToolConfig(
+                path_config=PathConfig(working_directory=wd, ontology_directory=od),
+                embedding=EmbeddingConfig(dimension=384),
+                fuseki=FusekiConfig(uri=None, auth=None),
+            )
+        )
+    )
+
+
+def _tenant_ontology(iri: str, ontology_id: str) -> Ontology:
+    graph = RDFGraph._from_turtle_str(
+        f"""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix ex: <{iri}#> .
+
+        <{iri}> a owl:Ontology ; rdfs:label "Tenant ontology" .
+        ex:Thing a owl:Class .
+        """
+    )
+    return Ontology(graph=graph, iri=iri, ontology_id=ontology_id)
+
+
+def test_tenancy_switch_clears_the_in_memory_catalog() -> None:
+    """A tenancy switch must not leave the previous tenant's ontologies visible."""
+    with tempfile.TemporaryDirectory() as tmp:
+        toolbox = _tenancy_toolbox(tmp)
+        onto_a = _tenant_ontology("https://example.org/tenant-a", "shared")
+
+        async def main() -> None:
+            await toolbox.update_tenancy("alpha", "one")
+            await toolbox.triple_store_manager.aserialize(onto_a)
+            toolbox.ontology_manager.add_ontology(onto_a, skip_vector_index=True)
+            assert toolbox.ontology_manager.get_ontology_iris() == [onto_a.iri]
+
+            await toolbox.update_tenancy("beta", "one")
+            assert toolbox.ontology_manager.get_ontology_iris() == []
+
+            # The alias ledger went with it: a different IRI may reuse the id.
+            onto_b = _tenant_ontology("https://example.org/tenant-b", "shared")
+            toolbox.ontology_manager.add_ontology(onto_b, skip_vector_index=True)
+            assert toolbox.ontology_manager.get_ontology_iris() == [onto_b.iri]
+
+        asyncio.run(main())
+
+
+def test_tenancy_switch_back_repopulates_from_the_store() -> None:
+    """Switching back must restore the catalog rather than leave it empty."""
+    with tempfile.TemporaryDirectory() as tmp:
+        toolbox = _tenancy_toolbox(tmp)
+        onto_a = _tenant_ontology("https://example.org/tenant-a", "alpha-onto")
+
+        async def main() -> None:
+            await toolbox.update_tenancy("alpha", "one")
+            await toolbox.triple_store_manager.aserialize(onto_a)
+            toolbox.ontology_manager.add_ontology(onto_a, skip_vector_index=True)
+
+            await toolbox.update_tenancy("beta", "one")
+            await toolbox.update_tenancy("alpha", "one")
+            assert toolbox.ontology_manager.get_ontology_iris() == [onto_a.iri]
+
+        asyncio.run(main())
+
+
+def test_repeated_tenancy_call_does_not_drop_the_catalog() -> None:
+    """Re-asserting the same tenancy is a no-op, not a reset."""
+    with tempfile.TemporaryDirectory() as tmp:
+        toolbox = _tenancy_toolbox(tmp)
+        onto = _tenant_ontology("https://example.org/tenant-a", "alpha-onto")
+
+        async def main() -> None:
+            await toolbox.update_tenancy("alpha", "one")
+            toolbox.ontology_manager.add_ontology(onto, skip_vector_index=True)
+            await toolbox.update_tenancy("alpha", "one")
+            assert toolbox.ontology_manager.get_ontology_iris() == [onto.iri]
+
+        asyncio.run(main())
