@@ -247,8 +247,14 @@ class StubSPARQLTool(SPARQLTool):
         ancestor_closure_depth: int = 3,
         ontologies: list[Ontology] | None = None,
         merged: tuple[RDFGraph, dict[str, str]] | None = None,
+        type_promotion_score_factor: float = 1.0,
+        seed_order: str = "score",
+        entity_groups: Mapping[str, str] | None = None,
+        extra_description_predicates=(),
     ) -> RDFGraph:
         del depth, hub_seed_count, ancestor_closure_depth
+        del type_promotion_score_factor, seed_order, entity_groups
+        del extra_description_predicates
         self._last_ontologies = ontologies
         self._last_merged = merged
         self.induced_subgraph_calls += 1
@@ -1014,7 +1020,7 @@ def test_search_hits_by_vector_returns_per_channel_typed_scores() -> None:
                 return [_Point("p1", 0.8, "neighbor"), _Point("p2", 0.4, "neighbor")]
             return [_Point("p1", 0.5, "neighbor"), _Point("p2", 0.2, "neighbor")]
 
-        def _point_to_atom(self, point):
+        def _point_to_atom(self, point, *, score=None):
             return GraphAtom(
                 atom_id=str(point.id),
                 ontology_iri="https://example.org/o",
@@ -1022,6 +1028,7 @@ def test_search_hits_by_vector_returns_per_channel_typed_scores() -> None:
                 entity_role="resource",
                 core_representation="core",
                 neighborhood_representation="neighbor",
+                score=score,
             )
 
     store = _Store(
@@ -1082,7 +1089,7 @@ def test_search_hits_by_vector_dedupes_duplicate_iri_hits() -> None:
                 _Point("v5", 0.74, "https://example.org/o#Other"),
             ]
 
-        def _point_to_atom(self, point):
+        def _point_to_atom(self, point, *, score=None):
             return GraphAtom(
                 atom_id=str(point.id),
                 ontology_iri="https://example.org/o",
@@ -1090,6 +1097,7 @@ def test_search_hits_by_vector_dedupes_duplicate_iri_hits() -> None:
                 entity_role="resource",
                 core_representation="core",
                 neighborhood_representation="neighbor",
+                score=score,
             )
 
     store = _Store(

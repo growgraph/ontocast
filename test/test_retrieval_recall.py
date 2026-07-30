@@ -24,8 +24,22 @@ and tuning sweeps / embedding bake-offs (large):
   ``ontologies/``), the domain-neutral tier; build one with
   ``ontocast-validation/run/build_recall_corpus.py``
 * ``ONTOCAST_RECALL_ROOT``        — Text2KGBench corpus root
-* ``ONTOCAST_RECALL_ONTOLOGIES``  — ontologies loaded into the catalog (default 6)
-* ``ONTOCAST_RECALL_CASES``       — cases per ontology (default 15)
+* ``ONTOCAST_RECALL_ONTOLOGIES``  — ontologies loaded into the catalog (default 6);
+  Text2KGBench tier only
+* ``ONTOCAST_RECALL_CASES``       — cases per ontology (default 15); Text2KGBench tier
+  only
+
+Ablation controls, for asking whether indexing a large external vocabulary (QUDT's 2,575
+units, say) helps or dilutes. Both are opt-in and inert when unset:
+
+* ``ONTOCAST_RECALL_EXTRA_ONTOLOGIES`` — ``os.pathsep``-separated .ttl files/directories
+  appended to the corpus catalog. Keeps the *index* axis a one-variable flip while the
+  corpus on disk stays byte-identical across arms.
+* ``ONTOCAST_RECALL_COLLECTION_SUFFIX`` — pin the Qdrant collection name and skip
+  teardown, so it can be reused. With ``ONTOCAST_RECALL_SKIP_INDEX=1`` a later arm
+  scores against it without re-embedding. Everything on the *retrieval* axis
+  (``ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA``, merge mode, caps) is applied at merge
+  time, so a whole sweep needs one index.
 
 Case text is split into proposition windows exactly as production does, so a passage
 spanning several sentences issues several queries rather than one.
@@ -99,7 +113,13 @@ def recall_qdrant_config() -> Generator[QdrantConfig, Any, None]:
     if not qdrant_reachable(uri=base.uri, api_key=base.api_key):
         pytest.skip(f"Qdrant not reachable at {base.uri}")
 
-    run_id = uuid.uuid4().hex[:8]
+    # A pinned suffix names a reusable collection instead of a throwaway one, so a
+    # config sweep (per-ontology quota, merge mode, caps -- all applied at merge time)
+    # scores against an index built once. Indexing a large external vocabulary costs
+    # minutes; re-paying that per arm is the difference between a tight loop and an
+    # afternoon. Unset means the original per-run uuid, deleted on teardown.
+    pinned = os.getenv("ONTOCAST_RECALL_COLLECTION_SUFFIX", "").strip()
+    run_id = pinned or uuid.uuid4().hex[:8]
     config = base.model_copy(
         update={
             "ontology_collection": f"ontocast_recall_{run_id}_ontologies",
@@ -108,6 +128,9 @@ def recall_qdrant_config() -> Generator[QdrantConfig, Any, None]:
     )
 
     yield config
+
+    if pinned:
+        return
 
     client = QdrantClient(
         url=config.uri,
@@ -141,12 +164,31 @@ def _build_toolbox(qdrant_config: QdrantConfig, tmp_path_factory: Any) -> ToolBo
 
 
 async def _index(tools: ToolBox, ontologies: list[Ontology]) -> None:
-    """Bring the vector store up and index every ontology into the catalog."""
+    """Bring the vector store up and index every ontology into the catalog.
+
+    ``ONTOCAST_RECALL_SKIP_INDEX=1`` reuses whatever a pinned collection already holds.
+    Only meaningful with ``ONTOCAST_RECALL_COLLECTION_SUFFIX``; the catalog itself is
+    still registered in-process, so scoring and attribution are unaffected.
+    """
     assert tools.vector_store is not None
     await tools.vector_store.initialize()
     tools.vector_store_ready = True
     tools.vector_store_last_error = None
+    skip = os.getenv("ONTOCAST_RECALL_SKIP_INDEX", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     for ontology in ontologies:
+        if skip:
+            # Register in the catalog without re-embedding: the vectors are already in
+            # the pinned collection from the arm that built it. The triple store is
+            # in-memory per run, so the graph stage still needs the ontology written —
+            # without it every induced subgraph is silently empty.
+            if tools.triple_store_manager is not None:
+                await tools.triple_store_manager.aserialize(ontology)
+            tools.ontology_manager.add_ontology(ontology, skip_vector_index=True)
+            continue
         ttl = ontology.graph.serialize(format="turtle").encode("utf-8")
         await tools.ingest_ontology_ttl(ttl)
 

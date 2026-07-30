@@ -79,6 +79,13 @@ class GraphAtom(BasePydanticModel):
         default=None,
         description="Optional similarity score populated by vector search.",
     )
+    lexical_triggers: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Case-preserved literal tokens (symbols, notations, formula codes) "
+            "used by the lexical-trigger retrieval lane for exact text matching."
+        ),
+    )
 
     @field_validator("entity_role", mode="before")
     @classmethod
@@ -189,6 +196,20 @@ class VectorStoreManager(Tool):
     ) -> dict[str, tuple[list[float], list[float]]]:
         """Async wrapper around :meth:`fetch_vectors`."""
         return await asyncio.to_thread(self.fetch_vectors, atom_ids)
+
+    def fetch_atoms_by_ids(self, atom_ids: list[str]) -> list[GraphAtom]:
+        """Batch-fetch atom payloads by ``atom_id`` (for lexical-trigger injection)."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support fetch_atoms_by_ids"
+        )
+
+    def match_lexical_triggers(
+        self, text: str, *, max_atoms: int | None = None
+    ) -> list[GraphAtom]:
+        """Match raw text against the lexical-trigger index and return atoms."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support lexical trigger matching"
+        )
 
     @abc.abstractmethod
     def delete_ontology(

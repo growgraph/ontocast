@@ -228,6 +228,8 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 # VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT=16
 # VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH=3
 # VECTOR_STORE_INDUCED_SUBGRAPH_CANDIDATE_PUSHDOWN=false
+# VECTOR_STORE_INDUCED_SUBGRAPH_TYPE_PROMOTION_SCORE_FACTOR=1.0
+# VECTOR_STORE_INDUCED_SUBGRAPH_SEED_ORDER=score
 # VECTOR_STORE_PROPOSITION_WINDOW_SENTENCES=2
 # VECTOR_STORE_PROPOSITION_MAX_WINDOWS=16
 # VECTOR_STORE_PROPOSITION_RETRIEVAL_ENABLED=true
@@ -251,6 +253,9 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | `550` | Global triple cap returned to the LLM |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | `24` | Per-entity BFS quota hint during retrieval |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_CANDIDATE_PUSHDOWN` | `false` | Opt-in SPARQL `CONSTRUCT` neighborhood instead of merging whole ontology graphs (see [Ontology Context](ontology_context.md#candidate-pushdown-opt-in)) |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_TYPE_PROMOTION_SCORE_FACTOR` | `1.0` | Fraction of a retrieved seed's score inherited by its promoted `rdf:type` IRIs; the seed always keeps its own score |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_SEED_ORDER` | `score` | Seed expansion order under the triple budget: `score` (global relevance) or `ontology_round_robin` (interleave source ontologies) |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_SYMBOL_PREDICATES` | trigger predicates | Symbol/notation predicates admitted as seed descriptions between names and glosses (empty list disables) |
 | `VECTOR_STORE_PROPOSITION_WINDOW_SENTENCES` | `2` | Sentences per proposition window for multi-query retrieval |
 | `VECTOR_STORE_PROPOSITION_MAX_WINDOWS` | `16` | Cap on windows per excerpt; when a chunk has more, windows are sampled at an even stride spanning both endpoints (not “first N only”) |
 | `VECTOR_STORE_PROPOSITION_RETRIEVAL_ENABLED` | `true` | Multi-query proposition retrieval for induced-graph mode |
@@ -259,10 +264,20 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `VECTOR_STORE_REINDEX_CONCURRENCY` | `2` | Max ontologies materialized/reindexed in parallel at `ToolBox.initialize` |
 | `VECTOR_STORE_WIPE_ON_INIT` | `false` | Drop the current tenant/project vector partition before recreate+reindex (clean slate; also CLI `--wipe-vector-store`) |
 | `VECTOR_STORE_PRUNE_ORPHAN_IRIS_ON_INIT` | `true` | Delete indexed ontology IRIs absent from the synchronized catalog (covers IRI renames without a full wipe) |
+| `VECTOR_STORE_LEXICAL_TRIGGER_ENABLED` | `true` | Exact-match lane for notation/symbol tokens in raw chunk text |
+| `VECTOR_STORE_LEXICAL_TRIGGER_PREDICATES` | `skos:notation`, `qudt:symbol`, `qudt:ucumCode` | Predicate IRIs whose literals become case-preserved triggers |
+| `VECTOR_STORE_LEXICAL_TRIGGER_HEURISTIC_ENABLED` | `true` | Promote code-shaped labels/altLabels when no notation is declared |
+| `VECTOR_STORE_LEXICAL_TRIGGER_MIN_LEN` | `2` | Minimum length for heuristic promotion |
+| `VECTOR_STORE_LEXICAL_TRIGGER_MAX_LEN` | `24` | Maximum length for heuristic promotion |
+| `VECTOR_STORE_LEXICAL_TRIGGER_HEURISTIC_MAX_PER_ENTITY` | `2` | Cap on heuristic triggers per entity |
+| `VECTOR_STORE_LEXICAL_TRIGGER_MAX_ATOMS` | `16` | Additive cap on trigger seeds per retrieval call (outside semantic budget) |
+| `VECTOR_STORE_LEXICAL_TRIGGER_SCORE` | `0.35` | Score assigned to trigger hits (calibrated against fused rank scores: rank-1 core = 0.583, merged floor = 0.18) |
+| `VECTOR_STORE_LEXICAL_TRIGGER_FUSION` | `max_merge` | `max_merge` promotes an already-retrieved atom to `max(semantic, trigger)` score; `append` (legacy) only adds unseen atoms |
+| `FACTS_OBJECT_PROPERTY_LITERAL_CHECK` | `true` | Quarantine string literals on predicates whose schema range is a class (e.g. `qudt:unit`); surfaced to the facts critic |
 
 **Migration note:** retrieval knobs formerly named `QDRANT_TOP_K`, `QDRANT_INDUCED_SUBGRAPH_*`, etc. are **ignored**. Use `VECTOR_STORE_*`. `QDRANT_*` covers connection/transport only.
 
-**BM25 / sparse schema:** Qdrant collections must declare IDF sparse vectors and index label-enriched text. A stale collection fails with `EmbeddingContractMismatchError` — recreate via `VECTOR_STORE_WIPE_ON_INIT=true` or `--wipe-vector-store`.
+**BM25 / sparse schema:** Qdrant collections must declare IDF sparse vectors and index label-enriched text. A stale collection fails with `EmbeddingContractMismatchError` — recreate via `VECTOR_STORE_WIPE_ON_INIT=true` or `--wipe-vector-store`. The surface-form contract is now `sf3` (adds `lexical_triggers` for the exact-match lane).
 
 Catalog graphs are served through `OntologyManager` (see [Ontology Catalog](../architecture/ontology_catalog.md)).
 

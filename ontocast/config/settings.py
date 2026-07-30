@@ -155,6 +155,20 @@ class VectorStoreDedupMode(StrEnum):
     IRI = "iri"
 
 
+class InducedSubgraphSeedOrder(StrEnum):
+    """Seed expansion order for induced-subgraph triple budgeting."""
+
+    SCORE = "score"
+    ONTOLOGY_ROUND_ROBIN = "ontology_round_robin"
+
+
+class LexicalTriggerFusion(StrEnum):
+    """How lexical-trigger hits combine with semantic retrieval hits."""
+
+    MAX_MERGE = "max_merge"
+    APPEND = "append"
+
+
 class LLMConfig(BaseSettings):
     """LLM configuration settings."""
 
@@ -927,6 +941,41 @@ class VectorStoreConfig(BaseSettings):
             "allocation in induced subgraph retrieval."
         ),
     )
+    induced_subgraph_type_promotion_score_factor: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Fraction of a retrieved seed's score inherited by its promoted rdf:type "
+            "IRIs during induced-subgraph budgeting. The seed always keeps its own "
+            "score; this only scales the copy banked on the type. (Transferring the "
+            "score to the type and zeroing the individual collapsed all typed "
+            "individuals into a relevance-0 tie broken by raw IRI order, which "
+            "starved high-ranked seeds under tight triple budgets.)"
+        ),
+    )
+    induced_subgraph_seed_order: InducedSubgraphSeedOrder = Field(
+        default=InducedSubgraphSeedOrder.SCORE,
+        description=(
+            "Seed expansion order under the induced-subgraph triple budget: 'score' "
+            "expands in global relevance order; 'ontology_round_robin' interleaves "
+            "seeds across source ontologies so no ontology is starved by another's "
+            "high scorers. Ablation knob; 'score' is the measured default."
+        ),
+    )
+    induced_subgraph_symbol_predicates: list[str] = Field(
+        default_factory=lambda: [
+            "http://www.w3.org/2004/02/skos/core#notation",
+            "http://qudt.org/schema/qudt/symbol",
+            "http://qudt.org/schema/qudt/ucumCode",
+        ],
+        description=(
+            "Predicate IRIs admitted as seed descriptions in the induced subgraph, "
+            "between names and glosses (default mirrors lexical_trigger_predicates). "
+            "Without them a unit individual reaches the prompt label-only and the "
+            "LLM cannot map surface tokens like 'meV' to its IRI. Empty disables."
+        ),
+    )
     induced_subgraph_candidate_pushdown: bool = Field(
         default=False,
         description=(
@@ -1068,6 +1117,74 @@ class VectorStoreConfig(BaseSettings):
             "Facts table/collection reserved for future fact vectors; created on init."
         ),
     )
+    lexical_trigger_enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable the lexical-trigger lane: scan raw chunk text for notation/symbol "
+            "tokens and inject matching atoms as additive retrieval seeds."
+        ),
+    )
+    lexical_trigger_predicates: list[str] = Field(
+        default_factory=lambda: [
+            "http://www.w3.org/2004/02/skos/core#notation",
+            "http://qudt.org/schema/qudt/symbol",
+            "http://qudt.org/schema/qudt/ucumCode",
+        ],
+        description=(
+            "Predicate IRIs whose literal objects become case-preserved lexical triggers "
+            "(default: skos:notation, qudt:symbol, qudt:ucumCode)."
+        ),
+    )
+    lexical_trigger_heuristic_enabled: bool = Field(
+        default=True,
+        description=(
+            "Promote bare code-shaped rdfs:label/skos:altLabel values as triggers when "
+            "no predicate-declared notation exists for the entity."
+        ),
+    )
+    lexical_trigger_min_len: int = Field(
+        default=2,
+        ge=1,
+        description="Minimum length for heuristic label/altLabel trigger promotion.",
+    )
+    lexical_trigger_max_len: int = Field(
+        default=24,
+        ge=1,
+        description="Maximum length for heuristic label/altLabel trigger promotion.",
+    )
+    lexical_trigger_heuristic_max_per_entity: int = Field(
+        default=2,
+        ge=0,
+        description="Cap on heuristic triggers per entity.",
+    )
+    lexical_trigger_max_atoms: int = Field(
+        default=16,
+        ge=0,
+        description=(
+            "Maximum lexical-trigger atoms injected per retrieval call, additive to the "
+            "semantic atom budget."
+        ),
+    )
+    lexical_trigger_score: float = Field(
+        default=0.35,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Score assigned to lexical-trigger hits. Calibrated against fused "
+            "reciprocal-rank scores: a rank-1 core hit scores 0.583, the merged-atom "
+            "floor is 0.18. The previous hardcoded 1.0 outranked every semantic seed "
+            "and monopolized hub-BFS expansion slots."
+        ),
+    )
+    lexical_trigger_fusion: LexicalTriggerFusion = Field(
+        default=LexicalTriggerFusion.MAX_MERGE,
+        description=(
+            "How trigger hits combine with semantic hits: 'max_merge' promotes an "
+            "already-retrieved atom to max(semantic score, trigger score) and appends "
+            "unseen atoms; 'append' (legacy) only appends unseen atoms, silently "
+            "discarding the trigger evidence for atoms retrieval already found."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="VECTOR_STORE_",
@@ -1187,6 +1304,25 @@ class LanceDBConfig(BaseSettings):
         return self
 
 
+class FactsValidationConfig(BaseSettings):
+    """Deterministic post-checks applied to LLM-rendered facts graphs."""
+
+    object_property_literal_check: bool = Field(
+        default=True,
+        description=(
+            "Quarantine string literals sitting on predicates whose schema range "
+            "is a class (e.g. qudt:unit with range qudt:Unit). Quarantined triples "
+            "are surfaced to the facts critic so the renderer resolves the token "
+            "to an IRI from the ontology context."
+        ),
+    )
+
+    model_config = SettingsConfigDict(
+        env_prefix="FACTS_",
+        case_sensitive=False,
+    )
+
+
 class ToolConfig(BaseSettings):
     """Configuration for tools (LLM, triple stores, paths, chunking)."""
 
@@ -1202,6 +1338,10 @@ class ToolConfig(BaseSettings):
     patch_retrieval: PatchRetrievalConfig = Field(
         default_factory=PatchRetrievalConfig,
         description="Ontology patch retrieval: post-vector scoring, MMR, and limits.",
+    )
+    facts_validation: FactsValidationConfig = Field(
+        default_factory=FactsValidationConfig,
+        description="Deterministic post-checks on LLM-rendered facts graphs.",
     )
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)

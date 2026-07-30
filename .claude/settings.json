@@ -35,7 +35,42 @@
             "Bash(gh pr merge *)"
         ],
         "allow": [
-            "Bash(uv *)"
+            "Bash(uv *)",
+            "Bash(git status*)",
+            "Bash(git diff*)",
+            "Bash(git log*)",
+            "Bash(git show*)",
+            "Bash(git branch*)",
+            "Bash(git stash*)",
+            "Bash(ls*)",
+            "Bash(find*)",
+            "Bash(grep*)",
+            "Bash(rg*)",
+            "Bash(cat*)",
+            "Bash(echo*)",
+            "Bash(pwd*)",
+            "Bash(bash*)",
+            "Bash(sh*)",
+            "Bash(exit*)",
+            "Bash(cd*)",
+            "Bash(mkdir*)",
+            "Bash(cp*)",
+            "Bash(mv*)",
+            "Bash(rm*)",
+            "Bash(jq*)",
+            "Bash(sed*)",
+            "Bash(awk*)",
+            "Bash(ruff*)",
+            "Bash(ty*)",
+            "Bash(mypy*)",
+            "Bash(black*)",
+            "Bash(flake8*)",
+            "Bash(pip*)",
+            "Bash(docker*)",
+            "Bash(docker-compose*)",
+            "Bash(pdflatex*)",
+            "Bash(bibtex*)",
+            "Bash(latexmk*)"
         ]
     },
     "hooks": {
@@ -67,7 +102,7 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "cmd=$(jq -r '.tool_input.command // \"\"'); deny(){ printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"%s\"}}' \"$1\"; exit 0; }; printf '%s' \"$cmd\" | grep -Eq '(^|[^[:alnum:]_-])((git|g)[^;&|]*[[:space:]](commit|push|merge)([[:space:]]|$)|gh[[:space:]]+pr[[:space:]]+(create|merge))' && deny \"Project policy: Claude must not run git or git-alias commit, push, merge, or open PRs. Leave the work as uncommitted changes for the user to review and commit.\"; scrubbed=$(printf '%s' \"$cmd\" | sed 's/[.]env[.]example//g'); printf '%s' \"$scrubbed\" | grep -Eq '[.]env' && printf '%s' \"$scrubbed\" | grep -Eq '(^|[;&|()[:space:]])(cat|less|more|head|tail|grep|egrep|fgrep|rg|awk|sed|strings|nl|xxd|od|cut|tee|printenv|env|dotenv)([[:space:]]|$)' && deny \"Project policy: .env* holds live secrets and must never be printed into the transcript. Read .env.example instead, or pass the file to the tool that needs it without displaying its contents.\"; exit 0",
+                        "command": "cmd=$(jq -r '.tool_input.command // \"\"'); deny(){ printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"%s\"}}' \"$1\"; exit 0; }; printf '%s' \"$cmd\" | grep -Eq '(^|[^[:alnum:]_-])((git|g)[^;&|]*[[:space:]](commit|push|merge)([[:space:]]|$)|gh[[:space:]]+pr[[:space:]]+(create|merge))' && deny \"Project policy: Claude must not run git or git-alias commit, push, merge, or open PRs. Leave the work as uncommitted changes for the user to review and commit.\"; printf '%s' \"$cmd\" | grep -Eq '(^|[|;&()])[[:space:]]*(env[[:space:]]+)?([[:alnum:]_]+=[^[:space:]]+[[:space:]]+)*(python|python3|pytest)([[:space:]]|$)' && deny \"Project policy: Bare 'python', 'python3', or 'pytest' commands are forbidden. You MUST use 'uv run python ...' or 'uv run pytest ...' from the owning repository directory.\"; scrubbed=$(printf '%s' \"$cmd\" | sed 's/[.]env[.]example//g'); printf '%s' \"$scrubbed\" | grep -Eq '[.]env' && printf '%s' \"$scrubbed\" | grep -Eq '(^|[;&|()[:space:]])(cat|less|more|head|tail|grep|egrep|fgrep|rg|awk|sed|strings|nl|xxd|od|cut|tee|printenv|env|dotenv)([[:space:]]|$)' && deny \"Project policy: .env* holds live secrets and must never be printed into the transcript. Read .env.example instead, or pass the file to the tool that needs it without displaying its contents.\"; exit 0",
                         "timeout": 10,
                         "statusMessage": "Checking Claude policy"
                     }

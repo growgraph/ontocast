@@ -12,6 +12,7 @@ from ontocast.tool.sparql import (
     _classify_and_promote_seeds,
     _crosslink_property_seeds,
     _find_schema_uri_connected_components,
+    _interleave_by_group,
     _prune_degenerate_restriction_bnodes,
     _prune_disconnected_uri_entities,
     _prune_orphaned_bnode_subjects,
@@ -47,6 +48,85 @@ def test_bind_implicit_namespaces_skips_parent_directory_stem() -> None:
     bound = {prefix: str(ns) for prefix, ns in graph.namespaces() if prefix}
     assert "qqval_ontologies" not in bound
     assert bound["qqval"] == str(QQVAL)
+
+
+def test_bind_implicit_namespaces_own_stem_gets_plain_prefix() -> None:
+    """An ontology's own namespace binds as ``matsci``, not ``matsci_matsci``."""
+    graph = RDFGraph()
+    graph.add((MATSCI["Material"], RDF.type, OWL.Class))
+    graph.add((MATSCI["Method"], RDF.type, OWL.Class))
+    graph.add((PEROV["Perovskite"], RDF.type, OWL.Class))
+    graph.add((PEROV["Halide"], RDF.type, OWL.Class))
+
+    graph.bind_implicit_namespaces(prefix_base="matsci")
+
+    bound = {prefix: str(ns) for prefix, ns in graph.namespaces() if prefix}
+    assert bound.get("matsci") == str(MATSCI)
+    assert "matsci_matsci" not in bound
+    # Foreign stems still get the disambiguating base.
+    assert bound.get("matsci_perovskitemat") == str(PEROV)
+
+
+def _lineage(iri: str, version: str | None, hash_: str | None):
+    from ontocast.onto.ontology_header import OntologyHeader
+
+    return OntologyHeader(iri=iri, graph_uri=iri, version=version, hash=hash_)
+
+
+def test_select_relevant_ontologies_hash_mismatch_falls_back_same_version() -> None:
+    """A hash filter selects among entries; it never empties an IRI wholesale.
+
+    Graph hashes are unstable under serialization round-trips (literal lexical
+    forms sit outside URDNA2015), so atom-payload hashes routinely disagree with
+    catalog hashes computed in another process. The old exact-hash requirement
+    silently dropped whole ontologies from the prompt context.
+    """
+    from ontocast.tool.sparql import select_relevant_ontologies
+
+    entry = _lineage(f"{BASE}units", "1.0.0", "catalog-hash")
+    selected = select_relevant_ontologies(
+        [entry],
+        [f"{BASE}units"],
+        {f"{BASE}units": {"1.0.0"}},
+        {f"{BASE}units": {"atoms-hash"}},
+    )
+    assert selected == [entry]
+
+
+def test_select_relevant_ontologies_exact_hash_still_disambiguates_versions() -> None:
+    from ontocast.tool.sparql import select_relevant_ontologies
+
+    old = _lineage(f"{BASE}units", "1.0.0", "old-hash")
+    new = _lineage(f"{BASE}units", "2.0.0", "new-hash")
+    selected = select_relevant_ontologies(
+        [old, new],
+        [f"{BASE}units"],
+        None,
+        {f"{BASE}units": {"new-hash"}},
+    )
+    assert selected == [new]
+
+
+def test_select_relevant_ontologies_version_mismatch_falls_back_to_all() -> None:
+    from ontocast.tool.sparql import select_relevant_ontologies
+
+    entry = _lineage(f"{BASE}units", "1.0.0", "h1")
+    selected = select_relevant_ontologies(
+        [entry],
+        [f"{BASE}units"],
+        {f"{BASE}units": {"9.9.9"}},
+        None,
+    )
+    assert selected == [entry]
+
+
+def test_select_relevant_ontologies_iri_filter_still_excludes() -> None:
+    from ontocast.tool.sparql import select_relevant_ontologies
+
+    wanted = _lineage(f"{BASE}units", "1.0.0", "h1")
+    other = _lineage(f"{BASE}matsci", "1.0.0", "h2")
+    selected = select_relevant_ontologies([wanted, other], [f"{BASE}units"], None, None)
+    assert selected == [wanted]
 
 
 def test_filter_overbroad_namespace_map_drops_parent_directory_uri() -> None:
@@ -232,13 +312,157 @@ def test_build_concept_relevance_inherits_individual_score_to_class() -> None:
     graph.add((individual, RDF.type, OWL.NamedIndividual))
     graph.add((individual, RDF.type, method_class))
 
-    relevance = _build_concept_relevance(
+    relevance, first_rank = _build_concept_relevance(
         [str(individual)],
         graph,
         {str(individual): 0.75},
         frozenset(),
     )
+    # The retrieved individual keeps its own score; the promoted class inherits it.
+    assert relevance[str(individual)] == 0.75
     assert relevance[str(method_class)] == 0.75
+    assert first_rank[str(individual)] == 0
+    assert first_rank[str(method_class)] == 0
+
+
+def test_build_concept_relevance_type_promotion_factor_scales_class_only() -> None:
+    graph = RDFGraph()
+    individual = MATSCI["Photoluminescence"]
+    method_class = MATSCI["OpticalCharacterizationMethod"]
+    graph.add((individual, RDF.type, method_class))
+
+    relevance, _ = _build_concept_relevance(
+        [str(individual)],
+        graph,
+        {str(individual): 0.8},
+        frozenset(),
+        type_promotion_score_factor=0.5,
+    )
+    assert relevance[str(individual)] == 0.8
+    assert relevance[str(method_class)] == 0.4
+
+
+def test_high_scored_https_seed_not_starved_by_http_byte_order() -> None:
+    """Score order, not IRI byte order, decides who survives a tight budget.
+
+    Regression: typed individuals used to lose their scores to their promoted
+    type IRIs, collapsing into a relevance-0 tie broken alphabetically —
+    ``http://qudt.org/…`` always preceded ``https://growgraph.dev/…`` and tight
+    budgets never reached the actually-retrieved unit.
+    """
+    qudt = Namespace("http://qudt.org/schema/qudt/")
+    unit_ns = Namespace("http://qudt.org/vocab/unit/")
+    munits = Namespace(f"{BASE}matsci-units#")
+
+    graph = RDFGraph()
+    graph.bind("qudt", qudt)
+    graph.bind("unit", unit_ns)
+    graph.bind("matsciunits", munits)
+    graph.add((URIRef(f"{BASE}matsci-units"), RDF.type, OWL.Ontology))
+    mega_ev = unit_ns["MegaEV"]
+    milli_ev = munits["millielectronvolt"]
+    for individual, label in ((mega_ev, "Mega Electron Volt"), (milli_ev, "meV")):
+        graph.add((individual, RDF.type, qudt.Unit))
+        graph.add((individual, RDFS.label, Literal(label)))
+    graph.add((qudt.Unit, RDF.type, OWL.Class))
+    graph.add((qudt.Unit, RDFS.label, Literal("Unit")))
+
+    ontologies = [_ontology(f"{BASE}matsci-units", graph)]
+    entity_roles = {str(milli_ev): ROLE_RESOURCE, str(mega_ev): ROLE_RESOURCE}
+    result, _ = SPARQLTool._build_induced_subgraph(
+        ontologies=ontologies,
+        entity_uris=[str(milli_ev), str(mega_ev)],
+        entity_relevance={str(milli_ev): 0.1667, str(mega_ev): 0.0556},
+        ontology_iris=[ontologies[0].iri],
+        depth=1,
+        max_total_triples=4,
+        estimated_triples_per_query=24,
+        ontology_version_filters=None,
+        ontology_hash_filters=None,
+        entity_roles=entity_roles,
+        hub_seed_count=1,
+        ancestor_closure_depth=1,
+    )
+    assert (milli_ev, RDFS.label, Literal("meV")) in result
+
+
+def test_seed_symbol_predicates_reach_snapshot_before_glosses() -> None:
+    """Symbol/notation annotations on seeds survive even tight budgets."""
+    qudt = Namespace("http://qudt.org/schema/qudt/")
+    munits = Namespace(f"{BASE}matsci-units#")
+
+    graph = RDFGraph()
+    graph.bind("qudt", qudt)
+    graph.bind("matsciunits", munits)
+    graph.add((URIRef(f"{BASE}matsci-units"), RDF.type, OWL.Ontology))
+    milli_ev = munits["millielectronvolt"]
+    graph.add((milli_ev, RDF.type, qudt.Unit))
+    graph.add((milli_ev, RDFS.label, Literal("millielectronvolt")))
+    graph.add((milli_ev, qudt.symbol, Literal("meV")))
+    graph.add(
+        (milli_ev, RDFS.comment, Literal("The working unit for small energy shifts."))
+    )
+
+    ontologies = [_ontology(f"{BASE}matsci-units", graph)]
+    # Budget of 2: room for the label and exactly one more description triple.
+    # Symbols sort before glosses, so qudt:symbol wins over rdfs:comment.
+    result, _ = SPARQLTool._build_induced_subgraph(
+        ontologies=ontologies,
+        entity_uris=[str(milli_ev)],
+        entity_relevance={str(milli_ev): 1.0},
+        ontology_iris=[ontologies[0].iri],
+        depth=1,
+        max_total_triples=2,
+        estimated_triples_per_query=24,
+        ontology_version_filters=None,
+        ontology_hash_filters=None,
+        entity_roles={str(milli_ev): ROLE_RESOURCE},
+        hub_seed_count=1,
+        ancestor_closure_depth=1,
+        extra_description_predicates=(qudt.symbol,),
+    )
+    assert (milli_ev, qudt.symbol, Literal("meV")) in result
+
+
+def test_snapshot_binds_only_used_prefixes() -> None:
+    """Prefixes of merged ontologies that contribute no triple stay unbound."""
+    munits = Namespace(f"{BASE}matsci-units#")
+    graph = RDFGraph()
+    graph.bind("matsci", MATSCI)
+    graph.bind("matsciunits", munits)
+    graph.add((URIRef(f"{BASE}matsci"), RDF.type, OWL.Ontology))
+    material = MATSCI["Material"]
+    graph.add((material, RDF.type, OWL.Class))
+    graph.add((material, RDFS.label, Literal("Material")))
+    # matsciunits namespace declared but no triple from it is retrieved.
+    graph.add((munits["millielectronvolt"], RDFS.label, Literal("meV")))
+
+    ontologies = [_ontology(f"{BASE}matsci", graph)]
+    result, _ = SPARQLTool._build_induced_subgraph(
+        ontologies=ontologies,
+        entity_uris=[str(material)],
+        entity_relevance={str(material): 1.0},
+        ontology_iris=[ontologies[0].iri],
+        depth=0,
+        max_total_triples=3,
+        estimated_triples_per_query=24,
+        ontology_version_filters=None,
+        ontology_hash_filters=None,
+        entity_roles={str(material): ROLE_RESOURCE},
+        hub_seed_count=1,
+        ancestor_closure_depth=0,
+    )
+    bound = {prefix for prefix, _ in result.namespaces() if prefix}
+    assert "matsci" in bound
+    assert "matsciunits" not in bound
+
+
+def test_ontology_round_robin_seed_order_interleaves_groups() -> None:
+    ordered = _interleave_by_group(
+        ["a1", "b1", "a2", "a3", "b2"],
+        {"a1": "A", "a2": "A", "a3": "A", "b1": "B", "b2": "B"},
+    )
+    assert ordered == ["a1", "b1", "a2", "b2", "a3"]
 
 
 def test_build_induced_subgraph_class_seed_includes_label_and_subclass() -> None:

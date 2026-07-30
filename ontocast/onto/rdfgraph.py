@@ -236,14 +236,21 @@ def extract_known_prefixes(
 
 
 class RejectedLiteralTriple(BaseModel):
-    """A triple removed during LLM ingest because the object literal failed XSD validation."""
+    """A triple quarantined during LLM ingest because its object literal is invalid.
+
+    Covers two cases: the literal's lexical form fails XSD validation for its
+    declared ``datatype``, or a literal sits on a predicate whose schema declares
+    an IRI object (``reason``/``expected_range`` are set for the latter).
+    """
 
     model_config = ConfigDict(frozen=True)
 
     subject: str
     predicate: str
     object_lexical: str
-    datatype: str
+    datatype: str = ""
+    reason: str | None = None
+    expected_range: str | None = None
 
 
 def _format_term_for_turtle(term: str) -> str:
@@ -258,6 +265,16 @@ def _datatype_to_compact(datatype: str) -> str:
         local = datatype[len(xsd_base) :]
         return f"xsd:{local}"
     return datatype
+
+
+def _quarantine_hint(item: RejectedLiteralTriple) -> str:
+    """Human-readable explanation appended after a quarantined triple."""
+    if not item.reason:
+        return ""
+    hint = item.reason
+    if item.expected_range:
+        hint += f" (expected IRI with range <{item.expected_range}>)"
+    return hint
 
 
 def format_quarantine_for_prompt(
@@ -285,26 +302,31 @@ def format_quarantine_for_prompt(
                     if item.subject.startswith(ns):
                         subj = f"{prefix}:{item.subject[len(ns) :]}"
                         break
-            lines.append(
-                json.dumps(
-                    {
-                        "@id": subj,
-                        pred_key: {
-                            "@value": item.object_lexical,
-                            "@type": _datatype_to_compact(item.datatype),
-                        },
-                    },
-                    indent=2,
-                )
-            )
+            value_obj: dict[str, str] = {"@value": item.object_lexical}
+            if item.datatype:
+                value_obj["@type"] = _datatype_to_compact(item.datatype)
+            entry = json.dumps({"@id": subj, pred_key: value_obj}, indent=2)
+            hint = _quarantine_hint(item)
+            if hint:
+                entry += f"\n^ {hint}"
+            lines.append(entry)
         return "\n".join(lines)
 
-    return "\n".join(
-        f"{_format_term_for_turtle(item.subject)} "
-        f"{_format_term_for_turtle(item.predicate)} "
-        f'"{item.object_lexical}"^^<{item.datatype}> .'
-        for item in rejected
-    )
+    lines = []
+    for item in rejected:
+        obj = f'"{item.object_lexical}"'
+        if item.datatype:
+            obj += f"^^<{item.datatype}>"
+        line = (
+            f"{_format_term_for_turtle(item.subject)} "
+            f"{_format_term_for_turtle(item.predicate)} "
+            f"{obj} ."
+        )
+        hint = _quarantine_hint(item)
+        if hint:
+            line += f"  # {hint}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def finalize_llm_graph(
@@ -1471,7 +1493,12 @@ class RDFGraph(Graph):
             ):
                 continue
             slug = stem.rstrip("#/").rsplit("/", 1)[-1].replace("-", "_")
-            prefix = f"{prefix_base}_{slug}" if prefix_base else slug
+            # An ontology's own namespace keeps the plain stem — "matsci", not
+            # "matsci_matsci"; the base only disambiguates foreign stems.
+            if prefix_base and prefix_base.replace("-", "_") != slug:
+                prefix = f"{prefix_base}_{slug}"
+            else:
+                prefix = slug
             self.bind(prefix, Namespace(stem), override=False)
 
     def unbind_chunk_namespaces(self, chunk_pattern="/chunk/") -> "RDFGraph":

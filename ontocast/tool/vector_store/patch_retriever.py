@@ -13,12 +13,18 @@ from pydantic import Field, PrivateAttr
 from rdflib import Namespace, URIRef
 from rdflib.namespace import RDFS
 
-from ontocast.config import CrossQueryMergeMode, PatchRetrievalConfig, VectorStoreConfig
+from ontocast.config import (
+    CrossQueryMergeMode,
+    LexicalTriggerFusion,
+    PatchRetrievalConfig,
+    VectorStoreConfig,
+)
 from ontocast.onto.constants import COMMON_PREFIXES
 from ontocast.onto.iri_policy import as_sparql_iriref
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_header import OntologyHeader
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.util import RDFLIB_DEFAULT_NAMESPACE_URIS
 from ontocast.tool.onto import Tool
 from ontocast.tool.sparql import (
     build_candidate_subgraph_query,
@@ -819,6 +825,62 @@ def _mmr_rerank(
     return selected
 
 
+def _merge_lexical_trigger_atoms(
+    merged: list[GraphAtom],
+    trigger_atoms: list[GraphAtom],
+    fusion: LexicalTriggerFusion = LexicalTriggerFusion.MAX_MERGE,
+) -> tuple[list[GraphAtom], int, int]:
+    """Fuse lexical-trigger hits with semantic seeds.
+
+    ``max_merge`` promotes an atom retrieval already found to
+    ``max(semantic score, trigger score)`` — a case-sensitive exact notation match
+    is evidence, not a duplicate — and appends unseen atoms. ``append`` (legacy)
+    only appends unseen atoms, discarding trigger evidence for known IRIs.
+
+    A fourth RRF fusion channel was considered and rejected: a trigger match is
+    binary per chunk (no ranked list per query window), so RRF over it degenerates
+    to a constant rank-1 bonus — which max_merge implements directly.
+
+    Returns:
+        Tuple of (fused atoms, promoted count, appended count).
+    """
+    if not trigger_atoms:
+        return merged, 0, 0
+    trigger_score_by_iri: dict[str, float] = {}
+    for atom in trigger_atoms:
+        if atom.iri:
+            trigger_score_by_iri[atom.iri] = max(
+                trigger_score_by_iri.get(atom.iri, 0.0), float(atom.score or 0.0)
+            )
+    promoted = 0
+    out: list[GraphAtom] = []
+    existing_iris: set[str] = set()
+    for atom in merged:
+        iri = atom.iri
+        if iri:
+            existing_iris.add(iri)
+        trigger_score = trigger_score_by_iri.get(iri or "")
+        if (
+            fusion is LexicalTriggerFusion.MAX_MERGE
+            and trigger_score is not None
+            and trigger_score > float(atom.score or 0.0)
+        ):
+            out.append(atom.model_copy(update={"score": trigger_score}))
+            promoted += 1
+        else:
+            out.append(atom)
+    appended = 0
+    for atom in trigger_atoms:
+        iri = atom.iri
+        if iri and iri in existing_iris:
+            continue
+        out.append(atom)
+        appended += 1
+        if iri:
+            existing_iris.add(iri)
+    return out, promoted, appended
+
+
 class OntologyPatchRetriever(Tool):
     """Combines vector retrieval into one composite ontology graph."""
 
@@ -891,6 +953,21 @@ class OntologyPatchRetriever(Tool):
         prefix_map = filter_overbroad_namespace_map(prefix_map)
         for prefix, namespace in prefix_map.items():
             candidate.bind(prefix, Namespace(namespace))
+        # Mirror the merge path: graphs served from a triple store carry no author
+        # @prefix bindings, so stem-derived prefixes fill the gap there (see
+        # ontology_from_named_graph). Recover the same implicit stems here so
+        # both context paths advertise identical namespaces.
+        candidate.bind_implicit_namespaces()
+        known_namespaces = set(prefix_map.values())
+        for prefix, namespace_uri in candidate.namespaces():
+            ns = str(namespace_uri)
+            if (
+                not prefix
+                or ns in known_namespaces
+                or ns in RDFLIB_DEFAULT_NAMESPACE_URIS
+            ):
+                continue
+            prefix_map[prefix] = ns
         return candidate, prefix_map
 
     async def _aresolve_merged_context(
@@ -1000,6 +1077,7 @@ class OntologyPatchRetriever(Tool):
         subgraph_depth: int = 1,
         max_total_triples: int = 300,
         estimated_triples_per_query: int = 24,
+        trigger_text: str | None = None,
     ) -> tuple[RDFGraph, list[str]]:
         """Sync: one induced graph and source IRIs for the union of vector hits over ``queries``."""
         try:
@@ -1013,6 +1091,7 @@ class OntologyPatchRetriever(Tool):
                     subgraph_depth=subgraph_depth,
                     max_total_triples=max_total_triples,
                     estimated_triples_per_query=estimated_triples_per_query,
+                    trigger_text=trigger_text,
                 )
             )
         raise RuntimeError(
@@ -1027,6 +1106,7 @@ class OntologyPatchRetriever(Tool):
         subgraph_depth: int = 1,
         max_total_triples: int = 300,
         estimated_triples_per_query: int = 24,
+        trigger_text: str | None = None,
     ) -> tuple[RDFGraph, list[str]]:
         """Async single-query variant of :meth:`aretrieve_ensemble`."""
         return await self.aretrieve_ensemble(
@@ -1036,6 +1116,7 @@ class OntologyPatchRetriever(Tool):
             subgraph_depth=subgraph_depth,
             max_total_triples=max_total_triples,
             estimated_triples_per_query=estimated_triples_per_query,
+            trigger_text=trigger_text,
         )
 
     async def aretrieve_ensemble(
@@ -1046,17 +1127,21 @@ class OntologyPatchRetriever(Tool):
         subgraph_depth: int = 1,
         max_total_triples: int = 300,
         estimated_triples_per_query: int = 24,
+        trigger_text: str | None = None,
     ) -> tuple[RDFGraph, list[str]]:
         """Vector search over all ``queries`` once, score-filter, dedupe, single subgraph expansion."""
         self._last_retrieval_metrics = {}
-        if not queries:
+        trigger_source = (trigger_text or "").strip()
+        if not queries and not trigger_source:
             return RDFGraph(), []
 
         eff_top_k = self._effective_top_k(top_k)
-        hits_by_query = await self.vector_store.asearch_patch_hits_many(
-            queries=queries,
-            top_k=eff_top_k,
-        )
+        hits_by_query: list[OntologySearchHitsByChannel] = []
+        if queries:
+            hits_by_query = await self.vector_store.asearch_patch_hits_many(
+                queries=queries,
+                top_k=eff_top_k,
+            )
         sc = self.vector_store.store_config
         pc = self.patch
         eff_max_atoms = pc.effective_max_atoms(len(queries))
@@ -1111,6 +1196,14 @@ class OntologyPatchRetriever(Tool):
         elif eff_max_atoms > 0:
             merged = merged[:eff_max_atoms]
 
+        trigger_source = trigger_source or " ".join(queries)
+        trigger_atoms = await asyncio.to_thread(
+            self.vector_store.match_lexical_triggers, trigger_source
+        )
+        merged, trigger_promoted, trigger_appended = _merge_lexical_trigger_atoms(
+            merged, trigger_atoms, fusion=sc.lexical_trigger_fusion
+        )
+
         if not merged:
             self._last_retrieval_metrics = {
                 "query_count": len(queries),
@@ -1119,6 +1212,10 @@ class OntologyPatchRetriever(Tool):
                 "atoms_after_dedupe": atoms_after_dedupe,
                 "atoms_final": 0,
                 "seed_iris": [],
+                "lexical_trigger_hits": len(trigger_atoms),
+                "lexical_trigger_atom_ids": [a.atom_id for a in trigger_atoms],
+                "lexical_trigger_promoted": trigger_promoted,
+                "lexical_trigger_appended": trigger_appended,
             }
             if pc.dump_ontology_ranks:
                 self._last_retrieval_metrics["ontology_rank_diagnostics"] = (
@@ -1144,6 +1241,11 @@ class OntologyPatchRetriever(Tool):
             "seed_iris": [atom.iri for atom in merged if atom.iri],
             "source_ontology_iris": source_iris,
             "seeds_by_ontology": dict(seeds_by_ontology),
+            "lexical_trigger_hits": len(trigger_atoms),
+            "lexical_trigger_atom_ids": [a.atom_id for a in trigger_atoms],
+            "lexical_trigger_iris": [a.iri for a in trigger_atoms if a.iri],
+            "lexical_trigger_promoted": trigger_promoted,
+            "lexical_trigger_appended": trigger_appended,
         }
         if pc.dump_ontology_ranks:
             self._last_retrieval_metrics["ontology_rank_diagnostics"] = (
@@ -1195,6 +1297,14 @@ class OntologyPatchRetriever(Tool):
 
         hub_seed_count = sc.induced_subgraph_hub_seed_count
         ancestor_depth = sc.induced_subgraph_ancestor_closure_depth
+        entity_groups: dict[str, str] = {
+            atom.iri: atom.ontology_iri
+            for atom in merged
+            if atom.iri and atom.ontology_iri
+        }
+        symbol_predicates = tuple(
+            URIRef(iri) for iri in sc.induced_subgraph_symbol_predicates
+        )
 
         graph = await self.sparql_tool.aget_induced_subgraph(
             ontologies=catalog,
@@ -1210,6 +1320,12 @@ class OntologyPatchRetriever(Tool):
             ontology_hash_filters=ontology_hash_filters or None,
             hub_seed_count=hub_seed_count,
             ancestor_closure_depth=ancestor_depth,
+            type_promotion_score_factor=(
+                sc.induced_subgraph_type_promotion_score_factor
+            ),
+            seed_order=sc.induced_subgraph_seed_order.value,
+            entity_groups=entity_groups,
+            extra_description_predicates=symbol_predicates,
         )
         self._last_retrieval_metrics["snapshot_triple_count"] = len(graph)
         self._last_retrieval_metrics["ontology_iris_for_expansion"] = ontology_iris

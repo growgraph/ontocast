@@ -27,6 +27,10 @@ from ontocast.tool.representation_text import (
     stable_sorted_triples,
 )
 from ontocast.tool.vector_store.core import GraphAtom
+from ontocast.tool.vector_store.lexical_trigger import (
+    dedupe_preserve_case,
+    looks_like_lexical_code,
+)
 from ontocast.util.hash import render_text_hash
 
 # rdf:type values that add little embedding signal (OWL/RDFS scaffolding).
@@ -67,7 +71,11 @@ _LABEL_PREDICATES: list[URIRef] = [
 # measurements is queried by symbol. They are collected against their own budget rather
 # than queued behind labels: a QUDT unit may declare a dozen labels (one per language),
 # which would exhaust the surface-form cap before any symbol is reached.
-_SYMBOL_PREDICATES: list[URIRef] = [QUDT.symbol, QUDT.ucumCode]
+_SYMBOL_PREDICATES: list[URIRef] = [
+    SKOS.notation,
+    QUDT.symbol,
+    QUDT.ucumCode,
+]
 
 
 def _language_rank(value: Literal) -> int:
@@ -105,6 +113,7 @@ _ANNOTATION_PREDICATES: frozenset[URIRef] = frozenset(
         DCTERMS.title,
         DCTERMS.description,
         DCTERMS.abstract,
+        SKOS.notation,
         QUDT.symbol,
         QUDT.ucumCode,
     }
@@ -177,6 +186,27 @@ class GraphAtomizer(Tool):
             "match. Changing it changes stored vectors and requires a reindex."
         ),
     )
+    lexical_trigger_enabled: bool = Field(
+        default=True,
+        description="Collect case-preserved lexical triggers on each atom.",
+    )
+    lexical_trigger_predicates: list[str] = Field(
+        default_factory=lambda: [
+            "http://www.w3.org/2004/02/skos/core#notation",
+            "http://qudt.org/schema/qudt/symbol",
+            "http://qudt.org/schema/qudt/ucumCode",
+        ],
+        description="Predicate IRIs whose literal objects become lexical triggers.",
+    )
+    lexical_trigger_heuristic_enabled: bool = Field(
+        default=True,
+        description=(
+            "Promote code-shaped labels/altLabels when no notation is declared."
+        ),
+    )
+    lexical_trigger_min_len: int = Field(default=2, ge=1)
+    lexical_trigger_max_len: int = Field(default=24, ge=1)
+    lexical_trigger_heuristic_max_per_entity: int = Field(default=2, ge=0)
 
     class _VectorizationSource(Protocol):
         graph: RDFGraph
@@ -229,6 +259,7 @@ class GraphAtomizer(Tool):
             minimal_representation = self._build_minimal_representation(
                 entity, embedding_graph
             )
+            lexical_triggers = self._build_lexical_triggers(entity, embedding_graph)
             neighborhood_variants = self._build_neighborhood_variants(
                 entity=entity, graph=patch_graph, entity_role=role
             )
@@ -268,6 +299,7 @@ class GraphAtomizer(Tool):
                     core_representation=core_representation,
                     minimal_representation=minimal_representation,
                     neighborhood_representation=neighborhood_representation,
+                    lexical_triggers=lexical_triggers,
                     created_at=generated_at,
                 )
         return list(atoms_by_id.values())
@@ -776,6 +808,66 @@ class GraphAtomizer(Tool):
             if len(merged) >= max_items:
                 break
         return merged
+
+    def _resolved_lexical_trigger_predicates(self) -> list[URIRef]:
+        return [URIRef(iri) for iri in self.lexical_trigger_predicates if iri.strip()]
+
+    def _collect_raw_literals(
+        self,
+        graph: RDFGraph,
+        subject: URIRef,
+        predicates: list[URIRef],
+        max_items: int,
+    ) -> list[str]:
+        """Collect literal values preserving original case (for lexical triggers)."""
+        values: list[str] = []
+        seen: set[str] = set()
+        for predicate in predicates:
+            candidates = sorted(
+                {
+                    (_language_rank(obj), str(obj).strip())
+                    for _, _, obj in graph.triples((subject, predicate, None))
+                    if isinstance(obj, Literal) and str(obj).strip()
+                }
+            )
+            for _, raw in candidates:
+                if raw in seen:
+                    continue
+                values.append(raw)
+                seen.add(raw)
+                if len(values) >= max_items:
+                    return values
+        return values
+
+    def _build_lexical_triggers(self, entity: URIRef, graph: RDFGraph) -> list[str]:
+        if not self.lexical_trigger_enabled:
+            return []
+        predicate_iris = self._resolved_lexical_trigger_predicates()
+        declared = self._collect_raw_literals(
+            graph, entity, predicate_iris, max_items=16
+        )
+        if declared:
+            return dedupe_preserve_case(declared)
+
+        if not self.lexical_trigger_heuristic_enabled:
+            return []
+
+        heuristic: list[str] = []
+        for candidate in self._collect_raw_literals(
+            graph,
+            entity,
+            [RDFS.label, SKOS.altLabel],
+            max_items=self.lexical_trigger_heuristic_max_per_entity + 4,
+        ):
+            if looks_like_lexical_code(
+                candidate,
+                min_len=self.lexical_trigger_min_len,
+                max_len=self.lexical_trigger_max_len,
+            ):
+                heuristic.append(candidate)
+            if len(heuristic) >= self.lexical_trigger_heuristic_max_per_entity:
+                break
+        return dedupe_preserve_case(heuristic)
 
     def _normalize_uri(self, uri: URIRef) -> str:
         return normalize_uri_local_name(uri)

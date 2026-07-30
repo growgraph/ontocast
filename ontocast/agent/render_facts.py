@@ -35,6 +35,7 @@ from ontocast.prompt.render_facts import (
 )
 from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
 from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.validate import partition_object_property_literal_triples
 
 logger = logging.getLogger(__name__)
 
@@ -237,11 +238,16 @@ async def render_facts_fresh(
         )
         render_report.semantic_graph.sanitize_prefixes_namespaces()
         clean_graph, rejected = finalize_llm_graph(render_report.semantic_graph)
+        if tools.object_property_literal_check:
+            clean_graph, op_rejected = partition_object_property_literal_triples(
+                clean_graph, access.effective_ontology_for_prompt().graph
+            )
+            rejected = rejected + op_rejected
         state.content_unit.graph = clean_graph
         state.quarantined_literal_triples = rejected
         if rejected:
             logger.warning(
-                "Fresh facts quarantined %d triple(s) with invalid typed literals",
+                "Fresh facts quarantined %d triple(s) with invalid literals",
                 len(rejected),
             )
 
@@ -333,14 +339,21 @@ async def render_facts_update(
         )
         graph_update = render_report.graph_update
         all_rejected = []
+        ontology_context_graph = access.effective_ontology_for_prompt().graph
         for op in graph_update.triple_operations:
             clean_graph, rejected = finalize_llm_graph(op.graph)
+            # Only insert ops are checked: deleting a bad literal is desirable.
+            if tools.object_property_literal_check and op.type == "insert":
+                clean_graph, op_rejected = partition_object_property_literal_triples(
+                    clean_graph, ontology_context_graph
+                )
+                rejected = rejected + op_rejected
             op.graph = clean_graph
             all_rejected.extend(rejected)
         state.quarantined_literal_triples = all_rejected
         if all_rejected:
             logger.warning(
-                "Facts update quarantined %d triple(s) with invalid typed literals",
+                "Facts update quarantined %d triple(s) with invalid literals",
                 len(all_rejected),
             )
         state.facts_updates.append(graph_update)

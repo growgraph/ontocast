@@ -13,6 +13,7 @@ from rdflib import BNode, Literal, Namespace, URIRef
 from rdflib.namespace import DCTERMS, OWL, RDF, RDFS, SKOS
 from rdflib.plugins.sparql import prepareQuery
 
+from ontocast.onto.constants import COMMON_PREFIXES, WELL_KNOWN_PREFIXES
 from ontocast.onto.enum import SPARQLOperationType
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
@@ -23,18 +24,43 @@ from ontocast.tool.triple_manager.util import LineageT
 
 logger = logging.getLogger(__name__)
 
-# Predicates treated as human-facing descriptions for seed entities (always merged in first).
-_SEED_DESCRIPTION_PREDICATES: frozenset[URIRef] = frozenset(
-    {
-        RDFS.label,
-        RDFS.comment,
-        SKOS.prefLabel,
-        SKOS.altLabel,
-        SKOS.definition,
-        URIRef("http://purl.org/dc/terms/description"),
-        URIRef("http://purl.org/dc/elements/1.1/description"),
-    }
+# Predicates treated as human-facing descriptions for seed entities (always merged in
+# first). Ordered tuples, not sets: iteration order decides which triples are admitted
+# before the total-triple budget cuts off, and set iteration order is salted per process.
+# Names come before glosses so tight budgets drop comments, not identifiers.
+_SEED_NAME_PREDICATES: tuple[URIRef, ...] = (
+    RDFS.label,
+    SKOS.prefLabel,
 )
+_SEED_GLOSS_PREDICATES: tuple[URIRef, ...] = (
+    SKOS.altLabel,
+    RDFS.comment,
+    SKOS.definition,
+    URIRef("http://purl.org/dc/terms/description"),
+    URIRef("http://purl.org/dc/elements/1.1/description"),
+)
+_SEED_DESCRIPTION_PREDICATES: tuple[URIRef, ...] = (
+    _SEED_NAME_PREDICATES + _SEED_GLOSS_PREDICATES
+)
+
+
+def _compose_description_predicates(
+    extra: Sequence[URIRef],
+) -> tuple[URIRef, ...]:
+    """Insert identifier-like extras (symbols, notations) between names and glosses.
+
+    Symbols sit before glosses so a tight triple budget drops comments, not the
+    short codes that let the LLM map surface tokens to IRIs.
+    """
+    if not extra:
+        return _SEED_DESCRIPTION_PREDICATES
+    deduped = tuple(
+        pred
+        for pred in dict.fromkeys(extra)
+        if pred not in _SEED_DESCRIPTION_PREDICATES
+    )
+    return _SEED_NAME_PREDICATES + deduped + _SEED_GLOSS_PREDICATES
+
 
 # RDF list expansion and ontology header predicates tend to introduce low-value
 # triples that are disconnected from business entities.
@@ -273,21 +299,63 @@ def select_relevant_ontologies(
         list: The surviving records, in input order.
     """
     ontology_filter = set(ontology_iris or [])
-    relevant: list[LineageT] = []
-    for ontology in ontologies:
-        if ontology_filter and ontology.iri not in ontology_filter:
-            continue
-        if ontology_version_filters and ontology.iri in ontology_version_filters:
-            ontology_version = (
-                str(ontology.version) if ontology.version is not None else None
-            )
-            if ontology_version not in ontology_version_filters[ontology.iri]:
-                continue
-        if ontology_hash_filters and ontology.iri in ontology_hash_filters:
-            if ontology.hash not in ontology_hash_filters[ontology.iri]:
-                continue
-        relevant.append(ontology)
-    return relevant
+    candidates: list[LineageT] = [
+        ontology
+        for ontology in ontologies
+        if not ontology_filter or ontology.iri in ontology_filter
+    ]
+    by_iri: dict[str, list[LineageT]] = {}
+    for ontology in candidates:
+        by_iri.setdefault(ontology.iri, []).append(ontology)
+
+    # Version/hash filters *select among* an IRI's catalog entries; they must never
+    # discard an IRI wholesale. Atom payloads and catalog graphs are produced by
+    # different processes, and graph hashes are not stable under serialization
+    # round-trips (literal lexical forms are outside URDNA2015 canonicalization),
+    # so an exact-hash requirement silently emptied whole ontologies out of the
+    # prompt context. Relax per IRI: exact match → same-version → any catalog
+    # entry, warning on each relaxation.
+    kept_ids: set[int] = set()
+    for iri, group in by_iri.items():
+        if ontology_version_filters and iri in ontology_version_filters:
+            allowed_versions = ontology_version_filters[iri]
+            version_pass = [
+                ontology
+                for ontology in group
+                if (str(ontology.version) if ontology.version is not None else None)
+                in allowed_versions
+            ]
+            if not version_pass:
+                logger.warning(
+                    "Ontology %s: no catalog entry matches retrieval versions %s; "
+                    "falling back to all %d catalog entr(ies) for this IRI",
+                    iri,
+                    sorted(allowed_versions),
+                    len(group),
+                )
+                version_pass = list(group)
+        else:
+            version_pass = list(group)
+
+        if ontology_hash_filters and iri in ontology_hash_filters:
+            allowed_hashes = ontology_hash_filters[iri]
+            hash_pass = [
+                ontology for ontology in version_pass if ontology.hash in allowed_hashes
+            ]
+            if not hash_pass:
+                logger.warning(
+                    "Ontology %s: no catalog entry matches retrieval hashes "
+                    "(catalog identity drift, e.g. serialization round-trip); "
+                    "falling back to %d same-version entr(ies)",
+                    iri,
+                    len(version_pass),
+                )
+                hash_pass = version_pass
+        else:
+            hash_pass = version_pass
+        kept_ids.update(id(ontology) for ontology in hash_pass)
+
+    return [ontology for ontology in candidates if id(ontology) in kept_ids]
 
 
 def merge_ontology_graphs(
@@ -325,6 +393,48 @@ def merge_ontology_graphs(
     for ontology in ontologies:
         merged_graph += ontology.graph
     return merged_graph, filtered_ns
+
+
+# One canonical prefix per well-known namespace, used to undo stem-derived
+# aliases (e.g. ``units_qudt``) that implicit binding generates after a
+# triple-store round trip strips author @prefix declarations.
+_CANONICAL_PREFIX_BY_NAMESPACE: dict[str, str] = {
+    **{uri.strip("<>"): prefix for prefix, uri in COMMON_PREFIXES.items()},
+    **{uri: prefix for prefix, uri in WELL_KNOWN_PREFIXES.items()},
+}
+
+
+def _bind_used_prefixes(graph: RDFGraph, prefix_map: Mapping[str, str]) -> None:
+    """Bind one prefix per namespace actually used by a term in ``graph``.
+
+    Prefix bindings are what downstream prompts advertise as available namespaces;
+    binding every merged ontology's prefixes regardless of content claims terms
+    "exist verbatim in the ontology" that the snapshot never shows. Namespaces
+    with several candidate prefixes (each merged ontology may alias the same
+    namespace under its own stem) get exactly one: the well-known canonical name
+    when there is one, else the plainest candidate.
+    """
+    used_terms: set[str] = set()
+    for subj, pred, obj in graph:
+        if isinstance(subj, URIRef):
+            used_terms.add(str(subj))
+        if isinstance(pred, URIRef):
+            used_terms.add(str(pred))
+        if isinstance(obj, URIRef):
+            used_terms.add(str(obj))
+        elif isinstance(obj, Literal) and obj.datatype is not None:
+            used_terms.add(str(obj.datatype))
+
+    candidates_by_ns: dict[str, list[str]] = {}
+    for prefix, uri in prefix_map.items():
+        candidates_by_ns.setdefault(uri, []).append(prefix)
+    for uri, prefixes in candidates_by_ns.items():
+        if not any(term.startswith(uri) for term in used_terms):
+            continue
+        prefix = _CANONICAL_PREFIX_BY_NAMESPACE.get(uri) or min(
+            prefixes, key=lambda p: (p.count("_"), len(p), p)
+        )
+        graph.bind(prefix, Namespace(uri))
 
 
 def _prune_orphaned_bnode_subjects(graph: RDFGraph) -> None:
@@ -425,17 +535,77 @@ def _build_concept_relevance(
     merged_graph: RDFGraph,
     relevance: dict[str, float],
     ontology_subjects: frozenset[str],
-) -> dict[str, float]:
-    """Map retrieval scores onto promoted class IRIs (max score per class)."""
+    type_promotion_score_factor: float = 1.0,
+) -> tuple[dict[str, float], dict[str, int]]:
+    """Map retrieval scores onto seeds and their promoted class IRIs.
+
+    A retrieved individual keeps its own score; each promoted type IRI receives
+    ``score * type_promotion_score_factor`` (max-merged per target). Transferring
+    the score to the type alone — the previous behavior — collapsed every typed
+    individual into an undifferentiated relevance-0 tie that downstream ordering
+    then broke by raw IRI bytes, starving high-ranked seeds under tight budgets.
+
+    Also returns ``first_rank``: the earliest retrieval rank contributing to each
+    target (promoted types inherit their promoter's rank), so ordering can
+    tie-break equal scores by retrieval rank instead of IRI bytes.
+    """
     concept_relevance: dict[str, float] = {}
-    for orig_uri in seed_uris_ranked:
+    first_rank: dict[str, int] = {}
+    for rank, orig_uri in enumerate(seed_uris_ranked):
         score = float(relevance.get(orig_uri, 0.0))
         ref = URIRef(orig_uri)
         promoted = _promoted_type_iris(merged_graph, ref, ontology_subjects)
-        targets = promoted if promoted else [orig_uri]
-        for target in targets:
-            concept_relevance[target] = max(concept_relevance.get(target, 0.0), score)
-    return concept_relevance
+        targets = [(orig_uri, score)] + [
+            (uri, score * type_promotion_score_factor) for uri in promoted
+        ]
+        for target, target_score in targets:
+            concept_relevance[target] = max(
+                concept_relevance.get(target, 0.0), target_score
+            )
+            first_rank.setdefault(target, rank)
+    return concept_relevance, first_rank
+
+
+def _expand_groups_to_promoted(
+    seed_uris_ranked: list[str],
+    merged_graph: RDFGraph,
+    ontology_subjects: frozenset[str],
+    entity_groups: Mapping[str, str],
+) -> dict[str, str]:
+    """Extend seed→group mapping so promoted type IRIs inherit their promoter's group."""
+    groups = dict(entity_groups)
+    for orig_uri in seed_uris_ranked:
+        group = entity_groups.get(orig_uri)
+        if not group:
+            continue
+        for promoted in _promoted_type_iris(
+            merged_graph, URIRef(orig_uri), ontology_subjects
+        ):
+            groups.setdefault(promoted, group)
+    return groups
+
+
+def _interleave_by_group(
+    ordered_uris: list[str],
+    groups: Mapping[str, str],
+) -> list[str]:
+    """Round-robin over groups, preserving in-group order.
+
+    Group visiting order is the first-appearance order in ``ordered_uris``, so the
+    best-scored seed still expands first. URIs without a group form their own bucket.
+    """
+    buckets: dict[str, list[str]] = {}
+    for uri in ordered_uris:
+        buckets.setdefault(groups.get(uri, ""), []).append(uri)
+    bucket_lists = list(buckets.values())
+    result: list[str] = []
+    round_idx = 0
+    while len(result) < len(ordered_uris):
+        for bucket in bucket_lists:
+            if round_idx < len(bucket):
+                result.append(bucket[round_idx])
+        round_idx += 1
+    return result
 
 
 def _uri_entities_in_graph(graph: RDFGraph) -> set[URIRef]:
@@ -720,6 +890,7 @@ def _materialize_class_node_in_snapshot(
     max_total_triples: int,
     should_include,
     include_types: bool = True,
+    description_predicates: Sequence[URIRef] = _SEED_DESCRIPTION_PREDICATES,
 ) -> None:
     """Priority order: hierarchy axioms, then glosses, then informative types."""
     _add_class_schema_triples_for_node(
@@ -735,6 +906,7 @@ def _materialize_class_node_in_snapshot(
         result,
         max_total_triples=max_total_triples,
         should_include=should_include,
+        description_predicates=description_predicates,
     )
     if not include_types:
         return
@@ -796,8 +968,9 @@ def _add_description_triples_for_node(
     *,
     max_total_triples: int,
     should_include,
+    description_predicates: Sequence[URIRef] = _SEED_DESCRIPTION_PREDICATES,
 ) -> None:
-    for pred in _SEED_DESCRIPTION_PREDICATES:
+    for pred in description_predicates:
         outgoing = sorted(
             merged_graph.triples((node, pred, None)),
             key=lambda triple: str(triple),
@@ -825,6 +998,7 @@ def _add_subclass_ancestor_closure(
     max_total_triples: int,
     should_include,
     ancestor_closure_depth: int,
+    description_predicates: Sequence[URIRef] = _SEED_DESCRIPTION_PREDICATES,
 ) -> None:
     if ancestor_closure_depth <= 0:
         return
@@ -845,6 +1019,7 @@ def _add_subclass_ancestor_closure(
                 max_total_triples=max_total_triples,
                 should_include=should_include,
                 include_types=False,
+                description_predicates=description_predicates,
             )
             for _, _, parent in sorted(
                 merged_graph.triples((node, RDFS.subClassOf, None)),
@@ -863,6 +1038,7 @@ def _schema_shell_for_concept_seeds(
     max_total_triples: int,
     should_include,
     ancestor_closure_depth: int,
+    description_predicates: Sequence[URIRef] = _SEED_DESCRIPTION_PREDICATES,
 ) -> None:
     for seed_uri in concept_seeds:
         if len(result) >= max_total_triples:
@@ -875,6 +1051,7 @@ def _schema_shell_for_concept_seeds(
             max_total_triples=max_total_triples,
             should_include=should_include,
             include_types=True,
+            description_predicates=description_predicates,
         )
         _add_subclass_ancestor_closure(
             merged_graph,
@@ -883,6 +1060,7 @@ def _schema_shell_for_concept_seeds(
             max_total_triples=max_total_triples,
             should_include=should_include,
             ancestor_closure_depth=ancestor_closure_depth,
+            description_predicates=description_predicates,
         )
 
 
@@ -895,6 +1073,7 @@ def _bfs_expand_from_seed(
     should_include,
     depth: int,
     quota: int,
+    description_predicates: Sequence[URIRef] = _SEED_DESCRIPTION_PREDICATES,
 ) -> None:
     if quota <= 0 or depth < 0:
         return
@@ -925,6 +1104,7 @@ def _bfs_expand_from_seed(
                 max_total_triples=max_total_triples,
                 should_include=should_include,
                 include_types=False,
+                description_predicates=description_predicates,
             )
             outgoing = sorted(
                 merged_graph.triples((node, None, None)),
@@ -1620,6 +1800,10 @@ class SPARQLTool:
         hub_seed_count: int = 8,
         ancestor_closure_depth: int = 3,
         merged: tuple[RDFGraph, dict[str, str]] | None = None,
+        type_promotion_score_factor: float = 1.0,
+        seed_order: str = "score",
+        entity_groups: Mapping[str, str] | None = None,
+        extra_description_predicates: Sequence[URIRef] = (),
     ) -> tuple[RDFGraph, dict[str, int]]:
         """Merge filtered graphs; schema shell, hub BFS, and connectivity repair.
 
@@ -1627,6 +1811,14 @@ class SPARQLTool:
             merged: Pre-merged ``(graph, prefix_map)`` for the already-filtered
                 ontologies. When supplied, ``ontologies`` and the three filter
                 arguments are not consulted -- the caller has resolved them.
+            type_promotion_score_factor: Fraction of a seed's retrieval score
+                inherited by its promoted type IRIs.
+            seed_order: ``"score"`` expands seeds in global score order;
+                ``"ontology_round_robin"`` interleaves ontology groups
+                (requires ``entity_groups``).
+            entity_groups: Seed IRI -> ontology IRI, used by round-robin ordering.
+            extra_description_predicates: Additional description predicates (e.g.
+                symbol/notation annotations) admitted for seed nodes.
         """
 
         if merged is None:
@@ -1668,13 +1860,17 @@ class SPARQLTool:
         seed_uris_ranked = list(dict.fromkeys(uri for uri in entity_uris if uri))
         if not seed_uris_ranked:
             return RDFGraph(), {}
+        # Prefixes are bound only after the snapshot is built (_bind_used_prefixes):
+        # binding every merged ontology's prefixes up front advertised namespaces
+        # downstream prompts could not see a single term from.
         result = RDFGraph()
-        for prefix, uri in filtered_ns.items():
-            result.bind(prefix, Namespace(uri))
 
         if max_total_triples <= 0 or estimated_triples_per_query <= 0:
             return result, {}
 
+        description_predicates = _compose_description_predicates(
+            tuple(extra_description_predicates)
+        )
         relevance = entity_relevance or {}
         roles = entity_roles or {}
         concept_seeds, property_seeds = _classify_and_promote_seeds(
@@ -1729,15 +1925,32 @@ class SPARQLTool:
                 max_total_triples=max_total_triples,
                 should_include=should_include_expansion_triple,
             )
+            _bind_used_prefixes(result, filtered_ns)
             return result, metrics
 
-        concept_relevance = _build_concept_relevance(
-            seed_uris_ranked, merged_graph, relevance, ontology_subjects
+        concept_relevance, first_rank = _build_concept_relevance(
+            seed_uris_ranked,
+            merged_graph,
+            relevance,
+            ontology_subjects,
+            type_promotion_score_factor=type_promotion_score_factor,
         )
+        default_rank = len(seed_uris_ranked)
         sorted_seed_uris = sorted(
             concept_seeds,
-            key=lambda uri: (-float(concept_relevance.get(uri, 0.0)), uri),
+            key=lambda uri: (
+                -float(concept_relevance.get(uri, 0.0)),
+                first_rank.get(uri, default_rank),
+                uri,
+            ),
         )
+        if seed_order == "ontology_round_robin" and entity_groups:
+            sorted_seed_uris = _interleave_by_group(
+                sorted_seed_uris,
+                _expand_groups_to_promoted(
+                    seed_uris_ranked, merged_graph, ontology_subjects, entity_groups
+                ),
+            )
 
         _schema_shell_for_concept_seeds(
             merged_graph,
@@ -1746,6 +1959,7 @@ class SPARQLTool:
             max_total_triples=max_total_triples,
             should_include=should_include_expansion_triple,
             ancestor_closure_depth=ancestor_closure_depth,
+            description_predicates=description_predicates,
         )
 
         score_by_seed: dict[str, float] = {
@@ -1783,6 +1997,7 @@ class SPARQLTool:
                     should_include=should_include_expansion_triple,
                     depth=depth,
                     quota=quota,
+                    description_predicates=description_predicates,
                 )
 
         if tail_seeds and tail_budget > 0:
@@ -1801,6 +2016,7 @@ class SPARQLTool:
                     should_include=should_include_expansion_triple,
                     depth=max(0, depth - 1),
                     quota=quota,
+                    description_predicates=description_predicates,
                 )
                 tail_quota_total -= quota
 
@@ -1814,6 +2030,7 @@ class SPARQLTool:
             max_total_triples=max_total_triples,
             should_include=should_include_expansion_triple,
         )
+        _bind_used_prefixes(result, filtered_ns)
         return result, metrics
 
     def _fetch_ontologies_sync(self, ontology_iris: list[str] | None) -> list[Ontology]:
@@ -1849,6 +2066,10 @@ class SPARQLTool:
         ancestor_closure_depth: int = 3,
         ontologies: list[Ontology] | None = None,
         merged: tuple[RDFGraph, dict[str, str]] | None = None,
+        type_promotion_score_factor: float = 1.0,
+        seed_order: str = "score",
+        entity_groups: Mapping[str, str] | None = None,
+        extra_description_predicates: Sequence[URIRef] = (),
     ) -> RDFGraph:
         """Fetch a deterministic induced subgraph around selected entities.
 
@@ -1884,6 +2105,10 @@ class SPARQLTool:
             hub_seed_count,
             ancestor_closure_depth,
             merged,
+            type_promotion_score_factor,
+            seed_order,
+            entity_groups,
+            extra_description_predicates,
         )
         self.last_finalize_metrics = metrics
         return result
@@ -1903,6 +2128,10 @@ class SPARQLTool:
         ancestor_closure_depth: int = 3,
         ontologies: list[Ontology] | None = None,
         merged: tuple[RDFGraph, dict[str, str]] | None = None,
+        type_promotion_score_factor: float = 1.0,
+        seed_order: str = "score",
+        entity_groups: Mapping[str, str] | None = None,
+        extra_description_predicates: Sequence[URIRef] = (),
     ) -> RDFGraph:
         """Like ``get_induced_subgraph`` but uses ``afetch_ontologies`` for I/O.
 
@@ -1928,6 +2157,10 @@ class SPARQLTool:
                 ancestor_closure_depth=ancestor_closure_depth,
                 ontologies=ontologies,
                 merged=merged,
+                type_promotion_score_factor=type_promotion_score_factor,
+                seed_order=seed_order,
+                entity_groups=entity_groups,
+                extra_description_predicates=extra_description_predicates,
             )
         if depth < 0:
             raise ValueError("depth must be >= 0")
@@ -1955,6 +2188,10 @@ class SPARQLTool:
             hub_seed_count,
             ancestor_closure_depth,
             merged,
+            type_promotion_score_factor,
+            seed_order,
+            entity_groups,
+            extra_description_predicates,
         )
         self.last_finalize_metrics = metrics
         return result

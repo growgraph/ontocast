@@ -180,3 +180,5 @@ cython_debug/
 
 .env*
 !.env.example
+
+.claude/worktrees

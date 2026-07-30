@@ -33,6 +33,7 @@ from ontocast.tool.vector_store.embedding import (
     EmbeddingTool,
     FastembedBm25SparseTool,
 )
+from ontocast.tool.vector_store.lexical_trigger import LexicalTriggerIndex
 from ontocast.tool.vector_store.util import (
     META_EMBEDDING_MODEL,
     EmbeddingContractMismatchError,
@@ -49,6 +50,7 @@ from ontocast.tool.vector_store.util import (
     point_id_for_atom,
     rank_fuse_channel_hits,
     require_embedding_vector_length,
+    sync_atomizer_from_store_config,
     validate_embedding_contract_metadata,
 )
 
@@ -66,19 +68,58 @@ class QdrantVectorStoreManager(VectorStoreManager):
     sparse_embedding: FastembedBm25SparseTool | None = Field(default=None, exclude=True)
     atomizer: GraphAtomizer = Field(default_factory=GraphAtomizer, exclude=True)
     _client: QdrantClient | None = PrivateAttr(default=None)
+    _lexical_trigger_index: LexicalTriggerIndex | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def _sync_atomizer_with_store_config(self) -> "QdrantVectorStoreManager":
-        """Mirror representation settings from store config onto the atomizer.
-
-        The atomizer decides what text is embedded, but its knobs are configured
-        alongside the rest of the vector store, so they are propagated here rather
-        than requiring every construction site to build a matching atomizer.
-        """
-        self.atomizer.minimal_representation_label_limit = (
-            self.store_config.minimal_label_limit
-        )
+        """Mirror representation settings from store config onto the atomizer."""
+        sync_atomizer_from_store_config(self.atomizer, self.store_config)
         return self
+
+    def _get_lexical_trigger_index(self) -> LexicalTriggerIndex:
+        if self._lexical_trigger_index is None:
+            self._lexical_trigger_index = LexicalTriggerIndex(
+                max_match_atoms=self.store_config.lexical_trigger_max_atoms
+            )
+        return self._lexical_trigger_index
+
+    def _register_lexical_triggers(self, atoms: list[GraphAtom]) -> None:
+        if not self.store_config.lexical_trigger_enabled:
+            return
+        self._get_lexical_trigger_index().register_atoms(atoms)
+
+    def _rebuild_lexical_trigger_index(self) -> None:
+        index = LexicalTriggerIndex(
+            max_match_atoms=self.store_config.lexical_trigger_max_atoms
+        )
+        self._lexical_trigger_index = index
+        if not self.store_config.lexical_trigger_enabled:
+            return
+        for atom in self._scroll_all_atoms():
+            index.register_atom(atom)
+
+    def _scroll_all_atoms(self, *, batch_size: int = 512) -> list[GraphAtom]:
+        collection_name = self._ontology_collection_name()
+        if not self.client.collection_exists(collection_name=collection_name):
+            return []
+        atoms: list[GraphAtom] = []
+        offset: Any = None
+        while True:
+            points, next_offset = self.client.scroll(
+                collection_name=collection_name,
+                with_payload=True,
+                with_vectors=False,
+                offset=offset,
+                limit=batch_size,
+            )
+            if not points:
+                break
+            for point in points:
+                atoms.append(self._point_to_atom(point))
+            if next_offset is None:
+                break
+            offset = next_offset
+        return atoms
 
     @property
     def embedding_config(self) -> EmbeddingConfig:
@@ -164,6 +205,8 @@ class QdrantVectorStoreManager(VectorStoreManager):
             collection_name=ontology_col, field_name="ontology_hash"
         )
         self._ensure_payload_index(collection_name=ontology_col, field_name="iri")
+        self._ensure_payload_index(collection_name=ontology_col, field_name="atom_id")
+        await asyncio.to_thread(self._rebuild_lexical_trigger_index)
 
     async def wipe_store(self) -> None:
         """Drop the currently configured ontology and facts collections."""
@@ -174,6 +217,7 @@ class QdrantVectorStoreManager(VectorStoreManager):
             if name and self.client.collection_exists(collection_name=name):
                 self.client.delete_collection(collection_name=name)
                 logger.info("Wiped Qdrant collection %s", name)
+        self._lexical_trigger_index = None
 
     async def clean_tenancy(
         self,
@@ -390,6 +434,7 @@ class QdrantVectorStoreManager(VectorStoreManager):
         collection = self._ontology_collection_name()
         for points_batch in iter_batches(points, self.qdrant_config.upsert_batch_size):
             self.client.upsert(collection_name=collection, points=points_batch)
+        self._register_lexical_triggers(atoms)
         return len(points)
 
     def search_patches(
@@ -576,6 +621,59 @@ class QdrantVectorStoreManager(VectorStoreManager):
             out[atom_id] = (core, neighborhood)
         return out
 
+    def fetch_atoms_by_ids(self, atom_ids: list[str]) -> list[GraphAtom]:
+        if not atom_ids:
+            return []
+        collection = self._ontology_collection_name()
+        if not self.client.collection_exists(collection_name=collection):
+            return []
+        wanted = set(atom_ids)
+        found: dict[str, GraphAtom] = {}
+        offset: Any = None
+        while wanted - found.keys():
+            points, next_offset = self.client.scroll(
+                collection_name=collection,
+                scroll_filter=qdrant_models.Filter(
+                    must=[
+                        qdrant_models.FieldCondition(
+                            key="atom_id",
+                            match=qdrant_models.MatchAny(any=list(wanted)),
+                        )
+                    ]
+                ),
+                with_payload=True,
+                with_vectors=False,
+                offset=offset,
+                limit=512,
+            )
+            if not points:
+                break
+            for point in points:
+                atom = self._point_to_atom(point)
+                found[atom.atom_id] = atom
+            if next_offset is None:
+                break
+            offset = next_offset
+        return [found[aid] for aid in atom_ids if aid in found]
+
+    def match_lexical_triggers(
+        self, text: str, *, max_atoms: int | None = None
+    ) -> list[GraphAtom]:
+        if not self.store_config.lexical_trigger_enabled or not text.strip():
+            return []
+        limit = (
+            self.store_config.lexical_trigger_max_atoms
+            if max_atoms is None
+            else max_atoms
+        )
+        if limit <= 0:
+            return []
+        index = self._get_lexical_trigger_index()
+        matched_ids = index.match(text, max_atoms=limit)
+        atoms = self.fetch_atoms_by_ids(matched_ids)
+        trigger_score = self.store_config.lexical_trigger_score
+        return [atom.model_copy(update={"score": trigger_score}) for atom in atoms]
+
     def search_by_vector(
         self,
         core_vector: list[float],
@@ -688,8 +786,7 @@ class QdrantVectorStoreManager(VectorStoreManager):
                     == "no neighborhood facts available"
                 ):
                     score = 0.0
-            atom = self._point_to_atom(point)
-            atom.score = score
+            atom = self._point_to_atom(point, score=score)
             hits.append(OntologySearchHit(atom=atom, score=score))
         return hits
 
@@ -705,6 +802,7 @@ class QdrantVectorStoreManager(VectorStoreManager):
         )
         if delete_filter is None:
             return
+        self._get_lexical_trigger_index().unregister_ontology(iri)
         self.client.delete(
             collection_name=self._ontology_collection_name(),
             points_selector=qdrant_models.FilterSelector(filter=delete_filter),
@@ -741,9 +839,15 @@ class QdrantVectorStoreManager(VectorStoreManager):
             return None
         return qdrant_models.Filter(must=conditions)
 
-    def _point_to_atom(self, point: Any) -> GraphAtom:
+    def _point_to_atom(self, point: Any, *, score: float | None = None) -> GraphAtom:
+        """Build a ``GraphAtom`` from a Qdrant point payload.
+
+        ``score`` must be supplied explicitly by the caller rather than read off
+        ``point`` here: ``ScoredPoint`` (from ``search``/``query_points``) carries a
+        score, but ``Record`` (from ``scroll``/``retrieve``) has no such field at
+        all, so probing ``point.score`` would raise for id-based lookups.
+        """
         payload = point.payload or {}
-        score = float(point.score) if point.score is not None else None
         return atom_from_payload(
             payload,
             score=score,

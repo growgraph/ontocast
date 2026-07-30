@@ -80,6 +80,22 @@ facts_instruction_shared = """\n\n
    - Prose restatements of a measurement in dcterms:description are redundant
      once typed numeric properties exist — omit them.
 
+8a. OBJECT PROPERTIES TAKE IRIs, NOT STRINGS:
+   - A property whose range is a class (declared `owl:ObjectProperty`, or with an
+     `rdfs:range` pointing to a class — e.g. `qudt:unit` with range `qudt:Unit`)
+     MUST have an IRI as its object, never a string literal.
+   - Resolve the surface token to an individual in the provided ontology context by
+     matching its `rdfs:label`, `skos:notation`, symbol, or code annotations,
+     preserving case exactly (a lowercase symbol and its uppercase variant denote
+     DIFFERENT individuals — match character-for-character).
+   - WRONG:   `cd:value_1 qudt:unit "meV" .` — string on an object property
+   - CORRECT: `cd:value_1 qudt:unit unit:MilliEV .` — when that individual's
+     label/notation matches the text token
+   - Only if NO individual in the provided context matches the token: keep the raw
+     token in a literal-code annotation property (e.g. `qudt:ucumCode` or
+     `rdfs:comment`) on the `cd:` node instead of putting a string on the
+     object property, so the surface form is preserved without breaking typing.
+
 9. To extract data from tables, use CSV on the Web (CSVW) to describe tables.
 
 10. {output_hygiene_rule}

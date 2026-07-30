@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ontocast.config import EmbeddingConfig, VectorStoreConfig, VectorStoreDedupMode
+from ontocast.tool.vector_store.atomizer import GraphAtomizer
 from ontocast.tool.vector_store.core import (
     GraphAtom,
     OntologySearchHit,
@@ -23,8 +24,9 @@ _DEFAULT_MINIMAL_LABEL_LIMIT = 5
 # Bumped whenever the atomizer changes *which* literals become surface forms. Unlike the
 # cap, such a change alters the stored text for every term at the default setting, so it
 # is fingerprinted unconditionally. ``sf2``: added qudt:symbol / qudt:ucumCode, and
-# ranked untagged and English literals ahead of other languages.
-_SURFACE_FORM_CONTRACT = "sf2"
+# ranked untagged and English literals ahead of other languages. ``sf3``: added
+# lexical_triggers for the exact-match retrieval lane.
+_SURFACE_FORM_CONTRACT = "sf3"
 
 
 class EmbeddingContractMismatchError(ValueError):
@@ -253,6 +255,7 @@ def atom_payload(atom: GraphAtom) -> dict[str, Any]:
         "core_representation": atom.core_representation,
         "minimal_representation": atom.minimal_representation,
         "neighborhood_representation": atom.neighborhood_representation,
+        "lexical_triggers": list(atom.lexical_triggers),
         "created_at": atom.created_at.isoformat(),
     }
 
@@ -275,9 +278,19 @@ def atom_from_payload(
         core_representation=str(payload.get("core_representation", "")),
         minimal_representation=str(payload.get("minimal_representation", "")),
         neighborhood_representation=str(payload.get("neighborhood_representation", "")),
+        lexical_triggers=_payload_lexical_triggers(payload),
         created_at=parse_created_at(created_at_raw),
         score=score,
     )
+
+
+def _payload_lexical_triggers(payload: Mapping[str, Any]) -> list[str]:
+    raw = payload.get("lexical_triggers")
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(item) for item in raw if str(item).strip()]
+    return []
 
 
 def identity_key_for_atom(
@@ -341,6 +354,23 @@ def dedupe_hits_by_identity(
         )
     )
     return deduped
+
+
+def sync_atomizer_from_store_config(
+    atomizer: GraphAtomizer, store_config: VectorStoreConfig
+) -> None:
+    """Mirror vector-store representation settings onto the atomizer."""
+    atomizer.minimal_representation_label_limit = store_config.minimal_label_limit
+    atomizer.lexical_trigger_enabled = store_config.lexical_trigger_enabled
+    atomizer.lexical_trigger_predicates = list(store_config.lexical_trigger_predicates)
+    atomizer.lexical_trigger_heuristic_enabled = (
+        store_config.lexical_trigger_heuristic_enabled
+    )
+    atomizer.lexical_trigger_min_len = store_config.lexical_trigger_min_len
+    atomizer.lexical_trigger_max_len = store_config.lexical_trigger_max_len
+    atomizer.lexical_trigger_heuristic_max_per_entity = (
+        store_config.lexical_trigger_heuristic_max_per_entity
+    )
 
 
 def effective_top_k(store_config: VectorStoreConfig, top_k: int | None) -> int:

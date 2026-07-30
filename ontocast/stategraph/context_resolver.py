@@ -194,6 +194,7 @@ async def _resolve_ensemble_context(
         subgraph_depth=vcfg.induced_subgraph_depth,
         max_total_triples=vcfg.induced_subgraph_max_total_triples,
         estimated_triples_per_query=vcfg.induced_subgraph_estimated_triples_per_query,
+        trigger_text=unit.text.strip(),
     )
     metrics = retriever.last_retrieval_metrics
     writable = list(source_iris)

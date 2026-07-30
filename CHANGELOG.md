@@ -5,6 +5,100 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Retrieval-score preservation in the induced subgraph.** A retrieved individual now
+  keeps its own score when its `rdf:type` classes are promoted into the seed set;
+  previously the score was transferred to the type and the individual dropped to
+  relevance 0, collapsing all typed individuals into a tie that was broken by raw IRI
+  byte order (`http://…` before `https://…`) — under a tight triple budget this
+  systematically starved high-ranked seeds (e.g. a rank-1 `millielectronvolt` lost to
+  `unit:MegaEV` purely by URL scheme). Score ties now break by retrieval rank. New knobs:
+  `VECTOR_STORE_INDUCED_SUBGRAPH_TYPE_PROMOTION_SCORE_FACTOR` (default `1.0`) and
+  `VECTOR_STORE_INDUCED_SUBGRAPH_SEED_ORDER` (`score` | `ontology_round_robin`; round-robin
+  measured neutral on the matsci recall corpus, kept as an ablation arm).
+- **Symbol surfacing for seed nodes** —
+  `VECTOR_STORE_INDUCED_SUBGRAPH_SYMBOL_PREDICATES` (default: the lexical-trigger
+  predicates `skos:notation` / `qudt:symbol` / `qudt:ucumCode`) admits notation literals
+  as seed descriptions, ordered between names and glosses so tight budgets drop comments,
+  not codes. Without this a unit individual reached the prompt label-only and the LLM
+  could not map a surface token (`meV`) to its IRI.
+- **Lexical-trigger score fusion** — trigger hits now carry a calibrated
+  `VECTOR_STORE_LEXICAL_TRIGGER_SCORE` (default `0.35`) instead of a hardcoded `1.0`
+  that outranked every semantic seed, and `VECTOR_STORE_LEXICAL_TRIGGER_FUSION=max_merge`
+  (default) promotes an already-retrieved atom to `max(semantic, trigger)` score — the
+  previous behavior silently discarded trigger evidence for any IRI the semantic lanes
+  had already found, which was the one case-sensitive signal distinguishing `meV` from
+  `MeV`. `append` retains the legacy additive-only mode. Promotion/append counts are
+  reported in `last_retrieval_metrics`.
+- **Object-property literal quarantine for rendered facts** — a deterministic post-check
+  (`FACTS_OBJECT_PROPERTY_LITERAL_CHECK`, default on) quarantines string literals sitting
+  on predicates whose schema declares a class range or `owl:ObjectProperty` (e.g.
+  `qudt:unit "meV"` where an IRI like `unit:MilliEV` belongs). Quarantined triples flow
+  through the existing invalid-literal channel to the facts critic with the declared
+  range as a hint (`tool/validate.py::partition_object_property_literal_triples`).
+  Facts guideline 8a now states the rule for the renderer (IRI objects resolved via
+  case-exact label/notation matching), and the ontology-render prompt's
+  `schema:unitCode "DAY"` string-literal example is replaced by unit-IRI-first guidance.
+  `validate_predicates` also gains the missing literal-vs-class-range branch.
+
+- **Lexical-trigger retrieval lane** for notation-bearing vocabulary (unit symbols,
+  chemical formulae, gene symbols, etc.). At index time each atom stores case-preserved
+  `lexical_triggers` from `skos:notation`, `qudt:symbol`, `qudt:ucumCode`, and optionally
+  code-shaped labels. At query time raw chunk text is scanned case-sensitively; matching
+  atoms are injected as additive seeds (`VECTOR_STORE_LEXICAL_TRIGGER_MAX_ATOMS`, default
+  16) outside the semantic atom budget. Configurable via `VECTOR_STORE_LEXICAL_TRIGGER_*`.
+  Embedding contract bumps to `sf3` — reindex required. Matsci recall corpus: added
+  `units#millielectronvolt` and `perovskitemat#CsPbBr3` to `sample_c0_p0` expected IRIs.
+
+- **Ablation controls in the recall harness** (test-only; no production change). Asking
+  whether indexing a large external vocabulary helps or dilutes previously required
+  editing the corpus on disk, which changed the very baseline the arms were compared
+  against.
+  - `ONTOCAST_RECALL_EXTRA_ONTOLOGIES` (`test/retrieval_gt.py`) — `os.pathsep`-separated
+    Turtle files or directories appended to the corpus catalog, so the *index* axis is a
+    one-variable flip while the corpus stays byte-identical. A missing entry raises
+    rather than being skipped: an arm that silently ran without the vocabulary it was
+    meant to measure is indistinguishable from one where the vocabulary did not help.
+  - `ONTOCAST_RECALL_COLLECTION_SUFFIX` / `ONTOCAST_RECALL_SKIP_INDEX`
+    (`test/test_retrieval_recall.py`) — pin a Qdrant collection, skip teardown, and let a
+    later arm score against it without re-embedding. Everything on the *retrieval* axis
+    (`ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA`, merge mode, caps) is applied at merge
+    time, so a whole sweep needs one index instead of one per arm — minutes rather than
+    an hour when the catalog includes a 32k-triple vocabulary. Both default to the prior
+    behaviour (per-run `uuid4` collection, deleted on teardown).
+
+### Fixed
+
+- **Ontology version/hash filters no longer silently empty the prompt context.** Graph
+  hashes are not stable under serialization round-trips (URDNA2015 canonicalizes blank
+  nodes, not literal lexical forms, so float-bearing vocabularies re-hash on every
+  Turtle round trip). The exact-hash requirement in `select_relevant_ontologies` then
+  dropped whole ontologies whose atoms were retrieved in another process — seeds became
+  silent no-ops with no log line. Filters now relax per IRI (exact → same-version → any
+  catalog entry) with a warning. On the matsci recall corpus with a QUDT-units dilution
+  arm this took snapshot term recall from 49% to 72% and flipped the graph-stage net
+  from −4 to +19 terms; Text2KGBench stayed at 99% snapshot term recall.
+- **Snapshot prefixes now reflect content.** The induced subgraph binds one prefix per
+  namespace actually used by its triples (canonical vocabulary names preferred over
+  stem-derived aliases) instead of eagerly binding every merged ontology's prefix map —
+  prompts no longer advertise namespaces with zero visible terms. Graphs fetched from a
+  triple store (which strips author `@prefix` bindings) rebuild implicit stem prefixes on
+  fetch, on both the merge and candidate-pushdown context paths; an ontology's own
+  namespace binds as its plain stem (`matsci`, not `matsci_matsci`).
+- `_SEED_DESCRIPTION_PREDICATES` is now an ordered tuple: it is iterated at the
+  triple-budget cut point, and per-process set-order salting made snapshot admission
+  nondeterministic across runs.
+- Recall-harness `ONTOCAST_RECALL_SKIP_INDEX=1` reuse mode wrote nothing to the run's
+  in-memory triple store, so every induced subgraph in a reused-index arm was silently
+  empty (snapshot recall 0%). The skip path now serializes ontologies to the triple
+  store while still skipping re-embedding.
+- Documented that `ONTOCAST_RECALL_ONTOLOGIES` / `ONTOCAST_RECALL_CASES` apply to the
+  Text2KGBench tier only. The module docstring implied they bounded the prebuilt-corpus
+  tier as well; `load_corpus` has never consulted either.
+
 ## [0.4.4]
 
 ### Added

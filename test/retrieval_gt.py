@@ -45,6 +45,13 @@ TEXT2KGBENCH_ROOT_ENV = "ONTOCAST_RECALL_ROOT"
 
 CORPUS_ROOT_ENV = "ONTOCAST_RECALL_CORPUS"
 
+# Extra ontologies to load alongside the corpus catalog, os.pathsep-separated; each
+# entry is a .ttl file or a directory of them. Exists so that "does indexing a large
+# external vocabulary help or dilute?" is a one-env-var flip rather than a corpus edit:
+# copying the vocabulary into <corpus>/ontologies/ would make the ablation a file move
+# and permanently change the corpus every arm is compared against.
+EXTRA_ONTOLOGIES_ENV = "ONTOCAST_RECALL_EXTRA_ONTOLOGIES"
+
 FIXTURES_DIR = Path(__file__).parent / "manual" / "fixtures"
 
 _GT_TEXT_SUBDIRS = ("wikidata_tekgen", "dbpedia_webnlg")
@@ -413,6 +420,35 @@ def corpus_root() -> Path | None:
     return root if (root / "cases.jsonl").is_file() else None
 
 
+def extra_ontology_paths() -> list[Path]:
+    """Turtle files named by ``ONTOCAST_RECALL_EXTRA_ONTOLOGIES``.
+
+    Accepts ``os.pathsep``-separated files and directories. Missing entries raise
+    rather than being skipped: an arm that silently ran without the vocabulary it was
+    supposed to measure is indistinguishable from one where the vocabulary did not help.
+
+    Returns:
+        list[Path]: Sorted, de-duplicated Turtle paths; empty when the var is unset.
+    """
+    raw = os.getenv(EXTRA_ONTOLOGIES_ENV)
+    if not raw:
+        return []
+    found: list[Path] = []
+    for entry in raw.split(os.pathsep):
+        if not entry.strip():
+            continue
+        path = Path(entry).expanduser()
+        if path.is_dir():
+            found.extend(sorted(path.glob("*.ttl")))
+        elif path.is_file():
+            found.append(path)
+        else:
+            raise ValueError(
+                f"{EXTRA_ONTOLOGIES_ENV}: {path} is neither a file nor a directory"
+            )
+    return sorted(dict.fromkeys(found))
+
+
 def load_corpus(root: Path) -> tuple[list[RecallCase], list[Ontology]]:
     """Load ``(cases, ontologies)`` from a prebuilt, domain-neutral recall corpus.
 
@@ -425,6 +461,10 @@ def load_corpus(root: Path) -> tuple[list[RecallCase], list[Ontology]]:
     Ground-truth defects raise rather than deflating recall silently: a case naming an
     ontology absent from the catalog would otherwise look like a retrieval miss.
 
+    ``ONTOCAST_RECALL_EXTRA_ONTOLOGIES`` appends further ontologies to the catalog
+    without touching the corpus on disk, so the same corpus can be scored with and
+    without a large external vocabulary and the two runs stay comparable.
+
     Args:
         root: Corpus directory containing ``ontologies/`` and ``cases.jsonl``.
     """
@@ -433,7 +473,7 @@ def load_corpus(root: Path) -> tuple[list[RecallCase], list[Ontology]]:
         raise ValueError(f"{root}: missing ontologies/ directory")
 
     ontologies: list[Ontology] = []
-    for path in sorted(ontology_dir.glob("*.ttl")):
+    for path in [*sorted(ontology_dir.glob("*.ttl")), *extra_ontology_paths()]:
         graph = RDFGraph()
         graph.parse(str(path), format="turtle")
         ontologies.append(Ontology(graph=graph))

@@ -4,7 +4,7 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
-from ontocast.config import WebSearchConfig
+from ontocast.config import FactsValidationConfig, WebSearchConfig
 from ontocast.onto.enum import WorkflowNode
 from ontocast.tool.llm import LLMTool
 
@@ -57,10 +57,16 @@ class AtomicToolBox:
         web_search_allowed_domains: tuple[str, ...] = (),
         web_search_blocked_domains: tuple[str, ...] = (),
         web_search_min_snippet_chars: int = 40,
+        facts_validation_config: FactsValidationConfig | None = None,
     ):
         self.llm_provider = llm_provider
         self.search_provider = search_provider
         self.web_search_config = web_search_config
+        self.object_property_literal_check = (
+            facts_validation_config.object_property_literal_check
+            if facts_validation_config is not None
+            else True
+        )
 
         if web_search_config is not None:
             self.web_search_enabled = web_search_config.enabled

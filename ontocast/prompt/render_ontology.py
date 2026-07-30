@@ -93,7 +93,7 @@ general_ontology_instruction = f"""
    - **owl:ReflexiveProperty** — every entity relates to itself (e.g., `owl:sameAs`)
    - **owl:IrreflexiveProperty** — no entity relates to itself (e.g., `owl:differentFrom`)
 
-8. **For measurable properties, specify units using schema:unitCode, rdfs:comment, or explicit unit classes** (e.g., `schema:duration schema:unitCode "DAY"` or `time:numericDuration rdfs:comment "Duration measured in days"`).
+8. **For measurable properties, model units as IRIs first:** reference or declare a unit individual (e.g. a `qudt:Unit` instance) and point to it via an object property with a class range. Only fall back to a literal code on a declared string-code property (e.g. `schema:unitCode "DAY"`) or an `rdfs:comment` when no unit individual is available — never attach a string literal to a property whose range is a class.
 
 9. **Never model ontology classes/properties under `cd:`.** The `cd:` namespace (`{DEFAULT_IRI}`) is reserved for factual instances only.
 

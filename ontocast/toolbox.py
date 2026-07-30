@@ -140,6 +140,7 @@ class ToolBox:
             llm_provider=self,
             search_provider=self.search_provider,
             web_search_config=tool_config.web_search,
+            facts_validation_config=tool_config.facts_validation,
         )
 
         # Create triple store manager: Fuseki when configured, otherwise in-memory.

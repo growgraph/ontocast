@@ -184,9 +184,32 @@ After seeds are chosen, expansion builds a budgeted snapshot:
   dropped IRIs are removed so the snapshot never names a term it does not define.
 - **Individual seeds stay alongside their classes.** An individual's `rdf:type` classes are
   promoted into the seed set without discarding the individual (needed for the facts
-  two-namespace contract's reference individuals).
+  two-namespace contract's reference individuals). The individual **keeps its own
+  retrieval score**; promoted classes inherit
+  `score × VECTOR_STORE_INDUCED_SUBGRAPH_TYPE_PROMOTION_SCORE_FACTOR` (default `1.0`).
+  Score ties in seed ordering break by retrieval rank, never by raw IRI bytes — byte
+  order systematically starved `https://…` seeds behind `http://…` ones under tight
+  budgets. `VECTOR_STORE_INDUCED_SUBGRAPH_SEED_ORDER=ontology_round_robin` optionally
+  interleaves seeds across source ontologies instead of global score order.
 - **BFS admission prefers schema role** (label, `rdf:type`, hierarchy, domain/range, then
   descriptions) when a seed's quota cannot hold a full level — not alphabetical order.
+- **Seed symbols reach the prompt.** Notation predicates
+  (`VECTOR_STORE_INDUCED_SUBGRAPH_SYMBOL_PREDICATES`, defaulting to the lexical-trigger
+  predicates `skos:notation` / `qudt:symbol` / `qudt:ucumCode`) are admitted as seed
+  descriptions between names and glosses, so tight budgets drop comments, not the short
+  codes that let the LLM map a surface token like `meV` to its IRI.
+- **Version/hash filters select, never exclude.** Retrieval hits pin the ontology
+  versions/hashes their atoms were indexed from; the catalog is filtered to those. When
+  no catalog entry matches (graph hashes are not stable under serialization round-trips —
+  literal lexical forms sit outside URDNA2015 canonicalization), the filter relaxes per
+  IRI to same-version entries, then to any entry, with a warning — instead of silently
+  dropping the whole ontology from the prompt context.
+- **Only used prefixes are advertised.** The snapshot binds one prefix per namespace that
+  actually appears in its triples (canonical vocabulary names preferred, e.g. `qudt:` over
+  a stem-derived alias). Previously every merged ontology's prefixes were bound
+  regardless of content, so prompts claimed namespaces the LLM could not see a single
+  term from. Graphs served from a triple store lose author `@prefix` bindings; implicit
+  stem prefixes are rebuilt on fetch so the advertising survives the round trip.
 - **Long chunks** split into up to `VECTOR_STORE_PROPOSITION_MAX_WINDOWS` windows sampled
   at an even stride from start to end, so the tail of a long passage still issues queries.
 
@@ -210,9 +233,34 @@ are worth knowing when indexing an external vocabulary:
   Without this a term is named by whichever language sorts first alphabetically, and the
   cap fills with translations no English-language query matches.
 
-This is what makes indexing a full external unit vocabulary practical: QUDT publishes an
-authoritative symbol and UCUM code per unit, so a corpus need not restate them as
-`skos:altLabel` to stay findable by the form its prose actually uses.
+This is what makes a **small** vocabulary findable by symbol in the sparse lane. It does
+**not** make indexing a large symbol vocabulary into the shared semantic pool practical:
+thousands of near-identical unit embeddings cluster together and displace domain terms under
+the global atom cap (measured on the matsci recall corpus when QUDT was indexed
+wholesale).
+
+### Lexical-trigger lane (exact-match codes)
+
+Some catalog terms are identified by a **literal token** in source text — unit symbols
+(`meV`), chemical formulae (`CsPbBr3`), gene symbols, CAS numbers — rather than by
+paraphrase similarity. Those are handled by a separate **lexical-trigger** lane:
+
+- At **index** time each atom stores `lexical_triggers`: case-preserved tokens from
+  `skos:notation`, `qudt:symbol`, `qudt:ucumCode`, and (optionally) code-shaped
+  `rdfs:label` / `skos:altLabel` values.
+- At **query** time the raw content-unit text is scanned case-sensitively; matching atoms
+  fuse with the semantic hits at `VECTOR_STORE_LEXICAL_TRIGGER_SCORE` (default `0.35`,
+  calibrated against fused reciprocal-rank scores). Under the default
+  `VECTOR_STORE_LEXICAL_TRIGGER_FUSION=max_merge`, an atom retrieval already found is
+  **promoted** to `max(semantic, trigger)` score — a case-exact notation match is
+  evidence, not a duplicate — and unseen atoms are appended (cap
+  `VECTOR_STORE_LEXICAL_TRIGGER_MAX_ATOMS=16`, outside the semantic atom budget).
+  `append` restores the legacy add-only behavior for ablation.
+- Toggle with `VECTOR_STORE_LEXICAL_TRIGGER_ENABLED` (default on). Predicate list and
+  heuristic promotion are configurable via `VECTOR_STORE_LEXICAL_TRIGGER_*` — see
+  [Configuration](configuration.md).
+
+Requires a **reindex** after upgrading: the embedding contract fingerprint bumps to `sf3`.
 
 ### `fixed_single_ontology`
 

@@ -63,6 +63,7 @@ def _build_tools() -> AtomicToolBox:
         SimpleNamespace(
             get_llm_tool=get_llm_tool,
             web_grounding_enabled_for_node=lambda _node: False,
+            object_property_literal_check=True,
         ),
     )
 

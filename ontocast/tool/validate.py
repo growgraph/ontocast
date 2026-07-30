@@ -9,13 +9,110 @@ from collections import defaultdict, deque
 from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field
-from rdflib import RDF, RDFS, Graph, Literal, URIRef
+from rdflib import OWL, RDF, RDFS, XSD, Graph, Literal, URIRef
 
 from ontocast.onto.constants import PROV, SCHEMA
 from ontocast.onto.content_unit import ContentUnit
-from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
 
 logger = logging.getLogger(__name__)
+
+# Ranges compatible with literal objects even though they are not XSD datatypes.
+_LITERAL_COMPATIBLE_RANGES: frozenset[URIRef] = frozenset({RDFS.Literal, RDFS.Resource})
+
+
+def _predicate_expects_iri_object(
+    predicate: URIRef, ontology_graph: Graph
+) -> tuple[bool, str | None]:
+    """Decide from the schema whether *predicate* requires an IRI object.
+
+    True when the predicate is declared ``owl:ObjectProperty``, or its
+    ``rdfs:range`` is a class IRI (not XSD, not ``rdfs:Literal``/``Resource``,
+    not a declared ``rdfs:Datatype``). Predicates also declared datatype or
+    annotation properties, or absent from the schema, never expect an IRI —
+    unknown predicates must not be over-quarantined.
+
+    Returns:
+        Tuple of (expects IRI, declared range IRI or None).
+    """
+    types = set(ontology_graph.objects(predicate, RDF.type))
+    if OWL.DatatypeProperty in types or OWL.AnnotationProperty in types:
+        return False, None
+    declared_range = next(
+        (
+            r
+            for r in ontology_graph.objects(predicate, RDFS.range)
+            if isinstance(r, URIRef)
+        ),
+        None,
+    )
+    if OWL.ObjectProperty in types:
+        return True, str(declared_range) if declared_range else None
+    if declared_range is None:
+        return False, None
+    if str(declared_range).startswith(str(XSD)):
+        return False, None
+    if declared_range in _LITERAL_COMPATIBLE_RANGES:
+        return False, None
+    if (declared_range, RDF.type, RDFS.Datatype) in ontology_graph:
+        return False, None
+    return True, str(declared_range)
+
+
+def partition_object_property_literal_triples(
+    facts_graph: RDFGraph, ontology_graph: Graph
+) -> tuple[RDFGraph, list[RejectedLiteralTriple]]:
+    """Split facts into a clean graph and quarantined literal-on-object-property triples.
+
+    A string literal on a predicate whose schema range is a class (e.g.
+    ``qudt:unit`` with range ``qudt:Unit``) silently breaks typing: the value can
+    never be linked to the reference individual it names. Such triples are
+    quarantined with a reason so the critic loop can ask the renderer to resolve
+    the token to an IRI from the ontology context instead.
+
+    Args:
+        facts_graph: Freshly rendered facts graph.
+        ontology_graph: Ontology context the facts were rendered against.
+
+    Returns:
+        Tuple of (clean graph, quarantined triples).
+    """
+    clean = RDFGraph()
+    for prefix, namespace_uri in facts_graph.namespaces():
+        if prefix:
+            clean.bind(prefix, namespace_uri)
+
+    rejected: list[RejectedLiteralTriple] = []
+    expects_cache: dict[URIRef, tuple[bool, str | None]] = {}
+    for subject, predicate, obj in facts_graph:
+        if isinstance(obj, Literal) and isinstance(predicate, URIRef):
+            if predicate not in expects_cache:
+                expects_cache[predicate] = _predicate_expects_iri_object(
+                    predicate, ontology_graph
+                )
+            expects_iri, declared_range = expects_cache[predicate]
+            if expects_iri:
+                rejected.append(
+                    RejectedLiteralTriple(
+                        subject=str(subject),
+                        predicate=str(predicate),
+                        object_lexical=str(obj),
+                        datatype=str(obj.datatype) if obj.datatype else "",
+                        reason=(
+                            "object property expects an IRI from the ontology "
+                            "context, got a string literal"
+                        ),
+                        expected_range=declared_range,
+                    )
+                )
+                continue
+        clean.add((subject, predicate, obj))
+
+    if rejected:
+        logger.warning(
+            "Quarantined %d literal triple(s) on object properties", len(rejected)
+        )
+    return clean, rejected
 
 
 class PredicateStats(BaseModel):
@@ -284,6 +381,22 @@ class RDFGraphConnectivityValidator:
                                     f"Object {o} of type {object_type} "
                                     f"used with predicate {pred} "
                                     f"that requires range {range_}"
+                                )
+
+                        if has_range and isinstance(o, Literal):
+                            # A literal can never satisfy a class range.
+                            range_is_class = (
+                                isinstance(range_, URIRef)
+                                and not str(range_).startswith(str(XSD))
+                                and range_ not in _LITERAL_COMPATIBLE_RANGES
+                                and (range_, RDF.type, RDFS.Datatype) not in self.graph
+                            )
+                            if range_is_class:
+                                result.domain_range_consistent = False
+                                result.domain_range_violations.append(
+                                    f"Literal object {str(o)!r} used with "
+                                    f"predicate {pred} whose range {range_} "
+                                    f"is a class (IRI expected)"
                                 )
 
         return result
