@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, cast
 
 from pydantic import Field
+from rdflib import URIRef
 
 from ..onto.null import NULL_ONTOLOGY
 from ..onto.ontology import Ontology
@@ -201,6 +202,11 @@ class OntologyManager(Tool):
             logger.warning(f"Cannot add ontology without hash (IRI: {ontology.iri})")
             return False
 
+        # Author @prefix names die at the triple-store boundary; persisting them
+        # as sh:declare triples here (hash-neutral, idempotent) lets any later
+        # export rebind them instead of inventing synthetic stem-derived names.
+        ontology.graph.materialize_prefix_declarations(URIRef(ontology.iri))
+
         self.validate_identity_uniqueness(ontology)
         self._register_identity(ontology)
 
@@ -380,6 +386,7 @@ class OntologyManager(Tool):
 
         resolved: list[Ontology] = []
         missing_iris: list[str] = []
+        graph_uri_by_iri: dict[str, str] = {}
         for header in headers:
             cached = self._graph_cache.get(header.graph_uri)
             if cached is not None:
@@ -388,11 +395,12 @@ class OntologyManager(Tool):
             else:
                 self._graph_cache_misses += 1
                 missing_iris.append(header.iri)
+                graph_uri_by_iri[header.iri] = header.graph_uri
 
         if missing_iris:
             fetched = await store.afetch_ontologies_by_iri(missing_iris)
             for ontology in fetched:
-                self._cache_graph(ontology)
+                self._cache_graph(ontology, graph_uri_by_iri.get(ontology.iri))
             resolved.extend(fetched)
         return resolved
 
@@ -437,8 +445,8 @@ class OntologyManager(Tool):
             "catalog_merge_cache_misses": self._merged_cache_misses,
         }
 
-    def _cache_graph(self, ontology: Ontology) -> None:
-        """Register a store-read ``ontology`` under its content-addressed versioned IRI.
+    def _cache_graph(self, ontology: Ontology, graph_uri: str | None = None) -> None:
+        """Register a store-read ``ontology`` under the graph URI it was read from.
 
         Only ever called with graphs that came *from* the triple store. Seeding the
         cache from :meth:`add_ontology` instead would be tempting -- those graphs are
@@ -447,9 +455,21 @@ class OntologyManager(Tool):
         relabels blank nodes. Snapshot expansion tie-breaks on ``str(triple)``, so
         mixing the two makes retrieval depend on whether a graph happened to be
         written by this process.
+
+        The key must be the *header's* ``graph_uri``, since that is what
+        :meth:`aget_ontologies_by_iri` looks up. Keying on the recomputed
+        ``versioned_iri`` instead is only equivalent while content hashing is
+        round-trip stable; when it is not, the two never coincide and every
+        lookup misses forever.
+
+        Args:
+            ontology: Ontology materialized from the triple store.
+            graph_uri: Named graph it was read from. Falls back to the
+                content-addressed ``versioned_iri`` when the caller has no header.
         """
-        if ontology.hash:
-            self._graph_cache.setdefault(ontology.versioned_iri, ontology)
+        key = graph_uri or (ontology.versioned_iri if ontology.hash else None)
+        if key:
+            self._graph_cache.setdefault(key, ontology)
 
     def _effective_patch_top_k(self, top_k: int | None) -> int:
         if top_k is not None:

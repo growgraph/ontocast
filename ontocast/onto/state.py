@@ -276,6 +276,14 @@ class AgentState(BasePydanticModel):
         default=None,
     )
 
+    document_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Caller-asserted document identity metadata attached to the parent "
+            "doc_iri as provenance (DOI, ISBN, scheme+value business ids, title, …)."
+        ),
+    )
+
     ontology_updates: list[GraphUpdate] = Field(
         default_factory=list,
         description="A list of graph update that improve the current ontology",

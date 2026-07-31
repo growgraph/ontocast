@@ -33,6 +33,7 @@ from ontocast.tool.vector_store.lexical_trigger import LexicalTriggerIndex
 from ontocast.tool.vector_store.util import (
     atom_from_payload,
     atom_payload,
+    atom_scope_fingerprint,
     collection_embedding_metadata,
     dedupe_hits_by_identity,
     effective_top_k,
@@ -237,6 +238,7 @@ class LanceDBVectorStoreManager(VectorStoreManager):
             self.embedding_config,
             metadata_dim=self._dense_dimension(),
             minimal_label_limit=self.store_config.minimal_label_limit,
+            atom_scope=atom_scope_fingerprint(self.store_config),
         )
         self._meta_path().write_text(json.dumps(meta), encoding="utf-8")
 
@@ -254,6 +256,7 @@ class LanceDBVectorStoreManager(VectorStoreManager):
             embedding_config=self.embedding_config,
             expected_meta_dim=self._dense_dimension(),
             minimal_label_limit=self.store_config.minimal_label_limit,
+            atom_scope=atom_scope_fingerprint(self.store_config),
         )
 
     async def initialize(self) -> None:

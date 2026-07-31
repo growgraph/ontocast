@@ -161,10 +161,16 @@ def _normalize_vocab_exclude_prefix(prefix: str) -> str:
 class GraphAtomizer(Tool):
     """Extract natural-language atoms around graph focal entities.
 
-    By default, ontology atomization skips focal IRIs in common W3C and DC vocabulary
-    namespaces (see module-level exclusions). Set ``embed_standard_vocab_iris=True`` to
-    restore legacy behavior (embed every URIRef in the graph). Facts sources are still
-    restricted to ``facts_namespace`` only; vocabulary exclusion does not apply to them.
+    Two defaults narrow what an ontology contributes, both restorable:
+
+    * Focal IRIs in common W3C and DC vocabulary namespaces are skipped (see
+      module-level exclusions); ``embed_standard_vocab_iris=True`` embeds them.
+    * An IRI is atomized only when this graph *describes* it — a subject-position triple
+      or a label. ``index_undescribed_iris=True`` restores atomizing every URIRef,
+      object-position references included.
+
+    Facts sources are restricted to ``facts_namespace`` only; neither narrowing applies
+    to them.
     """
 
     embed_standard_vocab_iris: bool = Field(
@@ -174,6 +180,23 @@ class GraphAtomizer(Tool):
     extra_excluded_namespace_prefixes: list[str] = Field(
         default_factory=list,
         description="Additional IRI prefixes excluded from focal entities (ontology sources).",
+    )
+    index_undescribed_iris: bool = Field(
+        default=False,
+        description=(
+            "If True, atomize every IRI in the graph, including ones appearing only in "
+            "object or predicate position. Default False: an ontology mints an atom "
+            "only for terms it describes (a subject-position triple, or a label). A "
+            "referenced IRI has no local text, so its atom is its mangled local name -- "
+            "'a0e0l2i0m1h0t 3d0' for a QUDT dimension vector -- and such strings embed "
+            "near the corpus centroid, making them hubs that rank against every query. "
+            "Measured on the 8-module matsci catalog: 247 of 690 atoms (36%) were "
+            "undescribed references, and dimension vectors alone took 51 of 140 dense "
+            "retrieval slots on one document, crowding four ontologies out entirely. "
+            "Referenced IRIs are still reachable -- induced-subgraph expansion walks "
+            "into them from seeds; they just stop being seeds themselves. Changing this "
+            "changes which atoms exist and requires a reindex."
+        ),
     )
     minimal_representation_label_limit: int = Field(
         default=5,
@@ -232,13 +255,17 @@ class GraphAtomizer(Tool):
         raw_graph = source.graph
         embedding_graph = strip_provenance_triples_for_embedding(raw_graph)
         focal_namespace = source.facts_namespace if isinstance(source, Facts) else None
+        is_ontology_source = not isinstance(source, Facts)
         excluded_vocab: frozenset[str] | None = None
-        if not isinstance(source, Facts) and not self.embed_standard_vocab_iris:
+        if is_ontology_source and not self.embed_standard_vocab_iris:
             excluded_vocab = self._merged_excluded_vocab_prefixes()
         entities = self._collect_focal_entities(
             graph=embedding_graph,
             focal_namespace=focal_namespace,
             excluded_vocab_prefixes=excluded_vocab,
+            # Facts are already confined to ``facts_namespace``, where every individual
+            # is a subject; the describes-only rule targets ontology cross-references.
+            require_description=is_ontology_source and not self.index_undescribed_iris,
         )
         predicate_uris = {p for (_, p, _) in embedding_graph if isinstance(p, URIRef)}
         generated_at = datetime.now(timezone.utc)
@@ -340,11 +367,26 @@ class GraphAtomizer(Tool):
             if prefix:
                 result.bind(prefix, namespace)
 
+    def _describes(self, graph: RDFGraph, entity: URIRef) -> bool:
+        """True when this graph says something *about* ``entity``, not merely with it.
+
+        Subject-position triples are the primary evidence. A label alone also counts:
+        a vocabulary may name a term it otherwise only references, and that name is
+        exactly what retrieval needs.
+        """
+        for _ in graph.triples((entity, None, None)):
+            return True
+        return any(
+            next(graph.objects(entity, predicate), None) is not None
+            for predicate in _LABEL_PREDICATES
+        )
+
     def _collect_focal_entities(
         self,
         graph: RDFGraph,
         focal_namespace: str | None = None,
         excluded_vocab_prefixes: frozenset[str] | None = None,
+        require_description: bool = False,
     ) -> list[URIRef]:
         ns_prefix = focal_namespace.rstrip("/") if focal_namespace is not None else None
         entities: set[URIRef] = set()
@@ -363,6 +405,9 @@ class GraphAtomizer(Tool):
                 for e in entities
                 if not any(str(e).startswith(p) for p in excluded_vocab_prefixes)
             }
+
+        if require_description:
+            entities = {e for e in entities if self._describes(graph, e)}
 
         return sorted(entities, key=lambda entity: str(entity))
 

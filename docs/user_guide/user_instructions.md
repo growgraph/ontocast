@@ -102,7 +102,7 @@ state = AgentState(
     input_text="Your document text...",
     ontology_selection_user_instruction="Prefer legal/compliance ontologies when multiple options are relevant",
     ontology_user_instruction="Focus on extracting geographical locations and organizations",
-    facts_user_instruction="Extract financial data and numerical values"
+    facts_user_instruction="Extract financial data and numerical values",
 )
 ```
 

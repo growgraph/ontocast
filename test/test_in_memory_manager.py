@@ -298,7 +298,9 @@ def test_aconstruct_returns_typed_terms() -> None:
         graph = await manager.aconstruct(
             "CONSTRUCT { ?s ?p ?o } WHERE { GRAPH ?g { ?s ?p ?o } }"
         )
-        assert len(graph) == len(_sample_ontology().graph)
+        # Serialization persists author @prefix bindings as one sh:declare
+        # blank node (3 triples) on top of the ontology's own content.
+        assert len(graph) == len(_sample_ontology().graph) + 3
         labels = list(
             graph.objects(
                 URIRef("https://example.org/test#Thing"),

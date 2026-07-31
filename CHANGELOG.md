@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Document-level provenance from payload metadata.** Optional `document_metadata`
+  on `/process`, `/process_unit`, and `ontocast --document-metadata '…'` attaches
+  caller-asserted identity to the parent `doc_iri` as `prov:Entity` / `foaf:Document`.
+  Bibliographic ids (`doi`, `isbn`, …) and `identifiers: [{scheme, value}]` remain
+  literal / structured `dcterms:identifier` triples. Business-oriented keys
+  (`author` / `creator` / `authors` → `schema:Person`; `project` and any other
+  non-reserved key → `prov:Entity`) mint typed RDF entities under the document
+  facts namespace with `rdfs:label` (optional `type` / `identifier` dict fields)
+  so they are SPARQL-discoverable. Document identity survives chunk-level
+  `strip_provenance`. In `--input-path` batch mode, when no metadata is provided
+  the filename (or `file:line` for JSONL records) is used as `dcterms:title`.
+  Local file runs also dump sibling `*.facts.ttl` (or `*.L{n}.facts.ttl` for
+  JSONL) with chunk provenance stripped.
 - **Retrieval-score preservation in the induced subgraph.** A retrieved individual now
   keeps its own score when its `rdf:type` classes are promoted into the seed set;
   previously the score was transferred to the type and the individual dropped to
@@ -44,6 +57,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `schema:unitCode "DAY"` string-literal example is replaced by unit-IRI-first guidance.
   `validate_predicates` also gains the missing literal-vs-class-range branch.
 
+- **Author prefix persistence through the triple store** — prefix bindings are
+  serialization metadata a SPARQL store never holds, so any export re-derived synthetic
+  stem names (`matsci_units:` where the author wrote `matsciunits:`) and prompt contexts
+  rendered domain terms under names the source ontology never used. Ontology
+  registration and store serialization now persist used, non-well-known author bindings
+  as SHACL prefix declarations (`sh:declare`) on the ontology subject; fetch rebinds
+  them before implicit-stem recovery, and snapshot prefix binding prefers
+  canonical → author-declared → plainest candidate. Declarations are excluded from the
+  ontology content hash, so stored identities are unchanged and existing indexes stay
+  valid. The candidate-pushdown CONSTRUCT gained a header branch pulling the
+  declaration blank nodes so both context paths recover identical names
+  (`RDFGraph.materialize_prefix_declarations` / `bind_declared_prefixes` /
+  `declared_prefix_map`).
+
 - **Lexical-trigger retrieval lane** for notation-bearing vocabulary (unit symbols,
   chemical formulae, gene symbols, etc.). At index time each atom stores case-preserved
   `lexical_triggers` from `skos:notation`, `qudt:symbol`, `qudt:ucumCode`, and optionally
@@ -70,8 +97,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     an hour when the catalog includes a 32k-triple vocabulary. Both default to the prior
     behaviour (per-run `uuid4` collection, deleted on teardown).
 
+### Changed
+
+- **Ontology sources atomize only IRIs they describe** (surface-form contract `sf3` →
+  `sf4`; **every existing collection needs one reindex**). `GraphAtomizer` made an atom
+  out of every `URIRef` in a graph — subject, predicate *or object* — so an IRI appearing
+  only as the object of `qudt:hasDimensionVector` became a first-class searchable term
+  whose entire text was its mangled local name (`a0e0l2i0m1h0t 3d0`). Meaningless token
+  strings embed near the corpus centroid, making them *hubs*: near-equidistant from every
+  query, so they rank against all of them. On the 8-module matsci catalog 247 of 690
+  atoms (36%) were such references; on one document the six most frequently retrieved
+  dense atoms were all dimension vectors (present in 5 of 7 proposition windows, against
+  2–3 for real domain terms), taking 51 of 140 dense slots and leaving `qqval`,
+  `observation`, `pergres` and `lifecycle` with none. An ontology now mints an atom only
+  for a term it describes — a subject-position triple, or a label. Measured end to end on
+  that catalog: indexed atoms 669 → 443, noise seeds (dimension vector / system-of-units
+  / prefix) 13 → 0, `matsci` seeds 47 → 63, `matsci-units#millielectronvolt` seed rank
+  53 → 15. Referenced IRIs stay reachable through induced-subgraph expansion; they just
+  stop being seeds. This also retires the junk atoms minted from `owl:versionIRI` and
+  `dcterms:license` objects (`"1.3.0"`, `"4.0"`). New knobs, all requiring a reindex:
+  `VECTOR_STORE_INDEX_UNDESCRIBED_IRIS` (default `false`) restores the previous scope;
+  `VECTOR_STORE_EMBED_STANDARD_VOCAB_IRIS` and
+  `VECTOR_STORE_EXTRA_EXCLUDED_NAMESPACE_PREFIXES` expose two `GraphAtomizer` fields that
+  previously existed but reached no configuration path at all.
+- **Sparse-lane fusion weight `0.2` → `0.8`, neighborhood `0.3` → `0.15`**
+  (`VECTOR_STORE_FUSION_BM25_WEIGHT`, `VECTOR_STORE_FUSION_NEIGHBORHOOD_WEIGHT`; no
+  reindex). A term whose surface form is a symbol rather than a phrase is frequently
+  invisible to the dense lanes, so BM25 is its only evidence — but at `0.2` the
+  normalized weights were `0.583 / 0.250 / 0.167`, so a rank-1 sparse hit was outvoted
+  3.5:1 by a rank-1 dense hit. `matsci-units#millielectronvolt` was a rank-1 BM25 hit for
+  a passage reporting `∼10−50 meV`, appeared in no dense lane in any window, and still
+  ranked 32nd overall — reaching the prompt only because the lexical-trigger lane
+  promoted it after the cap. On the matsci recall corpus: seed term recall 57.1% → 65.3%,
+  snapshot term recall 76.5% → 86.7%. Text2KGBench (the regression guard) improved too:
+  seed term recall 77.0% → 79.1%, snapshot 92.0% → 95.1%. Known cost: `observation`
+  seed term recall 1/13 → 0/13 (its terms are abstract scaffolding, the same class as
+  `qqval`; snapshot recall holds at 10/13 because the graph stage still reaches them).
+  That regression is the missing per-source atom floor, tracked in `docs/PLANNING.md`.
+
 ### Fixed
 
+- **Serialization of oxigraph-backed graphs holding RDF 1.2 triple terms.**
+  `RDFGraph.serialize()` delegates Turtle output to pyoxigraph for oxigraph stores
+  because oxrdflib surfaces a `pyoxigraph.Triple` as a plain Python tuple, which
+  rdflib's Turtle writer cannot label. The delegation allowlist covered only
+  `turtle` / `ttl`, so once `serialize_canonical_turtle()` switched to the lossless
+  `ontocast-turtle` flavour every merged facts graph (built by `GraphRewriter` as
+  `RDFGraph(store="oxigraph")`) fell through to rdflib and the `Serialize` node died
+  with `'tuple' object has no attribute 'n3'`. `ontocast-turtle` is now routed to
+  pyoxigraph as well; its writer is value-preserving for floating-point literals, so
+  the precision the lossless serializer exists for is not given up.
+- **Ontology content hash is now stable across a triple-store round trip.**
+  `RDFGraph.hash()` hashed literal *lexical* forms — URDNA2015 canonicalizes blank node
+  labels only — while triple stores normalize literals into their value space on insert.
+  Measured against pyoxigraph: `"10.0"^^xsd:decimal` comes back as `"10"^^xsd:decimal`,
+  and integer subtypes collapse (`"1"^^xsd:nonNegativeInteger`, the datatype OWL 2
+  requires on qualified cardinality axioms, becomes `"1"^^xsd:integer`). Six of the eight
+  shipped matsci ontologies re-hashed differently after a round trip, so the hash written
+  into `dcterms:identifier "hash:…"` and the named graph URI `<iri>#<hash>` disagreed
+  with the hash recomputed on read. Consequences, all reproduced: the
+  `catalog identity drift` warning fired on every retrieval touching those ontologies;
+  `OntologyManager`'s catalog graph cache missed 100% of the time (written under the
+  recomputed `versioned_iri`, read under the header's `graph_uri`); and each restart
+  wrote a second named graph for the same ontology that still advertised the stale hash.
+  Hashing now runs over the RDF value space via `canonical_literal()` (integer family,
+  `xsd:decimal`, `xsd:boolean`), applied to a throwaway copy so stored and prompt-facing
+  graphs are untouched. Hashes are also now backend-independent. The graded relaxation
+  ladder in `select_relevant_ontologies` stays as defense in depth.
+  **Upgrade note:** every ontology's hash changes, so `versioned_iri` changes. Existing
+  Fuseki catalogs keep their old named graphs alongside the new ones (a one-time clean is
+  simplest), and because `atom_id` folds `ontology_hash` the vector index must be rebuilt
+  — run once with `--wipe-vector-store` (or `VECTOR_STORE_WIPE_ON_INIT=true`).
+- **Turtle serialization no longer rounds floating-point literals.** rdflib's Turtle
+  writer renders `xsd:double`/`xsd:float`/`xsd:decimal` through its plain-literal
+  shorthand (`"%e" % float(x)`), truncating to 7 significant digits —
+  `1.602176634e-22` was written out as `1.602177e-22`. This reached the triple store,
+  the TTL returned by `/process`, and the graph rendered into the LLM prompt, so the
+  model was shown rounded physical constants. `serialize_canonical_turtle()` now uses a
+  serializer that emits explicit typed literals for those datatypes.
 - **Ontology version/hash filters no longer silently empty the prompt context.** Graph
   hashes are not stable under serialization round-trips (URDNA2015 canonicalizes blank
   nodes, not literal lexical forms, so float-bearing vocabularies re-hash on every

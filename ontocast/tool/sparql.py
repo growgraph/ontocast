@@ -203,10 +203,11 @@ def build_candidate_subgraph_query(
 ) -> str:
     """Build a CONSTRUCT for everything :func:`_build_induced_subgraph` may read.
 
-    Four branches, each a direct translation of a read pattern in the builder:
+    Five branches, each a direct translation of a read pattern in the builder:
 
     1. ``owl:Ontology`` header triples, which populate the ``ontology_subjects``
-       exclusion set.
+       exclusion set — plus the ``sh:declare`` blank-node subtrees hanging off
+       them, so persisted author prefix names reach the candidate path too.
     2. Triples incident to any node within ``depth`` hops of a seed -- what
        :func:`_bfs_expand_from_seed` visits and materializes.
     3. Triples incident to the ``rdfs:subClassOf`` ancestors of the seeds and of
@@ -254,11 +255,14 @@ def build_candidate_subgraph_query(
 PREFIX owl: <http://www.w3.org/2002/07/owl#>
 PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX sh: <http://www.w3.org/ns/shacl#>
 CONSTRUCT {{ ?s ?p ?o }}
 {from_clause}
 WHERE {{
   VALUES ?seed {{ {" ".join(seed_irefs)} }}
   {{ ?s a owl:Ontology . ?s ?p ?o }}
+  UNION
+  {{ ?onto a owl:Ontology . ?onto sh:declare ?s . ?s ?p ?o }}
   UNION
   {{ {" UNION ".join(ball_branches)} {incident} }}
   UNION
@@ -404,7 +408,11 @@ _CANONICAL_PREFIX_BY_NAMESPACE: dict[str, str] = {
 }
 
 
-def _bind_used_prefixes(graph: RDFGraph, prefix_map: Mapping[str, str]) -> None:
+def _bind_used_prefixes(
+    graph: RDFGraph,
+    prefix_map: Mapping[str, str],
+    declared_by_namespace: Mapping[str, str] | None = None,
+) -> None:
     """Bind one prefix per namespace actually used by a term in ``graph``.
 
     Prefix bindings are what downstream prompts advertise as available namespaces;
@@ -412,7 +420,8 @@ def _bind_used_prefixes(graph: RDFGraph, prefix_map: Mapping[str, str]) -> None:
     "exist verbatim in the ontology" that the snapshot never shows. Namespaces
     with several candidate prefixes (each merged ontology may alias the same
     namespace under its own stem) get exactly one: the well-known canonical name
-    when there is one, else the plainest candidate.
+    when there is one, else the author-declared name (``sh:declare`` persisted
+    through the triple store), else the plainest candidate.
     """
     used_terms: set[str] = set()
     for subj, pred, obj in graph:
@@ -428,11 +437,14 @@ def _bind_used_prefixes(graph: RDFGraph, prefix_map: Mapping[str, str]) -> None:
     candidates_by_ns: dict[str, list[str]] = {}
     for prefix, uri in prefix_map.items():
         candidates_by_ns.setdefault(uri, []).append(prefix)
+    declared = declared_by_namespace or {}
     for uri, prefixes in candidates_by_ns.items():
         if not any(term.startswith(uri) for term in used_terms):
             continue
-        prefix = _CANONICAL_PREFIX_BY_NAMESPACE.get(uri) or min(
-            prefixes, key=lambda p: (p.count("_"), len(p), p)
+        prefix = (
+            _CANONICAL_PREFIX_BY_NAMESPACE.get(uri)
+            or declared.get(uri)
+            or min(prefixes, key=lambda p: (p.count("_"), len(p), p))
         )
         graph.bind(prefix, Namespace(uri))
 
@@ -1925,7 +1937,7 @@ class SPARQLTool:
                 max_total_triples=max_total_triples,
                 should_include=should_include_expansion_triple,
             )
-            _bind_used_prefixes(result, filtered_ns)
+            _bind_used_prefixes(result, filtered_ns, merged_graph.declared_prefix_map())
             return result, metrics
 
         concept_relevance, first_rank = _build_concept_relevance(
@@ -2030,7 +2042,7 @@ class SPARQLTool:
             max_total_triples=max_total_triples,
             should_include=should_include_expansion_triple,
         )
-        _bind_used_prefixes(result, filtered_ns)
+        _bind_used_prefixes(result, filtered_ns, merged_graph.declared_prefix_map())
         return result, metrics
 
     def _fetch_ontologies_sync(self, ontology_iris: list[str] | None) -> list[Ontology]:

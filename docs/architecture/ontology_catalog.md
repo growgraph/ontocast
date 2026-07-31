@@ -19,9 +19,15 @@ This page is the standing answer to "which layer owns what", and in particular t
 
 - Terminal selection runs on headers read fresh from the store on every call
   (`aget_catalog_headers`), so another process's writes are visible immediately.
-- Graphs are cached under `Ontology.versioned_iri`, which is `{iri}#{sha256}` — a
+- Graphs are cached under the header's `graph_uri`, which is `{iri}#{sha256}` — a
   content address. A concurrent writer necessarily produces a *new* graph URI, which
   is a cache miss. There is no sequence of events that yields a stale hit.
+- The key is the `graph_uri` the graph was *read from*, not the hash recomputed on the
+  materialized `Ontology`. Those agree only while hashing is round-trip stable, which is
+  why `RDFGraph.hash()` canonicalizes literals onto the value space triple stores
+  normalize to (`canonical_literal`): stores rewrite `xsd:decimal` lexical forms and
+  collapse integer subtypes on insert. Keying on the recomputed hash instead made every
+  lookup for an affected ontology miss forever.
 
 This matters for the cloud stack, where several `ontocast-worker` processes share one
 Fuseki dataset. An in-process catalog could not be authoritative there; a
@@ -52,10 +58,12 @@ parameter would be a surprise.
 ## Reading the catalog
 
 ```python
-headers = await tools.ontology_manager.aget_catalog_headers()      # metadata, no graphs
+headers = await tools.ontology_manager.aget_catalog_headers()  # metadata, no graphs
 ontologies = await tools.ontology_manager.aget_ontologies_by_iri(iris)
 merged, prefix_map = await tools.ontology_manager.aget_merged_graph(ontologies)
-iri = tools.ontology_manager.resolve_ontology_ref("obs")  # IRI, ontology_id, or author prefix
+iri = tools.ontology_manager.resolve_ontology_ref(
+    "obs"
+)  # IRI, ontology_id, or author prefix
 ```
 
 Returned `Ontology` objects are **shared, read-only references**. This was already true

@@ -34,6 +34,36 @@ def turtle_from_graph(graph: RDFGraph, *, strip_provenance: bool) -> str:
     return out.serialize_canonical_turtle()
 
 
+def facts_ttl_output_path(
+    file_path: pathlib.Path,
+    *,
+    line_number: int | None = None,
+) -> pathlib.Path:
+    """Return the sibling ``.facts.ttl`` path for a processed input file."""
+    if line_number is not None:
+        return file_path.with_name(f"{file_path.stem}.L{line_number}.facts.ttl")
+    return file_path.with_name(f"{file_path.stem}.facts.ttl")
+
+
+def dump_facts_ttl(
+    state: AgentState,
+    file_path: pathlib.Path,
+    *,
+    line_number: int | None = None,
+) -> pathlib.Path | None:
+    """Write chunk-stripped facts Turtle next to the input file when facts exist."""
+    if state.aggregated_facts is None or len(state.aggregated_facts) == 0:
+        return None
+    ttl_content = turtle_from_graph(state.aggregated_facts, strip_provenance=True)
+    output_path = facts_ttl_output_path(file_path, line_number=line_number)
+    output_path.write_text(ttl_content, encoding="utf-8")
+    logger.info(
+        "Dumped facts graph with chunk-level provenance stripped to %s",
+        output_path,
+    )
+    return output_path
+
+
 async def flush_triple_configured_scope(tools: ToolBox) -> None:
     """Match POST /flush without tenant/project: triple store only, current scope."""
     if tools.triple_store_manager is not None:
@@ -63,6 +93,21 @@ def calculate_recursion_limit(
     )
 
 
+def _resolve_document_metadata(
+    file_path: pathlib.Path,
+    document_metadata: dict[str, object] | None,
+    *,
+    line_number: int | None = None,
+) -> dict[str, object]:
+    """Return explicit metadata, or filename fallback when none was provided."""
+    if document_metadata:
+        return dict(document_metadata)
+    title = file_path.name
+    if line_number is not None:
+        title = f"{file_path.name}:{line_number}"
+    return {"title": title}
+
+
 def expand_input_to_states(
     file_path: pathlib.Path,
     *,
@@ -77,6 +122,7 @@ def expand_input_to_states(
     document_type_hint: str | None = None,
     section_schema_id: str | None = None,
     max_visits: int | None = None,
+    document_metadata: dict[str, object] | None = None,
 ) -> list[AgentState]:
     """Expand a local input file into one ``AgentState`` per logical record."""
     file_bytes = file_path.read_bytes()
@@ -105,6 +151,9 @@ def expand_input_to_states(
         return [
             AgentState(
                 raw_input={file_path.as_posix(): file_bytes},
+                document_metadata=_resolve_document_metadata(
+                    file_path, document_metadata
+                ),
                 **base_state_kwargs,
             )
         ]
@@ -119,6 +168,11 @@ def expand_input_to_states(
         states.append(
             AgentState(
                 raw_input={virtual_path: line.encode("utf-8")},
+                document_metadata=_resolve_document_metadata(
+                    file_path,
+                    document_metadata,
+                    line_number=line_number,
+                ),
                 **base_state_kwargs,
             )
         )
@@ -143,6 +197,17 @@ def select_unit_facts_ontology_graph(onto_result, facts_result) -> RDFGraph:
     return RDFGraph()
 
 
+def _effective_document_metadata(state: AgentState) -> dict[str, object]:
+    metadata = dict(state.document_metadata)
+    if (
+        state.source_url
+        and "source_url" not in metadata
+        and "source_uri" not in metadata
+    ):
+        metadata["source_url"] = state.source_url
+    return metadata
+
+
 async def persist_unit_pipeline_outputs(
     state: AgentState,
     onto_result,
@@ -161,6 +226,9 @@ async def persist_unit_pipeline_outputs(
         state.aggregated_facts = tools.aggregator.postprocess_facts_units(
             units=[facts_result.content_unit],
             ontology_graph=ontology_graph,
+            doc_iri=state.doc_iri,
+            document_metadata=_effective_document_metadata(state),
+            doc_namespace=state.doc_namespace,
         )
     await asyncio.to_thread(serialize_agent_state, state, tools)
 
@@ -182,6 +250,7 @@ async def process_files_input(
     document_type_hint: str | None = None,
     section_schema_id: str | None = None,
     max_visits: int | None = None,
+    document_metadata: dict[str, object] | None = None,
 ) -> None:
     resolved_max_visits = (
         max_visits if max_visits is not None else config.server.max_visits_per_node
@@ -206,8 +275,9 @@ async def process_files_input(
                 document_type_hint=document_type_hint,
                 section_schema_id=section_schema_id,
                 max_visits=resolved_max_visits,
+                document_metadata=document_metadata,
             )
-            for state in states:
+            for state_index, state in enumerate(states):
                 if use_unit_pipeline:
                     try:
                         onto_result, facts_result = await run_unit_pipeline(
@@ -220,11 +290,40 @@ async def process_files_input(
                         state, onto_result, facts_result, tools
                     )
                 else:
-                    async for _ in workflow.astream(
+                    workflow_state: AgentState | dict | None = None
+                    async for chunk in workflow.astream(
                         state,
                         stream_mode="values",
                         config=RunnableConfig(recursion_limit=recursion_limit),
                     ):
-                        pass
+                        workflow_state = chunk
+                    if isinstance(workflow_state, AgentState):
+                        state = workflow_state
+                    elif isinstance(workflow_state, dict):
+                        facts = workflow_state.get("aggregated_facts")
+                        if facts is not None:
+                            state.aggregated_facts = facts
+                        meta = workflow_state.get("document_metadata")
+                        if meta:
+                            state.document_metadata = dict(meta)
+                        doc_hid = workflow_state.get("doc_hid")
+                        if doc_hid:
+                            state.doc_hid = doc_hid
+                        current_domain = workflow_state.get("current_domain")
+                        if current_domain:
+                            state.current_domain = current_domain
+                line_number: int | None = None
+                if file_path.suffix.lower() == ".jsonl" and len(states) > 1:
+                    # Recover line from virtual raw_input key "...:N.json"
+                    raw_key = next(iter(state.raw_input), "")
+                    marker = f"{file_path.as_posix()}:"
+                    if raw_key.startswith(marker) and raw_key.endswith(".json"):
+                        try:
+                            line_number = int(raw_key[len(marker) : -len(".json")])
+                        except ValueError:
+                            line_number = state_index + 1
+                    else:
+                        line_number = state_index + 1
+                dump_facts_ttl(state, file_path, line_number=line_number)
         except Exception:
             logger.exception("Error processing %s", file_path)

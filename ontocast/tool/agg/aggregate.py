@@ -18,25 +18,225 @@ import re
 from difflib import SequenceMatcher
 from enum import StrEnum
 from itertools import combinations
+from typing import Any
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
-from rdflib import URIRef
-from rdflib.namespace import OWL, RDF, RDFS, XSD
+from rdflib import BNode, Literal, URIRef
+from rdflib.namespace import DCTERMS, FOAF, OWL, RDF, RDFS, XSD
 
-from ontocast.onto.constants import DEFAULT_IRI, PROV, SCHEMA
+from ontocast.onto.constants import (
+    DEFAULT_IRI,
+    PROV,
+    SCHEMA,
+    prefix_lookup_for_ingest,
+)
 from ontocast.onto.content_unit import ContentUnit, OutputType
-from ontocast.onto.iri_policy import is_in_namespace
+from ontocast.onto.iri_policy import (
+    is_in_namespace,
+    join_namespace_local,
+    normalize_namespace_iri,
+)
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.tool.representation_text import normalize_uri_local_name
+from ontocast.tool.representation_text import normalize_text, normalize_uri_local_name
 
 from .clustering import ClusterRepresentativeSelector
 from .normalizer import EntityNormalizer, EntityRepresentation
 from .rewriter import GraphRewriter
-from .uri_builder import EntityRole, URIBuilder
+from .uri_builder import EntityRole, URIBuilder, to_lower_camel_case
 
 logger = logging.getLogger(__name__)
 _INSTANCE_LOCAL_NAME_RE = re.compile(r"^(?P<stem>.+?)(?P<index>\d+)$")
+
+_DOC_METADATA_FIRST_CLASS: dict[str, URIRef] = {
+    "title": DCTERMS.title,
+    "published": DCTERMS.issued,
+    "issued": DCTERMS.issued,
+    "source_system": PROV.wasAttributedTo,
+}
+_DOC_METADATA_IDENTIFIER_KEYS = frozenset({"doi", "isbn", "pmid", "arxiv_id", "handle"})
+_DOC_METADATA_SOURCE_KEYS = frozenset({"source_uri", "source_url"})
+_DOC_METADATA_ENTITY_LINKS: dict[str, tuple[URIRef, URIRef]] = {
+    "author": (DCTERMS.creator, SCHEMA.Person),
+    "authors": (DCTERMS.creator, SCHEMA.Person),
+    "creator": (DCTERMS.creator, SCHEMA.Person),
+    "project": (DCTERMS.relation, PROV.Entity),
+}
+_DEFAULT_ENTITY_LINK_PREDICATE = DCTERMS.relation
+_DEFAULT_ENTITY_TYPE = PROV.Entity
+
+_DCTERMS_IDENTIFIER_CLASS = URIRef(str(DCTERMS) + "Identifier")
+
+
+def _as_iri_or_literal(value: object) -> URIRef | Literal:
+    text = str(value).strip()
+    if text.startswith(("http://", "https://", "urn:")):
+        return URIRef(text)
+    return Literal(text)
+
+
+def _add_structured_identifier(
+    graph: RDFGraph,
+    doc_iri: URIRef,
+    *,
+    scheme: str,
+    value: object,
+) -> None:
+    bnode = BNode()
+    graph.add((doc_iri, DCTERMS.identifier, bnode))
+    graph.add((bnode, RDF.type, _DCTERMS_IDENTIFIER_CLASS))
+    graph.add((bnode, DCTERMS.type, Literal(scheme)))
+    graph.add((bnode, RDF.value, Literal(str(value))))
+
+
+def _resolve_entity_type(type_hint: str | None, default: URIRef) -> URIRef:
+    if not type_hint:
+        return default
+    text = str(type_hint).strip()
+    if not text:
+        return default
+    if text.startswith(("http://", "https://", "urn:")):
+        return URIRef(text)
+    prefix, sep, local = text.partition(":")
+    if not sep or not local:
+        return default
+    ns = prefix_lookup_for_ingest().get(prefix)
+    if not ns:
+        return default
+    return URIRef(f"{ns}{local}")
+
+
+def _mint_metadata_entity(
+    graph: RDFGraph,
+    entity_namespace: str,
+    name: str,
+    *,
+    rdf_type: URIRef,
+    identifier: str | None,
+) -> URIRef:
+    local = to_lower_camel_case(normalize_text(name)) or "entity"
+    local = re.sub(r"[^\w]", "", local) or "entity"
+    entity_iri = URIRef(join_namespace_local(entity_namespace, local, context="facts"))
+    graph.add((entity_iri, RDF.type, rdf_type))
+    graph.add((entity_iri, RDFS.label, Literal(name)))
+    if identifier:
+        graph.add((entity_iri, DCTERMS.identifier, Literal(str(identifier))))
+    return entity_iri
+
+
+def _emit_metadata_entities(
+    graph: RDFGraph,
+    doc_iri: URIRef,
+    entity_namespace: str,
+    *,
+    link: URIRef,
+    default_type: URIRef,
+    value: object,
+) -> None:
+    items = value if isinstance(value, list) else [value]
+    for item in items:
+        if item is None or item == "":
+            continue
+        if isinstance(item, dict):
+            name = item.get("name")
+            if not name:
+                continue
+            raw_type = item.get("type")
+            type_hint = raw_type if isinstance(raw_type, str) else None
+            rdf_type = _resolve_entity_type(type_hint, default_type)
+            raw_id = item.get("identifier")
+            identifier = str(raw_id) if raw_id is not None else None
+        else:
+            name = str(item)
+            rdf_type = default_type
+            identifier = None
+        entity_iri = _mint_metadata_entity(
+            graph,
+            entity_namespace,
+            str(name),
+            rdf_type=rdf_type,
+            identifier=identifier,
+        )
+        graph.add((doc_iri, link, entity_iri))
+
+
+def apply_document_metadata_provenance(
+    doc_iri: URIRef,
+    metadata: dict[str, Any],
+    graph: RDFGraph,
+    *,
+    entity_namespace: str | None = None,
+) -> None:
+    """Emit caller-asserted document identity triples on ``doc_iri``.
+
+    Document-level identity is provenance-adjacent but intentionally kept on the
+    facts graph (survives chunk-level ``strip_provenance``) so query/RAG clients
+    can filter by DOI, business id, filename, etc.
+
+    Business-oriented keys (``author``, ``project``, and any non-reserved key)
+    mint typed RDF entities under ``entity_namespace`` (defaults to the document
+    facts namespace) so they are SPARQL-discoverable via ``rdf:type``.
+    """
+    if not metadata:
+        return
+
+    graph.bind("prov", str(PROV))
+    graph.bind("foaf", str(FOAF))
+    graph.bind("dcterms", str(DCTERMS))
+    graph.bind("owl", str(OWL))
+    graph.bind("rdfs", str(RDFS))
+    graph.bind("schema", str(SCHEMA))
+
+    graph.add((doc_iri, RDF.type, PROV.Entity))
+    graph.add((doc_iri, RDF.type, FOAF.Document))
+
+    ns = entity_namespace or normalize_namespace_iri(str(doc_iri), context="facts")
+
+    for key, value in metadata.items():
+        if value is None or value == "":
+            continue
+        if key == "stable_source_iri":
+            graph.add((doc_iri, OWL.sameAs, _as_iri_or_literal(value)))
+            continue
+        if key in _DOC_METADATA_SOURCE_KEYS:
+            graph.add((doc_iri, DCTERMS.source, _as_iri_or_literal(value)))
+            continue
+        if key in _DOC_METADATA_IDENTIFIER_KEYS:
+            graph.add((doc_iri, DCTERMS.identifier, Literal(str(value))))
+            continue
+        if key == "identifiers":
+            items = value if isinstance(value, list) else [value]
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                scheme = item.get("scheme") or item.get("type")
+                val = item.get("value")
+                if scheme and val is not None and val != "":
+                    _add_structured_identifier(
+                        graph, doc_iri, scheme=str(scheme), value=val
+                    )
+            continue
+        if key in _DOC_METADATA_FIRST_CLASS:
+            predicate = _DOC_METADATA_FIRST_CLASS[key]
+            if isinstance(value, list):
+                for item in value:
+                    if item is not None and item != "":
+                        graph.add((doc_iri, predicate, Literal(str(item))))
+            else:
+                graph.add((doc_iri, predicate, Literal(str(value))))
+            continue
+
+        link, default_type = _DOC_METADATA_ENTITY_LINKS.get(
+            key, (_DEFAULT_ENTITY_LINK_PREDICATE, _DEFAULT_ENTITY_TYPE)
+        )
+        _emit_metadata_entities(
+            graph,
+            doc_iri,
+            ns,
+            link=link,
+            default_type=default_type,
+            value=value,
+        )
 
 
 class EntityClassification(StrEnum):
@@ -930,13 +1130,30 @@ class EmbeddingBasedAggregator:
         self,
         units: list[ContentUnit],
         ontology_graph: RDFGraph,
+        *,
+        doc_iri: URIRef | None = None,
+        document_metadata: dict[str, Any] | None = None,
+        doc_namespace: str | None = None,
     ) -> RDFGraph:
         """Sanitize facts units, then run aggregation/normalization.
 
         This method is intentionally safe for both single-unit and multi-unit
         inputs so unit-pipeline and graph-pipeline paths share the same
         post-processing behavior.
+
+        When ``doc_iri`` and non-empty ``document_metadata`` are provided,
+        caller-asserted document identity triples are attached to the merged
+        facts graph. Business-oriented keys mint typed entities under
+        ``doc_namespace`` (defaults to the document facts namespace).
         """
         for unit in units:
             unit.sanitize()
-        return self.aggregate_graphs(units=units, ontology_graph=ontology_graph)
+        merged = self.aggregate_graphs(units=units, ontology_graph=ontology_graph)
+        if doc_iri is not None and document_metadata:
+            apply_document_metadata_provenance(
+                doc_iri,
+                document_metadata,
+                merged,
+                entity_namespace=doc_namespace,
+            )
+        return merged

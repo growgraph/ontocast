@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 import pyoxigraph as ox
 from oxrdflib._converter import to_ox
-from rdflib import Graph
+from rdflib import Graph, URIRef
 
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_header import OntologyHeader
@@ -289,6 +289,10 @@ class InMemoryTripleStoreManager(TripleStoreManager):
 
     def serialize(self, o: Ontology | RDFGraph, **kwargs) -> bool:
         if isinstance(o, Ontology):
+            if o.iri and not o.is_null():
+                # Persist author @prefix names as triples before they die at
+                # the store boundary (idempotent, excluded from content hash).
+                o.graph.materialize_prefix_declarations(URIRef(o.iri))
             return self.serialize_graph(
                 o.graph,
                 graph_uri=o.versioned_iri,

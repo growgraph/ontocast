@@ -132,9 +132,12 @@ def ontology_from_named_graph(graph_uri: str, graph: Graph) -> Ontology | None:
             ontology = Ontology(graph=graph, iri=onto_iri)
             ontology.sync_properties_from_graph()
             # Named-graph exports carry triples only — author @prefix bindings are
-            # serialization metadata the store never held. Rebind implicit
-            # namespaces (as Ontology.from_file does) so prompt-context prefix
-            # advertising survives a triple-store round trip.
+            # serialization metadata the store never held. First rebind the
+            # author's names from persisted sh:declare triples, then let implicit
+            # binding cover any namespace that predates declaration support (it
+            # skips already-declared stems), so prompt-context prefix advertising
+            # survives a triple-store round trip with authorial names intact.
+            ontology.graph.bind_declared_prefixes()
             ontology.graph.bind_implicit_namespaces(prefix_base=ontology.ontology_id)
             logger.debug(
                 "Loaded ontology %s version %s from graph %s",

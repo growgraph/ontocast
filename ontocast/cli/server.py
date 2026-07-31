@@ -18,6 +18,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from ontocast.api.app import create_app
 from ontocast.api.parse import (
+    parse_document_metadata_param,
     parse_document_type_hint_param,
     parse_max_visits_param,
     parse_section_schema_id_param,
@@ -189,6 +190,16 @@ def _prepare_path_config(config: Config) -> None:
         "VECTOR_STORE_PRUNE_ORPHAN_IRIS_ON_INIT."
     ),
 )
+@click.option(
+    "--document-metadata",
+    type=str,
+    default=None,
+    help=(
+        "JSON object of caller-asserted document identity metadata "
+        '(e.g. \'{"doi":"10.1234/example","title":"…"}\'). '
+        "When omitted in --input-path mode, the filename is used as dcterms:title."
+    ),
+)
 def run(
     input_path: pathlib.Path | None,
     head_chunks: int | None,
@@ -202,6 +213,7 @@ def run(
     document_type_hint: str | None,
     section_schema_id: str | None,
     wipe_vector_store: bool | None,
+    document_metadata: str | None,
 ):
     """Start the OntoCast API server or process local files in batch mode."""
     config = Config()
@@ -269,6 +281,7 @@ def run(
         default=config.server.max_visits_per_node,
     )
     config.server.max_visits_per_node = parsed_max_visits
+    parsed_document_metadata = parse_document_metadata_param(document_metadata)
 
     workflow: CompiledStateGraph = create_agent_graph(tools)
 
@@ -297,6 +310,7 @@ def run(
                 document_type_hint=parsed_document_type_hint,
                 section_schema_id=parsed_section_schema_id,
                 max_visits=parsed_max_visits,
+                document_metadata=parsed_document_metadata,
             )
         )
     else:

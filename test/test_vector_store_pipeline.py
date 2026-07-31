@@ -53,6 +53,7 @@ from ontocast.tool.vector_store.patch_retriever import (
 from ontocast.tool.vector_store.qdrant import QdrantVectorStoreManager
 from ontocast.tool.vector_store.util import (
     normalized_core_neighborhood_weights,
+    normalized_fusion_weights,
     point_id_for_atom,
 )
 from ontocast.util.hash import render_text_hash
@@ -448,10 +449,13 @@ def test_atomizer_multi_domain_namespaces_still_embedded_without_config() -> Non
 
 
 def test_atomizer_embed_standard_vocab_iris_restores_vocab_focal_entities() -> None:
+    # Standard vocabulary terms are used, not defined, by an ontology that imports them,
+    # so lifting the namespace exclusion alone leaves them filtered by the
+    # describes-only rule. The two narrowings are independent; this asserts the first.
     ontology = _build_smoke_ontology()
-    atoms = GraphAtomizer(embed_standard_vocab_iris=True).atomize(
-        source=ontology, depth=1
-    )
+    atoms = GraphAtomizer(
+        embed_standard_vocab_iris=True, index_undescribed_iris=True
+    ).atomize(source=ontology, depth=1)
     assert any(
         a.iri.startswith("http://www.w3.org/1999/02/22-rdf-syntax-ns#") for a in atoms
     )
@@ -1416,9 +1420,13 @@ async def test_aretrieve_ensemble_forwards_ranking_and_budget_controls() -> None
         "https://example.org/smoke#A",
         "https://example.org/smoke#B",
     ]
+    # Core-only hits, so the fused score is the normalized core weight over rank.
+    # Derived from the config rather than hardcoded: this test is about relevance
+    # reaching the SPARQL tool, not about what the fusion weights happen to be.
+    core_weight, _, _ = normalized_fusion_weights(VectorStoreConfig())
     assert sparql_tool.last_entity_relevance == {
-        "https://example.org/smoke#A": pytest.approx(0.7 / 1.2),
-        "https://example.org/smoke#B": pytest.approx(0.7 / 1.2 / 2),
+        "https://example.org/smoke#A": pytest.approx(core_weight),
+        "https://example.org/smoke#B": pytest.approx(core_weight / 2),
     }
     assert sparql_tool.last_max_total_triples == 77
     assert sparql_tool.last_estimated_triples_per_query == 9

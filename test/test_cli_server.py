@@ -112,6 +112,7 @@ def test_build_agent_state_from_parsed_sets_max_visits() -> None:
         summary_max_sentences=5,
         document_type_hint=None,
         section_schema_id=None,
+        document_metadata={},
     )
     state = build_agent_state_from_parsed(
         parsed,
@@ -121,6 +122,39 @@ def test_build_agent_state_from_parsed_sets_max_visits() -> None:
         max_chunks=1,
     )
     assert state.max_visits == 6
+
+
+def test_build_agent_state_from_parsed_sets_document_metadata() -> None:
+    parsed = ParsedProcessRequest(
+        files_dict={"input.json": b'{"text": "hello"}'},
+        max_visits=1,
+        strip_provenance=False,
+        ontology_user_instruction="",
+        ontology_selection_user_instruction="",
+        facts_user_instruction="",
+        ontology_context_fixed_ontology_id="",
+        render_mode=None,
+        llm_graph_format=None,
+        ontology_context_mode_value=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
+        target_sections=None,
+        summarize_sections=None,
+        summary_max_sentences=5,
+        document_type_hint=None,
+        section_schema_id=None,
+        document_metadata={
+            "doi": "10.1234/example",
+            "identifiers": [{"scheme": "erp:doc", "value": "INV-1"}],
+        },
+    )
+    state = build_agent_state_from_parsed(
+        parsed,
+        server_config=ServerConfig(max_visits_per_node=1),
+        resolved_tenant="t",
+        resolved_project="p",
+        max_chunks=1,
+    )
+    assert state.document_metadata["doi"] == "10.1234/example"
+    assert state.document_metadata["identifiers"][0]["value"] == "INV-1"
 
 
 def _tools(vector_store: object | None, patch_retriever: object | None) -> ToolBox:
@@ -262,15 +296,17 @@ def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
         ontology_snapshot=OntologySnapshot.empty(),
     )
     state = AgentState(docling_doc=plain_text_to_docling_doc("x", "doc"))
-    captured: dict[str, RDFGraph] = {}
+    captured: dict[str, object] = {}
 
     class _Aggregator:
         def postprocess_facts_units(
             self,
             units: list[ContentUnit],
             ontology_graph: RDFGraph,
+            **kwargs,
         ) -> RDFGraph:
             captured["ontology_graph"] = ontology_graph
+            captured["kwargs"] = kwargs
             graph = RDFGraph()
             graph += units[0].graph
             return graph
@@ -289,7 +325,9 @@ def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
         )
     )
 
-    assert set(captured["ontology_graph"]) == set(facts_graph)
+    ontology_graph = captured["ontology_graph"]
+    assert isinstance(ontology_graph, RDFGraph)
+    assert set(ontology_graph) == set(facts_graph)
 
 
 def _match_test_app(monkeypatch: pytest.MonkeyPatch):
@@ -468,3 +506,81 @@ def test_derive_matches_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     matches = response.json()["data"]["entity_matches"]
     assert len(matches) == 1
     assert matches[0]["predicted_entity"] == "http://predicted.example/a"
+
+
+def test_parse_document_metadata_param_accepts_dict_and_json() -> None:
+    from ontocast.api.parse import parse_document_metadata_param
+
+    assert parse_document_metadata_param(None) == {}
+    assert parse_document_metadata_param("") == {}
+    assert parse_document_metadata_param({"doi": "10.1/x"}) == {"doi": "10.1/x"}
+    assert parse_document_metadata_param('{"title": "Report"}') == {"title": "Report"}
+
+
+def test_parse_document_metadata_param_rejects_non_object() -> None:
+    from ontocast.api.parse import parse_document_metadata_param
+
+    with pytest.raises(ValueError, match="document_metadata must be a JSON object"):
+        parse_document_metadata_param("[1, 2]")
+
+
+def test_expand_input_to_states_filename_fallback(tmp_path) -> None:
+    from ontocast.api.process_helpers import expand_input_to_states
+    from ontocast.config import Config
+
+    doc = tmp_path / "annual-report.pdf"
+    doc.write_bytes(b"%PDF-1.4 fake")
+    config = Config()
+    states = expand_input_to_states(
+        doc,
+        config=config,
+        head_chunks=1,
+        ontology_context_mode_value=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
+        tenant="t",
+        project="p",
+        document_metadata=None,
+    )
+    assert len(states) == 1
+    assert states[0].document_metadata == {"title": "annual-report.pdf"}
+
+
+def test_expand_input_to_states_keeps_explicit_metadata(tmp_path) -> None:
+    from ontocast.api.process_helpers import expand_input_to_states
+    from ontocast.config import Config
+
+    doc = tmp_path / "annual-report.pdf"
+    doc.write_bytes(b"%PDF-1.4 fake")
+    config = Config()
+    states = expand_input_to_states(
+        doc,
+        config=config,
+        head_chunks=1,
+        ontology_context_mode_value=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
+        tenant="t",
+        project="p",
+        document_metadata={"doi": "10.1234/x", "title": "Custom"},
+    )
+    assert states[0].document_metadata == {"doi": "10.1234/x", "title": "Custom"}
+
+
+def test_facts_ttl_output_path_and_dump(tmp_path) -> None:
+    from rdflib import DCTERMS, Literal
+
+    from ontocast.api.process_helpers import dump_facts_ttl, facts_ttl_output_path
+    from ontocast.onto.constants import PROV
+    from ontocast.onto.docling_helpers import plain_text_to_docling_doc
+
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"x")
+    assert facts_ttl_output_path(src) == tmp_path / "paper.facts.ttl"
+    assert facts_ttl_output_path(src, line_number=3) == tmp_path / "paper.L3.facts.ttl"
+
+    state = AgentState(docling_doc=plain_text_to_docling_doc("hello", "doc"))
+    state.aggregated_facts = RDFGraph()
+    state.aggregated_facts.add((state.doc_iri, DCTERMS.title, Literal("paper.pdf")))
+    state.aggregated_facts.add((state.doc_iri, RDF.type, PROV.Entity))
+    out = dump_facts_ttl(state, src)
+    assert out is not None
+    assert out.exists()
+    text = out.read_text(encoding="utf-8")
+    assert "paper.pdf" in text

@@ -39,6 +39,7 @@ from ontocast.tool.vector_store.util import (
     EmbeddingContractMismatchError,
     atom_from_payload,
     atom_payload,
+    atom_scope_fingerprint,
     collection_embedding_metadata,
     dedupe_hits_by_identity,
     effective_top_k,
@@ -280,6 +281,7 @@ class QdrantVectorStoreManager(VectorStoreManager):
             embedding_config=self.embedding_config,
             expected_meta_dim=self._metadata_embedding_dimension(),
             minimal_label_limit=self.store_config.minimal_label_limit,
+            atom_scope=atom_scope_fingerprint(self.store_config),
         )
 
     def _vectors_and_sparse_for_create(
@@ -366,6 +368,7 @@ class QdrantVectorStoreManager(VectorStoreManager):
             self.embedding_config,
             metadata_dim=metadata_dim,
             minimal_label_limit=self.store_config.minimal_label_limit,
+            atom_scope=atom_scope_fingerprint(self.store_config),
         )
         vectors_cfg, sparse_cfg = self._vectors_and_sparse_for_create()
         if not self.client.collection_exists(collection_name=collection):

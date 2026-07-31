@@ -953,8 +953,17 @@ class OntologyPatchRetriever(Tool):
         prefix_map = filter_overbroad_namespace_map(prefix_map)
         for prefix, namespace in prefix_map.items():
             candidate.bind(prefix, Namespace(namespace))
-        # Mirror the merge path: graphs served from a triple store carry no author
-        # @prefix bindings, so stem-derived prefixes fill the gap there (see
+        # Mirror the merge path: author @prefix names persisted as sh:declare
+        # triples (pulled by the candidate CONSTRUCT's header branch) win over
+        # stem-derived recovery, exactly as ontology_from_named_graph binds them
+        # for merged catalog graphs.
+        declared = candidate.bind_declared_prefixes()
+        known_before_declared = set(prefix_map.values())
+        for namespace, prefix in declared.items():
+            if namespace not in known_before_declared:
+                prefix_map[prefix] = namespace
+        # Graphs served from a triple store carry no author @prefix bindings, so
+        # stem-derived prefixes fill any remaining gap (see
         # ontology_from_named_graph). Recover the same implicit stems here so
         # both context paths advertise identical namespaces.
         candidate.bind_implicit_namespaces()

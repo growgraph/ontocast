@@ -12,8 +12,10 @@ from typing import Any, Union, cast
 from pydantic import BaseModel, ConfigDict, GetCoreSchemaHandler
 from pydantic_core import core_schema
 from pyld import jsonld
-from rdflib import BNode, Graph, Literal, Namespace, Node, URIRef
-from rdflib.namespace import XSD, NamespaceManager
+from rdflib import BNode, Graph, Literal, Namespace, Node, URIRef, plugin
+from rdflib.namespace import SH, XSD, NamespaceManager
+from rdflib.plugins.serializers.turtle import _GEN_QNAME_FOR_DT, TurtleSerializer
+from rdflib.serializer import Serializer
 
 from ontocast.onto.constants import COMMON_PREFIXES, prefix_lookup_for_ingest
 from ontocast.onto.enum import LLMGraphFormat
@@ -23,6 +25,41 @@ from ontocast.onto.util import is_rdflib_default_namespace
 from ontocast.util.hash import render_text_hash
 
 logger = logging.getLogger(__name__)
+
+
+#: Datatypes rdflib renders with its plain-literal shorthand in Turtle. For
+#: ``xsd:double`` that shorthand is ``"%e" % float(x)``, which silently truncates
+#: to 7 significant digits (``1.602176634e-22`` -> ``1.602177e-22``).
+_LOSSY_PLAIN_DATATYPES = frozenset({XSD.double, XSD.float, XSD.decimal})
+
+#: Serializer plugin name registered for :class:`_LosslessTurtleSerializer`.
+LOSSLESS_TURTLE_FORMAT = "ontocast-turtle"
+
+
+class _LosslessTurtleSerializer(TurtleSerializer):
+    """Turtle writer that never abbreviates a floating-point literal.
+
+    rdflib's Turtle serializer renders ``xsd:double``/``xsd:float``/``xsd:decimal``
+    through Python's ``%e`` formatting, which loses precision. Emitting those as
+    explicit typed literals preserves the author's lexical form exactly, at the
+    cost of slightly more verbose output.
+    """
+
+    def label(self, node: Node, position: int) -> str:
+        if isinstance(node, Literal) and node.datatype in _LOSSY_PLAIN_DATATYPES:
+            return node._literal_n3(
+                use_plain=False,
+                qname_callback=lambda dt: self.get_pname(dt, _GEN_QNAME_FOR_DT),
+            )
+        return super().label(node, position)
+
+
+plugin.register(
+    LOSSLESS_TURTLE_FORMAT,
+    Serializer,
+    "ontocast.onto.rdfgraph",
+    "_LosslessTurtleSerializer",
+)
 
 
 def _oxigraph_inner_store(rdflib_store: object) -> object:
@@ -102,6 +139,68 @@ def _is_valid_decimal_lexical(lexical: str) -> bool:
         return True
     except InvalidOperation:
         return False
+
+
+#: Datatypes a triple store collapses onto ``xsd:integer``. pyoxigraph normalises
+#: literals into its value space on insert, so ``"1"^^xsd:nonNegativeInteger`` --
+#: the datatype OWL 2 requires on qualified cardinality axioms -- comes back out as
+#: ``"1"^^xsd:integer``.
+_XSD_INTEGER_DATATYPES = frozenset(
+    {
+        XSD.integer,
+        XSD.int,
+        XSD.long,
+        XSD.short,
+        XSD.byte,
+        XSD.nonNegativeInteger,
+        XSD.positiveInteger,
+        XSD.negativeInteger,
+        XSD.nonPositiveInteger,
+        XSD.unsignedInt,
+        XSD.unsignedLong,
+        XSD.unsignedShort,
+        XSD.unsignedByte,
+    }
+)
+
+
+def canonical_literal(term: Node) -> Node:
+    """Map a literal onto the value-space normal form triple stores converge on.
+
+    Content hashing has to be blind to differences a round trip through the
+    triple store erases anyway. Two rewrites were measured against pyoxigraph:
+    integer subtypes collapse to ``xsd:integer``, and ``xsd:decimal`` lexicals
+    canonicalise (``"10.0"`` -> ``"10"``). Neither changes the value, so a hash
+    that distinguishes them reports drift where no content changed.
+
+    Non-literals, untyped literals, ill-typed literals, and datatypes outside
+    the normalised set are returned unchanged.
+
+    Args:
+        term: Any RDF term.
+
+    Returns:
+        Node: The canonicalized literal, or ``term`` itself when nothing applies.
+    """
+    if not isinstance(term, Literal) or term.datatype is None or term.ill_typed:
+        return term
+    lexical = str(term)
+    try:
+        if term.datatype in _XSD_INTEGER_DATATYPES:
+            return Literal(str(int(lexical)), datatype=XSD.integer)
+        if term.datatype == XSD.decimal:
+            value = Decimal(lexical).normalize()
+            if value == 0:
+                # Decimal('-0.0').normalize() keeps the sign; the store does not.
+                value = Decimal(0)
+            return Literal(format(value, "f"), datatype=XSD.decimal)
+        if term.datatype == XSD.boolean:
+            return Literal(
+                "true" if lexical in ("true", "1") else "false", datatype=XSD.boolean
+            )
+    except (ValueError, InvalidOperation):
+        return term
+    return term
 
 
 def _coerce_date_lexical_for_turtle(lexical: str) -> str:
@@ -1218,9 +1317,15 @@ class RDFGraph(Graph):
         return raw.decode()
 
     def serialize_canonical_turtle(self) -> str:
-        """Serialize to Turtle after canonical namespace/prefix sanitization."""
+        """Serialize to Turtle after canonical namespace/prefix sanitization.
+
+        Uses :class:`_LosslessTurtleSerializer` rather than rdflib's stock Turtle
+        writer, which rounds floating-point literals to 7 significant digits.
+        This output is what reaches the triple store, the API response, and the
+        LLM prompt, so the rounding was real value loss rather than formatting.
+        """
         self.sanitize_prefixes_namespaces()
-        serialized = self.serialize(format="turtle")
+        serialized = self.serialize(format=LOSSLESS_TURTLE_FORMAT)
         if isinstance(serialized, bytes):
             return serialized.decode("utf-8")
         return str(serialized)
@@ -1330,13 +1435,20 @@ class RDFGraph(Graph):
         """Serialize the graph, delegating to pyoxigraph for oxigraph stores.
 
         When the graph is backed by an *oxigraph* store and the requested
-        format is ``"turtle"`` (or ``"ttl"``), serialisation is handled by
+        format is any Turtle flavour (``"turtle"``, ``"ttl"`` or
+        :data:`LOSSLESS_TURTLE_FORMAT`), serialisation is handled by
         ``pyoxigraph`` which natively supports RDF 1.2 triple terms.
         For all other stores or formats the default rdflib serialiser is
         used.
+
+        The lossless flavour has to be routed here too: oxrdflib surfaces a
+        pyoxigraph triple term as a plain Python tuple, which rdflib's Turtle
+        writer cannot label (``'tuple' object has no attribute 'n3'``).
+        pyoxigraph's own writer is value-preserving for floating-point
+        literals, so nothing the lossless serializer exists for is given up.
         """
         is_ox = type(self.store).__name__ == "OxigraphStore"
-        if is_ox and format in ("turtle", "ttl"):
+        if is_ox and format in ("turtle", "ttl", LOSSLESS_TURTLE_FORMAT):
             ttl = self.serialize_turtle_star()
             if destination is not None:
                 enc = encoding or "utf-8"
@@ -1501,6 +1613,116 @@ class RDFGraph(Graph):
                 prefix = slug
             self.bind(prefix, Namespace(stem), override=False)
 
+    def declared_prefix_map(self) -> dict[str, str]:
+        """Read SHACL prefix declarations into a namespace → prefix map.
+
+        Declarations are ``sh:declare [ sh:prefix "..." ; sh:namespace "..." ]``
+        blank nodes, conventionally attached to the ``owl:Ontology`` subject.
+        When a namespace carries several declarations, the lexically plainest
+        prefix wins so the result is deterministic.
+
+        Returns:
+            dict[str, str]: Namespace IRI → declared prefix name.
+        """
+        pairs: list[tuple[str, str]] = []
+        for _, _, decl in self.triples((None, SH.declare, None)):
+            prefix = self.value(decl, SH.prefix)
+            namespace = self.value(decl, SH.namespace)
+            if prefix is not None and namespace is not None:
+                pairs.append((str(namespace), str(prefix)))
+        declared: dict[str, str] = {}
+        for namespace, prefix in sorted(
+            pairs, key=lambda item: (item[0], item[1].count("_"), len(item[1]), item[1])
+        ):
+            declared.setdefault(namespace, prefix)
+        return declared
+
+    def bind_declared_prefixes(self) -> dict[str, str]:
+        """Bind prefixes recovered from ``sh:declare`` triples onto this graph.
+
+        The inverse of :meth:`materialize_prefix_declarations`: after a triple
+        store round trip the author's ``@prefix`` names exist only as declaration
+        triples; this rebinds them so serialization and prompt-context prefix
+        advertising show the author's names again.
+
+        Returns:
+            dict[str, str]: Namespace IRI → prefix that was bound.
+        """
+        declared = self.declared_prefix_map()
+        for namespace, prefix in declared.items():
+            self.bind(prefix, Namespace(namespace), override=True, replace=True)
+        if declared:
+            # The declaration triples themselves use the SHACL namespace; bind
+            # its canonical name so implicit binding never mints a synthetic one.
+            self.bind("sh", SH, override=False)
+        return declared
+
+    def materialize_prefix_declarations(self, ontology_iri: URIRef) -> int:
+        """Persist author prefix bindings as SHACL declarations on ``ontology_iri``.
+
+        Prefix bindings are serialization metadata: triple stores keep triples
+        only, so ``@prefix`` names die at the store boundary and later exports
+        must invent synthetic names (:meth:`bind_implicit_namespaces`). Writing
+        ``sh:declare`` triples makes the author's names part of the graph content,
+        surviving any RDF-preserving channel.
+
+        Only namespaces actually used by a term in the graph are persisted;
+        rdflib built-ins and namespaces recoverable from the canonical prefix
+        tables are skipped. Idempotent: an already-declared namespace is left
+        untouched, so round-tripped graphs never accumulate synthetic names on
+        top of authorial ones.
+
+        Args:
+            ontology_iri: Subject to attach declarations to (the ontology IRI).
+
+        Returns:
+            int: Number of declarations added.
+        """
+        recoverable = set(prefix_lookup_for_ingest().values())
+        already_declared = set(self.declared_prefix_map())
+
+        used_namespaces: set[str] = set()
+        candidate_namespaces = [
+            str(namespace) for prefix, namespace in self.namespaces() if prefix
+        ]
+        for subj, pred, obj in self:
+            terms = [subj, pred, obj]
+            if isinstance(obj, Literal) and obj.datatype is not None:
+                terms.append(obj.datatype)
+            for term in terms:
+                if not isinstance(term, URIRef):
+                    continue
+                iri = str(term)
+                for namespace in candidate_namespaces:
+                    if iri.startswith(namespace):
+                        used_namespaces.add(namespace)
+
+        candidates_by_ns: dict[str, list[str]] = {}
+        for prefix, namespace in self.namespaces():
+            ns_str = str(namespace)
+            if (
+                not prefix
+                or is_rdflib_default_namespace(ns_str)
+                or ns_str in recoverable
+                or ns_str in already_declared
+                or ns_str not in used_namespaces
+            ):
+                continue
+            candidates_by_ns.setdefault(ns_str, []).append(prefix)
+
+        added = 0
+        for namespace in sorted(candidates_by_ns):
+            prefix = min(
+                candidates_by_ns[namespace],
+                key=lambda p: (p.count("_"), len(p), p),
+            )
+            decl = BNode()
+            self.add((ontology_iri, SH.declare, decl))
+            self.add((decl, SH.prefix, Literal(prefix)))
+            self.add((decl, SH.namespace, Literal(namespace, datatype=XSD.anyURI)))
+            added += 1
+        return added
+
     def unbind_chunk_namespaces(self, chunk_pattern="/chunk/") -> "RDFGraph":
         """
         Unbinds namespace prefixes that point to URIs containing a chunk pattern.
@@ -1617,8 +1839,30 @@ class RDFGraph(Graph):
         logger.debug(f"Removed triple: {subj} {pred} {obj}")
 
     def hash(self: Graph) -> str:
+        """Return the SHA-256 content hash of this graph.
+
+        The hash is taken over the RDF **value** space, not the lexical space:
+        literals are canonicalized with :func:`canonical_literal` before
+        URDNA2015 runs, because URDNA2015 canonicalizes blank node labels only.
+        Without that step a graph re-hashes differently after a triple-store
+        round trip -- stores normalise literals on insert -- which breaks the
+        content-addressed ``versioned_iri`` identity the catalog is built on.
+
+        Canonicalization is applied to a throwaway copy; the graph itself is
+        never mutated, so what gets stored, served, and shown to the LLM is
+        unaffected.
+
+        Returns:
+            str: Full 64-character hex digest.
+        """
+        canonical = Graph()
+        for subject, predicate, object_ in self:
+            canonical.add((subject, predicate, canonical_literal(object_)))
+        for prefix, namespace in self.namespaces():
+            canonical.bind(prefix, namespace)
+
         # Serialize to JSON-LD
-        data = self.serialize(format="json-ld")
+        data = canonical.serialize(format="json-ld")
 
         # Parse the JSON string
         doc = json.loads(data)

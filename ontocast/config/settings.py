@@ -1049,21 +1049,40 @@ class VectorStoreConfig(BaseSettings):
         default=0.7,
         ge=0.0,
         le=1.0,
-        description="Core vector score weight for dual-vector ranking fusion.",
+        description=(
+            "Core vector score weight for dual-vector ranking fusion. Weights are "
+            "normalized across the three lanes before use, so only their ratio matters."
+        ),
     )
     fusion_neighborhood_weight: float = Field(
-        default=0.3,
+        default=0.15,
         ge=0.0,
         le=1.0,
-        description="Neighborhood vector score weight for dual-vector ranking fusion.",
+        description=(
+            "Neighborhood vector score weight for dual-vector ranking fusion. Lowered "
+            "0.3 -> 0.15: the neighborhood text describes a term's edges rather than "
+            "the term, so it corroborates the core lane more than it adds to it. "
+            "Halving it "
+            "raised seed recall at rank 30 (0.69 -> 0.81 on the matsci case4 excerpt) "
+            "without changing which terms the core lane found."
+        ),
     )
     fusion_bm25_weight: float = Field(
-        default=0.2,
+        default=0.8,
         ge=0.0,
         le=1.0,
         description=(
             "BM25 sparse-lane weight for rank fusion (normalized with core and "
-            "neighborhood weights when BM25 retrieval is enabled)."
+            "neighborhood weights when BM25 retrieval is enabled). Raised 0.2 -> 0.8: "
+            "a term whose surface form is a symbol or notation (unit symbols, chemical "
+            "formulae, gene symbols) is frequently invisible to the dense lanes, so the "
+            "sparse lane is its only evidence. At 0.2 the normalized weights were "
+            "0.583/0.250/0.167, meaning a rank-1 BM25 hit was outvoted 3.5:1 by a rank-1 "
+            "dense hit. Measured on the matsci case4 excerpt, where "
+            "'matsci-units#millielectronvolt' is a rank-1 BM25 hit and appears in no "
+            "dense lane at all: merged seed rank 32 -> 7, ground-truth recall at rank 40 "
+            "0.62 -> 0.81. This does not weaken the dense lanes -- it stops the sparse "
+            "lane from being a tie-breaker."
         ),
     )
     minimal_label_limit: int = Field(
@@ -1075,6 +1094,44 @@ class VectorStoreConfig(BaseSettings):
             "declare more aliases than this; symbol aliases sort last and are dropped "
             "first, so raising this widens what the sparse lane can match. Changing it "
             "changes stored sparse vectors and requires a reindex."
+        ),
+    )
+    index_undescribed_iris: bool = Field(
+        default=False,
+        description=(
+            "If True, atomize every IRI in an ontology graph, including ones appearing "
+            "only in object or predicate position. Default False: an ontology mints an "
+            "atom only for terms it describes (a subject-position triple, or a label). "
+            "A merely referenced IRI carries no local text, so its atom is its mangled "
+            "local name -- 'a0e0l2i0m1h0t 3d0' for a QUDT dimension vector -- and such "
+            "strings embed near the corpus centroid, making them hubs that rank "
+            "against every query. Measured on the 8-module matsci catalog: 247 of 690 "
+            "atoms "
+            "(36%) were undescribed references, and dimension vectors alone took 51 of "
+            "140 dense retrieval slots on one document, crowding four ontologies out "
+            "entirely. Referenced IRIs stay reachable via induced-subgraph expansion; "
+            "they just stop being seeds. Changing this requires a reindex."
+        ),
+    )
+    embed_standard_vocab_iris: bool = Field(
+        default=False,
+        description=(
+            "If True, atomize focal IRIs in standard RDF/OWL/SKOS/DC/SHACL/schema.org "
+            "namespaces instead of skipping them. These are scaffolding an ontology "
+            "reuses rather than terms it defines, so they carry no retrieval signal for "
+            "the document being processed. Changing this requires a reindex."
+        ),
+    )
+    extra_excluded_namespace_prefixes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Additional IRI prefixes whose entities are never atomized from ontology "
+            "sources, on top of the standard-vocabulary set. Use for an upper ontology "
+            "or external vocabulary a catalog references but does not define (BFO, SOSA, "
+            "OM-2). Mostly redundant once index_undescribed_iris is False -- an "
+            "undefined reference is already skipped -- so reach for it when a vocabulary "
+            "*is* vendored but should still stay out of the semantic lane. Changing this "
+            "requires a reindex."
         ),
     )
     dedup_mode: VectorStoreDedupMode = Field(

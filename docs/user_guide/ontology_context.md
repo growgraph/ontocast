@@ -200,18 +200,52 @@ After seeds are chosen, expansion builds a budgeted snapshot:
   codes that let the LLM map a surface token like `meV` to its IRI.
 - **Version/hash filters select, never exclude.** Retrieval hits pin the ontology
   versions/hashes their atoms were indexed from; the catalog is filtered to those. When
-  no catalog entry matches (graph hashes are not stable under serialization round-trips —
-  literal lexical forms sit outside URDNA2015 canonicalization), the filter relaxes per
-  IRI to same-version entries, then to any entry, with a warning — instead of silently
-  dropping the whole ontology from the prompt context.
+  no catalog entry matches, the filter relaxes per IRI to same-version entries, then to
+  any entry, with a warning — instead of silently dropping the whole ontology from the
+  prompt context. Content hashes are computed over the RDF *value* space, so they are
+  stable across a triple-store round trip and identical between backends; the relaxation
+  ladder is defense in depth, and a `catalog identity drift` warning in the log now
+  signals a real problem rather than routine hash noise.
 - **Only used prefixes are advertised.** The snapshot binds one prefix per namespace that
   actually appears in its triples (canonical vocabulary names preferred, e.g. `qudt:` over
   a stem-derived alias). Previously every merged ontology's prefixes were bound
   regardless of content, so prompts claimed namespaces the LLM could not see a single
-  term from. Graphs served from a triple store lose author `@prefix` bindings; implicit
-  stem prefixes are rebuilt on fetch so the advertising survives the round trip.
+  term from.
+- **Author `@prefix` names survive the triple store.** Prefix bindings are serialization
+  metadata that a SPARQL store never holds, so exports used to re-derive synthetic stem
+  names (`matsci_units:` for a namespace the author binds as `matsciunits:`). On catalog
+  registration and store write, used non-well-known bindings are persisted as SHACL
+  prefix declarations (`sh:declare [ sh:prefix … ; sh:namespace … ]`) on the ontology
+  subject — excluded from the content hash, so identity is unaffected — and rebound on
+  fetch before implicit-stem recovery fills any remaining gap. Snapshot binding priority
+  per namespace: canonical vocabulary name → author-declared name → plainest candidate.
+  Both context paths (merged catalog and SPARQL candidate pushdown) recover the same
+  names.
 - **Long chunks** split into up to `VECTOR_STORE_PROPOSITION_MAX_WINDOWS` windows sampled
   at an even stride from start to end, so the tail of a long passage still issues queries.
+
+### What becomes an atom
+
+An ontology graph *mentions* far more IRIs than it *defines*. Every object of a
+`qudt:hasDimensionVector`, `qudt:applicableSystem` or `owl:versionIRI` triple is an IRI
+the ontology references without describing. Those are not indexed: an ontology mints an
+atom only for a term it describes — one with a subject-position triple, or a label.
+
+This matters more than it sounds. A referenced IRI has no local text, so its atom is its
+mangled local name (`a0e0l2i0m1h0t 3d0` for a QUDT dimension vector), and meaningless
+token strings embed near the corpus centroid — they are near-equidistant from every
+query, so they surface against all of them. On the 8-module matsci catalog, 247 of 690
+atoms (36%) were such references, and dimension vectors alone took 51 of 140 dense
+retrieval slots on one document, pushing four ontologies out of the results entirely.
+
+Referenced IRIs stay reachable — induced-subgraph expansion walks into them from seeds.
+They just stop being seeds. Set `VECTOR_STORE_INDEX_UNDESCRIBED_IRIS=true` to restore
+the old scope; both it and `VECTOR_STORE_EMBED_STANDARD_VOCAB_IRIS` change which atoms
+exist and require a reindex.
+
+A corollary worth knowing when authoring modules: a term only reaches the semantic lane
+from the module that *describes* it. If a vocabulary is meant to contribute its terms,
+vendor the declarations — referencing the IRIs is not enough.
 
 ### BM25 / index recreate
 
@@ -220,6 +254,14 @@ Lexical retrieval uses Qdrant's BM25 with IDF and indexes split local names plus
 quantity vocabularies — `qudt:symbol` / `qudt:ucumCode`. Collections built
 before that contract fail loudly with `EmbeddingContractMismatchError` — wipe and reindex
 (`VECTOR_STORE_WIPE_ON_INIT` or `--wipe-vector-store`).
+
+The sparse lane carries substantial fusion weight (`VECTOR_STORE_FUSION_BM25_WEIGHT`,
+default `0.8`, against `0.7` core and `0.15` neighborhood). Terms identified by a symbol
+rather than a phrase are frequently absent from the dense lanes altogether, so the sparse
+lane is not a tie-breaker for them — it is the only evidence there is. At the former
+`0.2` the normalized weights were `0.583 / 0.250 / 0.167`, meaning a rank-1 BM25 hit was
+outvoted 3.5:1 by a rank-1 dense hit; `matsci-units#millielectronvolt` was a rank-1 BM25
+hit for a passage reporting `∼10−50 meV`, appeared in no dense lane, and still lost.
 
 Surface forms are capped per atom (`VECTOR_STORE_MINIMAL_LABEL_LIMIT`, default 5) and
 selected deterministically, ranked by predicate and then by language. Two consequences

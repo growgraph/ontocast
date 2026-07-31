@@ -437,3 +437,53 @@ def test_model_validate_uses_explicit_llm_graph_format_context() -> None:
         context={"llm_graph_format": LLMGraphFormat.JSONLD},
     )
     assert len(report.graph_update.triple_operations[0].graph) >= 1
+
+
+def test_serialize_canonical_turtle_handles_oxigraph_triple_terms() -> None:
+    """Oxigraph-backed graphs may hold RDF 1.2 triple terms.
+
+    oxrdflib surfaces those as plain Python tuples, which rdflib's Turtle
+    writer cannot serialize, so the canonical writer must delegate to
+    pyoxigraph for oxigraph stores regardless of the Turtle flavour requested.
+    """
+    from typing import cast
+
+    import pyoxigraph as ox
+    from oxrdflib._converter import to_ox
+
+    from ontocast.onto.rdfgraph import _oxigraph_inner_store
+
+    graph = RDFGraph(store="oxigraph")
+    inner = cast(ox.Store, _oxigraph_inner_store(graph.store))
+    context = to_ox(graph.identifier)
+    assert isinstance(context, (ox.NamedNode, ox.BlankNode, ox.DefaultGraph))
+    inner.load(
+        b"""
+        @prefix cd: <https://growgraph.dev/facts/> .
+        cd:a cd:p cd:b .
+        cd:s cd:annotates <<( cd:a cd:p cd:b )>> .
+        """,
+        format=ox.RdfFormat.TURTLE,
+        to_graph=context,
+    )
+    graph.bind("cd", "https://growgraph.dev/facts/")
+
+    turtle = graph.serialize_canonical_turtle()
+
+    assert "cd:a cd:p cd:b" in turtle
+    assert "cd:s cd:annotates <<( cd:a cd:p cd:b )>>" in turtle
+
+
+def test_serialize_canonical_turtle_keeps_double_precision() -> None:
+    graph = RDFGraph._from_turtle_str(
+        """
+        @prefix ex: <https://example.org/ns#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        ex:m ex:mass "1.602176634e-22"^^xsd:double .
+        """
+    )
+
+    turtle = graph.serialize_canonical_turtle()
+
+    assert "1.602177e-22" not in turtle
+    assert "1.602176634e-22" in turtle

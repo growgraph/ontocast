@@ -483,9 +483,19 @@ def create_app(
                 ontology_graph = select_unit_facts_ontology_graph(
                     onto_result, facts_result
                 )
+                document_metadata = dict(initial_state.document_metadata)
+                if (
+                    initial_state.source_url
+                    and "source_url" not in document_metadata
+                    and "source_uri" not in document_metadata
+                ):
+                    document_metadata["source_url"] = initial_state.source_url
                 postprocessed_facts = tools.aggregator.postprocess_facts_units(
                     units=[facts_result.content_unit],
                     ontology_graph=ontology_graph,
+                    doc_iri=initial_state.doc_iri,
+                    document_metadata=document_metadata,
+                    doc_namespace=initial_state.doc_namespace,
                 )
                 facts_ttl = turtle_from_graph(
                     postprocessed_facts,

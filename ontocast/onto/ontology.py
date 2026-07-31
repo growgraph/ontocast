@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Annotated, Union
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
-from rdflib import DCTERMS, OWL, RDF, RDFS, XSD, Literal, URIRef
+from rdflib import DCTERMS, OWL, RDF, RDFS, SH, XSD, Literal, URIRef
 
 from ontocast.onto.constants import DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI, PROV
 from ontocast.onto.iri_policy import normalize_namespace_iri
@@ -504,17 +504,23 @@ class Ontology(OntologyPropertiesWithLineage):
                         Literal(self.created_at.isoformat(), datatype=XSD.dateTime),
                     )
                 )
-        # Add hash (only if not already present in graph)
+        # Add hash, refreshing any stale value already in the graph.
         # Use dcterms:identifier for hash (with "hash:" prefix to distinguish from other identifiers)
         if self.hash:
-            # Check if hash already exists in graph
-            existing_hash = [
-                str(obj)
+            # A graph read back from the store carries the hash literal written by
+            # whoever wrote it. Leaving a disagreeing value in place would let the
+            # named graph <iri>#<hash> advertise a different hash than its own URI
+            # encodes, breaking the content-addressed catalog invariant.
+            current = Literal(f"hash:{self.hash}")
+            stale = [
+                obj
                 for _, _, obj in g.triples((onto_iri, DCTERMS.identifier, None))
-                if str(obj).startswith("hash:")
+                if str(obj).startswith("hash:") and obj != current
             ]
-            if not existing_hash:
-                g.add((onto_iri, DCTERMS.identifier, Literal(f"hash:{self.hash}")))
+            for obj in stale:
+                g.remove((onto_iri, DCTERMS.identifier, obj))
+            if (onto_iri, DCTERMS.identifier, current) not in g:
+                g.add((onto_iri, DCTERMS.identifier, current))
 
         # Add parent_hashes (multiple parents supported)
         # Use prov:wasDerivedFrom for each parent hash (standard PROV predicate)
@@ -606,11 +612,24 @@ class Ontology(OntologyPropertiesWithLineage):
                 # Create a temporary graph without hash/parent_hash triples for hashing
                 temp_graph = RDFGraph()
 
+                # Prefix declarations are serialization metadata (persisted author
+                # @prefix names), not content: excluding them keeps the hash equal
+                # across stores that do and do not carry declarations.
+                declaration_nodes = (
+                    set(self.graph.objects(onto_iri, SH.declare))
+                    if onto_iri is not None
+                    else set()
+                )
+
                 # Copy all triples except metadata triples - these are metadata, not content
                 # Metadata to exclude: hash, parent_hash, created_at, version, title, description
                 for s, p, o in self.graph:
+                    if s in declaration_nodes:
+                        continue
                     # Skip metadata triples for the ontology IRI
                     if onto_iri and s == onto_iri:
+                        if p == SH.declare:
+                            continue  # Skip prefix declarations
                         if (
                             p == DCTERMS.identifier
                             and isinstance(o, Literal)

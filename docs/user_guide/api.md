@@ -45,6 +45,7 @@ Runs the full document pipeline: convert → chunk → ontology map/reduce → f
 | `summary_max_sentences` | Max sentences per summary when summarization runs (default `5`) |
 | `section_schema_id` | Section label schema (`academic`, `financial`, `legal`, …) |
 | `document_type_hint` | Free-text hint to resolve schema when `section_schema_id` is omitted |
+| `document_metadata` | JSON object (or stringified JSON) of caller-asserted document identity — DOI/ISBN, scheme+value ids, title, and typed entities for `author`/`project`/custom keys. See [Concepts — Document-level identity metadata](concepts.md#document-level-identity-metadata). |
 
 **Examples:**
 
@@ -57,6 +58,11 @@ curl -X POST http://localhost:8999/process \
 # PDF upload
 curl -X POST http://localhost:8999/process \
   -F "file=@document.pdf"
+
+# Document identity metadata with upload (typed author/project entities)
+curl -X POST http://localhost:8999/process \
+  -F "file=@document.pdf" \
+  -F 'document_metadata={"doi":"10.1234/example","author":["Jane Doe"],"project":{"name":"Perovskite Survey","identifier":"PRJ-1"},"identifiers":[{"scheme":"erp:doc","value":"INV-1"}]}'
 
 # Strip provenance from API Turtle output
 curl -X POST "http://localhost:8999/process?strip_provenance=true" \

@@ -1,5 +1,6 @@
 """Regression tests for domain-prefix / namespace hygiene in prompts and graphs."""
 
+import pytest
 from rdflib import OWL, RDF, URIRef
 
 from ontocast.onto.ontology import Ontology
@@ -107,3 +108,96 @@ def test_facts_guidelines_domain_clause_appears_once() -> None:
     )
     assert guidelines.count(clause) == 1
     assert "domain ontology namespace(s) above" in guidelines
+
+
+# --- Author-prefix persistence through the triple-store boundary (sh:declare) ---
+
+_AUTHOR_PREFIX_TTL = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix qudt: <http://qudt.org/schema/qudt/> .
+@prefix myunits: <https://example.org/ontologies/my-units#> .
+
+<https://example.org/ontologies/my-units> a owl:Ontology ;
+    owl:versionInfo "1.0.0" .
+
+myunits:someUnit a owl:NamedIndividual, qudt:Unit ;
+    rdfs:label "some unit"@en .
+
+myunits:otherUnit a owl:NamedIndividual, qudt:Unit ;
+    rdfs:label "other unit"@en .
+"""
+
+_MY_UNITS_NS = "https://example.org/ontologies/my-units#"
+
+
+def _author_ontology() -> Ontology:
+    graph = RDFGraph()
+    graph.parse(data=_AUTHOR_PREFIX_TTL, format="turtle")
+    return Ontology(graph=graph)
+
+
+def test_materialize_prefix_declarations_targets_used_author_bindings() -> None:
+    ontology = _author_ontology()
+    ontology.graph.bind("unused", URIRef("https://example.org/never-used#"))
+
+    added = ontology.graph.materialize_prefix_declarations(URIRef(ontology.iri))
+
+    declared = ontology.graph.declared_prefix_map()
+    assert added == 1
+    assert declared == {_MY_UNITS_NS: "myunits"}
+    # Well-known namespaces (qudt) are recoverable from the canonical tables and
+    # unused bindings advertise nothing — neither is persisted.
+    assert "http://qudt.org/schema/qudt/" not in declared
+    assert "https://example.org/never-used#" not in declared
+
+
+def test_materialize_prefix_declarations_idempotent_and_hash_neutral() -> None:
+    ontology = _author_ontology()
+    hash_before = ontology.hash
+
+    first = ontology.graph.materialize_prefix_declarations(URIRef(ontology.iri))
+    second = ontology.graph.materialize_prefix_declarations(URIRef(ontology.iri))
+
+    assert first == 1
+    assert second == 0
+    rehashed = Ontology(graph=ontology.graph, iri=ontology.iri)
+    assert rehashed.hash == hash_before
+
+
+@pytest.mark.anyio
+async def test_author_prefix_survives_store_round_trip() -> None:
+    from ontocast.tool.triple_manager.in_memory import InMemoryTripleStoreManager
+
+    ontology = _author_ontology()
+    hash_before = ontology.hash
+
+    manager = InMemoryTripleStoreManager()
+    await manager.aserialize(ontology)
+    fetched = (await manager.afetch_ontologies())[0]
+
+    bindings = [p for p, u in fetched.graph.namespaces() if str(u) == _MY_UNITS_NS]
+    assert bindings == ["myunits"]
+    assert fetched.prefix == "myunits"
+    # Declarations are hash-neutral, so identity survives the round trip too
+    # (content is float-free, so no literal-lexical-form drift interferes).
+    assert fetched.hash == hash_before
+
+
+def test_bind_used_prefixes_prefers_declared_over_heuristic() -> None:
+    from ontocast.tool.sparql import _bind_used_prefixes
+
+    namespace = "https://example.org/ontologies/my-units#"
+    graph = RDFGraph()
+    graph.parse(data=_AUTHOR_PREFIX_TTL, format="turtle")
+    snapshot = RDFGraph()
+    for triple in graph.triples((URIRef(f"{namespace}someUnit"), None, None)):
+        snapshot.add(triple)
+
+    # The plainest-name heuristic would pick "mu"; the author declared "my_units".
+    prefix_map = {"mu": namespace, "my_units": namespace}
+    _bind_used_prefixes(snapshot, prefix_map, {namespace: "my_units"})
+
+    bound = {p: str(u) for p, u in snapshot.namespaces()}
+    assert bound.get("my_units") == namespace
+    assert "mu" not in bound

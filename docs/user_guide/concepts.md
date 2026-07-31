@@ -36,6 +36,68 @@ OntoCast uses **pyoxigraph** for RDF 1.2 quoted-triple syntax and separates prov
 
 See [Workflow](workflow.md#4-ontology-reduce-document-level).
 
+## Document-level identity metadata
+
+Chunk provenance links facts → chunk → parent `doc_iri` (content-hash IRI). Callers can also assert **document identity** that is independent of body text via optional `document_metadata`:
+
+| Kind | Examples |
+|------|----------|
+| Bibliographic | `doi`, `isbn`, `pmid`, `arxiv_id`, `handle` (literal `dcterms:identifier`) |
+| Structured ids | `identifiers: [{ "scheme": "erp:doc", "value": "INV-…" }]` (blank-node `dcterms:Identifier`) |
+| Descriptive scalars | `title`, `published` / `issued`, `source_system` |
+| Typed entities | `author` / `creator` / `authors` → `schema:Person`; `project` and any other key → `prov:Entity` (SPARQL-discoverable) |
+| Stable URI | `stable_source_iri` (`owl:sameAs`), `source_uri` / `source_url` (`dcterms:source`) |
+
+Scalar / identifier example:
+
+```turtle
+<doc_iri> a prov:Entity, foaf:Document ;
+    dcterms:title "Annual Report" ;
+    dcterms:identifier "10.1234/example" ;
+    dcterms:identifier [
+        a dcterms:Identifier ;
+        dcterms:type "erp:doc" ;
+        rdf:value "INV-2024-001"
+    ] .
+```
+
+Business-oriented keys mint **typed RDF entities** under the document facts namespace (not literals), so they are discoverable via SPARQL (`?x a schema:Person`):
+
+```json
+{
+  "author": ["Jane Doe"],
+  "project": {"name": "Perovskite Survey", "identifier": "PRJ-2024-07"}
+}
+```
+
+```turtle
+<doc_iri> dcterms:creator <doc_iri/janeDoe> ;
+    dcterms:relation <doc_iri/perovskiteSurvey> .
+
+<doc_iri/janeDoe> a schema:Person ;
+    rdfs:label "Jane Doe" .
+
+<doc_iri/perovskiteSurvey> a prov:Entity ;
+    rdfs:label "Perovskite Survey" ;
+    dcterms:identifier "PRJ-2024-07" .
+```
+
+A bare string is enough (`{"project": "Perovskite Survey"}`). Override the class with a dict: `{"type": "schema:Project"}` (CURIE or absolute IRI). Entities are per-document (no cross-document identity claim).
+
+Rules:
+
+- All fields optional; omit → no document identity triples (except local `--input-path` filename fallback below).
+- Payload values are guaranteed in the graph even when absent from the text.
+- Document identity and minted metadata entities stay on the facts graph under chunk-level `strip_provenance`.
+- `graph_uri_override` remains storage partitioning, not identity.
+
+**Local batch (`ontocast --input-path`):**
+
+- `--document-metadata '{"doi":"…"}'` JSON object, or omit to default `dcterms:title` to the filename (`file:line` for JSONL records).
+- After each successful run, writes a sibling Turtle dump with chunk provenance stripped: `doc.facts.ttl` (or `doc.L3.facts.ttl` for JSONL line 3).
+
+**HTTP:** pass `document_metadata` as a JSON object field (JSON body) or stringified JSON (multipart / query).
+
 ## Structured documents (optional)
 
 For papers and other heading-structured Markdown text, `/process` and `ontocast --input-path` accept optional parameters. When both `target_sections` and `summarize_sections` are omitted, the pipeline stays `convert → chunk → extract` with no extra graph nodes.

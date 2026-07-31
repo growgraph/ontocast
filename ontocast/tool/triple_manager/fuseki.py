@@ -12,7 +12,7 @@ from urllib.parse import quote, urlparse, urlunparse
 
 import httpx
 from pydantic import Field
-from rdflib import Graph
+from rdflib import Graph, URIRef
 
 from ontocast.onto.constants import DEFAULT_DATASET, DEFAULT_ONTOLOGIES_DATASET
 from ontocast.onto.ontology import Ontology
@@ -806,6 +806,10 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         graph_uri = kwargs.get("graph_uri")
 
         if isinstance(o, Ontology):
+            if o.iri and not o.is_null():
+                # Persist author @prefix names as triples before they die at
+                # the store boundary (idempotent, excluded from content hash).
+                o.graph.materialize_prefix_declarations(URIRef(o.iri))
             graph = o.graph
             # Use versioned IRI for storage to enable multiple versions to coexist
             graph_uri = o.versioned_iri

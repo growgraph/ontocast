@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from rdflib import DCTERMS, RDFS, Literal, URIRef
+from rdflib import RDFS, Literal, URIRef
 
 from ontocast.agent.normalize_ontology import normalize_ontology_units
 from ontocast.agent.render_ontology import render_ontology_update
@@ -450,18 +450,24 @@ def make_merge_facts_node(tools: ToolBox):
         merged_context = build_merged_document_ontology_context(state)
         if merged_context is not None and len(merged_context.snapshot.graph) > 0:
             ontology_graph = merged_context.snapshot.graph
+        document_metadata = dict(state.document_metadata)
+        if (
+            state.source_url
+            and "source_url" not in document_metadata
+            and "source_uri" not in document_metadata
+        ):
+            document_metadata["source_url"] = state.source_url
         state.aggregated_facts = tools.aggregator.postprocess_facts_units(
             units=state.facts_units,
             ontology_graph=ontology_graph,
+            doc_iri=state.doc_iri,
+            document_metadata=document_metadata,
+            doc_namespace=state.doc_namespace,
         )
         if len(state.aggregated_facts) == 0:
             logger.warning(
                 "Facts aggregation produced an empty graph from "
                 f"{len(state.facts_units)} successful unit(s)."
-            )
-        if state.source_url and state.doc_namespace:
-            state.aggregated_facts.add(
-                (URIRef(state.doc_namespace), DCTERMS.source, URIRef(state.source_url))
             )
         state.status = Status.SUCCESS
         return state

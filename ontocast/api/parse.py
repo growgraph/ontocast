@@ -172,3 +172,29 @@ def parse_max_visits_param(value: str | int | None, default: int) -> int:
     if parsed < 1:
         raise ValueError("max_visits must be an integer >= 1")
     return parsed
+
+
+def parse_document_metadata_param(
+    value: str | dict[str, object] | None,
+) -> dict[str, object]:
+    """Parse optional ``document_metadata`` from query/form/JSON.
+
+    Accepts a dict (already-parsed JSON) or a JSON object string. Empty /
+    missing values yield ``{}``.
+    """
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return {str(k): v for k, v in value.items() if v is not None}
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("document_metadata must be a JSON object") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("document_metadata must be a JSON object")
+        return {str(k): v for k, v in parsed.items() if v is not None}
+    raise ValueError("document_metadata must be a JSON object")
