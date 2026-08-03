@@ -25,19 +25,19 @@ To start an OntoCast server:
 
 ```bash
 # Backend automatically detected from .env configuration
-ontocast --env-path .env
+ontocast serve
 
-# Process specific file
-ontocast --env-path .env --input-path ./document.pdf
+# Process specific file (local batch)
+ontocast process --input-path ./document.pdf --output-dir ./out
 
 # Process with chunk limit (for testing)
-ontocast --env-path .env --head-chunks 5
+ontocast process --input-path ./document.pdf --head-chunks 5
 
 # Override render/critic retry budget
-ontocast --env-path .env --input-path ./document.pdf --max-visits 2
+ontocast process --input-path ./document.pdf --max-visits 2
 
 # Clean-slate vector reindex (embedding-contract / BM25 schema changes)
-ontocast --env-path .env --wipe-vector-store
+ontocast serve --wipe-vector-store
 ```
 
 - Triple store: Fuseki when `FUSEKI_URI` is set; otherwise in-memory pyoxigraph
@@ -115,20 +115,25 @@ LLM_API_KEY=your-google-api-key
 ### CLI Parameters
 
 ```bash
-# Use custom .env file
-ontocast --env-path /path/to/custom.env
+# Start the API server (config from .env / environment)
+ontocast serve
 
-# Process specific input file
-ontocast --env-path .env --input-path /path/to/document.pdf
+# Process specific input file; dump TTLs under ./out
+ontocast process --input-path /path/to/document.pdf --output-dir ./out
 
 # Process only first 5 chunks (for testing)
-ontocast --env-path .env --head-chunks 5
+ontocast process --input-path /path/to/document.pdf --head-chunks 5
 
 # Override MAX_VISITS for this run
-ontocast --env-path .env --input-path /path/to/document.pdf --max-visits 2
+ontocast process --input-path /path/to/document.pdf --max-visits 2
 
 # Drop and recreate the vector partition before reindex
-ontocast --env-path .env --wipe-vector-store
+ontocast serve --wipe-vector-store
+
+# Separate facts vs ontology dump folders
+ontocast process --input-path ./docs \
+  --facts-output-dir ./out/facts \
+  --ontology-output-dir ./out/ontologies
 ```
 
 **Note:** Paths and directories are configured via the `.env` file.

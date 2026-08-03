@@ -1432,7 +1432,7 @@ class Config(BaseSettings):
     clean: bool = Field(
         default=False,
         description=(
-            "When true, ``--input-path`` batch mode flushes the triple store "
+            "When true, ``ontocast process`` batch mode flushes the triple store "
             "(configured datasets) before loading ontologies."
         ),
     )

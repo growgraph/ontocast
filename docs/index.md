@@ -68,7 +68,7 @@ Optional PDF/DOCX conversion: `pip install "ontocast[doc-processing]"`
 cp .env.example .env
 # Edit LLM_API_KEY and paths
 
-ontocast --env-path .env
+ontocast serve
 
 curl -X POST http://localhost:8999/process -F "file=@document.pdf"
 ```

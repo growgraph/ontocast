@@ -566,14 +566,40 @@ def test_expand_input_to_states_keeps_explicit_metadata(tmp_path) -> None:
 def test_facts_ttl_output_path_and_dump(tmp_path) -> None:
     from rdflib import DCTERMS, Literal
 
-    from ontocast.api.process_helpers import dump_facts_ttl, facts_ttl_output_path
+    from ontocast.api.process_helpers import (
+        dump_facts_ttl,
+        dump_ontology_ttls,
+        facts_ttl_output_path,
+        ontology_ttl_output_path,
+        resolve_batch_output_dirs,
+    )
     from ontocast.onto.constants import PROV
     from ontocast.onto.docling_helpers import plain_text_to_docling_doc
 
     src = tmp_path / "paper.pdf"
     src.write_bytes(b"x")
+    out_dir = tmp_path / "out"
+    facts_dir = tmp_path / "facts"
+    onto_dir = tmp_path / "ontologies"
+
     assert facts_ttl_output_path(src) == tmp_path / "paper.facts.ttl"
     assert facts_ttl_output_path(src, line_number=3) == tmp_path / "paper.L3.facts.ttl"
+    assert facts_ttl_output_path(src, output_dir=out_dir) == out_dir / "paper.facts.ttl"
+    assert (
+        facts_ttl_output_path(src, line_number=3, output_dir=out_dir)
+        == out_dir / "paper.L3.facts.ttl"
+    )
+    assert ontology_ttl_output_path(src) == tmp_path / "paper.ontology.ttl"
+    assert (
+        ontology_ttl_output_path(src, ontology_id="matsci", output_dir=onto_dir)
+        == onto_dir / "paper.matsci.ontology.ttl"
+    )
+    assert resolve_batch_output_dirs(out_dir, None, None) == (out_dir, out_dir)
+    assert resolve_batch_output_dirs(out_dir, facts_dir, onto_dir) == (
+        facts_dir,
+        onto_dir,
+    )
+    assert resolve_batch_output_dirs(None, facts_dir, None) == (facts_dir, None)
 
     state = AgentState(docling_doc=plain_text_to_docling_doc("hello", "doc"))
     state.aggregated_facts = RDFGraph()
@@ -584,3 +610,67 @@ def test_facts_ttl_output_path_and_dump(tmp_path) -> None:
     assert out.exists()
     text = out.read_text(encoding="utf-8")
     assert "paper.pdf" in text
+
+    out2 = dump_facts_ttl(state, src, output_dir=out_dir)
+    assert out2 == out_dir / "paper.facts.ttl"
+
+    onto_graph = RDFGraph()
+    onto_graph.add(
+        (
+            URIRef("https://example.com/onto#Thing"),
+            RDF.type,
+            URIRef("http://www.w3.org/2002/07/owl#Class"),
+        )
+    )
+    ontology = Ontology(graph=onto_graph, iri="https://example.com/onto")
+    state.reduced_ontology_artifacts = [ontology]
+    written = dump_ontology_ttls(state, src, output_dir=onto_dir)
+    assert written == [onto_dir / "paper.ontology.ttl"]
+    assert written[0].exists()
+
+    second = Ontology(
+        graph=onto_graph,
+        iri="https://example.com/other",
+        ontology_id="other",
+    )
+    state.reduced_ontology_artifacts = [ontology, second]
+    written_multi = dump_ontology_ttls(state, src, output_dir=onto_dir)
+    assert {p.name for p in written_multi} == {
+        "paper.onto.ontology.ttl",
+        "paper.other.ontology.ttl",
+    }
+
+
+def test_cli_serve_process_help() -> None:
+    from click.testing import CliRunner
+
+    from ontocast.cli.server import cli
+
+    runner = CliRunner()
+    root = runner.invoke(cli, ["--help"])
+    assert root.exit_code == 0
+    assert "serve" in root.output
+    assert "process" in root.output
+
+    serve_help = runner.invoke(cli, ["serve", "--help"])
+    assert serve_help.exit_code == 0
+    assert "--wipe-vector-store" in serve_help.output
+    assert "--input-path" not in serve_help.output
+
+    process_help = runner.invoke(cli, ["process", "--help"])
+    assert process_help.exit_code == 0
+    assert "--input-path" in process_help.output
+    assert "--output-dir" in process_help.output
+    assert "--facts-output-dir" in process_help.output
+    assert "--ontology-output-dir" in process_help.output
+    assert "dcterms:title" in process_help.output
+
+
+def test_cli_requires_subcommand() -> None:
+    from click.testing import CliRunner
+
+    from ontocast.cli.server import cli
+
+    runner = CliRunner()
+    result = runner.invoke(cli, [])
+    assert result.exit_code != 0

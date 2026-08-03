@@ -7,10 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Vector store initialization bypass during tenancy bootstrapping.** Fixed an ordering issue where `update_tenancy_with_vector_mode` initialized the vector store too early, causing an `EmbeddingContractMismatchError` when launching the server or processing files even when `--wipe-vector-store` was set. The vector store initialization is now properly delayed to the `initialize` method where the `wipe_vector_store` flag is checked and executed first.
+
 ### Added
 
+- **BREAKING: CLI `serve` / `process` subcommands and batch TTL output dirs.** The
+  `ontocast` console script is now a Click group: `ontocast serve` starts the API
+  (was bare `ontocast`); `ontocast process --input-path …` runs local in-process
+  batch extraction (was `ontocast --input-path …`). Batch dumps provenance-stripped
+  `*.facts.ttl` and `*.ontology.ttl` next to each input by default, or under
+  `--output-dir` (shared), with optional `--facts-output-dir` /
+  `--ontology-output-dir` overrides. Filename → `dcterms:title` metadata fallback
+  when `--document-metadata` is omitted is unchanged.
 - **Document-level provenance from payload metadata.** Optional `document_metadata`
-  on `/process`, `/process_unit`, and `ontocast --document-metadata '…'` attaches
+  on `/process`, `/process_unit`, and `ontocast process --document-metadata '…'` attaches
   caller-asserted identity to the parent `doc_iri` as `prov:Entity` / `foaf:Document`.
   Bibliographic ids (`doi`, `isbn`, …) and `identifiers: [{scheme, value}]` remain
   literal / structured `dcterms:identifier` triples. Business-oriented keys
@@ -18,10 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-reserved key → `prov:Entity`) mint typed RDF entities under the document
   facts namespace with `rdfs:label` (optional `type` / `identifier` dict fields)
   so they are SPARQL-discoverable. Document identity survives chunk-level
-  `strip_provenance`. In `--input-path` batch mode, when no metadata is provided
+  `strip_provenance`. In `ontocast process` batch mode, when no metadata is provided
   the filename (or `file:line` for JSONL records) is used as `dcterms:title`.
-  Local file runs also dump sibling `*.facts.ttl` (or `*.L{n}.facts.ttl` for
-  JSONL) with chunk provenance stripped.
 - **Retrieval-score preservation in the induced subgraph.** A retrieved individual now
   keeps its own score when its `rdf:type` classes are promoted into the seed set;
   previously the score was transferred to the type and the individual dropped to

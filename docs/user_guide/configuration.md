@@ -158,7 +158,8 @@ No environment variables. Pass on `POST /process`, multipart form, JSON body, or
 | `document_type_hint` | `--document-type-hint` | Free-text hint to resolve schema when `section_schema_id` is omitted |
 
 ```bash
-ontocast --input-path ./papers/ \
+ontocast process --input-path ./papers/ \
+  --output-dir ./out \
   --target-sections results,methods \
   --summarize-sections results \
   --summary-max-sentences 5
@@ -406,7 +407,7 @@ Search is "search-later": nodes run without search first, and only request exter
 ### Other
 
 ```bash
-CLEAN=false                              # flush triple store before --input-path batch
+CLEAN=false                              # flush triple store before `ontocast process` batch
 LOGGING_LEVEL=info                       # debug | info | warning | error
 ```
 

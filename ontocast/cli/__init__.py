@@ -11,7 +11,9 @@ Preprocess
   - ``split-chunks``: Split documents into chunks
 
 Serve / process
-  - ``ontocast`` (``cli.server:run``): Start the API server or batch-process local files
+  - ``ontocast serve`` (``cli.server:cli``): Start the API server
+  - ``ontocast process --input-path …``: Local in-process batch extraction
+    (optional ``--output-dir`` / ``--facts-output-dir`` / ``--ontology-output-dir``)
 
 API clients
   - ``test-api``: Smoke-test the ``/process`` endpoint

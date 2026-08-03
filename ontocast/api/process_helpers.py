@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import pathlib
+import re
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
@@ -10,6 +11,7 @@ from langgraph.graph.state import CompiledStateGraph
 from ontocast.agent.serialize import serialize as serialize_agent_state
 from ontocast.config import Config, ServerConfig
 from ontocast.onto.enum import OntologyContextMode
+from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
@@ -17,6 +19,8 @@ from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
+
+_SAFE_ONTOLOGY_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def get_supported_input_extensions(tools: ToolBox) -> tuple[str, ...]:
@@ -34,15 +38,75 @@ def turtle_from_graph(graph: RDFGraph, *, strip_provenance: bool) -> str:
     return out.serialize_canonical_turtle()
 
 
+def resolve_batch_output_dirs(
+    output_dir: pathlib.Path | None,
+    facts_output_dir: pathlib.Path | None,
+    ontology_output_dir: pathlib.Path | None,
+) -> tuple[pathlib.Path | None, pathlib.Path | None]:
+    """Resolve facts/ontology dump dirs from shared and override flags.
+
+    Returns:
+        ``(facts_dir, ontology_dir)``. ``None`` means sibling-of-input.
+    """
+    facts_dir = facts_output_dir or output_dir
+    ontology_dir = ontology_output_dir or output_dir
+    return facts_dir, ontology_dir
+
+
+def _ttl_basename(
+    file_path: pathlib.Path,
+    *,
+    line_number: int | None,
+    kind: str,
+    ontology_id: str | None = None,
+) -> str:
+    stem = file_path.stem
+    line_part = f".L{line_number}" if line_number is not None else ""
+    id_part = f".{ontology_id}" if ontology_id else ""
+    return f"{stem}{line_part}{id_part}.{kind}.ttl"
+
+
 def facts_ttl_output_path(
     file_path: pathlib.Path,
     *,
     line_number: int | None = None,
+    output_dir: pathlib.Path | None = None,
 ) -> pathlib.Path:
-    """Return the sibling ``.facts.ttl`` path for a processed input file."""
-    if line_number is not None:
-        return file_path.with_name(f"{file_path.stem}.L{line_number}.facts.ttl")
-    return file_path.with_name(f"{file_path.stem}.facts.ttl")
+    """Return the ``.facts.ttl`` path for a processed input file."""
+    name = _ttl_basename(file_path, line_number=line_number, kind="facts")
+    if output_dir is not None:
+        return output_dir / name
+    return file_path.with_name(name)
+
+
+def safe_ontology_filename_id(ontology: Ontology) -> str | None:
+    """Return a filesystem-safe ontology id fragment, or None if unavailable."""
+    raw = ontology.ontology_id
+    if not raw and ontology.iri:
+        raw = ontology.iri.rstrip("/").rsplit("/", 1)[-1]
+    if not raw:
+        return None
+    cleaned = _SAFE_ONTOLOGY_ID_RE.sub("_", raw).strip("._-")
+    return cleaned or None
+
+
+def ontology_ttl_output_path(
+    file_path: pathlib.Path,
+    *,
+    line_number: int | None = None,
+    output_dir: pathlib.Path | None = None,
+    ontology_id: str | None = None,
+) -> pathlib.Path:
+    """Return the ``.ontology.ttl`` path for a processed input file."""
+    name = _ttl_basename(
+        file_path,
+        line_number=line_number,
+        kind="ontology",
+        ontology_id=ontology_id,
+    )
+    if output_dir is not None:
+        return output_dir / name
+    return file_path.with_name(name)
 
 
 def dump_facts_ttl(
@@ -50,18 +114,69 @@ def dump_facts_ttl(
     file_path: pathlib.Path,
     *,
     line_number: int | None = None,
+    output_dir: pathlib.Path | None = None,
 ) -> pathlib.Path | None:
-    """Write chunk-stripped facts Turtle next to the input file when facts exist."""
+    """Write chunk-stripped facts Turtle when facts exist."""
     if state.aggregated_facts is None or len(state.aggregated_facts) == 0:
         return None
     ttl_content = turtle_from_graph(state.aggregated_facts, strip_provenance=True)
-    output_path = facts_ttl_output_path(file_path, line_number=line_number)
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = facts_ttl_output_path(
+        file_path, line_number=line_number, output_dir=output_dir
+    )
     output_path.write_text(ttl_content, encoding="utf-8")
     logger.info(
         "Dumped facts graph with chunk-level provenance stripped to %s",
         output_path,
     )
     return output_path
+
+
+def _ontology_artifacts_for_dump(state: AgentState) -> list[Ontology]:
+    artifacts = (
+        state.reduced_ontology_artifacts
+        if state.reduced_ontology_artifacts
+        else state.ontology_artifacts
+    )
+    return [
+        artifact
+        for artifact in artifacts
+        if artifact is not None and not artifact.is_null() and len(artifact.graph) > 0
+    ]
+
+
+def dump_ontology_ttls(
+    state: AgentState,
+    file_path: pathlib.Path,
+    *,
+    line_number: int | None = None,
+    output_dir: pathlib.Path | None = None,
+) -> list[pathlib.Path]:
+    """Write provenance-stripped ontology Turtle dumps when artifacts exist."""
+    artifacts = _ontology_artifacts_for_dump(state)
+    if not artifacts:
+        return []
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    include_ids = len(artifacts) > 1
+    written: list[pathlib.Path] = []
+    for artifact in artifacts:
+        ontology_id = safe_ontology_filename_id(artifact) if include_ids else None
+        ttl_content = turtle_from_graph(artifact.graph, strip_provenance=True)
+        output_path = ontology_ttl_output_path(
+            file_path,
+            line_number=line_number,
+            output_dir=output_dir,
+            ontology_id=ontology_id,
+        )
+        output_path.write_text(ttl_content, encoding="utf-8")
+        logger.info(
+            "Dumped ontology graph with provenance stripped to %s",
+            output_path,
+        )
+        written.append(output_path)
+    return written
 
 
 async def flush_triple_configured_scope(tools: ToolBox) -> None:
@@ -233,6 +348,36 @@ async def persist_unit_pipeline_outputs(
     await asyncio.to_thread(serialize_agent_state, state, tools)
 
 
+def _merge_workflow_state_into_agent_state(
+    state: AgentState,
+    workflow_state: AgentState | dict,
+) -> AgentState:
+    """Copy dump-relevant fields from an astream values chunk onto ``state``."""
+    if isinstance(workflow_state, AgentState):
+        return workflow_state
+    if not isinstance(workflow_state, dict):
+        return state
+    facts = workflow_state.get("aggregated_facts")
+    if facts is not None:
+        state.aggregated_facts = facts
+    meta = workflow_state.get("document_metadata")
+    if meta:
+        state.document_metadata = dict(meta)
+    doc_hid = workflow_state.get("doc_hid")
+    if doc_hid:
+        state.doc_hid = doc_hid
+    current_domain = workflow_state.get("current_domain")
+    if current_domain:
+        state.current_domain = current_domain
+    reduced = workflow_state.get("reduced_ontology_artifacts")
+    if reduced is not None:
+        state.reduced_ontology_artifacts = list(reduced)
+    artifacts = workflow_state.get("ontology_artifacts")
+    if artifacts is not None:
+        state.ontology_artifacts = list(artifacts)
+    return state
+
+
 async def process_files_input(
     files: list[pathlib.Path],
     *,
@@ -251,6 +396,9 @@ async def process_files_input(
     section_schema_id: str | None = None,
     max_visits: int | None = None,
     document_metadata: dict[str, object] | None = None,
+    output_dir: pathlib.Path | None = None,
+    facts_output_dir: pathlib.Path | None = None,
+    ontology_output_dir: pathlib.Path | None = None,
 ) -> None:
     resolved_max_visits = (
         max_visits if max_visits is not None else config.server.max_visits_per_node
@@ -259,6 +407,9 @@ async def process_files_input(
         head_chunks,
         config.server,
         max_visits_per_node=resolved_max_visits,
+    )
+    facts_dir, ontology_dir = resolve_batch_output_dirs(
+        output_dir, facts_output_dir, ontology_output_dir
     )
     for file_path in files:
         try:
@@ -297,21 +448,10 @@ async def process_files_input(
                         config=RunnableConfig(recursion_limit=recursion_limit),
                     ):
                         workflow_state = chunk
-                    if isinstance(workflow_state, AgentState):
-                        state = workflow_state
-                    elif isinstance(workflow_state, dict):
-                        facts = workflow_state.get("aggregated_facts")
-                        if facts is not None:
-                            state.aggregated_facts = facts
-                        meta = workflow_state.get("document_metadata")
-                        if meta:
-                            state.document_metadata = dict(meta)
-                        doc_hid = workflow_state.get("doc_hid")
-                        if doc_hid:
-                            state.doc_hid = doc_hid
-                        current_domain = workflow_state.get("current_domain")
-                        if current_domain:
-                            state.current_domain = current_domain
+                    if workflow_state is not None:
+                        state = _merge_workflow_state_into_agent_state(
+                            state, workflow_state
+                        )
                 line_number: int | None = None
                 if file_path.suffix.lower() == ".jsonl" and len(states) > 1:
                     # Recover line from virtual raw_input key "...:N.json"
@@ -324,6 +464,17 @@ async def process_files_input(
                             line_number = state_index + 1
                     else:
                         line_number = state_index + 1
-                dump_facts_ttl(state, file_path, line_number=line_number)
+                dump_facts_ttl(
+                    state,
+                    file_path,
+                    line_number=line_number,
+                    output_dir=facts_dir,
+                )
+                dump_ontology_ttls(
+                    state,
+                    file_path,
+                    line_number=line_number,
+                    output_dir=ontology_dir,
+                )
         except Exception:
             logger.exception("Error processing %s", file_path)

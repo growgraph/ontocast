@@ -86,21 +86,24 @@ A bare string is enough (`{"project": "Perovskite Survey"}`). Override the class
 
 Rules:
 
-- All fields optional; omit → no document identity triples (except local `--input-path` filename fallback below).
+- All fields optional; omit → no document identity triples (except local `ontocast process` filename fallback below).
 - Payload values are guaranteed in the graph even when absent from the text.
 - Document identity and minted metadata entities stay on the facts graph under chunk-level `strip_provenance`.
 - `graph_uri_override` remains storage partitioning, not identity.
 
-**Local batch (`ontocast --input-path`):**
+**Local batch (`ontocast process --input-path`):**
 
 - `--document-metadata '{"doi":"…"}'` JSON object, or omit to default `dcterms:title` to the filename (`file:line` for JSONL records).
-- After each successful run, writes a sibling Turtle dump with chunk provenance stripped: `doc.facts.ttl` (or `doc.L3.facts.ttl` for JSONL line 3).
+- After each successful run, dumps provenance-stripped Turtle:
+  - Facts: `doc.facts.ttl` (or `doc.L3.facts.ttl` for JSONL line 3)
+  - Ontology artifacts: `doc.ontology.ttl` (or `doc.<id>.ontology.ttl` when multiple)
+- Dump destination defaults to siblings of each input. Override with `--output-dir` (shared), or separately with `--facts-output-dir` / `--ontology-output-dir`.
 
 **HTTP:** pass `document_metadata` as a JSON object field (JSON body) or stringified JSON (multipart / query).
 
 ## Structured documents (optional)
 
-For papers and other heading-structured Markdown text, `/process` and `ontocast --input-path` accept optional parameters. When both `target_sections` and `summarize_sections` are omitted, the pipeline stays `convert → chunk → extract` with no extra graph nodes.
+For papers and other heading-structured Markdown text, `/process` and `ontocast process --input-path` accept optional parameters. When both `target_sections` and `summarize_sections` are omitted, the pipeline stays `convert → chunk → extract` with no extra graph nodes.
 
 ### Section tagging and section-aligned chunks
 
