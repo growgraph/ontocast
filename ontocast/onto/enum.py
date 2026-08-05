@@ -111,3 +111,34 @@ class SPARQLOperationType(StrEnum):
     INSERT = "INSERT"
     UPDATE = "UPDATE"
     DELETE = "DELETE"
+
+
+class VectorStoreBackend(StrEnum):
+    """Which vector store implementation backs ontology patch retrieval.
+
+    ``AUTO`` infers the backend from whichever connection setting is populated
+    -- Qdrant if ``QDRANT_URI`` is set, LanceDB if it is enabled, otherwise the
+    dependency-free in-memory store. Naming a backend explicitly makes the
+    choice fail loudly when its configuration is missing.
+    """
+
+    AUTO = "auto"
+    MEMORY = "memory"
+    QDRANT = "qdrant"
+    LANCEDB = "lancedb"
+    NONE = "none"
+
+
+class VectorDistance(StrEnum):
+    """Vector distance metric used when creating a vector collection.
+
+    Values match ``qdrant_client.http.models.Distance`` exactly, so existing
+    ``QDRANT_DISTANCE`` environment values keep working. Declaring it here
+    rather than importing Qdrant's enum keeps the Qdrant SDK off the import
+    path of :mod:`ontocast.config`, which every entry point loads.
+    """
+
+    COSINE = "Cosine"
+    DOT = "Dot"
+    EUCLID = "Euclid"
+    MANHATTAN = "Manhattan"

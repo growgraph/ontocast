@@ -26,12 +26,58 @@ jobs:
         -   name: Import the documented entry points
             run: |
                 /tmp/base-install/bin/python -c "
-                from ontocast.toolbox import ToolBox
-                from ontocast.config import Config
+                from ontocast import (
+                    AgentState, Config, ToolBox, build_agent_graph, create_agent_graph,
+                    make_ontocast_node, ontocast_tool_diagnostics, ontocast_tool_names,
+                    ontocast_tools, run_unit_pipeline, text_in_turtle_out,
+                )
                 print('base install imports OK')
                 "
+        # The tiering is only real if the heavy backends stay unimported. The
+        # `unit` job runs under --all-extras and can never catch a regression
+        # here, so assert it against the actual base install.
+        -   name: No optional backend leaks into the import path
+            run: |
+                /tmp/base-install/bin/python -c "
+                import sys
+                from ontocast import AgentState, Config, ToolBox, ontocast_tools
+                forbidden = [
+                    'qdrant_client', 'grpc', 'fastembed', 'onnxruntime', 'lancedb',
+                    'docling_core', 'docling', 'pandas', 'pyarrow', 'fastapi',
+                    'starlette', 'uvicorn', 'networkx', 'sentence_transformers',
+                    'langchain_openai', 'langchain_anthropic', 'langchain_ollama',
+                    'langchain_google_genai',
+                ]
+                leaked = [name for name in forbidden if name in sys.modules]
+                assert not leaked, f'optional packages imported on a base install: {leaked}'
+                print('import weight OK')
+                "
+        # The console script needs ontocast[server]; on a base install it must
+        # say so rather than dying on a bare ModuleNotFoundError for click.
+        -   name: Console script explains the missing extra
+            run: |
+                if /tmp/base-install/bin/ontocast --help 2>/tmp/err; then
+                    echo "expected a non-zero exit on a base install" && exit 1
+                fi
+                grep -q 'ontocast\[server\]' /tmp/err || { cat /tmp/err; exit 1; }
+
+    # The server and CLI live behind an extra; check they still work with it.
+    server-install:
+        runs-on: ubuntu-latest
+        steps:
+        -   uses: actions/checkout@v5
+        -   name: Install uv
+            uses: astral-sh/setup-uv@v7
+            with:
+                version: "0.10.12"
+        -   name: Build wheel
+            run: uv build --wheel --out-dir dist
+        -   name: Install the wheel with the server extra
+            run: |
+                uv venv --python 3.12 /tmp/server-install
+                VIRTUAL_ENV=/tmp/server-install uv pip install "$(echo dist/*.whl)[server]"
         -   name: Console script resolves
-            run: /tmp/base-install/bin/ontocast --help
+            run: /tmp/server-install/bin/ontocast --help
 
     unit:
         runs-on: ubuntu-latest

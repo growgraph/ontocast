@@ -1,8 +1,10 @@
 from functools import partial
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.constants import END, START
 from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.store.base import BaseStore
 
 from ontocast.agent import chunk_text, convert_document
 from ontocast.agent.serialize import serialize
@@ -26,8 +28,12 @@ from ontocast.stategraph.routing import (
 from ontocast.toolbox import ToolBox
 
 
-def create_agent_graph(tools: ToolBox) -> CompiledStateGraph:
-    """Create the parallel map/reduce agent graph.
+def build_agent_graph(tools: ToolBox) -> StateGraph:
+    """Build the document-level agent graph without compiling it.
+
+    Use this when you need to attach a checkpointer or store yourself, inspect
+    the topology, or splice extra nodes in before compiling. Most callers want
+    :func:`create_agent_graph`, which compiles for you.
 
     Flow: CONVERT -> CHUNK (prepare: segment, tag, filter, size) ->
           [SUMMARIZE_CHUNKS] -> (conditional extraction)
@@ -36,6 +42,12 @@ def create_agent_graph(tools: ToolBox) -> CompiledStateGraph:
     document-level select node). For ``ONTOLOGY_AND_FACTS``, the full ontology
     block completes before the facts map runs; facts use the merged document
     ontology from ``AgentState``.
+
+    Args:
+        tools: The dependency container bound into every node.
+
+    Returns:
+        The uncompiled :class:`~langgraph.graph.StateGraph`.
     """
     workflow = StateGraph(AgentState)
 
@@ -112,4 +124,29 @@ def create_agent_graph(tools: ToolBox) -> CompiledStateGraph:
     )
     workflow.add_edge(WorkflowNode.SERIALIZE, END)
 
-    return workflow.compile()
+    return workflow
+
+
+def create_agent_graph(
+    tools: ToolBox,
+    *,
+    checkpointer: BaseCheckpointSaver | None = None,
+    store: BaseStore | None = None,
+    name: str | None = None,
+) -> CompiledStateGraph:
+    """Create and compile the parallel map/reduce agent graph.
+
+    Args:
+        tools: The dependency container bound into every node.
+        checkpointer: Optional LangGraph checkpointer for durable execution.
+        store: Optional LangGraph store for cross-thread memory.
+        name: Optional graph name. Set this when embedding the graph as a node
+            in a parent graph -- LangGraph shows unnamed subgraphs as
+            ``LangGraph`` in traces.
+
+    Returns:
+        The compiled graph, ready for ``ainvoke`` or ``astream``.
+    """
+    return build_agent_graph(tools).compile(
+        checkpointer=checkpointer, store=store, name=name
+    )

@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 import abc
-import importlib
 import threading
 from typing import Any
 
 import httpx
 from langchain_core.embeddings import Embeddings
-from langchain_ollama.embeddings import OllamaEmbeddings
-from langchain_openai import OpenAIEmbeddings
 from pydantic import Field, PrivateAttr, SecretStr
-from qdrant_client.http import models as qdrant_models
 
 from ontocast.config import EmbeddingConfig, EmbeddingProvider
+from ontocast.onto.sparse import SparseVector
 from ontocast.tool.onto import Tool
+from ontocast.util.optional import require
 
 # Shared across EmbeddingTool instances so parallel ontology reindex does not
 # race HuggingFace SentenceTransformer.encode / remote client state.
@@ -83,13 +81,13 @@ class HuggingFaceEmbeddingTool(EmbeddingTool):
     def _get_embedder(self) -> Any:
         if self._embedder is not None:
             return self._embedder
-        try:
-            sentence_transformers = importlib.import_module("sentence_transformers")
-        except ImportError as error:
-            raise ImportError(
-                "HuggingFace embeddings require sentence-transformers. "
-                "Install it with: uv add sentence-transformers"
-            ) from error
+        sentence_transformers = require(
+            "sentence_transformers",
+            feature=(
+                "Local HuggingFace embeddings. For a light install, set "
+                "EMBEDDING_PROVIDER=openai or =ollama to embed via an API instead"
+            ),
+        )
         self._embedder = sentence_transformers.SentenceTransformer(
             self.config.model_name
         )
@@ -127,6 +125,9 @@ class OpenAIEmbeddingTool(_LangChainEmbeddingTool):
         api_key = (
             SecretStr(self.config.api_key) if self.config.api_key is not None else None
         )
+        OpenAIEmbeddings = require(
+            "langchain_openai", feature="OpenAI embeddings"
+        ).OpenAIEmbeddings
         return OpenAIEmbeddings(
             model=self.config.model_name,
             api_key=api_key,
@@ -138,6 +139,9 @@ class OllamaEmbeddingTool(_LangChainEmbeddingTool):
     """Ollama embeddings using either LangChain or direct API fallback."""
 
     def _build_embedder(self) -> Embeddings:
+        OllamaEmbeddings = require(
+            "langchain_ollama.embeddings", feature="Ollama embeddings"
+        ).OllamaEmbeddings
         return OllamaEmbeddings(
             model=self.config.model_name,
             base_url=self.config.base_url,
@@ -179,27 +183,21 @@ class FastembedBm25SparseTool(Tool):
     def _get_embedder(self) -> Any:
         if self._embedder is not None:
             return self._embedder
-        try:
-            fastembed_mod = importlib.import_module("fastembed")
-        except ImportError as error:
-            raise ImportError(
-                "BM25 sparse embeddings require fastembed. "
-                "Install it with: uv add 'fastembed[all]'"
-            ) from error
+        fastembed_mod = require("fastembed", feature="BM25 sparse embeddings")
         sparse_cls = getattr(fastembed_mod, "SparseTextEmbedding", None)
         if sparse_cls is None:
             raise ImportError("fastembed.SparseTextEmbedding is not available")
         self._embedder = sparse_cls(model_name=self.config.bm25_model_name)
         return self._embedder
 
-    def embed_sparse(self, texts: list[str]) -> list[qdrant_models.SparseVector]:
+    def embed_sparse(self, texts: list[str]) -> list[SparseVector]:
         """Return Qdrant sparse vectors for indexing all given texts (thread-safe)."""
         if not texts:
             return []
         with _SPARSE_EMBED_LOCK:
             return self._embed_sparse_unlocked(texts)
 
-    def embed_sparse_query(self, texts: list[str]) -> list[qdrant_models.SparseVector]:
+    def embed_sparse_query(self, texts: list[str]) -> list[SparseVector]:
         """Return Qdrant sparse vectors for *querying* with all given texts.
 
         BM25 is asymmetric: documents carry term-frequency saturation weights, queries
@@ -214,10 +212,10 @@ class FastembedBm25SparseTool(Tool):
 
     def _embed_sparse_unlocked(
         self, texts: list[str], *, query: bool = False
-    ) -> list[qdrant_models.SparseVector]:
+    ) -> list[SparseVector]:
         model = self._get_embedder()
         encode = model.query_embed if query else model.embed
-        out: list[qdrant_models.SparseVector] = []
+        out: list[SparseVector] = []
         for sparse_emb in encode(texts):
             payload = sparse_emb.as_object()
             indices_raw = payload["indices"]
@@ -225,7 +223,7 @@ class FastembedBm25SparseTool(Tool):
             indices_list = indices_raw.tolist()
             values_list = values_raw.tolist()
             out.append(
-                qdrant_models.SparseVector(
+                SparseVector(
                     indices=[int(i) for i in indices_list],
                     values=[float(v) for v in values_list],
                 )
@@ -234,7 +232,7 @@ class FastembedBm25SparseTool(Tool):
             raise ValueError("BM25 embedder returned mismatched sparse vector count")
         return out
 
-    def embed_one_sparse(self, text: str) -> qdrant_models.SparseVector:
+    def embed_one_sparse(self, text: str) -> SparseVector:
         vectors = self.embed_sparse_query([text])
         if not vectors:
             raise ValueError("BM25 embedder returned no sparse vector for query text")

@@ -35,6 +35,141 @@ project:
   bump it say so explicitly.
 
 
+## [Unreleased]
+
+### Breaking
+
+- **The base install is now the light embeddable core.** `pip install ontocast`
+  no longer ships the HTTP server, the CLI, any LLM provider SDK, the document
+  stack, or a vector-service client. Measured on a clean install, importing the
+  documented entry points previously resolved `qdrant_client`, `grpc`,
+  `fastembed`, `onnxruntime`, `tokenizers`, `PIL`, `docling_core`, `pandas`,
+  `pyarrow`, `scipy`, `sklearn`, `transformers`, `torch` and all four
+  `langchain-*` provider packages — roughly 30 heavy top-level packages, for a
+  caller who wanted to hand an agent a SPARQL tool. New extras: `openai`,
+  `anthropic`, `google`, `ollama`, `server`, `documents`, `qdrant`, `sparse`,
+  `graph`. Existing `doc-processing`, `lancedb`, `semantic-chunking`, `shacl`,
+  `web-search` and `all` are unchanged in intent. **Every install now needs at
+  least one LLM provider extra**; there is no default.
+- **Console scripts require `ontocast[server]`.** On a base install `ontocast`,
+  `plot-graph`, `cmp-states`, `match-graphs`, `pdfs-to-markdown` and `test-api`
+  print the missing extra and exit 1 rather than dying on
+  `ModuleNotFoundError: No module named 'click'`. All six now resolve through
+  `ontocast.cli._entry`.
+- **A base install cannot convert or chunk documents.** `docling-core` moved to
+  the `documents` extra, so `AgentState.docling_doc` is typed `Any` with lazy
+  runtime coercion — pydantic resolves field annotations at class-creation
+  time, so a `TYPE_CHECKING`-only import would have made the model unbuildable.
+  Chunking additionally downloads a HuggingFace tokenizer at runtime. Use
+  `run_unit_pipeline`, which treats its input as a single unit.
+- **`QdrantConfig.distance` is `ontocast.onto.enum.VectorDistance`**, not
+  `qdrant_client.http.models.Distance`. Values are identical (`Cosine`, `Dot`,
+  `Euclid`, `Manhattan`), so `QDRANT_DISTANCE` env values keep working. This
+  one import was responsible for pulling the entire Qdrant/gRPC/ONNX stack onto
+  the import path of `ontocast.config`, which every entry point loads
+  (`docs/PLANNING.md` "vector-store abstraction is nominal").
+- **Sparse embeddings return `ontocast.onto.sparse.SparseVector`**, not
+  Qdrant's. Conversion happens inside the Qdrant backend. This also decouples
+  the LanceDB lane, which previously required `qdrant-client` for a type alone.
+- **`ontocast.tool` and `ontocast.tool.vector_store` export
+  `QdrantVectorStoreManager` / `LanceDBVectorStoreManager` lazily.**
+  `from ontocast.tool import QdrantVectorStoreManager` still works; a
+  `from … import *` no longer eagerly loads both backend SDKs.
+- **`LLMTool.create` and the Fuseki sync wrappers raise inside a running event
+  loop** instead of failing with `asyncio.run() cannot be called from a running
+  event loop`, which named neither the call nor the fix. The new error names
+  the coroutine to await.
+
+### Added
+
+- **`ontocast.integrations.langchain.ontocast_tools`** — wraps OntoCast as
+  LangChain `BaseTool` objects for use in any agent:
+  `create_agent(model, tools=[*ontocast_tools(tools)])`. Thirteen tools
+  covering ontology listing and retrieval, read-only SPARQL, term search,
+  chunking, extraction, graph patching, ontology ingest/delete, document
+  conversion and entity alignment.
+  - Capability-gated: a tool whose backend is missing is omitted rather than
+    returned and made to fail on first call, since an agent will retry a
+    permanently-broken tool. `ontocast_tool_diagnostics` reports why each
+    omission happened — missing extra versus missing configuration — and
+    `ontocast_tool_names` lists the result without building the tools.
+  - Mutating tools (`apply_graph_update`, `ingest_ontology_ttl`,
+    `delete_ontology`) are excluded unless `mutating=True`; `convert_document`
+    and `align_entities` are `include=`-only.
+  - The SPARQL tools are read-only by contract and refuse UPDATE forms.
+    `SPARQLTool.execute_operation` is deliberately **not** wrapped: it runs a
+    free-form SPARQL UPDATE, so exposing it would hand every agent an
+    unguarded `DELETE WHERE { ?s ?p ?o }`. Writes go through the validated,
+    namespace-partitioned, triple-capped `GraphUpdate` path instead.
+  - Results are rendered with the canonical Turtle serializer and truncated
+    with an explicit marker: a silently cut graph parses as a syntax error but
+    reads to a model as a complete one.
+- **`ontocast.integrations.langgraph.make_ontocast_node`** — runs the pipeline
+  as a node inside a third-party `StateGraph`. `AgentState` declares no
+  annotated reducer channels and every node returns the whole state, so
+  LangGraph cannot merge it into a foreign schema; the node takes the
+  input/output mapping explicitly. `text_in_turtle_out()` supplies the mapping
+  for the common text-to-Turtle case. The node compiles once at construction,
+  uses `ainvoke` rather than `astream`, merges the caller's `RunnableConfig`,
+  and defaults the recursion limit from the chunk budget — LangGraph's default
+  of 25 dies on a multi-chunk document.
+- **`InMemoryVectorStoreManager`** — a process-local vector store completing the
+  zero-external-services path, so a base install can run
+  `SELECTED_VECTOR_SEARCH_ONTOLOGY`, the one ontology-context mode that
+  previously required Qdrant or LanceDB. Exact numpy cosine over an
+  L2-normalised matrix, plus a local Okapi BM25 over `minimal_representation`;
+  at ontology scale (thousands of atoms) exact search beats an approximate
+  index and its build cost, and implementing BM25 locally removes the
+  `fastembed`/ONNX dependency the other two lanes carry.
+- **`VectorStoreConfig.backend`** (`VECTOR_STORE_BACKEND`): `auto`, `memory`,
+  `qdrant`, `lancedb`, `none`. `auto` — the default — keeps today's behaviour,
+  resolving to Qdrant or LanceDB when configured and otherwise disabling vector
+  retrieval. The in-memory backend is opt-in: silently giving every
+  unconfigured deployment a vector store would change indexing behaviour and
+  embedding cost unasked.
+- **`Config.in_memory(**overrides)`** — pins the process-local triple and vector
+  stores, leaving every other setting to the environment.
+- **`ToolBox.acreate(config)`** — constructs a ToolBox from inside a running
+  event loop. **`ToolBox.aserialize(state)`** — async-safe form of `serialize`,
+  which reaches a Fuseki write path that wraps a coroutine in `asyncio.run` and
+  only worked because LangGraph offloads sync nodes to a thread.
+  `ToolBox.require_vector_store()` / `require_patch_retriever()` raise directive
+  errors naming the setting to change.
+- **`build_agent_graph(tools)`** returns the uncompiled `StateGraph`;
+  **`create_agent_graph`** gains `checkpointer`, `store` and `name`. Set `name`
+  when embedding as a subgraph — an unnamed one appears as `LangGraph` in
+  traces.
+- **Top-level exports**: `AgentState`, `build_agent_graph`,
+  `create_agent_graph`, `run_unit_pipeline`, `ontocast_tools`,
+  `ontocast_tool_names`, `ontocast_tool_diagnostics`, `make_ontocast_node`,
+  `text_in_turtle_out`. All resolved through the existing lazy `__getattr__`, so
+  `import ontocast` still costs nothing.
+- **`ontocast.util.optional.require`** — imports an optional module or raises
+  naming the extra that provides it. Every deferred import routes through it, so
+  a missing dependency says `pip install "ontocast[documents]"` rather than
+  `No module named 'docling_core'`.
+- **`docs/user_guide/embedding.md`** — install tiers, the tool table, capability
+  gating, the recursion-limit trap, and an explicit list of what a base install
+  cannot do. **`examples/`** — three runnable scripts (tool factory, unit
+  pipeline, LangGraph subgraph), none needing an external service.
+- **`test/test_import_weight.py`** — asserts in a subprocess that no optional
+  backend reaches `sys.modules` after importing the documented entry points.
+  The rest of the suite runs under `uv sync --all-extras`, where every optional
+  package is importable, so nothing else can catch this class of regression. CI
+  gains the same assertion against a real base install, plus a `server-install`
+  job for the console scripts.
+
+### Fixed
+
+- **Dead self-assignment in tenancy application.** `ToolBox` copied
+  `vector_store.store_config.ontology_table` onto
+  `config.tool_config.vector_store.ontology_table`, but
+  `create_vector_store_manager` passes that config object *by reference*, so the
+  two were already the same object. Removed. The by-reference aliasing is also
+  why any future per-tenant isolation must deep-copy `Config`.
+- **`langchain` was a hard dependency with zero imports** anywhere in the
+  package or the test suite. Dropped.
+
 ## [0.5.0]
 
 ### Breaking

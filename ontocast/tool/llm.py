@@ -47,16 +47,14 @@ from contextvars import ContextVar
 from functools import wraps
 from typing import Any, Callable, Type, TypeVar
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages.ai import AIMessage
 from langchain_core.output_parsers import PydanticOutputParser
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_ollama import ChatOllama
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, PrivateAttr, SecretStr
 
 from ontocast.config import LLMConfig, LLMProvider
+from ontocast.util.loop import require_no_running_loop
+from ontocast.util.optional import require
 
 from .cache import Cacher, ToolCacher
 from .onto import Tool
@@ -238,7 +236,12 @@ class LLMTool(Tool):
 
         Returns:
             LLMTool: A new instance of the LLM tool.
+
+        Raises:
+            RuntimeError: If called from inside a running event loop; use
+                :meth:`acreate` there.
         """
+        require_no_running_loop("LLMTool.create", "LLMTool.acreate")
         return asyncio.run(
             cls.acreate(
                 config=config, cache=cache, budget_tracker=budget_tracker, **kwargs
@@ -282,6 +285,9 @@ class LLMTool(Tool):
                     f"Setting temperature to {self.config.temperature} for gpt-5 class "
                     f"model {self.config.model_name}"
                 )
+            ChatOpenAI = require(
+                "langchain_openai", feature="The OpenAI LLM provider"
+            ).ChatOpenAI
             self._llm = ChatOpenAI(
                 model=self.config.model_name,
                 temperature=self.config.temperature,
@@ -302,6 +308,9 @@ class LLMTool(Tool):
                 ollama_kwargs["num_predict"] = self.config.num_predict
             if self.config.num_ctx is not None:
                 ollama_kwargs["num_ctx"] = self.config.num_ctx
+            ChatOllama = require(
+                "langchain_ollama", feature="The Ollama LLM provider"
+            ).ChatOllama
             self._llm = ChatOllama(**ollama_kwargs)
         elif self.config.provider == LLMProvider.ANTHROPIC:
             anthropic_kwargs: dict[str, Any] = {
@@ -312,8 +321,14 @@ class LLMTool(Tool):
                 anthropic_kwargs["anthropic_api_key"] = SecretStr(self.config.api_key)
             if self.config.base_url:
                 anthropic_kwargs["anthropic_api_url"] = self.config.base_url
+            ChatAnthropic = require(
+                "langchain_anthropic", feature="The Anthropic LLM provider"
+            ).ChatAnthropic
             self._llm = ChatAnthropic(**anthropic_kwargs)
         elif self.config.provider == LLMProvider.GOOGLE:
+            ChatGoogleGenerativeAI = require(
+                "langchain_google_genai", feature="The Google LLM provider"
+            ).ChatGoogleGenerativeAI
             self._llm = ChatGoogleGenerativeAI(
                 model=self.config.model_name,
                 temperature=self.config.temperature,

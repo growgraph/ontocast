@@ -13,7 +13,9 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
 
 from ontocast.config import EmbeddingConfig, QdrantConfig, VectorStoreConfig
+from ontocast.onto.enum import VectorDistance
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.sparse import SparseVector
 from ontocast.onto.tenancy import (
     TENANCY_SEP,
     tenant_project_facts_name,
@@ -58,6 +60,26 @@ from ontocast.tool.vector_store.util import (
 logger = logging.getLogger(__name__)
 
 ChannelVector: TypeAlias = list[float] | qdrant_models.SparseVector
+
+
+def _to_qdrant_sparse(vector: SparseVector) -> qdrant_models.SparseVector:
+    """Convert OntoCast's backend-neutral sparse vector to Qdrant's own type.
+
+    Sparse embeddings are produced as :class:`~ontocast.onto.sparse.SparseVector`
+    so that no module outside this one needs the Qdrant SDK on its import path.
+    """
+    return qdrant_models.SparseVector(
+        indices=list(vector.indices), values=list(vector.values)
+    )
+
+
+def _to_qdrant_distance(distance: VectorDistance) -> qdrant_models.Distance:
+    """Convert OntoCast's distance enum to Qdrant's.
+
+    Both are string enums over the same four values, so this is a lookup rather
+    than a mapping table; it exists so the config module need not import Qdrant.
+    """
+    return qdrant_models.Distance(distance.value)
 
 
 class QdrantVectorStoreManager(VectorStoreManager):
@@ -153,7 +175,10 @@ class QdrantVectorStoreManager(VectorStoreManager):
             )
         for i, vec in enumerate(dense_vecs):
             self._require_embedding_vector_length(vec, role=f"Query embedding[{i}]")
-        sparse_vecs = self._require_sparse_embedding_tool().embed_sparse_query(queries)
+        sparse_vecs = [
+            _to_qdrant_sparse(v)
+            for v in self._require_sparse_embedding_tool().embed_sparse_query(queries)
+        ]
         if len(sparse_vecs) != n:
             raise ValueError(
                 "BM25 embedder returned mismatched sparse vectors for queries"
@@ -300,7 +325,7 @@ class QdrantVectorStoreManager(VectorStoreManager):
         dict[str, qdrant_models.VectorParams],
         dict[str, qdrant_models.SparseVectorParams],
     ]:
-        distance = self.qdrant_config.distance
+        distance = _to_qdrant_distance(self.qdrant_config.distance)
         dense_dim = self._dense_dimension()
         vectors: dict[str, qdrant_models.VectorParams] = {
             CORE_VECTOR_NAME: qdrant_models.VectorParams(
@@ -323,7 +348,7 @@ class QdrantVectorStoreManager(VectorStoreManager):
     def _validate_collection_vector_layout(
         self, collection: str, info: qdrant_models.CollectionInfo
     ) -> None:
-        distance = self.qdrant_config.distance
+        distance = _to_qdrant_distance(self.qdrant_config.distance)
         dense_dim = self._dense_dimension()
         params = info.config.params
         raw_vectors = params.vectors
@@ -987,7 +1012,9 @@ class QdrantVectorStoreManager(VectorStoreManager):
         out: list[qdrant_models.SparseVector] = []
         sparse_tool = self._require_sparse_embedding_tool()
         for batch in iter_batches(texts, self.store_config.embedding_batch_size):
-            batch_vectors = sparse_tool.embed_sparse(batch)
+            batch_vectors = [
+                _to_qdrant_sparse(v) for v in sparse_tool.embed_sparse(batch)
+            ]
             if len(batch_vectors) != len(batch):
                 raise ValueError(
                     "BM25 embedder returned mismatched sparse vectors for batch"

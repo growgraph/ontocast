@@ -8,14 +8,19 @@ from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from qdrant_client.http.models import Distance as QdrantDistance
 
 from ontocast.onto.constants import DEFAULT_DOMAIN
-from ontocast.onto.enum import LLMGraphFormat, OntologyContextMode, RenderMode
+from ontocast.onto.enum import (
+    LLMGraphFormat,
+    OntologyContextMode,
+    RenderMode,
+    VectorDistance,
+    VectorStoreBackend,
+)
 from ontocast.onto.tenancy import (
     DEFAULT_PROJECT,
     DEFAULT_TENANT,
@@ -1121,6 +1126,15 @@ class PatchRetrievalConfig(BaseSettings):
 class VectorStoreConfig(BaseSettings):
     """Backend-agnostic vector store retrieval and indexing settings."""
 
+    backend: VectorStoreBackend = Field(
+        default=VectorStoreBackend.AUTO,
+        description=(
+            "Which vector store implementation to use: 'auto' (infer from "
+            "QDRANT_URI / LANCEDB_ENABLED, falling back to the in-memory "
+            "store), 'memory', 'qdrant', 'lancedb', or 'none' to disable "
+            "vector retrieval entirely."
+        ),
+    )
     top_k: int = Field(
         default=20,
         ge=1,
@@ -1581,8 +1595,8 @@ class QdrantConfig(BaseSettings):
             "when unset, the embedding dimension is used."
         ),
     )
-    distance: QdrantDistance = Field(
-        default=QdrantDistance.COSINE,
+    distance: VectorDistance = Field(
+        default=VectorDistance.COSINE,
         description=(
             "Qdrant vector distance when creating collections "
             "(Cosine, Dot, Euclid, Manhattan; same as qdrant_client Distance)."
@@ -1834,6 +1848,35 @@ class Config(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    @classmethod
+    def in_memory(cls, **overrides: Any) -> "Config":
+        """Build a configuration that needs no external services.
+
+        Selects the in-memory triple store (a full pyoxigraph SPARQL engine)
+        and the in-memory vector store, so the whole pipeline runs inside the
+        calling process. This is the recommended starting point for embedding
+        OntoCast in another application:
+
+        ```python
+        tools = await ToolBox.acreate(Config.in_memory())
+        ```
+
+        Environment variables still populate any section not named in
+        ``overrides``; only the store selection is forced.
+
+        Args:
+            **overrides: Fields to set on the returned ``Config``.
+
+        Returns:
+            A configuration bound to the process-local backends.
+        """
+        config = cls(**overrides)
+        config.tool_config.fuseki.uri = None
+        config.tool_config.qdrant.uri = None
+        config.tool_config.lancedb.enabled = False
+        config.tool_config.vector_store.backend = VectorStoreBackend.MEMORY
+        return config
 
     def get_tool_config(self) -> ToolConfig:
         """Get tool configuration.

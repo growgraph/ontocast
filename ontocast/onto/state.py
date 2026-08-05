@@ -3,9 +3,8 @@ from __future__ import annotations
 import os
 import re
 from collections import defaultdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from docling_core.types.doc import DoclingDocument
 from pydantic import ConfigDict, Field, field_validator
 from rdflib import URIRef
 
@@ -34,9 +33,28 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.util.hash import render_text_hash
+from ontocast.util.optional import require
+
+if TYPE_CHECKING:
+    from docling_core.types.doc import DoclingDocument
 
 # Top-level SPARQL update keywords at line start (used to split compound LLM output).
 _TOP_LEVEL_UPDATE_START_RE = re.compile(r"(?m)^(?=(?:INSERT|DELETE|WITH)\b)")
+
+
+def _docling_document_cls() -> Any:
+    """Resolve ``DoclingDocument`` on demand.
+
+    ``docling-core`` ships in the ``documents`` extra: it drags pandas, pyarrow
+    and transformers, none of which the light core needs. Resolving the class
+    lazily keeps ``AgentState`` importable without it, at the cost of typing
+    :attr:`AgentState.docling_doc` as ``Any`` -- pydantic resolves field
+    annotations when the class is created, so a ``TYPE_CHECKING``-only import
+    would make the model itself unbuildable.
+    """
+    return require(
+        "docling_core.types.doc", feature="Parsed Docling documents"
+    ).DoclingDocument
 
 
 class BudgetTracker(BasePydanticModel):
@@ -173,7 +191,10 @@ class AgentState(BasePydanticModel):
         max_chunks: Maximum number of source content units to split and process.
     """
 
-    docling_doc: DoclingDocument | None = Field(
+    # Typed `Any` rather than `DoclingDocument | None` so that importing
+    # AgentState does not require the `documents` extra; the validator below
+    # still enforces the real type whenever docling-core is installed.
+    docling_doc: Any = Field(
         default=None,
         description="Parsed document in native Docling format.",
     )
@@ -666,7 +687,7 @@ class AgentState(BasePydanticModel):
 
         return "\n".join(markdown_parts)
 
-    def set_docling_doc(self, doc: DoclingDocument) -> None:
+    def set_docling_doc(self, doc: "DoclingDocument") -> None:
         """Set the parsed document and generate document hash.
 
         Args:
@@ -677,11 +698,14 @@ class AgentState(BasePydanticModel):
 
     @field_validator("docling_doc", mode="before")
     @classmethod
-    def _coerce_docling_doc(cls, value: object) -> DoclingDocument | None:
-        if value is None or isinstance(value, DoclingDocument):
+    def _coerce_docling_doc(cls, value: object) -> Any:
+        if value is None:
+            return None
+        docling_document = _docling_document_cls()
+        if isinstance(value, docling_document):
             return value
         if isinstance(value, dict):
-            return DoclingDocument.model_validate(value)
+            return docling_document.model_validate(value)
         raise TypeError(f"Expected DoclingDocument or dict, got {type(value).__name__}")
 
     def set_failure(self, stage: FailureStage, reason: str, success_score: float = 0.0):

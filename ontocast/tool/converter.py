@@ -4,18 +4,23 @@ This module provides functionality for converting various document formats
 into structured data that can be processed by the OntoCast system.
 """
 
+from __future__ import annotations
+
 import importlib
 import logging
 import pathlib
 import threading
 from io import BytesIO
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from docling_core.types.doc import DoclingDocument
 from pydantic import Field
 
 from ontocast.config import ConverterConfig
 from ontocast.onto.docling_helpers import apply_text_sanitizers
+from ontocast.util.optional import require
+
+if TYPE_CHECKING:
+    from docling_core.types.doc import DoclingDocument
 
 from .cache import Cacher, ToolCacher
 from .onto import Tool
@@ -196,12 +201,15 @@ class ConverterTool(Tool):
         cached_result = self.cache.get(content_for_cache, config=config_dict)
         if cached_result is not None:
             logger.debug("Cache hit for document conversion")
-            if isinstance(cached_result, DoclingDocument):
+            docling_document = require(
+                "docling_core.types.doc", feature="Document conversion"
+            ).DoclingDocument
+            if isinstance(cached_result, docling_document):
                 return cached_result
             if isinstance(cached_result, str):
-                return DoclingDocument.model_validate_json(cached_result)
+                return docling_document.model_validate_json(cached_result)
             if isinstance(cached_result, dict):
-                return DoclingDocument.model_validate(cached_result)
+                return docling_document.model_validate(cached_result)
 
         # Convert document (with thread-safe access to converter)
         with self._converter_lock:

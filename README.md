@@ -308,17 +308,53 @@ See [CHANGELOG.md](CHANGELOG.md) for release-by-release notes.
 
 ## Examples
 
-### Basic Usage
+### Give an agent ontology tools
+
+`pip install "ontocast[openai]"` — no external services required.
 
 ```python
-from ontocast.config import Config
-from ontocast.toolbox import ToolBox
+from langchain.agents import create_agent
+from ontocast import Config, ToolBox, ontocast_tools
 
-config = Config()
-tools = ToolBox(config)
+tools = await ToolBox.acreate(Config.in_memory())
+await tools.initialize()
 
-# Process documents via tools / workflow graph
+agent = create_agent(
+    model,
+    tools=[*ontocast_tools(tools)],
+    prompt="You are a helpful agent that edits the ontology based on input.",
+)
 ```
+
+Only tools whose backend is installed and configured are returned;
+`ontocast_tool_diagnostics(tools)` explains any omission.
+
+### Extract from text
+
+```python
+from ontocast import AgentState, run_unit_pipeline
+
+state = AgentState(raw_input={"note.txt": text.encode()})
+ontology_result, facts_result = await run_unit_pipeline(state, tools)
+```
+
+### Run the pipeline inside your own LangGraph
+
+```python
+from langgraph.graph import StateGraph
+from ontocast import make_ontocast_node, text_in_turtle_out
+
+to_state, from_state = text_in_turtle_out()
+
+builder = StateGraph(MyState)
+builder.add_node(
+    "extract",
+    make_ontocast_node(tools, to_agent_state=to_state, from_agent_state=from_state),
+)
+```
+
+See [Embedding OntoCast](https://growgraph.github.io/ontocast/user_guide/embedding/)
+for the tool table, install tiers, and what a base install cannot do.
 
 ### Server Usage
 

@@ -6,10 +6,6 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from docling_core.transforms.chunker.doc_chunk import DocMeta
-from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
-from docling_core.types.doc import DoclingDocument
-
 from ontocast.config import ChunkConfig
 from ontocast.config.section_labels import (
     SectionLabelSchema,
@@ -32,8 +28,12 @@ from ontocast.tool.chunk.segment import (
     starts_with_section_heading,
 )
 from ontocast.tool.chunk.sizing import merge_small_parts
+from ontocast.util.optional import require
 
 if TYPE_CHECKING:
+    from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
+    from docling_core.types.doc import DoclingDocument
+
     from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -104,7 +104,10 @@ def _hybrid_segments(
         headings: list[str] | None = None
         doc_item_refs: tuple[str, ...] = ()
         meta = chunk.meta
-        if isinstance(meta, DocMeta):
+        doc_meta_cls = require(
+            "docling_core.transforms.chunker.doc_chunk", feature="Hybrid chunking"
+        ).DocMeta
+        if isinstance(meta, doc_meta_cls):
             headings = meta.headings
             doc_item_refs = tuple(item.self_ref for item in meta.doc_items)
         segments.append(
@@ -298,7 +301,9 @@ async def prepare_content_units(
 ) -> list[PreparedChunk]:
     """Segment, tag, filter, and size document text into prepared chunks."""
     document_text = document_text_for_section_tagging(docling_doc)
-    hybrid_chunker = HybridChunker()
+    hybrid_chunker = require(
+        "docling_core.transforms.chunker.hybrid_chunker", feature="Hybrid chunking"
+    ).HybridChunker()
 
     if not options.needs_section_prepare():
         return _simple_prepare(

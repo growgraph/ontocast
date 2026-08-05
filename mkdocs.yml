@@ -62,6 +62,7 @@ nav:
     -   Workflow: user_guide/workflow.md
     -   Configuration System: user_guide/configuration.md
     -   API Endpoints: user_guide/api.md
+    -   Embedding OntoCast: user_guide/embedding.md
     -   Tenancy: user_guide/tenancy.md
     -   Ontology Context: user_guide/ontology_context.md
     -   Entity Disambiguation: user_guide/aggregation.md

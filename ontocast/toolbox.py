@@ -110,7 +110,34 @@ class ToolBox:
         config: Configuration object containing all necessary settings.
     """
 
-    def __init__(self, config: Config):
+    @classmethod
+    async def acreate(cls, config: Config) -> "ToolBox":
+        """Construct a ToolBox from inside a running event loop.
+
+        Equivalent to ``ToolBox(config)``, except that LLM provider setup is
+        awaited rather than driven through :func:`asyncio.run` -- which is
+        illegal in a loop and is what makes the plain constructor unusable from
+        async code. Embedders should prefer this, and pair it with
+        ``async with`` so backend connections are released:
+
+        ```python
+        async with await ToolBox.acreate(config) as tools:
+            await tools.initialize()
+        ```
+
+        Args:
+            config: Fully resolved configuration.
+
+        Returns:
+            A ready ToolBox. Call :meth:`initialize` to sync ontologies and
+            prepare backend schema.
+        """
+        llm = await LLMTool.acreate(
+            config=config.get_tool_config().llm_config, cache=Cacher(config=config)
+        )
+        return cls(config, llm=llm)
+
+    def __init__(self, config: Config, *, llm: LLMTool | None = None):
         # Store the config for later use
         self.config = config
 
@@ -120,9 +147,11 @@ class ToolBox:
         # Create shared cache instance with config
         self.shared_cache = Cacher(config=config)
 
-        # LLM configuration - pass the entire LLM config to the tool
+        # LLM configuration - pass the entire LLM config to the tool.
+        # `acreate` passes a pre-built tool because LLMTool.create() drives
+        # provider setup through asyncio.run(), which raises inside a loop.
         self.llm_provider = tool_config.llm_config.provider
-        self.llm: LLMTool = LLMTool.create(
+        self.llm: LLMTool = llm or LLMTool.create(
             config=tool_config.llm_config, cache=self.shared_cache
         )
         self.search_provider = None
@@ -205,17 +234,21 @@ class ToolBox:
         self.vector_store_ready: bool = False
         self.vector_store_last_error: Exception | None = None
 
-        if tool_config.qdrant.uri or tool_config.lancedb.enabled:
-            sparse_embedding = FastembedBm25SparseTool(config=tool_config.embedding)
-            vector_store = create_vector_store_manager(
-                tool_config,
-                embedding=self.embedding_tool,
-                sparse_embedding=sparse_embedding,
-            )
-            if vector_store is None:
-                raise RuntimeError(
-                    "vector store backend is configured but manager was not created"
-                )
+        # The factory owns backend selection, including resolving AUTO and
+        # returning None when the backend is explicitly disabled. Only the
+        # external backends need a BM25 tool; the in-memory store scores BM25
+        # itself rather than pulling fastembed.
+        needs_sparse = tool_config.qdrant.uri or tool_config.lancedb.enabled
+        vector_store = create_vector_store_manager(
+            tool_config,
+            embedding=self.embedding_tool,
+            sparse_embedding=(
+                FastembedBm25SparseTool(config=tool_config.embedding)
+                if needs_sparse
+                else None
+            ),
+        )
+        if vector_store is not None:
             self.vector_store = vector_store
             self.patch_retriever = OntologyPatchRetriever(
                 vector_store=vector_store,
@@ -272,6 +305,25 @@ class ToolBox:
         if manager is None:
             raise RuntimeError("Triple store backend is not configured")
         return manager
+
+    def require_vector_store(self) -> VectorStoreManager:
+        """Return the configured vector store or raise a directive error."""
+        if self.vector_store is None:
+            raise RuntimeError(
+                "No vector store is configured. Set VECTOR_STORE_BACKEND=memory "
+                "for the dependency-free in-memory store, or configure "
+                "QDRANT_URI / LANCEDB_ENABLED."
+            )
+        return self.vector_store
+
+    def require_patch_retriever(self) -> OntologyPatchRetriever:
+        """Return the ontology patch retriever or raise a directive error."""
+        if self.patch_retriever is None:
+            raise RuntimeError(
+                "Ontology patch retrieval needs a vector store. Set "
+                "VECTOR_STORE_BACKEND=memory for the dependency-free backend."
+            )
+        return self.patch_retriever
 
     async def aclose(self) -> None:
         """Release every backend connection this ToolBox opened.
@@ -448,6 +500,30 @@ class ToolBox:
                 self.triple_store_manager.serialize(ontology)
             if state.render_facts:
                 self.triple_store_manager.serialize(
+                    state.aggregated_facts,
+                    graph_uri=state.graph_uri,
+                )
+
+    async def aserialize(self, state: AgentState) -> None:
+        """Async-safe form of :meth:`serialize`.
+
+        :meth:`serialize` reaches a Fuseki write path that wraps a coroutine in
+        :func:`asyncio.run`. That is fine on the graph path, where LangGraph
+        offloads sync nodes to a worker thread, and raises for an embedder
+        calling it directly from a coroutine.
+        """
+        ontologies_to_serialize = document_ontology_access(
+            state
+        ).serialization_targets()
+        for ontology in ontologies_to_serialize:
+            if ontology and ontology.hash:
+                self.ontology_manager.add_ontology(ontology)
+
+        if self.triple_store_manager is not None:
+            for ontology in ontologies_to_serialize:
+                await self.triple_store_manager.aserialize(ontology)
+            if state.render_facts:
+                await self.triple_store_manager.aserialize(
                     state.aggregated_facts,
                     graph_uri=state.graph_uri,
                 )

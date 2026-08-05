@@ -20,7 +20,7 @@ def test_setup_openai() -> None:
         model_name=OpenAIModel.GPT4_O_MINI,
         api_key="test-key",
     )
-    with patch("ontocast.tool.llm.ChatOpenAI") as mock_cls:
+    with patch("langchain_openai.ChatOpenAI") as mock_cls:
         mock_cls.return_value = MagicMock()
         tool = LLMTool(config=config)
         asyncio.run(tool.setup())
@@ -36,7 +36,7 @@ def test_setup_anthropic() -> None:
         api_key="test-key",
         base_url="https://api.example.com",
     )
-    with patch("ontocast.tool.llm.ChatAnthropic") as mock_cls:
+    with patch("langchain_anthropic.ChatAnthropic") as mock_cls:
         mock_cls.return_value = MagicMock()
         tool = LLMTool(config=config)
         asyncio.run(tool.setup())
@@ -52,7 +52,7 @@ def test_setup_google() -> None:
         model_name=GeminiModel.GEMINI_2_0_FLASH,
         api_key="test-key",
     )
-    with patch("ontocast.tool.llm.ChatGoogleGenerativeAI") as mock_cls:
+    with patch("langchain_google_genai.ChatGoogleGenerativeAI") as mock_cls:
         mock_cls.return_value = MagicMock()
         tool = LLMTool(config=config)
         asyncio.run(tool.setup())
@@ -68,7 +68,7 @@ def test_setup_ollama() -> None:
         model_name=OllamaModel.LLAMA3_1,
         base_url="http://localhost:11434",
     )
-    with patch("ontocast.tool.llm.ChatOllama") as mock_cls:
+    with patch("langchain_ollama.ChatOllama") as mock_cls:
         mock_cls.return_value = MagicMock()
         tool = LLMTool(config=config)
         asyncio.run(tool.setup())

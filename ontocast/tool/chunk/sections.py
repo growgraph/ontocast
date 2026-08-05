@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from docling_core.types.doc import DoclingDocument
+from typing import TYPE_CHECKING
 
 from ontocast.config.section_labels import (
     SectionLabelSchema,
@@ -11,6 +11,9 @@ from ontocast.config.section_labels import (
     match_heading_line,
 )
 from ontocast.onto.section_models import SectionSpan
+
+if TYPE_CHECKING:
+    from docling_core.types.doc import DoclingDocument
 
 ABSTRACT_FRONT_MATTER_MAX_CHARS = 6000
 _IMRAD_START_LABELS = frozenset({"introduction", "related_work", "background"})

@@ -27,37 +27,26 @@ classifiers = [
 # could select a floor that cannot import the package. Floors now name the
 # major actually developed and tested against; ceilings stop the next major
 # from breaking every install silently.
+#
+# Tiering: the base install is the light embeddable core -- the extraction
+# pipeline, the in-memory triple and vector stores, and the ontology tooling.
+# Anything that pulls a service SDK, a document-processing stack, or an ML
+# runtime lives behind an extra, because `from ontocast import ontocast_tools`
+# must not install a gRPC stack and an ONNX runtime. `test/test_import_weight.py`
+# is the regression guard; see docs/user_guide/embedding.md for the tiers.
 dependencies = [
-  "click>=8.1.8,<9",
-  "docling-core[chunking]>=2.57.0,<3",
-  "fastapi>=0.115.0,<1",
-  "fastembed>=0.8.0,<1",
   "httpx>=0.27.0,<1",
-  "langchain-anthropic>=1.0,<2",
   "langchain-core>=1.0,<2",
-  "langchain-google-genai>=4.0,<5",
-  "langchain-ollama>=1.0,<2",
-  "langchain-openai>=1.0,<2",
-  "langchain>=1.0,<2",
   "langgraph>=1.0,<2",
-  "networkx>=3.0,<4",
   "numpy>=1.26,<3",
   "oxrdflib>=0.5.0,<0.6",
   "pydantic-settings>=2.5.0,<3",
   "pydantic>=2.11.9,<3",
   "pyld>=3.0,<4",
   "pyoxigraph>=0.5.8,<0.6",
-  "python-dotenv>=1.0.0,<2",
-  "python-multipart>=0.0.22,<1",
   "pyyaml>=6.0.2,<7",
-  "qdrant-client>=1.15.1,<2",
   "rdflib>=7.1.4,<8",
-  "requests>=2.32.3,<3",
-  "rich>=14.0.0,<16",
-  "scikit-learn>=1.4,<2",
-  "starlette>=1.0,<2",
-  "suthing>=0.4.1,<1",
-  "uvicorn[standard]>=0.32.0,<1"
+  "scikit-learn>=1.4,<2"
 ]
 description = "Agentic ontology and knowledge graph co-generation"
 keywords = [
@@ -82,7 +71,10 @@ version = "0.5.0"
 # graphviz headers, so including it here made `pip install ontocast[all]` fail
 # on a stock machine. Install it explicitly when you need `plot-graph`.
 all = [
-  "ontocast[doc-processing,lancedb,semantic-chunking,shacl,web-search]"
+  "ontocast[anthropic,doc-processing,documents,google,graph,lancedb,ollama,openai,qdrant,semantic-chunking,server,shacl,sparse,web-search]"
+]
+anthropic = [
+  "langchain-anthropic>=1.0,<2"
 ]
 dev = [
   "anyio>=4.4.0",
@@ -93,9 +85,14 @@ dev = [
   "ruff>=0.11.2",
   "ty>=0.0.14"
 ]
+# `documents` is the docling-core layer needed to *represent* and chunk a
+# converted document; `doc-processing` adds the converters that produce one
+# from a PDF. Chunking additionally downloads a HuggingFace tokenizer at
+# runtime, so a base install cannot chunk -- use run_unit_pipeline instead.
 doc-processing = [
   "docling>=2.57.0",
   "easyocr>=1.7.2",
+  "ontocast[documents]",
   "sentence-transformers>=5.1.1"
 ]
 docs = [
@@ -109,11 +106,31 @@ docs = [
   "mkdocstrings-python>=2.0.3",
   "mkdocstrings[python]>=0.29.1"
 ]
+documents = [
+  "docling-core[chunking]>=2.57.0,<3"
+]
+google = [
+  "langchain-google-genai>=4.0,<5"
+]
+graph = [
+  "networkx>=3.0,<4"
+]
 lancedb = [
-  "lancedb>=0.33.0"
+  "lancedb>=0.33.0",
+  "ontocast[sparse]"
+]
+ollama = [
+  "langchain-ollama>=1.0,<2"
+]
+openai = [
+  "langchain-openai>=1.0,<2"
 ]
 plot = [
   "pygraphviz>=1.14"
+]
+qdrant = [
+  "ontocast[sparse]",
+  "qdrant-client>=1.15.1,<2"
 ]
 semantic-chunking = [
   "hdbscan>=0.8.41",
@@ -121,19 +138,40 @@ semantic-chunking = [
   "torch>=2.0",
   "umap-learn>=0.5.12"
 ]
+# FastAPI app, uvicorn, and everything the `ontocast` console script needs.
+server = [
+  "click>=8.1.8,<9",
+  "fastapi>=0.115.0,<1",
+  "ontocast[documents]",
+  "python-dotenv>=1.0.0,<2",
+  "python-multipart>=0.0.22,<1",
+  "requests>=2.32.3,<3",
+  "rich>=14.0.0,<16",
+  "starlette>=1.0,<2",
+  "suthing>=0.4.1,<1",
+  "uvicorn[standard]>=0.32.0,<1"
+]
 shacl = [
   "pyshacl>=0.30.0"
+]
+# BM25 sparse embeddings. Pulled in by both vector backends; on its own it is
+# only useful if you wire FastembedBm25SparseTool yourself.
+sparse = [
+  "fastembed>=0.8.0,<1"
 ]
 web-search = [
   "duckduckgo-search>=8.1.1"
 ]
 
+# All scripts route through ontocast.cli._entry, which turns a missing
+# `ontocast[server]` install into a directive message instead of a bare
+# ModuleNotFoundError for click.
 [project.scripts]
-cmp-states = "ontocast.cli.cmp_states:main"
-match-graphs = "ontocast.cli.match_graphs:main"
-ontocast = "ontocast.cli.server:cli"
-pdfs-to-markdown = "ontocast.cli.pdfs_to_markdown:main"
-plot-graph = "ontocast.cli.plot_graph:main"
+cmp-states = "ontocast.cli._entry:cmp_states"
+match-graphs = "ontocast.cli._entry:match_graphs"
+ontocast = "ontocast.cli._entry:ontocast"
+pdfs-to-markdown = "ontocast.cli._entry:pdfs_to_markdown"
+plot-graph = "ontocast.cli._entry:plot_graph"
 test-api = "ontocast.cli.test_api:main"
 
 [project.urls]
