@@ -1,0 +1,838 @@
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix doc: <https://growgraph.dev/doc/193f3f88d207/> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix matsci: <https://growgraph.dev/ontologies/matsci#> .
+@prefix matsciunits: <https://growgraph.dev/ontologies/matsci-units#> .
+@prefix obs: <https://growgraph.dev/ontologies/observation#> .
+@prefix perovmat: <https://growgraph.dev/ontologies/perovskitemat#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix qqval: <https://growgraph.dev/ontologies/qqval#> .
+@prefix qudt: <http://qudt.org/schema/qudt/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix schema: <https://schema.org/> .
+@prefix sosa: <http://www.w3.org/ns/sosa/> .
+@prefix unit: <http://qudt.org/vocab/unit/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<https://growgraph.dev/doc/193f3f88d207> a prov:Entity,
+        foaf:Document ;
+    dcterms:title "acs.jpclett.9b00178-MT-aging.pdf"^^xsd:string .
+
+doc:arLaser a matsci:Laser ;
+    rdfs:label "Ar laser"@en ;
+    rdfs:comment "excitation source, λ exc = 488 nm"@en .
+
+doc:bandgap_obs_1 a sosa:Observation ;
+    rdfs:label "bandgap observation of bulk CsPbBr3"@en ;
+    sosa:hasFeatureOfInterest doc:bulk_cspbbr3_sample ;
+    sosa:observedProperty matsci:bandgapProperty ;
+    obs:hasQuantityResult doc:bandgap_val_1 .
+
+doc:c4h9nh3_2pbi4_perovskite a perovmat:HybridOrganicInorganicPerovskite ;
+    rdfs:label "(C4H9NH3)2PbI4 2D layered perovskite"@en ;
+    perovmat:hasASiteComponent doc:butylammoniumASite ;
+    perovmat:hasBSiteComponent doc:pbComponent ;
+    perovmat:hasXSiteComponent doc:iodideXSite .
+
+doc:cdseSlDimObs a obs:Observation ;
+    rdfs:label "Observation of CdSe superlattice dimensionality"@en ;
+    sosa:hasFeatureOfInterest doc:cdseSuperlattice ;
+    sosa:hasResult doc:threeDimensionalResult ;
+    sosa:observedProperty matsci:dimensionalityProperty .
+
+doc:colloidalSynthesisLeadHalidePerovskite a matsci:SynthesisProcess ;
+    rdfs:label "Colloidal Synthesis of Lead-Based Halide Perovskite Nanocrystals"@en ;
+    matsci:hasInputMaterial doc:benzoylHalides ;
+    matsci:hasOutputMaterial doc:leadHalidePerovskiteMaterial .
+
+doc:confocalPlMicroscopy a obs:Observation ;
+    rdfs:label "confocal PL microscopy"@en ;
+    prov:wasAssociatedWith doc:micheleOneto ;
+    sosa:hasFeatureOfInterest doc:slSample ;
+    sosa:usedProcedure matsci:Photoluminescence .
+
+doc:crystal_growth_cspbbr3 a matsci:SynthesisProcess ;
+    rdfs:label "Crystal Growth of CsPbBr3"@en ;
+    matsci:hasOutputMaterial doc:cspbbr3 .
+
+doc:diethyleneGlycol a matsci:Material ;
+    rdfs:label "diethylene glycol"@en .
+
+doc:goldBromideTriggeredAssembly a matsci:AssemblyProcess ;
+    rdfs:label "Gold-bromide complex triggered assembly of CsPbBr3 nanocubes"@en .
+
+doc:guilhermeAlmeida a schema:Person ;
+    rdfs:label "Guilherme Almeida"@en .
+
+doc:hrsemEdsAnalysis a obs:Observation ;
+    rdfs:label "HRSEM/EDS analysis"@en ;
+    prov:wasAssociatedWith doc:simoneLauciello ;
+    sosa:hasFeatureOfInterest doc:slSample .
+
+doc:hybrid_organic_inorganic_lead_bromide_perovskite_3d a perovmat:HybridOrganicInorganicPerovskite,
+        perovmat:ThreeDimensionalPerovskite ;
+    rdfs:label "3D Hybrid Organic-Inorganic Lead Bromide Perovskite"@en ;
+    perovmat:hasBSiteComponent doc:pbComponent ;
+    perovmat:hasXSiteComponent perovmat:Br .
+
+doc:isopropanol a matsci:Material ;
+    rdfs:label "2-propanol"@en .
+
+doc:letterJpcl a schema:ScholarlyArticle ;
+    rdfs:label "The formation of cesium lead bromide (CsPbBr 3 ) nanocrystal superlattices (NC SLs) is accompanied by a red shift in the NC photoluminescence (PL)"@en ;
+    schema:author doc:dmitryBaranov,
+        doc:liberatoManna,
+        doc:muhammadImran,
+        doc:stefanoToso ;
+    schema:name "The formation of cesium lead bromide (CsPbBr 3 ) nanocrystal superlattices (NC SLs) is accompanied by a red shift in the NC photoluminescence (PL)"@en .
+
+doc:methanol a matsci:Material ;
+    rdfs:label "methanol"@en .
+
+doc:ncFilmSample a matsci:BulkSample ;
+    rdfs:label "CsPbBr3 NC film"@en ;
+    rdfs:comment "drop-casted from a hexane solution"@en ;
+    prov:wasGeneratedBy doc:filmDropCasting ;
+    matsci:describesMaterial doc:cspbbr3 .
+
+doc:obsCleanRedShift a sosa:Observation ;
+    rdfs:label "PL red shift observation of aggregated SL"^^xsd:string,
+        "PL red shift observation of clean SL"^^xsd:string,
+        "Observation of PL red shift from self-absorption"@en,
+        "Observation of PL red shift in SLs with impurities"@en,
+        "Observation of PL red shift in clean SLs"@en,
+        "Observation of overall PL red shift"@en ;
+    sosa:hasFeatureOfInterest doc:cdseSuperlattice,
+        doc:individualCleanSl,
+        doc:sample_sl3 ;
+    sosa:hasResult doc:redShiftCleanVal,
+        doc:valCleanRedShift ;
+    sosa:observedProperty matsci:stokesShiftProperty .
+
+doc:obsFwhmNc a sosa:Observation ;
+    rdfs:label "SL dimension observation"^^xsd:string,
+        "PL FWHM observation of NCs in solution"@en,
+        "PL FWHM observation of SL aggregates"@en,
+        "PL peak wavelength observation of NCs in solution"@en,
+        "PL peak wavelength observation of SL aggregates"@en ;
+    sosa:hasFeatureOfInterest doc:ncSampleInSolution,
+        doc:sample_sl3,
+        doc:superlatticeSample ;
+    sosa:hasResult doc:slDimensionVal ;
+    sosa:observedProperty matsci:fwhmProperty,
+        matsci:plPeakWavelengthProperty ;
+    obs:hasQuantityResult doc:sizeLowerBound,
+        doc:val_fwhm_3 .
+
+doc:obsShapeFlat a obs:Observation ;
+    rdfs:label "Shape observation of CsPbBr3 NC batch"^^xsd:string,
+        "Observation of CsPbBr3 nanocrystal shape"@en,
+        "Observation of shape for biggest CsPbBr3 NC SLs"@en,
+        "Observation of shape for flat SLs"@en,
+        "Observation of supraparticle shape"@en ;
+    sosa:featureOfInterest doc:cdseSuperlattice,
+        doc:ncSlSampleFlat ;
+    sosa:hasFeatureOfInterest doc:cuboidalSupraparticles,
+        doc:ncBatch ;
+    sosa:hasResult doc:cube,
+        doc:cubicShapeResult,
+        doc:cuboidalShapeResult,
+        doc:shapeFlat,
+        doc:shapeIsotropic ;
+    sosa:observedProperty matsci:shapeProperty .
+
+doc:obs_edge_length_3 a obs:QuantitativeObservation ;
+    rdfs:label "Observation of edge length for biggest CsPbBr3 NC SLs"@en ;
+    sosa:featureOfInterest doc:cdseSuperlattice ;
+    sosa:hasResult doc:val_edge_length_3 ;
+    sosa:observedProperty matsci:edgeLengthProperty .
+
+doc:obs_fwhm_1 a obs:QuantitativeObservation ;
+    rdfs:label "FWHM observation of CsPbBr3 NC batch"^^xsd:string,
+        "PL peak wavelength observation of CsPbBr3 NC batch"^^xsd:string,
+        "Observation of PL red shift in aggregates of SLs"@en,
+        "Observation of PL red shift in isolated SLs"@en,
+        "Observation of impurity contribution to PL red shift"@en,
+        "Observation of self-absorption contribution to PL red shift in macroscopic sample"@en,
+        "PL FWHM observation of NC solution in ODE"@en,
+        "PL FWHM observation of drop-casted NC film"@en,
+        "PL FWHM observation of isolated NC SLs"@en,
+        "PL peak energy observation of NC solution in ODE"@en,
+        "PL peak energy observation of drop-casted NC film"@en,
+        "PL peak energy observation of isolated NC SLs"@en,
+        "PL peak wavelength observation at n = 1"@en,
+        "PL peak wavelength observation at n = 30"@en,
+        "PL peak wavelength observation of NC solution in ODE"@en,
+        "PL peak wavelength observation of drop-casted NC film"@en,
+        "PL peak wavelength observation of isolated NC SLs"@en,
+        "PL peak wavelength of SL1"@en,
+        "PL peak wavelength of SL2"@en,
+        "PL peak wavelength of SL3"@en,
+        "PL peak wavelength of individual SL"@en,
+        "PL red shift energy observation of individual SLs"@en,
+        "PL red shift observation of SL3"@en,
+        "PL red shift wavelength observation of individual SLs"@en ;
+    sosa:featureOfInterest doc:cdseSuperlattice,
+        doc:sl_sample_1 ;
+    sosa:hasFeatureOfInterest doc:bulklike_cspbbr3_impurity,
+        doc:cdseSuperlattice,
+        doc:ncBatch,
+        doc:sample_1,
+        doc:sample_2,
+        doc:sample_3,
+        doc:sample_sl3 ;
+    sosa:hasResult doc:sizeLowerBound,
+        doc:valPlPeakIndividual,
+        doc:val_fwhm_3 ;
+    sosa:observedProperty matsci:fwhmProperty,
+        matsci:plPeakWavelengthProperty,
+        matsci:stokesShiftProperty ;
+    obs:hasQuantityResult doc:fwhm_value_1,
+        doc:pl_peak_value_1,
+        doc:range_energy_1,
+        doc:range_fwhm_1,
+        doc:range_rs_wl_1,
+        doc:range_wl_1,
+        doc:val_energy_3,
+        doc:val_fwhm_3,
+        doc:val_rs_sl3,
+        doc:val_wl_3 ;
+    obs:usesMethod matsci:Photoluminescence .
+
+doc:obs_lateral_dimension_1 a obs:QuantitativeObservation ;
+    rdfs:label "Observation of lateral dimensions for NC SLs (<1 μm)"@en,
+        "Observation of lateral dimensions for NC SLs (>1 μm)"@en ;
+    sosa:featureOfInterest doc:cdseSuperlattice ;
+    sosa:hasResult doc:slDimensionVal ;
+    sosa:observedProperty matsci:edgeLengthProperty .
+
+doc:perovskiteQdSuperlattice a matsci:NanocrystalSuperlatticeSample ;
+    rdfs:label "lead halide perovskite quantum dot superlattices"^^xsd:string ;
+    matsci:hasConstituentNanocrystalSample doc:perovskiteQd .
+
+doc:perovskiteSingleCrystals a perovmat:Perovskite ;
+    rdfs:label "perovskite single crystals"@en ;
+    matsci:hasPhotonPropagationEffect doc:photonReabsorption .
+
+doc:pressureInducedPhaseTransformation a obs:Process ;
+    rdfs:label "Pressure-induced phase transformation"@en .
+
+doc:quantumDotPolymerComposites a matsci:Material ;
+    rdfs:label "quantum dot-polymer composites"@en ;
+    matsci:hasPhotonPropagationEffect doc:photonReabsorption .
+
+doc:quintenAkkerman a schema:Person ;
+    rdfs:label "Quinten Akkerman"@en .
+
+doc:sT a schema:Person ;
+    rdfs:label "S.T."@en ;
+    schema:funding doc:grantTransNano .
+
+doc:slowSolventEvaporationProcess a matsci:AssemblyMethod ;
+    rdfs:label "slow solvent evaporation"@en .
+
+doc:suspensionSample a matsci:NanocrystalSuperlatticeSample ;
+    rdfs:label "liquid suspension of NC SLs"@en ;
+    prov:wasGeneratedBy doc:suspensionPreparation .
+
+doc:thisWork a schema:ScholarlyArticle ;
+    rdfs:label "Solvent diffusion growth of CsPbBr3 NC SLs on liquid perfluorodecalin"^^xsd:string ;
+    schema:dateAccepted "2019-01-24"^^xsd:date ;
+    schema:datePublished "2019-01-24"^^xsd:date ;
+    schema:dateReceived "2019-01-21"^^xsd:date .
+
+doc:transformationProcess a obs:Process ;
+    rdfs:label "transformation of Cs4PbX6 into CsPbX3 nanocrystals"@en ;
+    matsci:hasInputMaterial doc:cspbx3_nanocrystals ;
+    matsci:hasOutputMaterial doc:cspbx3_nanocrystals .
+
+doc:bandgap_val_1 a qudt:QuantityValue ;
+    rdfs:label "2.25 eV"@en ;
+    qudt:numericValue "2.25"^^xsd:decimal ;
+    qudt:unit unit:EV .
+
+doc:benzoylHalides a matsci:Material ;
+    rdfs:label "benzoyl halides"@en .
+
+doc:brComponent a perovmat:HalideComponent ;
+    rdfs:label "bromide"@en .
+
+doc:bulk_cspbbr3_sample a matsci:BulkSample ;
+    rdfs:label "bulk CsPbBr3 sample"@en .
+
+doc:butylammoniumASite a perovmat:OrganicASiteComponent ;
+    rdfs:label "butylammonium"@en .
+
+doc:cdseMaterial a matsci:Material ;
+    rdfs:label "CdSe"@en .
+
+doc:cdseNcSample a matsci:NanocrystalSample ;
+    rdfs:label "CdSe Nanoparticles"@en ;
+    sosa:isSampleOf doc:cdseMaterial .
+
+doc:cesiumOleate a matsci:Material ;
+    rdfs:label "cesium oleate"^^xsd:string .
+
+doc:cube a matsci:ShapeValue ;
+    rdfs:label "cube"^^xsd:string .
+
+doc:cubicShape a matsci:ShapeValue ;
+    rdfs:label "cubic"@en .
+
+doc:cubicShapeResult a obs:QualitativeResult ;
+    rdfs:label "cubic"@en .
+
+doc:cuboidalShapeResult a obs:QualitativeResult ;
+    rdfs:label "cuboidal"@en .
+
+doc:cuboidalSupraparticles a matsci:NanocrystalSuperlatticeSample ;
+    rdfs:label "Cuboidal supraparticles"@en ;
+    matsci:hasConstituentNanocrystalSample doc:ncBatch .
+
+doc:didodecylamine a matsci:Material ;
+    rdfs:label "didodecylamine"@en .
+
+doc:dielectricChanges a obs:Phenomenon ;
+    rdfs:label "changes in the dielectric environment"@en .
+
+doc:dmitryBaranov a schema:Person ;
+    rdfs:label "Dmitry Baranov"@en ;
+    schema:affiliation doc:iit ;
+    schema:funding doc:grantRetain ;
+    schema:identifier "0000-0001-6439-8132"^^xsd:string .
+
+doc:edgeLengthVal a qudt:QuantityValue ;
+    rdfs:label "8.5 ± 0.5 nm"@en ;
+    qudt:numericValue "8.5"^^xsd:decimal ;
+    qudt:unit unit:NanoM ;
+    qqval:numericUncertainty "0.5"^^xsd:decimal .
+
+doc:edge_length_1 a qqval:QualifiedQuantityValue ;
+    rdfs:label "6.8 ± 1 nm"^^xsd:string ;
+    qudt:numericValue "6.8"^^xsd:decimal ;
+    qudt:unit unit:NanoM ;
+    qqval:numericUncertainty "1"^^xsd:decimal .
+
+doc:electronMicroscopyFacilityAtIit a schema:Organization ;
+    rdfs:label "Electron Microscopy Facility at IIT"@en ;
+    schema:parentOrganization doc:iit .
+
+doc:electronicCoupling a obs:Phenomenon ;
+    rdfs:label "electronic coupling between the NCs"@en .
+
+doc:electronicallyCoupledSupercrystalStructure a matsci:AssemblyStructure ;
+    rdfs:label "electronically coupled supercrystals"^^xsd:string .
+
+doc:energeticDisorder a obs:Phenomenon ;
+    rdfs:label "energetic disorder"@en .
+
+doc:filmDropCasting a matsci:SynthesisProcess ;
+    rdfs:label "drop-casting"@en ;
+    matsci:usedSolvent matsci:hexane .
+
+doc:fwhm_value_1 a qqval:QualifiedQuantityValue ;
+    rdfs:label "<80 meV"^^xsd:string ;
+    qudt:unit matsciunits:millielectronvolt ;
+    qqval:numericUpperBound "80"^^xsd:decimal .
+
+doc:grantRetain a schema:Grant ;
+    rdfs:label "RETAIN"@en ;
+    schema:funder doc:europeanUnion ;
+    schema:identifier "794560"^^xsd:string .
+
+doc:impurity_sl1 a matsci:Impurity ;
+    rdfs:label "impurities in SL1"@en,
+        "impurities in SL2"@en,
+        "impurities in SL3"@en .
+
+doc:individualCleanSl a matsci:SuperlatticeSample ;
+    rdfs:label "individual clean SL"^^xsd:string ;
+    matsci:describesMaterial doc:cspbbr3 ;
+    matsci:exhibitsPhenomenon doc:redShiftIsolated .
+
+doc:interfacialSelfAssembly a matsci:SelfAssemblyTechnique ;
+    rdfs:label "interfacial self-assembly"^^xsd:string,
+        "self-assembly technique"^^xsd:string,
+        "developed self-assembly method"@en,
+        "self-assembly on perfluorodecalin surface"@en .
+
+doc:interparticleEnergyTransfer a obs:Phenomenon ;
+    rdfs:label "interparticle energy transfer"@en .
+
+doc:leadBromide a matsci:Material ;
+    rdfs:label "lead bromide"^^xsd:string .
+
+doc:liberatoManna a schema:Person ;
+    rdfs:label "Liberato Manna"@en ;
+    schema:affiliation doc:iit ;
+    schema:funding doc:grantTransNano ;
+    schema:identifier "0000-0003-4386-7985"^^xsd:string .
+
+doc:micheleOneto a schema:Person ;
+    rdfs:label "Michele Oneto"@en ;
+    schema:affiliation doc:nikonCenterAtIit .
+
+doc:muhammadImran a schema:Person ;
+    rdfs:label "Muhammad Imran"@en ;
+    schema:affiliation doc:iit ;
+    schema:funding doc:grantTransNano ;
+    schema:identifier "0000-0001-7091-6514"^^xsd:string .
+
+doc:nanocrystalAssemblyStructure a matsci:AssemblyStructure ;
+    rdfs:label "close-packed nanocrystal assemblies"^^xsd:string .
+
+doc:nanocubeMorphology a matsci:NanocrystalMorphologyState ;
+    rdfs:label "CsPbBr3 nanocrystal morphology"^^xsd:string,
+        "cube-shaped morphology"^^xsd:string,
+        "nanocube morphology"^^xsd:string,
+        "morphology of CsPbBr3 NCs"@en ;
+    matsci:hasEdgeLength doc:edgeLengthVal,
+        doc:edge_length_1 ;
+    matsci:hasShapeValue doc:cubicShape .
+
+doc:ncSlSampleFlat a matsci:NanocrystalSuperlatticeSample ;
+    rdfs:label "flat SLs grown by slow solvent evaporation"@en ;
+    matsci:describesMaterial doc:cspbbr3 .
+
+doc:nikonCenterAtIit a schema:Organization ;
+    rdfs:label "Nikon Center at IIT"@en ;
+    schema:parentOrganization doc:iit .
+
+doc:odeDispersionProcess a matsci:SynthesisProcess ;
+    rdfs:label "dispersion in ODE"@en ;
+    matsci:usedSolvent matsci:octadecene .
+
+doc:perovskiteQd a matsci:NanocrystalSample ;
+    rdfs:label "lead halide perovskite quantum dot"^^xsd:string ;
+    sosa:isSampleOf doc:leadHalidePerovskiteMaterial .
+
+doc:pfdAntisolventRole a matsci:AntisolventRole ;
+    rdfs:label "antisolvent role"^^xsd:string .
+
+doc:plBroadening a obs:Phenomenon ;
+    rdfs:label "PL broadening"@en .
+
+doc:pl_peak_value_1 a qqval:QualifiedQuantityValue ;
+    rdfs:label "509 - 512 nm"^^xsd:string ;
+    qudt:unit unit:NanoM ;
+    qqval:numericUpperBound "512"^^xsd:decimal .
+
+doc:quantumConfinementInstance a matsci:QuantumConfinement ;
+    rdfs:label "quantum confinement"^^xsd:string .
+
+doc:range_energy_1 a qqval:QuantityRange ;
+    rdfs:label "10 - 15 meV"@en,
+        "2.422 - 2.426 eV"@en ;
+    qqval:hasLowerBound doc:val_fwhm_3 ;
+    qqval:hasUpperBound doc:val_fwhm_3 .
+
+doc:range_fwhm_1 a qqval:QuantityRange ;
+    rdfs:label "84 - 85 meV"@en ;
+    qqval:hasLowerBound doc:val_fwhm_3 ;
+    qqval:hasUpperBound doc:val_fwhm_3 .
+
+doc:range_rs_wl_1 a qqval:QuantityRange ;
+    rdfs:label "2 - 3 nm"@en ;
+    qqval:hasLowerBound doc:sizeLowerBound ;
+    qqval:hasUpperBound doc:sizeLowerBound .
+
+doc:range_wl_1 a qqval:QuantityRange ;
+    rdfs:label "511 - 512 nm"@en ;
+    qqval:hasLowerBound doc:sizeLowerBound ;
+    qqval:hasUpperBound doc:sizeLowerBound .
+
+doc:rectangularShape a matsci:ShapeValue ;
+    rdfs:label "rectangular"@en .
+
+doc:redShiftCleanVal a qudt:QuantityValue ;
+    rdfs:label "PL red shift value of aggregated SL"^^xsd:string,
+        "PL red shift value of clean SL"^^xsd:string ;
+    qudt:numericValue "96"^^xsd:decimal ;
+    qudt:unit matsciunits:millielectronvolt ;
+    rdfs:comment "10-15 meV"^^xsd:string,
+        "up to ~96 meV"^^xsd:string .
+
+doc:rhombicShape a matsci:ShapeValue ;
+    rdfs:label "rhombic"@en .
+
+doc:sample_1 a matsci:SuperlatticeSample ;
+    rdfs:label "oleic acid dispersion of superlattices"@en ;
+    matsci:derivedFromSample doc:ncBatch ;
+    matsci:isCompatibleWithSolvent matsci:oleicAcid .
+
+doc:sample_2 a matsci:BulkSample ;
+    rdfs:label "drop-casted film from hexane solution of nanocrystals"@en ;
+    matsci:derivedFromSample doc:ncBatch .
+
+doc:sample_3 a matsci:NanocrystalSample ;
+    rdfs:label "nanocrystal solution in octadecene"@en ;
+    matsci:derivedFromSample doc:ncBatch ;
+    matsci:isCompatibleWithSolvent matsci:octadecene .
+
+doc:selfAssemblyGrowth a matsci:AssemblyProcess,
+        matsci:SynthesisProcess ;
+    rdfs:label "CsPbBr3 nanocrystal self-assembly"^^xsd:string,
+        "self-assembly of colloidal nanocrystals"^^xsd:string,
+        "spontaneous self-assembly of perovskite nanocrystals"^^xsd:string,
+        "self-assembly growth of NC SLs"@en,
+        "self-assembly of CsPbBr3 NCs on tilted Si wafer"@en,
+        "self-assembly process"@en ;
+    prov:generated doc:cdseSuperlattice ;
+    prov:used doc:ncBatch ;
+    matsci:producesAssemblyStructure doc:electronicallyCoupledSupercrystalStructure,
+        doc:nanocrystalAssemblyStructure ;
+    matsci:usedAntisolvent doc:pfd ;
+    matsci:usesSelfAssemblyTechnique doc:interfacialSelfAssembly,
+        doc:slowSolventEvaporation ;
+    obs:hasInputEntity doc:ncSampleInSolution ;
+    obs:hasOutputEntity doc:superlatticeSample .
+
+doc:shapeFlat a matsci:ShapeValue ;
+    rdfs:label "flat"@en .
+
+doc:shapeIsotropic a matsci:ShapeValue ;
+    rdfs:label "isotropic"@en .
+
+doc:simoneLauciello a schema:Person ;
+    rdfs:label "Simone Lauciello"@en ;
+    schema:affiliation doc:electronMicroscopyFacilityAtIit .
+
+doc:simpleCubicPacking a matsci:PackingMotifValue ;
+    rdfs:label "simple cubic packing"^^xsd:string .
+
+doc:sizeRange a qqval:QuantityRange ;
+    rdfs:label "50 - 300 nm"@en ;
+    qqval:lowerBound doc:sizeLowerBound ;
+    qqval:upperBound doc:sizeUpperBound .
+
+doc:sizeUpperBound a qudt:QuantityValue ;
+    rdfs:label "300 nm"@en ;
+    qudt:numericValue "300"^^xsd:decimal ;
+    qudt:unit unit:NanoM .
+
+doc:sl_morphology_1 a matsci:AssemblyStructure ;
+    rdfs:label "CsPbBr3 superlattice morphology"^^xsd:string ;
+    matsci:hasPackingMotifValue doc:simpleCubicPacking .
+
+doc:sl_sample_1 a matsci:NanocrystalSuperlatticeSample ;
+    rdfs:label "SL1"@en,
+        "SL2"@en,
+        "SL3"@en ;
+    matsci:describesMaterial doc:cspbbr3 ;
+    matsci:hasLuminescentImpurity doc:impurity_sl1 .
+
+doc:solventDiffusionGrowth a matsci:SynthesisProcess ;
+    rdfs:label "solvent diffusion growth process"^^xsd:string ;
+    matsci:usedAntisolvent doc:pfd ;
+    matsci:usedSolvent matsci:hexane ;
+    obs:usesMethod doc:solventDiffusionTechnique .
+
+doc:solventDiffusionTechnique a matsci:SelfAssemblyTechnique ;
+    rdfs:label "solvent diffusion technique"^^xsd:string .
+
+doc:stefanoToso a schema:Person ;
+    rdfs:label "Stefano Toso"@en .
+
+doc:submicrometerCrystalsMorphology a matsci:NanocrystalMorphologyState ;
+    rdfs:label "morphology of submicrometer crystals"@en ;
+    matsci:hasShapeValue doc:rectangularShape,
+        doc:rhombicShape ;
+    matsci:hasValueRange doc:sizeRange .
+
+doc:superfluorescenceEmission a matsci:Superfluorescence ;
+    rdfs:label "superfluorescence"@en .
+
+doc:suspensionPreparation a matsci:SynthesisProcess ;
+    rdfs:label "suspension preparation"@en ;
+    matsci:usedLigand matsci:oleicAcid .
+
+doc:synthesis_cspbbr3_ncs a obs:Process ;
+    rdfs:label "synthesis of CsPbBr3 NCs"@en ;
+    matsci:hasOutputMaterial doc:cspbbr3 .
+
+doc:synthesis_process_1 a matsci:SynthesisProcess ;
+    rdfs:label "CsPbBr3 NC synthesis"^^xsd:string,
+        "CsPbBr3 nanocrystal synthesis"^^xsd:string,
+        "benzoyl bromide route synthesis of CsPbBr3 NCs"@en ;
+    prov:generated doc:ncBatch ;
+    matsci:hasInputMaterial doc:cesiumOleate,
+        doc:leadBromide ;
+    matsci:usedLigand doc:didodecylamine,
+        matsci:oleicAcid,
+        matsci:oleylamine ;
+    matsci:usedSolvent matsci:octadecene ;
+    obs:hasOutputEntity doc:ncSampleInSolution ;
+    obs:usesMethod matsci:hot_injection .
+
+doc:threeDimensionalResult a obs:QualitativeResult ;
+    rdfs:label "three-dimensional"@en .
+
+doc:valCleanRedShift a qqval:QualifiedQuantityValue ;
+    rdfs:label "at least 50 meV"@en,
+        "∼10-15 meV"@en,
+        "∼30 meV"@en,
+        "∼96 meV"@en ;
+    qudt:numericValue "30"^^xsd:decimal,
+        "96"^^xsd:decimal ;
+    qudt:unit matsciunits:millielectronvolt ;
+    qqval:epistemicQualifier "∼"@en,
+        "≥"@en ;
+    qqval:numericLowerBound "10"^^xsd:decimal,
+        "50"^^xsd:decimal ;
+    qqval:numericUpperBound "15"^^xsd:decimal .
+
+doc:valPlPeakIndividual a qudt:QuantityValue ;
+    rdfs:label "511 nm"@en ;
+    qudt:numericValue "511"^^xsd:decimal ;
+    qudt:unit unit:NanoM .
+
+doc:val_edge_length_3 a qqval:QualifiedQuantityValue ;
+    rdfs:label "edge length ~70 μm"@en ;
+    qudt:numericValue "70"^^xsd:decimal ;
+    qudt:unit unit:MicroM ;
+    rdfs:comment "up to ~70 μm"@en ;
+    qqval:epistemicQualifier qqval:Approximate .
+
+doc:val_energy_3 a qudt:QuantityValue ;
+    rdfs:label "2.436 eV"@en ;
+    qudt:numericValue "2.436"^^xsd:decimal ;
+    qudt:unit unit:EV .
+
+doc:val_rs_sl3 a qqval:QualifiedQuantityValue ;
+    rdfs:label "up to 40 meV"@en ;
+    qudt:unit matsciunits:millielectronvolt ;
+    qqval:numericUpperBound "40"^^xsd:decimal .
+
+doc:val_wl_3 a qudt:QuantityValue ;
+    rdfs:label "509 nm"@en ;
+    qudt:numericValue "509"^^xsd:decimal ;
+    qudt:unit unit:NanoM .
+
+doc:bulklike_cspbbr3_impurity a matsci:Impurity ;
+    rdfs:label "bulklike CsPbBr3 crystals"@en,
+        "bulklike CsPbBr3 particles"@en .
+
+doc:europeanUnion a schema:Organization ;
+    rdfs:label "European Union"@en .
+
+doc:iodideXSite a perovmat:HalideComponent ;
+    rdfs:label "iodide"@en .
+
+doc:leadHalidePerovskiteMaterial a perovmat:LeadHalidePerovskite ;
+    rdfs:label "lead halide perovskite"^^xsd:string,
+        "lead-based halide perovskite nanocrystals"@en ;
+    perovmat:hasBSiteComponent doc:pbComponent .
+
+doc:pfd a matsci:Material ;
+    rdfs:label "perfluorodecalin"^^xsd:string,
+        "perfluorodecalin"@en ;
+    matsci:hasRole doc:pfdAntisolventRole .
+
+doc:photonReabsorption a matsci:PhotonPropagationEffect ;
+    rdfs:label "photon re-emission"@en,
+        "photon reabsorption"@en .
+
+doc:selfAbsorptionEffect a matsci:PhotonPropagationEffect ;
+    rdfs:label "self-absorption photon propagation effect"^^xsd:string,
+        "photon propagation effect"@en,
+        "self-absorption"@en .
+
+doc:slDimensionVal a qudt:QuantityValue ;
+    rdfs:label "SL dimension value"^^xsd:string,
+        "lateral dimension < 1 μm"@en,
+        "lateral dimension > 1 μm"@en ;
+    qudt:numericValue "1"^^xsd:decimal,
+        "70"^^xsd:decimal ;
+    qudt:unit unit:MicroM ;
+    rdfs:comment "up to ~70 μm"^^xsd:string,
+        "greater than 1 μm"@en,
+        "less than 1 μm"@en .
+
+doc:slSample a matsci:NanocrystalSuperlatticeSample ;
+    rdfs:label "SLs"@en ;
+    prov:wasGeneratedBy doc:slowSolventEvaporation .
+
+doc:slowSolventEvaporation a matsci:SelfAssemblyTechnique,
+        obs:Process ;
+    rdfs:label "slow solvent evaporation"@en .
+
+doc:submicrometerCrystals a matsci:LuminescentImpurity ;
+    rdfs:label "CsPbBr3 submicrometer particles"^^xsd:string,
+        "submicrometer crystals of CsPbBr3"@en ;
+    rdfs:comment "identified as submicrometer particles of CsPbBr3"^^xsd:string ;
+    matsci:hasNanocrystalMorphology doc:submicrometerCrystalsMorphology .
+
+doc:superlatticeSample a matsci:SuperlatticeSample ;
+    rdfs:label "CsPbBr3 NC SLs"^^xsd:string,
+        "CsPbBr3 nanocrystal superlattice sample"@en ;
+    matsci:describesMaterial doc:cspbbr3,
+        doc:cspbx3_nanocrystals ;
+    matsci:isCompatibleWithSolvent matsci:toluene ;
+    obs:producedByProcess doc:solventDiffusionGrowth .
+
+doc:grantTransNano a schema:Grant ;
+    rdfs:label "TRANS-NANO"@en ;
+    schema:funder doc:europeanUnion ;
+    schema:identifier "614897"^^xsd:string .
+
+doc:ncSampleInSolution a sosa:Sample ;
+    rdfs:label "CsPbBr3 NCs in toluene solution"@en ;
+    matsci:describesMaterial doc:cspbx3_nanocrystals .
+
+doc:redShiftIsolated a matsci:RedShift ;
+    rdfs:label "PL red shift of aggregated SL"^^xsd:string,
+        "PL red shift of clean SL"^^xsd:string,
+        "PL red shift"@en,
+        "PL red shift from NCs in solution to SL aggregates"@en,
+        "PL red shift in aggregates of SLs"@en,
+        "PL red shift in isolated SLs"@en ;
+    rdfs:comment "PL red shift from 512 to 517 nm (~24 meV)"@en ;
+    obs:hasQuantityResult doc:val_fwhm_3 .
+
+doc:sample_sl3 a matsci:SuperlatticeSample ;
+    rdfs:label "aggregated NC SL sample"^^xsd:string,
+        "superlattice sample SL3"@en,
+        "superlattice sample area 1 (thin, well-isolated SLs)"@en,
+        "superlattice sample area 2 (thicker, closely packed SLs)"@en,
+        "superlattice sample area 3 (bunched SLs)"@en ;
+    matsci:derivedFromSample doc:ncBatch ;
+    matsci:describesMaterial doc:cspbbr3 ;
+    matsci:exhibitsPhenomenon doc:redShiftIsolated ;
+    matsci:hasLuminescentImpurity doc:submicrometerCrystals ;
+    matsci:hasPhotonPropagationEffect doc:selfAbsorptionEffect .
+
+doc:cspbx3_nanocrystals a matsci:Material,
+        perovmat:Perovskite ;
+    rdfs:label "Cs4PbX6 nanocrystals"@en,
+        "CsPbBr3 nanocrystals"@en,
+        "CsPbX3 nanocrystals"@en ;
+    perovmat:hasASiteComponent perovmat:Cs ;
+    perovmat:hasBSiteComponent doc:pbComponent ;
+    perovmat:hasXSiteComponent doc:brComponent,
+        doc:iodideXSite,
+        perovmat:Br,
+        perovmat:Cl .
+
+doc:pbComponent a perovmat:BSiteComponent ;
+    rdfs:label "lead"@en .
+
+doc:iit a schema:Organization ;
+    rdfs:label "IIT"@en .
+
+doc:sizeLowerBound a qudt:QuantityValue ;
+    rdfs:label "2 nm"@en,
+        "3 nm"@en,
+        "50 nm"@en,
+        "511 nm"@en,
+        "512 nm"@en,
+        "514 nm"@en,
+        "515 nm"@en,
+        "517 nm"@en,
+        "523 nm"@en ;
+    qudt:numericValue "2"^^xsd:decimal,
+        "3"^^xsd:decimal,
+        "50"^^xsd:decimal,
+        "511"^^xsd:decimal,
+        "512"^^xsd:decimal,
+        "514"^^xsd:decimal,
+        "515"^^xsd:decimal,
+        "517"^^xsd:decimal,
+        "523"^^xsd:decimal ;
+    qudt:unit unit:NanoM .
+
+doc:cdseSuperlattice a matsci:NanocrystalSuperlatticeSample ;
+    rdfs:label "CsPbBr3 nanocrystal superlattice"^^xsd:string,
+        "Binary nanocrystal superlattice membranes"@en,
+        "CsPbBr3 NC SL sample"@en,
+        "CsPbBr3 NC SLs with bulklike impurities"@en,
+        "CsPbBr3 nanocrystal superlattice"@en,
+        "CsPbBr3 nanocrystal superlattice sample"@en,
+        "CsPbBr3 nanocube superlattice"@en,
+        "NC SLs (<1 μm)"@en,
+        "NC SLs (>1 μm)"@en,
+        "Three-Dimensional CdSe Superlattice"@en,
+        "aggregates of CsPbBr3 nanocrystal superlattices"@en,
+        "biggest CsPbBr3 NC SLs"@en,
+        "individual CsPbBr3 SL"@en,
+        "isolated CsPbBr3 nanocrystal superlattice with clean surfaces"@en,
+        "isolated and clean CsPbBr3 NC SLs"@en,
+        "macroscopic CsPbBr3 nanocrystal superlattice sample"@en ;
+    prov:wasGeneratedBy doc:selfAssemblyGrowth ;
+    matsci:describesMaterial doc:cspbbr3 ;
+    matsci:exhibitsPhenomenon doc:dielectricChanges,
+        doc:electronicCoupling,
+        doc:energeticDisorder,
+        doc:interparticleEnergyTransfer,
+        doc:plBroadening,
+        doc:redShiftIsolated,
+        doc:superfluorescenceEmission ;
+    matsci:hasConstituentNanocrystalSample doc:cdseNcSample,
+        doc:ncBatch ;
+    matsci:hasImpurity doc:bulklike_cspbbr3_impurity ;
+    matsci:hasLuminescentImpurity doc:submicrometerCrystals ;
+    matsci:hasPhotonPropagationEffect doc:selfAbsorptionEffect ;
+    matsci:hasSuperlatticeMorphology doc:sl_morphology_1 ;
+    matsci:isCompatibleWithSolvent matsci:oleicAcid .
+
+doc:val_fwhm_3 a qudt:QuantityValue ;
+    rdfs:label "10 meV"@en,
+        "15 meV"@en,
+        "2.422 eV"@en,
+        "2.426 eV"@en,
+        "70 meV"@en,
+        "79 meV"@en,
+        "84 meV"@en,
+        "85 meV"@en,
+        "87 meV"@en,
+        ">50 meV"@en,
+        "about 24 meV"@en,
+        "∼10 - 15 meV"@en,
+        "∼30 meV or more"@en,
+        "∼96 meV"@en ;
+    qudt:numericValue "2.422"^^xsd:decimal,
+        "2.426"^^xsd:decimal,
+        "10"^^xsd:decimal,
+        "12.5"^^xsd:decimal,
+        "15"^^xsd:decimal,
+        "24"^^xsd:decimal,
+        "30"^^xsd:decimal,
+        "50"^^xsd:decimal,
+        "70"^^xsd:decimal,
+        "79"^^xsd:decimal,
+        "84"^^xsd:decimal,
+        "85"^^xsd:decimal,
+        "87"^^xsd:decimal,
+        "96"^^xsd:decimal ;
+    qudt:unit unit:EV,
+        matsciunits:millielectronvolt ;
+    rdfs:comment "adds ∼30 meV or more to the PL red shift"@en,
+        "approximate value (∼24 meV)"@en,
+        "contribute >50 meV of additional PL red shift in a macroscopic sample"@en,
+        "∼10 − 15 meV PL red shift"@en,
+        "∼96 meV PL red shift"@en ;
+    qqval:numericUncertainty "2.5"^^xsd:decimal .
+
+doc:ncBatch a matsci:NanocrystalSample ;
+    rdfs:label "CsPbBr3 NCs"^^xsd:string,
+        "CsPbBr3 nanocrystal batch"^^xsd:string,
+        "CsPbBr3 nanocubes"^^xsd:string,
+        "CsPbBr3 perovskite nanocrystals"^^xsd:string,
+        "CsPbBr3 NC sample"@en,
+        "CsPbBr3 NCs"@en,
+        "CsPbBr3 NCs dispersed in ODE"@en,
+        "CsPbBr3 nanocrystal"@en,
+        "CsPbBr3 nanocrystals batch"@en,
+        "CsPbBr3 perovskite nanocrystals"@en ;
+    rdfs:comment "dispersed in ODE (octadecene)"@en ;
+    prov:wasGeneratedBy doc:odeDispersionProcess,
+        doc:synthesis_cspbbr3_ncs ;
+    sosa:isSampleOf doc:cspbbr3 ;
+    matsci:describesMaterial doc:cspbbr3 ;
+    matsci:exhibitsQuantumConfinement doc:quantumConfinementInstance ;
+    matsci:hasNanocrystalMorphology doc:nanocubeMorphology ;
+    obs:producedByProcess doc:synthesis_process_1 .
+
+doc:cspbbr3 a perovmat:ThreeDimensionalPerovskite ;
+    rdfs:label "CsPbBr3"@en ;
+    matsci:hasApplication matsci:LED .
+

@@ -1,3 +1,0 @@
-# `ontocast.onto`
-
-::: ontocast.onto

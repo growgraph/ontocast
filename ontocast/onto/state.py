@@ -22,7 +22,12 @@ from ontocast.onto.enum import (
     WorkflowNode,
 )
 from ontocast.onto.iri_policy import normalize_namespace_iri
-from ontocast.onto.model import BasePydanticModel, Suggestions
+from ontocast.onto.model import (
+    BasePydanticModel,
+    FactsLoopAttempt,
+    FactsValidationFinding,
+    Suggestions,
+)
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
@@ -307,6 +312,32 @@ class AgentState(BasePydanticModel):
     facts_units: list[ContentUnit] = Field(
         default_factory=list,
         description="Successful per-unit facts outputs collected during parallel map phase",
+    )
+
+    facts_loop_telemetry: dict[int, list[FactsLoopAttempt]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-unit facts loop attempt records (render/critic/repair) keyed "
+            "by content unit index; makes visit efficacy measurable."
+        ),
+    )
+
+    aggregation_clusters: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Final URI -> source entities merged into it during facts "
+            "aggregation (clusters with >= 2 members only); consumed by the "
+            "validation gate to turn findings into un-merge pair vetoes."
+        ),
+    )
+
+    facts_validation_findings: list[FactsValidationFinding] = Field(
+        default_factory=list,
+        description=(
+            "Post-aggregation invariant findings (functional violations, "
+            "suspect multi-values, degenerate coreference, SHACL) remaining "
+            "after any un-merge repair passes."
+        ),
     )
 
     ontology_units: list[ContentUnit] = Field(

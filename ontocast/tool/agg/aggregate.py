@@ -43,6 +43,12 @@ from ontocast.tool.representation_text import normalize_text, normalize_uri_loca
 from .clustering import ClusterRepresentativeSelector
 from .normalizer import EntityNormalizer, EntityRepresentation
 from .rewriter import GraphRewriter
+from .signatures import (
+    MergeGuardContext,
+    build_sibling_pairs,
+    empirically_functional_predicates,
+    harvest_max_one_predicates,
+)
 from .uri_builder import EntityRole, URIBuilder, to_lower_camel_case
 
 logger = logging.getLogger(__name__)
@@ -259,6 +265,29 @@ class EntityDecision(BaseModel):
     suppress_sameas: bool = False
 
 
+class AggregationResult(BaseModel):
+    """Outcome of one aggregation pass, including merge bookkeeping.
+
+    Attributes:
+        graph: Merged facts graph with provenance annotations.
+        decisions: Per-entity decision records (classification, identity
+            target, final URI).
+        merged_clusters: Final URI -> source entities that were rewritten to
+            it, restricted to clusters where >= 2 distinct entities merged.
+            Keys/values are strings so the mapping can live on
+            :class:`~ontocast.onto.state.AgentState` between graph nodes.
+        rejected_merge_count: Candidate merges rejected by symbolic
+            validation (guards, roles, types, lexical bar).
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    graph: RDFGraph
+    decisions: dict[URIRef, EntityDecision] = Field(default_factory=dict)
+    merged_clusters: dict[str, list[str]] = Field(default_factory=dict)
+    rejected_merge_count: int = 0
+
+
 class _EntityCollectionState(BaseModel):
     """Mutable state for entity collection across content units."""
 
@@ -273,6 +302,9 @@ class _EntityCollectionState(BaseModel):
         default_factory=dict
     )
     direct_relation_pairs: set[frozenset[URIRef]] = Field(default_factory=set)
+    object_groups: dict[tuple[URIRef, URIRef], set[URIRef]] = Field(
+        default_factory=dict
+    )
 
 
 _STANDARD_NAMESPACES = (
@@ -308,6 +340,11 @@ class EmbeddingBasedAggregator:
         candidate_similarity_threshold: float = 0.70,
         add_sameas_links: bool = True,
         base_iri: str = DEFAULT_IRI,
+        lexical_label_jaccard: float = 0.5,
+        lexical_sequence_ratio: float = 0.90,
+        lexical_token_jaccard: float = 0.75,
+        functional_min_empirical_support: int = 2,
+        sibling_guard_scope: str = "subject",
     ):
         """Initialise the embedding-based aggregator.
 
@@ -320,9 +357,26 @@ class EmbeddingBasedAggregator:
             base_iri: Base IRI for fact entity URIs (default: DEFAULT_IRI).
                 Entities under this namespace are facts; everything else is
                 treated as an ontology entity and left unchanged.
+            lexical_label_jaccard: Minimum label token-set Jaccard for the
+                fuzzy lexical-alias tier.
+            lexical_sequence_ratio: Minimum SequenceMatcher ratio on normal
+                forms for the fuzzy lexical-alias tier.
+            lexical_token_jaccard: Minimum normal-form token Jaccard for the
+                fuzzy lexical-alias tier (>= 2 tokens on both sides).
+            functional_min_empirical_support: Minimum distinct subjects
+                observed before a predicate counts as empirically
+                single-valued for the functional-object merge guard.
+            sibling_guard_scope: ``"subject"`` forbids merging any two
+                objects of one subject; ``"predicate"`` restricts the
+                prohibition to objects sharing the same predicate.
         """
         self.base_iri = base_iri
         self.candidate_similarity_threshold = candidate_similarity_threshold
+        self.lexical_label_jaccard = lexical_label_jaccard
+        self.lexical_sequence_ratio = lexical_sequence_ratio
+        self.lexical_token_jaccard = lexical_token_jaccard
+        self.functional_min_empirical_support = functional_min_empirical_support
+        self.sibling_guard_scope = sibling_guard_scope
 
         # Pipeline components (EntityClusterer imports sklearn/ST lazily)
         from .clustering import EntityClusterer
@@ -475,6 +529,14 @@ class EmbeddingBasedAggregator:
         }
         if left_label_tokens & right_label_tokens:
             return True
+
+        # Literal-bearing entities (measurements, identifiers, settings) are
+        # individuated by their payload, not their phrasing: "PL red shift of
+        # SL1" vs "PL red shift of SL2" share most tokens yet denote distinct
+        # values. Only the exact tiers above may merge them.
+        if left_rep.has_data_literal and right_rep.has_data_literal:
+            return False
+
         if left_label_tokens and right_label_tokens:
             max_label_overlap = 0.0
             for left_label in left_label_tokens:
@@ -483,7 +545,7 @@ class EmbeddingBasedAggregator:
                     right_tokens = self._tokenize(right_label)
                     overlap = self._jaccard(left_tokens, right_tokens)
                     max_label_overlap = max(max_label_overlap, overlap)
-            if max_label_overlap >= 0.2:
+            if max_label_overlap >= self.lexical_label_jaccard:
                 return True
 
         left_normalized = left_rep.normal_form.strip()
@@ -498,15 +560,57 @@ class EmbeddingBasedAggregator:
         ratio = SequenceMatcher(
             None, left_rep.normal_form, right_rep.normal_form
         ).ratio()
-        if ratio >= 0.90:
+        if ratio >= self.lexical_sequence_ratio:
             return True
 
         left_tokens = self._tokenize(left_rep.normal_form)
         right_tokens = self._tokenize(right_rep.normal_form)
         if len(left_tokens) >= 2 and len(right_tokens) >= 2:
-            if self._jaccard(left_tokens, right_tokens) >= 0.75:
+            if self._jaccard(left_tokens, right_tokens) >= self.lexical_token_jaccard:
                 return True
 
+        return False
+
+    @staticmethod
+    def _have_conflicting_literals(
+        left_rep: EntityRepresentation,
+        right_rep: EntityRepresentation,
+    ) -> bool:
+        """Return True when the entities assert disjoint values per predicate.
+
+        A shared predicate with two non-empty, disjoint canonical value sets
+        (numeric/temporal) marks the entities as distinct individuals; overlap
+        or one-sided values read as re-mention/enrichment and stay mergeable.
+        """
+        for predicate, left_values in left_rep.predicate_literals.items():
+            right_values = right_rep.predicate_literals.get(predicate)
+            if not right_values or not left_values:
+                continue
+            if left_values.isdisjoint(right_values):
+                return True
+        return False
+
+    @staticmethod
+    def _have_conflicting_functional_objects(
+        left_rep: EntityRepresentation,
+        right_rep: EntityRepresentation,
+        functional_predicates: set[URIRef],
+    ) -> bool:
+        """Return True when a max-1 object predicate points at disjoint IRIs.
+
+        Catches conflicts invisible to value comparison — e.g. two "10"
+        quantities whose ``qudt:unit`` objects are ``DEG_C`` vs ``KiloHZ``.
+        """
+        if not functional_predicates:
+            return False
+        for predicate, left_objects in left_rep.predicate_iri_objects.items():
+            if predicate not in functional_predicates:
+                continue
+            right_objects = right_rep.predicate_iri_objects.get(predicate)
+            if not right_objects or not left_objects:
+                continue
+            if left_objects.isdisjoint(right_objects):
+                return True
         return False
 
     def _can_merge_as_identity(
@@ -515,12 +619,23 @@ class EmbeddingBasedAggregator:
         right: URIRef,
         representations: dict[URIRef, EntityRepresentation],
         direct_relation_pairs: set[frozenset[URIRef]] | None = None,
+        guard_context: MergeGuardContext | None = None,
     ) -> bool:
-        if (
-            direct_relation_pairs is not None
-            and frozenset((left, right)) in direct_relation_pairs
-        ):
+        pair = frozenset((left, right))
+        if direct_relation_pairs is not None and pair in direct_relation_pairs:
             return False
+        if guard_context is not None:
+            if pair in guard_context.sibling_pairs:
+                return False
+            left_rep = representations.get(left)
+            right_rep = representations.get(right)
+            if left_rep is not None and right_rep is not None:
+                if self._have_conflicting_literals(left_rep, right_rep):
+                    return False
+                if self._have_conflicting_functional_objects(
+                    left_rep, right_rep, guard_context.functional_predicates
+                ):
+                    return False
         return (
             self._are_roles_compatible(left, right, representations)
             and self._are_types_compatible(left, right, representations)
@@ -574,8 +689,21 @@ class EmbeddingBasedAggregator:
         left: URIRef,
         right: URIRef,
         representations: dict[URIRef, EntityRepresentation],
+        guard_context: MergeGuardContext | None = None,
     ) -> list[str]:
         failures: list[str] = []
+        if guard_context is not None:
+            if frozenset((left, right)) in guard_context.sibling_pairs:
+                failures.append("sibling")
+            left_rep = representations.get(left)
+            right_rep = representations.get(right)
+            if left_rep is not None and right_rep is not None:
+                if self._have_conflicting_literals(left_rep, right_rep):
+                    failures.append("literal_conflict")
+                if self._have_conflicting_functional_objects(
+                    left_rep, right_rep, guard_context.functional_predicates
+                ):
+                    failures.append("functional_iri_conflict")
         if not self._are_roles_compatible(left, right, representations):
             failures.append("role")
         if not self._are_types_compatible(left, right, representations):
@@ -590,6 +718,7 @@ class EmbeddingBasedAggregator:
         representations: dict[URIRef, EntityRepresentation],
         embeddings: dict[URIRef, np.ndarray],
         direct_relation_pairs: set[frozenset[URIRef]] | None = None,
+        guard_context: MergeGuardContext | None = None,
     ) -> tuple[
         list[list[URIRef]], list[tuple[URIRef, URIRef, float | None, tuple[str, ...]]]
     ]:
@@ -630,6 +759,7 @@ class EmbeddingBasedAggregator:
                     right,
                     representations,
                     direct_relation_pairs=direct_relation_pairs,
+                    guard_context=guard_context,
                 ):
                     union(left, right)
                     continue
@@ -640,7 +770,10 @@ class EmbeddingBasedAggregator:
                         score,
                         tuple(
                             self._merge_validation_failures(
-                                left, right, representations
+                                left,
+                                right,
+                                representations,
+                                guard_context=guard_context,
                             )
                         ),
                     )
@@ -807,6 +940,7 @@ class EmbeddingBasedAggregator:
         dict[URIRef, URIRef],
         dict[URIRef, EntityClassification],
         set[frozenset[URIRef]],
+        dict[tuple[URIRef, URIRef], set[URIRef]],
     ]:
         """Collect all entities from all content unit graphs.
 
@@ -839,6 +973,8 @@ class EmbeddingBasedAggregator:
             for s, p, o in unit.graph:
                 if isinstance(s, URIRef) and isinstance(o, URIRef):
                     self._register_direct_relation(state=state, subject=s, obj=o)
+                    if isinstance(p, URIRef) and p != RDF.type:
+                        state.object_groups.setdefault((s, p), set()).add(o)
                 for term in (s, p, o):
                     if isinstance(term, URIRef):
                         self._register_entity(entity=term, unit=unit, state=state)
@@ -850,29 +986,35 @@ class EmbeddingBasedAggregator:
             state.entity_doc_iris,
             state.entity_classification,
             state.direct_relation_pairs,
+            state.object_groups,
         )
 
     def aggregate_graphs(
         self,
         units: list[ContentUnit],
         ontology_graph: RDFGraph,
-    ) -> RDFGraph:
+        merge_vetoes: set[frozenset[URIRef]] | None = None,
+    ) -> AggregationResult:
         """Aggregate multiple content unit graphs with embedding-based disambiguation.
 
         Args:
             units: List of ContentUnits to aggregate.
             ontology_graph: Selected ontology graph used to distinguish
                 known ontology entities from tentative ontology-like aliases.
+            merge_vetoes: Extra entity pairs that must never identity-merge —
+                the targeted un-merge lever used by the post-aggregation
+                validation gate. Unioned into the direct-relation veto set.
 
         Returns:
-            Merged RDF graph with provenance annotations.
+            :class:`AggregationResult` with the merged graph and merge
+            bookkeeping (decisions, merged clusters, rejection count).
         """
         logger.info(f"Starting aggregation with metadata for {len(units)} units")
         if ontology_graph is None:
             raise ValueError("ontology_graph must not be None for facts aggregation")
 
         if not units:
-            return RDFGraph()
+            return AggregationResult(graph=RDFGraph())
 
         # Steps 1-3: Collect, normalise, candidate clustering
         known_ontology_entities = self._build_known_ontology_entities(ontology_graph)
@@ -883,7 +1025,20 @@ class EmbeddingBasedAggregator:
             entity_doc_iris,
             entity_classification,
             direct_relation_pairs,
+            object_groups,
         ) = self._collect_all_entities(units, known_ontology_entities)
+        if merge_vetoes:
+            direct_relation_pairs = direct_relation_pairs | merge_vetoes
+        guard_context = MergeGuardContext(
+            sibling_pairs=build_sibling_pairs(
+                object_groups, scope=self.sibling_guard_scope
+            ),
+            functional_predicates=harvest_max_one_predicates(ontology_graph)
+            | empirically_functional_predicates(
+                object_groups,
+                min_support=self.functional_min_empirical_support,
+            ),
+        )
         representations = self.normalizer.create_representations_batch(
             entities, entity_graphs
         )
@@ -952,6 +1107,7 @@ class EmbeddingBasedAggregator:
             representations=representations,
             embeddings=embeddings,
             direct_relation_pairs=direct_relation_pairs,
+            guard_context=guard_context,
         )
         if rejected_merges:
             logger.info(
@@ -1016,6 +1172,7 @@ class EmbeddingBasedAggregator:
                         canonical_known_ontology,
                         representations,
                         direct_relation_pairs=direct_relation_pairs,
+                        guard_context=guard_context,
                     ):
                         identity_mapping[tentative_entity] = canonical_known_ontology
                         decisions[tentative_entity].suppress_sameas = True
@@ -1027,6 +1184,7 @@ class EmbeddingBasedAggregator:
                         canonical_known_ontology,
                         representations,
                         direct_relation_pairs=direct_relation_pairs,
+                        guard_context=guard_context,
                     ):
                         identity_mapping[fact_entity] = canonical_known_ontology
                         decisions[fact_entity].suppress_sameas = True
@@ -1052,6 +1210,7 @@ class EmbeddingBasedAggregator:
                             canonical_fact,
                             representations,
                             direct_relation_pairs=direct_relation_pairs,
+                            guard_context=guard_context,
                         ):
                             identity_mapping[tentative_entity] = canonical_fact
                             decisions[tentative_entity].suppress_sameas = True
@@ -1123,8 +1282,22 @@ class EmbeddingBasedAggregator:
             suppress_fact_subject_sources=suppress_fact_subject_sources,
         )
 
+        cluster_members: dict[str, set[str]] = {}
+        for entity, final_uri in final_mapping.items():
+            cluster_members.setdefault(str(final_uri), set()).add(str(entity))
+        merged_clusters = {
+            final_uri: sorted(members)
+            for final_uri, members in cluster_members.items()
+            if len(members) >= 2
+        }
+
         logger.info("Aggregation with metadata complete")
-        return merged_graph
+        return AggregationResult(
+            graph=merged_graph,
+            decisions=decisions,
+            merged_clusters=merged_clusters,
+            rejected_merge_count=len(rejected_merges),
+        )
 
     def postprocess_facts_units(
         self,
@@ -1134,7 +1307,8 @@ class EmbeddingBasedAggregator:
         doc_iri: URIRef | None = None,
         document_metadata: dict[str, Any] | None = None,
         doc_namespace: str | None = None,
-    ) -> RDFGraph:
+        merge_vetoes: set[frozenset[URIRef]] | None = None,
+    ) -> AggregationResult:
         """Sanitize facts units, then run aggregation/normalization.
 
         This method is intentionally safe for both single-unit and multi-unit
@@ -1145,15 +1319,30 @@ class EmbeddingBasedAggregator:
         caller-asserted document identity triples are attached to the merged
         facts graph. Business-oriented keys mint typed entities under
         ``doc_namespace`` (defaults to the document facts namespace).
+
+        Args:
+            units: Facts content units to aggregate.
+            ontology_graph: Merged ontology context for classification/guards.
+            doc_iri: Document IRI for metadata provenance attachment.
+            document_metadata: Caller-asserted document identity metadata.
+            doc_namespace: Namespace for metadata-minted entities.
+            merge_vetoes: Entity pairs that must never identity-merge
+                (validation-gate un-merge lever).
+
+        Returns:
+            :class:`AggregationResult`; its ``graph`` carries the merged facts
+            plus any document-metadata provenance.
         """
         for unit in units:
             unit.sanitize()
-        merged = self.aggregate_graphs(units=units, ontology_graph=ontology_graph)
+        result = self.aggregate_graphs(
+            units=units, ontology_graph=ontology_graph, merge_vetoes=merge_vetoes
+        )
         if doc_iri is not None and document_metadata:
             apply_document_metadata_provenance(
                 doc_iri,
                 document_metadata,
-                merged,
+                result.graph,
                 entity_namespace=doc_namespace,
             )
-        return merged
+        return result

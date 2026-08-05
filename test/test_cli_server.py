@@ -24,7 +24,7 @@ from ontocast.api.process_request import (
 )
 from ontocast.api.responses import ontology_context_config_error_response
 from ontocast.api.schemas import ProcessResultData
-from ontocast.config import ServerConfig
+from ontocast.config import Config, ServerConfig
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.docling_helpers import plain_text_to_docling_doc
 from ontocast.onto.enum import OntologyContextMode
@@ -36,6 +36,7 @@ from ontocast.onto.retrieval_capabilities import (
     validate_ontology_context_mode,
 )
 from ontocast.onto.state import AgentState
+from ontocast.tool.agg.aggregate import AggregationResult
 from ontocast.toolbox import ToolBox
 
 
@@ -304,14 +305,19 @@ def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
             units: list[ContentUnit],
             ontology_graph: RDFGraph,
             **kwargs,
-        ) -> RDFGraph:
+        ) -> AggregationResult:
             captured["ontology_graph"] = ontology_graph
             captured["kwargs"] = kwargs
             graph = RDFGraph()
             graph += units[0].graph
-            return graph
+            return AggregationResult(graph=graph)
 
-    tools = cast(ToolBox, SimpleNamespace(aggregator=_Aggregator()))
+    # persist_unit_pipeline_outputs now runs the post-aggregation invariant gate,
+    # which reads the facts-validation config the same way the graph node does.
+    tools = cast(
+        ToolBox,
+        SimpleNamespace(aggregator=_Aggregator(), config=Config()),
+    )
     monkeypatch.setattr(
         "ontocast.api.process_helpers.serialize_agent_state", lambda *_: None
     )

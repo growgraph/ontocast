@@ -817,3 +817,58 @@ def test_property_only_path_runs_finalization() -> None:
     if isinstance(turtle, bytes):
         turtle = turtle.decode("utf-8")
     assert "subClassOf [ ]" not in turtle
+
+
+def test_referenced_domain_class_gets_symbol_predicates_and_types() -> None:
+    """A property seed's domain class must carry its notation/symbol triples.
+
+    Case5 shape: matsci:hasPhotonPropagationEffect was admitted but its domain
+    NanocrystalSuperlatticeSample entered the snapshot without notation or
+    types, so the renderer fell back to the parent class.
+    """
+    from rdflib.namespace import SKOS
+
+    graph = RDFGraph()
+    graph.bind("matsci", MATSCI)
+    graph.add((URIRef(f"{BASE}matsci"), RDF.type, OWL.Ontology))
+
+    domain_class = MATSCI["NanocrystalSuperlatticeSample"]
+    parent = MATSCI["SuperlatticeSample"]
+    prop = MATSCI["hasPhotonPropagationEffect"]
+    graph.add((domain_class, RDF.type, OWL.Class))
+    graph.add((domain_class, RDFS.label, Literal("Nanocrystal superlattice sample")))
+    graph.add((domain_class, SKOS.notation, Literal("NC SL")))
+    graph.add((domain_class, RDFS.subClassOf, parent))
+    graph.add((parent, RDF.type, OWL.Class))
+    graph.add((parent, RDFS.label, Literal("Superlattice sample")))
+    graph.add((prop, RDF.type, OWL.ObjectProperty))
+    graph.add((prop, RDFS.label, Literal("has photon propagation effect")))
+    graph.add((prop, RDFS.domain, domain_class))
+    graph.add((prop, RDFS.range, MATSCI["PhotonPropagationEffect"]))
+
+    ontologies = [_ontology(f"{BASE}matsci", graph)]
+    result, _ = SPARQLTool._build_induced_subgraph(
+        ontologies=ontologies,
+        entity_uris=[str(prop)],
+        entity_relevance={str(prop): 1.0},
+        ontology_iris=[ontologies[0].iri],
+        depth=0,
+        max_total_triples=300,
+        estimated_triples_per_query=24,
+        ontology_version_filters=None,
+        ontology_hash_filters=None,
+        entity_roles={str(prop): ROLE_PREDICATE},
+        hub_seed_count=1,
+        ancestor_closure_depth=1,
+        extra_description_predicates=(SKOS.notation,),
+    )
+
+    assert (prop, RDFS.domain, domain_class) in result
+    # The referenced class is materialized with its symbol predicate...
+    assert (domain_class, SKOS.notation, Literal("NC SL")) in result
+    # ...and its label.
+    assert (
+        domain_class,
+        RDFS.label,
+        Literal("Nanocrystal superlattice sample"),
+    ) in result

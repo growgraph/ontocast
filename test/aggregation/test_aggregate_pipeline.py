@@ -46,7 +46,7 @@ def make_ontology_unit(
 
 def test_aggregate_graphs_returns_empty_graph_for_no_units() -> None:
     aggregator = EmbeddingBasedAggregator()
-    result = aggregator.aggregate_graphs([], ontology_graph=RDFGraph())
+    result = aggregator.aggregate_graphs([], ontology_graph=RDFGraph()).graph
     assert len(result) == 0
 
 
@@ -62,8 +62,10 @@ def test_fact_entities_use_doc_iri_namespace() -> None:
     """
     unit = make_fact_unit("Revenue was $42M.", 0, doc_iri, ttl)
 
-    result = EmbeddingBasedAggregator().aggregate_graphs(
-        [unit], ontology_graph=RDFGraph()
+    result = (
+        EmbeddingBasedAggregator()
+        .aggregate_graphs([unit], ontology_graph=RDFGraph())
+        .graph
     )
     assert len(result) > 0
 
@@ -143,7 +145,7 @@ def test_aggregate_graphs_merges_overlapping_facts(monkeypatch) -> None:
     monkeypatch.setattr(
         aggregator.clusterer, "cluster_entities", cluster_by_normal_form
     )
-    result = aggregator.aggregate_graphs(units, ontology_graph=RDFGraph())
+    result = aggregator.aggregate_graphs(units, ontology_graph=RDFGraph()).graph
     result.bind("unused", "https://unused.example/")
     turtle = result.serialize(format="turtle")
 
@@ -237,7 +239,7 @@ def test_aggregate_graphs_preserves_ontology_uris_and_provenance(monkeypatch) ->
         force_typo_and_canonical_in_one_cluster,
     )
 
-    result = aggregator.aggregate_graphs(units, ontology_graph=RDFGraph())
+    result = aggregator.aggregate_graphs(units, ontology_graph=RDFGraph()).graph
 
     canonical = URIRef("http://example.org/onto#Person")
     typo = URIRef("http://example.org/onto#Persno")
@@ -290,7 +292,7 @@ def test_facts_doc_entity_can_merge_into_matching_ontology_entity(monkeypatch) -
         force_doc_and_ontology_court_together,
     )
 
-    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
+    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph).graph
 
     assert (ontology_court, RDF.type, court_type) in result
     assert (ontology_court, OWL.sameAs, doc_court) not in result
@@ -339,7 +341,7 @@ def test_ontology_entities_in_same_cluster_keep_original_iris(monkeypatch) -> No
         force_ontology_variants_together,
     )
 
-    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
+    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph).graph
 
     assert (court_fr, rdfs_label, Literal("Cour d'appel de Rouen")) in result
     assert (court_en, rdfs_label, Literal("Rouen Court of Appeal")) in result
@@ -382,7 +384,7 @@ def test_directly_related_entities_do_not_merge_even_if_lexically_similar(
         return [list(entities)], {}
 
     monkeypatch.setattr(aggregator.clusterer, "cluster_entities", force_cluster)
-    result = aggregator.aggregate_graphs([unit], ontology_graph=RDFGraph())
+    result = aggregator.aggregate_graphs([unit], ontology_graph=RDFGraph()).graph
 
     heard_at_subjects = {
         subject
@@ -438,7 +440,7 @@ def test_fact_merged_into_known_ontology_suppresses_fact_subject_assertions(
         return [list(entities)], {}
 
     monkeypatch.setattr(aggregator.clusterer, "cluster_entities", force_cluster)
-    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
+    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph).graph
 
     assert known_court in set(result.objects(None, heard_at))
     assert (known_court, RDFS.label, Literal("Rouen Court of Appeal")) not in result
@@ -455,8 +457,10 @@ def test_uri_builder_uses_instance_lowercamel_and_structured_snakecase() -> None
     facts:tribunal_correctionnel_1 rdf:type fcaont:Trial .
     """
     unit = make_fact_unit("URI style", 0, doc_iri, ttl)
-    result = EmbeddingBasedAggregator().aggregate_graphs(
-        [unit], ontology_graph=RDFGraph()
+    result = (
+        EmbeddingBasedAggregator()
+        .aggregate_graphs([unit], ontology_graph=RDFGraph())
+        .graph
     )
 
     uri_nodes = {
@@ -503,7 +507,7 @@ def test_prefix_extension_ontology_properties_do_not_merge(monkeypatch) -> None:
         return [list(entities)], {}
 
     monkeypatch.setattr(aggregator.clusterer, "cluster_entities", force_cluster)
-    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
+    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph).graph
 
     assert (has_judgment, OWL.sameAs, has_judgment_date) not in result
     assert (has_judgment_date, OWL.sameAs, has_judgment) not in result
@@ -528,10 +532,14 @@ def test_collect_all_entities_exposes_direct_relation_pairs() -> None:
         _entity_doc_iris,
         _entity_classification,
         direct_relation_pairs,
+        object_groups,
     ) = aggregator._collect_all_entities([unit], known_ontology_entities=set())
 
     assert frozenset((left, right)) in direct_relation_pairs
     assert frozenset((right, left)) in direct_relation_pairs
+    assert object_groups[(left, URIRef("https://growgraph.dev/fcaont#relatedTo"))] == {
+        right
+    }
 
 
 def test_aggregate_passes_explicit_known_ontology_map_to_selector(monkeypatch) -> None:
@@ -563,7 +571,7 @@ def test_aggregate_passes_explicit_known_ontology_map_to_selector(monkeypatch) -
         )
 
     monkeypatch.setattr(aggregator.selector, "create_mapping", capture_create_mapping)
-    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
+    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph).graph
 
     assert captured["map"] is not None
     assert captured["map"].get(known_court) is True
@@ -610,7 +618,7 @@ def test_tentative_ontology_like_alias_maps_to_known_ontology(monkeypatch) -> No
         force_known_and_invented_together,
     )
 
-    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
+    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph).graph
 
     heard_at_targets = set(result.objects(None, heard_at))
     assert known_court in heard_at_targets
@@ -653,7 +661,7 @@ def test_tentative_only_ontology_like_entities_are_preserved(monkeypatch) -> Non
         force_tentatives_together,
     )
 
-    result = aggregator.aggregate_graphs([unit], ontology_graph=RDFGraph())
+    result = aggregator.aggregate_graphs([unit], ontology_graph=RDFGraph()).graph
 
     heard_at_targets = set(result.objects(None, heard_at))
     assert invented_court_1 in heard_at_targets
@@ -718,8 +726,10 @@ def test_unused_ontology_entities_do_not_create_spurious_sameas() -> None:
     ontology_graph.add((unused_a, RDF.type, court_type))
     ontology_graph.add((unused_b, RDF.type, court_type))
 
-    result = EmbeddingBasedAggregator().aggregate_graphs(
-        [unit], ontology_graph=ontology_graph
+    result = (
+        EmbeddingBasedAggregator()
+        .aggregate_graphs([unit], ontology_graph=ontology_graph)
+        .graph
     )
 
     assert (unused_a, OWL.sameAs, unused_b) not in result
@@ -770,7 +780,7 @@ def test_tentative_with_incompatible_type_does_not_merge_to_known_ontology(
         force_known_and_tentative_together,
     )
 
-    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
+    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph).graph
 
     assert tentative_person in set(result.objects(None, associated_with))
     assert known_conviction not in set(result.objects(None, associated_with))
@@ -816,7 +826,7 @@ def test_tentative_prefix_extension_alias_is_not_merged(monkeypatch) -> None:
         force_known_and_tentative_together,
     )
 
-    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
+    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph).graph
 
     assert known_conviction not in set(result.objects(None, associated_with))
     assert tentative_alias in set(result.objects(None, associated_with))
@@ -867,7 +877,7 @@ def test_hallucinated_ontology_prefixed_instance_maps_to_fact_entity(
     #     force_fact_and_hallucinated_together,
     # )
 
-    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
+    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph).graph
     punishment_targets = {
         obj for obj in result.objects(None, has_punishment) if isinstance(obj, URIRef)
     }
@@ -923,7 +933,7 @@ def test_known_ontology_class_not_rewritten_as_fact(monkeypatch) -> None:
         force_known_class_and_fact_instance_together,
     )
 
-    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
+    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph).graph
     associated_targets = {
         obj for obj in result.objects(None, associated_with) if isinstance(obj, URIRef)
     }
@@ -962,7 +972,7 @@ def test_non_alias_ontology_terms_do_not_emit_sameas(monkeypatch) -> None:
         return [list(entities)], {}
 
     monkeypatch.setattr(aggregator.clusterer, "cluster_entities", force_together)
-    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
+    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph).graph
 
     assert (appeal, OWL.sameAs, appeal_decision) not in result
     assert (appeal_decision, OWL.sameAs, appeal) not in result
@@ -1022,7 +1032,7 @@ def test_fact_entity_forced_with_known_ontology_uses_identity_guard(
         force_known_and_fact_together,
     )
 
-    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph)
+    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph).graph
 
     associated_targets = {
         obj for obj in result.objects(None, associated_with) if isinstance(obj, URIRef)
@@ -1159,7 +1169,7 @@ def test_fact_to_fact_candidate_rejected_when_symbolically_incompatible(
         force_candidate_cluster,
     )
 
-    result = aggregator.aggregate_graphs([unit], ontology_graph=RDFGraph())
+    result = aggregator.aggregate_graphs([unit], ontology_graph=RDFGraph()).graph
     heard_at_targets = {
         subject
         for subject in result.subjects(RDFS.label, Literal("Criminal Court"))
@@ -1190,7 +1200,7 @@ def test_fact_to_fact_candidate_merges_when_symbolically_compatible(
     facts:UnitedStates rdfs:label "United States" .
     facts:united_states rdfs:label "United States" .
     facts:UnitedStates facts:population "331000000" .
-    facts:united_states facts:population "332000000" .
+    facts:united_states facts:population "331000000" .
     """
     unit = make_fact_unit("US aliases", 0, doc_iri, ttl)
     aggregator = EmbeddingBasedAggregator()
@@ -1215,13 +1225,13 @@ def test_fact_to_fact_candidate_merges_when_symbolically_compatible(
         force_candidate_cluster,
     )
 
-    result = aggregator.aggregate_graphs([unit], ontology_graph=RDFGraph())
+    result = aggregator.aggregate_graphs([unit], ontology_graph=RDFGraph()).graph
     population_subjects = {
         subject
         for subject, _, obj in result
         if isinstance(subject, URIRef)
         and isinstance(obj, Literal)
-        and str(obj) in {"331000000", "332000000"}
+        and str(obj) == "331000000"
     }
 
     assert len(population_subjects) == 1

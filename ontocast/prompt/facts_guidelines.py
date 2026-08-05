@@ -1,5 +1,16 @@
 """Facts rendering operational guidelines (format-specific)."""
 
+# Fallback vocabulary for bounded/approximate quantities when retrieval supplied
+# no suitable class. QUDT by default because it is the most widely deployed
+# quantity vocabulary -- but a default, not a compiled-in assumption: override
+# via FACTS_QUANTITY_FALLBACK_VOCABULARY, or set it empty to forbid reaching
+# outside the provided context at all.
+DEFAULT_QUANTITY_FALLBACK_VOCABULARY: dict[str, str] = {
+    "value_class": "qudt:QuantityValue",
+    "numeric_value": "qudt:numericValue",
+    "unit": "qudt:unit",
+}
+
 facts_instruction_shared = """\n\n
 # OPERATIONAL GUIDELINES
 
@@ -73,12 +84,16 @@ facts_instruction_shared = """\n\n
        * If found, instantiate it and use its typed decimal properties for
          the numeric components (nominal value, lower/upper bound, uncertainty)
          and its qualifier properties for the epistemic marker.
-       * If no such class is found in the domain ontology, use qudt:QuantityValue
-         as the type and attach the numeric parts with qudt:numericValue /
-         qudt:unit, adding a plain qualifier annotation (e.g. rdfs:comment
-         or a well-known approximation property).
+{quantity_fallback_clause}
    - Prose restatements of a measurement in dcterms:description are redundant
      once typed numeric properties exist — omit them.
+   - VERBATIM VALUES AND UNITS: transcribe every measurement with its exact
+     source value and source unit. NEVER convert units — not between scale
+     prefixes, not between related quantity kinds, not into a "preferred"
+     unit — and never round or re-derive values —
+     canonicalization happens downstream in code. If the exact source unit
+     has no individual in the provided context, keep the value verbatim and
+     preserve the unit token per rule 8a's fallback.
 
 8a. OBJECT PROPERTIES TAKE IRIs, NOT STRINGS:
    - A property whose range is a class (declared `owl:ObjectProperty`, or with an
@@ -88,9 +103,10 @@ facts_instruction_shared = """\n\n
      matching its `rdfs:label`, `skos:notation`, symbol, or code annotations,
      preserving case exactly (a lowercase symbol and its uppercase variant denote
      DIFFERENT individuals — match character-for-character).
-   - WRONG:   `cd:value_1 qudt:unit "meV" .` — string on an object property
-   - CORRECT: `cd:value_1 qudt:unit unit:MilliEV .` — when that individual's
-     label/notation matches the text token
+   - WRONG:   `cd:value_1 qudt:unit "nm" .` — string on an object property
+   - CORRECT: `cd:value_1 qudt:unit unit:NanoM .` — when that individual's
+     label/notation matches the text token; use only unit IRIs that appear
+     verbatim in the provided context, never invent one
    - Only if NO individual in the provided context matches the token: keep the raw
      token in a literal-code annotation property (e.g. `qudt:ucumCode` or
      `rdfs:comment`) on the `cd:` node instead of putting a string on the
@@ -129,11 +145,48 @@ facts_output_hygiene_jsonld = (
 )
 
 
+_QUANTITY_FALLBACK_TEMPLATE = """       * If no such class is found in the domain ontology, use {value_class}
+         as the type and attach the numeric parts with {numeric_value} /
+         {unit}, adding a plain qualifier annotation (e.g. rdfs:comment
+         or a well-known approximation property)."""
+
+_QUANTITY_FALLBACK_NONE = """       * If no such class is found in the domain ontology, keep the numeric
+         parts as typed literals on the entity itself and record the
+         qualifier with rdfs:comment. Do NOT borrow a class from a
+         vocabulary outside the provided context."""
+
+
+def format_quantity_fallback_clause(vocabulary: dict[str, str]) -> str:
+    """Render the bounded-quantity fallback for a configured vocabulary.
+
+    The fallback is what the renderer reaches for when retrieval supplied no
+    bounded-quantity class. Which vocabulary that is belongs to the deployment,
+    not to the prompt: a catalog modelling quantities with anything other than
+    QUDT would otherwise be told to emit QUDT terms it never declared.
+
+    Args:
+        vocabulary: Role -> term mapping (``FACTS_QUANTITY_FALLBACK_VOCABULARY``).
+            Empty disables the fallback and keeps the renderer inside the
+            provided context.
+
+    Returns:
+        str: The guideline bullet for the configured fallback.
+    """
+    if not vocabulary:
+        return _QUANTITY_FALLBACK_NONE
+    return _QUANTITY_FALLBACK_TEMPLATE.format(
+        value_class=vocabulary.get("value_class", "a quantity-value class"),
+        numeric_value=vocabulary.get("numeric_value", "its numeric-value property"),
+        unit=vocabulary.get("unit", "its unit property"),
+    )
+
+
 def format_facts_operational_guidelines(
     *,
     facts_namespace: str,
     domain_ontologies_clause: str,
     jsonld: bool,
+    quantity_fallback_vocabulary: dict[str, str] | None = None,
     search_guidelines: str = "",
 ) -> str:
     """Build operational guidelines for the active graph format."""
@@ -144,6 +197,11 @@ def format_facts_operational_guidelines(
         facts_namespace=facts_namespace,
         literal_encoding_rules=literal_rules,
         output_hygiene_rule=hygiene,
+        quantity_fallback_clause=format_quantity_fallback_clause(
+            quantity_fallback_vocabulary
+            if quantity_fallback_vocabulary is not None
+            else DEFAULT_QUANTITY_FALLBACK_VOCABULARY
+        ),
         search_guidelines=search_guidelines,
     )
     if jsonld:

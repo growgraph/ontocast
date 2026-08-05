@@ -17,15 +17,33 @@ For more information, see the documentation at https://growgraph.github.io/ontoc
 
 from typing import Any
 
-__all__ = ["facts_loop", "ontology_loop"]
+from ontocast._version import __version__
+
+__all__ = ["Config", "ToolBox", "__version__", "facts_loop", "ontology_loop"]
+
+# Everything is resolved lazily so `import ontocast` stays cheap: ToolBox pulls
+# in the whole tool tree and Config the settings tree, and neither is wanted
+# just to read __version__.
+_LAZY_EXPORTS: dict[str, tuple[str, str]] = {
+    "Config": ("ontocast.config", "Config"),
+    "ToolBox": ("ontocast.toolbox", "ToolBox"),
+    "facts_loop": ("ontocast.stategraph.atomic", "facts_loop"),
+    "ontology_loop": ("ontocast.stategraph.atomic", "ontology_loop"),
+}
 
 
 def __getattr__(name: str) -> Any:
-    """Lazily export unit-loop entry points to keep ``import ontocast`` light."""
-    if name in ("facts_loop", "ontology_loop"):
-        from ontocast.stategraph.atomic import facts_loop, ontology_loop
+    """Lazily export the documented entry points."""
+    target = _LAZY_EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
 
-        exports = {"facts_loop": facts_loop, "ontology_loop": ontology_loop}
-        globals().update(exports)
-        return exports[name]
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attribute = target
+    value = getattr(importlib.import_module(module_name), attribute)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted([*globals(), *__all__])

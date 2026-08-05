@@ -6,6 +6,7 @@ from rdflib import RDFS, Literal, URIRef
 from ontocast.agent.normalize_ontology import normalize_ontology_units
 from ontocast.agent.render_ontology import render_ontology_update
 from ontocast.agent.summarize_chunks import should_summarize_unit, summarize_chunk
+from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
 from ontocast.onto.enum import (
     OntologyAssemblyMode,
@@ -14,6 +15,7 @@ from ontocast.onto.enum import (
     WorkflowNode,
 )
 from ontocast.onto.iri_policy import split_namespace_local
+from ontocast.onto.model import FactsValidationFinding
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.ontology_apply import (
@@ -33,6 +35,10 @@ from ontocast.stategraph.helpers import (
     all_unit_patch_source_iris,
     build_document_excerpt,
     build_ontology_delta_graph,
+)
+from ontocast.tool.facts_invariants import (
+    collect_shacl_shapes,
+    validate_aggregated_facts,
 )
 from ontocast.tool.validate import RDFGraphConnectivityValidator
 from ontocast.toolbox import ToolBox
@@ -402,6 +408,8 @@ def make_render_facts_node(tools: ToolBox):
             assembly_mode,
         ) in ordered_results:
             state.budget_tracker.merge_from(result.budget_tracker)
+            if result.attempt_log:
+                state.facts_loop_telemetry[unit_index] = list(result.attempt_log)
             unit_contexts[unit_index] = (anchor_iri, patch_sources, assembly_mode)
             has_output = len(result.content_unit.graph) > 0
             if not has_output:
@@ -432,11 +440,40 @@ def make_render_facts_node(tools: ToolBox):
         state.candidate_anchor_iris = sorted(anchor_counts.keys())
         state.retrieval_metrics["facts_anchor_count"] = len(anchor_counts)
         state.retrieval_metrics["facts_anchor_units"] = sum(anchor_counts.values())
+        all_attempts = [
+            attempt
+            for attempts in state.facts_loop_telemetry.values()
+            for attempt in attempts
+        ]
+        state.retrieval_metrics["facts_repair_visits_total"] = sum(
+            1 for attempt in all_attempts if attempt.kind == "repair"
+        )
+        state.retrieval_metrics["facts_findings_residual"] = sum(
+            attempts[-1].n_deterministic_findings
+            for attempts in state.facts_loop_telemetry.values()
+            if attempts and attempts[-1].kind == "repair"
+        )
         state.facts_units = facts_units
         state.status = Status.SUCCESS
         return state
 
     return render_facts
+
+
+def _facts_aggregation_inputs(state: AgentState) -> tuple[RDFGraph, dict]:
+    """Ontology context and document metadata shared by merge and validate."""
+    ontology_graph = RDFGraph()
+    merged_context = build_merged_document_ontology_context(state)
+    if merged_context is not None and len(merged_context.snapshot.graph) > 0:
+        ontology_graph = merged_context.snapshot.graph
+    document_metadata = dict(state.document_metadata)
+    if (
+        state.source_url
+        and "source_url" not in document_metadata
+        and "source_uri" not in document_metadata
+    ):
+        document_metadata["source_url"] = state.source_url
+    return ontology_graph, document_metadata
 
 
 def make_merge_facts_node(tools: ToolBox):
@@ -446,24 +483,17 @@ def make_merge_facts_node(tools: ToolBox):
             state.status = Status.SUCCESS
             return state
 
-        ontology_graph = RDFGraph()
-        merged_context = build_merged_document_ontology_context(state)
-        if merged_context is not None and len(merged_context.snapshot.graph) > 0:
-            ontology_graph = merged_context.snapshot.graph
-        document_metadata = dict(state.document_metadata)
-        if (
-            state.source_url
-            and "source_url" not in document_metadata
-            and "source_uri" not in document_metadata
-        ):
-            document_metadata["source_url"] = state.source_url
-        state.aggregated_facts = tools.aggregator.postprocess_facts_units(
+        ontology_graph, document_metadata = _facts_aggregation_inputs(state)
+        result = tools.aggregator.postprocess_facts_units(
             units=state.facts_units,
             ontology_graph=ontology_graph,
             doc_iri=state.doc_iri,
             document_metadata=document_metadata,
             doc_namespace=state.doc_namespace,
         )
+        state.aggregated_facts = result.graph
+        state.aggregation_clusters = result.merged_clusters
+        state.retrieval_metrics["facts_rejected_merges"] = result.rejected_merge_count
         if len(state.aggregated_facts) == 0:
             logger.warning(
                 "Facts aggregation produced an empty graph from "
@@ -473,6 +503,143 @@ def make_merge_facts_node(tools: ToolBox):
         return state
 
     return merge_facts
+
+
+def _vetoes_from_findings(
+    findings: list[FactsValidationFinding],
+    clusters: dict[str, list[str]],
+) -> set[frozenset[URIRef]]:
+    """Full-cluster pair vetoes for error findings on merged entities.
+
+    Both the finding's subject and its IRI-valued objects are candidate merge
+    victims. DEGENERATE_COREFERENCE reports the *pointing* node as subject and
+    the over-merged endpoint in ``values`` (``range1 hasLowerBound v1 ;
+    hasUpperBound v1`` -- ``v1`` is the collapsed cluster, ``range1`` usually
+    is not merged at all), so a subject-only lookup could never repair it.
+    The same holds for the IRI-object branch of SUSPECT_MULTI_VALUE.
+    """
+    vetoes: set[frozenset[URIRef]] = set()
+    for finding in findings:
+        candidates = [finding.subject, *finding.values]
+        for candidate in candidates:
+            members = clusters.get(candidate, [])
+            if len(members) < 2:
+                continue
+            refs = [URIRef(member) for member in members]
+            for index, left in enumerate(refs):
+                for right in refs[index + 1 :]:
+                    vetoes.add(frozenset((left, right)))
+    return vetoes
+
+
+def make_validate_facts_node(tools: ToolBox):
+    facts_validation = tools.config.get_tool_config().facts_validation
+
+    def validate_facts(state: AgentState) -> AgentState:
+        """Post-aggregation invariant gate with deterministic un-merge repair.
+
+        Error findings whose subject resulted from an identity merge turn the
+        offending cluster into pair vetoes; the retained facts units are then
+        re-aggregated, up to ``FACTS_MERGE_REPAIR_PASSES`` times. Residual
+        findings stay on the state as telemetry.
+        """
+        if not state.facts_units or len(state.aggregated_facts) == 0:
+            state.status = Status.SUCCESS
+            return state
+
+        ontology_graph, document_metadata = _facts_aggregation_inputs(state)
+        shapes_graph = collect_shacl_shapes(ontology_graph, facts_validation.shapes_dir)
+        fact_namespaces = [DEFAULT_IRI, str(state.doc_iri), state.doc_namespace or ""]
+
+        def run_validation():
+            return validate_aggregated_facts(
+                state.aggregated_facts,
+                ontology_graph,
+                shapes_graph=shapes_graph,
+                fact_namespaces=fact_namespaces,
+                suspect_multi_value_severity=(
+                    facts_validation.suspect_multi_value_severity
+                ),
+                functional_min_single_support=(
+                    facts_validation.functional_min_single_support
+                ),
+                quantity_fallback_vocabulary=(
+                    facts_validation.quantity_fallback_vocabulary
+                ),
+            )
+
+        report = run_validation()
+        vetoes: set[frozenset[URIRef]] = set()
+        repair_passes = 0
+        rejected_repairs = 0
+        while (
+            report.error_findings
+            and repair_passes < facts_validation.merge_repair_passes
+        ):
+            new_vetoes = _vetoes_from_findings(
+                report.error_findings, state.aggregation_clusters
+            )
+            if not (new_vetoes - vetoes):
+                break
+            vetoes |= new_vetoes
+            logger.info(
+                "Facts validation gate: %d error finding(s), re-aggregating "
+                "with %d merge veto pair(s)",
+                len(report.error_findings),
+                len(vetoes),
+            )
+            result = tools.aggregator.postprocess_facts_units(
+                units=state.facts_units,
+                ontology_graph=ontology_graph,
+                doc_iri=state.doc_iri,
+                document_metadata=document_metadata,
+                doc_namespace=state.doc_namespace,
+                merge_vetoes=vetoes,
+            )
+            # Un-merging is destructive: a veto dissolves a whole cluster, so a
+            # pass that does not strictly reduce the error count has traded real
+            # coreference for nothing and must not be kept.
+            previous_graph = state.aggregated_facts
+            previous_clusters = state.aggregation_clusters
+            previous_errors = len(report.error_findings)
+            state.aggregated_facts = result.graph
+            state.aggregation_clusters = result.merged_clusters
+            candidate_report = run_validation()
+            if len(candidate_report.error_findings) >= previous_errors:
+                logger.warning(
+                    "Facts validation gate: repair pass %d did not reduce errors "
+                    "(%d -> %d); reverting to the pre-repair graph",
+                    repair_passes + 1,
+                    previous_errors,
+                    len(candidate_report.error_findings),
+                )
+                state.aggregated_facts = previous_graph
+                state.aggregation_clusters = previous_clusters
+                rejected_repairs += 1
+                break
+            repair_passes += 1
+            report = candidate_report
+
+        state.facts_validation_findings = report.findings
+        state.retrieval_metrics["facts_validation_findings"] = len(report.findings)
+        state.retrieval_metrics["facts_validation_errors"] = len(report.error_findings)
+        state.retrieval_metrics["facts_merge_repair_passes"] = repair_passes
+        state.retrieval_metrics["facts_merge_vetoes"] = len(vetoes)
+        state.retrieval_metrics["facts_merge_repairs_rejected"] = rejected_repairs
+        if repair_passes:
+            # merge_facts recorded this against the pre-repair aggregation.
+            state.retrieval_metrics["facts_rejected_merges"] = len(vetoes)
+        if report.error_findings:
+            logger.warning(
+                "Facts validation gate: %d error finding(s) remain after "
+                "%d repair pass(es)",
+                len(report.error_findings),
+                repair_passes,
+            )
+        state.status = Status.SUCCESS
+        return state
+
+    return validate_facts
 
 
 def make_structural_check_node(tools: ToolBox):

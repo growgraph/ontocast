@@ -23,7 +23,7 @@ from ontocast.tool.onto import Tool
 from ontocast.tool.representation_text import (
     normalize_text,
     normalize_uri_local_name,
-    role_from_predicate_usage,
+    role_from_declaration,
     stable_sorted_triples,
 )
 from ontocast.tool.vector_store.core import GraphAtom
@@ -46,6 +46,26 @@ _GENERIC_TYPE_IRIS: frozenset[URIRef] = frozenset(
         OWL.Ontology,
         OWL.NamedIndividual,
         OWL.DeprecatedClass,
+        OWL.FunctionalProperty,
+        OWL.InverseFunctionalProperty,
+        OWL.TransitiveProperty,
+        OWL.SymmetricProperty,
+        OWL.AsymmetricProperty,
+        OWL.ReflexiveProperty,
+        OWL.IrreflexiveProperty,
+    }
+)
+
+# rdf:type values that declare an entity to be a property. OWL property
+# characteristics (functional, transitive, …) are included: they are only ever
+# asserted of properties, and an ontology that states a characteristic without
+# also stating owl:ObjectProperty is still describing a predicate.
+_PROPERTY_TYPE_IRIS: frozenset[URIRef] = frozenset(
+    {
+        RDF.Property,
+        OWL.ObjectProperty,
+        OWL.DatatypeProperty,
+        OWL.AnnotationProperty,
         OWL.FunctionalProperty,
         OWL.InverseFunctionalProperty,
         OWL.TransitiveProperty,
@@ -268,12 +288,21 @@ class GraphAtomizer(Tool):
             require_description=is_ontology_source and not self.index_undescribed_iris,
         )
         predicate_uris = {p for (_, p, _) in embedding_graph if isinstance(p, URIRef)}
+        declared_property_uris = {
+            subject
+            for property_type in _PROPERTY_TYPE_IRIS
+            for subject in embedding_graph.subjects(RDF.type, property_type)
+            if isinstance(subject, URIRef)
+        }
         generated_at = datetime.now(timezone.utc)
 
         atoms_by_id: dict[str, GraphAtom] = {}
         seen_payload_keys: set[tuple[str, str, str, str | None, str | None]] = set()
         for entity in entities:
-            role = role_from_predicate_usage(is_predicate=entity in predicate_uris)
+            role = role_from_declaration(
+                is_declared_property=entity in declared_property_uris,
+                is_predicate=entity in predicate_uris,
+            )
             patch_graph = self._build_neighborhood_graph(
                 graph=embedding_graph, root=entity, depth=depth
             )

@@ -80,7 +80,7 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "path=$(jq -r '.tool_input.file_path // .tool_input.path // \"\"'); deny(){ printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"%s\"}}' \"$1\"; exit 0; }; printf '%s' \"$path\" | grep -Eq '(^|/)[.]env($|[^/]+)' && ! printf '%s' \"$path\" | grep -Eq '(^|/)[.]env[.]example$' && deny \"Project policy: only .env.example may be read. Other .env* files may contain live secrets and must stay hidden from Claude.\"; exit 0",
+                        "command": "path=$(jq -r '.tool_input.file_path // .tool_input.path // .tool_input.filePath // .tool_input.file // \"\"'); deny(){ printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"%s\"}}' \"$1\"; exit 0; }; printf '%s' \"$path\" | grep -Eq '(^|/)[.]env($|[^/]+)' && ! printf '%s' \"$path\" | grep -Eq '(^|/)[.]env[.]example$' && deny \"Project policy: only .env.example may be read. Other .env* files may contain live secrets and must stay hidden from Claude.\"; exit 0",
                         "timeout": 10,
                         "statusMessage": "Checking Claude policy"
                     }
@@ -91,7 +91,7 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "path=$(jq -r '.tool_input.file_path // .tool_input.path // \"\"'); deny(){ printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"%s\"}}' \"$1\"; exit 0; }; printf '%s' \"$path\" | grep -Eq '(^|/)[.]env($|[^/]+)' && ! printf '%s' \"$path\" | grep -Eq '(^|/)[.]env[.]example$' && deny \"Project policy: only .env.example may be edited by Claude. Other .env* files may contain live secrets and must stay hidden.\"; exit 0",
+                        "command": "path=$(jq -r '.tool_input.file_path // .tool_input.path // .tool_input.filePath // .tool_input.file // \"\"'); deny(){ printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"%s\"}}' \"$1\"; exit 0; }; printf '%s' \"$path\" | grep -Eq '(^|/)[.]env($|[^/]+)' && ! printf '%s' \"$path\" | grep -Eq '(^|/)[.]env[.]example$' && deny \"Project policy: only .env.example may be edited by Claude. Other .env* files may contain live secrets and must stay hidden.\"; exit 0",
                         "timeout": 10,
                         "statusMessage": "Checking Claude policy"
                     }

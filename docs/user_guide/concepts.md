@@ -150,7 +150,11 @@ Facts rendering follows a **two-namespace contract** baked into the operational 
 | Namespace | Role |
 |-----------|------|
 | Domain ontology prefix | Schema only: classes (`rdf:type` targets), properties, and **reference individuals** that already exist verbatim in the catalog (e.g. controlled vocabulary entries) |
-| `cd:` (`FACTS_NAMESPACE`) | Every **new** instance extracted from the source text, even when typed with an ontology class |
+| `cd:` | Every **new** instance extracted from the source text, even when typed with an ontology class |
+
+The `cd:` namespace is the fixed constant `DEFAULT_IRI`
+(`ontocast/onto/constants.py`), not a configurable setting — there is no
+`FACTS_NAMESPACE` environment variable.
 
 Rules the model is steered to follow:
 

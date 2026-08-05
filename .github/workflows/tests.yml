@@ -1,0 +1,56 @@
+name: tests
+
+on:
+    pull_request:
+    push:
+        branches: [main]
+
+jobs:
+    # Guards the packaged artifact, not the source tree: `pip install ontocast`
+    # with no extras must import. This is the check that would have caught
+    # docling-core being imported unguarded while declared only in an extra.
+    import-smoke:
+        runs-on: ubuntu-latest
+        steps:
+        -   uses: actions/checkout@v5
+        -   name: Install uv
+            uses: astral-sh/setup-uv@v7
+            with:
+                version: "0.10.12"
+        -   name: Build wheel
+            run: uv build --wheel --out-dir dist
+        -   name: Install the wheel with NO extras
+            run: |
+                uv venv --python 3.12 /tmp/base-install
+                VIRTUAL_ENV=/tmp/base-install uv pip install dist/*.whl
+        -   name: Import the documented entry points
+            run: |
+                /tmp/base-install/bin/python -c "
+                from ontocast.toolbox import ToolBox
+                from ontocast.config import Config
+                print('base install imports OK')
+                "
+        -   name: Console script resolves
+            run: /tmp/base-install/bin/ontocast --help
+
+    unit:
+        runs-on: ubuntu-latest
+        strategy:
+            fail-fast: false
+            matrix:
+                python-version: ['3.12', '3.13']
+        steps:
+        -   uses: actions/checkout@v5
+        -   name: Install uv
+            uses: astral-sh/setup-uv@v7
+            with:
+                version: "0.10.12"
+        -   name: Install dependencies
+            run: uv sync --all-extras
+        # No .env exists in a clean checkout; pytest-dotenv no-ops on a missing
+        # file, and integration tests self-skip when their service is
+        # unreachable, so this runs offline.
+        -   name: Run tests
+            run: uv run pytest -m "not slow"
+            env:
+                PYTHONUNBUFFERED: '1'

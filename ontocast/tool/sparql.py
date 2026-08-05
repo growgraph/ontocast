@@ -1208,6 +1208,7 @@ def _ensure_property_schema_links(
     *,
     max_total_triples: int,
     should_include,
+    description_predicates: Sequence[URIRef] = _SEED_DESCRIPTION_PREDICATES,
 ) -> None:
     """Add at least one domain/range property bridge for classes lacking property incidence."""
     preferred = set(property_seeds)
@@ -1245,7 +1246,7 @@ def _ensure_property_schema_links(
             result,
             max_total_triples=max_total_triples,
             should_include=should_include,
-            include_types=False,
+            description_predicates=description_predicates,
         )
 
 
@@ -1294,6 +1295,7 @@ def _apply_schema_path_to_result(
     *,
     max_total_triples: int,
     should_include,
+    description_predicates: Sequence[URIRef] = _SEED_DESCRIPTION_PREDICATES,
 ) -> None:
     for triple in path:
         if len(result) >= max_total_triples:
@@ -1313,6 +1315,7 @@ def _apply_schema_path_to_result(
                 max_total_triples=max_total_triples,
                 should_include=should_include,
                 include_types=False,
+                description_predicates=description_predicates,
             )
         if isinstance(obj, URIRef):
             _materialize_class_node_in_snapshot(
@@ -1322,6 +1325,7 @@ def _apply_schema_path_to_result(
                 max_total_triples=max_total_triples,
                 should_include=should_include,
                 include_types=False,
+                description_predicates=description_predicates,
             )
 
 
@@ -1376,6 +1380,7 @@ def _finalize_induced_subgraph_snapshot(
     *,
     max_total_triples: int,
     should_include,
+    description_predicates: Sequence[URIRef] = _SEED_DESCRIPTION_PREDICATES,
 ) -> dict[str, int]:
     """Post-process snapshot for schema connectivity and cleanliness."""
     _ensure_property_schema_links(
@@ -1385,6 +1390,7 @@ def _finalize_induced_subgraph_snapshot(
         property_seeds,
         max_total_triples=max_total_triples,
         should_include=should_include,
+        description_predicates=description_predicates,
     )
     _ensure_class_hierarchy_axioms_pass(
         merged_graph,
@@ -1398,6 +1404,7 @@ def _finalize_induced_subgraph_snapshot(
         sorted_seed_uris,
         max_total_triples=max_total_triples,
         should_include=should_include,
+        description_predicates=description_predicates,
     )
     dropped_restrictions = _prune_degenerate_restriction_bnodes(result)
     _strip_redundant_generic_types(result)
@@ -1418,6 +1425,7 @@ def _connectivity_repair_seed_local_pass(
     *,
     max_total_triples: int,
     should_include,
+    description_predicates: Sequence[URIRef] = _SEED_DESCRIPTION_PREDICATES,
 ) -> None:
     """Add outgoing schema triples from seeds to bridge URI components."""
     if len(result) >= max_total_triples:
@@ -1457,6 +1465,7 @@ def _connectivity_repair_seed_local_pass(
                 max_total_triples=max_total_triples,
                 should_include=should_include,
                 include_types=False,
+                description_predicates=description_predicates,
             )
             if obj in component_for and component_for[obj] != origin:
                 _add_class_schema_triples_for_node(
@@ -1475,6 +1484,7 @@ def _connectivity_repair_cross_component_pass(
     *,
     max_total_triples: int,
     should_include,
+    description_predicates: Sequence[URIRef] = _SEED_DESCRIPTION_PREDICATES,
 ) -> None:
     """Bridge remaining schema components via shortest paths in merged graph."""
     components = _find_schema_uri_connected_components(result)
@@ -1510,6 +1520,7 @@ def _connectivity_repair_cross_component_pass(
             domain_range_first,
             max_total_triples=max_total_triples,
             should_include=should_include,
+            description_predicates=description_predicates,
         )
 
 
@@ -1520,6 +1531,7 @@ def _connectivity_repair_pass(
     *,
     max_total_triples: int,
     should_include,
+    description_predicates: Sequence[URIRef] = _SEED_DESCRIPTION_PREDICATES,
 ) -> None:
     """Add schema triples linking disconnected URI components when budget remains."""
     _connectivity_repair_seed_local_pass(
@@ -1528,6 +1540,7 @@ def _connectivity_repair_pass(
         sorted_seed_uris,
         max_total_triples=max_total_triples,
         should_include=should_include,
+        description_predicates=description_predicates,
     )
     _connectivity_repair_cross_component_pass(
         merged_graph,
@@ -1535,6 +1548,7 @@ def _connectivity_repair_pass(
         sorted_seed_uris,
         max_total_triples=max_total_triples,
         should_include=should_include,
+        description_predicates=description_predicates,
     )
 
 
@@ -1936,6 +1950,7 @@ class SPARQLTool:
                 protected_uris,
                 max_total_triples=max_total_triples,
                 should_include=should_include_expansion_triple,
+                description_predicates=description_predicates,
             )
             _bind_used_prefixes(result, filtered_ns, merged_graph.declared_prefix_map())
             return result, metrics
@@ -2041,6 +2056,7 @@ class SPARQLTool:
             protected_uris,
             max_total_triples=max_total_triples,
             should_include=should_include_expansion_triple,
+            description_predicates=description_predicates,
         )
         _bind_used_prefixes(result, filtered_ns, merged_graph.declared_prefix_map())
         return result, metrics

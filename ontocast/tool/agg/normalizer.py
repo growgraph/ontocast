@@ -44,6 +44,13 @@ class EntityRepresentation:
         representation: Combined string representation r(e) for embedding
         is_ontology_entity: Whether this entity is from an ontology namespace
         role: Detected entity role (class / property / instance)
+        predicate_literals: Per-predicate canonical guard-relevant literal
+            values ``pred -> {(value, kind)}`` (numeric/temporal only)
+        predicate_iri_objects: Per-predicate outgoing IRI objects
+            (subject-position only)
+        has_data_literal: Whether the entity holds any literal beyond
+            rdf:type/rdfs:label/rdfs:comment — literal-bearing entities get a
+            strict lexical merge bar
     """
 
     iri: URIRef
@@ -57,6 +64,11 @@ class EntityRepresentation:
     core_representation: str = ""
     neighborhood_representation: str = ""
     representation: str = ""
+    predicate_literals: dict[URIRef, frozenset[tuple[str, str]]] = field(
+        default_factory=dict
+    )
+    predicate_iri_objects: dict[URIRef, frozenset[URIRef]] = field(default_factory=dict)
+    has_data_literal: bool = False
 
     def __post_init__(self) -> None:
         if not self.core_representation:
@@ -65,6 +77,21 @@ class EntityRepresentation:
             self.representation = combine_embedding_text(self)
 
     ontology_iri: str | None = None
+
+
+@dataclass
+class EntityContext:
+    """Semantic context extracted for one entity in a single graph scan."""
+
+    types: list[URIRef]
+    properties: list[URIRef]
+    labels: list[str]
+    alt_labels: list[str]
+    is_predicate: bool
+    is_type_value: bool
+    predicate_literals: dict[URIRef, frozenset[tuple[str, str]]]
+    predicate_iri_objects: dict[URIRef, frozenset[URIRef]]
+    has_data_literal: bool
 
 
 class EntityNormalizer:
@@ -132,9 +159,7 @@ class EntityNormalizer:
         """
         return not is_in_namespace(str(entity), self.facts_iri, context="facts")
 
-    def extract_entity_context(
-        self, entity: URIRef, graph: RDFGraph
-    ) -> tuple[list[URIRef], list[URIRef], list[str], list[str], bool, bool]:
+    def extract_entity_context(self, entity: URIRef, graph: RDFGraph) -> EntityContext:
         """Extract semantic context for an entity from the graph.
 
         Args:
@@ -142,22 +167,27 @@ class EntityNormalizer:
             graph: RDF graph containing the entity
 
         Returns:
-            Tuple of (types, properties, labels, alt_labels, is_predicate,
-            is_type_value).
-            *is_predicate* is ``True`` when the entity appears in the
+            :class:`EntityContext` with types, properties, labels, alt labels,
+            role hints and merge-guard signatures.
+            ``is_predicate`` is ``True`` when the entity appears in the
             predicate position of at least one triple.
-            *is_type_value* is ``True`` when another entity is explicitly
+            ``is_type_value`` is ``True`` when another entity is explicitly
             typed *as* this entity (i.e., ``(X, rdf:type, entity)`` exists).
             This allows role inference for range/domain classes that are
             referenced as types in sparse per-sentence graphs but carry no
             ``a owl:Class`` declaration locally.
         """
+        from ontocast.tool.agg.signatures import canonical_literal
+
         types: list[URIRef] = []
         properties: set[URIRef] = set()
         labels: list[str] = []
         alt_labels: list[str] = []
         is_predicate = False
         is_type_value = False
+        has_data_literal = False
+        predicate_literals: dict[URIRef, set[tuple[str, str]]] = {}
+        predicate_iri_objects: dict[URIRef, set[URIRef]] = {}
         schema_predicates = {RDF.type, RDFS.label, RDFS.comment}
 
         # Extract information from triples
@@ -170,18 +200,22 @@ class EntityNormalizer:
                 # Collect types
                 if p == RDF.type and isinstance(o, URIRef):
                     types.append(o)
+                elif isinstance(p, URIRef) and isinstance(o, URIRef):
+                    predicate_iri_objects.setdefault(p, set()).add(o)
 
                 # Collect labels
                 if p == RDFS.label and isinstance(o, Literal):
                     labels.append(str(o))
-                elif (
-                    p not in schema_predicates
-                    and isinstance(o, Literal)
-                    and o.datatype is None
-                ):
-                    value = str(o).strip()
-                    if len(value) >= 3 and not value.isnumeric():
-                        alt_labels.append(value)
+                elif p not in schema_predicates and isinstance(o, Literal):
+                    has_data_literal = True
+                    if isinstance(p, URIRef):
+                        canonical = canonical_literal(o)
+                        if canonical is not None:
+                            predicate_literals.setdefault(p, set()).add(canonical)
+                    if o.datatype is None:
+                        value = str(o).strip()
+                        if len(value) >= 3 and not value.isnumeric():
+                            alt_labels.append(value)
 
             # When entity is object
             elif o == entity:
@@ -196,13 +230,22 @@ class EntityNormalizer:
 
         sorted_types = sorted(types, key=lambda entity: str(entity))
         sorted_properties = sorted(properties, key=lambda entity: str(entity))
-        return (
-            sorted_types,
-            sorted_properties,
-            labels,
-            alt_labels,
-            is_predicate,
-            is_type_value,
+        return EntityContext(
+            types=sorted_types,
+            properties=sorted_properties,
+            labels=labels,
+            alt_labels=alt_labels,
+            is_predicate=is_predicate,
+            is_type_value=is_type_value,
+            predicate_literals={
+                predicate: frozenset(values)
+                for predicate, values in predicate_literals.items()
+            },
+            predicate_iri_objects={
+                predicate: frozenset(objects)
+                for predicate, objects in predicate_iri_objects.items()
+            },
+            has_data_literal=has_data_literal,
         )
 
     def _render_term(self, term: Node) -> str:
@@ -338,20 +381,20 @@ class EntityNormalizer:
         # Get normalized form
         normal_form = self.normalize_uri(entity)
 
-        # Extract semantic context
-        types, properties, labels, alt_labels, is_predicate, is_type_value = (
-            self.extract_entity_context(entity, graph)
-        )
+        # Extract semantic context (single graph scan, incl. guard signatures)
+        context = self.extract_entity_context(entity, graph)
 
         # Detect role from the already-extracted context (no extra graph scan)
-        role = detect_role_from_context(types, is_predicate, is_type_value)
+        role = detect_role_from_context(
+            context.types, context.is_predicate, context.is_type_value
+        )
 
         core_representation = self._build_core_representation(
             normal_form=normal_form,
-            types=types,
-            properties=properties,
-            labels=labels,
-            alt_labels=alt_labels,
+            types=context.types,
+            properties=context.properties,
+            labels=context.labels,
+            alt_labels=context.alt_labels,
         )
         neighborhood_representation = self._build_neighborhood_representation(
             entity=entity,
@@ -364,14 +407,17 @@ class EntityNormalizer:
         return EntityRepresentation(
             iri=entity,
             normal_form=normal_form,
-            types=types,
-            properties=properties,
-            labels=labels,
-            alt_labels=alt_labels,
+            types=context.types,
+            properties=context.properties,
+            labels=context.labels,
+            alt_labels=context.alt_labels,
             is_ontology_entity=is_ontology,
             role=role,
             core_representation=core_representation,
             neighborhood_representation=neighborhood_representation,
+            predicate_literals=context.predicate_literals,
+            predicate_iri_objects=context.predicate_iri_objects,
+            has_data_literal=context.has_data_literal,
         )
 
     def create_representations_batch(

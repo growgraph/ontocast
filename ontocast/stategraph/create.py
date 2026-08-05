@@ -17,6 +17,7 @@ from ontocast.stategraph.node_factories import (
     make_render_ontology_node,
     make_structural_check_node,
     make_summarize_chunks_node,
+    make_validate_facts_node,
 )
 from ontocast.stategraph.routing import (
     route_after_chunk,
@@ -48,6 +49,7 @@ def create_agent_graph(tools: ToolBox) -> CompiledStateGraph:
     consolidate_ontology_node = make_consolidate_ontology_node(tools)
     render_facts_node = make_render_facts_node(tools)
     merge_facts_node = make_merge_facts_node(tools)
+    validate_facts_node = make_validate_facts_node(tools)
     structural_check_node = make_structural_check_node(tools)
     consistency_critic_node = make_consistency_critic_node(tools)
 
@@ -59,6 +61,7 @@ def create_agent_graph(tools: ToolBox) -> CompiledStateGraph:
     workflow.add_node(WorkflowNode.CONSOLIDATE_ONTOLOGY, consolidate_ontology_node)
     workflow.add_node(WorkflowNode.RENDER_FACTS, render_facts_node)
     workflow.add_node(WorkflowNode.MERGE_FACTS, merge_facts_node)
+    workflow.add_node(WorkflowNode.VALIDATE_FACTS, validate_facts_node)
     workflow.add_node(WorkflowNode.STRUCTURAL_CHECK, structural_check_node)
     workflow.add_node(WorkflowNode.CONSISTENCY_CRITIC, consistency_critic_node)
     workflow.add_node(WorkflowNode.SERIALIZE, serialize_node)
@@ -91,7 +94,8 @@ def create_agent_graph(tools: ToolBox) -> CompiledStateGraph:
     workflow.add_edge(WorkflowNode.RENDER_FACTS, WorkflowNode.MERGE_FACTS)
 
     workflow.add_edge(WorkflowNode.STRUCTURAL_CHECK, WorkflowNode.CONSISTENCY_CRITIC)
-    workflow.add_edge(WorkflowNode.MERGE_FACTS, WorkflowNode.SERIALIZE)
+    workflow.add_edge(WorkflowNode.MERGE_FACTS, WorkflowNode.VALIDATE_FACTS)
+    workflow.add_edge(WorkflowNode.VALIDATE_FACTS, WorkflowNode.SERIALIZE)
 
     def route_after_consistency_critic(state: AgentState) -> str:
         if state.render_facts:

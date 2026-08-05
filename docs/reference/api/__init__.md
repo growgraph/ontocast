@@ -1,3 +1,0 @@
-# `ontocast.api`
-
-::: ontocast.api

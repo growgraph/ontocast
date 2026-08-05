@@ -10,11 +10,16 @@ from langgraph.graph.state import CompiledStateGraph
 
 from ontocast.agent.serialize import serialize as serialize_agent_state
 from ontocast.config import Config, ServerConfig
+from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
+from ontocast.tool.facts_invariants import (
+    collect_shacl_shapes,
+    validate_aggregated_facts,
+)
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.toolbox import ToolBox
 
@@ -344,8 +349,44 @@ async def persist_unit_pipeline_outputs(
             doc_iri=state.doc_iri,
             document_metadata=_effective_document_metadata(state),
             doc_namespace=state.doc_namespace,
-        )
+        ).graph
+        _validate_unit_pipeline_facts(state, ontology_graph, tools)
     await asyncio.to_thread(serialize_agent_state, state, tools)
+
+
+def _validate_unit_pipeline_facts(
+    state: AgentState,
+    ontology_graph: RDFGraph,
+    tools: ToolBox,
+) -> None:
+    """Run the post-aggregation invariant gate for the single-unit path.
+
+    The document graph reaches this gate at VALIDATE_FACTS; the unit pipeline
+    does not run the graph, so without this call ``/process_unit`` would ship
+    facts with no functional-violation, coreference, or SHACL check at all.
+    Detection only: the un-merge repair re-aggregates *retained units against
+    each other*, which has no meaning for a single unit.
+    """
+    facts_validation = tools.config.get_tool_config().facts_validation
+    shapes_graph = collect_shacl_shapes(ontology_graph, facts_validation.shapes_dir)
+    report = validate_aggregated_facts(
+        state.aggregated_facts,
+        ontology_graph,
+        shapes_graph=shapes_graph,
+        fact_namespaces=[DEFAULT_IRI, str(state.doc_iri), state.doc_namespace or ""],
+        suspect_multi_value_severity=facts_validation.suspect_multi_value_severity,
+        functional_min_single_support=facts_validation.functional_min_single_support,
+        quantity_fallback_vocabulary=facts_validation.quantity_fallback_vocabulary,
+    )
+    state.facts_validation_findings = report.findings
+    state.retrieval_metrics["facts_validation_findings"] = len(report.findings)
+    state.retrieval_metrics["facts_validation_errors"] = len(report.error_findings)
+    if report.error_findings:
+        logger.warning(
+            "Unit-pipeline facts validation: %d error finding(s) "
+            "(no un-merge repair in single-unit mode)",
+            len(report.error_findings),
+        )
 
 
 def _merge_workflow_state_into_agent_state(
@@ -375,6 +416,14 @@ def _merge_workflow_state_into_agent_state(
     artifacts = workflow_state.get("ontology_artifacts")
     if artifacts is not None:
         state.ontology_artifacts = list(artifacts)
+    # Without these the post-aggregation validation gate is log-only on the
+    # batch path: its findings and counters never reach the dumped state.
+    findings = workflow_state.get("facts_validation_findings")
+    if findings is not None:
+        state.facts_validation_findings = list(findings)
+    metrics = workflow_state.get("retrieval_metrics")
+    if metrics:
+        state.retrieval_metrics = dict(metrics)
     return state
 
 

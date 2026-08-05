@@ -435,6 +435,52 @@ def finalize_llm_graph(
     return RDFGraph.partition_invalid_typed_literals(graph)
 
 
+_COMPACT_PREFIX = re.compile(r"^([A-Za-z][A-Za-z0-9_.-]*):(?!//)")
+
+
+def _collect_compact_prefixes(value: Any, found: set[str]) -> None:
+    """Gather ``prefix:`` heads from every key and IRI-ish string in *value*."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not key.startswith("@"):
+                match = _COMPACT_PREFIX.match(key)
+                if match:
+                    found.add(match.group(1))
+            _collect_compact_prefixes(item, found)
+    elif isinstance(value, list):
+        for item in value:
+            _collect_compact_prefixes(item, found)
+    elif isinstance(value, str):
+        match = _COMPACT_PREFIX.match(value)
+        if match:
+            found.add(match.group(1))
+
+
+def _referenced_jsonld_context(
+    context: dict[str, str], graph_nodes: list[dict[str, Any]]
+) -> dict[str, str]:
+    """Keep only the prefixes the serialized nodes actually use.
+
+    Every binding on the graph lands in the namespace manager, including
+    rdflib's built-ins (``brick``, ``csvw``, ``dcat``, ``odrl``, ``qb``,
+    ``void``, ``wgs``, …). Emitting all of them puts dozens of vocabularies in
+    front of the model that nothing in the payload references, which reads as
+    an invitation to use them.
+
+    Args:
+        context: Full prefix → namespace map from the graph bindings.
+        graph_nodes: Compacted JSON-LD nodes about to be serialized.
+
+    Returns:
+        dict: Context restricted to referenced prefixes, insertion order kept.
+    """
+    used: set[str] = set()
+    _collect_compact_prefixes(graph_nodes, used)
+    return {
+        prefix: namespace for prefix, namespace in context.items() if prefix in used
+    }
+
+
 class RDFGraph(Graph):
     """Subclass of rdflib.Graph with Pydantic schema support.
 
@@ -1406,7 +1452,10 @@ class RDFGraph(Graph):
                 continue
             graph_nodes.append(node)
 
-        payload: dict[str, Any] = {"@context": context, "@graph": graph_nodes}
+        payload: dict[str, Any] = {
+            "@context": _referenced_jsonld_context(context, graph_nodes),
+            "@graph": graph_nodes,
+        }
         try:
             return json.dumps(payload, indent=2, ensure_ascii=False)
         except (TypeError, ValueError) as exc:

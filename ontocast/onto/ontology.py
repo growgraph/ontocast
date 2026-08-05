@@ -1186,10 +1186,10 @@ class Ontology(OntologyPropertiesWithLineage):
         Example:
             >>> ont = Ontology(iri="https://example.org/ont", hash="abc123", parent_hashes=["def456"])
             >>> node = ont.to_lineage_node()
-            >>> node["hash"]
-            'abc123'
-            >>> node["parents"]
-            ['def456']
+            >>> node["hash"] == "abc123"
+            True
+            >>> node["parents"] == ["def456"]
+            True
         """
         return {
             "hash": self.hash,

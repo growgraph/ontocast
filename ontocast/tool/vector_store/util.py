@@ -30,8 +30,12 @@ _DEFAULT_MINIMAL_LABEL_LIMIT = 5
 # references (dimension vectors, systems of units, version IRIs) no longer become atoms.
 # A collection built under sf3 still holds those atoms; serving it would silently mix
 # pruned and unpruned sources, so the fingerprint forces a reindex rather than allowing
-# a half-pruned index.
-_SURFACE_FORM_CONTRACT = "sf4"
+# a half-pruned index. ``sf5``: entity_role is derived from property *declaration* as
+# well as predicate-position usage, so a TBox-only module's properties become
+# predicate-role atoms and gain a non-empty neighborhood representation. Both the role
+# payload and the embedded neighborhood text change, so the old vectors cannot be served
+# alongside the new ones.
+_SURFACE_FORM_CONTRACT = "sf5"
 
 
 class EmbeddingContractMismatchError(ValueError):

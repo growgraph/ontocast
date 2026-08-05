@@ -12,7 +12,9 @@ own ontology context according to mode/policy.
 """
 
 import logging
+from collections.abc import Sequence
 from copy import deepcopy
+from typing import Literal
 
 from ontocast.agent.criticise_facts import criticise_facts
 from ontocast.agent.criticise_ontology import criticise_ontology
@@ -22,11 +24,16 @@ from ontocast.agent.external_evidence import (
 )
 from ontocast.agent.render_facts import render_facts
 from ontocast.agent.render_ontology import render_ontology
+from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
-from ontocast.onto.model import ExternalEvidenceCacheEntry, ExternalEvidenceRequest
+from ontocast.onto.model import (
+    ExternalEvidenceCacheEntry,
+    ExternalEvidenceRequest,
+    FactsLoopAttempt,
+    FactsUnitFinding,
+)
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import document_ontology_access
-from ontocast.onto.rdfgraph import format_quarantine_for_prompt
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.context_resolver import (
@@ -34,6 +41,7 @@ from ontocast.stategraph.context_resolver import (
     resolve_effective_facts_ontology_context,
     resolve_unit_ontology_context,
 )
+from ontocast.tool.facts_invariants import collect_unit_findings
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -102,28 +110,118 @@ def _skip_critic_after_final_render(render_attempt: int, max_visits: int) -> boo
     return render_attempt == max_visits
 
 
-def _surface_unresolved_quarantine(unit_state: UnitFactsState) -> None:
-    """Log and record quarantined literals when the critic is skipped on the final render."""
-    if not unit_state.quarantined_literal_triples:
-        return
+def _collect_facts_findings(
+    unit_state: UnitFactsState,
+    additional_standard_namespaces: Sequence[str] = (),
+) -> list[FactsUnitFinding]:
+    """Run the deterministic per-unit validator against the current graph."""
+    return collect_unit_findings(
+        graph=unit_state.content_unit.graph,
+        ontology_graph=unit_state.ontology_snapshot.graph,
+        quarantined=unit_state.quarantined_literal_triples,
+        extraction_text=unit_state.content_unit.extraction_text,
+        fact_namespaces=[DEFAULT_IRI, str(unit_state.content_unit.doc_iri)],
+        # Citation numerics (pages, years, volume numbers) are not extractable
+        # quantities — never push coverage repair on bibliography units.
+        coverage_limit=0 if unit_state.content_unit.is_citation_metadata else 30,
+        additional_standard_namespaces=additional_standard_namespaces,
+    )
 
-    logger.warning(
-        "%d quarantined literal triple(s) were not critiqued (final render)",
-        len(unit_state.quarantined_literal_triples),
+
+def _record_facts_attempt(
+    unit_state: UnitFactsState,
+    *,
+    kind: Literal["render", "critic", "repair"],
+    render_attempt: int,
+    critic_attempt: int = 0,
+    n_findings: int = 0,
+    n_mandatory: int = 0,
+    repair_failed: bool = False,
+) -> None:
+    """Append one telemetry record for the current loop attempt."""
+    graph = unit_state.content_unit.graph
+    unit_state.attempt_log.append(
+        FactsLoopAttempt(
+            render_attempt=render_attempt,
+            critic_attempt=critic_attempt,
+            kind=kind,
+            success=unit_state.status == Status.SUCCESS,
+            n_deterministic_findings=n_findings,
+            n_mandatory_findings=n_mandatory,
+            repair_failed=repair_failed,
+            triple_count=len(graph),
+        )
     )
-    formatted = format_quarantine_for_prompt(
-        unit_state.quarantined_literal_triples,
-        unit_state.llm_graph_format,
+
+
+async def _run_deterministic_repair(
+    unit_state: UnitFactsState,
+    atomic,
+    supplemental: list[Ontology],
+    *,
+    render_attempt: int,
+) -> UnitFactsState:
+    """Repair machine-found violations with bounded render-update visits.
+
+    Runs after the final render (where the LLM critic is skipped): mandatory
+    findings — quarantined literals, unknown/near-miss terms — drive the loop.
+    Advisory findings (numeric coverage) ride along in the prompt when a repair
+    does run, but never trigger one on their own: they fire on nearly every
+    unit of numeric prose, so gating on them cost an extra render per unit.
+    A failed repair leaves the pre-repair graph intact (the patch path applies
+    only parsed operations) and is recorded rather than erased.
+    """
+    repair_visits = atomic.facts_repair_visits
+    findings = _collect_facts_findings(
+        unit_state, atomic.additional_standard_namespaces
     )
-    notice = (
-        "Unresolved quarantined typed literals (invalid XSD lexical forms, not applied):\n"
-        f"{formatted}"
-    )
-    existing = unit_state.suggestions.systemic_critique_summary.strip()
-    if existing:
-        unit_state.suggestions.systemic_critique_summary = f"{existing}\n\n{notice}"
-    else:
-        unit_state.suggestions.systemic_critique_summary = notice
+    for repair_attempt in range(1, repair_visits + 1):
+        mandatory = [finding for finding in findings if finding.mandatory]
+        if not mandatory:
+            break
+        logger.info(
+            "Deterministic facts repair %s/%s: %d finding(s) (%d mandatory)",
+            repair_attempt,
+            repair_visits,
+            len(findings),
+            len(mandatory),
+        )
+        unit_state.deterministic_findings = findings
+        unit_state = await render_facts(
+            unit_state, atomic, supplemental_ontologies=supplemental
+        )
+        repair_failed = unit_state.status != Status.SUCCESS
+        _record_facts_attempt(
+            unit_state,
+            kind="repair",
+            render_attempt=render_attempt,
+            critic_attempt=repair_attempt,
+            n_findings=len(findings),
+            n_mandatory=len(mandatory),
+            repair_failed=repair_failed,
+        )
+        if repair_failed:
+            # The pre-repair graph is intact, so the unit is still usable and
+            # the loop reports SUCCESS -- but the crash is recorded on the
+            # attempt log so "repair converged" stays distinguishable from
+            # "repair never ran".
+            logger.warning("Deterministic facts repair render failed; keeping graph")
+            unit_state.clear_failure()
+            unit_state.status = Status.SUCCESS
+            break
+        findings = _collect_facts_findings(
+            unit_state, atomic.additional_standard_namespaces
+        )
+
+    unit_state.deterministic_findings = findings
+    if findings:
+        mandatory_count = sum(1 for finding in findings if finding.mandatory)
+        if mandatory_count:
+            logger.warning(
+                "%d mandatory deterministic finding(s) remain unresolved",
+                mandatory_count,
+            )
+    return unit_state
 
 
 def _reset_node_evidence_context(
@@ -201,6 +299,9 @@ async def facts_loop(
             unit_state = await render_facts(
                 unit_state, atomic, supplemental_ontologies=supplemental
             )
+            _record_facts_attempt(
+                unit_state, kind="render", render_attempt=render_attempt
+            )
             if unit_state.status != Status.SUCCESS:
                 render_request = unit_state.get_external_evidence_request(
                     WorkflowNode.TEXT_TO_FACTS
@@ -214,6 +315,9 @@ async def facts_loop(
                     )
                     unit_state = await render_facts(
                         unit_state, atomic, supplemental_ontologies=supplemental
+                    )
+                    _record_facts_attempt(
+                        unit_state, kind="render", render_attempt=render_attempt
                     )
                     if unit_state.status == Status.SUCCESS:
                         logger.info(
@@ -239,16 +343,23 @@ async def facts_loop(
             if _skip_critic_after_final_render(render_attempt, max_visits):
                 logger.info(
                     "Unit facts loop finishing on final render attempt %s/%s "
-                    "(no further extract; skipping critic)",
+                    "(skipping LLM critic; running deterministic repair)",
                     render_attempt,
                     max_visits,
                 )
-                _surface_unresolved_quarantine(unit_state)
-                return unit_state
+                return await _run_deterministic_repair(
+                    unit_state,
+                    atomic,
+                    supplemental,
+                    render_attempt=render_attempt,
+                )
 
             for critic_attempt in range(1, max_visits + 1):
                 unit_state.node_visits[WorkflowNode.CRITICISE_FACTS] += 1
                 _reset_node_evidence_context(unit_state, WorkflowNode.CRITICISE_FACTS)
+                unit_state.deterministic_findings = _collect_facts_findings(
+                    unit_state, atomic.additional_standard_namespaces
+                )
                 unit_state = await criticise_facts(unit_state, atomic)
                 if unit_state.status == Status.SUCCESS:
                     logger.info(
@@ -258,7 +369,12 @@ async def facts_loop(
                         critic_attempt,
                         max_visits,
                     )
-                    return unit_state
+                    return await _run_deterministic_repair(
+                        unit_state,
+                        atomic,
+                        supplemental,
+                        render_attempt=render_attempt,
+                    )
 
                 critic_request = unit_state.get_external_evidence_request(
                     WorkflowNode.CRITICISE_FACTS
@@ -290,7 +406,12 @@ async def facts_loop(
                         critic_attempt,
                         max_visits,
                     )
-                    return unit_state
+                    return await _run_deterministic_repair(
+                        unit_state,
+                        atomic,
+                        supplemental,
+                        render_attempt=render_attempt,
+                    )
 
         logger.info("Unit facts loop exhausted retries")
         return unit_state

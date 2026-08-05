@@ -458,7 +458,25 @@ def test_initialize_skips_wipe_and_prune_when_disabled(
     st.vector_store.prune_orphan_ontology_iris.assert_not_called()
 
 
+def _skip_if_qdrant_configured_but_down() -> None:
+    """Skip when a configured Qdrant is unreachable.
+
+    These build a real ToolBox, so they use whatever vector backend the
+    environment configures. With no QDRANT_URI (a clean CI checkout) that is
+    the in-memory store and they run offline; with QDRANT_URI set but the
+    service down they used to fail with a bare connection error instead of
+    skipping like every other service-dependent test.
+    """
+    from ontocast.config import QdrantConfig
+    from test.qdrant_util import qdrant_reachable
+
+    qdrant = QdrantConfig()
+    if qdrant.uri and not qdrant_reachable(uri=qdrant.uri, api_key=qdrant.api_key):
+        pytest.skip(f"Qdrant not reachable at {qdrant.uri}")
+
+
 def _tenancy_toolbox(tmp: str) -> ToolBox:
+    _skip_if_qdrant_configured_but_down()
     wd = Path(tmp)
     od = wd / "ontologies"
     od.mkdir()

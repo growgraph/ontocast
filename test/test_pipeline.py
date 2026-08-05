@@ -129,7 +129,13 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
     toolbox = cast(
         ToolBox,
         SimpleNamespace(
-            get_atomic_tools=lambda: cast(AtomicToolBox, object()),
+            get_atomic_tools=lambda: cast(
+                AtomicToolBox,
+                SimpleNamespace(
+                    facts_repair_visits=1,
+                    additional_standard_namespaces=(),
+                ),
+            ),
             ontology_manager=OntologyManager(),
         ),
     )

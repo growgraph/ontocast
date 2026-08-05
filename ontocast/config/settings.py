@@ -22,6 +22,44 @@ from ontocast.onto.tenancy import (
     tenant_project_ontologies_name,
 )
 
+# Explicit public surface. ``ontocast.config`` re-exports this module with a
+# star import, so without __all__ every imported third-party name (Field,
+# BaseSettings, SettingsConfigDict, AliasChoices, Path, Literal, StrEnum)
+# became part of the package's public API.
+__all__ = [
+    "AggregationConfig",
+    "ChunkConfig",
+    "ClaudeModel",
+    "Config",
+    "ConverterConfig",
+    "CrossQueryMergeMode",
+    "DomainConfig",
+    "EmbeddingConfig",
+    "EmbeddingProvider",
+    "FactsValidationConfig",
+    "FusekiConfig",
+    "GeminiModel",
+    "InducedSubgraphSeedOrder",
+    "LLMConfig",
+    "LLMModelName",
+    "LLMModelNameAbstract",
+    "LLMProvider",
+    "LanceDBConfig",
+    "LexicalTriggerFusion",
+    "OllamaModel",
+    "OpenAIModel",
+    "PatchRetrievalConfig",
+    "PathConfig",
+    "QdrantConfig",
+    "ServerConfig",
+    "SiblingGuardScope",
+    "ToolConfig",
+    "VectorStoreConfig",
+    "VectorStoreDedupMode",
+    "WebSearchConfig",
+    "WebSearchProvider",
+]
+
 
 class LLMProvider(StrEnum):
     """Supported LLM providers."""
@@ -194,8 +232,13 @@ class LLMConfig(BaseSettings):
     llm_max_inflight: int = Field(
         default=16,
         ge=1,
+        # Documented as LLM_MAX_INFLIGHT, but the LLM_ env_prefix would otherwise
+        # make the real variable LLM_LLM_MAX_INFLIGHT -- the documented name was a
+        # silent no-op. "max_inflight" resolves to LLM_MAX_INFLIGHT under the prefix.
+        validation_alias=AliasChoices("llm_max_inflight", "max_inflight"),
         description=(
-            "Maximum concurrent provider LLM requests shared across all documents."
+            "Maximum concurrent provider LLM requests shared across all documents. "
+            "Set via LLM_MAX_INFLIGHT."
         ),
     )
     think: bool | None = Field(
@@ -285,6 +328,37 @@ class ChunkConfig(BaseSettings):
         description=(
             "Min stripped length for LLM section tagging; smaller segments merge "
             "into neighbors before tagging"
+        ),
+    )
+    bibliography_mode: Literal["domain_facts", "citations_only", "skip"] = Field(
+        default="citations_only",
+        description=(
+            "Routing for chunks detected as bibliography/reference lists "
+            "(section label or citation-density heuristics): 'citations_only' "
+            "extracts bibliographic metadata only, 'skip' drops the chunks "
+            "before extraction, 'domain_facts' disables special handling."
+        ),
+    )
+    citation_vocabulary: dict[str, str] = Field(
+        default_factory=lambda: {
+            "work_class": "schema:ScholarlyArticle",
+            "fallback_class": "schema:CreativeWork",
+            "title": "schema:name",
+            "author": "schema:author",
+            "author_name": "schema:name",
+            "date_published": "schema:datePublished",
+            "venue": "schema:isPartOf",
+            "identifier": "schema:identifier",
+            "cites": "schema:citation",
+        },
+        description=(
+            "Terms the citation-metadata prompt uses in 'citations_only' mode, "
+            "by role. Bibliographic entries are not domain facts, so unlike the "
+            "rest of the pipeline these terms are not retrieved from the "
+            "catalog -- they default to schema.org and are overridden here for "
+            "catalogs that model citations with another vocabulary (e.g. "
+            "bibo, FaBiO, DCMI). Keys are fixed roles; values are CURIEs or "
+            "IRIs. Setting an empty mapping drops the vocabulary guidance."
         ),
     )
 
@@ -646,6 +720,13 @@ class WebSearchConfig(BaseSettings):
     )
 
 
+class SiblingGuardScope(StrEnum):
+    """Scope of the co-object sibling merge guard."""
+
+    SUBJECT = "subject"
+    PREDICATE = "predicate"
+
+
 class AggregationConfig(BaseSettings):
     """Aggregation settings for entity clustering/disambiguation."""
 
@@ -658,6 +739,58 @@ class AggregationConfig(BaseSettings):
         ge=0.0,
         le=1.0,
         description="Cosine similarity threshold used by DBSCAN clustering.",
+    )
+    candidate_similarity_threshold: float = Field(
+        default=0.70,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Lower cosine threshold used to generate permissive merge "
+            "candidates before symbolic validation."
+        ),
+    )
+    lexical_label_jaccard: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum label token-set Jaccard for the fuzzy lexical-alias merge tier."
+        ),
+    )
+    lexical_sequence_ratio: float = Field(
+        default=0.90,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum SequenceMatcher ratio on URI normal forms for the fuzzy "
+            "lexical-alias merge tier."
+        ),
+    )
+    lexical_token_jaccard: float = Field(
+        default=0.75,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum normal-form token Jaccard for the fuzzy lexical-alias "
+            "merge tier (both sides >= 2 tokens)."
+        ),
+    )
+    functional_min_empirical_support: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "Minimum distinct subjects a predicate must be observed on "
+            "before it counts as empirically single-valued for the "
+            "functional-object merge guard."
+        ),
+    )
+    sibling_guard_scope: SiblingGuardScope = Field(
+        default=SiblingGuardScope.SUBJECT,
+        description=(
+            "Co-object sibling guard scope: 'subject' forbids merging any "
+            "two objects of one subject; 'predicate' restricts the "
+            "prohibition to objects sharing the same predicate."
+        ),
     )
 
     model_config = SettingsConfigDict(
@@ -829,6 +962,65 @@ class PatchRetrievalConfig(BaseSettings):
             "Unused in the default max_score path."
         ),
     )
+    per_ontology_atom_floor: int = Field(
+        default=2,
+        ge=0,
+        description=(
+            "Reserve pass before the global fill: each ontology contributing "
+            "candidates is guaranteed min(floor, its candidate count) seed "
+            "slots, allocated round-robin. Unlike per_ontology_seed_quota "
+            "(a ceiling), the floor protects small modules from being starved "
+            "by one dominant ontology at the atom cap. 0 disables."
+        ),
+    )
+    small_module_closure_max_triples: int = Field(
+        default=300,
+        ge=0,
+        description=(
+            "Include a source ontology's whole (header-stripped) graph in the "
+            "snapshot when it has at least one admitted atom and at most this "
+            "many triples. Partial inclusion of a tiny vocabulary pushes the "
+            "renderer to improvise near-miss property names. Inert unless the "
+            "module wins at least one seed, so it pairs with "
+            "per_ontology_atom_floor. The single largest lever measured on "
+            "case6: with the floor at 2 and the triple budget at 1200 it took "
+            "the needed-term recall from 3/11 to 11/11 and declared-property "
+            "coverage from 37% to 74%, because a qualified-quantity or "
+            "observation module is only useful whole. 0 disables."
+        ),
+    )
+    per_role_atom_floor: int = Field(
+        default=12,
+        ge=0,
+        description=(
+            "Reserve pass guaranteeing predicate-role atoms a share of the seed "
+            "budget before the global fill, in the same floor-not-ceiling shape "
+            "as per_ontology_atom_floor. Dense similarity between prose and a "
+            "noun phrase beats a verb phrase, so classes and individuals win a "
+            "shared ranking and the properties carrying the graph structure are "
+            "crowded out. 0 disables."
+        ),
+    )
+    schema_closure_max_entities: int = Field(
+        default=32,
+        ge=0,
+        description=(
+            "Cap on terms admitted by rdfs:domain/rdfs:range closure over the "
+            "retrieved seeds: properties whose domain or range names an admitted "
+            "class (or its ancestors), and the domain/range classes of admitted "
+            "properties. A class with no property that can link it is inert "
+            "context. 0 disables."
+        ),
+    )
+    schema_closure_ancestor_depth: int = Field(
+        default=2,
+        ge=0,
+        description=(
+            "How far to walk rdfs:subClassOf upward when matching a property's "
+            "declared domain/range against an admitted class. Properties are "
+            "usually declared on an ancestor of the class the text mentions."
+        ),
+    )
     mmr_lambda: float = Field(
         default=1.0,
         ge=0.0,
@@ -929,9 +1121,16 @@ class VectorStoreConfig(BaseSettings):
         ),
     )
     induced_subgraph_max_total_triples: int = Field(
-        default=550,
+        default=1200,
         ge=1,
-        description="Hard cap on triples returned for induced subgraph retrieval.",
+        description=(
+            "Hard cap on triples returned for induced subgraph retrieval. This, "
+            "not the atom cap, is what binds in practice: measured on the case6 "
+            "8-module catalog, every seed-side knob (top_k, max_atoms, MMR, the "
+            "atom floors) was flat while the snapshot sat pinned at the old 550, "
+            "and raising it alone moved declared-property coverage 21% -> 36%. "
+            "Gains flatten past ~1600."
+        ),
     )
     induced_subgraph_estimated_triples_per_query: int = Field(
         default=24,
@@ -1242,6 +1441,17 @@ class VectorStoreConfig(BaseSettings):
             "discarding the trigger evidence for atoms retrieval already found."
         ),
     )
+    query_unit_signals_enabled: bool = Field(
+        default=False,
+        description=(
+            "Match number-adjacent tokens in the unit text ('4-15 days', "
+            "'200 kV', '0.5 %') case-insensitively and plural-tolerantly "
+            "against catalog surface forms (labels, symbols, UCUM codes) and "
+            "inject the matched entities as additional snapshot seeds at "
+            "lexical_trigger_score, outside the semantic atom budget. Off by "
+            "default until the recall-corpus sweep validates it."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="VECTOR_STORE_",
@@ -1371,6 +1581,95 @@ class FactsValidationConfig(BaseSettings):
             "is a class (e.g. qudt:unit with range qudt:Unit). Quarantined triples "
             "are surfaced to the facts critic so the renderer resolves the token "
             "to an IRI from the ontology context."
+        ),
+    )
+    repair_visits: int = Field(
+        default=1,
+        ge=0,
+        description=(
+            "Deterministic repair budget per unit: extra render_facts_update "
+            "calls fed with machine-found MANDATORY fixes (quarantined "
+            "literals, unknown terms, alias leftovers) and numeric-coverage "
+            "candidates. Applies even at MAX_VISITS=1, where the LLM critic "
+            "never runs."
+        ),
+    )
+    property_alias_min_ratio: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "SequenceMatcher cutoff for deterministic near-miss property "
+            "rewrites in catalog namespaces (token containment always "
+            "qualifies)."
+        ),
+    )
+    merge_repair_passes: int = Field(
+        default=1,
+        ge=0,
+        description=(
+            "Deterministic un-merge budget at the post-aggregation validation "
+            "gate: error findings on merged subjects turn into full-cluster "
+            "pair vetoes and the facts units are re-aggregated, up to this "
+            "many passes. 0 records findings without repairing."
+        ),
+    )
+    suspect_multi_value_severity: Literal["error", "warning"] = Field(
+        default="error",
+        description=(
+            "Severity of SUSPECT_MULTI_VALUE gate findings (multiple distinct "
+            "numeric values on one predicate, or multiple objects on a "
+            "dominantly single-valued predicate). Only error findings drive "
+            "the un-merge repair."
+        ),
+    )
+    additional_standard_namespaces: list[str] = Field(
+        default_factory=lambda: ["https://schema.org/", "http://schema.org/"],
+        description=(
+            "Namespaces exempt from UNKNOWN_TERM findings in addition to the "
+            "RDF/OWL substrate and annotation/provenance terms. Only "
+            "meta-vocabularies are built in; a domain vocabulary a deployment "
+            "genuinely shares across catalogs (SOSA/SSN, CSVW, FOAF, "
+            "schema.org, Dublin Core application profiles) is exempted here. "
+            "schema.org is the default because the shipped citation "
+            "vocabulary uses it."
+        ),
+    )
+    quantity_fallback_vocabulary: dict[str, str] = Field(
+        default_factory=lambda: {
+            "value_class": "qudt:QuantityValue",
+            "numeric_value": "qudt:numericValue",
+            "unit": "qudt:unit",
+        },
+        description=(
+            "Vocabulary the facts prompt names as the fallback for bounded or "
+            "approximate quantities when the retrieved context supplies no "
+            "suitable class. Roles: value_class, numeric_value, unit. Defaults "
+            "to QUDT; override for catalogs modelling quantities otherwise. An "
+            "empty mapping forbids the fallback and keeps the renderer inside "
+            "the provided context. Terms named here are treated as a deliberate "
+            "fallback by the NON_CATALOG_VOCABULARY finding rather than as an "
+            "unexplained outside term."
+        ),
+    )
+    functional_min_single_support: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Minimum number of single-valued subjects a predicate needs before "
+            "the gate treats it as empirically functional. Below this the "
+            "evidence is too thin to call a second value a violation."
+        ),
+    )
+    shapes_dir: str | None = Field(
+        default=None,
+        description=(
+            "Directory of SHACL shape files (.ttl) for the validation gate. "
+            "Shapes inlined in the ontology context (sh:NodeShape) are picked "
+            "up automatically; SHACL runs only when pyshacl is installed "
+            "(extra: 'shacl'). Setting this without the extra installed, or "
+            "pointing it at a directory with no readable shapes, logs a "
+            "warning rather than silently skipping validation."
         ),
     )
 

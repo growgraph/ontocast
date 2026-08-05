@@ -1,4 +1,5 @@
 import pathlib
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -528,6 +529,74 @@ class OntologyRenderReport(BaseModel):
         default_factory=ExternalEvidenceRequest,
         description="Optional request to run web search before retrying.",
     )
+
+
+class FactsUnitFindingKind(StrEnum):
+    """Kinds of deterministic per-unit facts findings."""
+
+    QUARANTINED_LITERAL = "quarantined_literal"
+    UNKNOWN_TERM = "unknown_term"
+    PROPERTY_ALIAS = "property_alias"
+    CLOSED_RANGE_LITERAL = "closed_range_literal"
+    NUMERIC_COVERAGE = "numeric_coverage"
+
+
+class FactsUnitFinding(BaseModel):
+    """One deterministic, machine-found issue in a rendered facts graph.
+
+    Mandatory findings are schema/namespace violations the renderer must fix;
+    non-mandatory findings (numeric coverage) list candidates the renderer
+    adjudicates item by item.
+    """
+
+    kind: FactsUnitFindingKind
+    mandatory: bool = True
+    message: str
+    subject: str = ""
+    predicate: str = ""
+    value: str = ""
+    suggestions: list[str] = Field(default_factory=list)
+
+
+class FactsLoopAttempt(BaseModel):
+    """Telemetry record for one attempt inside the per-unit facts loop."""
+
+    render_attempt: int = 0
+    critic_attempt: int = 0
+    kind: Literal["render", "critic", "repair"] = "render"
+    score: float | None = None
+    success: bool | None = None
+    n_actionable_fixes: int = 0
+    n_deterministic_findings: int = 0
+    n_mandatory_findings: int = 0
+    repair_failed: bool = False
+    triple_count: int = 0
+
+
+class FactsValidationFindingKind(StrEnum):
+    """Kinds of deterministic post-aggregation facts findings."""
+
+    FUNCTIONAL_VIOLATION = "functional_violation"
+    SUSPECT_MULTI_VALUE = "suspect_multi_value"
+    DEGENERATE_COREFERENCE = "degenerate_coreference"
+    SHACL = "shacl"
+    NON_CATALOG_VOCABULARY = "non_catalog_vocabulary"
+
+
+class FactsValidationFinding(BaseModel):
+    """One invariant violation detected in the aggregated facts graph.
+
+    Error-severity findings on subjects that resulted from an identity merge
+    drive the deterministic un-merge repair (full-cluster pair vetoes plus
+    re-aggregation); warning findings are telemetry only.
+    """
+
+    kind: FactsValidationFindingKind
+    severity: Literal["error", "warning"] = "error"
+    message: str
+    subject: str = ""
+    predicate: str = ""
+    values: list[str] = Field(default_factory=list)
 
 
 class Suggestions(BaseModel):

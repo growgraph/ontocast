@@ -64,6 +64,12 @@ def _build_tools() -> AtomicToolBox:
             get_llm_tool=get_llm_tool,
             web_grounding_enabled_for_node=lambda _node: False,
             object_property_literal_check=True,
+            # Mirrors AtomicToolBox: read directly, not via getattr with a
+            # duplicated literal default, so a rename fails loudly here
+            # instead of silently reverting the configured ratio.
+            property_alias_min_ratio=0.85,
+            citation_vocabulary={},
+            quantity_fallback_vocabulary=None,
         ),
     )
 

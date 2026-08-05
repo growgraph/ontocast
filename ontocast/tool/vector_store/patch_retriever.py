@@ -10,7 +10,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from pydantic import Field, PrivateAttr
-from rdflib import Namespace, URIRef
+from rdflib import BNode, Namespace, URIRef
 from rdflib.namespace import RDFS
 
 from ontocast.config import (
@@ -26,6 +26,7 @@ from ontocast.onto.ontology_header import OntologyHeader
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.util import RDFLIB_DEFAULT_NAMESPACE_URIS
 from ontocast.tool.onto import Tool
+from ontocast.tool.representation_text import ROLE_PREDICATE
 from ontocast.tool.sparql import (
     build_candidate_subgraph_query,
     filter_overbroad_namespace_map,
@@ -41,6 +42,10 @@ from ontocast.tool.vector_store.core import (
 )
 from ontocast.tool.vector_store.diagnostics import (
     build_ontology_rank_diagnostics,
+)
+from ontocast.tool.vector_store.query_signals import (
+    CatalogSurfaceIndex,
+    number_adjacent_tokens,
 )
 from ontocast.tool.vector_store.util import (
     normalized_core_neighborhood_weights,
@@ -95,6 +100,149 @@ def _ranked_entity_weights(
         key=lambda iri: (-best_score_by_iri[iri], iri),
     )
     return ranked, best_score_by_iri, entity_roles
+
+
+def _class_ancestors(graph: RDFGraph, cls: URIRef, *, max_depth: int) -> set[URIRef]:
+    """Walk ``rdfs:subClassOf`` upward from ``cls``, bounded and cycle-safe."""
+    seen: set[URIRef] = set()
+    frontier = {cls}
+    for _ in range(max(max_depth, 0)):
+        nxt: set[URIRef] = set()
+        for node in frontier:
+            for parent in graph.objects(node, RDFS.subClassOf):
+                if isinstance(parent, URIRef) and parent not in seen:
+                    seen.add(parent)
+                    nxt.add(parent)
+        if not nxt:
+            break
+        frontier = nxt
+    return seen
+
+
+def _schema_closure_entities(
+    graph: RDFGraph,
+    seed_uris: Iterable[str],
+    *,
+    max_entities: int,
+    ancestor_depth: int,
+    seed_relevance: dict[str, float] | None = None,
+) -> dict[str, str]:
+    """Terms reachable from the seeds by ``rdfs:domain`` / ``rdfs:range``.
+
+    Vector retrieval ranks terms by how a text chunk reads, which favours noun
+    phrases: a class scores against prose far more readily than the property
+    that connects it. Admitting a class without any property whose domain or
+    range mentions it hands the renderer nouns it cannot link, and the renderer
+    then improvises a predicate from outside the catalog. This closes that gap
+    deterministically -- no embeddings, no domain knowledge, no LLM call:
+
+    - for an admitted class, the properties declaring it (or one of its
+      ancestors) as domain or range;
+    - for an admitted property, the classes it declares as domain and range.
+
+    Args:
+        graph: Merged ontology context to read schema axioms from.
+        seed_uris: IRIs already admitted by retrieval.
+        max_entities: Hard cap on added IRIs (0 disables the closure).
+        ancestor_depth: How far to walk ``rdfs:subClassOf`` when matching a
+            property's declared domain/range against an admitted class.
+        seed_relevance: Retrieval score per seed IRI, used to rank additions.
+            Without it the cap truncates alphabetically, which is close to
+            random: ``matsci#A…`` displaces ``observation#hasQuantityResult``
+            for no reason but the letter it starts with.
+
+    Returns:
+        dict: ``{iri: role}`` for terms to add, excluding the seeds themselves.
+    """
+    if max_entities <= 0:
+        return {}
+    seeds = {URIRef(uri) for uri in seed_uris if uri}
+    if not seeds:
+        return {}
+    scores = seed_relevance or {}
+
+    # One pass over the schema axioms; ontologies are small enough that
+    # indexing them beats re-scanning per seed.
+    domain_range: dict[URIRef, set[URIRef]] = defaultdict(set)
+    for predicate in (RDFS.domain, RDFS.range):
+        for prop, target in graph.subject_objects(predicate):
+            if isinstance(prop, URIRef) and isinstance(target, URIRef):
+                domain_range[prop].add(target)
+
+    # Best score of any seed that justifies each addition, so the cap keeps
+    # what the text actually pointed at.
+    induced_by: dict[URIRef, float] = {}
+
+    def _offer(term: URIRef, score: float) -> None:
+        if term in seeds:
+            return
+        if score > induced_by.get(term, float("-inf")):
+            induced_by[term] = score
+
+    ancestors_of: dict[URIRef, set[URIRef]] = {}
+    for seed in seeds:
+        score = float(scores.get(str(seed), 0.0))
+        # Property seed -> its declared domain and range classes.
+        for target in domain_range.get(seed, ()):
+            _offer(target, score)
+        ancestors_of[seed] = {seed} | _class_ancestors(
+            graph, seed, max_depth=ancestor_depth
+        )
+
+    # Class seed -> properties whose domain/range names it or an ancestor.
+    for prop, targets in domain_range.items():
+        for seed, family in ancestors_of.items():
+            if targets & family:
+                _offer(prop, float(scores.get(str(seed), 0.0)))
+
+    property_iris = {str(prop) for prop in domain_range}
+    ranked = sorted(
+        induced_by.items(),
+        # Properties first at equal score: they are the scarce half of the
+        # snapshot and the half a class cannot be linked without.
+        key=lambda item: (
+            -item[1],
+            0 if str(item[0]) in property_iris else 1,
+            str(item[0]),
+        ),
+    )
+    return {
+        str(term): ("predicate" if str(term) in property_iris else "resource")
+        for term, _ in ranked[:max_entities]
+    }
+
+
+def _drop_module_contribution(graph: RDFGraph, module_graph: RDFGraph) -> None:
+    """Remove what the snapshot already holds about a module's own subjects.
+
+    The induced subgraph normally took a slice of the module before the closure
+    decided to include it whole. Merging the two would be harmless for IRI
+    subjects — RDF is a set — but every blank node in the module (OWL
+    restriction shells, SHACL prefix declarations) gets fresh identity on
+    merge, so the shell would appear twice: once from the slice, once from the
+    module. Dropping the slice first keeps the closure idempotent.
+    """
+    module_subjects = {
+        subject for subject in module_graph.subjects() if isinstance(subject, URIRef)
+    }
+    if not module_subjects:
+        return
+
+    stale: set = set()
+    frontier = [s for s in graph.subjects() if s in module_subjects]
+    while frontier:
+        subject = frontier.pop()
+        if subject in stale:
+            continue
+        stale.add(subject)
+        for _, _, obj in graph.triples((subject, None, None)):
+            # Blank nodes have no identity of their own: they are only
+            # reachable through the subject being replaced.
+            if isinstance(obj, BNode) and obj not in stale:
+                frontier.append(obj)
+
+    for subject in stale:
+        graph.remove((subject, None, None))
 
 
 def _filter_hits_by_relative_floor(
@@ -201,13 +349,27 @@ def _select_hits_round_robin_by_ontology(
     *,
     per_ontology_seed_quota: int,
     max_atoms: int,
+    per_ontology_atom_floor: int = 0,
+    per_role_atom_floor: int = 0,
 ) -> list[OntologySearchHit]:
     """Fair multi-ontology fill from a score-ranked unique-entity list.
 
-    Round-robin across ontology IRIs, taking at most ``per_ontology_seed_quota`` seeds
-    each. If slots remain under ``max_atoms``, fill from leftover hits in global score
-    order. ``per_ontology_seed_quota <= 0`` or ``max_atoms <= 0`` means no per-ontology /
-    no total cap respectively.
+    Three optional mechanisms:
+
+    - ``per_role_atom_floor`` is a *reserve* for predicate-role atoms, taken
+      first in global score order. Prose reads as noun phrases, so a class
+      out-scores the property that connects it in a shared ranking, and the
+      predicates carrying the graph structure are the ones squeezed out.
+    - ``per_ontology_atom_floor`` is a *reserve*: before any global fill,
+      each contributing ontology is guaranteed min(floor, its candidates)
+      slots, allocated round-robin so small modules cannot be starved by
+      one dominant ontology's seed volume (the case4 qqval failure).
+    - ``per_ontology_seed_quota`` is a *ceiling*: round-robin taking at most
+      that many seeds per ontology before the leftover fill.
+
+    Remaining slots under ``max_atoms`` fill from leftover hits in global
+    score order. ``<= 0`` disables each mechanism; ``max_atoms <= 0`` means
+    no total cap.
 
     Ontologies are visited best-scoring first. Visiting them in IRI order instead made
     allocation alphabetical whenever the cap bound before every ontology was served —
@@ -216,7 +378,11 @@ def _select_hits_round_robin_by_ontology(
     if not ranked_hits:
         return []
     limit = len(ranked_hits) if max_atoms <= 0 else min(max_atoms, len(ranked_hits))
-    if per_ontology_seed_quota <= 0:
+    if (
+        per_ontology_seed_quota <= 0
+        and per_ontology_atom_floor <= 0
+        and per_role_atom_floor <= 0
+    ):
         return ranked_hits[:limit]
 
     by_ontology: dict[str, list[OntologySearchHit]] = defaultdict(list)
@@ -233,25 +399,47 @@ def _select_hits_round_robin_by_ontology(
     selected: list[OntologySearchHit] = []
     selected_iris: set[str] = set()
 
-    progressed = True
-    while len(selected) < limit and progressed:
-        progressed = False
-        for onto in ontology_order:
-            if len(selected) >= limit:
+    if per_role_atom_floor > 0:
+        for hit in ranked_hits:
+            if len(selected) >= min(limit, per_role_atom_floor):
                 break
-            if taken_count[onto] >= per_ontology_seed_quota:
+            iri = hit.atom.iri
+            if not iri or iri in selected_iris:
                 continue
-            queue = queues[onto]
-            while queue:
-                hit = queue.pop(0)
-                iri = hit.atom.iri
-                if not iri or iri in selected_iris:
+            if hit.atom.entity_role != ROLE_PREDICATE:
+                continue
+            selected.append(hit)
+            selected_iris.add(iri)
+            taken_count[hit.atom.ontology_iri or ""] += 1
+        # Reserved hits must not be handed out twice by the ontology passes.
+        for onto, queue in queues.items():
+            queues[onto] = [h for h in queue if h.atom.iri not in selected_iris]
+
+    def _round_robin_fill(per_ontology_cap: int) -> None:
+        progressed = True
+        while len(selected) < limit and progressed:
+            progressed = False
+            for onto in ontology_order:
+                if len(selected) >= limit:
+                    break
+                if taken_count[onto] >= per_ontology_cap:
                     continue
-                selected.append(hit)
-                selected_iris.add(iri)
-                taken_count[onto] += 1
-                progressed = True
-                break
+                queue = queues[onto]
+                while queue:
+                    hit = queue.pop(0)
+                    iri = hit.atom.iri
+                    if not iri or iri in selected_iris:
+                        continue
+                    selected.append(hit)
+                    selected_iris.add(iri)
+                    taken_count[onto] += 1
+                    progressed = True
+                    break
+
+    if per_ontology_atom_floor > 0:
+        _round_robin_fill(per_ontology_atom_floor)
+    if per_ontology_seed_quota > 0:
+        _round_robin_fill(max(per_ontology_seed_quota, per_ontology_atom_floor))
 
     if len(selected) < limit:
         for hit in ranked_hits:
@@ -357,6 +545,8 @@ def _select_atoms_round_robin_by_ontology(
     *,
     per_ontology_seed_quota: int,
     max_atoms: int,
+    per_ontology_atom_floor: int = 0,
+    per_role_atom_floor: int = 0,
 ) -> list[GraphAtom]:
     """GraphAtom variant of :func:`_select_hits_round_robin_by_ontology`."""
     as_hits = [
@@ -367,6 +557,8 @@ def _select_atoms_round_robin_by_ontology(
         as_hits,
         per_ontology_seed_quota=per_ontology_seed_quota,
         max_atoms=max_atoms,
+        per_ontology_atom_floor=per_ontology_atom_floor,
+        per_role_atom_floor=per_role_atom_floor,
     )
     return [hit.atom for hit in selected]
 
@@ -894,10 +1086,161 @@ class OntologyPatchRetriever(Tool):
         exclude=True,
     )
     _last_retrieval_metrics: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _surface_index: CatalogSurfaceIndex | None = PrivateAttr(default=None)
+    # Whole-module graphs for the small-module closure, keyed by ontology IRI.
+    # The catalog is stable for the life of a run, and every content unit hits
+    # the same handful of modules — refetching per unit multiplies catalog
+    # reads by the unit count for no new information. ``None`` caches a miss.
+    _small_module_cache: dict[str, Ontology | None] = PrivateAttr(default_factory=dict)
+    # Tenancy the cache was filled under. The retriever outlives a tenancy
+    # switch, and serving one tenant's modules to another would be a leak.
+    _small_module_cache_scope: str = PrivateAttr(default="")
 
     @property
     def last_retrieval_metrics(self) -> dict[str, Any]:
         return self._last_retrieval_metrics
+
+    def _match_query_unit_signals(self, trigger_source: str) -> dict[str, str]:
+        """Match number-adjacent unit tokens against catalog surface forms.
+
+        Additive, outside the semantic atom budget (precedent: the lexical
+        trigger lane). Returns ``{entity_iri: ontology_iri}``; empty when the
+        lane is disabled or nothing matches.
+        """
+        if not self.vector_store.store_config.query_unit_signals_enabled:
+            return {}
+        manager = self.ontology_manager
+        if manager is None or not trigger_source:
+            return {}
+        tokens = number_adjacent_tokens(trigger_source)
+        if not tokens:
+            return {}
+        if self._surface_index is None:
+            # Symbol/notation predicates come from configuration rather than
+            # being compiled into query_signals; built lazily because the
+            # store config is not available at PrivateAttr default time.
+            self._surface_index = CatalogSurfaceIndex(
+                symbol_predicates=[
+                    URIRef(iri)
+                    for iri in (
+                        self.vector_store.store_config.induced_subgraph_symbol_predicates
+                    )
+                ]
+            )
+        matched = self._surface_index.match(tokens, manager.ontologies)
+        if matched:
+            logger.info(
+                "Query unit signals matched %d entity(ies) from tokens %s",
+                len(matched),
+                sorted(tokens),
+            )
+        return matched
+
+    @staticmethod
+    def _schema_axiom_graph(
+        merged_context: tuple[RDFGraph, dict[str, str]] | None,
+        catalog: list[Ontology] | None,
+    ) -> RDFGraph | None:
+        """Pick the graph to read ``rdfs:domain``/``rdfs:range`` axioms from.
+
+        Whichever of the two expansion paths materialized the ontologies wins;
+        neither being available means the induced-subgraph call is fetching on
+        its own and there is nothing local to close over.
+        """
+        if merged_context is not None:
+            return merged_context[0]
+        if catalog:
+            combined = RDFGraph()
+            for ontology in catalog:
+                combined += ontology.graph
+            return combined
+        return None
+
+    async def _apply_small_module_closure(
+        self, graph: RDFGraph, hit_ontology_iris: list[str]
+    ) -> None:
+        """Merge whole small modules into the snapshot (header-stripped).
+
+        A vocabulary small enough to fit entirely (e.g. a qualified-quantity
+        module of ~20 terms) is included wholesale once any of its atoms is
+        admitted: partial inclusion of a tiny module is what pushes the
+        renderer to improvise near-miss property names.
+        """
+        closure_max = self.patch.small_module_closure_max_triples
+        if closure_max <= 0:
+            return
+        modules = await self._asmall_module_candidates(hit_ontology_iris)
+        closed: list[str] = []
+        for onto_iri, ontology in modules:
+            if len(ontology.graph) > closure_max:
+                continue
+            module_graph = Ontology.strip_ontology_header_triples(ontology.graph.copy())
+            _drop_module_contribution(graph, module_graph)
+            graph += module_graph
+            for prefix, namespace_uri in ontology.graph.namespaces():
+                graph.bind(prefix, namespace_uri)
+            closed.append(onto_iri)
+        if closed:
+            self._last_retrieval_metrics["module_closure_iris"] = closed
+
+    async def _asmall_module_candidates(
+        self, hit_ontology_iris: list[str]
+    ) -> list[tuple[str, Ontology]]:
+        """Resolve hit ontologies to full graphs, manager first, store second.
+
+        The in-memory manager is empty in every deployment that keeps its
+        catalog in a triple store and fetches per query — which is the normal
+        server configuration, and where this closure silently did nothing.
+        """
+        store_config = getattr(self.vector_store, "store_config", None)
+        scope = str(getattr(store_config, "ontology_table", "") or "")
+        if scope != self._small_module_cache_scope:
+            self._small_module_cache.clear()
+            self._small_module_cache_scope = scope
+
+        wanted = sorted(set(hit_ontology_iris))
+        resolved: list[tuple[str, Ontology]] = []
+        missing: list[str] = []
+        manager = self.ontology_manager
+        for onto_iri in wanted:
+            if onto_iri in self._small_module_cache:
+                cached = self._small_module_cache[onto_iri]
+                if cached is not None:
+                    resolved.append((onto_iri, cached))
+                continue
+            ontology = (
+                manager.get_freshest_terminal_ontology_by_iri(onto_iri)
+                if manager is not None
+                else None
+            )
+            if ontology is None or ontology.is_null():
+                missing.append(onto_iri)
+            else:
+                self._small_module_cache[onto_iri] = ontology
+                resolved.append((onto_iri, ontology))
+
+        store = self.sparql_tool.triple_store_manager if self.sparql_tool else None
+        if missing and store is not None:
+            try:
+                fetched = await store.afetch_ontologies_by_iri(missing)
+            except Exception as exc:
+                # Do NOT cache on this path. A None entry is a permanent
+                # negative (see the miss-caching note above), so memoizing a
+                # transient store error would silently strip the small-module
+                # closure from every later unit in the process.
+                logger.warning(
+                    "Small-module closure catalog fetch failed (not cached, "
+                    "will retry on the next unit): %s",
+                    exc,
+                )
+                return sorted(resolved, key=lambda item: item[0])
+            by_iri = {o.iri: o for o in fetched if o.iri and not o.is_null()}
+            for onto_iri in missing:
+                found = by_iri.get(onto_iri)
+                self._small_module_cache[onto_iri] = found
+                if found is not None:
+                    resolved.append((onto_iri, found))
+        return sorted(resolved, key=lambda item: item[0])
 
     async def _acandidate_context(
         self,
@@ -1201,6 +1544,8 @@ class OntologyPatchRetriever(Tool):
                 merged,
                 per_ontology_seed_quota=pc.per_ontology_seed_quota,
                 max_atoms=eff_max_atoms,
+                per_ontology_atom_floor=pc.per_ontology_atom_floor,
+                per_role_atom_floor=pc.per_role_atom_floor,
             )
         elif eff_max_atoms > 0:
             merged = merged[:eff_max_atoms]
@@ -1267,8 +1612,20 @@ class OntologyPatchRetriever(Tool):
             return RDFGraph(), source_iris
 
         entity_uris, entity_relevance, entity_roles = _ranked_entity_weights(merged)
+        signal_entities = self._match_query_unit_signals(trigger_source)
+        for signal_iri, signal_onto_iri in sorted(signal_entities.items()):
+            if signal_iri in entity_relevance:
+                continue
+            entity_uris.append(signal_iri)
+            entity_relevance[signal_iri] = sc.lexical_trigger_score
+            entity_roles[signal_iri] = "resource"
+        if signal_entities:
+            self._last_retrieval_metrics["query_signal_iris"] = sorted(
+                signal_entities.keys()
+            )
         hit_ontology_iris = sorted(
             {atom.ontology_iri for atom in merged if atom.ontology_iri}
+            | set(signal_entities.values())
         )
         ontology_version_filters: dict[str, set[str]] = {}
         ontology_hash_filters: dict[str, set[str]] = {}
@@ -1304,6 +1661,26 @@ class OntologyPatchRetriever(Tool):
             candidate_pushdown=sc.induced_subgraph_candidate_pushdown,
         )
 
+        schema_graph = self._schema_axiom_graph(merged_context, catalog)
+        if schema_graph is not None:
+            closure = _schema_closure_entities(
+                schema_graph,
+                entity_uris,
+                max_entities=pc.schema_closure_max_entities,
+                ancestor_depth=pc.schema_closure_ancestor_depth,
+                seed_relevance=entity_relevance,
+            )
+            if closure:
+                # Rank below every real seed: the closure fills structural gaps,
+                # it must not displace a term the text actually matched when the
+                # induced-subgraph triple budget binds.
+                floor_score = min(entity_relevance.values(), default=0.0)
+                for closure_iri, closure_role in closure.items():
+                    entity_uris.append(closure_iri)
+                    entity_relevance[closure_iri] = floor_score * 0.5
+                    entity_roles[closure_iri] = closure_role
+                self._last_retrieval_metrics["schema_closure_iris"] = sorted(closure)
+
         hub_seed_count = sc.induced_subgraph_hub_seed_count
         ancestor_depth = sc.induced_subgraph_ancestor_closure_depth
         entity_groups: dict[str, str] = {
@@ -1311,6 +1688,8 @@ class OntologyPatchRetriever(Tool):
             for atom in merged
             if atom.iri and atom.ontology_iri
         }
+        for signal_iri, signal_onto_iri in signal_entities.items():
+            entity_groups.setdefault(signal_iri, signal_onto_iri)
         symbol_predicates = tuple(
             URIRef(iri) for iri in sc.induced_subgraph_symbol_predicates
         )
@@ -1336,6 +1715,8 @@ class OntologyPatchRetriever(Tool):
             entity_groups=entity_groups,
             extra_description_predicates=symbol_predicates,
         )
+        await self._apply_small_module_closure(graph, hit_ontology_iris)
+
         self._last_retrieval_metrics["snapshot_triple_count"] = len(graph)
         self._last_retrieval_metrics["ontology_iris_for_expansion"] = ontology_iris
         self._last_retrieval_metrics.update(self.sparql_tool.last_finalize_metrics)

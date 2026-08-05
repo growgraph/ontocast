@@ -19,6 +19,8 @@ from ontocast.onto.model import (
     ExternalEvidenceHit,
     ExternalEvidencePlan,
     ExternalEvidenceRequest,
+    FactsLoopAttempt,
+    FactsUnitFinding,
     Suggestions,
 )
 from ontocast.onto.ontology import Ontology
@@ -165,6 +167,17 @@ class UnitFactsState(UnitState):
     quarantined_literal_triples: list[RejectedLiteralTriple] = Field(
         default_factory=list,
         description="Triples excluded from the applied graph due to invalid XSD typed literals.",
+    )
+    deterministic_findings: list[FactsUnitFinding] = Field(
+        default_factory=list,
+        description=(
+            "Machine-found violations/coverage gaps injected as MANDATORY "
+            "fixes into the next repair render."
+        ),
+    )
+    attempt_log: list[FactsLoopAttempt] = Field(
+        default_factory=list,
+        description="Per-attempt telemetry (render/critic/repair) for this unit.",
     )
     assembly_anchor_iri: str = Field(
         default="",

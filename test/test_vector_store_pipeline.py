@@ -1811,8 +1811,11 @@ async def test_ensemble_fanout_never_fetches_full_catalog() -> None:
 
     stats = manager.catalog_io_stats()
     assert stats["full_catalog_fetches"] == 0
-    # Only the two ontologies actually referenced are materialized per call.
-    assert stats["graph_fetches"] <= 5 * 2
+    # Only the two ontologies actually referenced are materialized per call,
+    # plus a one-off read per module for the small-module closure — which has
+    # no manager to ask here. That surcharge must stay O(modules), not
+    # O(units x modules); the +2 headroom is what pins the closure's cache.
+    assert stats["graph_fetches"] <= 5 * 2 + 2
     assert retriever.last_retrieval_metrics["catalog_access_mode"] == "sparql"
 
 
@@ -1849,6 +1852,13 @@ def _catalog_retriever(
         vector_store=vector_store,
         sparql_tool=SPARQLTool(triple_store_manager=manager),
         ontology_manager=ontology_manager,
+        # These fixtures are a few triples each, so the small-module closure
+        # would swallow them whole and make every assertion below about the
+        # closure instead of about the pushdown/merge machinery under test.
+        # It also mints fresh blank nodes per merge, which no cross-path
+        # identity comparison can survive. Covered separately in
+        # test_retrieval_floor_and_signals.
+        patch=PatchRetrievalConfig(small_module_closure_max_triples=0),
     )
 
 

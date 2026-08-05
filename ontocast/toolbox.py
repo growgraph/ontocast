@@ -141,6 +141,7 @@ class ToolBox:
             search_provider=self.search_provider,
             web_search_config=tool_config.web_search,
             facts_validation_config=tool_config.facts_validation,
+            citation_vocabulary=tool_config.chunk_config.citation_vocabulary,
         )
 
         # Create triple store manager: Fuseki when configured, otherwise in-memory.
@@ -169,6 +170,16 @@ class ToolBox:
         self.aggregator: EmbeddingBasedAggregator = EmbeddingBasedAggregator(
             embedding_model=tool_config.aggregation.embedding_model,
             similarity_threshold=tool_config.aggregation.similarity_threshold,
+            candidate_similarity_threshold=(
+                tool_config.aggregation.candidate_similarity_threshold
+            ),
+            lexical_label_jaccard=tool_config.aggregation.lexical_label_jaccard,
+            lexical_sequence_ratio=tool_config.aggregation.lexical_sequence_ratio,
+            lexical_token_jaccard=tool_config.aggregation.lexical_token_jaccard,
+            functional_min_empirical_support=(
+                tool_config.aggregation.functional_min_empirical_support
+            ),
+            sibling_guard_scope=str(tool_config.aggregation.sibling_guard_scope),
         )
         self._entity_aligners: dict[tuple[str, float], EntityAligner] = {}
 

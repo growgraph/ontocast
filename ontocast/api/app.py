@@ -498,7 +498,7 @@ def create_app(
                     doc_namespace=initial_state.doc_namespace,
                 )
                 facts_ttl = turtle_from_graph(
-                    postprocessed_facts,
+                    postprocessed_facts.graph,
                     strip_provenance=loaded.strip_provenance,
                 )
 

@@ -74,7 +74,7 @@ existing contract load-bearing.
 `resolve_ontology_ref` accepts the canonical ontology IRI, the short `ontology_id`, or the
 author Turtle prefix. Prompt assembly uses `OntologySnapshot` views (no catalog id); writeback
 applies insert complements onto freshest catalog terminals by namespace ownership — snapshots
-are never registered as catalog entries. See [Ontology Context](../user_guide/ontology_context.md#assemble--propose--apply).
+are never registered as catalog entries. See [Ontology Context](../user_guide/ontology_context.md#assemble-propose-apply).
 
 `catalog_cache_stats()` exposes hit/miss counters; they also ride along in
 `state.retrieval_metrics["patch_retrieval"]` (see
