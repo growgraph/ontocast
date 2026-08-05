@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from rdflib import RDFS
+from rdflib import RDFS, URIRef
 
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
@@ -81,15 +81,29 @@ def owner_index(ontologies: list[Ontology]) -> list[tuple[str, str]]:
     return sorted(pairs.items(), key=lambda kv: -len(kv[0]))
 
 
-def owner_of(iri: str, candidates: list[tuple[str, str]]) -> str | None:
+def owner_of(
+    iri: str,
+    candidates: list[tuple[str, str]],
+    ontologies: list[Ontology] | None = None,
+) -> str | None:
     """Resolve which ontology owns ``iri`` by namespace containment.
+
+    Mirrors production's two-pass resolution: namespace containment first, then
+    subject membership. The fallback matters for vocabularies whose
+    ``owl:Ontology`` header IRI is not a prefix of their term IRIs (e.g. QUDT
+    heads at ``…/2.1/vocab/unit`` while its units live under ``…/vocab/unit/``)
+    — without it every such term reads as unowned and silently vanishes from
+    per-ontology attribution.
 
     Args:
         iri: Entity IRI to attribute.
         candidates: Output of :func:`owner_index`.
+        ontologies: Catalog ontologies for the subject-membership fallback;
+            omit to restrict resolution to namespace containment.
 
     Returns:
-        str | None: Owning ontology IRI, or None when no namespace matches.
+        str | None: Owning ontology IRI, or None when neither namespace
+        containment nor subject membership matches.
     """
     for namespace, ontology_iri in candidates:
         if (
@@ -98,6 +112,13 @@ def owner_of(iri: str, candidates: list[tuple[str, str]]) -> str | None:
             or iri.startswith(f"{namespace}/")
         ):
             return ontology_iri
+    if ontologies:
+        ref = URIRef(iri)
+        for ontology in ontologies:
+            if not ontology.iri:
+                continue
+            if next(ontology.graph.triples((ref, None, None)), None) is not None:
+                return ontology.iri
     return None
 
 

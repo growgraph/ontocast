@@ -25,6 +25,7 @@ from ontocast.onto.model import (
     FactsUnitFindingKind,
     FactsValidationFinding,
     FactsValidationFindingKind,
+    GraphRepairRecord,
 )
 from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
 from ontocast.tool.agg.signatures import canonical_literal, harvest_max_one_predicates
@@ -167,6 +168,84 @@ def normalize_literals_against_schema(
     return len(replacements)
 
 
+_COMPACT_IRI = re.compile(r"^([A-Za-z][\w.-]*):([^\s/][^\s]*)$")
+
+
+def _resolve_type_literal(lexical: str, prefix_map: dict[str, str]) -> str | None:
+    """Resolve a literal ``rdf:type`` object to a full IRI, when unambiguous.
+
+    Accepts absolute IRIs and compact IRIs whose prefix is bound in the graph.
+    Returns None when the lexical form cannot be resolved deterministically.
+    """
+    if lexical.startswith(("http://", "https://", "urn:")) and " " not in lexical:
+        return lexical
+    match = _COMPACT_IRI.match(lexical)
+    if match is None:
+        return None
+    namespace = prefix_map.get(match.group(1))
+    if not namespace:
+        return None
+    return f"{namespace}{match.group(2)}"
+
+
+def repair_literal_type_objects(
+    graph: RDFGraph,
+) -> tuple[int, list[FactsUnitFinding], list[GraphRepairRecord]]:
+    """Coerce literal ``rdf:type`` objects into IRIs.
+
+    The renderer sometimes emits ``a "prefix:Class"^^xsd:string`` instead of
+    ``a prefix:Class`` (JSON-LD bare-string type values parse the same way).
+    A literal-typed node is invisible to SPARQL class queries, reasoning, and
+    the aggregator's URI minting/entity matching, all of which guard on
+    ``isinstance(obj, URIRef)``. Absolute IRIs and compact IRIs bound in the
+    graph are rewritten deterministically; unresolvable forms become MANDATORY
+    findings.
+
+    Returns:
+        Tuple of (number of rewritten triples, unresolved findings,
+        applied-repair records).
+    """
+    prefix_map = {
+        prefix: str(namespace) for prefix, namespace in graph.namespaces() if prefix
+    }
+    rewritten = 0
+    findings: list[FactsUnitFinding] = []
+    applied: list[GraphRepairRecord] = []
+    for subject, predicate, obj in list(graph.triples((None, RDF.type, None))):
+        if not isinstance(obj, Literal):
+            continue
+        lexical = str(obj).strip()
+        resolved = _resolve_type_literal(lexical, prefix_map)
+        if resolved is not None:
+            graph.remove((subject, predicate, obj))
+            graph.add((subject, RDF.type, URIRef(resolved)))
+            rewritten += 1
+            applied.append(
+                GraphRepairRecord(
+                    kind=FactsUnitFindingKind.LITERAL_TYPE_OBJECT,
+                    source=lexical,
+                    target=resolved,
+                )
+            )
+            logger.info(
+                "Repaired literal rdf:type object %r -> <%s>", lexical, resolved
+            )
+            continue
+        findings.append(
+            FactsUnitFinding(
+                kind=FactsUnitFindingKind.LITERAL_TYPE_OBJECT,
+                message=(
+                    f"rdf:type object '{lexical}' is a string literal, not an "
+                    "IRI; assert the type as a catalog class IRI "
+                    "(`a prefix:Class`), never as a quoted string."
+                ),
+                subject=str(subject),
+                value=lexical,
+            )
+        )
+    return rewritten, findings, applied
+
+
 def _alias_candidates(
     alias: URIRef,
     graph: RDFGraph,
@@ -225,7 +304,7 @@ def repair_property_aliases(
     ontology_graph: RDFGraph | None,
     *,
     min_ratio: float = 0.85,
-) -> tuple[int, list[FactsUnitFinding]]:
+) -> tuple[int, list[FactsUnitFinding], list[GraphRepairRecord]]:
     """Rewrite near-miss predicates in catalog namespaces; report ambiguity.
 
     A predicate whose namespace belongs to the ontology context but which is
@@ -236,14 +315,16 @@ def repair_property_aliases(
     suggestions.
 
     Returns:
-        Tuple of (number of rewritten triples, unresolved findings).
+        Tuple of (number of rewritten triples, unresolved findings,
+        applied-repair records).
     """
     catalog_terms = collect_catalog_terms(ontology_graph)
     if not catalog_terms:
-        return 0, []
+        return 0, [], []
     catalog_namespaces = {_namespace_of(term) for term in catalog_terms}
 
     findings: list[FactsUnitFinding] = []
+    applied: list[GraphRepairRecord] = []
     rewritten = 0
     predicates = {
         predicate
@@ -273,10 +354,20 @@ def repair_property_aliases(
         ]
         if len(strong) == 1:
             replacement = URIRef(strong[0])
+            alias_triples = 0
             for subject, predicate, obj in list(graph.triples((None, alias, None))):
                 graph.remove((subject, predicate, obj))
                 graph.add((subject, replacement, obj))
                 rewritten += 1
+                alias_triples += 1
+            applied.append(
+                GraphRepairRecord(
+                    kind=FactsUnitFindingKind.PROPERTY_ALIAS,
+                    source=str(alias),
+                    target=str(replacement),
+                    triple_count=alias_triples,
+                )
+            )
             logger.info("Repaired property alias %s -> %s", alias, replacement)
             continue
         findings.append(
@@ -290,7 +381,7 @@ def repair_property_aliases(
                 suggestions=candidates,
             )
         )
-    return rewritten, findings
+    return rewritten, findings, applied
 
 
 def _closed_range_suggestions(
@@ -311,7 +402,10 @@ def _closed_range_suggestions(
             for value in ontology_graph.objects(individual, predicate)
         }
         surfaces.add(_local_name(str(individual)))
-        if token in surfaces or token.lower() in {s.lower() for s in surfaces}:
+        # Character-for-character only: the facts prompt instructs that a
+        # lowercase symbol and its uppercase variant denote DIFFERENT
+        # individuals, so the suggester must not propose `unit:M` for "m".
+        if token in surfaces:
             suggestions.append(str(individual))
     return sorted(suggestions)[:3]
 
@@ -360,8 +454,33 @@ def collect_unit_findings(
     catalog_namespaces = {_namespace_of(term) for term in catalog_terms}
     normalized_fact_namespaces = [ns for ns in fact_namespaces if ns]
 
+    prefix_map = {
+        prefix: str(namespace) for prefix, namespace in graph.namespaces() if prefix
+    }
     flagged_terms: set[str] = set()
     for subject, predicate, obj in graph:
+        if predicate == RDF.type and isinstance(obj, Literal):
+            lexical = str(obj).strip()
+            if lexical in flagged_terms:
+                continue
+            flagged_terms.add(lexical)
+            resolved = _resolve_type_literal(lexical, prefix_map)
+            findings.append(
+                FactsUnitFinding(
+                    kind=FactsUnitFindingKind.LITERAL_TYPE_OBJECT,
+                    message=(
+                        f"rdf:type object '{lexical}' is a string literal, not "
+                        "an IRI; assert the type as a catalog class IRI "
+                        "(`a prefix:Class`), never as a quoted string."
+                    ),
+                    subject=str(subject),
+                    value=lexical,
+                    suggestions=[resolved]
+                    if resolved and resolved in catalog_terms
+                    else [],
+                )
+            )
+            continue
         for position, term in (("predicate", predicate), ("type", obj)):
             if not isinstance(term, URIRef):
                 continue
@@ -618,6 +737,10 @@ def _non_catalog_vocabulary_findings(
     Returns:
         list: One finding per non-catalog term, ordered by IRI.
     """
+    # A pure graph-vs-graph check: with nothing to compare against there is no
+    # per-term finding to make. The *deployment* condition this used to mask --
+    # extraction proceeding with no catalog vocabulary at all -- is reported by
+    # the validate node, which knows whether an empty context was expected.
     if ontology_graph is None or not len(ontology_graph):
         return []
 

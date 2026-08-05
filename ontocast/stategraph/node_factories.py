@@ -15,12 +15,13 @@ from ontocast.onto.enum import (
     WorkflowNode,
 )
 from ontocast.onto.iri_policy import split_namespace_local
-from ontocast.onto.model import FactsValidationFinding
+from ontocast.onto.model import FactsValidationFinding, UnitFailure
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.ontology_apply import (
-    apply_partitioned_inserts,
-    partition_inserts_by_namespace,
+    OntologyDelta,
+    apply_partitioned_updates,
+    partition_triples_by_namespace,
 )
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
@@ -35,6 +36,7 @@ from ontocast.stategraph.helpers import (
     all_unit_patch_source_iris,
     build_document_excerpt,
     build_ontology_delta_graph,
+    merge_unit_deltas,
 )
 from ontocast.tool.facts_invariants import (
     collect_shacl_shapes,
@@ -57,11 +59,30 @@ def _empty_unit_snapshot() -> OntologySnapshot:
     )
 
 
+def _map_stage_status(failed_without_output: int, total_units: int) -> Status:
+    """Status for a completed map stage.
+
+    A stage where *every* unit failed is a failure, not a success with empty
+    output. Both map nodes previously ended with an unconditional
+    ``Status.SUCCESS``, so a document whose units all died -- or one whose
+    conversion failed upstream -- still returned HTTP 200 with empty facts.
+    Partial failure stays SUCCESS: the surviving units produced real output,
+    and the casualties are recorded in ``state.unit_failures``.
+    """
+    if total_units and failed_without_output >= total_units:
+        return Status.FAILED
+    return Status.SUCCESS
+
+
 def make_render_ontology_node(tools: ToolBox):
     async def render_ontology_updates(state: AgentState) -> AgentState:
         if not state.content_units:
             state.ontology_units = []
-            state.status = Status.SUCCESS
+            # Do not overwrite an upstream failure: conversion and chunking set
+            # FAILED and the graph edge into this node is unconditional, so
+            # clobbering it here turned a failed conversion into HTTP 200.
+            if state.status != Status.FAILED:
+                state.status = Status.SUCCESS
             return state
 
         worker_limit = max(1, tools.config.server.parallel_workers)
@@ -98,6 +119,7 @@ def make_render_ontology_node(tools: ToolBox):
         ordered_results = sorted(raw_results, key=lambda item: item[0])
 
         ontology_units: list[ContentUnit] = []
+        unit_deltas: list[OntologyDelta] = []
         fresh_ontologies: list[Ontology] = []
         failed_without_output_count = 0
         salvaged_failed_count = 0
@@ -133,17 +155,31 @@ def make_render_ontology_node(tools: ToolBox):
 
             if not has_output:
                 failed_without_output_count += 1
+                state.unit_failures.append(
+                    UnitFailure(
+                        unit_index=unit_index,
+                        phase="ontology",
+                        stage=(
+                            result.failure_stage.value
+                            if result.failure_stage is not None
+                            else None
+                        ),
+                        reason=result.failure_reason,
+                    )
+                )
                 continue
 
             content_unit = result.content_unit
-            delta_graph = build_ontology_delta_graph(result)
-            if len(delta_graph) > 0:
+            delta = build_ontology_delta_graph(result)
+            if not delta.is_empty():
+                unit_deltas.append(delta)
+            if len(delta.inserts) > 0:
                 ontology_units.append(
                     ContentUnit(
                         text=content_unit.text,
                         index=content_unit.index,
                         doc_iri=content_unit.doc_iri,
-                        graph=delta_graph,
+                        graph=delta.inserts,
                         type=OutputType.ONTOLOGIES,
                     )
                 )
@@ -171,36 +207,41 @@ def make_render_ontology_node(tools: ToolBox):
         state.retrieval_metrics["ontology_writable_count"] = len(seen_writable)
         state.retrieval_metrics["ontology_primary_units"] = sum(primary_counts.values())
 
-        # Document-level complement bag + namespace apply onto catalog bases.
-        merged_delta = RDFGraph()
-        for unit in ontology_units:
-            for triple in unit.graph:
-                merged_delta.add(triple)
-            for prefix, namespace in unit.graph.namespaces():
-                if prefix:
-                    merged_delta.bind(prefix, namespace)
+        # Document-level insert/delete consensus + namespace apply onto catalog bases.
+        merged_delta = merge_unit_deltas(unit_deltas)
 
         artifacts: list[Ontology] = list(fresh_ontologies)
-        if len(merged_delta) > 0 and all_writable:
-            partitioned, unattributed = partition_inserts_by_namespace(
-                merged_delta,
+        if not merged_delta.is_empty() and all_writable:
+            partitioned_inserts, unattributed = partition_triples_by_namespace(
+                merged_delta.inserts,
                 writable_iris=all_writable,
                 ontology_manager=tools.ontology_manager,
             )
             state.ontology_reduce_metrics["unattributed_insert_triples"] = unattributed
-            applied, apply_metrics = apply_partitioned_inserts(
-                partitioned,
+            partitioned_deletes, unattributed_deletes = partition_triples_by_namespace(
+                merged_delta.deletes,
+                writable_iris=all_writable,
+                ontology_manager=tools.ontology_manager,
+            )
+            state.ontology_reduce_metrics["unattributed_delete_triples"] = (
+                unattributed_deletes
+            )
+            applied, apply_metrics, applied_updates = apply_partitioned_updates(
+                partitioned_inserts,
                 ontology_manager=tools.ontology_manager,
                 normalize_units_fn=normalize_ontology_units,
                 tools=tools,
+                partitioned_deletes=partitioned_deletes,
             )
             artifacts.extend(applied)
+            state.ontology_updates_applied.extend(applied_updates)
             state.ontology_reduce_metrics.update(apply_metrics)
-        elif len(merged_delta) > 0 and not all_writable:
+        elif not merged_delta.is_empty() and not all_writable:
             logger.warning(
-                "Ontology map produced %s complement triples but no writable catalog "
-                "IRIs; skipping catalog apply",
-                len(merged_delta),
+                "Ontology map produced %s complement / %s delete triples but no "
+                "writable catalog IRIs; skipping catalog apply",
+                len(merged_delta.inserts),
+                len(merged_delta.deletes),
             )
 
         state.ontology_artifacts = artifacts
@@ -208,7 +249,9 @@ def make_render_ontology_node(tools: ToolBox):
         state.reduced_ontology_by_anchor = _index_ontologies_by_anchor(artifacts)
         state.ontology_reduce_metrics["reduced_artifact_count"] = len(artifacts)
         state.ontology_units = ontology_units
-        state.status = Status.SUCCESS
+        state.status = _map_stage_status(
+            failed_without_output_count, len(state.content_units)
+        )
         return state
 
     return render_ontology_updates
@@ -309,17 +352,31 @@ def make_consolidate_ontology_node(tools: ToolBox):
         result = await render_ontology_update(consolidation_state, atomic_tools)
         if result.status == Status.SUCCESS and result.working_graph_changed():
             delta = build_ontology_delta_graph(result)
-            if len(delta) > 0 and primary.iri:
-                partitioned, _unattr = partition_inserts_by_namespace(
-                    delta,
+            if not delta.is_empty() and primary.iri:
+                # The consolidation delta is a complement of `primary` (the
+                # map-stage artifact), so it must be applied on top of exactly
+                # that artifact — not the pre-run catalog terminal, which would
+                # silently drop the map-stage additions.
+                base_overrides = {primary.iri: primary}
+                partitioned_inserts, _unattr = partition_triples_by_namespace(
+                    delta.inserts,
                     writable_iris=[primary.iri],
                     ontology_manager=tools.ontology_manager,
+                    base_overrides=base_overrides,
                 )
-                applied, _metrics = apply_partitioned_inserts(
-                    partitioned,
+                partitioned_deletes, _unattr_del = partition_triples_by_namespace(
+                    delta.deletes,
+                    writable_iris=[primary.iri],
+                    ontology_manager=tools.ontology_manager,
+                    base_overrides=base_overrides,
+                )
+                applied, _metrics, applied_updates = apply_partitioned_updates(
+                    partitioned_inserts,
                     ontology_manager=tools.ontology_manager,
                     normalize_units_fn=normalize_ontology_units,
                     tools=tools,
+                    partitioned_deletes=partitioned_deletes,
+                    base_overrides=base_overrides,
                 )
                 if applied:
                     state.reduced_ontology_artifacts = applied
@@ -327,17 +384,15 @@ def make_consolidate_ontology_node(tools: ToolBox):
                         applied
                     )
                     state.ontology_artifacts = applied
-                    state.ontology_updates_applied.extend(
-                        result.ontology_updates_applied
-                    )
+                    state.ontology_updates_applied.extend(applied_updates)
                     logger.info(
                         "Ontology consolidation applied %s update operation(s).",
-                        len(result.ontology_updates_applied),
+                        len(applied_updates),
                     )
                 else:
                     logger.warning(
                         "Ontology consolidation produced deltas but catalog apply "
-                        "returned no artifacts."
+                        "returned no artifacts; keeping the map-stage artifact."
                     )
             else:
                 logger.warning(
@@ -358,7 +413,8 @@ def make_render_facts_node(tools: ToolBox):
     async def render_facts(state: AgentState) -> AgentState:
         if not state.content_units:
             state.facts_units = []
-            state.status = Status.SUCCESS
+            if state.status != Status.FAILED:
+                state.status = Status.SUCCESS
             return state
 
         worker_limit = max(1, tools.config.server.parallel_workers)
@@ -410,10 +466,24 @@ def make_render_facts_node(tools: ToolBox):
             state.budget_tracker.merge_from(result.budget_tracker)
             if result.attempt_log:
                 state.facts_loop_telemetry[unit_index] = list(result.attempt_log)
+            if result.applied_repairs:
+                state.facts_repairs_applied[unit_index] = list(result.applied_repairs)
             unit_contexts[unit_index] = (anchor_iri, patch_sources, assembly_mode)
             has_output = len(result.content_unit.graph) > 0
             if not has_output:
                 failed_without_output_count += 1
+                state.unit_failures.append(
+                    UnitFailure(
+                        unit_index=unit_index,
+                        phase="facts",
+                        stage=(
+                            result.failure_stage.value
+                            if result.failure_stage is not None
+                            else None
+                        ),
+                        reason=result.failure_reason,
+                    )
+                )
                 continue
 
             facts_units.append(result.content_unit)
@@ -454,7 +524,9 @@ def make_render_facts_node(tools: ToolBox):
             if attempts and attempts[-1].kind == "repair"
         )
         state.facts_units = facts_units
-        state.status = Status.SUCCESS
+        state.status = _map_stage_status(
+            failed_without_output_count, len(state.content_units)
+        )
         return state
 
     return render_facts
@@ -480,7 +552,8 @@ def make_merge_facts_node(tools: ToolBox):
     def merge_facts(state: AgentState) -> AgentState:
         if not state.facts_units:
             state.aggregated_facts = RDFGraph()
-            state.status = Status.SUCCESS
+            if state.status != Status.FAILED:
+                state.status = Status.SUCCESS
             return state
 
         ontology_graph, document_metadata = _facts_aggregation_inputs(state)
@@ -544,10 +617,26 @@ def make_validate_facts_node(tools: ToolBox):
         findings stay on the state as telemetry.
         """
         if not state.facts_units or len(state.aggregated_facts) == 0:
-            state.status = Status.SUCCESS
+            if state.status != Status.FAILED:
+                state.status = Status.SUCCESS
             return state
 
         ontology_graph, document_metadata = _facts_aggregation_inputs(state)
+        if not len(ontology_graph):
+            # Facts were extracted with no catalog vocabulary in front of the
+            # model. The per-term non-catalog check cannot see this -- with no
+            # context there is nothing to compare against -- so it is reported
+            # here, where an empty context is known to be unexpected.
+            reason = state.retrieval_metrics.get(
+                "empty_snapshot_reason", "no ontology context was assembled"
+            )
+            logger.warning(
+                "Validating facts against an empty ontology context (%s); every "
+                "extracted term is outside the catalog.",
+                reason,
+            )
+            state.retrieval_metrics["validated_without_ontology_context"] = True
+
         shapes_graph = collect_shacl_shapes(ontology_graph, facts_validation.shapes_dir)
         fact_namespaces = [DEFAULT_IRI, str(state.doc_iri), state.doc_namespace or ""]
 
@@ -766,30 +855,37 @@ def make_summarize_chunks_node(tools: ToolBox):
         worker_limit = max(1, tools.config.server.parallel_workers)
         semaphore = asyncio.Semaphore(worker_limit)
 
-        async def process_unit(unit_index: int) -> tuple[int, str | None]:
+        async def process_unit(
+            unit_index: int,
+        ) -> tuple[int, str | None, BudgetTracker]:
             async with semaphore:
+                unit_budget = BudgetTracker()
                 unit = state.content_units[unit_index]
                 if not should_summarize_unit(unit, state.summarize_sections):
-                    return unit_index, None
+                    return unit_index, None, unit_budget
                 try:
                     summary = await summarize_chunk(
                         unit,
                         tools,
                         max_sentences=state.summary_max_sentences,
+                        budget_tracker=unit_budget,
                     )
-                    return unit_index, summary
+                    return unit_index, summary, unit_budget
                 except Exception as exc:
                     logger.warning(
                         "Summarization failed for unit %s: %s",
                         unit_index,
                         exc,
                     )
-                    return unit_index, None
+                    return unit_index, None, unit_budget
 
         tasks = [process_unit(i) for i in range(len(state.content_units))]
         raw_results = await asyncio.gather(*tasks)
         summarized_count = 0
-        for unit_index, summary in sorted(raw_results, key=lambda item: item[0]):
+        for unit_index, summary, unit_budget in sorted(
+            raw_results, key=lambda item: item[0]
+        ):
+            state.budget_tracker.merge_from(unit_budget)
             if summary is None:
                 continue
             state.content_units[unit_index].summary = summary

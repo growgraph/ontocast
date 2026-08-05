@@ -21,6 +21,7 @@ from ontocast.onto.model import (
     ExternalEvidenceRequest,
     FactsLoopAttempt,
     FactsUnitFinding,
+    GraphRepairRecord,
     Suggestions,
 )
 from ontocast.onto.ontology import Ontology
@@ -173,6 +174,14 @@ class UnitFactsState(UnitState):
         description=(
             "Machine-found violations/coverage gaps injected as MANDATORY "
             "fixes into the next repair render."
+        ),
+    )
+    applied_repairs: list[GraphRepairRecord] = Field(
+        default_factory=list,
+        description=(
+            "Deterministic rewrites the machine applied to rendered graphs "
+            "(alias repairs, rdf:type literal coercions) — the provenance "
+            "trail distinguishing machine-altered triples from LLM output."
         ),
     )
     attempt_log: list[FactsLoopAttempt] = Field(

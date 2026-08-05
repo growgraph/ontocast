@@ -186,3 +186,200 @@ def test_skos_notation_becomes_lexical_trigger() -> None:
     ontology = _ontology_from_ttl(ttl)
     atoms = GraphAtomizer().atomize(source=ontology, depth=1)
     assert any("CsPbBr3" in a.lexical_triggers for a in atoms)
+
+
+def test_tokenize_admits_non_ascii_symbol_starts() -> None:
+    """µm, °C, %, Å must tokenize whole — SI-reporting prose is full of them."""
+    tokens = tokenize_for_lexical_match(
+        "a 70 µm film at 25 °C with 0.5 % yield and 5 Å spacing"
+    )
+    assert "µm" in tokens
+    assert "°C" in tokens
+    assert "%" in tokens
+    assert "Å" in tokens
+    # Greek mu variant, too.
+    assert "μm" in tokenize_for_lexical_match("about 3 μm")
+
+
+def test_short_non_ascii_trigger_matches() -> None:
+    atom = GraphAtom(
+        atom_id="a1",
+        ontology_iri="https://example.org/units",
+        iri=f"{UNITS}micrometre",
+        core_representation="micrometre",
+        neighborhood_representation="",
+        lexical_triggers=["µm"],
+    )
+    index = LexicalTriggerIndex(max_match_atoms=8)
+    index.register_atoms([atom])
+    assert index.match("a grain size of 70 µm") == ["a1"]
+
+
+def test_substring_scan_respects_token_boundaries() -> None:
+    """`mA/cm²` in text must not fire the `A/cm²` trigger (measured false hit)."""
+    ampere = GraphAtom(
+        atom_id="ampere",
+        ontology_iri="https://example.org/units",
+        iri=f"{UNIT}A-PER-CentiM2",
+        core_representation="ampere per square centimetre",
+        neighborhood_representation="",
+        lexical_triggers=["A/cm²"],
+    )
+    milliampere = GraphAtom(
+        atom_id="milliampere",
+        ontology_iri="https://example.org/units",
+        iri=f"{UNIT}MilliA-PER-CentiM2",
+        core_representation="milliampere per square centimetre",
+        neighborhood_representation="",
+        lexical_triggers=["mA/cm²"],
+    )
+    per_centim = GraphAtom(
+        atom_id="per_centim",
+        ontology_iri="https://example.org/units",
+        iri=f"{UNIT}PER-CentiM",
+        core_representation="reciprocal centimetre",
+        neighborhood_representation="",
+        lexical_triggers=["/cm"],
+    )
+    index = LexicalTriggerIndex(max_match_atoms=8)
+    index.register_atoms([ampere, milliampere, per_centim])
+
+    hits = index.match("a current density of 20 mA/cm² was applied")
+    assert "milliampere" in hits
+    assert "ampere" not in hits
+    assert "per_centim" not in hits
+
+    # The exact trigger still fires at a real boundary.
+    assert "ampere" in index.match("a current density of 20 A/cm² was applied")
+
+
+def test_atomizer_collects_dcterms_alternative_as_label() -> None:
+    """dcterms:alternative synonyms must reach the surface forms (sf6)."""
+    ttl = f"""
+    @prefix owl: <{OWL}> .
+    @prefix rdfs: <{RDFS}> .
+    @prefix dcterms: <http://purl.org/dc/terms/> .
+
+    <https://example.org/matsci#PhotoluminescenceSpectroscopy> a owl:Class ;
+        rdfs:label "photoluminescence spectroscopy"@en ;
+        dcterms:alternative "PL spectroscopy"@en .
+    """
+    ontology = _ontology_from_ttl(ttl)
+    atoms = GraphAtomizer().atomize(source=ontology, depth=1)
+    target = [a for a in atoms if a.iri.endswith("PhotoluminescenceSpectroscopy")]
+    assert target
+    assert any("pl spectroscopy" in a.minimal_representation for a in target)
+
+
+def test_atomizer_collects_case_preserved_symbol_surfaces() -> None:
+    ttl = f"""
+    @prefix qudt: <{QUDT}> .
+    @prefix unit: <{UNIT}> .
+    @prefix rdfs: <{RDFS}> .
+
+    unit:MegaEV a qudt:Unit ;
+        rdfs:label "megaelectronvolt"@en ;
+        qudt:symbol "MeV" .
+    """
+    ontology = _ontology_from_ttl(ttl)
+    atoms = GraphAtomizer().atomize(source=ontology, depth=1)
+    target = [a for a in atoms if a.iri.endswith("MegaEV")]
+    assert target
+    # Case preserved — the minimal representation is folded, the surface is not.
+    assert "MeV" in target[0].symbol_surfaces
+    assert "mev" in target[0].minimal_representation
+
+
+def test_symbol_case_mismatch_demotes_counterfeit_match() -> None:
+    """The case4 regression: prose `meV` must not keep unit:MegaEV ranked
+    above the correct millielectronvolt atom."""
+    from ontocast.config import SymbolCaseMismatchPolicy
+    from ontocast.tool.vector_store.patch_retriever import (
+        _demote_case_mismatched_symbol_atoms,
+    )
+
+    mega = GraphAtom(
+        atom_id="mega",
+        ontology_iri="https://example.org/units",
+        iri=f"{UNIT}MegaEV",
+        core_representation="megaelectronvolt mev",
+        neighborhood_representation="",
+        symbol_surfaces=["MeV"],
+        score=0.6,
+    )
+    milli = GraphAtom(
+        atom_id="milli",
+        ontology_iri="https://example.org/units",
+        iri=f"{UNITS}millielectronvolt",
+        core_representation="millielectronvolt mev",
+        neighborhood_representation="",
+        symbol_surfaces=["meV"],
+        score=0.5,
+    )
+    query = "an energy shift of 96 meV was observed"
+
+    demoted, penalized = _demote_case_mismatched_symbol_atoms(
+        [mega, milli],
+        query,
+        policy=SymbolCaseMismatchPolicy.DEMOTE,
+        demote_factor=0.5,
+    )
+    assert penalized == 1
+    by_id = {a.atom_id: a for a in demoted}
+    # Exact-case match untouched; counterfeit match halved and now below it.
+    assert by_id["milli"].score == 0.5
+    assert by_id["mega"].score == 0.3
+    assert float(by_id["milli"].score or 0.0) > float(by_id["mega"].score or 0.0)
+
+    dropped, penalized = _demote_case_mismatched_symbol_atoms(
+        [mega, milli],
+        query,
+        policy=SymbolCaseMismatchPolicy.DROP,
+        demote_factor=0.5,
+    )
+    assert penalized == 1
+    assert [a.atom_id for a in dropped] == ["milli"]
+
+    kept, penalized = _demote_case_mismatched_symbol_atoms(
+        [mega, milli],
+        query,
+        policy=SymbolCaseMismatchPolicy.OFF,
+        demote_factor=0.5,
+    )
+    assert penalized == 0
+    assert [a.score for a in kept] == [0.6, 0.5]
+
+
+def test_symbol_case_mismatch_ignores_label_only_atoms() -> None:
+    from ontocast.config import SymbolCaseMismatchPolicy
+    from ontocast.tool.vector_store.patch_retriever import (
+        _demote_case_mismatched_symbol_atoms,
+    )
+
+    # No symbol surfaces at all: never penalized, whatever the query casing.
+    label_atom = GraphAtom(
+        atom_id="label",
+        ontology_iri="https://example.org/matsci",
+        iri="https://example.org/matsci#RedShift",
+        core_representation="red shift",
+        neighborhood_representation="",
+        score=0.4,
+    )
+    # Symbol present but absent from the query: untouched.
+    unrelated = GraphAtom(
+        atom_id="unrelated",
+        ontology_iri="https://example.org/units",
+        iri=f"{UNIT}KiloGM",
+        core_representation="kilogram",
+        neighborhood_representation="",
+        symbol_surfaces=["kg"],
+        score=0.4,
+    )
+    out, penalized = _demote_case_mismatched_symbol_atoms(
+        [label_atom, unrelated],
+        "a Red Shift of 96 meV",
+        policy=SymbolCaseMismatchPolicy.DEMOTE,
+        demote_factor=0.5,
+    )
+    assert penalized == 0
+    assert [a.score for a in out] == [0.4, 0.4]

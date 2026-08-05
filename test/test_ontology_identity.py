@@ -221,6 +221,52 @@ def test_ontology_manager_rejects_alias_across_iris() -> None:
         mgr.add_ontology(ontology_b)
 
 
+def test_ontology_manager_prefix_collision_degrades_to_iri_addressing() -> None:
+    """Two ontologies binding the same author prefix can coexist in one catalog.
+
+    The colliding prefix alias is skipped (first binding wins); the second
+    ontology stays addressable by IRI and ontology_id. Regression: the
+    Text2KGBench corpus binds ``onto:`` in every ontology and could not be
+    ingested at all.
+    """
+    graph_a = RDFGraph._from_turtle_str(
+        """
+        @prefix onto: <https://example.org/music#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        <https://example.org/music> a owl:Ontology .
+        """
+    )
+    ontology_a = Ontology(
+        graph=graph_a,
+        iri="https://example.org/music",
+        ontology_id="music",
+    )
+    graph_b = RDFGraph._from_turtle_str(
+        """
+        @prefix onto: <https://example.org/film#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        <https://example.org/film> a owl:Ontology .
+        """
+    )
+    ontology_b = Ontology(
+        graph=graph_b,
+        iri="https://example.org/film",
+        ontology_id="film",
+    )
+    assert ontology_a.prefix == "onto"
+    assert ontology_b.prefix == "onto"
+
+    mgr = OntologyManager()
+    mgr.add_ontology(ontology_a)
+    mgr.add_ontology(ontology_b)  # must not raise
+
+    # First binding wins the prefix alias; both stay fully addressable.
+    assert mgr.resolve_ontology_ref("onto") == ontology_a.iri
+    assert mgr.resolve_ontology_ref("music") == ontology_a.iri
+    assert mgr.resolve_ontology_ref("film") == ontology_b.iri
+    assert mgr.resolve_ontology_ref(ontology_b.iri) == ontology_b.iri
+
+
 def test_no_owl_ontology_does_not_promote_prefix() -> None:
     graph = RDFGraph()
     graph.bind("ex", URIRef("https://example.org/mystery#"))

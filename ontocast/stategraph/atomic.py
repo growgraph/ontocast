@@ -191,13 +191,22 @@ async def _run_deterministic_repair(
             unit_state, atomic, supplemental_ontologies=supplemental
         )
         repair_failed = unit_state.status != Status.SUCCESS
+        if not repair_failed:
+            findings = _collect_facts_findings(
+                unit_state, atomic.additional_standard_namespaces
+            )
+        # Recorded counts are the residual AFTER this repair render (on failure
+        # the graph is unchanged, so the pre-render findings still describe it).
+        # This is what `facts_findings_residual` sums document-level; recording
+        # the pre-render counts here measured what the repair was asked to fix,
+        # not what survived it.
         _record_facts_attempt(
             unit_state,
             kind="repair",
             render_attempt=render_attempt,
             critic_attempt=repair_attempt,
             n_findings=len(findings),
-            n_mandatory=len(mandatory),
+            n_mandatory=sum(1 for finding in findings if finding.mandatory),
             repair_failed=repair_failed,
         )
         if repair_failed:
@@ -209,9 +218,6 @@ async def _run_deterministic_repair(
             unit_state.clear_failure()
             unit_state.status = Status.SUCCESS
             break
-        findings = _collect_facts_findings(
-            unit_state, atomic.additional_standard_namespaces
-        )
 
     unit_state.deterministic_findings = findings
     if findings:

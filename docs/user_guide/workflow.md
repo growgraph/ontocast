@@ -11,6 +11,7 @@ OntoCast transforms input documents into RDF ontology and facts graphs through a
 3. **Ontology map/reduce** (when `render_mode` includes ontology):
    - Per-unit context assembly (catalog selection or vector retrieval)
    - Render/critic loops with optional web evidence
+   - Reduce: each unit's `GraphUpdate`s replay against its prompt snapshot into a net insert/delete delta; deltas union across units (a triple inserted by any unit vetoes another unit's delete of it), partition by namespace ownership, and apply delete-first onto the owning catalog terminals
    - Global normalize (provenance split) → optional consolidate → structural check → consistency critic
 4. **Facts map/reduce** (when `render_mode` includes facts):
    - Per-unit render/critic loops

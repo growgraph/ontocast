@@ -16,10 +16,15 @@ from pydantic import Field, PrivateAttr
 from ontocast.tool.onto import Tool
 from ontocast.tool.vector_store.core import GraphAtom
 
+# Symbol characters that begin common unit/quantity tokens (µm, °C, Å, %, Δν).
+# Without them a token like "µm" tokenized to "m" and "%" to nothing at all.
+_SYMBOL_START = "µμÅΩ°%‰Δ"
+_SYMBOL_CONTINUE = "°·/⁻²³µμÅΩ%‰Δ"
+
 # Word-like tokens tolerant of unit/formula punctuation (UCUM is case-sensitive).
 _TOKEN_PATTERN = re.compile(
-    r"[A-Za-z][A-Za-z0-9°·/⁻²³⁻]*(?:[A-Za-z0-9]+)?|"
-    r"[0-9]+(?:\.[0-9]+)?[A-Za-z][A-Za-z0-9°·/⁻²³⁻]*"
+    rf"[A-Za-z{_SYMBOL_START}][A-Za-z0-9{_SYMBOL_CONTINUE}]*(?:[A-Za-z0-9]+)?|"
+    rf"[0-9]+(?:\.[0-9]+)?[A-Za-z{_SYMBOL_START}][A-Za-z0-9{_SYMBOL_CONTINUE}]*"
 )
 
 _HEURISTIC_STOPWORDS: frozenset[str] = frozenset(
@@ -192,7 +197,7 @@ class LexicalTriggerIndex(Tool):
         for trigger, atom_ids in sorted(
             self._substring_triggers.items(), key=lambda item: -len(item[0])
         ):
-            if trigger in text:
+            if _substring_match_with_boundaries(trigger, text):
                 for atom_id in atom_ids:
                     add(atom_id)
                     if len(hits) >= limit:
@@ -201,8 +206,28 @@ class LexicalTriggerIndex(Tool):
         return hits[:limit]
 
 
+def _substring_match_with_boundaries(trigger: str, text: str) -> bool:
+    """True when ``trigger`` occurs in ``text`` at token boundaries.
+
+    A bare ``in`` check let a shorter unit symbol fire inside a longer one:
+    ``mA/cm²`` in the text also fired the ``A/cm²`` trigger, and ``/cm``
+    fired inside ``/cm²``. An occurrence counts only when the adjacent
+    characters are not alphanumeric (superscripts count as numeric).
+    """
+    start = text.find(trigger)
+    while start != -1:
+        end = start + len(trigger)
+        before_ok = start == 0 or not text[start - 1].isalnum()
+        after_ok = end == len(text) or not text[end].isalnum()
+        if before_ok and after_ok:
+            return True
+        start = text.find(trigger, start + 1)
+    return False
+
+
 def _needs_substring_scan(trigger: str) -> bool:
     """Triggers with internal punctuation may not survive tokenization."""
-    if len(trigger) < 3:
+    has_non_ascii = any(ord(ch) > 127 for ch in trigger)
+    if len(trigger) < 3 and not has_non_ascii:
         return False
     return any(ch in trigger for ch in "/·⁻²³°")

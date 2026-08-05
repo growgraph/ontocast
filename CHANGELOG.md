@@ -34,12 +34,46 @@ project:
   vectors, so a bump requires re-indexing existing collections; entries that
   bump it say so explicitly.
 
-## [Unreleased]
 
-## [0.5.0] - 2026-08-05
+## [0.5.0]
 
 ### Breaking
 
+- **`ontocast serve` binds loopback by default.** The bind interface moved to
+  `HOST` (default `127.0.0.1`); it was hardcoded to `0.0.0.0`. The server has
+  no authentication and exposes a destructive `POST /flush` that can target any
+  tenancy partition, so exposing every interface is now an explicit choice.
+  Containers and any non-loopback bind must set `HOST=0.0.0.0`, which logs a
+  warning recommending an authenticating proxy.
+- **`PARALLEL_FACTS_RETRIES` / `PARALLEL_ONTOLOGY_RETRIES` removed.** Both were
+  read by nothing; the per-unit retry budget is and was `MAX_VISITS_PER_NODE`.
+  Setting them never had any effect, so removing them changes no behaviour --
+  but a deployment passing them will now fail fast on an unknown setting rather
+  than silently ignoring them.
+- **`/process` answers 422 when no content unit produced output.** Previously a
+  document whose units all failed -- or whose conversion failed -- returned
+  HTTP 200 with `status: "success"` and empty facts, indistinguishable from a
+  document with nothing to extract. Malformed request parameters now answer
+  400 rather than 500, and `/process` maps a conversion failure to 422 for
+  parity with `/process_unit`.
+- **Surface-form contract `sf5` -> `sf6` — reindex required.**
+  `dcterms:alternative` joins the label predicates (atomizer labels,
+  annotation set, and seed gloss predicates): a vocabulary using the standard
+  DCMI synonym predicate previously lost every synonym in both retrieval
+  lanes and the prompt. Atoms additionally carry case-preserved
+  `symbol_surfaces` (`skos:notation` / `qudt:symbol` / `qudt:ucumCode`
+  literals before case folding), persisted through both Qdrant and LanceDB
+  payloads. Existing collections raise `EmbeddingContractMismatchError` and
+  must be dropped and re-indexed.
+- **Internal ontology-apply API reshaped for delete propagation.**
+  `partition_inserts_by_namespace` is now `partition_triples_by_namespace`
+  (it partitions delete deltas too, and accepts `base_overrides`);
+  `apply_partitioned_inserts` is now `apply_partitioned_updates`, takes
+  `partitioned_deletes` / `base_overrides`, and returns
+  `(artifacts, metrics, applied_updates)`. `normalize_ontology_units` gained
+  `delete_graph`. `build_ontology_delta_graph` returns an `OntologyDelta`
+  (insert + delete graphs) instead of a bare insert graph.
+  `repair_property_aliases` returns `(rewritten, findings, applied_records)`.
 - **A base `pip install ontocast` was unimportable and is now fixed.**
   `ontocast/onto/state.py` imported `docling_core` at module scope while
   `docling-core` was declared only in the `all` extra, so
@@ -78,9 +112,67 @@ project:
 - **`FactsLoopAttempt.graph_hash` was removed** and replaced by
   `n_mandatory_findings` / `repair_failed`. The hash had no consumer anywhere
   and cost a URDNA2015 canonicalization per attempt (see Fixed).
+- **CLI `serve` / `process` subcommands and batch TTL output dirs.** The
+  `ontocast` console script is now a Click group: `ontocast serve` starts the API
+  (was bare `ontocast`); `ontocast process --input-path …` runs local in-process
+  batch extraction (was `ontocast --input-path …`). Batch dumps provenance-stripped
+  `*.facts.ttl` and `*.ontology.ttl` next to each input by default, or under
+  `--output-dir` (shared), with optional `--facts-output-dir` /
+  `--ontology-output-dir` overrides. Filename → `dcterms:title` metadata fallback
+  when `--document-metadata` is omitted is unchanged.
+- **`VECTOR_STORE_CONSISTENCY_CRITIC_SIMILARITY_THRESHOLD` → `VECTOR_STORE_CONSISTENCY_CRITIC_MIN_FUSED_SCORE`, default `0.7 → 0.5`.** The value was never compared against a similarity: `search_patch_hits` returns a weighted reciprocal-rank score (sum of `weight/rank` across the core, neighborhood, and BM25 channels). On that scale a rank-1 core hit alone scores 0.583 and rank-2 scores 0.292, so the old `0.7` silently demanded rank-1 in two channels at once while reading as a cosine cutoff. `0.5` now means "top-ranked in the dominant dense channel".
 
 ### Added
 
+- **`py.typed` marker.** The package is fully annotated and `ty check` is a CI
+  gate, but without the PEP 561 marker every downstream type checker resolved
+  `import ontocast` to `Any`.
+- **Per-unit failure records and machine-repair provenance on the response.**
+  `ProcessResultMetadata` gained `failed_units` (unit index, phase, stage,
+  reason), `facts_repairs` (the deterministic rewrites the 0.5.0 changelog
+  advertised as consumer-facing but never exposed), and
+  `improvement_suggestions` from the structural check and consistency critic --
+  all three were previously written to state and read by nothing.
+- **Declared HTTP contract.** `/process`, `/process_unit`, `/flush` and
+  `/health` now declare `response_model` and per-status response models, so
+  OpenAPI documents them instead of showing parameterless POSTs returning
+  `{}`. Every route renders errors in one shape: an app-level handler
+  normalizes `HTTPException` (the `/ontologies` routes' `{"detail": ...}`) into
+  `StatusErrorBody`. `/info` reports the input types the install actually
+  supports rather than a hardcoded list claiming PDF support without the
+  `doc-processing` extra.
+- **Packaging metadata.** `authors`, `keywords`, `[project.urls]` and real
+  trove classifiers. The classifier list had been sitting in `[build-system]`,
+  a table where it is inert, so the published package advertised none.
+- **`[tool.hatch.build.targets.sdist]`.** Without it hatchling shipped
+  everything not VCS-ignored: `data/` (15 MB, plus an importable top-level
+  `data` package), `docs/` and `demo/`. The 0.5.0 wheel fix did not cover the
+  sdist, which `uv publish` uploads too. Source distribution: ~25 MB -> 591 KB.
+- **Dependency upper bounds.** All 31 runtime dependencies were unbounded `>=`
+  with floors that could not import the code (`langgraph>=0.2.35` predates the
+  `CompiledStateGraph` import path; the resolved version is 1.2.x). Floors now
+  name the major actually tested against and every range has a ceiling.
+- **Startup validation bounds** on `PORT`, `BASE_RECURSION_LIMIT`,
+  `ESTIMATED_CHUNKS`, `PARALLEL_WORKERS` and `ONTOLOGY_MAX_TRIPLES`, which
+  previously accepted zero and negative values and failed deep in the pipeline.
+- **BM25 case-mismatch penalty for symbol matches**
+  (`VECTOR_STORE_SYMBOL_CASE_MISMATCH_POLICY`: `demote` (default) /
+  `drop` / `off`, factor `VECTOR_STORE_SYMBOL_CASE_MISMATCH_DEMOTE_FACTOR`).
+  The BM25/dense document text is case-folded, so prose `meV` also retrieved
+  `unit:MegaEV` (symbol `MeV`) — one token from a 10^9 unit error. At merge
+  time, an atom whose symbol surfaces match a query token only
+  case-insensitively (with no exact-case match) is demoted or dropped;
+  exact-case and label-only matches are untouched. Domain-agnostic: surfaces
+  come from declared notation/symbol literals.
+- **Machine-repair provenance.** Deterministic rewrites (property-alias
+  repairs, `rdf:type` literal coercions) are recorded as `GraphRepairRecord`s
+  on the unit state and surfaced document-level as
+  `state.facts_repairs_applied`, so downstream consumers can tell
+  machine-altered triples from what the LLM asserted.
+- **Docs: pyoxigraph integer-subtype collapse documented as an accepted
+  limitation** (user guide, triple stores): `xsd:nonNegativeInteger` on
+  qualified cardinalities is served back as `xsd:integer`; keep authored
+  Turtle as the source of truth when strict OWL 2 DL export matters.
 - **A CI test job (`.github/workflows/tests.yml`).** The repository had no
   test job at all -- only pre-commit -- so the entire suite gated nothing. It
   now runs the non-slow suite on Python 3.12 and 3.13, plus an `import-smoke`
@@ -110,7 +202,6 @@ project:
   CSVW, FOAF, schema.org), permanently exempting them from `UNKNOWN_TERM` with
   no way to change it. Only meta-vocabularies are built in now; domain
   vocabularies are exempted by configuration.
-
 - **`rdfs:domain`/`rdfs:range` schema closure over retrieved seeds
   (`ONTOLOGY_PATCH_SCHEMA_CLOSURE_MAX_ENTITIES`, default 32;
   `_ANCESTOR_DEPTH`, default 2).** Admits the properties whose declared
@@ -165,8 +256,6 @@ project:
   `domain_facts` restores the legacy behavior. Numeric-coverage repair is
   suppressed on citation units so page/volume numbers are never pushed into
   the graph.
-
-
 - **Per-source atom floor and small-module closure for snapshot assembly.**
   `ONTOLOGY_PATCH_PER_ONTOLOGY_ATOM_FLOOR` reserves seed slots per
   contributing ontology before the global fill (a floor, unlike the existing
@@ -192,14 +281,6 @@ project:
   `AgentState.facts_loop_telemetry` with `facts_repair_visits_total` /
   `facts_findings_residual` summary metrics — critic-visit efficacy is now
   measurable instead of the scores being parsed and discarded.
-- **BREAKING: CLI `serve` / `process` subcommands and batch TTL output dirs.** The
-  `ontocast` console script is now a Click group: `ontocast serve` starts the API
-  (was bare `ontocast`); `ontocast process --input-path …` runs local in-process
-  batch extraction (was `ontocast --input-path …`). Batch dumps provenance-stripped
-  `*.facts.ttl` and `*.ontology.ttl` next to each input by default, or under
-  `--output-dir` (shared), with optional `--facts-output-dir` /
-  `--ontology-output-dir` overrides. Filename → `dcterms:title` metadata fallback
-  when `--document-metadata` is omitted is unchanged.
 - **Document-level provenance from payload metadata.** Optional `document_metadata`
   on `/process`, `/process_unit`, and `ontocast process --document-metadata '…'` attaches
   caller-asserted identity to the parent `doc_iri` as `prov:Entity` / `foaf:Document`.
@@ -245,7 +326,6 @@ project:
   case-exact label/notation matching), and the ontology-render prompt's
   `schema:unitCode "DAY"` string-literal example is replaced by unit-IRI-first guidance.
   `validate_predicates` also gains the missing literal-vs-class-range branch.
-
 - **Author prefix persistence through the triple store** — prefix bindings are
   serialization metadata a SPARQL store never holds, so any export re-derived synthetic
   stem names (`dom_units:` where the author wrote `domunits:`) and prompt contexts
@@ -259,7 +339,6 @@ project:
   declaration blank nodes so both context paths recover identical names
   (`RDFGraph.materialize_prefix_declarations` / `bind_declared_prefixes` /
   `declared_prefix_map`).
-
 - **Lexical-trigger retrieval lane** for notation-bearing vocabulary (unit symbols,
   chemical formulae, gene symbols, etc.). At index time each atom stores case-preserved
   `lexical_triggers` from `skos:notation`, `qudt:symbol`, `qudt:ucumCode`, and optionally
@@ -268,7 +347,6 @@ project:
   16) outside the semantic atom budget. Configurable via `VECTOR_STORE_LEXICAL_TRIGGER_*`.
   Embedding contract bumps to `sf3` — reindex required. Matsci recall corpus: added
   a unit individual and a compound individual to one case's expected IRIs.
-
 - **Ablation controls in the recall harness** (test-only; no production change). Asking
   whether indexing a large external vocabulary helps or dilutes previously required
   editing the corpus on disk, which changed the very baseline the arms were compared
@@ -285,7 +363,6 @@ project:
     time, so a whole sweep needs one index instead of one per arm — minutes rather than
     an hour when the catalog includes a 32k-triple vocabulary. Both default to the prior
     behaviour (per-run `uuid4` collection, deleted on teardown).
-
 - CLI `--max-visits` flag for batch mode (`--input-path`) and to override the server default when starting the API.
 - Docling converter configuration via `CONVERTER_*` settings, including a `born_digital` preset for text-selectable publisher PDFs.
 - `OntologySnapshot` prompt view (graph + `source_iris` / assembly mode, no catalog id) with `from_ontology` / `from_graph` builders; `ontology_apply` complement subtract + namespace-ownership partition onto freshest catalog bases.
@@ -324,14 +401,11 @@ project:
   citation-marker patterns are all English/Western. The failure mode is a miss
   (the section is extracted as ordinary content), not a misfire; the docstring
   now says so.
-
 - **`aggregate_graphs` / `postprocess_facts_units` return an
   `AggregationResult`** (graph + per-entity decisions + merged clusters +
   rejected-merge count) instead of a bare `RDFGraph`, and accept a
   `merge_vetoes` pair set — the targeted un-merge lever used by the
   validation gate. Call sites use `result.graph`.
-
-
 - **Ontology sources atomize only IRIs they describe** (surface-form contract `sf3` →
   `sf4`; **every existing collection needs one reindex**). `GraphAtomizer` made an atom
   out of every `URIRef` in a graph — subject, predicate *or object* — so an IRI appearing
@@ -371,7 +445,6 @@ project:
   lane to reach; snapshot recall holds at 10/13 because the graph-expansion stage
   still pulls them in.
   That regression is the missing per-source atom floor, tracked in `docs/PLANNING.md`.
-
 - **Cross-ontology reference ownership is now deterministic.** Attributing a referenced IRI to an ontology previously returned the first catalog entry whose namespace matched, in whatever order the backend listed named graphs — so with nested namespaces (`…/domain` and `…/domain/sub`) the answer could differ between runs. The longest matching namespace now wins, and where several ontologies declare the same IRI the lexicographically smallest owner is chosen. Namespace containment is still tried before graph membership, which is what attributes *dangling* references — an IRI inside an ontology's namespace that the ontology declares no triples about.
 - `SPARQLTool.get_induced_subgraph` / `aget_induced_subgraph` accept an optional trailing `ontologies` argument, letting a caller that already holds a catalog skip the fetch. Existing callers are unaffected.
 - **`ONTOLOGY_PATCH_MAX_ATOMS` `48 → 96` and `ONTOLOGY_PATCH_MAX_ATOMS_BASE` `32 → 96`** — the largest single lever found. On multi-window input the candidate pool reaches ~167 atoms per passage, so a cap of 48 was discarding two thirds of what per-channel `top_k` had already paid to retrieve. Measured on 15 multi-sentence passages against a linked 6-ontology catalog: **seed term recall 36.1% → 63.9%**, snapshot term recall 47.4% → 56.7%, and on-topic precision *improved* 66.6% → 70.4% — this was not a recall/precision trade, it was a cap set below the useful signal. On the single-sentence 20-ontology corpus, seed term recall 53.0% → 59.6%. Snapshots grow from a mean 303 to 392 triples, still inside the 550 budget, which is the real cost: ~29% more ontology context per prompt.
@@ -386,7 +459,6 @@ project:
   | 30 | 80.0% | 93.1% | 33.3% | 60.1 | 31.9 |
 
   20 captures the entire seed-recall gain; 30 adds nothing there because `ONTOLOGY_PATCH_MAX_ATOMS_BASE=32` binds again (`atoms_final` 31.9), so the extra candidates are fetched and discarded at 1.4× the search cost. Snapshots grow from a mean 190 to 204 triples, still inside the 550 budget. Caveat: the benchmark issues one query per case, so `effective_max_atoms` is 32 there; a 16-window production chunk gets 48 while its candidate pool grows ~16×, so on long inputs the cap binds first and this sweep does not predict the gain.
-- **BREAKING**: `VECTOR_STORE_CONSISTENCY_CRITIC_SIMILARITY_THRESHOLD` → `VECTOR_STORE_CONSISTENCY_CRITIC_MIN_FUSED_SCORE`, default `0.7 → 0.5`. The value was never compared against a similarity: `search_patch_hits` returns a weighted reciprocal-rank score (sum of `weight/rank` across the core, neighborhood, and BM25 channels). On that scale a rank-1 core hit alone scores 0.583 and rank-2 scores 0.292, so the old `0.7` silently demanded rank-1 in two channels at once while reading as a cosine cutoff. `0.5` now means "top-ranked in the dominant dense channel".
 - **Seed allocation defaults retuned against measured recall** on a 20-ontology catalog: `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` `3 → 0` (global score order, no per-ontology cap) and `ONTOLOGY_PATCH_MAX_ATOMS_BASE` `16 → 32`. Seed recall **60.0% → 73.1%**, snapshot recall **85.6% → 89.4%**. Dropping the quota improved precision as well (33.8% → 37.4%): spreading a fixed seed budget across every ontology that scored *something* cost accuracy on both axes rather than trading between them. Raising the floor past 32 changes nothing — `atoms_final` saturates at the candidate pool, so per-channel `VECTOR_STORE_TOP_K` is now the binding constraint.
 
 Cumulative effect of the retrieval fixes above, measured on a 20-ontology catalog (160 cases): **seed recall 61.5% → 80.0%**, **snapshot recall 41.5% → 92.5%**. Snapshots grow from a mean 85 to 204 triples, still inside the 550-triple budget, and on-topic precision moves 45.5% → 34.4% — a deliberate trade, since a term absent from the snapshot cannot be used at all while an extra one merely costs context. Both figures come from a corpus of mutually disjoint ontologies (0 cross-ontology schema edges) scored one sentence at a time, which overstates both the component-pruning loss and the precision cost relative to a linked stack, and cannot exercise cross-window merging at all; the direction is solid, the magnitude is corpus-specific.
@@ -424,6 +496,151 @@ Run-to-run variation is roughly ±1 percentage point (approximate nearest-neighb
 
 ### Fixed
 
+- **A transient Fuseki error could wipe the ontology vector index.** Listing
+  named graphs degraded to an empty list on any HTTP error, which
+  `ToolBox.initialize` read as "the catalog is empty" and, with
+  `PRUNE_ORPHAN_IRIS_ON_INIT` (default on), used as grounds to delete every
+  indexed ontology. Listing now raises `TripleStoreUnavailableError`, matching
+  the contract already documented for `aselect`/`aconstruct`; a partial catalog
+  fetch is reported through `last_catalog_was_complete()` and suppresses the
+  prune; and `prune_orphan_ontology_iris` refuses an empty keep-set outright.
+  Three failure modes each independently sufficient to destroy the index.
+- **Concurrent tenancy switches could cross tenants.** `?tenant=` on a request
+  triggers `update_tenancy_with_vector_mode`, which mutates ToolBox-wide state
+  (dataset names, ontology catalog, vector-store handles) across awaits, with
+  no concurrency cap. Two requests for different tenants could interleave and
+  read or write each other's partition. Retargeting and `clean_tenancy_data`
+  now hold a loop-bound lock.
+- **Per-unit LLM budget attribution was arbitrary under parallelism.** The
+  budget tracker was assigned to the shared `LLMTool` instance, so with
+  `PARALLEL_WORKERS` units in flight whichever bound last collected every
+  concurrent call's usage. Document totals were unaffected (the reduce merges
+  all per-unit trackers) but the per-unit numbers reported to API clients were
+  not. The active tracker is now a `ContextVar`, so each unit task charges its
+  own; `summarize_chunks` and the ontology-selection call, which bypassed the
+  accessor entirely, are now scoped too.
+- **`AgentState(current_domain=...)` was silently discarded.** A custom
+  `__init__` overwrote the caller's value from the environment after
+  construction. `current_domain` is now an ordinary field defaulting to
+  `CURRENT_DOMAIN` then `DEFAULT_DOMAIN`, so an explicit argument wins;
+  `DomainConfig` reads the same variable instead of declaring an unrelated
+  placeholder default that nothing consumed.
+- **Configuring symbol predicates changed retrieval but not indexing.** The
+  retrieval side read `INDUCED_SUBGRAPH_SYMBOL_PREDICATES` from config while
+  the atomizer hardcoded the same three IRIs, so overriding the knob changed
+  what surfaced without changing what was stored. Both label and symbol
+  predicates are now configurable
+  (`VECTOR_STORE_LABEL_PREDICATES` / `VECTOR_STORE_SYMBOL_PREDICATES`).
+- **The embedding fingerprint ignored settings that change the stored payload.**
+  `label_predicates`, `symbol_predicates`, `lexical_trigger_predicates` and the
+  four other `lexical_trigger_*` knobs are pushed into the atomizer but were
+  omitted from the fingerprint, so changing one silently served a stale index
+  instead of raising. They now contribute when they diverge from the defaults;
+  collections built at the defaults keep their existing fingerprint.
+  `embedding_fingerprint_matches` accepts the same optional components as
+  `embedding_model_fingerprint`, having previously disagreed with the validator
+  for any non-default collection.
+- **Public retrieval APIs contradicted the configured budget.** `retrieve`,
+  `aretrieve`, `retrieve_ensemble`, `aretrieve_ensemble` and the six
+  `OntologyManager.*patch_context*` wrappers carried literal defaults of
+  `subgraph_depth=1` / `max_total_triples=300` against config defaults of
+  `2` / `1200`. The pipeline passed config explicitly and was unaffected; every
+  other caller silently got a 4x smaller snapshot. All ten now default to
+  `None` and resolve from configuration.
+- **`FUSEKI_AUTH=user:password` failed startup.** Only the slash form parsed,
+  while `docs/user_guide/triple_stores.md` and the quickstart both recommended
+  the colon form. Both are accepted now (the separator appearing first wins, so
+  a password containing the other still round-trips), and the three docs pages
+  were corrected.
+- **`ontocast process` exited 0 when every input file failed.** The per-file
+  loop logged and swallowed all exceptions with no failure count. It now
+  returns the failed paths and the CLI raises a `ClickException`. Bad CLI
+  parameters raise `click.BadParameter` instead of a traceback.
+- **The detector for empty retrieval was disabled by empty retrieval.**
+  `_non_catalog_vocabulary_findings` returned no findings when the ontology
+  context was empty -- the exact case where every extracted term is outside the
+  catalog. The check stays a pure graph-vs-graph comparison, and the condition
+  is now reported by the validate node, which knows an empty context is
+  unexpected; the ensemble resolver additionally records *why* a snapshot came
+  back empty (`empty_snapshot_reason`: index empty/unreadable, everything below
+  threshold, or no match).
+- **No backend connection was ever closed.** There was no `ToolBox.close()`,
+  `FusekiTripleStoreManager.close` was defined but never called, and the Qdrant
+  client had neither a close path nor a timeout. `ToolBox.aclose()` (also an
+  async context manager) now releases both, the FastAPI app closes them on
+  shutdown, and `QDRANT_TIMEOUT_SECONDS` (default 30) bounds Qdrant calls.
+- **Ontology delete writeback: GraphUpdate delete operations now propagate
+  through map/reduce to catalog terminals.** Deletes were honored only inside
+  the per-unit render loop and then dropped at the reduce stage (with a
+  warning) — the catalog could grow but never shrink. The unit delta is now
+  computed by replaying all GraphUpdates in order onto the prompt snapshot
+  and diffing (so delete-then-reinsert nets out), deletes are reconciled
+  across parallel units conservatively (any unit's insert vetoes another
+  unit's delete of the same triple), partitioned by namespace ownership like
+  inserts, and applied delete-first onto the catalog base. The applied update
+  list now reaches `SERIALIZE`, so the existing delete-aware version-bump
+  logic (`MAJOR` on deletions) fires — it was previously dead code on the map
+  path.
+- **Ontology consolidation no longer applies its delta to a stale base.** The
+  consolidation pass asked the LLM for a complement of the map-stage artifact
+  but applied the result onto the pre-run catalog terminal, then replaced
+  `state.ontology_artifacts` wholesale — silently dropping every map-stage
+  addition whenever `ENABLE_ONTOLOGY_CONSOLIDATION` fired. The apply now
+  bases on the map-stage artifact via `base_overrides`, keeping one clean
+  lineage (pre-run -> map -> consolidated).
+- **Author-prefix collisions no longer block catalog ingest.** Two ontologies
+  binding the same Turtle prefix (`onto:`, `ex:` — every Text2KGBench
+  ontology binds `onto:`) raised `ValueError` on the second registration.
+  Prefix aliases now degrade: the first binding keeps the alias, later
+  ontologies register with a warning and stay addressable by IRI and
+  `ontology_id`. Genuine `ontology_id` collisions still raise.
+- **Facts: literal `rdf:type` objects are repaired deterministically.**
+  Extraction sometimes emitted `a "prefix:Class"^^xsd:string` (JSON-LD
+  bare-string type values parse the same way); such nodes are invisible to
+  SPARQL class queries and to aggregation's URI minting/entity matching.
+  Absolute and graph-bound compact IRIs are coerced to IRIs at the render
+  chokepoint; unresolvable forms become MANDATORY `literal_type_object`
+  findings driving the repair loop.
+- **`facts_findings_residual` now measures the residual, not the workload.**
+  Repair attempt records carried the finding counts computed *before* the
+  repair render, so the document-level metric reported what repairs were
+  asked to fix rather than what survived them. Records now carry the
+  post-render residual.
+- **Cross-document merge vetoes cover the whole cluster.** `merged_clusters`
+  was keyed by final URI while one canonical spanning two documents mints one
+  final URI per doc base, so the validation gate's veto dissolved only the
+  flagged document's half of a bad merge. Clusters are now grouped by
+  canonical identity, with every final URI keying the full member set.
+- **JSON-LD prompt serialization no longer mints phantom prefixes from
+  literal text.** `@context` filtering matched `prefix:`-shaped heads in
+  *every* string value, so a plain literal like `"time: 10 minutes"` kept the
+  unused `time:` vocabulary in front of the model. Prefixes are now collected
+  only from IRI positions (`@id`, `@type`, predicate keys).
+- **Lexical triggers match non-ASCII symbols.** `µm`, `μm`, `°C`, `%`, `Å`,
+  `Ω`, `‰`, `Δ` tokenized to their ASCII tails (or nothing) and were
+  unreachable — among the most common tokens in SI-reporting prose. Symbol
+  characters are now valid token starts, and short non-ASCII triggers
+  qualify for the substring lane.
+- **Substring trigger scan respects token boundaries.** `mA/cm²` in prose
+  fired the `A/cm²`, `W/cm²`, and `/cm` triggers (4 spurious seeds of 19 on
+  one measured passage), consuming the additive trigger budget and
+  mis-attributing units. Occurrences now count only at non-alphanumeric
+  boundaries.
+- **Schema-closure floor score no longer inverts at non-positive floors.**
+  Closure additions were ranked at `min(seed score) * 0.5`, which ties with
+  the weakest seed at `0.0` and *outranks* it for negative floors; closure
+  now always scores strictly below every real seed.
+- **Closed-range suggestions match case exactly.** The suggester's
+  case-insensitive fallback could propose `unit:M` for `"m"`, contradicting
+  the facts prompt's character-for-character rule.
+- **Retrieval recall harness attributes versioned-header vocabularies.**
+  `owner_of` was containment-only, so a vocabulary whose `owl:Ontology`
+  header is not a prefix of its term IRIs (QUDT 2.1: header
+  `…/2.1/vocab/unit`, terms `…/vocab/unit/`) read as "contributed nothing";
+  it now falls back to subject membership like production, and unowned
+  expected IRIs are reported as `(unattributed)` instead of being silently
+  dropped. Production `patch_retriever` needed no change — the PLANNING
+  entry's claim about the production path was wrong.
 - **The deterministic facts repair no longer fires on advisory findings.**
   `_run_deterministic_repair` broke out of its loop on `if not findings`, but
   `findings` includes `NUMERIC_COVERAGE`, which is explicitly non-mandatory and
@@ -513,15 +730,12 @@ Run-to-run variation is roughly ±1 percentage point (approximate nearest-neighb
   in the pre-commit hook's arguments, so the documented `uv run ruff check .`
   reported 282 findings that CI ignored. The ignores now live in
   `pyproject.toml` and the hook passes `--fix` alone.
-
 - **MkDocs build warnings** — workflow guide links now point at
   `docs/assets/graph.mmd` and the generated `stategraph/atomic` reference
   page; `docs/gen_pages.py` emits package pages at `reference/<pkg>.md`
   (not `reference/<pkg>/__init__.md`) so config/onto identifiers are not
   registered twice; doctest examples in `Ontology.to_lineage_node` no
   longer emit Markdown shortcut-link false positives for `'def456'`.
-
-
 - **Atom `entity_role` is derived from property *declaration*, not from
   incidental predicate-position usage** (surface-form contract `sf4` → `sf5`,
   so existing vector collections must be reindexed). A TBox-only module never
@@ -596,8 +810,6 @@ Run-to-run variation is roughly ±1 percentage point (approximate nearest-neighb
   unit conversion — canonicalization is downstream code's job) and no longer
   cites the nonexistent `unit:MilliEV` IRI in its example.
 - **Vector store initialization bypass during tenancy bootstrapping.** Fixed an ordering issue where `update_tenancy_with_vector_mode` initialized the vector store too early, causing an `EmbeddingContractMismatchError` when launching the server or processing files even when `--wipe-vector-store` was set. The vector store initialization is now properly delayed to the `initialize` method where the `wipe_vector_store` flag is checked and executed first.
-
-
 - **Serialization of oxigraph-backed graphs holding RDF 1.2 triple terms.**
   `RDFGraph.serialize()` delegates Turtle output to pyoxigraph for oxigraph stores
   because oxrdflib surfaces a `pyoxigraph.Triple` as a plain Python tuple, which
@@ -663,8 +875,6 @@ Run-to-run variation is roughly ±1 percentage point (approximate nearest-neighb
 - Documented that `ONTOCAST_RECALL_ONTOLOGIES` / `ONTOCAST_RECALL_CASES` apply to the
   Text2KGBench tier only. The module docstring implied they bounded the prebuilt-corpus
   tier as well; `load_corpus` has never consulted either.
-
-
 - **A multi-language vocabulary was named in an arbitrary language.** Literals are sorted before truncation so atomization is reproducible, but that sort also picks the display name and the surface forms that survive the cap — so a term declaring one `rdfs:label` per language was named by whichever language sorted first alphabetically. QUDT's `unit:DEG_C` (23 labels) came out as the Hungarian "Celsius Fok", and three of its five surviving surface forms were translations no English-language query will match. Literals are now ranked by language before value, putting untagged and `en*` forms first; other languages are demoted rather than dropped, so a non-English corpus keeps its aliases. The ordering stays total and deterministic, so reproducibility is unaffected. Changes stored vectors — requires a reindex.
 - **A tenant switch left the previous tenant's ontologies in memory.** `ToolBox.update_tenancy_with_vector_mode` retargeted the triple store and vector store but never touched `ontology_manager`, so after a per-request `?tenant=` switch the in-memory catalog still served the previous tenant's ontologies — and its alias-collision ledger still rejected a legitimately distinct ontology that reused an `ontology_id`. The catalog is now reset and reloaded from the retargeted store whenever tenancy actually changes; the first assignment is skipped because it precedes `initialize()`, which populates the catalog itself. Seed TTLs are deliberately not replayed into a different tenant.
 - **Retrieval re-read and re-merged the catalog once per content unit.** Even with by-IRI fetching, each unit in the `PARALLEL_WORKERS` fan-out downloaded the selected ontology graphs again and paid a fresh rdflib union over them. Both are now served from `OntologyManager`, so a document pays per ontology rather than per unit. Snapshot content is unchanged: `test_catalog_read_path_matches_direct_store_reads` asserts byte-identical Turtle with and without the new read path, and `test_induced_subgraph_quality.py` pins the builder's output. (The recall harness cannot establish this — approximate nearest-neighbour search is not bit-reproducible across index builds, and its snapshot sizes move by several triples run to run on identical code. Its stable figure, seed TERM recall, is unchanged at 84.0% on Text2KGBench and 100% on the anchor fixtures.)

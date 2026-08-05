@@ -68,7 +68,7 @@ For evaluation against ground truth, use the match endpoints (see [API Endpoints
 
 Entity match payloads accept IRI strings or `URIRef` values; evaluation normalizes to `URIRef` for projection. **Entity false positives/negatives** count unmatched entities in each graph (set difference), so a shared ontology vocabulary IRI matched once is not also counted as an extra false positive on the other side.
 
-The `match-dirs` CLI automates this for directory pairs of TTL files.
+The `match-graphs` CLI automates this for directory pairs of TTL files.
 
 ## Tuning Tips
 

@@ -90,22 +90,35 @@ class OntologyManager(Tool):
             )
         return identity
 
-    def _collect_aliases(self, ontology: Ontology) -> list[str]:
-        aliases: list[str] = []
-        for candidate in (ontology.ontology_id, ontology.prefix):
+    def _collect_aliases(self, ontology: Ontology) -> list[tuple[str, str]]:
+        """Collect ``(alias, kind)`` pairs; kind is ``ontology_id`` or ``prefix``.
+
+        When ``ontology_id`` and author prefix coincide, the alias keeps the
+        stricter ``ontology_id`` kind.
+        """
+        aliases: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for candidate, kind in (
+            (ontology.ontology_id, "ontology_id"),
+            (ontology.prefix, "prefix"),
+        ):
             if not candidate:
                 continue
             cleaned = candidate.strip().lower()
-            if cleaned and cleaned not in aliases:
-                aliases.append(cleaned)
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                aliases.append((cleaned, kind))
         return aliases
 
     def validate_identity_uniqueness(self, ontology: Ontology) -> None:
         """Validate catalog IRI and alias uniqueness across the manager.
 
-        Same IRI may not change its primary ``ontology_id``. The same alias
-        may not point at two different IRIs. Author ``prefix`` may differ from
-        ``ontology_id`` (both register as aliases of the same IRI).
+        Same IRI may not change its primary ``ontology_id``. The same
+        ``ontology_id`` alias may not point at two different IRIs. Author
+        ``prefix`` may differ from ``ontology_id`` (both register as aliases of
+        the same IRI); a *prefix* collision across IRIs does not block ingest —
+        the colliding prefix alias is simply skipped at registration and the
+        ontology stays addressable by IRI and ``ontology_id``.
         """
         iri = (ontology.iri or "").strip()
         if not iri:
@@ -123,20 +136,37 @@ class OntologyManager(Tool):
                 f"received '{primary}'"
             )
 
-        for alias in self._collect_aliases(ontology):
+        for alias, kind in self._collect_aliases(ontology):
             existing_iri = self._alias_to_iri.get(alias)
-            if existing_iri is not None and existing_iri != iri:
-                raise ValueError(
-                    "Ontology identity conflict: identity "
-                    f"'{alias}' is already bound to IRI '{existing_iri}', "
-                    f"received '{iri}'"
-                )
+            if existing_iri is None or existing_iri == iri:
+                continue
+            if kind == "prefix":
+                # Convenience alias only; degrades to IRI-only addressing.
+                continue
+            raise ValueError(
+                "Ontology identity conflict: identity "
+                f"'{alias}' is already bound to IRI '{existing_iri}', "
+                f"received '{iri}'"
+            )
 
     def _register_identity(self, ontology: Ontology) -> None:
         iri = ontology.iri.strip()
         primary = self._primary_ontology_id(ontology)
         self._iri_to_ontology_id[iri] = primary
-        for alias in self._collect_aliases(ontology):
+        for alias, _kind in self._collect_aliases(ontology):
+            existing_iri = self._alias_to_iri.get(alias)
+            if existing_iri is not None and existing_iri != iri:
+                # validate_identity_uniqueness raises on ontology_id conflicts,
+                # so only author-prefix aliases can reach this branch.
+                logger.warning(
+                    "Author prefix alias '%s' is already bound to IRI %s; "
+                    "skipping alias registration for %s (addressable by IRI "
+                    "and ontology_id only).",
+                    alias,
+                    existing_iri,
+                    iri,
+                )
+                continue
             self._alias_to_iri[alias] = iri
         # Also allow looking up by the raw IRI string and its normalized form.
         self._alias_to_iri[iri.lower()] = iri
@@ -498,9 +528,9 @@ class OntologyManager(Tool):
         self,
         query: str,
         top_k: int | None = None,
-        subgraph_depth: int = 1,
-        max_total_triples: int = 300,
-        estimated_triples_per_query: int = 24,
+        subgraph_depth: int | None = None,
+        max_total_triples: int | None = None,
+        estimated_triples_per_query: int | None = None,
     ) -> RDFGraph | None:
         """Retrieve multi-ontology patch context for a query.
 
@@ -520,9 +550,9 @@ class OntologyManager(Tool):
         self,
         query: str,
         top_k: int | None = None,
-        subgraph_depth: int = 1,
-        max_total_triples: int = 300,
-        estimated_triples_per_query: int = 24,
+        subgraph_depth: int | None = None,
+        max_total_triples: int | None = None,
+        estimated_triples_per_query: int | None = None,
     ) -> RDFGraph | None:
         """Async variant of :meth:`get_patch_context`."""
         graph, _ = await self.aget_patch_context_with_sources(
@@ -538,9 +568,9 @@ class OntologyManager(Tool):
         self,
         query: str,
         top_k: int | None = None,
-        subgraph_depth: int = 1,
-        max_total_triples: int = 300,
-        estimated_triples_per_query: int = 24,
+        subgraph_depth: int | None = None,
+        max_total_triples: int | None = None,
+        estimated_triples_per_query: int | None = None,
     ) -> tuple[RDFGraph | None, list[str]]:
         """Retrieve patch context and contributing ontology IRIs."""
         results = self.get_patch_contexts_with_sources(
@@ -558,9 +588,9 @@ class OntologyManager(Tool):
         self,
         query: str,
         top_k: int | None = None,
-        subgraph_depth: int = 1,
-        max_total_triples: int = 300,
-        estimated_triples_per_query: int = 24,
+        subgraph_depth: int | None = None,
+        max_total_triples: int | None = None,
+        estimated_triples_per_query: int | None = None,
     ) -> tuple[RDFGraph | None, list[str]]:
         """Async variant of :meth:`get_patch_context_with_sources`."""
         results = await self.aget_patch_contexts_with_sources(
@@ -578,9 +608,9 @@ class OntologyManager(Tool):
         self,
         queries: list[str],
         top_k: int | None = None,
-        subgraph_depth: int = 1,
-        max_total_triples: int = 300,
-        estimated_triples_per_query: int = 24,
+        subgraph_depth: int | None = None,
+        max_total_triples: int | None = None,
+        estimated_triples_per_query: int | None = None,
     ) -> list[tuple[RDFGraph | None, list[str]]]:
         """Retrieve patch contexts for many queries in a batched pass.
 
@@ -612,9 +642,9 @@ class OntologyManager(Tool):
         self,
         queries: list[str],
         top_k: int | None = None,
-        subgraph_depth: int = 1,
-        max_total_triples: int = 300,
-        estimated_triples_per_query: int = 24,
+        subgraph_depth: int | None = None,
+        max_total_triples: int | None = None,
+        estimated_triples_per_query: int | None = None,
     ) -> list[tuple[RDFGraph | None, list[str]]]:
         """Async patch retrieval (vector + induced subgraph) for many queries.
 

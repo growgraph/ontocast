@@ -78,12 +78,14 @@ _PROPERTY_TYPE_IRIS: frozenset[URIRef] = frozenset(
 
 QUDT = Namespace("http://qudt.org/schema/qudt/")
 
-# Declared surface forms, in descending priority.
-_LABEL_PREDICATES: list[URIRef] = [
-    RDFS.label,
-    SKOS.prefLabel,
-    DCTERMS.title,
-    SKOS.altLabel,
+# Declared surface forms, in descending priority. Defaults only -- see
+# ``GraphAtomizer.label_predicates``.
+DEFAULT_LABEL_PREDICATES: list[str] = [
+    str(RDFS.label),
+    str(SKOS.prefLabel),
+    str(DCTERMS.title),
+    str(SKOS.altLabel),
+    str(DCTERMS.alternative),
 ]
 
 # QUDT publishes an authoritative symbol and UCUM code per unit. Those are the forms
@@ -91,10 +93,16 @@ _LABEL_PREDICATES: list[URIRef] = [
 # measurements is queried by symbol. They are collected against their own budget rather
 # than queued behind labels: a QUDT unit may declare a dozen labels (one per language),
 # which would exhaust the surface-form cap before any symbol is reached.
-_SYMBOL_PREDICATES: list[URIRef] = [
-    SKOS.notation,
-    QUDT.symbol,
-    QUDT.ucumCode,
+#
+# Defaults only. A catalog that publishes symbols under different predicates
+# overrides ``GraphAtomizer.symbol_predicates``; the retrieval side has always
+# been configurable this way, and having only one half of the pair configurable
+# meant setting the knob changed what surfaced without changing what was
+# indexed.
+DEFAULT_SYMBOL_PREDICATES: list[str] = [
+    str(SKOS.notation),
+    str(QUDT.symbol),
+    str(QUDT.ucumCode),
 ]
 
 
@@ -133,6 +141,7 @@ _ANNOTATION_PREDICATES: frozenset[URIRef] = frozenset(
         DCTERMS.title,
         DCTERMS.description,
         DCTERMS.abstract,
+        DCTERMS.alternative,
         SKOS.notation,
         QUDT.symbol,
         QUDT.ucumCode,
@@ -229,6 +238,25 @@ class GraphAtomizer(Tool):
             "match. Changing it changes stored vectors and requires a reindex."
         ),
     )
+    label_predicates: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_LABEL_PREDICATES),
+        description=(
+            "Predicate IRIs whose literal objects are treated as declared "
+            "labels, in descending priority. Changing this changes stored "
+            "vectors and requires a reindex."
+        ),
+    )
+    symbol_predicates: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_SYMBOL_PREDICATES),
+        description=(
+            "Predicate IRIs whose literal objects are treated as symbols/"
+            "notations, collected against their own budget so they are not "
+            "crowded out by multilingual labels. Should agree with "
+            "VECTOR_STORE_INDUCED_SUBGRAPH_SYMBOL_PREDICATES, which controls "
+            "the retrieval half of the same contract. Changing this changes "
+            "stored vectors and requires a reindex."
+        ),
+    )
     lexical_trigger_enabled: bool = Field(
         default=True,
         description="Collect case-preserved lexical triggers on each atom.",
@@ -250,6 +278,14 @@ class GraphAtomizer(Tool):
     lexical_trigger_min_len: int = Field(default=2, ge=1)
     lexical_trigger_max_len: int = Field(default=24, ge=1)
     lexical_trigger_heuristic_max_per_entity: int = Field(default=2, ge=0)
+
+    def _label_predicate_refs(self) -> list[URIRef]:
+        """Configured label predicates as rdflib terms."""
+        return [URIRef(iri) for iri in self.label_predicates]
+
+    def _symbol_predicate_refs(self) -> list[URIRef]:
+        """Configured symbol/notation predicates as rdflib terms."""
+        return [URIRef(iri) for iri in self.symbol_predicates]
 
     class _VectorizationSource(Protocol):
         graph: RDFGraph
@@ -316,6 +352,9 @@ class GraphAtomizer(Tool):
                 entity, embedding_graph
             )
             lexical_triggers = self._build_lexical_triggers(entity, embedding_graph)
+            symbol_surfaces = self._collect_raw_literals(
+                embedding_graph, entity, self._symbol_predicate_refs(), max_items=8
+            )
             neighborhood_variants = self._build_neighborhood_variants(
                 entity=entity, graph=patch_graph, entity_role=role
             )
@@ -356,6 +395,7 @@ class GraphAtomizer(Tool):
                     minimal_representation=minimal_representation,
                     neighborhood_representation=neighborhood_representation,
                     lexical_triggers=lexical_triggers,
+                    symbol_surfaces=symbol_surfaces,
                     created_at=generated_at,
                 )
         return list(atoms_by_id.values())
@@ -407,7 +447,7 @@ class GraphAtomizer(Tool):
             return True
         return any(
             next(graph.objects(entity, predicate), None) is not None
-            for predicate in _LABEL_PREDICATES
+            for predicate in self._label_predicate_refs()
         )
 
     def _collect_focal_entities(
@@ -863,8 +903,12 @@ class GraphAtomizer(Tool):
         Returns:
             list[str]: Normalized surface forms, at most ``max_items``.
         """
-        labels = self._collect_literals(graph, subject, _LABEL_PREDICATES, max_items)
-        symbols = self._collect_literals(graph, subject, _SYMBOL_PREDICATES, max_items)
+        labels = self._collect_literals(
+            graph, subject, self._label_predicate_refs(), max_items
+        )
+        symbols = self._collect_literals(
+            graph, subject, self._symbol_predicate_refs(), max_items
+        )
         if not symbols:
             return labels[:max_items]
         if lead_with_symbol:

@@ -42,6 +42,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import wraps
 from typing import Any, Callable, Type, TypeVar
 
@@ -65,6 +67,30 @@ logger = logging.getLogger(__name__)
 
 # Shared across all LLMTool instances with the same max_inflight setting.
 _inflight_semaphores: dict[int, asyncio.Semaphore] = {}
+
+# The budget tracker usage should be charged to, scoped to the running task.
+#
+# The LLM tool is a singleton owned by the ToolBox, so binding a per-unit
+# tracker to an instance attribute meant concurrent unit workers overwrote each
+# other: whichever bound last collected every in-flight call's usage. Document
+# totals still summed correctly (the reduce merges all per-unit trackers) but
+# per-unit attribution was arbitrary, and it is reported to API clients.
+#
+# A ContextVar is task-local -- asyncio.gather copies the current context into
+# each task -- so parallel units no longer share one slot.
+_active_budget_tracker: ContextVar[Any | None] = ContextVar(
+    "ontocast_active_budget_tracker", default=None
+)
+
+
+@contextmanager
+def use_budget_tracker(budget_tracker: Any):
+    """Charge LLM usage inside this block to ``budget_tracker``."""
+    token = _active_budget_tracker.set(budget_tracker)
+    try:
+        yield
+    finally:
+        _active_budget_tracker.reset(token)
 
 
 def _inflight_semaphore(max_inflight: int) -> asyncio.Semaphore:
@@ -316,15 +342,25 @@ class LLMTool(Tool):
         extra = [self._prompt_to_string(arg) for arg in args[1:]]
         return primary + "\n---\n" + "\n---\n".join(extra)
 
+    def _current_budget_tracker(self) -> Any:
+        """Tracker for the running task, falling back to the instance default.
+
+        The context-local tracker wins so parallel unit workers charge their own
+        budgets; ``self.budget_tracker`` remains for direct library use of a
+        single ``LLMTool``.
+        """
+        scoped = _active_budget_tracker.get()
+        return scoped if scoped is not None else self.budget_tracker
+
     def _record_cache_hit(self, prompt_str: str, content_str: str) -> None:
         self._cache_hits += 1
-        bt = self.budget_tracker
+        bt = self._current_budget_tracker()
         if bt is not None:
             bt.add_cache_hit(len(prompt_str), len(content_str))
 
     def _record_api_usage(self, prompt_str: str, result: Any) -> None:
         self._cache_misses += 1
-        bt = self.budget_tracker
+        bt = self._current_budget_tracker()
         if bt is None:
             return
         input_tokens, output_tokens = _usage_from_llm_result(result)

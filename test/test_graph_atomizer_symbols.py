@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from rdflib import OWL, RDF, RDFS, Literal, URIRef
+
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.vector_store.atomizer import GraphAtomizer
@@ -76,3 +78,49 @@ def test_entities_without_symbols_are_unaffected() -> None:
     atom = _atom_for("Plain")
 
     assert "plain unit" in atom.minimal_representation
+
+
+def test_symbol_predicates_are_configurable() -> None:
+    """The indexing half of the symbol contract must follow config.
+
+    Retrieval has always read its symbol predicates from config; the atomizer
+    hardcoded them, so overriding the knob changed what surfaced without
+    changing what was indexed.
+    """
+    custom = URIRef("http://example.com/vocab#code")
+    graph = RDFGraph()
+    subject = URIRef("http://example.com/onto#Widget")
+    graph.add((subject, RDF.type, OWL.Class))
+    graph.add((subject, RDFS.label, Literal("Widget")))
+    graph.add((subject, custom, Literal("WDG")))
+
+    default_atomizer = GraphAtomizer()
+    configured = GraphAtomizer(symbol_predicates=[str(custom)])
+
+    assert "WDG" not in default_atomizer._collect_raw_literals(
+        graph, subject, default_atomizer._symbol_predicate_refs(), max_items=8
+    )
+    assert "WDG" in configured._collect_raw_literals(
+        graph, subject, configured._symbol_predicate_refs(), max_items=8
+    )
+
+
+def test_label_predicates_are_configurable() -> None:
+    custom = URIRef("http://example.com/vocab#displayName")
+    graph = RDFGraph()
+    subject = URIRef("http://example.com/onto#Widget")
+    graph.add((subject, RDF.type, OWL.Class))
+    graph.add((subject, custom, Literal("Widget display")))
+
+    configured = GraphAtomizer(label_predicates=[str(custom)])
+
+    # _collect_literals normalizes case.
+    assert "widget display" in configured._collect_literals(
+        graph, subject, configured._label_predicate_refs(), 5
+    )
+    assert (
+        GraphAtomizer()._collect_literals(
+            graph, subject, GraphAtomizer()._label_predicate_refs(), 5
+        )
+        == []
+    )

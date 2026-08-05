@@ -158,10 +158,10 @@ curl -X POST http://localhost:8999/process -F "file=@document.pdf"
 
 curl -X POST http://localhost:8999/flush
 
-curl -X POST "http://localhost:8999/flush?dataset=my_dataset"
+curl -X POST "http://localhost:8999/flush?tenant=acme&project=reports"
 ```
 
-For Fuseki, optional `tenant`/`project` query parameters target a specific partition. Without them, the active server scope is flushed.
+For Fuseki, optional `tenant`/`project` query parameters target a specific partition. Without them, the active server scope is flushed. There is no `dataset` parameter — unknown query parameters are ignored, so passing one silently flushes the active scope instead.
 
 Full reference: [API Endpoints](docs/user_guide/api.md).
 
@@ -209,7 +209,7 @@ OntoCast uses a hierarchical configuration system built on Pydantic BaseSettings
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `LLM_API_KEY` | API key for LLM provider | - | Yes (OpenAI) |
-| `LLM_PROVIDER` | LLM provider (openai, ollama) | openai | No |
+| `LLM_PROVIDER` | LLM provider (openai, anthropic, google, ollama) | openai | No |
 | `LLM_MODEL_NAME` | Model name | gpt-4o-mini | No |
 | `LLM_TEMPERATURE` | Temperature setting | 0.0 | No |
 | `ONTOCAST_WORKING_DIRECTORY` | Working directory path | - | No |

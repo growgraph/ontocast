@@ -34,6 +34,7 @@ _SEED_NAME_PREDICATES: tuple[URIRef, ...] = (
 )
 _SEED_GLOSS_PREDICATES: tuple[URIRef, ...] = (
     SKOS.altLabel,
+    URIRef("http://purl.org/dc/terms/alternative"),
     RDFS.comment,
     SKOS.definition,
     URIRef("http://purl.org/dc/terms/description"),
@@ -2100,6 +2101,13 @@ class SPARQLTool:
         extra_description_predicates: Sequence[URIRef] = (),
     ) -> RDFGraph:
         """Fetch a deterministic induced subgraph around selected entities.
+
+        This is a primitive: ``SPARQLTool`` holds no vector-store settings, so
+        the budget arguments here are conservative literals, *not* the
+        deployment's configured budget. ``OntologyPatchRetriever`` -- the
+        production caller -- passes every one of them from
+        ``ONTOLOGY_PATCH_INDUCED_SUBGRAPH_*``. Direct callers who want the
+        configured behaviour should do the same rather than rely on these.
 
         Args:
             ontologies: Pre-fetched catalog to build from. When ``None`` only the

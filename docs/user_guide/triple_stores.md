@@ -16,7 +16,7 @@ When `FUSEKI_URI` and `FUSEKI_AUTH` are set, Fuseki is used. Otherwise OntoCast 
 ```bash
 # Fuseki (optional — production)
 FUSEKI_URI=http://localhost:3030
-FUSEKI_AUTH=admin:password
+FUSEKI_AUTH=admin/admin
 #FUSEKI_DATASET=ontocast--test--facts
 #FUSEKI_ONTOLOGIES_DATASET=ontocast--test--ontologies
 
@@ -67,7 +67,7 @@ Configure OntoCast:
 
 ```bash
 FUSEKI_URI=http://localhost:3032
-FUSEKI_AUTH=admin:your-password
+FUSEKI_AUTH=admin/your-password
 ```
 
 ---
@@ -77,6 +77,25 @@ FUSEKI_AUTH=admin:your-password
 No setup required. Data lives in process memory (pyoxigraph) and is lost on restart.
 
 Use Fuseki for production deployments. The in-memory backend supports the same tenancy partition model as Fuseki.
+
+---
+
+## Known Limitation: Integer Subtypes Collapse on Insert
+
+pyoxigraph normalizes literals into its value space when a quad is added:
+`"1"^^xsd:nonNegativeInteger` is stored — and served back — as
+`"1"^^xsd:integer`, independent of serialization format. OWL 2 requires
+`xsd:nonNegativeInteger` on `owl:qualifiedCardinality` /
+`owl:maxQualifiedCardinality`, so an ontology round-tripped through the store
+is no longer OWL 2 DL conformant on those axioms, and an external reasoner may
+reject or ignore them.
+
+Content hashing is insensitive to this (literals are canonicalized onto the
+value-space normal form before hashing), so it causes no identity drift inside
+OntoCast — but the *served* ontology is lossy. If strict OWL 2 DL conformance
+of exported ontologies matters, keep the authored Turtle as the source of
+truth (e.g. under `ONTOCAST_ONTOLOGY_DIRECTORY`) rather than re-exporting from
+the store.
 
 ---
 

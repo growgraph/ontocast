@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections import Counter
 
@@ -13,6 +14,7 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import require_vector_retrieval
 from ontocast.onto.state import AgentState
 from ontocast.tool.chunk.proposition import split_proposition_windows
+from ontocast.tool.llm import use_budget_tracker
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -99,12 +101,15 @@ async def _resolve_selected_single_ontology_context(
     unit: SourceUnit,
 ) -> UnitOntologyContext:
     """One catalog ontology chosen by the LLM from the unit text."""
-    selected = await select_catalog_ontology_for_excerpt(
-        tools.ontology_manager,
-        tools.llm,
-        unit.text,
-        state.ontology_selection_user_instruction,
-    )
+    # Scoped so the selection call is charged to the calling unit's budget
+    # rather than to whichever tracker was bound last.
+    with use_budget_tracker(state.budget_tracker):
+        selected = await select_catalog_ontology_for_excerpt(
+            tools.ontology_manager,
+            tools.llm,
+            unit.text,
+            state.ontology_selection_user_instruction,
+        )
     mode = OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM
     if selected.is_null():
         return UnitOntologyContext(
@@ -214,6 +219,32 @@ async def _resolve_ensemble_context(
             metrics.get("expanded_ontology_iris"),
             metrics.get("snapshot_triple_count"),
         )
+    if not len(patch_graph):
+        # An empty snapshot reaching the renderer means it will extract with no
+        # vocabulary at all. Distinguish the causes: an empty index is a
+        # deployment problem, everything-below-threshold is a tuning problem,
+        # and neither should read as "this passage had no relevant terms".
+        indexed_iris: set[str] = set()
+        if tools.vector_store is not None:
+            try:
+                indexed_iris = await asyncio.to_thread(
+                    tools.vector_store.list_indexed_ontology_iris
+                )
+            except Exception as exc:
+                logger.warning("Could not inspect the vector index: %s", exc)
+        if not indexed_iris:
+            reason = "vector index is empty or unreadable"
+        elif metrics and metrics.get("atoms_after_dedupe"):
+            reason = "all candidate atoms scored below the retrieval thresholds"
+        else:
+            reason = "no candidate atoms matched the unit's queries"
+        state.retrieval_metrics["empty_snapshot_reason"] = reason
+        logger.warning(
+            "Ontology context for this unit is empty (%s); extraction will "
+            "proceed with no catalog vocabulary.",
+            reason,
+        )
+
     preferred = tools.ontology_manager.preferred_namespace_prefixes or None
     patch_graph.sanitize_prefixes_namespaces(preferred_namespace_prefixes=preferred)
 

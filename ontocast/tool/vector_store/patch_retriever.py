@@ -17,6 +17,7 @@ from ontocast.config import (
     CrossQueryMergeMode,
     LexicalTriggerFusion,
     PatchRetrievalConfig,
+    SymbolCaseMismatchPolicy,
     VectorStoreConfig,
 )
 from ontocast.onto.constants import COMMON_PREFIXES
@@ -43,6 +44,7 @@ from ontocast.tool.vector_store.core import (
 from ontocast.tool.vector_store.diagnostics import (
     build_ontology_rank_diagnostics,
 )
+from ontocast.tool.vector_store.lexical_trigger import tokenize_for_lexical_match
 from ontocast.tool.vector_store.query_signals import (
     CatalogSurfaceIndex,
     number_adjacent_tokens,
@@ -117,6 +119,22 @@ def _class_ancestors(graph: RDFGraph, cls: URIRef, *, max_depth: int) -> set[URI
             break
         frontier = nxt
     return seen
+
+
+def _closure_floor_score(seed_relevance: dict[str, float]) -> float:
+    """Score for schema-closure additions: strictly below every real seed.
+
+    The closure fills structural gaps and must not displace a term the text
+    actually matched when the induced-subgraph triple budget binds.
+    ``floor * 0.5`` only achieves that for positive floors — at ``0.0`` it
+    ties with the weakest seed (leaving truncation order arbitrary) and a
+    negative floor would *raise* closure above it — so non-positive floors
+    get a strictly smaller sentinel instead.
+    """
+    floor_score = min(seed_relevance.values(), default=0.0)
+    if floor_score > 0.0:
+        return floor_score * 0.5
+    return floor_score - 1.0
 
 
 def _schema_closure_entities(
@@ -1017,6 +1035,60 @@ def _mmr_rerank(
     return selected
 
 
+def _demote_case_mismatched_symbol_atoms(
+    atoms: list[GraphAtom],
+    query_text: str,
+    *,
+    policy: SymbolCaseMismatchPolicy,
+    demote_factor: float,
+) -> tuple[list[GraphAtom], int]:
+    """Demote or drop atoms whose only symbol evidence is case-mismatched.
+
+    The BM25/dense document text is case-folded before indexing, so prose
+    ``meV`` also retrieves ``unit:MegaEV`` (symbol ``MeV``) — one token away
+    from a 10^9 unit error. Symbol surfaces are case-significant by
+    definition (the lexical-trigger lane matches them exact-case); when a
+    query token equals one of an atom's symbol surfaces only after case
+    folding, and *no* query token matches any surface exactly, the symbol
+    evidence is counterfeit. Domain-agnostic: surfaces come from declared
+    ``skos:notation`` / ``qudt:symbol`` / ``qudt:ucumCode`` literals, never
+    from a vocabulary-specific list.
+
+    Atoms without symbol surfaces, exact-case matches, and label-only matches
+    are never touched; ``demote`` softens rather than removes, so an atom
+    with genuine semantic evidence survives at a lower rank.
+
+    Returns:
+        Tuple of (atoms after policy application, penalized count).
+    """
+    if policy is SymbolCaseMismatchPolicy.OFF or not query_text or not atoms:
+        return atoms, 0
+    tokens = set(tokenize_for_lexical_match(query_text))
+    if not tokens:
+        return atoms, 0
+    folded_tokens = {token.lower() for token in tokens}
+    out: list[GraphAtom] = []
+    penalized = 0
+    for atom in atoms:
+        surfaces = [s for s in atom.symbol_surfaces if s.strip()]
+        if not surfaces:
+            out.append(atom)
+            continue
+        if any(surface in tokens for surface in surfaces):
+            out.append(atom)
+            continue
+        if not any(surface.lower() in folded_tokens for surface in surfaces):
+            out.append(atom)
+            continue
+        penalized += 1
+        if policy is SymbolCaseMismatchPolicy.DROP:
+            continue
+        out.append(
+            atom.model_copy(update={"score": float(atom.score or 0.0) * demote_factor})
+        )
+    return out, penalized
+
+
 def _merge_lexical_trigger_atoms(
     merged: list[GraphAtom],
     trigger_atoms: list[GraphAtom],
@@ -1394,14 +1466,36 @@ class OntologyPatchRetriever(Tool):
             return top_k
         return self.vector_store.store_config.top_k
 
+    def _resolve_subgraph_budget(
+        self,
+        subgraph_depth: int | None,
+        max_total_triples: int | None,
+        estimated_triples_per_query: int | None,
+    ) -> tuple[int, int, int]:
+        """Fill unset induced-subgraph budget arguments from configuration."""
+        sc = self.vector_store.store_config
+        return (
+            sc.induced_subgraph_depth if subgraph_depth is None else subgraph_depth,
+            (
+                sc.induced_subgraph_max_total_triples
+                if max_total_triples is None
+                else max_total_triples
+            ),
+            (
+                sc.induced_subgraph_estimated_triples_per_query
+                if estimated_triples_per_query is None
+                else estimated_triples_per_query
+            ),
+        )
+
     def retrieve(
         self,
         query: str,
         top_k: int | None = None,
         expand_sparql: bool = True,
-        subgraph_depth: int = 1,
-        max_total_triples: int = 300,
-        estimated_triples_per_query: int = 24,
+        subgraph_depth: int | None = None,
+        max_total_triples: int | None = None,
+        estimated_triples_per_query: int | None = None,
     ) -> tuple[RDFGraph, list[str]]:
         """Retrieve top-k hits for one query and optional induced subgraph; returns source ontology IRIs."""
         try:
@@ -1426,9 +1520,9 @@ class OntologyPatchRetriever(Tool):
         queries: list[str],
         top_k: int | None = None,
         expand_sparql: bool = True,
-        subgraph_depth: int = 1,
-        max_total_triples: int = 300,
-        estimated_triples_per_query: int = 24,
+        subgraph_depth: int | None = None,
+        max_total_triples: int | None = None,
+        estimated_triples_per_query: int | None = None,
         trigger_text: str | None = None,
     ) -> tuple[RDFGraph, list[str]]:
         """Sync: one induced graph and source IRIs for the union of vector hits over ``queries``."""
@@ -1455,9 +1549,9 @@ class OntologyPatchRetriever(Tool):
         query: str,
         top_k: int | None = None,
         expand_sparql: bool = True,
-        subgraph_depth: int = 1,
-        max_total_triples: int = 300,
-        estimated_triples_per_query: int = 24,
+        subgraph_depth: int | None = None,
+        max_total_triples: int | None = None,
+        estimated_triples_per_query: int | None = None,
         trigger_text: str | None = None,
     ) -> tuple[RDFGraph, list[str]]:
         """Async single-query variant of :meth:`aretrieve_ensemble`."""
@@ -1476,13 +1570,27 @@ class OntologyPatchRetriever(Tool):
         queries: list[str],
         top_k: int | None = None,
         expand_sparql: bool = True,
-        subgraph_depth: int = 1,
-        max_total_triples: int = 300,
-        estimated_triples_per_query: int = 24,
+        subgraph_depth: int | None = None,
+        max_total_triples: int | None = None,
+        estimated_triples_per_query: int | None = None,
         trigger_text: str | None = None,
     ) -> tuple[RDFGraph, list[str]]:
-        """Vector search over all ``queries`` once, score-filter, dedupe, single subgraph expansion."""
+        """Vector search over all ``queries`` once, score-filter, dedupe, single subgraph expansion.
+
+        ``subgraph_depth`` / ``max_total_triples`` / ``estimated_triples_per_query``
+        default to the configured values (``ONTOLOGY_PATCH_INDUCED_SUBGRAPH_*``).
+        They previously carried literal defaults of 1 / 300 / 24, which
+        contradicted the config defaults of 2 / 1200 / 24: the pipeline passed
+        config explicitly and was unaffected, but any other caller of this
+        public API silently got a 4x smaller snapshot than the deployment was
+        configured for.
+        """
         self._last_retrieval_metrics = {}
+        subgraph_depth, max_total_triples, estimated_triples_per_query = (
+            self._resolve_subgraph_budget(
+                subgraph_depth, max_total_triples, estimated_triples_per_query
+            )
+        )
         trigger_source = (trigger_text or "").strip()
         if not queries and not trigger_source:
             return RDFGraph(), []
@@ -1557,6 +1665,15 @@ class OntologyPatchRetriever(Tool):
         merged, trigger_promoted, trigger_appended = _merge_lexical_trigger_atoms(
             merged, trigger_atoms, fusion=sc.lexical_trigger_fusion
         )
+        # After the trigger merge: an exact-case trigger hit is positive
+        # evidence and exempts the atom; what remains penalizable is the
+        # case-folded BM25/dense residue.
+        merged, symbol_case_penalized = _demote_case_mismatched_symbol_atoms(
+            merged,
+            trigger_source,
+            policy=sc.symbol_case_mismatch_policy,
+            demote_factor=sc.symbol_case_mismatch_demote_factor,
+        )
 
         if not merged:
             self._last_retrieval_metrics = {
@@ -1570,6 +1687,7 @@ class OntologyPatchRetriever(Tool):
                 "lexical_trigger_atom_ids": [a.atom_id for a in trigger_atoms],
                 "lexical_trigger_promoted": trigger_promoted,
                 "lexical_trigger_appended": trigger_appended,
+                "symbol_case_penalized": symbol_case_penalized,
             }
             if pc.dump_ontology_ranks:
                 self._last_retrieval_metrics["ontology_rank_diagnostics"] = (
@@ -1600,6 +1718,7 @@ class OntologyPatchRetriever(Tool):
             "lexical_trigger_iris": [a.iri for a in trigger_atoms if a.iri],
             "lexical_trigger_promoted": trigger_promoted,
             "lexical_trigger_appended": trigger_appended,
+            "symbol_case_penalized": symbol_case_penalized,
         }
         if pc.dump_ontology_ranks:
             self._last_retrieval_metrics["ontology_rank_diagnostics"] = (
@@ -1671,13 +1790,10 @@ class OntologyPatchRetriever(Tool):
                 seed_relevance=entity_relevance,
             )
             if closure:
-                # Rank below every real seed: the closure fills structural gaps,
-                # it must not displace a term the text actually matched when the
-                # induced-subgraph triple budget binds.
-                floor_score = min(entity_relevance.values(), default=0.0)
+                closure_score = _closure_floor_score(entity_relevance)
                 for closure_iri, closure_role in closure.items():
                     entity_uris.append(closure_iri)
-                    entity_relevance[closure_iri] = floor_score * 0.5
+                    entity_relevance[closure_iri] = closure_score
                     entity_roles[closure_iri] = closure_role
                 self._last_retrieval_metrics["schema_closure_iris"] = sorted(closure)
 

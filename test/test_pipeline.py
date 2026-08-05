@@ -38,14 +38,18 @@ from ontocast.onto.model import (
     OntologyCritiqueReport,
 )
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_apply import OntologyDelta
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph import create_agent_graph
 from ontocast.stategraph.context_resolver import UnitOntologyContext
-from ontocast.stategraph.helpers import build_ontology_delta_graph
-from ontocast.stategraph.node_factories import make_normalize_ontology_node
+from ontocast.stategraph.helpers import build_ontology_delta_graph, merge_unit_deltas
+from ontocast.stategraph.node_factories import (
+    make_consolidate_ontology_node,
+    make_normalize_ontology_node,
+)
 from ontocast.stategraph.routing import (
     route_after_ontology_consolidation,
     route_after_tag_or_chunk,
@@ -996,15 +1000,18 @@ def test_apply_update_query_splits_insert_where_plus_insert_data() -> None:
     ) in graph
 
 
-def test_build_ontology_delta_graph_warns_and_drops_delete_operations(
-    caplog,
-) -> None:
-    """Delete triples in unit GraphUpdates must be warned about and discarded.
+def test_build_ontology_delta_graph_propagates_delete_operations() -> None:
+    """Delete triples in unit GraphUpdates surface in the delete delta.
 
-    Policy: the ontology map-reduce stage is insert-only. Delete operations
-    produced by a unit loop cannot be safely applied across parallel results
-    and are intentionally dropped with a warning log.
+    The unit delta is the net replay of all GraphUpdates against the prompt
+    snapshot: complement inserts plus the snapshot triples removed by delete
+    operations, both of which propagate through the reduce stage.
     """
+    owl_class = URIRef("http://www.w3.org/2002/07/owl#Class")
+    ex_thing = URIRef("https://example.com/onto#Thing")
+    ex_new = URIRef("https://example.com/onto#NewThing")
+    ex_obsolete = URIRef("https://example.com/onto#obsolete")
+
     base_graph = RDFGraph()
     base_graph.parse(
         data="""
@@ -1015,13 +1022,17 @@ def test_build_ontology_delta_graph_warns_and_drops_delete_operations(
         """,
         format="turtle",
     )
+    delete_graph = RDFGraph()
+    delete_graph.parse(
+        data="""
+        @prefix ex: <https://example.com/onto#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        ex:obsolete a owl:Class .
+        """,
+        format="turtle",
+    )
     delete_op = GraphUpdate(
-        triple_operations=[
-            TripleOp(
-                type="delete",
-                graph=base_graph,
-            )
-        ]
+        triple_operations=[TripleOp(type="delete", graph=delete_graph)]
     )
     insert_graph = RDFGraph()
     insert_graph.parse(
@@ -1049,20 +1060,166 @@ def test_build_ontology_delta_graph_warns_and_drops_delete_operations(
         ontology_updates=[insert_op],
     )
 
-    with caplog.at_level(logging.WARNING, logger="ontocast.stategraph.helpers"):
-        delta = build_ontology_delta_graph(state)
+    delta = build_ontology_delta_graph(state)
 
-    assert any("delete" in record.message.lower() for record in caplog.records), (
-        "Expected a warning about dropped delete triples"
+    assert (ex_new, RDF.type, owl_class) in delta.inserts
+    assert (ex_obsolete, RDF.type, owl_class) in delta.deletes
+    # Untouched snapshot triples appear in neither channel.
+    assert (ex_thing, RDF.type, owl_class) not in delta.inserts
+    assert (ex_thing, RDF.type, owl_class) not in delta.deletes
+
+
+def test_build_ontology_delta_graph_delete_then_reinsert_nets_out() -> None:
+    """Ordered replay: a triple deleted and later re-inserted yields no delta."""
+    owl_class = URIRef("http://www.w3.org/2002/07/owl#Class")
+    ex_thing = URIRef("https://example.com/onto#Thing")
+
+    base_graph = RDFGraph()
+    base_graph.parse(
+        data="""
+        @prefix ex: <https://example.com/onto#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        ex:Thing a owl:Class .
+        """,
+        format="turtle",
     )
-    ex_new = URIRef("https://example.com/onto#NewThing")
-    ex_obsolete = URIRef("https://example.com/onto#obsolete")
-    assert (ex_new, RDF.type, URIRef("http://www.w3.org/2002/07/owl#Class")) in delta
-    assert (
-        ex_obsolete,
-        RDF.type,
-        URIRef("http://www.w3.org/2002/07/owl#Class"),
-    ) not in delta
+    churn_graph = RDFGraph()
+    churn_graph.parse(
+        data="""
+        @prefix ex: <https://example.com/onto#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        ex:Thing a owl:Class .
+        """,
+        format="turtle",
+    )
+    churn_update = GraphUpdate(
+        triple_operations=[
+            TripleOp(type="delete", graph=churn_graph),
+            TripleOp(type="insert", graph=churn_graph),
+        ]
+    )
+
+    onto = _build_ontology()
+    onto.graph = base_graph
+    state = UnitOntologyState(
+        content_unit=SourceUnit(
+            text="test",
+            index=0,
+            doc_iri=URIRef("https://example.com/doc/d1"),
+        ),
+        ontology_snapshot=snapshot_from_ontology(onto),
+        ontology_updates_applied=[churn_update],
+    )
+
+    delta = build_ontology_delta_graph(state)
+
+    assert (ex_thing, RDF.type, owl_class) not in delta.inserts
+    assert (ex_thing, RDF.type, owl_class) not in delta.deletes
+    assert delta.is_empty()
+
+
+def test_merge_unit_deltas_insert_wins_over_parallel_delete() -> None:
+    """Cross-unit consensus: any unit's insert vetoes another unit's delete."""
+    owl_class = URIRef("http://www.w3.org/2002/07/owl#Class")
+    contested = URIRef("https://example.com/onto#Contested")
+    removed = URIRef("https://example.com/onto#Removed")
+
+    delete_both = RDFGraph()
+    delete_both.add((contested, RDF.type, owl_class))
+    delete_both.add((removed, RDF.type, owl_class))
+    reinsert = RDFGraph()
+    reinsert.add((contested, RDF.type, owl_class))
+
+    merged = merge_unit_deltas(
+        [
+            OntologyDelta(deletes=delete_both),
+            OntologyDelta(inserts=reinsert),
+        ]
+    )
+
+    assert (contested, RDF.type, owl_class) in merged.inserts
+    assert (contested, RDF.type, owl_class) not in merged.deletes
+    assert (removed, RDF.type, owl_class) in merged.deletes
+
+
+@pytest.mark.anyio
+async def test_consolidate_ontology_node_applies_delta_on_map_stage_artifact(
+    monkeypatch,
+) -> None:
+    """Consolidation must build on the map-stage artifact, not the pre-run terminal.
+
+    The consolidation delta is a complement of the map-stage artifact; applying
+    it onto the stale catalog terminal silently dropped map-stage additions.
+    """
+    iri = "https://example.com/onto"
+    ns = f"{iri}#"
+    owl_class = URIRef("http://www.w3.org/2002/07/owl#Class")
+    map_stage_class = URIRef(f"{ns}MapStage")
+    consolidated_class = URIRef(f"{ns}Consolidated")
+
+    manager = OntologyManager()
+    terminal_graph = RDFGraph()
+    terminal_graph.bind("ex", ns)
+    terminal_graph.add((URIRef(iri), RDF.type, OWL.Ontology))
+    terminal_graph.add((URIRef(f"{ns}Thing"), RDF.type, owl_class))
+    terminal = Ontology(graph=terminal_graph, iri=iri)
+    manager.add_ontology(terminal, skip_vector_index=True)
+
+    primary_graph = terminal_graph.copy()
+    primary_graph.add((map_stage_class, RDF.type, owl_class))
+    primary = terminal.derive_updated_version(primary_graph)
+
+    class DummyServerConfig:
+        enable_ontology_consolidation = True
+        ontology_max_triples = None
+
+    class DummyConfig:
+        server = DummyServerConfig()
+
+    class DummyTools:
+        config = DummyConfig()
+        ontology_manager = manager
+
+        def get_atomic_tools(self):
+            return None
+
+    async def fake_render(unit_state: UnitOntologyState, atomic_tools):
+        insert_graph = RDFGraph()
+        insert_graph.bind("ex", ns)
+        insert_graph.add((consolidated_class, RDF.type, owl_class))
+        unit_state.ontology_updates = [
+            GraphUpdate(triple_operations=[TripleOp(type="insert", graph=insert_graph)])
+        ]
+        unit_state.update_ontology()
+        unit_state.status = Status.SUCCESS
+        return unit_state
+
+    monkeypatch.setattr(
+        "ontocast.stategraph.node_factories.render_ontology_update", fake_render
+    )
+
+    node = make_consolidate_ontology_node(cast(ToolBox, DummyTools()))
+    state = AgentState(render_mode=RenderMode.ONTOLOGY)
+    state.reduced_ontology_artifacts = [primary]
+    state.ontology_artifacts = [primary]
+    state.content_units = [
+        ContentUnit(
+            text="Perovskite samples were consolidated.",
+            index=0,
+            doc_iri=URIRef("https://example.com/doc/d1"),
+            graph=RDFGraph(),
+        )
+    ]
+
+    updated = await node(state)
+
+    assert updated.status == Status.SUCCESS
+    assert len(updated.ontology_artifacts) == 1
+    result_graph = updated.ontology_artifacts[0].graph
+    assert (consolidated_class, RDF.type, owl_class) in result_graph
+    # The regression: map-stage additions used to be dropped here.
+    assert (map_stage_class, RDF.type, owl_class) in result_graph
+    assert updated.ontology_updates_applied
 
 
 def test_chunk_text_resets_content_units_on_each_call() -> None:

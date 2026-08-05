@@ -28,3 +28,9 @@ for path in sorted(Path(pname).rglob("*.py")):
         f.write(f"# `{ident}`\n\n::: {ident}\n")
 
     mkdocs_gen_files.set_edit_path(full_doc_path, path)
+
+# mkdocs.yml enables the literate-nav plugin and points it at reference/, which
+# expects this file. Without it the built Nav object was discarded and nav fell
+# back to an implicit alphabetical directory listing.
+with mkdocs_gen_files.open("reference/SUMMARY.md", "w") as nav_file:
+    nav_file.writelines(nav.build_literate_nav())

@@ -1,7 +1,9 @@
 """Apply ontology update deltas onto catalog ontologies by namespace ownership.
 
-``U → O*``: complement inserts are partitioned by subject/predicate namespace onto
-writable catalog IRIs, then merged onto each ontology's freshest terminal.
+``U → O*``: complement inserts and catalog deletes are partitioned by
+subject/predicate namespace onto writable catalog IRIs, then applied
+(delete-then-insert) onto each ontology's freshest terminal — or an explicit
+in-run base override.
 """
 
 from __future__ import annotations
@@ -9,14 +11,17 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 
+from pydantic import Field
 from rdflib import Literal, URIRef
 
 from ontocast.onto.constants import COMMON_PREFIXES, DEFAULT_IRI
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.iri_policy import normalize_namespace_iri, split_namespace_local
+from ontocast.onto.model import BasePydanticModel
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.util import (
     RDFLIB_DEFAULT_NAMESPACE_URIS,
     is_rdflib_default_namespace,
@@ -24,6 +29,23 @@ from ontocast.onto.util import (
 from ontocast.tool.ontology_manager import OntologyManager
 
 logger = logging.getLogger(__name__)
+
+
+class OntologyDelta(BasePydanticModel):
+    """Net ontology change relative to a prompt snapshot.
+
+    ``inserts`` holds complement triples (``U \\ S``); ``deletes`` holds
+    snapshot triples removed by GraphUpdate delete operations, destined for
+    propagation onto catalog terminals.
+    """
+
+    inserts: RDFGraph = Field(default_factory=RDFGraph)
+    deletes: RDFGraph = Field(default_factory=RDFGraph)
+
+    def is_empty(self) -> bool:
+        """True when the delta carries no insert and no delete triples."""
+        return len(self.inserts) == 0 and len(self.deletes) == 0
+
 
 _STANDARD_NAMESPACE_STEMS: frozenset[str] = frozenset(
     {
@@ -75,13 +97,20 @@ def _is_standard_stem(stem: str | None) -> bool:
 def build_namespace_owner_map(
     ontology_manager: OntologyManager,
     writable_iris: list[str],
+    base_overrides: dict[str, Ontology] | None = None,
 ) -> dict[str, str]:
-    """Map namespace stem → catalog ontology IRI for writable sources."""
+    """Map namespace stem → catalog ontology IRI for writable sources.
+
+    ``base_overrides`` supplies in-run artifacts (not yet registered with the
+    manager) whose namespaces must resolve, keyed by ontology IRI.
+    """
     owners: dict[str, str] = {}
     for iri in writable_iris:
         if not iri or iri == NULL_ONTOLOGY.iri:
             continue
-        ontology = ontology_manager.get_freshest_terminal_ontology_by_iri(iri)
+        ontology = (base_overrides or {}).get(iri)
+        if ontology is None or ontology.is_null():
+            ontology = ontology_manager.get_freshest_terminal_ontology_by_iri(iri)
         if ontology is None or ontology.is_null():
             logger.warning(
                 "No catalog ontology for writable IRI %s; skipping ownership", iri
@@ -125,28 +154,32 @@ def _owner_for_uri(uri: str, owners: dict[str, str]) -> str | None:
     return owners.get(stem)
 
 
-def partition_inserts_by_namespace(
-    inserts: RDFGraph,
+def partition_triples_by_namespace(
+    triples: RDFGraph,
     *,
     writable_iris: list[str],
     ontology_manager: OntologyManager,
+    base_overrides: dict[str, Ontology] | None = None,
 ) -> tuple[dict[str, RDFGraph], int]:
-    """Partition insert triples onto writable catalog IRIs by namespace ownership.
+    """Partition delta triples onto writable catalog IRIs by namespace ownership.
 
-    Ownership prefers the subject URI namespace, then the predicate namespace.
+    Works for both insert and delete deltas. Ownership prefers the subject URI
+    namespace, then the predicate namespace.
     Returns ``(iri → graph, unattributed_triple_count)``.
     """
-    owners = build_namespace_owner_map(ontology_manager, writable_iris)
+    owners = build_namespace_owner_map(
+        ontology_manager, writable_iris, base_overrides=base_overrides
+    )
     writable = set(writable_iris)
     buckets: dict[str, RDFGraph] = defaultdict(RDFGraph)
     unattributed = 0
 
-    for prefix, namespace in inserts.namespaces():
+    for prefix, namespace in triples.namespaces():
         if prefix:
             for bucket in buckets.values():
                 bucket.bind(prefix, namespace)
 
-    for s, p, o in inserts:
+    for s, p, o in triples:
         owner: str | None = None
         if isinstance(s, URIRef):
             owner = _owner_for_uri(str(s), owners)
@@ -163,7 +196,7 @@ def partition_inserts_by_namespace(
         if owner is None or owner not in writable:
             unattributed += 1
             logger.debug(
-                "Unattributed ontology insert triple: %s %s %s",
+                "Unattributed ontology delta triple: %s %s %s",
                 s,
                 p,
                 o,
@@ -171,7 +204,7 @@ def partition_inserts_by_namespace(
             continue
 
         bucket = buckets[owner]
-        for prefix, namespace in inserts.namespaces():
+        for prefix, namespace in triples.namespaces():
             if prefix:
                 bucket.bind(prefix, namespace)
         bucket.add((s, p, o))
@@ -179,51 +212,73 @@ def partition_inserts_by_namespace(
     return dict(buckets), unattributed
 
 
-def apply_partitioned_inserts(
-    partitioned: dict[str, RDFGraph],
+def apply_partitioned_updates(
+    partitioned_inserts: dict[str, RDFGraph],
     *,
     ontology_manager: OntologyManager,
     normalize_units_fn,
     tools,
-) -> tuple[list[Ontology], dict[str, int]]:
-    """Merge each per-IRI insert graph onto the freshest catalog base.
+    partitioned_deletes: dict[str, RDFGraph] | None = None,
+    base_overrides: dict[str, Ontology] | None = None,
+) -> tuple[list[Ontology], dict[str, int], list[GraphUpdate]]:
+    """Apply each per-IRI delta (delete-then-insert) onto its catalog base.
 
-    ``normalize_units_fn`` is typically
+    The base is the freshest catalog terminal for the IRI unless
+    ``base_overrides`` supplies an in-run artifact (e.g. the map-stage output a
+    consolidation delta must build on). ``normalize_units_fn`` is typically
     :func:`ontocast.agent.normalize_ontology.normalize_ontology_units`.
+
+    Returns ``(artifacts, metrics, applied_updates)`` where ``applied_updates``
+    are the GraphUpdates actually executed, for version-bump analysis.
     """
+    deletes_by_iri = partitioned_deletes or {}
     artifacts: list[Ontology] = []
+    applied_updates: list[GraphUpdate] = []
     metrics: dict[str, int] = {
         "apply_touched_iris": 0,
         "apply_skipped_missing_base": 0,
         "apply_insert_triples": 0,
+        "apply_delete_triples": 0,
     }
-    for iri, delta in sorted(partitioned.items(), key=lambda item: item[0]):
-        if len(delta) == 0:
+    for iri in sorted(set(partitioned_inserts) | set(deletes_by_iri)):
+        insert_delta = partitioned_inserts.get(iri) or RDFGraph()
+        delete_delta = deletes_by_iri.get(iri) or RDFGraph()
+        if len(insert_delta) == 0 and len(delete_delta) == 0:
             continue
-        metrics["apply_insert_triples"] += len(delta)
-        base = ontology_manager.get_freshest_terminal_ontology_by_iri(iri)
+        metrics["apply_insert_triples"] += len(insert_delta)
+        metrics["apply_delete_triples"] += len(delete_delta)
+        base = (base_overrides or {}).get(iri)
+        if base is None or base.is_null():
+            base = ontology_manager.get_freshest_terminal_ontology_by_iri(iri)
         if base is None or base.is_null():
             logger.warning(
-                "Cannot apply %s insert triples: no catalog base for %s",
-                len(delta),
+                "Cannot apply %s insert / %s delete triples: no catalog base for %s",
+                len(insert_delta),
+                len(delete_delta),
                 iri,
             )
             metrics["apply_skipped_missing_base"] += 1
             continue
-        unit = ContentUnit(
-            text="",
-            index=0,
-            doc_iri="urn:ontocast:apply",
-            graph=delta,
-            type=OutputType.ONTOLOGIES,
-        )
-        result, _applied, _prov = normalize_units_fn(
-            [unit],
+        units = []
+        if len(insert_delta) > 0:
+            units.append(
+                ContentUnit(
+                    text="",
+                    index=0,
+                    doc_iri="urn:ontocast:apply",
+                    graph=insert_delta,
+                    type=OutputType.ONTOLOGIES,
+                )
+            )
+        result, applied, _prov = normalize_units_fn(
+            units,
             tools,
             base_ontology=base,
             require_base=True,
+            delete_graph=delete_delta if len(delete_delta) > 0 else None,
         )
         if not result.is_null() and len(result.graph) > 0:
             artifacts.append(result)
+            applied_updates.extend(applied)
             metrics["apply_touched_iris"] += 1
-    return artifacts, metrics
+    return artifacts, metrics, applied_updates

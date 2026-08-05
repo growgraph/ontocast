@@ -201,3 +201,54 @@ def test_bind_used_prefixes_prefers_declared_over_heuristic() -> None:
     bound = {p: str(u) for p, u in snapshot.namespaces()}
     assert bound.get("my_units") == namespace
     assert "mu" not in bound
+
+
+def test_jsonld_prompt_context_ignores_plain_literal_text() -> None:
+    """A plain literal like "time: 10 minutes" must not retain the `time:` binding."""
+    import json
+
+    from rdflib import RDFS, Literal
+
+    graph = RDFGraph()
+    facts_ns = "https://example.org/facts#"
+    graph.bind("cd", facts_ns)
+    graph.bind("time", "http://www.w3.org/2006/time#")
+    subject = URIRef(f"{facts_ns}s")
+    graph.add((subject, RDFS.comment, Literal("time: 10 minutes elapsed")))
+
+    payload = json.loads(graph.serialize_compact_jsonld_for_prompt())
+    context = payload["@context"]
+
+    assert "cd" in context
+    assert "rdfs" in context
+    assert "time" not in context
+
+
+def test_jsonld_prompt_context_keeps_datatype_and_reference_prefixes() -> None:
+    """Prefixes used in @id references and compact datatypes survive filtering."""
+    import json
+
+    from rdflib import Literal
+    from rdflib.namespace import XSD
+
+    graph = RDFGraph()
+    facts_ns = "https://example.org/facts#"
+    qudt_ns = "http://qudt.org/schema/qudt/"
+    graph.bind("cd", facts_ns)
+    graph.bind("qudt", qudt_ns)
+    subject = URIRef(f"{facts_ns}s")
+    graph.add(
+        (
+            subject,
+            URIRef(f"{qudt_ns}numericValue"),
+            Literal("230", datatype=XSD.decimal),
+        )
+    )
+    graph.add((subject, RDF.type, URIRef(f"{facts_ns}Measurement")))
+
+    payload = json.loads(graph.serialize_compact_jsonld_for_prompt())
+    context = payload["@context"]
+
+    assert "cd" in context
+    assert "qudt" in context
+    assert "xsd" in context  # via the compact datatype "@type": "xsd:decimal"

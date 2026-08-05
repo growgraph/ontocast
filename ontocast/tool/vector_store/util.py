@@ -14,6 +14,7 @@ from ontocast.tool.vector_store.core import (
     OntologySearchHit,
     canonicalize_entity_role,
 )
+from ontocast.util.hash import render_text_hash
 
 META_EMBEDDING_DIMENSION = "embedding_dimension"
 META_EMBEDDING_MODEL = "embedding_model"
@@ -34,8 +35,12 @@ _DEFAULT_MINIMAL_LABEL_LIMIT = 5
 # well as predicate-position usage, so a TBox-only module's properties become
 # predicate-role atoms and gain a non-empty neighborhood representation. Both the role
 # payload and the embedded neighborhood text change, so the old vectors cannot be served
-# alongside the new ones.
-_SURFACE_FORM_CONTRACT = "sf5"
+# alongside the new ones. ``sf6``: dcterms:alternative joins the label predicates (its
+# synonyms previously vanished from both retrieval lanes and the prompt), and atoms
+# carry case-preserved symbol_surfaces so merge-time can demote counterfeit
+# case-folded symbol matches (prose "meV" retrieving symbol "MeV"); both change the
+# stored surface forms and the payload schema.
+_SURFACE_FORM_CONTRACT = "sf6"
 
 
 class EmbeddingContractMismatchError(ValueError):
@@ -51,7 +56,12 @@ def embedding_contract_help(*, backend: str = "vector store") -> str:
 
 
 def atom_scope_fingerprint(store_config: VectorStoreConfig) -> str | None:
-    """Fingerprint fragment for settings that change *which entities* become atoms.
+    """Fingerprint fragment for settings that change what gets stored per atom.
+
+    Covers both *which entities* become atoms and *which literals* become their
+    surface forms and lexical triggers. All of these change the stored payload,
+    so serving an index built under different values silently degrades
+    retrieval instead of raising.
 
     Returns ``None`` at the defaults, so collections built under them keep the
     fingerprint they already have and need no reindex on upgrade.
@@ -62,6 +72,7 @@ def atom_scope_fingerprint(store_config: VectorStoreConfig) -> str | None:
     Returns:
         str | None: Compact divergence marker, or ``None`` when nothing diverges.
     """
+    defaults = VectorStoreConfig.model_fields
     parts: list[str] = []
     if store_config.index_undescribed_iris:
         parts.append("undescribed")
@@ -69,6 +80,29 @@ def atom_scope_fingerprint(store_config: VectorStoreConfig) -> str | None:
         parts.append("stdvocab")
     for prefix in sorted(store_config.extra_excluded_namespace_prefixes):
         parts.append(f"x:{prefix}")
+
+    def _diverges(name: str) -> bool:
+        factory = defaults[name].default_factory
+        default = factory() if factory is not None else defaults[name].default
+        return getattr(store_config, name) != default
+
+    # The surface-form and trigger settings are pushed into the atomizer and
+    # decide what lands in the stored payload, so they belong in the identity of
+    # the vectors. They were previously omitted, which meant changing one served
+    # a stale index rather than raising EmbeddingContractMismatchError.
+    for name in ("label_predicates", "symbol_predicates", "lexical_trigger_predicates"):
+        if _diverges(name):
+            joined = ",".join(sorted(getattr(store_config, name)))
+            parts.append(f"{name}={render_text_hash(joined)[:12]}")
+    for name in (
+        "lexical_trigger_enabled",
+        "lexical_trigger_heuristic_enabled",
+        "lexical_trigger_min_len",
+        "lexical_trigger_max_len",
+        "lexical_trigger_heuristic_max_per_entity",
+    ):
+        if _diverges(name):
+            parts.append(f"{name}={getattr(store_config, name)}")
     return ",".join(parts) if parts else None
 
 
@@ -117,9 +151,24 @@ def embedding_model_fingerprint(
 
 
 def embedding_fingerprint_matches(
-    stored: str, embedding_config: EmbeddingConfig
+    stored: str,
+    embedding_config: EmbeddingConfig,
+    *,
+    minimal_label_limit: int | None = None,
+    atom_scope: str | None = None,
 ) -> bool:
-    return stored == embedding_model_fingerprint(embedding_config)
+    """Whether ``stored`` is the fingerprint the given config would produce.
+
+    Takes the same optional components as :func:`embedding_model_fingerprint`.
+    Omitting them previously made this disagree with
+    ``validate_embedding_contract_metadata`` for any non-default collection --
+    it would report a match the validator rejects.
+    """
+    return stored == embedding_model_fingerprint(
+        embedding_config,
+        minimal_label_limit=minimal_label_limit,
+        atom_scope=atom_scope,
+    )
 
 
 def collection_embedding_metadata(
@@ -298,6 +347,7 @@ def atom_payload(atom: GraphAtom) -> dict[str, Any]:
         "minimal_representation": atom.minimal_representation,
         "neighborhood_representation": atom.neighborhood_representation,
         "lexical_triggers": list(atom.lexical_triggers),
+        "symbol_surfaces": list(atom.symbol_surfaces),
         "created_at": atom.created_at.isoformat(),
     }
 
@@ -320,14 +370,15 @@ def atom_from_payload(
         core_representation=str(payload.get("core_representation", "")),
         minimal_representation=str(payload.get("minimal_representation", "")),
         neighborhood_representation=str(payload.get("neighborhood_representation", "")),
-        lexical_triggers=_payload_lexical_triggers(payload),
+        lexical_triggers=_payload_str_list(payload, "lexical_triggers"),
+        symbol_surfaces=_payload_str_list(payload, "symbol_surfaces"),
         created_at=parse_created_at(created_at_raw),
         score=score,
     )
 
 
-def _payload_lexical_triggers(payload: Mapping[str, Any]) -> list[str]:
-    raw = payload.get("lexical_triggers")
+def _payload_str_list(payload: Mapping[str, Any], key: str) -> list[str]:
+    raw = payload.get(key)
     if raw is None:
         return []
     if isinstance(raw, list):
@@ -403,6 +454,8 @@ def sync_atomizer_from_store_config(
 ) -> None:
     """Mirror vector-store representation settings onto the atomizer."""
     atomizer.minimal_representation_label_limit = store_config.minimal_label_limit
+    atomizer.label_predicates = list(store_config.label_predicates)
+    atomizer.symbol_predicates = list(store_config.symbol_predicates)
     atomizer.index_undescribed_iris = store_config.index_undescribed_iris
     atomizer.embed_standard_vocab_iris = store_config.embed_standard_vocab_iris
     atomizer.extra_excluded_namespace_prefixes = list(

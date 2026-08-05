@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import pathlib
 from io import BytesIO
@@ -24,7 +25,7 @@ from ontocast.tool.agg.entity_aligner import EntityAligner
 from ontocast.tool.cache import Cacher
 from ontocast.tool.graph_diff import DiffTool
 from ontocast.tool.graph_version_manager import GraphVersionManager
-from ontocast.tool.llm import LLMTool
+from ontocast.tool.llm import LLMTool, _active_budget_tracker
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.sparql import SPARQLTool
 from ontocast.tool.triple_manager.core import TripleStoreManager
@@ -160,6 +161,14 @@ class ToolBox:
         self.ontology_manager.register_triple_store(self.triple_store_manager)
         # Tenancy the in-memory catalog currently reflects; None until first set.
         self._active_tenancy: tuple[str, str] | None = None
+        # Guards the tenancy retarget, which mutates ToolBox-wide state (dataset
+        # names, the ontology catalog, vector-store table names) across awaits.
+        # It is driven by a per-request query parameter with no concurrency cap,
+        # so without this two requests for different tenants can interleave and
+        # read or write each other's partition. Created lazily: __init__ may run
+        # outside an event loop.
+        self._tenancy_lock: asyncio.Lock | None = None
+        self._tenancy_lock_loop: asyncio.AbstractEventLoop | None = None
         self.converter: ConverterTool = ConverterTool(
             cache=self.shared_cache,
             converter_config=tool_config.converter_config,
@@ -240,15 +249,21 @@ class ToolBox:
         return aligner
 
     async def get_llm_tool(self, budget_tracker):
-        """Return the shared LLM tool with the given budget tracker attached.
+        """Return the shared LLM tool, charging usage to ``budget_tracker``.
+
+        The tracker is bound to the *calling task* rather than to the shared
+        tool instance. Assigning it to the instance -- as this did previously --
+        meant that with ``PARALLEL_WORKERS`` unit workers in flight, whichever
+        one bound last collected every concurrent call's usage; document totals
+        still summed correctly, but per-unit attribution was arbitrary.
 
         Args:
-            budget_tracker: The budget tracker instance to use.
+            budget_tracker: The budget tracker to charge for this task's calls.
 
         Returns:
-            LLMTool: Shared LLM tool with the specified budget tracker.
+            LLMTool: The shared LLM tool.
         """
-        self.llm.budget_tracker = budget_tracker
+        _active_budget_tracker.set(budget_tracker)
         return self.llm
 
     def require_triple_store_manager(self) -> TripleStoreManager:
@@ -257,6 +272,35 @@ class ToolBox:
         if manager is None:
             raise RuntimeError("Triple store backend is not configured")
         return manager
+
+    async def aclose(self) -> None:
+        """Release every backend connection this ToolBox opened.
+
+        The ToolBox owns an httpx client (Fuseki) and a Qdrant client, neither
+        of which was previously closed anywhere -- ``FusekiTripleStoreManager``
+        even defined ``close()`` that nothing called. Long-lived hosts that
+        build a ToolBox per tenant, and tests that build many, leaked sockets.
+
+        Safe to call more than once, and never raises: teardown failures are
+        logged, since a caller shutting down cannot act on them.
+        """
+        if self.triple_store_manager is not None:
+            try:
+                await self.triple_store_manager.close()
+            except Exception as exc:
+                logger.warning("Error closing triple store manager: %s", exc)
+
+        if self.vector_store is not None:
+            try:
+                await asyncio.to_thread(self.vector_store.close)
+            except Exception as exc:
+                logger.warning("Error closing vector store: %s", exc)
+
+    async def __aenter__(self) -> "ToolBox":
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.aclose()
 
     async def update_tenancy(self, tenant: str, project: str) -> None:
         """Retarget Fuseki datasets and Qdrant collections for ``tenant`` / ``project``."""
@@ -267,6 +311,19 @@ class ToolBox:
             fail_on_vector_store_error=True,
         )
 
+    def _get_tenancy_lock(self) -> asyncio.Lock:
+        """Return the tenancy lock bound to the running loop.
+
+        Rebuilt when the loop changes: the CLI bootstrap runs several
+        ``asyncio.run`` calls, and an ``asyncio.Lock`` created on a closed loop
+        cannot be awaited on a later one.
+        """
+        loop = asyncio.get_running_loop()
+        if self._tenancy_lock is None or self._tenancy_lock_loop is not loop:
+            self._tenancy_lock = asyncio.Lock()
+            self._tenancy_lock_loop = loop
+        return self._tenancy_lock
+
     async def update_tenancy_with_vector_mode(
         self,
         tenant: str,
@@ -275,7 +332,29 @@ class ToolBox:
         initialize_vector_store: bool,
         fail_on_vector_store_error: bool,
     ) -> None:
-        """Retarget tenancy and optionally initialize vector store collections."""
+        """Retarget tenancy and optionally initialize vector store collections.
+
+        Serialized: the body mutates ToolBox-wide state across awaits, and the
+        HTTP layer calls this per request from a ``?tenant=`` query parameter
+        with no concurrency cap. Interleaving two switches leaves the catalog
+        and the store handles describing different tenants.
+        """
+        async with self._get_tenancy_lock():
+            await self._update_tenancy_with_vector_mode_locked(
+                tenant,
+                project,
+                initialize_vector_store=initialize_vector_store,
+                fail_on_vector_store_error=fail_on_vector_store_error,
+            )
+
+    async def _update_tenancy_with_vector_mode_locked(
+        self,
+        tenant: str,
+        project: str,
+        *,
+        initialize_vector_store: bool,
+        fail_on_vector_store_error: bool,
+    ) -> None:
         t, p = tenant.strip(), project.strip()
         if not t or not p:
             raise ValueError("tenant and project must be non-empty")
@@ -329,22 +408,28 @@ class ToolBox:
                     )
 
     async def clean_tenancy_data(self, tenant: str, project: str) -> None:
-        """Flush triple-store and vector-store partitions for ``tenant`` / ``project``."""
+        """Flush triple-store and vector-store partitions for ``tenant`` / ``project``.
+
+        Takes the tenancy lock: this is destructive, and a concurrent retarget
+        would let it resolve partition names against a scope that changed
+        mid-flight.
+        """
         t, p = tenant.strip(), project.strip()
         if not t or not p:
             raise ValueError("tenant and project must be non-empty")
 
-        triple = self.triple_store_manager
-        if triple is not None:
-            if not triple.supports_tenancy_partition():
-                raise NotImplementedError(
-                    f"Triple store {type(triple).__name__} has no tenant/project partitions"
-                )
-            await triple.clean_tenancy(t, p)
+        async with self._get_tenancy_lock():
+            triple = self.triple_store_manager
+            if triple is not None:
+                if not triple.supports_tenancy_partition():
+                    raise NotImplementedError(
+                        f"Triple store {type(triple).__name__} has no tenant/project partitions"
+                    )
+                await triple.clean_tenancy(t, p)
 
-        vector = self.vector_store
-        if vector is not None and vector.supports_tenancy_partition():
-            await vector.clean_tenancy(t, p)
+            vector = self.vector_store
+            if vector is not None and vector.supports_tenancy_partition():
+                await vector.clean_tenancy(t, p)
 
     def get_atomic_tools(self) -> AtomicToolBox:
         """Return the minimal toolbox used by atomic render/critic paths."""
@@ -459,16 +544,31 @@ class ToolBox:
         )
 
         if do_prune and self.is_vector_store_ready() and self.vector_store is not None:
-            keep_iris = {o.iri for o in synchronized_ontologies if o.iri}
-            orphans = await asyncio.to_thread(
-                self.vector_store.prune_orphan_ontology_iris, keep_iris
+            triple = self.triple_store_manager
+            catalog_is_authoritative = (
+                triple is None or triple.last_catalog_was_complete()
             )
-            if orphans:
-                logger.info(
-                    "Pruned %d orphan ontology IRI(s) from vector store: %s",
-                    len(orphans),
-                    orphans,
+            if not catalog_is_authoritative:
+                # Pruning deletes indexed ontologies that the catalog no longer
+                # mentions. A catalog that only partly loaded mentions fewer
+                # ontologies than exist, so pruning against it deletes live
+                # data on the strength of a network error.
+                logger.warning(
+                    "Skipping vector-store orphan prune: the ontology catalog "
+                    "loaded incompletely, so absent IRIs are not evidence of "
+                    "deletion."
                 )
+            else:
+                keep_iris = {o.iri for o in synchronized_ontologies if o.iri}
+                orphans = await asyncio.to_thread(
+                    self.vector_store.prune_orphan_ontology_iris, keep_iris
+                )
+                if orphans:
+                    logger.info(
+                        "Pruned %d orphan ontology IRI(s) from vector store: %s",
+                        len(orphans),
+                        orphans,
+                    )
 
         for ontology in synchronized_ontologies:
             self.ontology_manager.add_ontology(ontology, skip_vector_index=True)

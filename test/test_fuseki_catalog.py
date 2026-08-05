@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 import pytest
 
+from ontocast.tool.triple_manager.core import TripleStoreUnavailableError
 from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
 
 _ONTO_IRI = "https://example.org/catalog"
@@ -263,3 +264,102 @@ async def test_aconstruct_raises_on_http_error(
 
     with pytest.raises(httpx.HTTPStatusError):
         await manager.aconstruct("CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }")
+
+
+@pytest.mark.anyio
+async def test_catalog_listing_raises_instead_of_returning_empty(
+    manager_and_transport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty catalog is grounds for pruning the vector index.
+
+    So a listing failure must raise rather than degrade to ``[]`` -- otherwise a
+    transient network error is indistinguishable from "no ontologies stored"
+    and ``ToolBox.initialize`` deletes every indexed ontology.
+    """
+    manager, _ = manager_and_transport([])
+
+    async def post(
+        _self: Any, url: str, data: dict[str, str], **kwargs: Any
+    ) -> httpx.Response:
+        if "query" not in data:
+            return httpx.Response(200, request=httpx.Request("POST", url))
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+
+    with pytest.raises(TripleStoreUnavailableError):
+        await manager.afetch_ontologies()
+
+
+@pytest.mark.anyio
+async def test_partial_catalog_fetch_is_reported_as_incomplete(
+    manager_and_transport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A catalog missing some graphs must not read as authoritative.
+
+    The absent ontologies would otherwise look like orphans to the vector-store
+    prune and be deleted.
+    """
+    manager, _ = manager_and_transport(
+        [
+            {"g": {"value": f"{_ONTO_IRI}-a#v1"}},
+            {"g": {"value": f"{_ONTO_IRI}-b#v1"}},
+        ]
+    )
+
+    async def get(_self: Any, url: str, **kwargs: Any) -> httpx.Response:
+        if "-b" in url:
+            return httpx.Response(503, text="", request=httpx.Request("GET", url))
+        return httpx.Response(200, text=_TURTLE, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", get)
+
+    ontologies = await manager.afetch_ontologies()
+
+    assert len(ontologies) == 1
+    assert manager.last_catalog_was_complete() is False
+
+
+@pytest.mark.anyio
+async def test_complete_catalog_fetch_reports_authoritative(
+    manager_and_transport,
+) -> None:
+    manager, _ = manager_and_transport([{"g": {"value": _GRAPH_URI}}])
+
+    await manager.afetch_ontologies()
+
+    assert manager.last_catalog_was_complete() is True
+
+
+@pytest.mark.parametrize(
+    ("auth", "expected"),
+    [
+        ("admin/secret", ("admin", "secret")),
+        ("admin:secret", ("admin", "secret")),
+        ("admin/pa:ss", ("admin", "pa:ss")),
+        ("admin:pa/ss", ("admin", "pa/ss")),
+    ],
+)
+def test_fuseki_auth_accepts_both_separator_forms(
+    auth: str, expected: tuple[str, str]
+) -> None:
+    """The colon form previously parsed to *no* auth header at all."""
+    manager = FusekiTripleStoreManager(uri="http://fuseki.invalid:3030", auth=auth)
+
+    prepared = manager._prepare_auth()
+
+    assert prepared is not None
+    request = httpx.Request("GET", "http://fuseki.invalid:3030/")
+    flow = prepared.auth_flow(request)
+    authorized = next(flow)
+    username, password = expected
+    import base64
+
+    token = base64.b64encode(f"{username}:{password}".encode()).decode()
+    assert authorized.headers["Authorization"] == f"Basic {token}"
+
+
+def test_fuseki_auth_without_separator_is_rejected_at_construction() -> None:
+    """Better a clear startup error than an unexplained 401 later."""
+    with pytest.raises(ValueError, match="user:password"):
+        FusekiTripleStoreManager(uri="http://fuseki.invalid:3030", auth="admin")

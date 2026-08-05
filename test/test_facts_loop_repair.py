@@ -91,7 +91,13 @@ async def test_repair_fires_and_findings_reach_render(monkeypatch) -> None:
     assert FactsUnitFindingKind.UNKNOWN_TERM not in residual_kinds
     repair_attempts = [a for a in result.attempt_log if a.kind == "repair"]
     assert len(repair_attempts) == 1
-    assert repair_attempts[0].n_deterministic_findings == len(seen_findings[0])
+    # The record carries the residual AFTER the repair render, not the
+    # pre-render count the repair was asked to fix.
+    assert repair_attempts[0].n_deterministic_findings == len(
+        result.deterministic_findings
+    )
+    assert repair_attempts[0].n_deterministic_findings < len(seen_findings[0])
+    assert repair_attempts[0].n_mandatory_findings == 0
 
 
 @pytest.mark.anyio
@@ -168,3 +174,7 @@ async def test_repair_budget_bounds_visits(monkeypatch) -> None:
         finding.kind == FactsUnitFindingKind.UNKNOWN_TERM
         for finding in result.deterministic_findings
     )
+    # A repair that fixed nothing records a non-zero mandatory residual.
+    repair_attempts = [a for a in result.attempt_log if a.kind == "repair"]
+    assert repair_attempts
+    assert all(a.n_mandatory_findings > 0 for a in repair_attempts)

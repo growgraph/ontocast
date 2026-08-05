@@ -246,3 +246,16 @@ async def test_small_module_closure_merges_whole_module() -> None:
         snapshot_off, ["https://x.org/qqval"]
     )
     assert len(snapshot_off) == 0
+
+
+def test_closure_floor_score_stays_below_weakest_seed() -> None:
+    from ontocast.tool.vector_store.patch_retriever import _closure_floor_score
+
+    # Positive floor: half the minimum, strictly below it.
+    assert _closure_floor_score({"a": 0.8, "b": 0.4}) == 0.2
+    # Zero floor: `0.0 * 0.5` would TIE with the weakest seed — must be below.
+    assert _closure_floor_score({"a": 0.8, "b": 0.0}) < 0.0
+    # Negative floor: `-0.4 * 0.5 == -0.2` would RANK ABOVE the weakest seed.
+    assert _closure_floor_score({"a": 0.8, "b": -0.4}) < -0.4
+    # No seeds at all: still finite and non-positive.
+    assert _closure_floor_score({}) <= 0.0

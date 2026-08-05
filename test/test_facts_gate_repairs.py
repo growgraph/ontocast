@@ -161,7 +161,7 @@ def _alias_graph(predicate: str, subjects: int = 1) -> RDFGraph:
 def test_alias_repair_does_not_invent_a_target_from_an_empty_catalog() -> None:
     """With no catalog terms there is nothing to rewrite toward."""
     graph = _alias_graph(Q + "hasResult", subjects=2)
-    rewritten, _ = repair_property_aliases(graph, RDFGraph(), min_ratio=0.85)
+    rewritten, _, _applied = repair_property_aliases(graph, RDFGraph(), min_ratio=0.85)
     assert rewritten == 0
     assert (None, URIRef(Q + "hasResult"), None) in graph
 
@@ -172,7 +172,7 @@ def test_alias_repair_rewrites_toward_a_declared_catalog_term() -> None:
     ontology.add((URIRef(Q + "numericValue"), RDF.type, OWL.DatatypeProperty))
     graph = _alias_graph(Q + "numericvalue")
 
-    rewritten, _ = repair_property_aliases(graph, ontology, min_ratio=0.85)
+    rewritten, _, _applied = repair_property_aliases(graph, ontology, min_ratio=0.85)
 
     assert rewritten == 1
     assert (None, URIRef(Q + "numericValue"), None) in graph

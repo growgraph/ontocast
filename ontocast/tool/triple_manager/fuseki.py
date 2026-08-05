@@ -23,7 +23,10 @@ from ontocast.onto.tenancy import (
     tenant_project_facts_name,
     tenant_project_ontologies_name,
 )
-from ontocast.tool.triple_manager.core import TripleStoreManagerWithAuth
+from ontocast.tool.triple_manager.core import (
+    TripleStoreManagerWithAuth,
+    TripleStoreUnavailableError,
+)
 from ontocast.tool.triple_manager.util import (
     LIST_NAMED_GRAPHS_QUERY,
     ONTOLOGY_HEADER_QUERY,
@@ -143,6 +146,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         self._graph_fetches = 0
         self._select_queries = 0
         self._construct_queries = 0
+        self._last_catalog_was_partial = False
 
     async def async_init(self) -> None:
         """Initialize configured Fuseki datasets explicitly.
@@ -173,17 +177,33 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
     def _prepare_auth(self) -> httpx.BasicAuth | None:
         """Prepare httpx BasicAuth from self.auth.
 
+        Accepts ``user/password`` and ``user:password``. Both forms appear in
+        the wild -- the colon form is what Fuseki's own docs and most HTTP
+        tooling use -- and previously only the slash form parsed, so
+        ``FUSEKI_AUTH=admin:secret`` silently produced *no* auth header and
+        surfaced as an opaque 401. The separator that appears first wins, so a
+        password containing the other character still round-trips.
+
         Returns:
-            httpx.BasicAuth instance or None if no auth is configured.
+            httpx.BasicAuth instance, or None when no auth is configured.
         """
-        if self.auth:
-            if isinstance(self.auth, tuple):
-                return httpx.BasicAuth(*self.auth)
-            elif isinstance(self.auth, str) and "/" in self.auth:
-                parts = self.auth.split("/", 1)
-                if len(parts) == 2:
-                    username, password = parts[0], parts[1]
+        if not self.auth:
+            return None
+        if isinstance(self.auth, tuple):
+            return httpx.BasicAuth(*self.auth)
+        if isinstance(self.auth, str):
+            positions = [
+                (self.auth.index(sep), sep) for sep in ("/", ":") if sep in self.auth
+            ]
+            if positions:
+                index, _ = min(positions)
+                username, password = self.auth[:index], self.auth[index + 1 :]
+                if username:
                     return httpx.BasicAuth(username, password)
+            logger.warning(
+                "FUSEKI_AUTH is set but is not in 'user/password' or 'user:password' "
+                "form; proceeding without authentication."
+            )
         return None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -206,6 +226,10 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             await self._client.aclose()
             self._client = None
         self._client_loop = None
+
+    def last_catalog_was_complete(self) -> bool:
+        """False when the last full catalog fetch could not materialize every graph."""
+        return not self._last_catalog_was_partial
 
     def supports_tenancy_partition(self) -> bool:
         return True
@@ -587,7 +611,18 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         }
 
     async def _list_ontology_graph_uris(self, client: httpx.AsyncClient) -> list[str]:
-        """List every named graph in the ontologies dataset."""
+        """List every named graph in the ontologies dataset.
+
+        Raises:
+            TripleStoreUnavailableError: the listing could not be performed.
+                This deliberately does **not** degrade to an empty list: an
+                empty catalog is indistinguishable from "no ontologies stored",
+                and ``ToolBox.initialize`` treats an empty catalog as grounds to
+                prune every indexed ontology IRI from the vector store. A
+                transient network error must not be able to wipe the index.
+                Mirrors the contract stated for ``aselect``/``aconstruct`` on
+                :class:`~ontocast.tool.triple_manager.core.TripleStoreManager`.
+        """
         sparql_url = f"{self._get_ontologies_dataset_url()}/sparql"
         try:
             rows = await self._sparql_select_rows(
@@ -595,7 +630,9 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             )
         except httpx.HTTPError as exc:
             logger.error("Failed to list graphs from Fuseki: %s", exc)
-            return []
+            raise TripleStoreUnavailableError(
+                f"Could not list named graphs in {sparql_url}: {exc}"
+            ) from exc
         graph_uris = [row["g"] for row in rows if "g" in row]
         logger.debug("Found %d named graphs: %s", len(graph_uris), graph_uris)
         return graph_uris
@@ -638,6 +675,23 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                 logger.warning(f"Exception fetching ontology: {result}")
             elif isinstance(result, Ontology):
                 ontologies.append(result)
+
+        missing = len(graph_uris) - len(ontologies)
+        if missing:
+            # A partial catalog is as dangerous as an empty one: the ontologies
+            # that failed to materialize look like orphans to the vector-store
+            # prune. Record it so callers can refuse to treat this catalog as
+            # authoritative.
+            self._last_catalog_was_partial = True
+            logger.error(
+                "Fetched %d of %d ontology graphs; %d failed. The catalog is "
+                "incomplete and must not be treated as authoritative.",
+                len(ontologies),
+                len(graph_uris),
+                missing,
+            )
+        else:
+            self._last_catalog_was_partial = False
         return ontologies
 
     async def _fetch_ontologies_async(self) -> list[Ontology]:

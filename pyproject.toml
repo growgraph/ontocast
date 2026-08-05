@@ -1,47 +1,75 @@
 [build-system]
 build-backend = "hatchling.build"
-classifiers = [
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.12",
-  "Programming Language :: Python :: 3.13",
-  "Programming Language :: Python :: Implementation :: CPython"
-]
 requires = ["hatchling"]
 
 [project]
+authors = [
+  {email = "alexander@growgraph.dev", name = "Alexander Belikov"}
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Framework :: FastAPI",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Text Processing :: Linguistic"
+]
+# Every range carries an upper bound. The previous unbounded `>=` floors were
+# fiction: `langgraph>=0.2.35` predates the `langgraph.graph.state`
+# `CompiledStateGraph` import used by `api/app.py`, so a backtracking resolver
+# could select a floor that cannot import the package. Floors now name the
+# major actually developed and tested against; ceilings stop the next major
+# from breaking every install silently.
 dependencies = [
-  "click>=8.1.8",
-  "docling-core[chunking]>=2.57.0",
-  "fastapi>=0.115.0",
-  "fastembed>=0.8.0",
-  "httpx>=0.27.0",
-  "langchain-anthropic>=0.3.0",
-  "langchain-core>=0.3.60",
-  "langchain-google-genai>=2.0.0",
-  "langchain-ollama>=0.3.3",
-  "langchain-openai>=0.3.17",
-  "langchain>=0.3.25",
-  "langgraph>=0.2.35",
-  "networkx>=3.0",
-  "numpy>=1.26",
-  "oxrdflib>=0.5.0",
-  "pydantic-settings>=2.5.0",
-  "pydantic>=2.11.9",
-  "pyld>=2.0.4",
-  "pyoxigraph>=0.5.8",
-  "python-dotenv>=1.0.0",
-  "python-multipart>=0.0.22",
-  "pyyaml>=6.0.2",
-  "qdrant-client>=1.15.1",
-  "rdflib>=7.1.4",
-  "requests>=2.32.3",
-  "rich>=14.0.0",
-  "scikit-learn>=1.4",
-  "starlette>=0.40.0",
-  "suthing>=0.4.1",
-  "uvicorn[standard]>=0.32.0"
+  "click>=8.1.8,<9",
+  "docling-core[chunking]>=2.57.0,<3",
+  "fastapi>=0.115.0,<1",
+  "fastembed>=0.8.0,<1",
+  "httpx>=0.27.0,<1",
+  "langchain-anthropic>=1.0,<2",
+  "langchain-core>=1.0,<2",
+  "langchain-google-genai>=4.0,<5",
+  "langchain-ollama>=1.0,<2",
+  "langchain-openai>=1.0,<2",
+  "langchain>=1.0,<2",
+  "langgraph>=1.0,<2",
+  "networkx>=3.0,<4",
+  "numpy>=1.26,<3",
+  "oxrdflib>=0.5.0,<0.6",
+  "pydantic-settings>=2.5.0,<3",
+  "pydantic>=2.11.9,<3",
+  "pyld>=3.0,<4",
+  "pyoxigraph>=0.5.8,<0.6",
+  "python-dotenv>=1.0.0,<2",
+  "python-multipart>=0.0.22,<1",
+  "pyyaml>=6.0.2,<7",
+  "qdrant-client>=1.15.1,<2",
+  "rdflib>=7.1.4,<8",
+  "requests>=2.32.3,<3",
+  "rich>=14.0.0,<16",
+  "scikit-learn>=1.4,<2",
+  "starlette>=1.0,<2",
+  "suthing>=0.4.1,<1",
+  "uvicorn[standard]>=0.32.0,<1"
 ]
 description = "Agentic ontology and knowledge graph co-generation"
+keywords = [
+  "agent",
+  "knowledge-graph",
+  "llm",
+  "ontology",
+  "rdf",
+  "semantic-web",
+  "sparql",
+  "triple-extraction"
+]
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 name = "ontocast"
@@ -50,8 +78,11 @@ requires-python = ">=3.12,<4.0"
 version = "0.5.0"
 
 [project.optional-dependencies]
+# `plot` is deliberately excluded: pygraphviz builds from source against system
+# graphviz headers, so including it here made `pip install ontocast[all]` fail
+# on a stock machine. Install it explicitly when you need `plot-graph`.
 all = [
-  "ontocast[doc-processing,lancedb,plot,semantic-chunking,shacl,web-search]"
+  "ontocast[doc-processing,lancedb,semantic-chunking,shacl,web-search]"
 ]
 dev = [
   "anyio>=4.4.0",
@@ -105,6 +136,35 @@ pdfs-to-markdown = "ontocast.cli.pdfs_to_markdown:main"
 plot-graph = "ontocast.cli.plot_graph:main"
 test-api = "ontocast.cli.test_api:main"
 
+[project.urls]
+Changelog = "https://github.com/growgraph/ontocast/blob/main/CHANGELOG.md"
+Documentation = "https://growgraph.github.io/ontocast"
+Homepage = "https://github.com/growgraph/ontocast"
+Issues = "https://github.com/growgraph/ontocast/issues"
+Repository = "https://github.com/growgraph/ontocast"
+
+# Without an explicit sdist target hatchling falls back to "everything not
+# VCS-ignored", which shipped `data/` (15 MB, and an importable top-level
+# `data` package), `docs/` and `demo/` in the source distribution -- exactly
+# what the 0.5.0 wheel change removed. `uv publish` uploads both artifacts, so
+# the wheel fix alone was not enough.
+[tool.hatch.build.targets.sdist]
+exclude = [
+  "**/.pytest_cache",
+  "**/.test_cache",
+  "**/__pycache__"
+]
+include = [
+  "/.env.example",
+  "/CHANGELOG.md",
+  "/CITATION.cff",
+  "/LICENSE",
+  "/README.md",
+  "/ontocast",
+  "/pyproject.toml",
+  "/test"
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["ontocast"]
 
@@ -147,9 +207,17 @@ select = ["E", "F", "I001", "W"]
 "ontocast/prompt/*.py" = ["E501"]
 
 [tool.ty.analysis]
-# docling (the heavy converter) and lancedb are optional extras loaded lazily via
-# importlib; CI type-checks without them. docling-core is a hard dependency and is
-# deliberately NOT listed here -- whitelisting it previously hid the fact that
-# `ontocast.onto.state` imported it unguarded while it was only in an extra, which
-# made a base `pip install ontocast` unimportable.
-allowed-unresolved-imports = ["docling.**", "lancedb.**", "pyshacl.**"]
+# Optional extras loaded lazily / only when selected; pre-commit CI syncs
+# `--extra dev` only, so ty must not require them. docling-core is a hard
+# dependency and is deliberately NOT listed here -- whitelisting it previously
+# hid the fact that `ontocast.onto.state` imported it unguarded while it was
+# only in an extra, which made a base `pip install ontocast` unimportable.
+allowed-unresolved-imports = [
+  "docling.**",
+  "duckduckgo_search.**",
+  "hdbscan.**",
+  "lancedb.**",
+  "langchain_huggingface.**",
+  "pyshacl.**",
+  "umap.**"
+]

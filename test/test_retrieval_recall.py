@@ -228,7 +228,14 @@ async def _score(
         # object-position references, so a named term may carry no usable definition.
         subjects = {str(subject) for subject in graph.subjects()}
         http_subjects = {s for s in subjects if s.startswith("http")}
-        on_topic = sum(1 for s in http_subjects if s.startswith(case.ontology_iri))
+        on_topic = sum(
+            1
+            for s in http_subjects
+            if owner_of(s, owners, ontologies) == case.ontology_iri
+        )
+        # Unowned expected IRIs are attributed explicitly rather than silently
+        # dropped, so a vocabulary whose header namespace excludes its own terms
+        # reads as "(unattributed)" instead of "contributed nothing".
         counts.observe(
             expected=case.expected_iris,
             seed_iris=seed_iris,
@@ -237,9 +244,8 @@ async def _score(
             on_topic_subjects=on_topic,
             total_subjects=len(http_subjects),
             expected_owner={
-                iri: owner
+                iri: owner_of(iri, owners, ontologies) or "(unattributed)"
                 for iri in case.expected_iris
-                if (owner := owner_of(iri, owners))
             },
         )
 

@@ -6,8 +6,10 @@ import pytest
 from rdflib import URIRef
 
 from ontocast.config import ChunkConfig
+from ontocast.onto.constants import DEFAULT_DOMAIN
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.model import FactsUnitFindingKind
+from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.stategraph.atomic import _collect_facts_findings
 from ontocast.tool.chunk.bibliography import (
@@ -163,3 +165,22 @@ async def test_domain_facts_disables_detection_entirely(monkeypatch) -> None:
 
     assert len(state.content_units) == 1
     assert state.content_units[0].is_citation_metadata is False
+
+
+def test_current_domain_constructor_argument_is_honored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A custom __init__ used to overwrite the caller's value from the env."""
+    monkeypatch.setenv("CURRENT_DOMAIN", "https://from-environment.example")
+
+    assert AgentState().current_domain == "https://from-environment.example"
+    assert (
+        AgentState(current_domain="https://explicit.example").current_domain
+        == "https://explicit.example"
+    )
+
+
+def test_current_domain_falls_back_to_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CURRENT_DOMAIN", raising=False)
+
+    assert AgentState().current_domain == DEFAULT_DOMAIN

@@ -55,7 +55,10 @@ class ProcessResultData(BaseModel):
     facts: str
     ontology: str | None = Field(
         default=None,
-        description="Deprecated singular ontology payload; use ontology_artifacts.",
+        deprecated=True,
+        description=(
+            "Deprecated singular ontology payload; always null. Use ontology_artifacts."
+        ),
     )
     ontology_artifacts: list[dict] = Field(default_factory=list)
 
@@ -66,6 +69,29 @@ class ProcessResultMetadata(BaseModel):
     chunks_remaining: int
     budget: dict
     retrieval_metrics: dict = Field(default_factory=dict)
+    facts_repairs: dict[int, list[dict]] = Field(
+        default_factory=dict,
+        description=(
+            "Deterministic machine repairs applied per content unit, keyed by "
+            "unit index. Lets a consumer tell machine-altered triples from what "
+            "the model asserted."
+        ),
+    )
+    failed_units: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "Content units that produced no output, with the stage and reason. "
+            "Empty on a fully successful run."
+        ),
+    )
+    improvement_suggestions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Advisory notes from the structural check and consistency critic "
+            "(orphan terms, potential cross-ontology conflicts). Advisory only: "
+            "nothing in the pipeline acts on them."
+        ),
+    )
 
 
 class ProcessOkResponse(BaseModel):

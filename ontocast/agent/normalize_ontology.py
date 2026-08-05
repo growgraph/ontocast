@@ -116,19 +116,22 @@ def normalize_ontology_units(
     tools: ToolBox,
     base_ontology: Ontology | None = None,
     require_base: bool = False,
+    delete_graph: RDFGraph | None = None,
 ) -> tuple[Ontology, list[GraphUpdate], RDFGraph]:
     """Merge ontology unit deltas as TripleOps, then apply to base ontology.
 
-    Units contain ontology delta graphs (insert triples only). To preserve the
-    exact unit output shape (and avoid ontology/facts aggregation rewrites), we
-    convert each unit graph into an ``insert`` TripleOp and apply them as one
-    GraphUpdate.
+    Units contain ontology insert delta graphs; ``delete_graph`` carries the
+    reconciled delete delta (triples to remove from the base). Deletes execute
+    first, then inserts, as one ordered GraphUpdate — so the applied update
+    list feeds version-bump analysis with true operation types.
 
     Args:
         units: ContentUnits with type=ONTOLOGIES and delta graph from each unit.
         tools: ToolBox instance.
         base_ontology: Optional ontology to use as base; merged delta is applied to it.
         require_base: Whether map/reduce caller expects a base ontology.
+        delete_graph: Optional triples to delete from the base before inserts.
+            Requires a catalog base; ignored (with a warning) otherwise.
 
     Returns:
         Tuple of (
@@ -137,7 +140,8 @@ def normalize_ontology_units(
             provenance artifact graph stripped from ontology output,
         ).
     """
-    if not units:
+    has_deletes = delete_graph is not None and len(delete_graph) > 0
+    if not units and not has_deletes:
         if base_ontology is not None:
             return base_ontology, [], RDFGraph()
         return Ontology(graph=RDFGraph()), [], RDFGraph()
@@ -152,17 +156,22 @@ def normalize_ontology_units(
             "continuing with merged aggregated ontology output."
         )
 
-    # Unit delta graphs contain insert-only triples produced by build_ontology_delta_graph.
-    # Delete operations are intentionally excluded at the map stage and are not
-    # represented here. This is a deliberate policy: parallel unit deletes cannot
-    # be safely reconciled without a consensus pass, which is not yet implemented.
-    merged_update = GraphUpdate(
-        triple_operations=[
-            TripleOp(type="insert", graph=unit.graph)
-            for unit in units
-            if len(unit.graph) > 0
-        ]
+    operations: list[TripleOp] = []
+    if has_deletes:
+        if base_ontology is None or base_ontology.is_null():
+            logger.warning(
+                "normalize_ontology_units received %d delete triple(s) without a "
+                "catalog base; deletes are dropped (nothing to delete from).",
+                len(delete_graph) if delete_graph is not None else 0,
+            )
+        else:
+            operations.append(TripleOp(type="delete", graph=delete_graph))
+    operations.extend(
+        TripleOp(type="insert", graph=unit.graph)
+        for unit in units
+        if len(unit.graph) > 0
     )
+    merged_update = GraphUpdate(triple_operations=operations)
     if not merged_update.triple_operations:
         merged_update = None
 

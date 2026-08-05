@@ -14,7 +14,11 @@ from langchain_core.prompts import PromptTemplate
 from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
-from ontocast.onto.model import FactsRenderReport, GraphUpdateRenderReport
+from ontocast.onto.model import (
+    FactsRenderReport,
+    GraphRepairRecord,
+    GraphUpdateRenderReport,
+)
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import (
     UnitFactsOntologyAccess,
@@ -39,6 +43,7 @@ from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_invariants import (
     format_findings_for_prompt,
     normalize_literals_against_schema,
+    repair_literal_type_objects,
     repair_property_aliases,
 )
 from ontocast.tool.validate import partition_object_property_literal_triples
@@ -51,26 +56,32 @@ def _normalize_and_repair_graph(
     ontology_context_graph: RDFGraph,
     *,
     min_ratio: float,
-) -> RDFGraph:
+) -> tuple[RDFGraph, list[GraphRepairRecord]]:
     """Apply deterministic parse-time fixes to a rendered graph in place.
 
-    Retypes untyped numeric literals against declared numeric ranges and
-    rewrites unambiguous near-miss predicates in catalog namespaces
-    (e.g. ``qudt:value`` -> ``qudt:numericValue``). Ambiguous near-misses are
-    left for findings collection.
+    Retypes untyped numeric literals against declared numeric ranges, coerces
+    literal ``rdf:type`` objects into IRIs, and rewrites unambiguous near-miss
+    predicates in catalog namespaces (e.g. ``qudt:value`` ->
+    ``qudt:numericValue``). Ambiguous near-misses and unresolvable type
+    literals are left for findings collection.
+
+    Returns:
+        Tuple of (repaired graph, applied-repair records for provenance).
     """
     retyped = normalize_literals_against_schema(graph, ontology_context_graph)
-    rewritten, _ = repair_property_aliases(
+    type_repaired, _type_findings, type_records = repair_literal_type_objects(graph)
+    rewritten, _alias_findings, alias_records = repair_property_aliases(
         graph, ontology_context_graph, min_ratio=min_ratio
     )
-    if retyped or rewritten:
+    if retyped or rewritten or type_repaired:
         logger.info(
-            "Deterministic graph repair: retyped %d literal(s), "
-            "rewrote %d alias triple(s)",
+            "Deterministic graph repair: retyped %d literal(s), coerced %d "
+            "rdf:type literal(s), rewrote %d alias triple(s)",
             retyped,
+            type_repaired,
             rewritten,
         )
-    return graph
+    return graph, [*type_records, *alias_records]
 
 
 def _findings_instruction(state: UnitFactsState) -> str:
@@ -289,11 +300,12 @@ async def render_facts_fresh(
         render_report.semantic_graph.sanitize_prefixes_namespaces()
         clean_graph, rejected = finalize_llm_graph(render_report.semantic_graph)
         ontology_context_graph = access.effective_ontology_for_prompt().graph
-        clean_graph = _normalize_and_repair_graph(
+        clean_graph, repair_records = _normalize_and_repair_graph(
             clean_graph,
             ontology_context_graph,
             min_ratio=tools.property_alias_min_ratio,
         )
+        state.applied_repairs.extend(repair_records)
         if tools.object_property_literal_check:
             clean_graph, op_rejected = partition_object_property_literal_triples(
                 clean_graph, ontology_context_graph
@@ -404,11 +416,12 @@ async def render_facts_update(
             # Only insert ops are normalized/checked: deleting a bad literal
             # (or a bad alias triple) is desirable and must match verbatim.
             if op.type == "insert":
-                clean_graph = _normalize_and_repair_graph(
+                clean_graph, repair_records = _normalize_and_repair_graph(
                     clean_graph,
                     ontology_context_graph,
                     min_ratio=tools.property_alias_min_ratio,
                 )
+                state.applied_repairs.extend(repair_records)
             if tools.object_property_literal_check and op.type == "insert":
                 clean_graph, op_rejected = partition_object_property_literal_triples(
                     clean_graph, ontology_context_graph

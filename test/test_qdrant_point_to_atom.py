@@ -77,3 +77,27 @@ def test_fetch_atoms_by_ids_survives_scroll_records_without_score() -> None:
 
     assert [atom.atom_id for atom in atoms] == ["a1"]
     assert atoms[0].score is None
+
+
+def test_atom_payload_round_trips_symbol_surfaces() -> None:
+    """symbol_surfaces (sf6) must survive the payload round trip case-intact."""
+    from ontocast.tool.vector_store.core import GraphAtom
+    from ontocast.tool.vector_store.util import atom_from_payload, atom_payload
+
+    atom = GraphAtom(
+        atom_id="a1",
+        ontology_iri="https://example.org/units",
+        iri="http://qudt.org/vocab/unit/MegaEV",
+        core_representation="megaelectronvolt",
+        neighborhood_representation="",
+        lexical_triggers=["MeV"],
+        symbol_surfaces=["MeV"],
+    )
+    restored = atom_from_payload(atom_payload(atom))
+    assert restored.symbol_surfaces == ["MeV"]
+    assert restored.lexical_triggers == ["MeV"]
+
+    # Payloads written before sf6 have no symbol_surfaces key: default empty.
+    legacy = atom_payload(atom)
+    legacy.pop("symbol_surfaces")
+    assert atom_from_payload(legacy).symbol_surfaces == []

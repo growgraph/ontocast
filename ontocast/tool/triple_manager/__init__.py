@@ -1,6 +1,6 @@
 """Triple store management package for OntoCast."""
 
-from .core import TripleStoreManager
+from .core import TripleStoreManager, TripleStoreUnavailableError
 from .fuseki import (
     FusekiTripleStoreManager,
     normalize_fuseki_server_uri,
@@ -15,6 +15,7 @@ from .util import deterministic_turtle_serialization
 
 __all__ = [
     "TripleStoreManager",
+    "TripleStoreUnavailableError",
     "FusekiTripleStoreManager",
     "InMemoryTripleStoreManager",
     "MockTripleStoreManager",

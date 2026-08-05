@@ -91,6 +91,7 @@ LLM_API_KEY=your_google_api_key_here
 ### Server
 
 ```bash
+HOST=127.0.0.1                           # loopback by default; see note below
 PORT=8999
 BASE_RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
@@ -101,11 +102,26 @@ ONTOLOGY_CONTEXT_MODE=selected_single_ontology
 #ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID=catalog_iri_or_id_or_prefix
 ONTOLOGY_MAX_TRIPLES=50000               # empty/unset for unlimited
 PARALLEL_WORKERS=4
-PARALLEL_FACTS_RETRIES=3
-PARALLEL_ONTOLOGY_RETRIES=3
 ENABLE_ONTOLOGY_CONSOLIDATION=false
 # MAX_CONCURRENT_PROCESSES=4      # optional cap on simultaneous /process handlers
 ```
+
+!!! warning "The server has no authentication"
+
+    `HOST` defaults to `127.0.0.1`. There is no authentication, authorization,
+    or request-size limit on any route, and `POST /flush` is destructive and
+    can target any tenancy partition. Set `HOST=0.0.0.0` only behind a proxy
+    that authenticates; the server logs a warning when you do.
+
+!!! note "`MAX_VISITS=1` means the LLM critic never runs"
+
+    A visit budget of 1 makes the single render also the final one, and a
+    critique that cannot drive a retry is skipped. Only the deterministic
+    repair pass (`FACTS_REPAIR_VISITS`) runs at the default. Set `MAX_VISITS=2`
+    or more to enable `criticise_facts` / `criticise_ontology`.
+
+`MAX_CONCURRENT_PROCESSES` **queues** requests beyond the limit; they are not
+rejected.
 
 ### Chunking
 
@@ -235,6 +251,7 @@ QDRANT_URI=http://localhost:6333
 QDRANT_API_KEY=abc123-qwe
 QDRANT_GRPC_PORT=6334
 QDRANT_USE_GRPC=false
+QDRANT_TIMEOUT_SECONDS=30                # whole seconds; the client accepts nothing finer
 # QDRANT_ONTOLOGY_COLLECTION=ontocast--test--ontologies
 # QDRANT_FACTS_COLLECTION=ontocast--test--facts
 ```
@@ -281,7 +298,9 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `VECTOR_STORE_INDUCED_SUBGRAPH_CANDIDATE_PUSHDOWN` | `false` | Opt-in SPARQL `CONSTRUCT` neighborhood instead of merging whole ontology graphs (see [Ontology Context](ontology_context.md#candidate-pushdown-opt-in)) |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_TYPE_PROMOTION_SCORE_FACTOR` | `1.0` | Fraction of a retrieved seed's score inherited by its promoted `rdf:type` IRIs; the seed always keeps its own score |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_SEED_ORDER` | `score` | Seed expansion order under the triple budget: `score` (global relevance) or `ontology_round_robin` (interleave source ontologies) |
-| `VECTOR_STORE_INDUCED_SUBGRAPH_SYMBOL_PREDICATES` | trigger predicates | Symbol/notation predicates admitted as seed descriptions between names and glosses (empty list disables) |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_SYMBOL_PREDICATES` | trigger predicates | Symbol/notation predicates admitted as seed descriptions between names and glosses (empty list disables). This is the *retrieval* half; keep it in agreement with `VECTOR_STORE_SYMBOL_PREDICATES` below |
+| `VECTOR_STORE_LABEL_PREDICATES` | `rdfs:label`, `skos:prefLabel`, `dcterms:title`, `skos:altLabel`, `dcterms:alternative` | Predicates whose literals are **indexed** as declared labels, in descending priority. Changing this requires a reindex |
+| `VECTOR_STORE_SYMBOL_PREDICATES` | `skos:notation`, `qudt:symbol`, `qudt:ucumCode` | Predicates whose literals are **indexed** as symbols, collected against their own budget so multilingual labels cannot crowd them out. The indexing half of the pair above; configuring only the retrieval half changes what surfaces without changing what is stored. Changing this requires a reindex |
 | `VECTOR_STORE_PROPOSITION_WINDOW_SENTENCES` | `2` | Sentences per proposition window for multi-query retrieval |
 | `VECTOR_STORE_PROPOSITION_MAX_WINDOWS` | `16` | Cap on windows per excerpt; when a chunk has more, windows are sampled at an even stride spanning both endpoints (not “first N only”) |
 | `VECTOR_STORE_PROPOSITION_RETRIEVAL_ENABLED` | `true` | Multi-query proposition retrieval for induced-graph mode |
@@ -306,6 +325,8 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `VECTOR_STORE_LEXICAL_TRIGGER_SCORE` | `0.35` | Score assigned to trigger hits (calibrated against fused rank scores: rank-1 core = 0.583, merged floor = 0.18) |
 | `VECTOR_STORE_LEXICAL_TRIGGER_FUSION` | `max_merge` | `max_merge` promotes an already-retrieved atom to `max(semantic, trigger)` score; `append` (legacy) only adds unseen atoms |
 | `VECTOR_STORE_QUERY_UNIT_SIGNALS_ENABLED` | `false` | Match number-adjacent tokens ("4-15 days", "200 kV", "0.5 %") case-insensitively and plural-tolerantly against catalog labels/symbols/UCUM codes; matched entities join the snapshot seeds at trigger score, outside the semantic budget |
+| `VECTOR_STORE_SYMBOL_CASE_MISMATCH_POLICY` | `demote` | Merge-time treatment of atoms whose declared symbol surfaces (`skos:notation`, `qudt:symbol`, `qudt:ucumCode`) match a query token only case-insensitively with no exact-case match anywhere — the BM25/dense text is case-folded, so prose "meV" also retrieves `unit:MegaEV` (symbol "MeV"). `demote` multiplies the atom score, `drop` removes it, `off` keeps legacy behavior; exact-case and label-only matches are never touched |
+| `VECTOR_STORE_SYMBOL_CASE_MISMATCH_DEMOTE_FACTOR` | `0.5` | Score multiplier applied under the `demote` policy |
 | `FACTS_OBJECT_PROPERTY_LITERAL_CHECK` | `true` | Quarantine string literals on predicates whose schema range is a class (e.g. `qudt:unit`); surfaced to the facts critic and the deterministic repair loop |
 | `FACTS_REPAIR_VISITS` | `1` | Deterministic repair budget per unit: extra update renders fed with machine-found MANDATORY fixes (quarantined literals, unknown/near-miss terms) and numeric-coverage candidates. Applies even at `MAX_VISITS=1`, where the LLM critic never runs |
 | `FACTS_PROPERTY_ALIAS_MIN_RATIO` | `0.85` | SequenceMatcher cutoff for deterministic near-miss property rewrites in catalog namespaces (token containment always qualifies, e.g. `qudt:value` → `qudt:numericValue`) |

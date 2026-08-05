@@ -172,8 +172,18 @@ class QdrantVectorStoreManager(VectorStoreManager):
                 api_key=self.qdrant_config.api_key,
                 grpc_port=self.qdrant_config.grpc_port,
                 prefer_grpc=self.qdrant_config.use_grpc,
+                timeout=self.qdrant_config.timeout_seconds,
             )
         return self._client
+
+    def close(self) -> None:
+        """Release the Qdrant connection, if one was opened."""
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception as exc:  # pragma: no cover - teardown best effort
+                logger.debug("Ignoring error while closing Qdrant client: %s", exc)
+            self._client = None
 
     def _ontology_collection_name(self) -> str:
         name = self.qdrant_config.ontology_collection

@@ -1,3 +1,0 @@
-# `ontocast.util`
-
-::: ontocast.util

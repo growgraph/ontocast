@@ -4,6 +4,7 @@ import asyncio
 import logging
 import pathlib
 import re
+from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
@@ -249,7 +250,10 @@ def expand_input_to_states(
     resolved_max_visits = (
         max_visits if max_visits is not None else config.server.max_visits_per_node
     )
-    base_state_kwargs = {
+    # Explicitly typed: the splat below is only checkable if the mapping's
+    # value type is known, and a heterogeneous literal infers as a union that
+    # matches no single field.
+    base_state_kwargs: dict[str, Any] = {
         "max_visits": resolved_max_visits,
         "max_chunks": head_chunks,
         "render_mode": config.server.render_mode,
@@ -448,7 +452,16 @@ async def process_files_input(
     output_dir: pathlib.Path | None = None,
     facts_output_dir: pathlib.Path | None = None,
     ontology_output_dir: pathlib.Path | None = None,
-) -> None:
+) -> list[pathlib.Path]:
+    """Process each input file, isolating per-file failures.
+
+    Returns:
+        The files that failed, in input order. Empty on full success. Callers
+        use this to set a non-zero exit code -- previously every failure was
+        logged and swallowed, so ``ontocast process`` exited 0 even when no
+        file produced any output.
+    """
+    failed_files: list[pathlib.Path] = []
     resolved_max_visits = (
         max_visits if max_visits is not None else config.server.max_visits_per_node
     )
@@ -485,6 +498,8 @@ async def process_files_input(
                         )
                     except DocumentConversionError as exc:
                         logger.error("Error processing %s: %s", file_path, exc)
+                        if file_path not in failed_files:
+                            failed_files.append(file_path)
                         continue
                     await persist_unit_pipeline_outputs(
                         state, onto_result, facts_result, tools
@@ -527,3 +542,7 @@ async def process_files_input(
                 )
         except Exception:
             logger.exception("Error processing %s", file_path)
+            if file_path not in failed_files:
+                failed_files.append(file_path)
+
+    return failed_files

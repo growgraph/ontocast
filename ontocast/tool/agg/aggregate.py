@@ -265,6 +265,34 @@ class EntityDecision(BaseModel):
     suppress_sameas: bool = False
 
 
+def build_merged_clusters(
+    final_mapping: dict[URIRef, URIRef],
+    identity_mapping: dict[URIRef, URIRef],
+) -> dict[str, list[str]]:
+    """Group merge clusters by canonical identity, keyed by every final URI.
+
+    One canonical spanning several source documents mints one final URI per
+    doc base; keying by final URI alone would split the same merge decision
+    into per-document clusters, and a validation veto on one flagged URI would
+    leave the sibling document's half of the cluster merged. Every final URI
+    rendering a canonical therefore keys the *full* cross-document member set.
+    """
+    members_by_canonical: dict[str, set[str]] = {}
+    final_uris_by_canonical: dict[str, set[str]] = {}
+    for entity, final_uri in final_mapping.items():
+        canonical = str(identity_mapping.get(entity, entity))
+        members_by_canonical.setdefault(canonical, set()).add(str(entity))
+        final_uris_by_canonical.setdefault(canonical, set()).add(str(final_uri))
+    merged_clusters: dict[str, list[str]] = {}
+    for canonical, final_uris in final_uris_by_canonical.items():
+        members = members_by_canonical[canonical]
+        if len(members) < 2:
+            continue
+        for final_uri in final_uris:
+            merged_clusters[final_uri] = sorted(members)
+    return merged_clusters
+
+
 class AggregationResult(BaseModel):
     """Outcome of one aggregation pass, including merge bookkeeping.
 
@@ -272,9 +300,13 @@ class AggregationResult(BaseModel):
         graph: Merged facts graph with provenance annotations.
         decisions: Per-entity decision records (classification, identity
             target, final URI).
-        merged_clusters: Final URI -> source entities that were rewritten to
-            it, restricted to clusters where >= 2 distinct entities merged.
-            Keys/values are strings so the mapping can live on
+        merged_clusters: Final URI -> all source entities sharing the same
+            canonical identity, restricted to clusters where >= 2 distinct
+            entities merged. A canonical spanning several documents mints one
+            final URI per doc base; every such final URI keys the *full*
+            cross-document cluster, so a validation veto dissolves the whole
+            merge decision rather than one document's half. Keys/values are
+            strings so the mapping can live on
             :class:`~ontocast.onto.state.AgentState` between graph nodes.
         rejected_merge_count: Candidate merges rejected by symbolic
             validation (guards, roles, types, lexical bar).
@@ -1282,14 +1314,7 @@ class EmbeddingBasedAggregator:
             suppress_fact_subject_sources=suppress_fact_subject_sources,
         )
 
-        cluster_members: dict[str, set[str]] = {}
-        for entity, final_uri in final_mapping.items():
-            cluster_members.setdefault(str(final_uri), set()).add(str(entity))
-        merged_clusters = {
-            final_uri: sorted(members)
-            for final_uri, members in cluster_members.items()
-            if len(members) >= 2
-        }
+        merged_clusters = build_merged_clusters(final_mapping, identity_mapping)
 
         logger.info("Aggregation with metadata complete")
         return AggregationResult(

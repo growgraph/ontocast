@@ -1,19 +1,15 @@
 import importlib
 import logging
 import re
+import tempfile
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from ontocast.config import (
-    Config,
-    LLMConfig,
-    LLMProvider,
-    OllamaModel,
-    PathConfig,
-    ToolConfig,
-)
+import click
+
+from ontocast.config import Config
 from ontocast.stategraph import create_agent_graph
 from ontocast.toolbox import ToolBox
 
@@ -387,8 +383,8 @@ def draw_flow_graphviz(
             print(f"📄 Wrote {out}.png")
 
 
-def write_atomic_loop_diagrams(pgv_module: Any) -> None:
-    assets = Path("docs/assets")
+def write_atomic_loop_diagrams(pgv_module: Any, output_dir: Path) -> None:
+    assets = Path(output_dir)
     assets.mkdir(parents=True, exist_ok=True)
     for name, builder in (
         ("facts_loop", lambda: facts_loop_flow(include_evidence=False)),
@@ -495,39 +491,46 @@ def draw_graphviz(
             print(f"📄 Wrote {out}.png")
 
 
-def main() -> None:
-    config = Config(
-        tool_config=ToolConfig(
-            path_config=PathConfig(
-                ontology_directory=None, working_directory=Path("/tmp")
-            ),
-            llm_config=LLMConfig(
-                provider=LLMProvider.OLLAMA,
-                model_name=OllamaModel.LLAMA3_1,
-                base_url="http://localhost:11434",
-            ),
+@click.command()
+@click.option(
+    "--output-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=Path("docs/assets"),
+    show_default=True,
+    help="Directory to write diagrams into. Created if absent.",
+)
+def main(output_dir: Path) -> None:
+    """Render the workflow graph and per-unit loop diagrams.
+
+    Diagram rendering only needs the compiled graph topology, so the LLM is
+    never called. The provider is still read from the environment via
+    ``Config()`` rather than pinned to a local Ollama, so the command works
+    wherever the package is installed.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    config = Config()
+    config.tool_config.path_config.ontology_directory = None
+    if config.tool_config.path_config.working_directory is None:
+        config.tool_config.path_config.working_directory = Path(
+            tempfile.mkdtemp(prefix="ontocast-plot-")
         )
-    )
     toolbox = ToolBox(config)
 
     app = create_agent_graph(toolbox)
     graph = app.get_graph()
     mmd_data = graph.draw_mermaid(frontmatter_config=frontmatter_config)
 
-    with open("graph.mmd", "w") as f:
-        f.write(mmd_data)
+    (output_dir / "graph.mmd").write_text(mmd_data)
 
+    graph_stem = str(output_dir / "graph")
     try:
-        # import pygraphviz as pgv_module
         pgv_module = importlib.import_module("pygraphviz")
 
-        draw_graphviz(
-            pgv_module, graph, "docs/assets/graph", ("svg", "png"), rankdir="TB"
-        )
-        draw_graphviz(
-            pgv_module, graph, "docs/assets/graph", ("svg", "png"), rankdir="LR"
-        )
-        write_atomic_loop_diagrams(pgv_module)
+        draw_graphviz(pgv_module, graph, graph_stem, ("svg", "png"), rankdir="TB")
+        draw_graphviz(pgv_module, graph, graph_stem, ("svg", "png"), rankdir="LR")
+        write_atomic_loop_diagrams(pgv_module, output_dir)
     except ImportError as e:
         logger.info(f"pygraphviz not available, skipping graphviz output: {e}")
 
@@ -540,8 +543,7 @@ def main() -> None:
             padding=20,
         )
 
-        with open("docs/assets/graph.preview.png", "wb") as f:
-            f.write(png_data)
+        (output_dir / "graph.preview.png").write_bytes(png_data)
     except ImportError as e:
         logger.info(f"MermaidDrawMethod not available, skipping mermaid PNG: {e}")
 

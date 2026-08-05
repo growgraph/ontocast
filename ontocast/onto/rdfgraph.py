@@ -439,21 +439,29 @@ _COMPACT_PREFIX = re.compile(r"^([A-Za-z][A-Za-z0-9_.-]*):(?!//)")
 
 
 def _collect_compact_prefixes(value: Any, found: set[str]) -> None:
-    """Gather ``prefix:`` heads from every key and IRI-ish string in *value*."""
+    """Gather ``prefix:`` heads from the IRI positions of compacted JSON-LD nodes.
+
+    IRI positions are exactly: ``@id`` values (subjects and object references),
+    ``@type`` values (compact literal datatypes), and non-``@`` keys (compact
+    predicate IRIs). Bare string values are plain literals and never carry a
+    prefix binding — matching them minted phantom prefixes from ordinary text
+    like ``"time: 10 minutes"``.
+    """
     if isinstance(value, dict):
         for key, item in value.items():
-            if not key.startswith("@"):
-                match = _COMPACT_PREFIX.match(key)
-                if match:
-                    found.add(match.group(1))
+            if key.startswith("@"):
+                if key in ("@id", "@type") and isinstance(item, str):
+                    match = _COMPACT_PREFIX.match(item)
+                    if match:
+                        found.add(match.group(1))
+                continue
+            match = _COMPACT_PREFIX.match(key)
+            if match:
+                found.add(match.group(1))
             _collect_compact_prefixes(item, found)
     elif isinstance(value, list):
         for item in value:
             _collect_compact_prefixes(item, found)
-    elif isinstance(value, str):
-        match = _COMPACT_PREFIX.match(value)
-        if match:
-            found.add(match.group(1))
 
 
 def _referenced_jsonld_context(

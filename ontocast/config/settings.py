@@ -14,6 +14,7 @@ from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from qdrant_client.http.models import Distance as QdrantDistance
 
+from ontocast.onto.constants import DEFAULT_DOMAIN
 from ontocast.onto.enum import LLMGraphFormat, OntologyContextMode, RenderMode
 from ontocast.onto.tenancy import (
     DEFAULT_PROJECT,
@@ -53,6 +54,7 @@ __all__ = [
     "QdrantConfig",
     "ServerConfig",
     "SiblingGuardScope",
+    "SymbolCaseMismatchPolicy",
     "ToolConfig",
     "VectorStoreConfig",
     "VectorStoreDedupMode",
@@ -205,6 +207,14 @@ class LexicalTriggerFusion(StrEnum):
 
     MAX_MERGE = "max_merge"
     APPEND = "append"
+
+
+class SymbolCaseMismatchPolicy(StrEnum):
+    """Treatment of hits whose only symbol evidence is case-mismatched."""
+
+    OFF = "off"
+    DEMOTE = "demote"
+    DROP = "drop"
 
 
 class LLMConfig(BaseSettings):
@@ -465,15 +475,31 @@ class ConverterConfig(BaseSettings):
 class ServerConfig(BaseSettings):
     """Server configuration settings."""
 
-    port: int = Field(default=8999, description="Server port")
-    base_recursion_limit: int = Field(
-        default=1000, description="Recursion limit for workflow"
+    host: str = Field(
+        default="127.0.0.1",
+        description=(
+            "Interface the server binds to. Defaults to loopback: the server "
+            "has no authentication and exposes a destructive /flush, so "
+            "binding every interface must be a deliberate choice. Set to "
+            "0.0.0.0 for containers."
+        ),
     )
-    estimated_chunks: int = Field(default=30, description="Estimated number of chunks")
+    port: int = Field(default=8999, ge=1, le=65535, description="Server port")
+    base_recursion_limit: int = Field(
+        default=1000, ge=1, description="Recursion limit for workflow"
+    )
+    estimated_chunks: int = Field(
+        default=30, ge=1, description="Estimated number of chunks"
+    )
     max_visits_per_node: int = Field(
         default=1,
         ge=1,
-        description="Maximum number of visits allowed per node",
+        description=(
+            "Maximum render attempts per unit loop. At the default of 1 the "
+            "critic never runs: the single render is also the final one, and a "
+            "critique that cannot drive a retry is skipped. Raise to 2 or more "
+            "to enable the LLM critic pass."
+        ),
         validation_alias=AliasChoices("max_visits_per_node", "max_visits"),
     )
     render_mode: RenderMode = Field(
@@ -504,21 +530,15 @@ class ServerConfig(BaseSettings):
     )
     ontology_max_triples: int | None = Field(
         default=50000,
+        ge=1,
         description="Maximum number of triples allowed in ontology graph. "
         "Updates that would exceed this limit are skipped with a warning. "
         "Set to None for unlimited.",
     )
     parallel_workers: int = Field(
         default=4,
+        ge=1,
         description="Maximum number of concurrent unit workers in parallel pipeline",
-    )
-    parallel_facts_retries: int = Field(
-        default=3,
-        description="Retry budget for unit facts loop",
-    )
-    parallel_ontology_retries: int = Field(
-        default=3,
-        description="Retry budget for unit ontology loop",
     )
     enable_ontology_consolidation: bool = Field(
         default=False,
@@ -528,8 +548,9 @@ class ServerConfig(BaseSettings):
         default=None,
         ge=1,
         description=(
-            "When set, limit concurrent /process and /process_unit handlers; "
-            "additional requests receive HTTP 503 until a slot is free."
+            "When set, limit concurrent /process and /process_unit handlers. "
+            "Requests beyond the limit queue until a slot frees up; they are "
+            "not rejected."
         ),
     )
 
@@ -581,10 +602,22 @@ class FusekiConfig(BaseSettings):
 
 
 class DomainConfig(BaseSettings):
-    """Domain and URI configuration."""
+    """Domain and URI configuration.
+
+    Reads the same ``CURRENT_DOMAIN`` variable that
+    :class:`~ontocast.onto.state.AgentState` defaults from. Previously this
+    class declared its own unrelated placeholder default and was never read by
+    anything, so the documented knob and the value the pipeline actually used
+    could not agree.
+    """
 
     current_domain: str = Field(
-        default="https://example.com", description="Current domain for URI generation"
+        default=DEFAULT_DOMAIN,
+        validation_alias=AliasChoices("current_domain", "CURRENT_DOMAIN"),
+        description=(
+            "IRI stem used to form document namespaces. Also read directly by "
+            "AgentState when no explicit value is supplied."
+        ),
     )
 
     model_config = SettingsConfigDict(
@@ -1373,6 +1406,36 @@ class VectorStoreConfig(BaseSettings):
             "Facts table/collection reserved for future fact vectors; created on init."
         ),
     )
+    label_predicates: list[str] = Field(
+        default_factory=lambda: [
+            "http://www.w3.org/2000/01/rdf-schema#label",
+            "http://www.w3.org/2004/02/skos/core#prefLabel",
+            "http://purl.org/dc/terms/title",
+            "http://www.w3.org/2004/02/skos/core#altLabel",
+            "http://purl.org/dc/terms/alternative",
+        ],
+        description=(
+            "Predicate IRIs whose literal objects are indexed as declared labels, "
+            "in descending priority (default: rdfs:label, skos:prefLabel, "
+            "dcterms:title, skos:altLabel, dcterms:alternative). Changing this "
+            "changes stored vectors and requires a reindex."
+        ),
+    )
+    symbol_predicates: list[str] = Field(
+        default_factory=lambda: [
+            "http://www.w3.org/2004/02/skos/core#notation",
+            "http://qudt.org/schema/qudt/symbol",
+            "http://qudt.org/schema/qudt/ucumCode",
+        ],
+        description=(
+            "Predicate IRIs whose literal objects are indexed as symbols/notations "
+            "(default: skos:notation, qudt:symbol, qudt:ucumCode). This is the "
+            "indexing half of the pair whose retrieval half is "
+            "INDUCED_SUBGRAPH_SYMBOL_PREDICATES; previously only the retrieval "
+            "half was configurable, so overriding it changed what surfaced "
+            "without changing what was indexed. Changing this requires a reindex."
+        ),
+    )
     lexical_trigger_enabled: bool = Field(
         default=True,
         description=(
@@ -1452,6 +1515,28 @@ class VectorStoreConfig(BaseSettings):
             "default until the recall-corpus sweep validates it."
         ),
     )
+    symbol_case_mismatch_policy: SymbolCaseMismatchPolicy = Field(
+        default=SymbolCaseMismatchPolicy.DEMOTE,
+        description=(
+            "Treatment of retrieved atoms whose case-preserved symbol surfaces "
+            "(skos:notation, qudt:symbol, qudt:ucumCode) match a query token "
+            "only case-insensitively, with no exact-case match on any surface. "
+            "The BM25 document text is case-folded before indexing, so prose "
+            "'meV' also retrieves unit:MegaEV (symbol 'MeV') — one token away "
+            "from a 10^9 unit error. 'demote' multiplies the atom score by "
+            "symbol_case_mismatch_demote_factor, 'drop' removes the atom, "
+            "'off' keeps legacy behavior. Exact-case and label-only matches "
+            "are never affected."
+        ),
+    )
+    symbol_case_mismatch_demote_factor: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Score multiplier applied by symbol_case_mismatch_policy='demote'."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="VECTOR_STORE_",
@@ -1507,6 +1592,15 @@ class QdrantConfig(BaseSettings):
         default=256,
         ge=1,
         description="Batch size used for Qdrant upsert operations.",
+    )
+    timeout_seconds: int = Field(
+        default=30,
+        ge=1,
+        description=(
+            "Per-request timeout for Qdrant calls, in whole seconds (the client "
+            "accepts nothing finer). Without one, an unreachable or hung Qdrant "
+            "blocks a pipeline worker indefinitely."
+        ),
     )
 
     model_config = SettingsConfigDict(

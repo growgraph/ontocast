@@ -256,10 +256,19 @@ def serve(
         active_tenant=runtime.tenant,
         active_project=runtime.project,
     )
-    logger.info("Starting Ontocast server on port %s", runtime.config.server.port)
+    bind_host = runtime.config.server.host
+    logger.info(
+        "Starting Ontocast server on %s:%s", bind_host, runtime.config.server.port
+    )
+    if bind_host not in {"127.0.0.1", "localhost", "::1"}:
+        logger.warning(
+            "Binding %s: the server has no authentication and /flush is "
+            "destructive. Put it behind a proxy that authenticates.",
+            bind_host,
+        )
     uvicorn.run(
         app,
-        host="0.0.0.0",
+        host=bind_host,
         port=runtime.config.server.port,
         log_level="info",
     )
@@ -382,28 +391,33 @@ def process(
         wipe_vector_store=wipe_vector_store,
         flush_on_clean=True,
     )
-    parsed_target_sections = (
-        parse_sections_list_param(target_sections)
-        if target_sections is not None
-        else None
-    )
-    parsed_summarize_sections = (
-        parse_sections_list_param(summarize_sections)
-        if summarize_sections is not None
-        else None
-    )
-    parsed_summary_max_sentences = parse_summary_max_sentences_param(
-        summary_max_sentences,
-        default=5,
-    )
-    parsed_document_type_hint = parse_document_type_hint_param(document_type_hint)
-    parsed_section_schema_id = parse_section_schema_id_param(section_schema_id)
-    parsed_max_visits = parse_max_visits_param(
-        max_visits,
-        default=runtime.config.server.max_visits_per_node,
-    )
+    # The parsers are shared with the HTTP layer and signal bad input by
+    # raising; surface that as a click usage error rather than a traceback.
+    try:
+        parsed_target_sections = (
+            parse_sections_list_param(target_sections, param="target-sections")
+            if target_sections is not None
+            else None
+        )
+        parsed_summarize_sections = (
+            parse_sections_list_param(summarize_sections, param="summarize-sections")
+            if summarize_sections is not None
+            else None
+        )
+        parsed_summary_max_sentences = parse_summary_max_sentences_param(
+            summary_max_sentences,
+            default=5,
+        )
+        parsed_document_type_hint = parse_document_type_hint_param(document_type_hint)
+        parsed_section_schema_id = parse_section_schema_id_param(section_schema_id)
+        parsed_max_visits = parse_max_visits_param(
+            max_visits,
+            default=runtime.config.server.max_visits_per_node,
+        )
+        parsed_document_metadata = parse_document_metadata_param(document_metadata)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
     runtime.config.server.max_visits_per_node = parsed_max_visits
-    parsed_document_metadata = parse_document_metadata_param(document_metadata)
 
     workflow: CompiledStateGraph = create_agent_graph(runtime.tools)
     input_path = input_path.expanduser()
@@ -418,7 +432,7 @@ def process(
             suffixes=get_supported_input_extensions(runtime.tools),
         )
     )
-    asyncio.run(
+    failed_files = asyncio.run(
         process_files_input(
             files,
             config=runtime.config,
@@ -441,6 +455,14 @@ def process(
             ontology_output_dir=ontology_dir,
         )
     )
+    if failed_files:
+        # Exit non-zero so a scripted pipeline can tell a partial or total
+        # failure from a clean run.
+        raise click.ClickException(
+            f"{len(failed_files)} of {len(files)} input file(s) failed: "
+            + ", ".join(str(path) for path in failed_files[:5])
+            + (" ..." if len(failed_files) > 5 else "")
+        )
 
 
 # Backward-compatible alias for tests / direct imports of the old entry name.

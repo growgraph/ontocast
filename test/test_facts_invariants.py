@@ -7,7 +7,7 @@ predicates, doc-namespace predicates, and string epistemic qualifiers
 against a closed individual range.
 """
 
-from rdflib import Literal, URIRef
+from rdflib import RDF, Literal, URIRef
 
 from ontocast.onto.model import FactsUnitFindingKind
 from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
@@ -15,6 +15,7 @@ from ontocast.tool.facts_invariants import (
     collect_unit_findings,
     format_findings_for_prompt,
     normalize_literals_against_schema,
+    repair_literal_type_objects,
     repair_property_aliases,
 )
 
@@ -87,7 +88,7 @@ def test_repair_property_aliases_rewrites_qudt_value() -> None:
         cd:c qudt:value "375"^^xsd:decimal .
         """
     )
-    rewritten, findings = repair_property_aliases(graph, _ontology())
+    rewritten, findings, _applied = repair_property_aliases(graph, _ontology())
     assert rewritten == 1
     assert not findings
     assert (
@@ -99,7 +100,7 @@ def test_repair_property_aliases_rewrites_qudt_value() -> None:
 
 def test_repair_property_aliases_rewrites_qqval_bound() -> None:
     graph = _facts('cd:r qqval:lowerBound "10"^^xsd:decimal .')
-    rewritten, findings = repair_property_aliases(graph, _ontology())
+    rewritten, findings, _applied = repair_property_aliases(graph, _ontology())
     # qqval:lowerBound tokens are contained in hasLowerBound -> unique rewrite.
     assert rewritten == 1
     assert not findings
@@ -108,6 +109,56 @@ def test_repair_property_aliases_rewrites_qqval_bound() -> None:
         URIRef(f"{QQVAL}hasLowerBound"),
         None,
     ) in graph
+
+
+def test_repair_literal_type_objects_coerces_compact_and_absolute() -> None:
+    # The case5 failure shape: `a "matsci-ontology:Material"^^xsd:string`
+    # instead of `a matsci-ontology:Material`.
+    graph = _facts(
+        f"""
+        cd:s a "qqval:Approximate"^^xsd:string .
+        cd:t a "{QQVAL}Exact" .
+        """
+    )
+    rewritten, findings, applied = repair_literal_type_objects(graph)
+    assert rewritten == 2
+    assert not findings
+    assert (URIRef(f"{FACTS}s"), RDF.type, URIRef(f"{QQVAL}Approximate")) in graph
+    assert (URIRef(f"{FACTS}t"), RDF.type, URIRef(f"{QQVAL}Exact")) in graph
+    assert {record.kind for record in applied} == {
+        FactsUnitFindingKind.LITERAL_TYPE_OBJECT
+    }
+    assert not [
+        obj for obj in graph.objects(None, RDF.type) if not isinstance(obj, URIRef)
+    ]
+
+
+def test_repair_literal_type_objects_unresolvable_becomes_finding() -> None:
+    graph = _facts('cd:s a "unboundprefix:Material"^^xsd:string .')
+    rewritten, findings, applied = repair_literal_type_objects(graph)
+    assert rewritten == 0
+    assert not applied
+    assert len(findings) == 1
+    assert findings[0].kind is FactsUnitFindingKind.LITERAL_TYPE_OBJECT
+    assert findings[0].mandatory
+
+
+def test_collect_unit_findings_flags_literal_type_objects() -> None:
+    graph = _facts('cd:s a "not an iri" .')
+    findings = collect_unit_findings(
+        graph=graph,
+        ontology_graph=_ontology(),
+        quarantined=[],
+        extraction_text="",
+        fact_namespaces=[FACTS],
+    )
+    literal_type = [
+        finding
+        for finding in findings
+        if finding.kind is FactsUnitFindingKind.LITERAL_TYPE_OBJECT
+    ]
+    assert len(literal_type) == 1
+    assert literal_type[0].mandatory
 
 
 def test_collect_unit_findings_flags_example_org_and_doc_predicates() -> None:
@@ -161,6 +212,33 @@ def test_collect_unit_findings_quarantine_gets_closed_range_suggestions() -> Non
     ]
     assert len(quarantine) == 1
     assert quarantine[0].suggestions == [f"{QQVAL}Approximate"]
+
+
+def test_closed_range_suggestions_match_case_exactly() -> None:
+    # The facts prompt mandates character-for-character symbol matching; a
+    # case-mismatched surface must not produce a suggestion (`unit:M` vs "m").
+    rejected = RejectedLiteralTriple(
+        subject=f"{FACTS}v1",
+        predicate=f"{QQVAL}epistemicQualifier",
+        object_lexical="exact",  # individual is qqval:Exact, local name "Exact"
+        datatype="",
+        reason="object property expects IRI",
+        expected_range=f"{QQVAL}EpistemicQualifier",
+    )
+    findings = collect_unit_findings(
+        graph=_facts(""),
+        ontology_graph=_ontology(),
+        quarantined=[rejected],
+        extraction_text="",
+        fact_namespaces=[FACTS],
+    )
+    quarantine = [
+        finding
+        for finding in findings
+        if finding.kind == FactsUnitFindingKind.QUARANTINED_LITERAL
+    ]
+    assert len(quarantine) == 1
+    assert quarantine[0].suggestions == []
 
 
 def test_collect_unit_findings_numeric_coverage_is_advisory() -> None:

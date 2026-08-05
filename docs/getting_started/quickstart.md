@@ -77,7 +77,7 @@ ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files
 
 # Triple store (optional — omit FUSEKI_URI for in-memory pyoxigraph)
 # FUSEKI_URI=http://localhost:3030
-# FUSEKI_AUTH=admin:password
+# FUSEKI_AUTH=admin/admin
 
 # Optional aggregation controls
 AGG_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2

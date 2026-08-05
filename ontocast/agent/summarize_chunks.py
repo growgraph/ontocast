@@ -1,10 +1,12 @@
 """LLM summarization of content units before extraction."""
 
 import logging
+from typing import Any
 
 from langchain_core.prompts import ChatPromptTemplate
 
 from ontocast.onto.content_unit import ContentUnit
+from ontocast.tool.llm import use_budget_tracker
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -47,15 +49,26 @@ async def summarize_chunk(
     tools: ToolBox,
     *,
     max_sentences: int,
+    budget_tracker: Any = None,
 ) -> str:
-    """Compress a content unit for downstream extraction."""
+    """Compress a content unit for downstream extraction.
+
+    Args:
+        unit: The content unit to summarize.
+        tools: Tool container.
+        max_sentences: Upper bound on summary length.
+        budget_tracker: Charged for this call. Summarization used to call the
+            shared LLM tool directly, so its tokens landed on whichever
+            tracker another unit happened to have bound.
+    """
     section_label = unit.section_label or "unclassified"
     prompt = _SUMMARIZE_PROMPT.format_prompt(
         max_sentences=max_sentences,
         section_label=section_label,
         text=unit.text,
     )
-    response = await tools.llm(prompt)
+    with use_budget_tracker(budget_tracker):
+        response = await tools.llm(prompt)
     summary = (response.content or "").strip()
     if not summary:
         raise ValueError("Summarization returned empty text")

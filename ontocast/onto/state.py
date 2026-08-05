@@ -26,7 +26,9 @@ from ontocast.onto.model import (
     BasePydanticModel,
     FactsLoopAttempt,
     FactsValidationFinding,
+    GraphRepairRecord,
     Suggestions,
+    UnitFailure,
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
@@ -176,7 +178,12 @@ class AgentState(BasePydanticModel):
         description="Parsed document in native Docling format.",
     )
     current_domain: str = Field(
-        description="IRI used for forming document namespace", default=DEFAULT_DOMAIN
+        description=(
+            "IRI used for forming the document namespace. Defaults to the "
+            "CURRENT_DOMAIN environment variable, then to DEFAULT_DOMAIN; an "
+            "explicit constructor argument always wins."
+        ),
+        default_factory=lambda: os.getenv("CURRENT_DOMAIN") or DEFAULT_DOMAIN,
     )
     doc_hid: str = Field(
         description="An almost unique hash / id for the parent document of the current unit",
@@ -322,6 +329,24 @@ class AgentState(BasePydanticModel):
         ),
     )
 
+    facts_repairs_applied: dict[int, list[GraphRepairRecord]] = Field(
+        default_factory=dict,
+        description=(
+            "Deterministic rewrites applied to rendered facts graphs, keyed by "
+            "content unit index — records which triples the machine altered "
+            "from what the LLM asserted."
+        ),
+    )
+
+    unit_failures: list[UnitFailure] = Field(
+        default_factory=list,
+        description=(
+            "Content units that produced no usable output, with the stage and "
+            "reason. Without this, a run in which every unit failed was "
+            "indistinguishable from one that found nothing to extract."
+        ),
+    )
+
     aggregation_clusters: dict[str, list[str]] = Field(
         default_factory=dict,
         description=(
@@ -449,15 +474,6 @@ class AgentState(BasePydanticModel):
         default_factory=BudgetTracker,
         description="Budget statistics tracker (LLM usage and generated triples)",
     )
-
-    def model_post_init(self, __context):
-        """Post-initialization hook for the model."""
-        pass
-
-    def __init__(self, **kwargs):
-        """Initialize the agent state with given keyword arguments."""
-        super().__init__(**kwargs)
-        self.current_domain = os.getenv("CURRENT_DOMAIN", DEFAULT_DOMAIN)
 
     def get_node_status(self, node: WorkflowNode) -> Status:
         """Get the status of a workflow node, returning NOT_VISITED if not set."""

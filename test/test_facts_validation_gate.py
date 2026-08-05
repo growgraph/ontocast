@@ -24,6 +24,7 @@ from ontocast.stategraph.node_factories import (
     make_validate_facts_node,
 )
 from ontocast.tool import EmbeddingBasedAggregator
+from ontocast.tool.agg.aggregate import build_merged_clusters
 from ontocast.tool.facts_invariants import validate_aggregated_facts
 from ontocast.toolbox import ToolBox
 
@@ -227,6 +228,33 @@ def test_transitive_merge_slips_guards_and_vetoes_split_it(monkeypatch) -> None:
     assert not repaired.merged_clusters
     report = validate_aggregated_facts(repaired.graph, None, fact_namespaces=scope)
     assert not report.error_findings
+
+
+def test_build_merged_clusters_spans_doc_bases() -> None:
+    """One canonical rendered under two doc bases keys the FULL cluster twice.
+
+    A veto on either document's flagged final URI must dissolve the whole
+    merge decision, not just that document's half.
+    """
+    entity_doc1 = URIRef(CD + "sample_x")
+    entity_doc2 = URIRef("https://y.org/doc/2/facts/sample_x")
+    canonical = entity_doc1
+    identity_mapping = {entity_doc1: canonical, entity_doc2: canonical}
+    final_doc1 = URIRef(CD + "SampleX")
+    final_doc2 = URIRef("https://y.org/doc/2/facts/SampleX")
+    final_mapping = {entity_doc1: final_doc1, entity_doc2: final_doc2}
+
+    clusters = build_merged_clusters(final_mapping, identity_mapping)
+
+    full_cluster = sorted([str(entity_doc1), str(entity_doc2)])
+    assert clusters[str(final_doc1)] == full_cluster
+    assert clusters[str(final_doc2)] == full_cluster
+
+
+def test_build_merged_clusters_skips_singletons() -> None:
+    entity = URIRef(CD + "solo")
+    clusters = build_merged_clusters({entity: URIRef(CD + "Solo")}, {entity: entity})
+    assert clusters == {}
 
 
 def test_vetoes_from_findings_builds_full_cluster_pairs() -> None:

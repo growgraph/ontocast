@@ -538,6 +538,7 @@ class FactsUnitFindingKind(StrEnum):
     UNKNOWN_TERM = "unknown_term"
     PROPERTY_ALIAS = "property_alias"
     CLOSED_RANGE_LITERAL = "closed_range_literal"
+    LITERAL_TYPE_OBJECT = "literal_type_object"
     NUMERIC_COVERAGE = "numeric_coverage"
 
 
@@ -558,8 +559,42 @@ class FactsUnitFinding(BaseModel):
     suggestions: list[str] = Field(default_factory=list)
 
 
+class GraphRepairRecord(BaseModel):
+    """One machine-applied deterministic rewrite on a rendered facts graph.
+
+    Records what the repair passes changed (near-miss predicate rewrites,
+    literal ``rdf:type`` coercions) so downstream consumers can distinguish
+    machine-altered triples from what the LLM asserted.
+    """
+
+    kind: FactsUnitFindingKind
+    source: str
+    target: str
+    triple_count: int = 1
+
+
+class UnitFailure(BaseModel):
+    """One content unit that produced no usable output.
+
+    Carried to the document level so a caller can tell "nothing to extract"
+    from "every unit failed" -- previously both produced an empty result with
+    ``status: success``.
+    """
+
+    unit_index: int
+    phase: Literal["ontology", "facts", "summarize"]
+    stage: str | None = None
+    reason: str | None = None
+
+
 class FactsLoopAttempt(BaseModel):
-    """Telemetry record for one attempt inside the per-unit facts loop."""
+    """Telemetry record for one attempt inside the per-unit facts loop.
+
+    ``n_deterministic_findings`` / ``n_mandatory_findings`` count findings
+    against the graph as of this record: for ``repair`` records that is the
+    residual *after* the repair render, so summing the last repair record per
+    unit yields the true document-level residual.
+    """
 
     render_attempt: int = 0
     critic_attempt: int = 0
