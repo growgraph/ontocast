@@ -11,11 +11,37 @@ _ONTOLOGY_HINT_PATTERN = re.compile(
 )
 
 
-def _strip_brackets(value: str) -> str:
+def strip_iri_brackets(value: str) -> str:
+    """Strip optional Turtle-style ``<...>`` wrappers from an IRI string."""
     text = value.strip()
     if text.startswith("<") and text.endswith(">") and len(text) > 2:
         return text[1:-1].strip()
     return text
+
+
+# Codepoints the SPARQL ``IRIREF`` production forbids inside ``<...>``.
+_IRIREF_FORBIDDEN = frozenset('<>"{}|^`\\')
+
+
+def as_sparql_iriref(value: str) -> str | None:
+    """Render an IRI for a SPARQL ``IRIREF`` slot, or ``None`` if it cannot be one.
+
+    Callers should log-and-skip on ``None`` rather than raising: a single
+    malformed IRI must not fail a whole query.
+
+    Args:
+        value: IRI text, optionally wrapped in Turtle-style angle brackets.
+
+    Returns:
+        str | None: ``<iri>`` ready for interpolation, or ``None`` when ``value``
+        is empty or contains a codepoint ``IRIREF`` forbids.
+    """
+    text = strip_iri_brackets(value).strip()
+    if not text:
+        return None
+    if any(char in _IRIREF_FORBIDDEN or ord(char) <= 0x20 for char in text):
+        return None
+    return f"<{text}>"
 
 
 def _resolve_context(namespace: str, context: URIContext) -> URIContext:
@@ -33,7 +59,7 @@ def normalize_namespace_iri(namespace: str, *, context: URIContext = "auto") -> 
     Existing trailing ``#`` or ``/`` are preserved. When absent, we append ``#``
     for ontology contexts and ``/`` for facts/default contexts.
     """
-    text = _strip_brackets(namespace)
+    text = strip_iri_brackets(namespace)
     if text.endswith("#") or text.endswith("/"):
         return text
     resolved_context = _resolve_context(text, context)

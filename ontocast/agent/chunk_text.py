@@ -8,6 +8,7 @@ import logging
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import Status
 from ontocast.onto.state import AgentState
+from ontocast.tool.chunk.bibliography import is_bibliography_unit
 from ontocast.tool.chunk.prepare import PrepareOptions, prepare_content_units
 from ontocast.toolbox import ToolBox
 
@@ -45,16 +46,46 @@ async def chunk_text(state: AgentState, tools: ToolBox) -> AgentState:
         [len(chunk.text) for chunk in prepared],
     )
 
-    for i, chunk in enumerate(prepared):
+    bibliography_mode = tools.chunker.config.bibliography_mode
+    skipped_bibliography = 0
+    index = 0
+    for chunk in prepared:
+        is_bibliography = bibliography_mode != "domain_facts" and is_bibliography_unit(
+            chunk.text, chunk.section_label
+        )
+        if is_bibliography:
+            # A false positive silences a content section: the unit is routed to
+            # citation-metadata extraction and no domain facts are minted from
+            # it. That must never happen without a trace, so every routing
+            # decision is logged, not only the 'skip' path.
+            logger.info(
+                "Chunk %d (%d chars, section_label=%r) routed as bibliography "
+                "(CHUNK_BIBLIOGRAPHY_MODE=%s): %s",
+                index,
+                len(chunk.text),
+                chunk.section_label,
+                bibliography_mode,
+                "dropped" if bibliography_mode == "skip" else "citation metadata only",
+            )
+        if is_bibliography and bibliography_mode == "skip":
+            skipped_bibliography += 1
+            continue
         state.content_units.append(
             ContentUnit(
                 text=chunk.text,
-                index=i,
+                index=index,
                 doc_iri=state.doc_iri,
                 headings=chunk.headings,
                 doc_item_refs=list(chunk.doc_item_refs),
                 section_label=chunk.section_label,
+                is_citation_metadata=is_bibliography,
             )
+        )
+        index += 1
+    if skipped_bibliography:
+        logger.info(
+            "Dropped %d bibliography chunk(s) (CHUNK_BIBLIOGRAPHY_MODE=skip)",
+            skipped_bibliography,
         )
 
     logger.info(

@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from ontocast.api.parse import (
+    parse_document_metadata_param,
     parse_document_type_hint_param,
     parse_llm_graph_format_param,
     parse_max_visits_param,
@@ -48,6 +49,7 @@ class ParsedProcessRequest:
     summary_max_sentences: int
     document_type_hint: str | None
     section_schema_id: str | None
+    document_metadata: dict[str, object]
 
 
 async def load_parsed_process_request(
@@ -110,6 +112,11 @@ async def load_parsed_process_request(
     section_schema_id = parse_section_schema_id_param(
         request.query_params.get("section_schema_id")
     )
+    document_metadata: dict[str, object] = {}
+    if "document_metadata" in request.query_params:
+        document_metadata = parse_document_metadata_param(
+            request.query_params.get("document_metadata")
+        )
 
     if content_type.startswith("application/json"):
         bytes_data = await request.body()
@@ -153,6 +160,10 @@ async def load_parsed_process_request(
                         section_schema_id = parse_section_schema_id_param(
                             str(raw_schema)
                         )
+                if "document_metadata" in parsed_obj:
+                    document_metadata = parse_document_metadata_param(
+                        parsed_obj.get("document_metadata")
+                    )
         except (json.JSONDecodeError, UnicodeDecodeError):
             logger.debug(
                 "%s JSON body could not be decoded for ontology id preview",
@@ -191,6 +202,8 @@ async def load_parsed_process_request(
                 document_type_hint = parse_document_type_hint_param(str(value))
             elif key == "section_schema_id" and value is not None:
                 section_schema_id = parse_section_schema_id_param(str(value))
+            elif key == "document_metadata" and value is not None:
+                document_metadata = parse_document_metadata_param(str(value))
         if not files_dict:
             return JSONResponse(
                 status_code=400,
@@ -234,6 +247,7 @@ async def load_parsed_process_request(
         summary_max_sentences=summary_max_sentences,
         document_type_hint=document_type_hint,
         section_schema_id=section_schema_id,
+        document_metadata=document_metadata,
     )
 
 
@@ -273,4 +287,5 @@ def build_agent_state_from_parsed(
         summary_max_sentences=parsed.summary_max_sentences,
         document_type_hint=parsed.document_type_hint,
         section_schema_id=parsed.section_schema_id,
+        document_metadata=dict(parsed.document_metadata),
     )

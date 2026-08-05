@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import logging
 from datetime import datetime, timezone
 
 from pydantic import Field, field_validator
@@ -19,6 +20,8 @@ from ontocast.tool.vector_store.embedding import (
     EmbeddingTool,
     FastembedBm25SparseTool,
 )
+
+logger = logging.getLogger(__name__)
 
 VECTOR_ENTITY_ROLES = frozenset({ROLE_RESOURCE, ROLE_PREDICATE})
 
@@ -78,6 +81,23 @@ class GraphAtom(BasePydanticModel):
     score: float | None = Field(
         default=None,
         description="Optional similarity score populated by vector search.",
+    )
+    lexical_triggers: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Case-preserved literal tokens (symbols, notations, formula codes) "
+            "used by the lexical-trigger retrieval lane for exact text matching."
+        ),
+    )
+    symbol_surfaces: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Case-preserved declared symbol/notation surface forms "
+            "(skos:notation, qudt:symbol, qudt:ucumCode). The embedded/BM25 "
+            "text is case-folded, so these carry the only case-significant "
+            "evidence at merge time — used to demote counterfeit symbol "
+            "matches like prose 'meV' retrieving symbol 'MeV'."
+        ),
     )
 
     @field_validator("entity_role", mode="before")
@@ -190,6 +210,20 @@ class VectorStoreManager(Tool):
         """Async wrapper around :meth:`fetch_vectors`."""
         return await asyncio.to_thread(self.fetch_vectors, atom_ids)
 
+    def fetch_atoms_by_ids(self, atom_ids: list[str]) -> list[GraphAtom]:
+        """Batch-fetch atom payloads by ``atom_id`` (for lexical-trigger injection)."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support fetch_atoms_by_ids"
+        )
+
+    def match_lexical_triggers(
+        self, text: str, *, max_atoms: int | None = None
+    ) -> list[GraphAtom]:
+        """Match raw text against the lexical-trigger index and return atoms."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support lexical trigger matching"
+        )
+
     @abc.abstractmethod
     def delete_ontology(
         self,
@@ -203,6 +237,57 @@ class VectorStoreManager(Tool):
         """Replace all atoms for a given ontology and return indexed count."""
         self.delete_ontology(ontology.iri)
         return self.index_ontology(ontology)
+
+    def list_indexed_ontology_iris(self) -> set[str]:
+        """Return distinct ``ontology_iri`` values present in the ontology store."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support listing indexed ontology IRIs"
+        )
+
+    def prune_orphan_ontology_iris(self, keep_iris: set[str]) -> list[str]:
+        """Delete indexed atoms whose ``ontology_iri`` is not in ``keep_iris``.
+
+        An empty ``keep_iris`` is refused rather than treated as "everything is
+        an orphan". Pruning exists to follow IRI renames, and no rename makes
+        every ontology disappear at once -- an empty catalog means the source of
+        truth could not be read, and deleting the whole index on that basis is
+        unrecoverable. Callers that genuinely want an empty store should call
+        :meth:`wipe_store`.
+
+        Returns the orphan IRIs that were deleted (sorted); empty when the
+        prune was refused.
+        """
+        indexed = self.list_indexed_ontology_iris()
+        if not keep_iris:
+            if indexed:
+                logger.warning(
+                    "Refusing to prune %d indexed ontology IRI(s) against an empty "
+                    "catalog -- this usually means the triple store could not be "
+                    "read. Use wipe_store() to clear the index deliberately.",
+                    len(indexed),
+                )
+            return []
+        orphans = sorted(indexed - keep_iris)
+        for iri in orphans:
+            self.delete_ontology(iri)
+        return orphans
+
+    def close(self) -> None:
+        """Release any backend connection held by this store.
+
+        Default is a no-op: backends that open no long-lived handle (LanceDB
+        connects per call) have nothing to release.
+        """
+        return None
+
+    async def wipe_store(self) -> None:
+        """Drop the currently configured ontology/facts collections or tables.
+
+        Call :meth:`initialize` afterwards to recreate empty schema.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support wiping the current store"
+        )
 
     def apply_tenancy(
         self,

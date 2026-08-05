@@ -12,7 +12,9 @@ own ontology context according to mode/policy.
 """
 
 import logging
+from collections.abc import Sequence
 from copy import deepcopy
+from typing import Literal
 
 from ontocast.agent.criticise_facts import criticise_facts
 from ontocast.agent.criticise_ontology import criticise_ontology
@@ -22,11 +24,16 @@ from ontocast.agent.external_evidence import (
 )
 from ontocast.agent.render_facts import render_facts
 from ontocast.agent.render_ontology import render_ontology
+from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
-from ontocast.onto.model import ExternalEvidenceCacheEntry, ExternalEvidenceRequest
+from ontocast.onto.model import (
+    ExternalEvidenceCacheEntry,
+    ExternalEvidenceRequest,
+    FactsLoopAttempt,
+    FactsUnitFinding,
+)
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import document_ontology_access
-from ontocast.onto.rdfgraph import format_quarantine_for_prompt
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.context_resolver import (
@@ -34,6 +41,7 @@ from ontocast.stategraph.context_resolver import (
     resolve_effective_facts_ontology_context,
     resolve_unit_ontology_context,
 )
+from ontocast.tool.facts_invariants import collect_unit_findings
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -48,6 +56,49 @@ def _document_supplemental_ontologies(document_state: AgentState) -> list[Ontolo
     ]
 
 
+def _catalog_ontologies_for_patch_sources(
+    tools: ToolBox,
+    patch_sources: list[str],
+) -> list[Ontology]:
+    """Freshest catalog terminals for each working-context source IRI."""
+    if not patch_sources:
+        return []
+    mgr = tools.ontology_manager
+    result: list[Ontology] = []
+    seen: set[str] = set()
+    for ref in patch_sources:
+        iri = mgr.resolve_ontology_ref(ref) or ref
+        if iri in seen:
+            continue
+        onto = mgr.get_freshest_terminal_ontology_by_iri(iri)
+        if onto is None or onto.is_null():
+            continue
+        seen.add(onto.iri)
+        result.append(onto)
+    return result
+
+
+def _supplemental_ontologies_for_unit(
+    document_state: AgentState,
+    unit_state: UnitOntologyState | UnitFactsState,
+    tools: ToolBox,
+) -> list[Ontology]:
+    """Document artifacts plus catalog entries for the unit's patch sources."""
+    merged: list[Ontology] = []
+    seen: set[str] = set()
+    for ontology in (
+        *_document_supplemental_ontologies(document_state),
+        *_catalog_ontologies_for_patch_sources(
+            tools, list(unit_state.ontology_patch_sources)
+        ),
+    ):
+        if ontology.iri in seen:
+            continue
+        seen.add(ontology.iri)
+        merged.append(ontology)
+    return merged
+
+
 def _resolve_max_visits_limit(state_visits: int, override: int | None) -> int:
     """Return a safe visit limit while respecting explicit overrides."""
     visits = state_visits if override is None else override
@@ -59,28 +110,124 @@ def _skip_critic_after_final_render(render_attempt: int, max_visits: int) -> boo
     return render_attempt == max_visits
 
 
-def _surface_unresolved_quarantine(unit_state: UnitFactsState) -> None:
-    """Log and record quarantined literals when the critic is skipped on the final render."""
-    if not unit_state.quarantined_literal_triples:
-        return
+def _collect_facts_findings(
+    unit_state: UnitFactsState,
+    additional_standard_namespaces: Sequence[str] = (),
+) -> list[FactsUnitFinding]:
+    """Run the deterministic per-unit validator against the current graph."""
+    return collect_unit_findings(
+        graph=unit_state.content_unit.graph,
+        ontology_graph=unit_state.ontology_snapshot.graph,
+        quarantined=unit_state.quarantined_literal_triples,
+        extraction_text=unit_state.content_unit.extraction_text,
+        fact_namespaces=[DEFAULT_IRI, str(unit_state.content_unit.doc_iri)],
+        # Citation numerics (pages, years, volume numbers) are not extractable
+        # quantities — never push coverage repair on bibliography units.
+        coverage_limit=0 if unit_state.content_unit.is_citation_metadata else 30,
+        additional_standard_namespaces=additional_standard_namespaces,
+    )
 
-    logger.warning(
-        "%d quarantined literal triple(s) were not critiqued (final render)",
-        len(unit_state.quarantined_literal_triples),
+
+def _record_facts_attempt(
+    unit_state: UnitFactsState,
+    *,
+    kind: Literal["render", "critic", "repair"],
+    render_attempt: int,
+    critic_attempt: int = 0,
+    n_findings: int = 0,
+    n_mandatory: int = 0,
+    repair_failed: bool = False,
+) -> None:
+    """Append one telemetry record for the current loop attempt."""
+    graph = unit_state.content_unit.graph
+    unit_state.attempt_log.append(
+        FactsLoopAttempt(
+            render_attempt=render_attempt,
+            critic_attempt=critic_attempt,
+            kind=kind,
+            success=unit_state.status == Status.SUCCESS,
+            n_deterministic_findings=n_findings,
+            n_mandatory_findings=n_mandatory,
+            repair_failed=repair_failed,
+            triple_count=len(graph),
+        )
     )
-    formatted = format_quarantine_for_prompt(
-        unit_state.quarantined_literal_triples,
-        unit_state.llm_graph_format,
+
+
+async def _run_deterministic_repair(
+    unit_state: UnitFactsState,
+    atomic,
+    supplemental: list[Ontology],
+    *,
+    render_attempt: int,
+) -> UnitFactsState:
+    """Repair machine-found violations with bounded render-update visits.
+
+    Runs after the final render (where the LLM critic is skipped): mandatory
+    findings — quarantined literals, unknown/near-miss terms — drive the loop.
+    Advisory findings (numeric coverage) ride along in the prompt when a repair
+    does run, but never trigger one on their own: they fire on nearly every
+    unit of numeric prose, so gating on them cost an extra render per unit.
+    A failed repair leaves the pre-repair graph intact (the patch path applies
+    only parsed operations) and is recorded rather than erased.
+    """
+    repair_visits = atomic.facts_repair_visits
+    findings = _collect_facts_findings(
+        unit_state, atomic.additional_standard_namespaces
     )
-    notice = (
-        "Unresolved quarantined typed literals (invalid XSD lexical forms, not applied):\n"
-        f"{formatted}"
-    )
-    existing = unit_state.suggestions.systemic_critique_summary.strip()
-    if existing:
-        unit_state.suggestions.systemic_critique_summary = f"{existing}\n\n{notice}"
-    else:
-        unit_state.suggestions.systemic_critique_summary = notice
+    for repair_attempt in range(1, repair_visits + 1):
+        mandatory = [finding for finding in findings if finding.mandatory]
+        if not mandatory:
+            break
+        logger.info(
+            "Deterministic facts repair %s/%s: %d finding(s) (%d mandatory)",
+            repair_attempt,
+            repair_visits,
+            len(findings),
+            len(mandatory),
+        )
+        unit_state.deterministic_findings = findings
+        unit_state = await render_facts(
+            unit_state, atomic, supplemental_ontologies=supplemental
+        )
+        repair_failed = unit_state.status != Status.SUCCESS
+        if not repair_failed:
+            findings = _collect_facts_findings(
+                unit_state, atomic.additional_standard_namespaces
+            )
+        # Recorded counts are the residual AFTER this repair render (on failure
+        # the graph is unchanged, so the pre-render findings still describe it).
+        # This is what `facts_findings_residual` sums document-level; recording
+        # the pre-render counts here measured what the repair was asked to fix,
+        # not what survived it.
+        _record_facts_attempt(
+            unit_state,
+            kind="repair",
+            render_attempt=render_attempt,
+            critic_attempt=repair_attempt,
+            n_findings=len(findings),
+            n_mandatory=sum(1 for finding in findings if finding.mandatory),
+            repair_failed=repair_failed,
+        )
+        if repair_failed:
+            # The pre-repair graph is intact, so the unit is still usable and
+            # the loop reports SUCCESS -- but the crash is recorded on the
+            # attempt log so "repair converged" stays distinguishable from
+            # "repair never ran".
+            logger.warning("Deterministic facts repair render failed; keeping graph")
+            unit_state.clear_failure()
+            unit_state.status = Status.SUCCESS
+            break
+
+    unit_state.deterministic_findings = findings
+    if findings:
+        mandatory_count = sum(1 for finding in findings if finding.mandatory)
+        if mandatory_count:
+            logger.warning(
+                "%d mandatory deterministic finding(s) remain unresolved",
+                mandatory_count,
+            )
+    return unit_state
 
 
 def _reset_node_evidence_context(
@@ -90,6 +237,18 @@ def _reset_node_evidence_context(
     state.set_external_evidence_request(node, ExternalEvidenceRequest())
     state.set_external_evidence_cache_entry(node, ExternalEvidenceCacheEntry())
     state.load_external_evidence_for_node(node)
+
+
+def _apply_unit_ontology_context(
+    unit_state: UnitFactsState | UnitOntologyState,
+    ctx: UnitOntologyContext,
+) -> None:
+    """Copy assemble product onto unit state (snapshot + writable + sources)."""
+    unit_state.ontology_snapshot = deepcopy(ctx.snapshot)
+    unit_state.ontology_patch_sources = list(ctx.patch_sources)
+    unit_state.writable_iris = list(ctx.writable_iris)
+    unit_state.assembly_anchor_iri = ctx.primary_writable_iri
+    unit_state.assembly_mode_used = ctx.assembly_mode
 
 
 async def _apply_facts_ontology_context(
@@ -102,12 +261,12 @@ async def _apply_facts_ontology_context(
         document_state, tools, unit_state.content_unit
     )
     logger.info(
-        f"Ontology selected for mode {document_state.ontology_context_mode}: {ctx.ontology_snapshot.iri}",
+        "Ontology context for mode %s: sources=%s writable=%s",
+        document_state.ontology_context_mode,
+        ctx.patch_sources,
+        ctx.writable_iris,
     )
-    unit_state.ontology_snapshot = deepcopy(ctx.ontology_snapshot)
-    unit_state.ontology_patch_sources = list(ctx.patch_sources)
-    unit_state.assembly_anchor_iri = ctx.anchor_iri
-    unit_state.assembly_mode_used = ctx.assembly_mode
+    _apply_unit_ontology_context(unit_state, ctx)
     return unit_state
 
 
@@ -116,33 +275,18 @@ async def facts_loop(
     tools: ToolBox,
     document_state: AgentState,
     max_visits_per_node: int | None = None,
-    pre_resolved_ontology: Ontology | None = None,
     pre_resolved_context: UnitOntologyContext | None = None,
 ) -> UnitFactsState:
     """Run facts render/critic loop for one content unit.
 
     Ontology context is resolved per unit before rendering unless
-    ``pre_resolved_ontology`` is provided, in which case it is used directly
-    and the store-based context resolution is skipped. This is intended for
-    sequential unit-level pipelines where the ontology loop has already run
-    and its output should feed directly into fact extraction.
+    ``pre_resolved_context`` is provided (sequential unit pipelines).
     """
     atomic = tools.get_atomic_tools()
     unit_state = state.model_copy(deep=True)
     try:
-        if pre_resolved_context is not None and pre_resolved_ontology is not None:
-            raise ValueError(
-                "Provide either pre_resolved_context or pre_resolved_ontology, not both."
-            )
         if pre_resolved_context is not None:
-            unit_state.ontology_snapshot = deepcopy(
-                pre_resolved_context.ontology_snapshot
-            )
-            unit_state.ontology_patch_sources = list(pre_resolved_context.patch_sources)
-            unit_state.assembly_anchor_iri = pre_resolved_context.anchor_iri
-            unit_state.assembly_mode_used = pre_resolved_context.assembly_mode
-        elif pre_resolved_ontology is not None:
-            unit_state.ontology_snapshot = deepcopy(pre_resolved_ontology)
+            _apply_unit_ontology_context(unit_state, pre_resolved_context)
         else:
             unit_state = await _apply_facts_ontology_context(
                 unit_state, document_state, tools
@@ -155,9 +299,14 @@ async def facts_loop(
         for render_attempt in range(1, max_visits + 1):
             unit_state.node_visits[WorkflowNode.TEXT_TO_FACTS] += 1
             _reset_node_evidence_context(unit_state, WorkflowNode.TEXT_TO_FACTS)
-            supplemental = _document_supplemental_ontologies(document_state)
+            supplemental = _supplemental_ontologies_for_unit(
+                document_state, unit_state, tools
+            )
             unit_state = await render_facts(
                 unit_state, atomic, supplemental_ontologies=supplemental
+            )
+            _record_facts_attempt(
+                unit_state, kind="render", render_attempt=render_attempt
             )
             if unit_state.status != Status.SUCCESS:
                 render_request = unit_state.get_external_evidence_request(
@@ -172,6 +321,9 @@ async def facts_loop(
                     )
                     unit_state = await render_facts(
                         unit_state, atomic, supplemental_ontologies=supplemental
+                    )
+                    _record_facts_attempt(
+                        unit_state, kind="render", render_attempt=render_attempt
                     )
                     if unit_state.status == Status.SUCCESS:
                         logger.info(
@@ -197,16 +349,23 @@ async def facts_loop(
             if _skip_critic_after_final_render(render_attempt, max_visits):
                 logger.info(
                     "Unit facts loop finishing on final render attempt %s/%s "
-                    "(no further extract; skipping critic)",
+                    "(skipping LLM critic; running deterministic repair)",
                     render_attempt,
                     max_visits,
                 )
-                _surface_unresolved_quarantine(unit_state)
-                return unit_state
+                return await _run_deterministic_repair(
+                    unit_state,
+                    atomic,
+                    supplemental,
+                    render_attempt=render_attempt,
+                )
 
             for critic_attempt in range(1, max_visits + 1):
                 unit_state.node_visits[WorkflowNode.CRITICISE_FACTS] += 1
                 _reset_node_evidence_context(unit_state, WorkflowNode.CRITICISE_FACTS)
+                unit_state.deterministic_findings = _collect_facts_findings(
+                    unit_state, atomic.additional_standard_namespaces
+                )
                 unit_state = await criticise_facts(unit_state, atomic)
                 if unit_state.status == Status.SUCCESS:
                     logger.info(
@@ -216,7 +375,12 @@ async def facts_loop(
                         critic_attempt,
                         max_visits,
                     )
-                    return unit_state
+                    return await _run_deterministic_repair(
+                        unit_state,
+                        atomic,
+                        supplemental,
+                        render_attempt=render_attempt,
+                    )
 
                 critic_request = unit_state.get_external_evidence_request(
                     WorkflowNode.CRITICISE_FACTS
@@ -248,7 +412,12 @@ async def facts_loop(
                         critic_attempt,
                         max_visits,
                     )
-                    return unit_state
+                    return await _run_deterministic_repair(
+                        unit_state,
+                        atomic,
+                        supplemental,
+                        render_attempt=render_attempt,
+                    )
 
         logger.info("Unit facts loop exhausted retries")
         return unit_state
@@ -275,11 +444,8 @@ async def ontology_loop(
         ctx = await resolve_unit_ontology_context(
             document_state, tools, unit_state.content_unit
         )
-        unit_state.ontology_snapshot = deepcopy(ctx.ontology_snapshot)
-        unit_state.ontology_patch_sources = list(ctx.patch_sources)
-        unit_state.current_ontology = deepcopy(unit_state.ontology_snapshot)
-        unit_state.assembly_anchor_iri = ctx.anchor_iri
-        unit_state.assembly_mode_used = ctx.assembly_mode
+        _apply_unit_ontology_context(unit_state, ctx)
+        unit_state.working_graph = unit_state.ontology_snapshot.graph.copy()
 
         max_visits = _resolve_max_visits_limit(
             unit_state.max_visits_per_node, max_visits_per_node
@@ -289,7 +455,9 @@ async def ontology_loop(
         for render_attempt in range(1, max_visits + 1):
             unit_state.node_visits[WorkflowNode.TEXT_TO_ONTOLOGY] += 1
             _reset_node_evidence_context(unit_state, WorkflowNode.TEXT_TO_ONTOLOGY)
-            supplemental = _document_supplemental_ontologies(document_state)
+            supplemental = _supplemental_ontologies_for_unit(
+                document_state, unit_state, tools
+            )
             unit_state = await render_ontology(
                 unit_state, atomic, supplemental_ontologies=supplemental
             )

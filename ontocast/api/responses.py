@@ -2,6 +2,7 @@
 
 from fastapi.responses import JSONResponse
 
+from ontocast.api.parse import RequestParamError
 from ontocast.api.schemas import StatusErrorBody
 from ontocast.onto.retrieval_capabilities import (
     OntologyContextConfigError,
@@ -15,6 +16,41 @@ def invalid_max_visits_response() -> JSONResponse:
         content=StatusErrorBody(
             error="max_visits must be an integer >= 1",
             error_type="ValidationError",
+        ).model_dump(),
+    )
+
+
+def request_param_error_response(error: RequestParamError) -> JSONResponse:
+    """400 for any malformed request parameter.
+
+    Replaces the previous per-message special cases, under which every
+    parameter error but one returned 500.
+    """
+    return JSONResponse(
+        status_code=400,
+        content=StatusErrorBody(
+            error=str(error),
+            error_type="ValidationError",
+            error_code=f"invalid_param:{error.param}",
+        ).model_dump(),
+    )
+
+
+def document_conversion_error_response(
+    error: Exception, stage: str | None
+) -> JSONResponse:
+    """422 when an uploaded document could not be converted.
+
+    Both /process and /process_unit answer this way; previously only
+    /process_unit did, so the same unreadable file produced 422 on one route
+    and 500 on the other.
+    """
+    return JSONResponse(
+        status_code=422,
+        content=StatusErrorBody(
+            error=str(error),
+            error_type="DocumentConversionError",
+            error_code=f"conversion_failed:{stage}" if stage else "conversion_failed",
         ).model_dump(),
     )
 

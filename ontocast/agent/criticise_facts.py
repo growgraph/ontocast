@@ -10,7 +10,7 @@ from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
-from ontocast.onto.model import FactsCritiqueReport, Suggestions
+from ontocast.onto.model import FactsCritiqueReport, FactsLoopAttempt, Suggestions
 from ontocast.onto.ontology_access import ontology_access_for_unit_facts
 from ontocast.onto.rdfgraph import format_quarantine_for_prompt
 from ontocast.onto.unit_states import UnitFactsState
@@ -23,24 +23,31 @@ from ontocast.prompt.criticise_facts import (
 from ontocast.prompt.graph_format import get_graph_format_profile
 from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
 from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.facts_invariants import format_findings_for_prompt
 
 logger = logging.getLogger(__name__)
 
 
 def _build_quarantine_chapter(state: UnitFactsState) -> str:
-    if not state.quarantined_literal_triples:
-        return ""
-
-    formatted = format_quarantine_for_prompt(
-        state.quarantined_literal_triples,
-        state.llm_graph_format,
-    )
-    return (
-        "\n\n## Quarantined triples (invalid XSD typed literals, excluded from applied graph)\n"
-        "The following triples were not merged into the facts graph. Replace them using "
-        "structured representations defined in the ontology chapter above.\n\n"
-        f"{formatted}\n"
-    )
+    sections: list[str] = []
+    if state.quarantined_literal_triples:
+        formatted = format_quarantine_for_prompt(
+            state.quarantined_literal_triples,
+            state.llm_graph_format,
+        )
+        sections.append(
+            "\n\n## Quarantined triples (invalid XSD typed literals, excluded from applied graph)\n"
+            "The following triples were not merged into the facts graph. Replace them using "
+            "structured representations defined in the ontology chapter above.\n\n"
+            f"{formatted}\n"
+        )
+    if state.deterministic_findings:
+        sections.append(
+            "\n\n"
+            + format_findings_for_prompt(state.deterministic_findings)
+            + "\nTreat every MANDATORY item as a required actionable fix.\n"
+        )
+    return "".join(sections)
 
 
 async def criticise_facts(
@@ -139,6 +146,19 @@ async def criticise_facts(
         logger.debug(
             f"Parsed critique report - success: {critique.success}, "
             f"score: {critique.score}"
+        )
+
+        state.attempt_log.append(
+            FactsLoopAttempt(
+                render_attempt=state.node_visits[WorkflowNode.TEXT_TO_FACTS],
+                critic_attempt=state.node_visits[WorkflowNode.CRITICISE_FACTS],
+                kind="critic",
+                score=critique.score,
+                success=bool(critique.success or critique.score > 90),
+                n_actionable_fixes=len(critique.actionable_triple_fixes),
+                n_deterministic_findings=len(state.deterministic_findings),
+                triple_count=len(state.content_unit.graph),
+            )
         )
 
         if critique.success or critique.score > 90:

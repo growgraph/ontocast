@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import PrivateAttr
+from pydantic import Field, PrivateAttr
+from qdrant_client.http import models as qdrant_models
+from rdflib import OWL, RDF, Literal, URIRef
+from rdflib.namespace import RDFS
 
 from ontocast.config import (
     CrossQueryMergeMode,
@@ -18,7 +22,10 @@ from ontocast.config import (
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.sparql import SPARQLTool
+from ontocast.tool.triple_manager.in_memory import InMemoryTripleStoreManager
+from ontocast.tool.triple_manager.mock import MockTripleStoreManager
 from ontocast.tool.vector_store.atomizer import (
     STANDARD_VOCABULARY_NAMESPACE_PREFIXES,
     GraphAtomizer,
@@ -33,14 +40,20 @@ from ontocast.tool.vector_store.core import (
 from ontocast.tool.vector_store.embedding import EmbeddingTool, FastembedBm25SparseTool
 from ontocast.tool.vector_store.patch_retriever import (
     OntologyPatchRetriever,
+    _aexpand_ontology_iris,
+    _aexpand_ontology_iris_by_reference,
     _expand_ontology_iris_by_reference,
+    _filter_hits_by_relative_floor,
     _merge_hits_across_queries_hybrid,
     _merge_hits_across_queries_max_score,
+    _merge_hits_across_queries_sum_score,
     _mmr_rerank,
+    _select_hits_round_robin_by_ontology,
 )
 from ontocast.tool.vector_store.qdrant import QdrantVectorStoreManager
 from ontocast.tool.vector_store.util import (
     normalized_core_neighborhood_weights,
+    normalized_fusion_weights,
     point_id_for_atom,
 )
 from ontocast.util.hash import render_text_hash
@@ -51,9 +64,11 @@ class CountingEmbeddingTool(EmbeddingTool):
 
     calls: int = 0
     truncate_by_one: bool = False
+    seen_texts: list[list[str]] = Field(default_factory=list)
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def _embed_unlocked(self, texts: list[str]) -> list[list[float]]:
         self.calls += 1
+        self.seen_texts.append(list(texts))
         vectors: list[list[float]] = []
         for text in texts:
             digest = render_text_hash(text, digits=None)
@@ -178,7 +193,13 @@ class StubSPARQLTool(SPARQLTool):
         self._last_ontology_hash_filters: dict[str, set[str]] | None = None
         self._last_max_total_triples: int | None = None
         self._last_estimated_triples_per_query: int | None = None
+        self._last_ontologies: list[Ontology] | None = None
+        self._last_merged: tuple[RDFGraph, dict[str, str]] | None = None
         self.induced_subgraph_calls: int = 0
+
+    @property
+    def last_ontologies(self) -> list[Ontology] | None:
+        return self._last_ontologies
 
     @property
     def last_entity_uris(self) -> list[str]:
@@ -201,6 +222,10 @@ class StubSPARQLTool(SPARQLTool):
         return self._last_estimated_triples_per_query
 
     @property
+    def last_merged(self) -> tuple[RDFGraph, dict[str, str]] | None:
+        return self._last_merged
+
+    @property
     def last_ontology_version_filters(self) -> dict[str, set[str]] | None:
         return self._last_ontology_version_filters
 
@@ -221,8 +246,18 @@ class StubSPARQLTool(SPARQLTool):
         ontology_hash_filters: dict[str, set[str]] | None = None,
         hub_seed_count: int = 8,
         ancestor_closure_depth: int = 3,
+        ontologies: list[Ontology] | None = None,
+        merged: tuple[RDFGraph, dict[str, str]] | None = None,
+        type_promotion_score_factor: float = 1.0,
+        seed_order: str = "score",
+        entity_groups: Mapping[str, str] | None = None,
+        extra_description_predicates=(),
     ) -> RDFGraph:
         del depth, hub_seed_count, ancestor_closure_depth
+        del type_promotion_score_factor, seed_order, entity_groups
+        del extra_description_predicates
+        self._last_ontologies = ontologies
+        self._last_merged = merged
         self.induced_subgraph_calls += 1
         self._last_entity_uris = entity_uris
         self._last_entity_relevance = entity_relevance
@@ -414,10 +449,13 @@ def test_atomizer_multi_domain_namespaces_still_embedded_without_config() -> Non
 
 
 def test_atomizer_embed_standard_vocab_iris_restores_vocab_focal_entities() -> None:
+    # Standard vocabulary terms are used, not defined, by an ontology that imports them,
+    # so lifting the namespace exclusion alone leaves them filtered by the
+    # describes-only rule. The two narrowings are independent; this asserts the first.
     ontology = _build_smoke_ontology()
-    atoms = GraphAtomizer(embed_standard_vocab_iris=True).atomize(
-        source=ontology, depth=1
-    )
+    atoms = GraphAtomizer(
+        embed_standard_vocab_iris=True, index_undescribed_iris=True
+    ).atomize(source=ontology, depth=1)
     assert any(
         a.iri.startswith("http://www.w3.org/1999/02/22-rdf-syntax-ns#") for a in atoms
     )
@@ -493,7 +531,7 @@ def test_atomizer_core_representation_includes_skos_alt_label() -> None:
     assert "synonym b" in core
 
 
-def test_atomizer_minimal_representation_splits_iri_local_name() -> None:
+def test_atomizer_minimal_representation_has_local_name_and_labels() -> None:
     graph = RDFGraph._from_turtle_str(
         """
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
@@ -508,7 +546,9 @@ def test_atomizer_minimal_representation_splits_iri_local_name() -> None:
     atoms = GraphAtomizer().atomize(source=ontology, depth=1)
     cool = next(a for a in atoms if a.iri.endswith("MyVeryCoolClass"))
     assert cool.core_representation.lower().startswith("a label")
-    assert cool.minimal_representation == "my very cool class"
+    # The BM25 lane indexes the split local name *and* the labels: an IRI local name is
+    # often an opaque identifier that carries no searchable token at all.
+    assert cool.minimal_representation == "my very cool class a label"
 
 
 def test_embedding_config_default_bm25_model() -> None:
@@ -556,7 +596,66 @@ def test_embed_texts_batched_raises_on_mismatch() -> None:
         raise AssertionError("Expected ValueError for embedding/vector count mismatch")
 
 
-def test_bm25_sparse_vector_uses_dot_product_modifier_none() -> None:
+def test_index_ontology_concatenates_core_and_neighborhood_embeds(
+    tmp_path: Path,
+) -> None:
+    """Dense indexing embeds core+neighborhood in one batched pass (LanceDB)."""
+    from ontocast.config import LanceDBConfig
+    from ontocast.tool.vector_store.lancedb import LanceDBVectorStoreManager
+
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    store = LanceDBVectorStoreManager(
+        store_config=VectorStoreConfig(embedding_batch_size=64),
+        lancedb_config=LanceDBConfig(enabled=True, data_dir=str(tmp_path / "ldb")),
+        embedding=embedding,
+    )
+
+    atoms = [
+        GraphAtom(
+            atom_id="a1",
+            ontology_iri="https://example.org/smoke",
+            ontology_id="smoke",
+            ontology_hash="hash1",
+            ontology_version="1.0.0",
+            iri="https://example.org/smoke#Alpha",
+            entity_role="resource",
+            core_representation="core-a",
+            neighborhood_representation="neigh-a",
+            minimal_representation="min-a",
+        ),
+        GraphAtom(
+            atom_id="a2",
+            ontology_iri="https://example.org/smoke",
+            ontology_id="smoke",
+            ontology_hash="hash1",
+            ontology_version="1.0.0",
+            iri="https://example.org/smoke#Beta",
+            entity_role="resource",
+            core_representation="core-b",
+            neighborhood_representation="neigh-b",
+            minimal_representation="min-b",
+        ),
+    ]
+
+    class _Atomizer:
+        def atomize(self, source, depth: int = 1):
+            del source, depth
+            return atoms
+
+    object.__setattr__(store, "atomizer", _Atomizer())
+
+    ontology = Ontology(
+        graph=RDFGraph(),
+        iri="https://example.org/smoke",
+        ontology_id="smoke",
+    )
+    count = store.index_ontology(ontology)
+    assert count == 2
+    # One dense batch for 2 cores + 2 neighborhoods (batch_size 64 → 1 call)
+    assert embedding.calls == 1
+
+
+def test_bm25_sparse_vector_uses_idf_modifier() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     store = QdrantVectorStoreManager(
         store_config=VectorStoreConfig(embedding_batch_size=2),
@@ -567,7 +666,9 @@ def test_bm25_sparse_vector_uses_dot_product_modifier_none() -> None:
     _, sparse_cfg = store._vectors_and_sparse_for_create()
     assert sparse_cfg is not None
     assert BM25_VECTOR_NAME in sparse_cfg
-    assert sparse_cfg[BM25_VECTOR_NAME].modifier is None
+    # Without IDF, BM25 degenerates to a term-frequency dot product in which a
+    # distinctive technical term is weighted no higher than a stopword.
+    assert sparse_cfg[BM25_VECTOR_NAME].modifier == qdrant_models.Modifier.IDF
 
 
 def test_retriever_expands_graph_via_sparql_tool() -> None:
@@ -923,7 +1024,7 @@ def test_search_hits_by_vector_returns_per_channel_typed_scores() -> None:
                 return [_Point("p1", 0.8, "neighbor"), _Point("p2", 0.4, "neighbor")]
             return [_Point("p1", 0.5, "neighbor"), _Point("p2", 0.2, "neighbor")]
 
-        def _point_to_atom(self, point):
+        def _point_to_atom(self, point, *, score=None):
             return GraphAtom(
                 atom_id=str(point.id),
                 ontology_iri="https://example.org/o",
@@ -931,6 +1032,7 @@ def test_search_hits_by_vector_returns_per_channel_typed_scores() -> None:
                 entity_role="resource",
                 core_representation="core",
                 neighborhood_representation="neighbor",
+                score=score,
             )
 
     store = _Store(
@@ -991,7 +1093,7 @@ def test_search_hits_by_vector_dedupes_duplicate_iri_hits() -> None:
                 _Point("v5", 0.74, "https://example.org/o#Other"),
             ]
 
-        def _point_to_atom(self, point):
+        def _point_to_atom(self, point, *, score=None):
             return GraphAtom(
                 atom_id=str(point.id),
                 ontology_iri="https://example.org/o",
@@ -999,6 +1101,7 @@ def test_search_hits_by_vector_dedupes_duplicate_iri_hits() -> None:
                 entity_role="resource",
                 core_representation="core",
                 neighborhood_representation="neighbor",
+                score=score,
             )
 
     store = _Store(
@@ -1317,9 +1420,13 @@ async def test_aretrieve_ensemble_forwards_ranking_and_budget_controls() -> None
         "https://example.org/smoke#A",
         "https://example.org/smoke#B",
     ]
+    # Core-only hits, so the fused score is the normalized core weight over rank.
+    # Derived from the config rather than hardcoded: this test is about relevance
+    # reaching the SPARQL tool, not about what the fusion weights happen to be.
+    core_weight, _, _ = normalized_fusion_weights(VectorStoreConfig())
     assert sparql_tool.last_entity_relevance == {
-        "https://example.org/smoke#A": pytest.approx(0.7 / 1.2),
-        "https://example.org/smoke#B": pytest.approx(0.7 / 1.2 / 2),
+        "https://example.org/smoke#A": pytest.approx(core_weight),
+        "https://example.org/smoke#B": pytest.approx(core_weight / 2),
     }
     assert sparql_tool.last_max_total_triples == 77
     assert sparql_tool.last_estimated_triples_per_query == 9
@@ -1450,30 +1557,54 @@ def test_hybrid_merge_tier2_adds_per_ontology_coverage() -> None:
     assert f"{perov}#P1" in iris
 
 
-def test_max_score_merge_beats_rrf_frequency_bias() -> None:
-    """Entity with one strong window outranks entity appearing weakly in many windows."""
-    weak_repeated = [
+def _weak_repeated(count: int) -> list[OntologySearchHit]:
+    return [
         OntologySearchHit(
             atom=_scored_atom(f"w{i}", "Repeated", 0.31 + i * 0.01).atom,
             score=0.31 + i * 0.01,
         )
-        for i in range(3)
+        for i in range(count)
     ]
-    strong_once = [
-        OntologySearchHit(atom=_scored_atom("s", "Strong", 1.0).atom, score=1.0),
+
+
+_STRONG_ONCE = [
+    OntologySearchHit(atom=_scored_atom("s", "Strong", 1.0).atom, score=1.0)
+]
+
+
+def test_max_score_merge_ignores_window_frequency() -> None:
+    """Entity with one strong window outranks entity appearing weakly in many windows."""
+    merged = _merge_hits_across_queries_max_score(_weak_repeated(4) + _STRONG_ONCE)
+    assert merged[0].atom.iri.endswith("#Strong")
+
+
+def test_sum_score_merge_rewards_agreement_across_windows() -> None:
+    """The same input flips under sum: four weak windows outweigh one strong one."""
+    merged = _merge_hits_across_queries_sum_score(_weak_repeated(4) + _STRONG_ONCE)
+    assert merged[0].atom.iri.endswith("#Repeated")
+    assert merged[0].score == pytest.approx(0.31 + 0.32 + 0.33 + 0.34)
+
+
+def test_sum_score_merge_matches_max_for_a_single_window() -> None:
+    """With one window per entity the two modes must be indistinguishable."""
+    hits = [
+        _scored_atom("a", "A", 0.8),
+        _scored_atom("b", "B", 0.5),
     ]
-    max_score = _merge_hits_across_queries_max_score(weak_repeated + strong_once)
-    assert max_score[0].atom.iri.endswith("#Strong")
+    by_max = _merge_hits_across_queries_max_score(hits)
+    by_sum = _merge_hits_across_queries_sum_score(hits)
+    assert [h.atom.iri for h in by_max] == [h.atom.iri for h in by_sum]
+    assert [h.score for h in by_max] == [h.score for h in by_sum]
 
 
 def test_expand_ontology_iris_by_reference_includes_cross_ontology_parent() -> None:
-    matsci_iri = "https://growgraph.dev/ontologies/matsci-ontology"
+    matsci_iri = "https://growgraph.dev/ontologies/matsci"
     perov_iri = "https://growgraph.dev/ontologies/perovskitemat"
     matsci_graph = RDFGraph._from_turtle_str(
         f"""
         @prefix owl: <http://www.w3.org/2002/07/owl#> .
         @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-        @prefix matsci: <https://growgraph.dev/ontologies/matsci-ontology#> .
+        @prefix matsci: <https://growgraph.dev/ontologies/matsci#> .
         @prefix perov: <https://growgraph.dev/ontologies/perovskitemat#> .
 
         <{matsci_iri}> a owl:Ontology .
@@ -1497,15 +1628,573 @@ def test_expand_ontology_iris_by_reference_includes_cross_ontology_parent() -> N
         Ontology(iri=perov_iri, graph=perov_graph, title="perov"),
     ]
     expanded = _expand_ontology_iris_by_reference(
-        ["https://growgraph.dev/ontologies/matsci-ontology#PerovskiteQD"],
+        ["https://growgraph.dev/ontologies/matsci#PerovskiteQD"],
         [matsci_iri],
         ontologies,
     )
     assert perov_iri in expanded
 
 
+_MATSCI_IRI = "https://growgraph.dev/ontologies/matsci"
+_PEROV_IRI = "https://growgraph.dev/ontologies/perovskitemat"
+
+
+def _cross_ontology_fixture(*, dangling: bool) -> list[Ontology]:
+    """Two ontologies linked by a cross-ontology ``rdfs:subClassOf``.
+
+    When ``dangling`` the parent class is *not* declared in the perovskite graph,
+    so only namespace containment can attribute it.
+    """
+    parent = "perov:PerovskiteNanocrystal"
+    matsci_graph = RDFGraph._from_turtle_str(
+        f"""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix matsci: <{_MATSCI_IRI}#> .
+        @prefix perov: <{_PEROV_IRI}#> .
+
+        <{_MATSCI_IRI}> a owl:Ontology .
+        matsci:PerovskiteQD a owl:Class ;
+            rdfs:subClassOf {parent} .
+        """
+    )
+    declaration = (
+        ""
+        if dangling
+        else """
+        perov:PerovskiteNanocrystal a owl:Class ;
+            rdfs:label "Perovskite nanocrystal" .
+        """
+    )
+    perov_graph = RDFGraph._from_turtle_str(
+        f"""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix perov: <{_PEROV_IRI}#> .
+
+        <{_PEROV_IRI}> a owl:Ontology ;
+            rdfs:label "Perovskite materials" .
+{declaration}
+        """
+    )
+    return [
+        Ontology(iri=_MATSCI_IRI, graph=matsci_graph, title="matsci"),
+        Ontology(iri=_PEROV_IRI, graph=perov_graph, title="perov"),
+    ]
+
+
 @pytest.mark.anyio
-async def test_aretrieve_ensemble_rrf_mode_regression() -> None:
+async def test_sparql_expansion_matches_in_python_expansion() -> None:
+    """The SPARQL path must reach the same ontologies as the catalog scan."""
+    manager = InMemoryTripleStoreManager()
+    ontologies = _cross_ontology_fixture(dangling=False)
+    for ontology in ontologies:
+        manager.serialize(ontology)
+
+    seeds = [f"{_MATSCI_IRI}#PerovskiteQD"]
+    expanded, metrics = await _aexpand_ontology_iris_by_reference(
+        manager, seeds, [_MATSCI_IRI]
+    )
+
+    assert _PEROV_IRI in expanded
+    assert expanded == _expand_ontology_iris_by_reference(
+        seeds, [_MATSCI_IRI], ontologies
+    )
+    assert metrics["catalog_access_mode"] == "sparql"
+    assert metrics["catalog_graphs_fetched"] == 0
+    # No ontology graph was materialized to answer the question.
+    assert manager.catalog_io_stats()["full_catalog_fetches"] == 0
+
+
+@pytest.mark.anyio
+async def test_sparql_expansion_resolves_dangling_reference() -> None:
+    """A reference no graph declares is still attributed by namespace containment.
+
+    This is what regresses if the two hops are ever collapsed into pure graph
+    membership.
+    """
+    manager = InMemoryTripleStoreManager()
+    for ontology in _cross_ontology_fixture(dangling=True):
+        manager.serialize(ontology)
+
+    expanded, _ = await _aexpand_ontology_iris_by_reference(
+        manager, [f"{_MATSCI_IRI}#PerovskiteQD"], [_MATSCI_IRI]
+    )
+    assert _PEROV_IRI in expanded
+
+
+@pytest.mark.anyio
+async def test_expansion_falls_back_when_backend_lacks_sparql() -> None:
+    """A backend without SPARQL yields identical IRIs via the catalog path."""
+    ontologies = _cross_ontology_fixture(dangling=False)
+    sparql_manager = InMemoryTripleStoreManager()
+    for ontology in ontologies:
+        sparql_manager.serialize(ontology)
+
+    mock_manager = MockTripleStoreManager()
+    mock_manager.ontologies = list(ontologies)
+    assert mock_manager.supports_sparql_select() is False
+
+    seeds = [f"{_MATSCI_IRI}#PerovskiteQD"]
+    sparql_iris, _, _ = await _aexpand_ontology_iris(
+        sparql_manager, seeds, [_MATSCI_IRI]
+    )
+    fallback_iris, catalog, metrics = await _aexpand_ontology_iris(
+        mock_manager, seeds, [_MATSCI_IRI]
+    )
+
+    assert fallback_iris == sparql_iris
+    assert metrics["catalog_access_mode"] == "full_fetch_fallback"
+    # The fallback hands its catalog back so the caller need not fetch it again.
+    assert catalog is not None
+
+
+@pytest.mark.anyio
+async def test_expansion_falls_back_when_select_raises() -> None:
+    """A failing query degrades to slow retrieval rather than failing the unit."""
+
+    class BrokenSelectManager(InMemoryTripleStoreManager):
+        async def aselect(self, query, *, use_ontologies_dataset=True):
+            raise RuntimeError("backend unavailable")
+
+    manager = BrokenSelectManager()
+    for ontology in _cross_ontology_fixture(dangling=False):
+        manager.serialize(ontology)
+
+    expanded, catalog, metrics = await _aexpand_ontology_iris(
+        manager, [f"{_MATSCI_IRI}#PerovskiteQD"], [_MATSCI_IRI]
+    )
+    assert _PEROV_IRI in expanded
+    assert metrics["catalog_access_mode"] == "full_fetch_fallback"
+    assert catalog is not None
+
+
+@pytest.mark.anyio
+async def test_ensemble_fanout_never_fetches_full_catalog() -> None:
+    """Per-unit retrieval must not re-materialize the catalog once per unit.
+
+    Guards the regression this change fixes: two full fetches per call, once per
+    content unit.
+    """
+    manager = InMemoryTripleStoreManager()
+    for ontology in _cross_ontology_fixture(dangling=False):
+        manager.serialize(ontology)
+
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    vector_store = StubVectorStore(
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
+        embedding=embedding,
+    )
+    vector_store.set_atoms(
+        [
+            GraphAtom(
+                atom_id="a1",
+                ontology_iri=_MATSCI_IRI,
+                ontology_id="matsci",
+                iri=f"{_MATSCI_IRI}#PerovskiteQD",
+                entity_role="resource",
+                core_representation="perovskite quantum dot",
+                neighborhood_representation="perovskite quantum dot nanocrystal",
+            )
+        ]
+    )
+    retriever = OntologyPatchRetriever(
+        vector_store=vector_store,
+        sparql_tool=SPARQLTool(triple_store_manager=manager),
+    )
+
+    for _ in range(5):
+        await retriever.aretrieve_ensemble(
+            queries=["perovskite"], top_k=2, expand_sparql=True
+        )
+
+    stats = manager.catalog_io_stats()
+    assert stats["full_catalog_fetches"] == 0
+    # Only the two ontologies actually referenced are materialized per call,
+    # plus a one-off read per module for the small-module closure — which has
+    # no manager to ask here. That surcharge must stay O(modules), not
+    # O(units x modules); the +2 headroom is what pins the closure's cache.
+    assert stats["graph_fetches"] <= 5 * 2 + 2
+    assert retriever.last_retrieval_metrics["catalog_access_mode"] == "sparql"
+
+
+def _catalog_retriever(
+    manager: InMemoryTripleStoreManager,
+    *,
+    ontology_manager: OntologyManager | None = None,
+    candidate_pushdown: bool = False,
+) -> OntologyPatchRetriever:
+    """A retriever wired to ``manager``, seeded with the cross-ontology fixture atom."""
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    vector_store = StubVectorStore(
+        store_config=VectorStoreConfig(
+            embedding_batch_size=2,
+            induced_subgraph_candidate_pushdown=candidate_pushdown,
+        ),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
+        embedding=embedding,
+    )
+    vector_store.set_atoms(
+        [
+            GraphAtom(
+                atom_id="a1",
+                ontology_iri=_MATSCI_IRI,
+                ontology_id="matsci",
+                iri=f"{_MATSCI_IRI}#PerovskiteQD",
+                entity_role="resource",
+                core_representation="perovskite quantum dot",
+                neighborhood_representation="perovskite quantum dot nanocrystal",
+            )
+        ]
+    )
+    return OntologyPatchRetriever(
+        vector_store=vector_store,
+        sparql_tool=SPARQLTool(triple_store_manager=manager),
+        ontology_manager=ontology_manager,
+        # These fixtures are a few triples each, so the small-module closure
+        # would swallow them whole and make every assertion below about the
+        # closure instead of about the pushdown/merge machinery under test.
+        # It also mints fresh blank nodes per merge, which no cross-path
+        # identity comparison can survive. Covered separately in
+        # test_retrieval_floor_and_signals.
+        patch=PatchRetrievalConfig(small_module_closure_max_triples=0),
+    )
+
+
+def _catalog_manager(
+    ontologies: list[Ontology],
+) -> tuple[InMemoryTripleStoreManager, OntologyManager]:
+    store = InMemoryTripleStoreManager()
+    for ontology in ontologies:
+        store.serialize(ontology)
+    catalog = OntologyManager()
+    catalog.register_triple_store(store)
+    return store, catalog
+
+
+@pytest.mark.anyio
+async def test_catalog_reuses_graphs_across_units() -> None:
+    """Repeated units must materialize each ontology graph once, not once per unit."""
+    store, catalog = _catalog_manager(_cross_ontology_fixture(dangling=False))
+    retriever = _catalog_retriever(store, ontology_manager=catalog)
+
+    for _ in range(5):
+        await retriever.aretrieve_ensemble(
+            queries=["perovskite"], top_k=2, expand_sparql=True
+        )
+
+    stats = store.catalog_io_stats()
+    assert stats["full_catalog_fetches"] == 0
+    # Two ontologies, fetched once each for the whole fan-out.
+    assert stats["graph_fetches"] == 2
+    metrics = retriever.last_retrieval_metrics
+    assert metrics["catalog_context_mode"] == "merged_catalog"
+    assert metrics["catalog_merge_cache_hits"] == 4
+    assert metrics["catalog_merge_cache_misses"] == 1
+
+
+@pytest.mark.anyio
+async def test_catalog_cache_sees_a_new_terminal_version() -> None:
+    """Headers are read fresh, so a newly written version supersedes the cached one."""
+    ontologies = _cross_ontology_fixture(dangling=False)
+    store, catalog = _catalog_manager(ontologies)
+
+    first = await catalog.aget_ontologies_by_iri([_PEROV_IRI])
+    assert len(first) == 1
+    original_hash = first[0].hash
+
+    next_graph = RDFGraph()
+    next_graph += ontologies[1].graph
+    next_graph.add((URIRef(f"{_PEROV_IRI}#Extra"), RDFS.label, Literal("extra")))
+    store.serialize(ontologies[1].derive_updated_version(next_graph))
+
+    second = await catalog.aget_ontologies_by_iri([_PEROV_IRI])
+    assert len(second) == 1
+    assert second[0].hash != original_hash
+    # The superseded version stays cached under its own content address.
+    assert first[0].versioned_iri in catalog._graph_cache
+
+
+@pytest.mark.anyio
+async def test_merged_graph_is_not_mutated_by_the_builder() -> None:
+    """The merge cache is only safe because the builder treats its input read-only."""
+    _, catalog = _catalog_manager(_cross_ontology_fixture(dangling=False))
+    ontologies = await catalog.aget_ontologies_by_iri([])
+    merged, prefix_map = await catalog.aget_merged_graph(ontologies)
+
+    before = merged.hash()
+    SPARQLTool._build_induced_subgraph(
+        [],
+        [f"{_MATSCI_IRI}#PerovskiteQD"],
+        None,
+        None,
+        2,
+        550,
+        24,
+        None,
+        None,
+        None,
+        16,
+        3,
+        (merged, prefix_map),
+    )
+    assert merged.hash() == before
+
+
+@pytest.mark.anyio
+async def test_catalog_read_path_matches_direct_store_reads() -> None:
+    """Routing catalog reads through OntologyManager must not change the snapshot.
+
+    The recall harness cannot show this: approximate nearest-neighbour search is
+    not bit-reproducible across index builds, so its snapshot sizes move by a few
+    triples run to run on identical code. This comparison has no ANN in it.
+    """
+    ontologies = _cross_ontology_fixture(dangling=False)
+
+    snapshots = {}
+    for via_manager in (False, True):
+        store, catalog = _catalog_manager(ontologies)
+        retriever = _catalog_retriever(
+            store, ontology_manager=catalog if via_manager else None
+        )
+        graph, _ = await retriever.aretrieve_ensemble(
+            queries=["perovskite"], top_k=2, expand_sparql=True, subgraph_depth=2
+        )
+        snapshots[via_manager] = graph
+
+    assert snapshots[True].serialize(format="turtle") == snapshots[False].serialize(
+        format="turtle"
+    )
+
+
+@pytest.mark.anyio
+async def test_candidate_pushdown_matches_the_merged_catalog_path() -> None:
+    """The CONSTRUCT path must produce the same snapshot as merging whole graphs."""
+    ontologies = _cross_ontology_fixture(dangling=False)
+
+    snapshots = {}
+    for pushdown in (False, True):
+        store, catalog = _catalog_manager(ontologies)
+        retriever = _catalog_retriever(
+            store, ontology_manager=catalog, candidate_pushdown=pushdown
+        )
+        graph, _ = await retriever.aretrieve_ensemble(
+            queries=["perovskite"], top_k=2, expand_sparql=True, subgraph_depth=2
+        )
+        snapshots[pushdown] = graph
+        expected = "sparql_candidate" if pushdown else "merged_catalog"
+        assert retriever.last_retrieval_metrics["catalog_context_mode"] == expected
+
+    assert set(snapshots[True]) == set(snapshots[False])
+    assert snapshots[True].serialize(format="turtle") == snapshots[False].serialize(
+        format="turtle"
+    )
+
+
+@pytest.mark.anyio
+async def test_candidate_pushdown_preserves_owl_restrictions() -> None:
+    """Restriction shells hang off blank nodes; a CONSTRUCT must carry them intact."""
+    restriction_graph = RDFGraph._from_turtle_str(
+        f"""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix matsci: <{_MATSCI_IRI}#> .
+
+        <{_MATSCI_IRI}> a owl:Ontology .
+        matsci:hasEmission a owl:ObjectProperty ;
+            rdfs:domain matsci:PerovskiteQD ;
+            rdfs:range matsci:Emission .
+        matsci:Emission a owl:Class ; rdfs:label "Emission" .
+        matsci:PerovskiteQD a owl:Class ;
+            rdfs:label "Perovskite QD" ;
+            rdfs:subClassOf [
+                a owl:Restriction ;
+                owl:onProperty matsci:hasEmission ;
+                owl:someValuesFrom matsci:Emission
+            ] .
+        """
+    )
+    ontologies = [Ontology(iri=_MATSCI_IRI, graph=restriction_graph, title="matsci")]
+
+    snapshots = {}
+    for pushdown in (False, True):
+        store, catalog = _catalog_manager(ontologies)
+        retriever = _catalog_retriever(
+            store, ontology_manager=catalog, candidate_pushdown=pushdown
+        )
+        graph, _ = await retriever.aretrieve_ensemble(
+            queries=["perovskite"], top_k=2, expand_sparql=True, subgraph_depth=2
+        )
+        snapshots[pushdown] = graph
+
+    restrictions = {
+        pushdown: len(list(graph.subjects(RDF.type, OWL.Restriction)))
+        for pushdown, graph in snapshots.items()
+    }
+    # Guard against both paths simply dropping the restriction, which would make
+    # the equality below vacuous.
+    assert restrictions[False] == 1
+    assert restrictions[True] == restrictions[False]
+    assert snapshots[True].serialize(format="turtle") == snapshots[False].serialize(
+        format="turtle"
+    )
+
+
+@pytest.mark.anyio
+async def test_candidate_pushdown_falls_back_without_construct_support() -> None:
+    """A backend that cannot CONSTRUCT still returns a snapshot, via the merge path."""
+
+    class NoConstructManager(InMemoryTripleStoreManager):
+        def supports_sparql_construct(self) -> bool:
+            return False
+
+    store = NoConstructManager()
+    for ontology in _cross_ontology_fixture(dangling=False):
+        store.serialize(ontology)
+    catalog = OntologyManager()
+    catalog.register_triple_store(store)
+
+    retriever = _catalog_retriever(
+        store, ontology_manager=catalog, candidate_pushdown=True
+    )
+    await retriever.aretrieve_ensemble(
+        queries=["perovskite"], top_k=2, expand_sparql=True
+    )
+    assert retriever.last_retrieval_metrics["catalog_context_mode"] == "merged_catalog"
+
+
+def test_embedding_prefixes_separate_query_and_document_encoding() -> None:
+    """Asymmetric models need distinct instructions on each side of the comparison."""
+    embedding = CountingEmbeddingTool(
+        config=EmbeddingConfig(
+            dimension=8,
+            query_prefix="query: ",
+            document_prefix="passage: ",
+        )
+    )
+    embedding.embed_query(["what is a perovskite"])
+    embedding.embed(["a perovskite is a crystal structure"])
+
+    assert embedding.seen_texts == [
+        ["query: what is a perovskite"],
+        ["passage: a perovskite is a crystal structure"],
+    ]
+
+
+def test_embedding_prefixes_default_to_symmetric_encoding() -> None:
+    """Empty prefixes must leave text untouched on both sides."""
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    embedding.embed_query(["abc"])
+    embedding.embed(["abc"])
+    assert embedding.seen_texts == [["abc"], ["abc"]]
+
+
+def test_relative_floor_disabled_keeps_negative_scores() -> None:
+    """A ratio of 0 is documented as "disables"; it must not act as a floor of 0.0."""
+    hits = [_scored_atom("a", "A", 0.4), _scored_atom("b", "B", -0.1)]
+    assert (
+        _filter_hits_by_relative_floor(hits, score_ratio=0.0, min_query_best_score=0.0)
+        == hits
+    )
+
+
+def test_relative_floor_keeps_best_hit_when_scores_are_negative() -> None:
+    """Qdrant cosine can return negative scores; the best hit must always survive."""
+    hits = [_scored_atom("a", "A", -0.2), _scored_atom("b", "B", -0.9)]
+    kept = _filter_hits_by_relative_floor(
+        hits, score_ratio=0.8, min_query_best_score=0.0
+    )
+    assert [hit.atom.atom_id for hit in kept] == ["a"]
+
+
+def test_relative_floor_matches_multiplicative_form_when_positive() -> None:
+    """The sign-safe form must not change behaviour on the ordinary positive path.
+
+    Scores stay off the ``best * ratio`` boundary: both forms land there within a float
+    ulp of each other, so a test pinned to it would assert rounding, not semantics.
+    """
+    hits = [
+        _scored_atom("a", "A", 0.8),  # best
+        _scored_atom("b", "B", 0.70),  # above the 0.64 floor
+        _scored_atom("c", "C", 0.50),  # below it
+    ]
+    kept = _filter_hits_by_relative_floor(
+        hits, score_ratio=0.8, min_query_best_score=0.0
+    )
+    assert [hit.atom.atom_id for hit in kept] == ["a", "b"]
+
+
+def test_effective_max_atoms_scales_with_windows() -> None:
+    pc = PatchRetrievalConfig(
+        seeds_per_window=4,
+        max_atoms_base=16,
+        max_atoms=48,
+    )
+    assert pc.effective_max_atoms(1) == 16
+    assert pc.effective_max_atoms(7) == 28
+    assert pc.effective_max_atoms(20) == 48
+    unlimited = PatchRetrievalConfig(max_atoms=0, seeds_per_window=4, max_atoms_base=16)
+    assert unlimited.effective_max_atoms(7) == 0
+
+
+def test_round_robin_selects_secondary_ontology_from_shared_pool() -> None:
+    matsci = "https://example.org/matsci"
+    perov = "https://example.org/perov"
+
+    def _hit(entity: str, onto: str, score: float) -> OntologySearchHit:
+        atom = GraphAtom(
+            atom_id=entity,
+            ontology_iri=onto,
+            iri=f"{onto}#{entity}",
+            entity_role="resource",
+            core_representation=entity,
+            neighborhood_representation="",
+            score=score,
+        )
+        return OntologySearchHit(atom=atom, score=score)
+
+    ranked = _merge_hits_across_queries_max_score(
+        [
+            _hit("M1", matsci, 0.99),
+            _hit("M2", matsci, 0.98),
+            _hit("M3", matsci, 0.97),
+            _hit("M4", matsci, 0.96),
+            _hit("P1", perov, 0.40),
+            _hit("P2", perov, 0.39),
+        ]
+    )
+    # Pure top-3 by score would be all matsci; round-robin quota=1 keeps P1.
+    selected = _select_hits_round_robin_by_ontology(
+        ranked,
+        per_ontology_seed_quota=1,
+        max_atoms=3,
+    )
+    iris = {hit.atom.iri for hit in selected}
+    assert f"{matsci}#M1" in iris
+    assert f"{perov}#P1" in iris
+    assert len(selected) == 3
+
+
+@pytest.mark.anyio
+async def test_aretrieve_ensemble_round_robin_multi_ontology() -> None:
+    matsci = "https://example.org/matsci"
+    perov = "https://example.org/perov"
+
+    def _onto_atom(
+        atom_id: str, onto: str, local: str, score: float
+    ) -> OntologySearchHit:
+        atom = GraphAtom(
+            atom_id=atom_id,
+            ontology_iri=onto,
+            ontology_id=onto.rsplit("/", 1)[-1],
+            iri=f"{onto}#{local}",
+            entity_role="resource",
+            core_representation=local,
+            neighborhood_representation="",
+        )
+        return OntologySearchHit(atom=atom, score=score)
+
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
         store_config=VectorStoreConfig(embedding_batch_size=2),
@@ -1514,10 +2203,14 @@ async def test_aretrieve_ensemble_rrf_mode_regression() -> None:
     )
     vector_store.set_hits_by_query(
         [
-            _channel_hits(core_hits=[_scored_atom("a", "A", 0.95)]),
-            _channel_hits(core_hits=[_scored_atom("a", "A", 0.94)]),
-            _channel_hits(core_hits=[_scored_atom("a", "A", 0.93)]),
-            _channel_hits(core_hits=[_scored_atom("b", "B", 0.99)]),
+            _channel_hits(
+                core_hits=[
+                    _onto_atom("m1", matsci, "M1", 0.99),
+                    _onto_atom("m2", matsci, "M2", 0.98),
+                    _onto_atom("m3", matsci, "M3", 0.97),
+                    _onto_atom("p1", perov, "P1", 0.50),
+                ]
+            )
         ]
     )
     sparql_tool = StubSPARQLTool(triple_store_manager=None)
@@ -1525,15 +2218,59 @@ async def test_aretrieve_ensemble_rrf_mode_regression() -> None:
         vector_store=vector_store,
         sparql_tool=sparql_tool,
         patch=PatchRetrievalConfig(
-            cross_query_merge_mode=CrossQueryMergeMode.RRF,
+            cross_query_merge_mode=CrossQueryMergeMode.MAX_SCORE,
             per_query_core_score_ratio=0.0,
             min_merged_max_score=0.0,
             merged_score_ratio=0.0,
             mmr_lambda=1.0,
-            max_atoms=2,
+            per_ontology_seed_quota=1,
+            seeds_per_window=4,
+            max_atoms_base=0,
+            max_atoms=3,
+        ),
+    )
+    await retriever.aretrieve_ensemble(queries=["q1"], top_k=4, expand_sparql=True)
+    iris = set(sparql_tool.last_entity_uris)
+    assert f"{perov}#P1" in iris
+    assert retriever.last_retrieval_metrics["atoms_after_dedupe"] == 4
+    assert retriever.last_retrieval_metrics["effective_max_atoms"] == 3
+    assert retriever.last_retrieval_metrics["atoms_final"] == 3
+    assert matsci in retriever.last_retrieval_metrics["seeds_by_ontology"]
+    assert perov in retriever.last_retrieval_metrics["seeds_by_ontology"]
+
+
+@pytest.mark.anyio
+async def test_aretrieve_ensemble_window_scaled_cap() -> None:
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    vector_store = StubVectorStore(
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
+        embedding=embedding,
+    )
+    hits = [
+        _channel_hits(core_hits=[_scored_atom(f"a{i}", f"E{i}", 0.9 - i * 0.01)])
+        for i in range(7)
+    ]
+    vector_store.set_hits_by_query(hits)
+    sparql_tool = StubSPARQLTool(triple_store_manager=None)
+    retriever = OntologyPatchRetriever(
+        vector_store=vector_store,
+        sparql_tool=sparql_tool,
+        patch=PatchRetrievalConfig(
+            cross_query_merge_mode=CrossQueryMergeMode.MAX_SCORE,
+            per_query_core_score_ratio=0.0,
+            min_merged_max_score=0.0,
+            merged_score_ratio=0.0,
+            mmr_lambda=1.0,
+            per_ontology_seed_quota=0,
+            seeds_per_window=4,
+            max_atoms_base=16,
+            max_atoms=48,
         ),
     )
     await retriever.aretrieve_ensemble(
-        queries=["q1", "q2", "q3", "q4"], top_k=1, expand_sparql=True
+        queries=[f"q{i}" for i in range(7)], top_k=1, expand_sparql=True
     )
-    assert sparql_tool.last_entity_uris[0].endswith("#A")
+    assert retriever.last_retrieval_metrics["effective_max_atoms"] == 28
+    assert retriever.last_retrieval_metrics["atoms_final"] == 7
+    assert len(sparql_tool.last_entity_uris) == 7

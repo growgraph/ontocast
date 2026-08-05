@@ -272,17 +272,17 @@ class TestFreshestTerminalOntology:
 
     def test_freshest_handles_no_timestamps(self, ontology_manager, sample_ontology):
         """Test that freshest falls back when no timestamps."""
-        # This shouldn't happen in practice since add_ontology sets created_at,
-        # but test the fallback logic
         sample_ontology.created_at = None
-        # Manually add to bypass add_ontology's created_at setting
+        # Register identity/aliases without going through add_ontology's timestamp set.
+        ontology_manager.validate_identity_uniqueness(sample_ontology)
+        ontology_manager._register_identity(sample_ontology)
         if sample_ontology.iri not in ontology_manager.ontology_versions:
             ontology_manager.ontology_versions[sample_ontology.iri] = []
         ontology_manager.ontology_versions[sample_ontology.iri].append(sample_ontology)
 
         freshest = ontology_manager.get_freshest_terminal_ontology("test")
-        # Should still return something (fallback to first)
         assert freshest is not None
+        assert freshest.hash == sample_ontology.hash
 
     def test_freshest_returns_none_when_no_ontologies(self, ontology_manager):
         """Test that freshest returns None when no ontologies exist."""
@@ -678,6 +678,50 @@ class TestOntologyManagerVectorAndRemoval:
         ontology_manager.register_vector_store(patch_retriever)
         ontology_manager.add_ontology(sample_ontology)
         patch_retriever.vector_store.reindex_ontology.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_aadd_ontology_reindexes_off_loop(
+        self, ontology_manager, sample_ontology
+    ):
+        patch_retriever = MagicMock()
+        patch_retriever.vector_store = MagicMock()
+        ontology_manager.register_vector_store(patch_retriever)
+        await ontology_manager.aadd_ontology(sample_ontology)
+        patch_retriever.vector_store.reindex_ontology.assert_called_once_with(
+            sample_ontology
+        )
+
+    @pytest.mark.anyio
+    async def test_add_ontology_reindex_refuses_running_loop(
+        self, ontology_manager, sample_ontology
+    ):
+        patch_retriever = MagicMock()
+        patch_retriever.vector_store = MagicMock()
+        ontology_manager.register_vector_store(patch_retriever)
+        with pytest.raises(RuntimeError, match="aadd_ontology"):
+            ontology_manager.add_ontology(sample_ontology)
+        patch_retriever.vector_store.reindex_ontology.assert_not_called()
+        assert sample_ontology.iri not in ontology_manager.ontology_versions
+
+    @pytest.mark.anyio
+    async def test_get_patch_contexts_refuses_running_loop(self, ontology_manager):
+        with pytest.raises(RuntimeError, match="aget_patch_contexts_with_sources"):
+            ontology_manager.get_patch_contexts_with_sources(queries=["q"])
+
+    @pytest.mark.anyio
+    async def test_aget_patch_contexts_fallback_copies_graph(
+        self, ontology_manager, sample_ontology
+    ):
+        ontology_manager.add_ontology(sample_ontology, skip_vector_index=True)
+        results = await ontology_manager.aget_patch_contexts_with_sources(
+            queries=["a", "b"]
+        )
+        assert len(results) == 2
+        g0, sources0 = results[0]
+        g1, sources1 = results[1]
+        assert g0 is not None and g1 is not None
+        assert g0 is not g1
+        assert sources0 == sources1 == [sample_ontology.iri]
 
     def test_remove_ontology_by_iri_clears_versions(
         self, ontology_manager, sample_ontology

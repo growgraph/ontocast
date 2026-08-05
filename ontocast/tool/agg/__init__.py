@@ -2,6 +2,7 @@
 
 from .aggregate import (
     EmbeddingBasedAggregator,
+    apply_document_metadata_provenance,
 )
 from .entity_aligner import EntityAligner
 from .match_derivation import derive_pair_matches
@@ -30,5 +31,6 @@ __all__ = [
     "TaggedGraph",
     "TripleSetEvaluator",
     "URIBuilder",
+    "apply_document_metadata_provenance",
     "derive_pair_matches",
 ]

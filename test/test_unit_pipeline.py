@@ -13,6 +13,7 @@ from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph import unit_pipeline
 from ontocast.stategraph.context_resolver import UnitOntologyContext
 from ontocast.toolbox import ToolBox
+from test.snapshot_helpers import snapshot_from_ontology
 
 
 def _build_ontology(iri: str = "https://example.com/onto") -> Ontology:
@@ -50,8 +51,12 @@ async def test_run_unit_pipeline_feeds_ontology_loop_output_to_facts(
         state: UnitOntologyState, tools: ToolBox, document_state: AgentState
     ) -> UnitOntologyState:
         state.status = Status.SUCCESS
-        state.ontology_snapshot = _build_ontology("https://example.com/onto/seed")
-        state.current_ontology = evolved
+        state.ontology_snapshot = snapshot_from_ontology(
+            _build_ontology("https://example.com/onto/seed")
+        )
+        state.fresh_ontology = evolved
+        state.working_graph = evolved.graph.copy()
+        state.writable_iris = ["https://example.com/onto/seed"]
         state.assembly_anchor_iri = "https://example.com/onto/seed"
         state.ontology_patch_sources = ["https://example.com/onto/seed"]
         state.assembly_mode_used = OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY
@@ -62,12 +67,11 @@ async def test_run_unit_pipeline_feeds_ontology_loop_output_to_facts(
         tools: ToolBox,
         document_state: AgentState,
         *,
-        pre_resolved_ontology: Ontology | None = None,
         pre_resolved_context: UnitOntologyContext | None = None,
     ) -> UnitFactsState:
         nonlocal captured_context, captured_ontology
         captured_context = pre_resolved_context
-        captured_ontology = pre_resolved_ontology
+        captured_ontology = None
         state.status = Status.SUCCESS
         return state
 
@@ -97,9 +101,8 @@ async def test_run_unit_pipeline_feeds_ontology_loop_output_to_facts(
     ctx = captured_context
     assert ctx is not None
     assert captured_ontology is None
-    assert ctx.ontology_snapshot is evolved
-    assert ctx.anchor_iri == "https://example.com/onto/seed"
-    assert ctx.patch_sources == ["https://example.com/onto/seed"]
+    assert ctx.snapshot.source_iris == [evolved.iri]
+    assert ctx.primary_writable_iri == "https://example.com/onto/seed"
     assert ctx.assembly_mode == OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY
     assert agent_state.reduced_ontology_artifacts == [evolved]
 

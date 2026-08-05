@@ -11,6 +11,7 @@ OntoCast transforms input documents into RDF ontology and facts graphs through a
 3. **Ontology map/reduce** (when `render_mode` includes ontology):
    - Per-unit context assembly (catalog selection or vector retrieval)
    - Render/critic loops with optional web evidence
+   - Reduce: each unit's `GraphUpdate`s replay against its prompt snapshot into a net insert/delete delta; deltas union across units (a triple inserted by any unit vetoes another unit's delete of it), partition by namespace ownership, and apply delete-first onto the owning catalog terminals
    - Global normalize (provenance split) → optional consolidate → structural check → consistency critic
 4. **Facts map/reduce** (when `render_mode` includes facts):
    - Per-unit render/critic loops
@@ -32,7 +33,7 @@ Outputs (under `docs/assets/`):
 | [graph.png](../assets/graph.png) | Top-to-bottom | Full document pipeline (default) |
 | [graph.lr.png](../assets/graph.lr.png) | Left-to-right | Same graph, landscape layout |
 | [graph.svg](../assets/graph.svg) / [graph.lr.svg](../assets/graph.lr.svg) | Vector | Scalable versions |
-| [graph.mmd](../../graph.mmd) | Mermaid source | Editable source at repo root |
+| [graph.mmd](../assets/graph.mmd) | Mermaid source | Editable Mermaid source |
 
 ![Document workflow (TB)](../assets/graph.png)
 
@@ -84,7 +85,7 @@ Notes:
 - On the **last allowed render attempt**, the critic is skipped (no further extract to critique). The facts loop also surfaces unresolved quarantined literals on that path.
 - `/process_unit` runs this loop on a single unit via `unit_pipeline.py` (no chunking or document-level reduce).
 
-Implementation: [`stategraph/atomic.py`](../../ontocast/stategraph/atomic.py).
+Implementation: [`stategraph/atomic.py`](../reference/stategraph/atomic.md).
 
 ## Stage Details
 
@@ -92,6 +93,7 @@ Implementation: [`stategraph/atomic.py`](../../ontocast/stategraph/atomic.py).
 
 - Accepts text, JSON (`text` field), or file uploads via `/process`
 - Converts supported formats to Markdown while preserving structure
+- PDF conversion quality can be tuned via `CONVERTER_*` settings; use `CONVERTER_PROFILE=born_digital` for text-selectable publisher PDFs with ligature-gap artifacts
 
 ### 2. Chunking (and optional structured preprocessing)
 
@@ -139,7 +141,9 @@ Provenance triples (`prov:`, reification, chunk metadata) are kept in `ontology_
 
 ### 5. Per-Unit Facts Loop
 
-When facts rendering is enabled, each unit runs a **facts loop** (render → critic, with optional web evidence), then **merge facts** applies cross-chunk entity disambiguation and aggregation.
+When facts rendering is enabled, each unit runs a **facts loop** (render → critic, with optional web evidence), then **merge facts** applies cross-chunk entity disambiguation and aggregation, and **validate facts** checks post-merge invariants (functional violations, suspect multi-values, degenerate coreference, optional SHACL). Error findings on merged subjects trigger a deterministic un-merge: the offending cluster's pairs are vetoed and the retained facts units are re-aggregated (`FACTS_MERGE_REPAIR_PASSES`). Residual findings land in `facts_validation_findings` and the retrieval metrics.
+
+Chunks detected as bibliography/reference lists are routed by `CHUNK_BIBLIOGRAPHY_MODE`: by default they yield citation metadata only (`schema:ScholarlyArticle` + `schema:citation`), never domain facts mined from citation titles.
 
 ![Facts loop](../assets/facts_loop.png)
 
@@ -159,10 +163,15 @@ Facts output uses the **`cd:` namespace** for text-derived instances; domain ont
 | `PARALLEL_WORKERS` | Max concurrent unit workers |
 | `LLM_MAX_INFLIGHT` | Max concurrent provider LLM requests (shared across units) |
 | `MAX_CONCURRENT_PROCESSES` | Optional cap on simultaneous `/process` pipelines |
-| `MAX_VISITS` / `max_visits` | Render/critic retry budget per loop |
+| `MAX_VISITS` / `max_visits` | Render/critic retry budget per loop (at `1`, the default, the LLM critic never runs — the critic is skipped after the final render) |
+| `FACTS_REPAIR_VISITS` | Deterministic repair budget per facts unit: bounded update renders driven by machine-found violations and numeric-coverage gaps; independent of `MAX_VISITS` |
+| `FACTS_MERGE_REPAIR_PASSES` | Un-merge budget at the post-aggregation validation gate (error findings → cluster pair vetoes → re-aggregation) |
+| `CHUNK_BIBLIOGRAPHY_MODE` | Routing for reference-list chunks: `citations_only` (default), `skip`, or `domain_facts` |
 | `ENABLE_ONTOLOGY_CONSOLIDATION` | Optional post-normalization consolidation |
 | `ONTOLOGY_CONTEXT_MODE` | How per-unit ontology context is sourced |
 | `LLM_GRAPH_FORMAT` | `turtle` or `jsonld` LLM wire encoding |
+| `--max-visits` | CLI override for `MAX_VISITS` (batch mode and server default) |
+| `--wipe-vector-store` | Drop the current vector partition before recreate+reindex |
 | `--head-chunks` | CLI limit on units processed |
 | `target_sections` / `summarize_sections` / `summary_max_sentences` | Per-request structured-document preprocessing (not env vars) |
 

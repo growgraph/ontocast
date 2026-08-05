@@ -1,0 +1,94 @@
+# .claudeignore — keep in sync with .cursorignore
+#
+# Deny-all at repo root, then allowlist what agents should see.
+# `*` matches one path segment (not `/`), so directories must be
+# re-included explicitly before their contents.
+#
+# Later patterns override earlier ones — use that to carve binaries
+# and caches back out of allowlisted trees.
+
+*
+
+# --- source & tests ---
+!ontocast/
+!ontocast/**
+!test/
+!test/**
+
+# --- docs (text only) ---
+!docs/
+!docs/**
+docs/assets/
+
+# --- fixtures (skip PDFs / caches) ---
+!data/
+!data/**
+data/pdf/
+data/**/__pycache__/
+
+# --- packaging / ops ---
+!docker/
+!docker/**
+!.github/
+!.github/**
+
+# --- optional / future ---
+!planning/
+!planning/**
+!scripts/
+!scripts/**
+
+# --- demo (text / JSON only) ---
+!demo/
+!demo/**
+demo/**/*.pdf
+demo/**/*.png
+demo/**/*.jpg
+demo/**/*.jpeg
+
+# --- agent config ---
+!.cursor/
+!.cursor/**
+!.claude/
+!.claude/**
+!.cursorignore
+!.claudeignore
+
+# --- root project files ---
+!.env.example
+!pyproject.toml
+!uv.lock
+!mkdocs.yml
+!pytest.ini
+!.pre-commit-config.yaml
+!.python-version
+!.gitignore
+!Dockerfile
+!shell.nix
+!CITATION.cff
+!LICENSE
+!logging.*.conf
+!graph.mmd
+!*.md
+
+# --- re-ignore noise inside allowlisted trees ---
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/*.egg-info/
+**/.DS_Store
+*.log
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.svg
+*.ico
+*.woff
+*.woff2
+*.ttf
+*.eot

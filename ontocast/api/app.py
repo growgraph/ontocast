@@ -2,11 +2,13 @@
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ontocast._version import __version__
 from ontocast.api.match_models import (
@@ -18,8 +20,10 @@ from ontocast.api.match_models import (
     EvaluateMatchResponse,
 )
 from ontocast.api.ontologies import build_ontology_router
+from ontocast.api.parse import RequestParamError
 from ontocast.api.process_helpers import (
     calculate_recursion_limit,
+    get_supported_input_extensions,
     select_unit_facts_ontology_graph,
     turtle_from_graph,
 )
@@ -28,8 +32,9 @@ from ontocast.api.process_request import (
     load_parsed_process_request,
 )
 from ontocast.api.responses import (
-    invalid_max_visits_response,
+    document_conversion_error_response,
     ontology_context_config_error_response,
+    request_param_error_response,
 )
 from ontocast.api.schemas import (
     FlushOkResponse,
@@ -77,7 +82,33 @@ def create_app(
     when the request omits ``tenant`` / ``project`` query parameters.
     """
 
-    app = FastAPI(title="ontocast", version=__version__)
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        """Release backend connections when the server stops."""
+        yield
+        await tools.aclose()
+
+    app = FastAPI(title="ontocast", version=__version__, lifespan=lifespan)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(_request: Request, exc: StarletteHTTPException):
+        """Render every HTTPException in the same shape as the other routes.
+
+        The ``/ontologies`` routes raise ``HTTPException``, which FastAPI
+        renders as ``{"detail": ...}`` -- a third error shape alongside
+        ``StatusErrorBody`` and ``ProcessErrorResponse``, so a client could not
+        write one error handler. Normalizing here covers every route, including
+        framework-generated 404s and 405s.
+        """
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=StatusErrorBody(
+                error=str(exc.detail),
+                error_type="HTTPError",
+            ).model_dump(),
+            headers=getattr(exc, "headers", None),
+        )
+
     app.include_router(
         build_ontology_router(
             tools,
@@ -93,8 +124,18 @@ def create_app(
     if server_config.max_concurrent_processes is not None:
         process_semaphore = asyncio.Semaphore(server_config.max_concurrent_processes)
 
-    @app.get("/health")
+    @app.get(
+        "/health",
+        response_model=HealthOkResponse,
+        responses={503: {"model": HealthErrorResponse}},
+        summary="Liveness probe",
+    )
     async def health_check():
+        """Report whether the LLM tool was constructed.
+
+        This is a liveness signal, not a readiness one: it does not reach the
+        LLM provider, the triple store, or the vector store.
+        """
         try:
             if tools.llm is None:
                 return JSONResponse(
@@ -113,7 +154,7 @@ def create_app(
                 content=HealthErrorResponse(error=str(e)).model_dump(),
             )
 
-    @app.get("/info", response_model=InfoResponse)
+    @app.get("/info", response_model=InfoResponse, summary="Server capabilities")
     async def info():
         llm_cache = None
         if tools.llm is not None:
@@ -122,6 +163,12 @@ def create_app(
             version=__version__,
             llm_cache=llm_cache,
             max_concurrent_processes=server_config.max_concurrent_processes,
+            # Computed, not hardcoded: without the doc-processing extra the
+            # server cannot accept PDFs, and advertising them anyway made
+            # /info unusable for capability probing.
+            input_types=sorted(
+                ext.lstrip(".") for ext in get_supported_input_extensions(tools)
+            ),
         )
 
     @app.post("/match/entities", response_model=AlignEntitiesResponse)
@@ -191,11 +238,23 @@ def create_app(
                 ).model_dump(),
             )
 
-    @app.post("/flush")
+    @app.post(
+        "/flush",
+        response_model=FlushOkResponse,
+        responses={400: {"model": StatusErrorBody}, 500: {"model": StatusErrorBody}},
+        summary="Delete stored facts and ontologies for a tenancy scope",
+    )
     async def flush(
-        tenant: str | None = Query(default=None),
-        project: str | None = Query(default=None),
+        tenant: str | None = Query(
+            default=None,
+            description="Tenancy partition to flush. Defaults to the server's active tenant.",
+        ),
+        project: str | None = Query(
+            default=None,
+            description="Project partition to flush. Defaults to the server's active project.",
+        ),
     ):
+        """Destructive: drops the target partition's facts, ontologies, and vectors."""
         try:
             if tools.triple_store_manager is None and tools.vector_store is None:
                 return JSONResponse(
@@ -237,8 +296,24 @@ def create_app(
                 ).model_dump(),
             )
 
-    @app.post("/process")
+    @app.post(
+        "/process",
+        response_model=ProcessOkResponse,
+        responses={
+            400: {"model": StatusErrorBody},
+            409: {"model": StatusErrorBody},
+            422: {"model": StatusErrorBody},
+            500: {"model": ProcessErrorResponse},
+        },
+        summary="Extract ontology and facts from a document",
+    )
     async def process(request: Request):
+        """Run the full chunked pipeline over an uploaded document.
+
+        Accepts multipart form data (``file=@doc.pdf``) or a JSON body. Request
+        parameters are documented in the API user guide; they are read from the
+        query string, form fields, or JSON body interchangeably.
+        """
         workflow_state: dict | None = None
         if process_semaphore is not None:
             await process_semaphore.acquire()
@@ -333,6 +408,35 @@ def create_app(
                     }
                 )
 
+            unit_failures = [
+                failure.model_dump(mode="json")
+                for failure in workflow_state.get("unit_failures", [])
+            ]
+            facts_repairs = {
+                unit_index: [record.model_dump(mode="json") for record in records]
+                for unit_index, records in workflow_state.get(
+                    "facts_repairs_applied", {}
+                ).items()
+            }
+
+            if workflow_state["status"] == Status.FAILED:
+                # Every unit failed, or conversion did. Returning 200 here made
+                # a total failure look identical to a document with nothing to
+                # extract.
+                return JSONResponse(
+                    status_code=422,
+                    content=ProcessErrorResponse(
+                        error="Extraction produced no output for any content unit",
+                        error_type="PipelineError",
+                        error_code="no_units_extracted",
+                        error_details={
+                            "stage": workflow_state.get("failure_stage"),
+                            "reason": workflow_state.get("failure_reason"),
+                            "unit_failures": unit_failures,
+                        },
+                    ).model_dump(),
+                )
+
             return ProcessOkResponse(
                 data=ProcessResultData(
                     facts=(
@@ -352,15 +456,20 @@ def create_app(
                     chunks_remaining=chunks_remaining,
                     budget=budget_tracker_data,
                     retrieval_metrics=workflow_state.get("retrieval_metrics", {}),
+                    facts_repairs=facts_repairs,
+                    failed_units=unit_failures,
+                    improvement_suggestions=list(
+                        workflow_state.get("improvements_suggestions", [])
+                    ),
                 ),
             )
 
+        except RequestParamError as e:
+            # Malformed input is the client's error, not ours.
+            return request_param_error_response(e)
+        except DocumentConversionError as e:
+            return document_conversion_error_response(e, e.stage)
         except Exception as e:
-            if (
-                isinstance(e, ValueError)
-                and str(e) == "max_visits must be an integer >= 1"
-            ):
-                return invalid_max_visits_response()
             logger.error("Error processing document: %s", e)
             logger.error("Error type: %s", type(e))
             logger.error("Error traceback:", exc_info=True)
@@ -384,9 +493,25 @@ def create_app(
             if process_semaphore is not None:
                 process_semaphore.release()
 
-    @app.post("/process_unit")
+    @app.post(
+        "/process_unit",
+        response_model=ProcessOkResponse,
+        responses={
+            400: {"model": StatusErrorBody},
+            409: {"model": StatusErrorBody},
+            422: {"model": StatusErrorBody},
+            500: {"model": ProcessErrorResponse},
+        },
+        summary="Extract from a single small document without chunking",
+    )
     async def process_unit(request: Request):
-        """Process a single small document or text without chunking or normalization."""
+        """Process the whole input as one content unit.
+
+        Skips chunking, section tagging, summarization, normalization, and the
+        post-aggregation validation gate, so ``max_chunks`` and the
+        section-selection parameters have no effect here. Use ``/process`` for
+        anything larger than a single passage.
+        """
         if process_semaphore is not None:
             await process_semaphore.acquire()
         try:
@@ -427,14 +552,7 @@ def create_app(
                     initial_state, tools
                 )
             except DocumentConversionError as exc:
-                return JSONResponse(
-                    status_code=422,
-                    content=ProcessErrorResponse(
-                        error=str(exc),
-                        error_type="ConversionError",
-                        error_details={"stage": exc.stage},
-                    ).model_dump(),
-                )
+                return document_conversion_error_response(exc, exc.stage)
             failed_unit_state = None
             if onto_result is not None and onto_result.status == Status.FAILED:
                 failed_unit_state = onto_result
@@ -461,7 +579,10 @@ def create_app(
 
             ontology_artifacts: list[dict] = []
             if onto_result is not None:
-                delta_graph = build_ontology_delta_graph(onto_result)
+                # Single-unit responses expose the insert complement; deletes
+                # are catalog-apply concerns and this path never writes the
+                # catalog.
+                delta_graph = build_ontology_delta_graph(onto_result).inserts
                 if len(delta_graph) > 0:
                     out_graph = (
                         TripleStoreManager.strip_provenance(delta_graph)
@@ -483,12 +604,22 @@ def create_app(
                 ontology_graph = select_unit_facts_ontology_graph(
                     onto_result, facts_result
                 )
+                document_metadata = dict(initial_state.document_metadata)
+                if (
+                    initial_state.source_url
+                    and "source_url" not in document_metadata
+                    and "source_uri" not in document_metadata
+                ):
+                    document_metadata["source_url"] = initial_state.source_url
                 postprocessed_facts = tools.aggregator.postprocess_facts_units(
                     units=[facts_result.content_unit],
                     ontology_graph=ontology_graph,
+                    doc_iri=initial_state.doc_iri,
+                    document_metadata=document_metadata,
+                    doc_namespace=initial_state.doc_namespace,
                 )
                 facts_ttl = turtle_from_graph(
-                    postprocessed_facts,
+                    postprocessed_facts.graph,
                     strip_provenance=loaded.strip_provenance,
                 )
 
@@ -513,12 +644,9 @@ def create_app(
                 ),
             )
 
+        except RequestParamError as e:
+            return request_param_error_response(e)
         except Exception as e:
-            if (
-                isinstance(e, ValueError)
-                and str(e) == "max_visits must be an integer >= 1"
-            ):
-                return invalid_max_visits_response()
             logger.error("Error in process_unit: %s", e)
             logger.error("Error type: %s", type(e))
             logger.error("Error traceback:", exc_info=True)

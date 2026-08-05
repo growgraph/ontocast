@@ -5,8 +5,8 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Annotated, Union
 
-from pydantic import BaseModel, ConfigDict, Field
-from rdflib import DCTERMS, OWL, RDF, RDFS, XSD, Literal, URIRef
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from rdflib import DCTERMS, OWL, RDF, RDFS, SH, XSD, Literal, URIRef
 
 from ontocast.onto.constants import DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI, PROV
 from ontocast.onto.iri_policy import normalize_namespace_iri
@@ -25,6 +25,55 @@ SemanticVersion = Annotated[
         description="Semantic version in MAJOR.MINOR.PATCH format (e.g., 1.2.3)",
     ),
 ]
+
+
+def normalize_semantic_version(version: str) -> str:
+    """Normalize a version string to semantic versioning format.
+
+    Handles various version formats and converts them to MAJOR.MINOR.PATCH:
+    - "3.5.1" -> "3.5.1" (already valid)
+    - "3.5" -> "3.5.0" (adds missing PATCH)
+    - "3" -> "3.0.0" (adds missing MINOR and PATCH)
+    - Invalid formats -> "1.0.0"
+
+    Args:
+        version: The version string to normalize.
+
+    Returns:
+        str: A valid semantic version string (MAJOR.MINOR.PATCH).
+    """
+    # Already valid semantic version
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)$", version)
+    if match:
+        return version
+
+    # Try to parse as MAJOR.MINOR (missing PATCH)
+    match = re.match(r"^(\d+)\.(\d+)$", version)
+    if match:
+        major, minor = match.groups()
+        normalized = f"{major}.{minor}.0"
+        logger.info(
+            f"Version '{version}' missing PATCH component, normalized to '{normalized}'"
+        )
+        return normalized
+
+    # Try to parse as just MAJOR (missing MINOR and PATCH)
+    match = re.match(r"^(\d+)$", version)
+    if match:
+        major = match.group(1)
+        normalized = f"{major}.0.0"
+        logger.info(
+            f"Version '{version}' missing MINOR and PATCH components, "
+            f"normalized to '{normalized}'"
+        )
+        return normalized
+
+    # Invalid format, use default
+    logger.warning(
+        f"Version '{version}' does not match any recognized format, "
+        f"normalizing to '1.0.0'"
+    )
+    return "1.0.0"
 
 
 class OntologyProperties(BaseModel):
@@ -169,6 +218,10 @@ class Ontology(OntologyPropertiesWithLineage):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    # When True, skip identity extraction/overwrite from owl:Ontology triples
+    # (used for multi-source working-context snapshots).
+    _identity_locked: bool = PrivateAttr(default=False)
+
     def _apply_iri_fragment_hash_or_version(self) -> None:
         """Normalize IRI when it carries a trailing hash or semantic-version fragment."""
         if not self.iri or "#" not in self.iri:
@@ -187,10 +240,13 @@ class Ontology(OntologyPropertiesWithLineage):
             logger.debug("Extracted version from IRI fragment: %s", version_str)
 
     def __init__(self, **kwargs):
-        # Pop current_domain if provided, else use DEFAULT_DOMAIN
+        # Pop construction-only flags before pydantic init
         current_domain = kwargs.pop("current_domain", DEFAULT_DOMAIN)
+        identity_locked = bool(kwargs.pop("identity_locked", False))
+        skip_graph_identity_sync = bool(kwargs.pop("skip_graph_identity_sync", False))
         super().__init__(**kwargs)
         self.current_domain = current_domain
+        self._identity_locked = identity_locked
 
         # Check if this is explicitly a null ontology (only if both IRI is null AND no graph provided)
         # Don't return early if graph is provided - graph might contain ontology information
@@ -208,7 +264,7 @@ class Ontology(OntologyPropertiesWithLineage):
         # Try to sync from graph first (this is the primary source of truth)
         graph_had_ontology = False
         iri_from_graph = None
-        if self.graph:
+        if self.graph and not skip_graph_identity_sync and not self._identity_locked:
             # Try to extract from graph
             self.sync_properties_from_graph()
             # Check if graph provided valid ontology information
@@ -218,30 +274,16 @@ class Ontology(OntologyPropertiesWithLineage):
                 if self.ontology_id:
                     graph_had_ontology = True
                 else:
-                    # IRI is set but ontology_id is missing - try to derive it
-                    self.ontology_id = (
-                        self._extract_ontology_id_from_prefixes()
-                        or derive_ontology_id(self.iri)
-                    )
+                    # Prefer IRI derivation over author prefix
+                    self._assign_ontology_id_from_iri_or_prefix()
                     if self.ontology_id:
                         graph_had_ontology = True
 
         # Only apply fallback if graph did not provide a valid pair
-        if not graph_had_ontology:
+        if not graph_had_ontology and not self._identity_locked:
             # Try to extract ontology_id from prefixes if IRI is available
             if self.iri and self.iri != ONTOLOGY_NULL_IRI and not self.ontology_id:
-                # Prefer derivation from IRI over prefix
-                derived_id = derive_ontology_id(self.iri)
-                prefix_id = self._extract_ontology_id_from_prefixes()
-
-                if derived_id:
-                    self.ontology_id = derived_id
-                    # If prefix exists but doesn't match ontology_id, rebind it
-                    if prefix_id and prefix_id != derived_id:
-                        self._rebind_prefix_to_ontology_id(prefix_id, derived_id)
-                elif prefix_id:
-                    # Fallback to prefix if IRI derivation fails
-                    self.ontology_id = prefix_id
+                self._assign_ontology_id_from_iri_or_prefix()
 
             # Fallback logic: construct IRI from ontology_id or vice versa
             # BUT: Never override IRI that came from graph
@@ -273,31 +315,35 @@ class Ontology(OntologyPropertiesWithLineage):
                         )
                         self.iri = expected_iri
             elif not self.ontology_id and self.iri and self.iri != ONTOLOGY_NULL_IRI:
-                # Extract ontology_id: prefer IRI derivation, rebind prefix if needed
-                derived_id = derive_ontology_id(self.iri)
-                prefix_id = self._extract_ontology_id_from_prefixes()
-
-                if derived_id:
-                    self.ontology_id = derived_id
-                    # If prefix exists but doesn't match ontology_id, rebind it
-                    if prefix_id and prefix_id != derived_id:
-                        self._rebind_prefix_to_ontology_id(prefix_id, derived_id)
-                elif prefix_id:
-                    # Fallback to prefix if IRI derivation fails
-                    self.ontology_id = prefix_id
+                self._assign_ontology_id_from_iri_or_prefix()
         # Set default values for fields that are still None
         if self.version is None:
             self.version = "1.0.0"
 
-        self._compute_and_set_hash()
-
-        # Always ensure graph is up to date with properties (including hash/parent_hashes)
-        self.sync_properties_to_graph()
+        if not self._identity_locked:
+            self._compute_and_set_hash()
+            # Always ensure graph is up to date with properties (including hash/parent_hashes)
+            self.sync_properties_to_graph()
+        else:
+            # Working contexts: hash the graph only; do not rewrite owl:Ontology headers.
+            self._compute_and_set_hash()
 
         # Set initial_version if not already set
         if self.initial_version is None and self.version:
             # Normalize version to ensure semantic versioning
             self.initial_version = self._normalize_version(self.version)
+
+    def _assign_ontology_id_from_iri_or_prefix(self) -> None:
+        """Set ontology_id preferring IRI derivation, then author prefix."""
+        if self.ontology_id or not self.iri or self.iri == ONTOLOGY_NULL_IRI:
+            return
+        derived_id = derive_ontology_id(self.iri)
+        prefix_id = self._extract_ontology_id_from_prefixes()
+        if derived_id:
+            self.ontology_id = derived_id
+            self._maybe_rebind_degenerate_prefix(prefix_id, derived_id)
+        elif prefix_id:
+            self.ontology_id = prefix_id
 
     @property
     def prefix(self) -> str | None:
@@ -370,6 +416,9 @@ class Ontology(OntologyPropertiesWithLineage):
 
         # Early return for NULL_ONTOLOGY - don't sync anything
         if self.is_null():
+            return
+
+        if self._identity_locked:
             return
 
         if self.ontology_id is not None:
@@ -455,17 +504,23 @@ class Ontology(OntologyPropertiesWithLineage):
                         Literal(self.created_at.isoformat(), datatype=XSD.dateTime),
                     )
                 )
-        # Add hash (only if not already present in graph)
+        # Add hash, refreshing any stale value already in the graph.
         # Use dcterms:identifier for hash (with "hash:" prefix to distinguish from other identifiers)
         if self.hash:
-            # Check if hash already exists in graph
-            existing_hash = [
-                str(obj)
+            # A graph read back from the store carries the hash literal written by
+            # whoever wrote it. Leaving a disagreeing value in place would let the
+            # named graph <iri>#<hash> advertise a different hash than its own URI
+            # encodes, breaking the content-addressed catalog invariant.
+            current = Literal(f"hash:{self.hash}")
+            stale = [
+                obj
                 for _, _, obj in g.triples((onto_iri, DCTERMS.identifier, None))
-                if str(obj).startswith("hash:")
+                if str(obj).startswith("hash:") and obj != current
             ]
-            if not existing_hash:
-                g.add((onto_iri, DCTERMS.identifier, Literal(f"hash:{self.hash}")))
+            for obj in stale:
+                g.remove((onto_iri, DCTERMS.identifier, obj))
+            if (onto_iri, DCTERMS.identifier, current) not in g:
+                g.add((onto_iri, DCTERMS.identifier, current))
 
         # Add parent_hashes (multiple parents supported)
         # Use prov:wasDerivedFrom for each parent hash (standard PROV predicate)
@@ -557,11 +612,24 @@ class Ontology(OntologyPropertiesWithLineage):
                 # Create a temporary graph without hash/parent_hash triples for hashing
                 temp_graph = RDFGraph()
 
+                # Prefix declarations are serialization metadata (persisted author
+                # @prefix names), not content: excluding them keeps the hash equal
+                # across stores that do and do not carry declarations.
+                declaration_nodes = (
+                    set(self.graph.objects(onto_iri, SH.declare))
+                    if onto_iri is not None
+                    else set()
+                )
+
                 # Copy all triples except metadata triples - these are metadata, not content
                 # Metadata to exclude: hash, parent_hash, created_at, version, title, description
                 for s, p, o in self.graph:
+                    if s in declaration_nodes:
+                        continue
                     # Skip metadata triples for the ontology IRI
                     if onto_iri and s == onto_iri:
+                        if p == SH.declare:
+                            continue  # Skip prefix declarations
                         if (
                             p == DCTERMS.identifier
                             and isinstance(o, Literal)
@@ -601,51 +669,8 @@ class Ontology(OntologyPropertiesWithLineage):
                 self.hash = None
 
     def _normalize_version(self, version: str) -> str:
-        """Normalize version string to semantic versioning format.
-
-        Handles various version formats and converts them to MAJOR.MINOR.PATCH:
-        - "3.5.1" -> "3.5.1" (already valid)
-        - "3.5" -> "3.5.0" (adds missing PATCH)
-        - "3" -> "3.0.0" (adds missing MINOR and PATCH)
-        - Invalid formats -> "1.0.0"
-
-        Args:
-            version: The version string to normalize
-
-        Returns:
-            A valid semantic version string (MAJOR.MINOR.PATCH)
-        """
-        # Already valid semantic version
-        match = re.match(r"^(\d+)\.(\d+)\.(\d+)$", version)
-        if match:
-            return version
-
-        # Try to parse as MAJOR.MINOR (missing PATCH)
-        match = re.match(r"^(\d+)\.(\d+)$", version)
-        if match:
-            major, minor = match.groups()
-            normalized = f"{major}.{minor}.0"
-            logger.info(
-                f"Version '{version}' missing PATCH component, normalized to '{normalized}'"
-            )
-            return normalized
-
-        # Try to parse as just MAJOR (missing MINOR and PATCH)
-        match = re.match(r"^(\d+)$", version)
-        if match:
-            major = match.group(1)
-            normalized = f"{major}.0.0"
-            logger.info(
-                f"Version '{version}' missing MINOR and PATCH components, normalized to '{normalized}'"
-            )
-            return normalized
-
-        # Invalid format, use default
-        logger.warning(
-            f"Version '{version}' does not match any recognized format, "
-            f"normalizing to '1.0.0'"
-        )
-        return "1.0.0"
+        """Normalize a version string to semantic versioning format."""
+        return normalize_semantic_version(version)
 
     def _analyze_version_increment_type(
         self, updates: list[GraphUpdate]
@@ -829,6 +854,29 @@ class Ontology(OntologyPropertiesWithLineage):
             f"Updated semantic version for ontology {self.ontology_id} to {self.version}"
         )
 
+    @staticmethod
+    def _is_degenerate_prefix(prefix: str) -> bool:
+        """Return True for auto-generated / placeholder prefixes (e.g. ``ns11``)."""
+        if not prefix:
+            return True
+        if prefix.startswith("ns") and prefix[2:].isdigit():
+            return True
+        return False
+
+    def _maybe_rebind_degenerate_prefix(
+        self, prefix_id: str | None, derived_id: str
+    ) -> None:
+        """Rebind only when the author prefix is missing or a degenerate placeholder.
+
+        Author-declared short prefixes (e.g. ``matsci``) are kept canonical;
+        IRI-tail-derived ``ontology_id`` is an identity key, not a forced
+        prefix name.
+        """
+        if not prefix_id or prefix_id == derived_id:
+            return
+        if self._is_degenerate_prefix(prefix_id):
+            self._rebind_prefix_to_ontology_id(prefix_id, derived_id)
+
     def _extract_ontology_id_from_prefixes(self) -> str | None:
         """Extract ontology_id from namespace prefixes that match the ontology IRI.
 
@@ -867,11 +915,11 @@ class Ontology(OntologyPropertiesWithLineage):
         return None
 
     def _rebind_prefix_to_ontology_id(self, old_prefix: str, ontology_id: str) -> None:
-        """Rebind a prefix to match the ontology_id.
+        """Rebind a prefix to match the ontology_id, removing the old binding.
 
-        If a prefix exists that matches the ontology IRI but has a different name
-        than the ontology_id, rebind it to use the ontology_id as the prefix name.
-        This ensures consistency between the prefix name and ontology_id.
+        Used only for degenerate/auto-generated prefixes (see
+        :meth:`_maybe_rebind_degenerate_prefix`). Author-declared short prefixes
+        are left alone so the graph keeps a single canonical binding.
 
         Args:
             old_prefix: The existing prefix name that needs to be rebound.
@@ -890,16 +938,23 @@ class Ontology(OntologyPropertiesWithLineage):
                 break
 
         if old_namespace_uri and old_namespace_uri == ontology_namespace:
-            # Only rebind if the namespace matches
-            # Bind the new prefix with ontology_id (this will override if it exists)
             from rdflib import Namespace
+            from rdflib.namespace import NamespaceManager
 
             ns = Namespace(ontology_namespace)
-            self.graph.namespace_manager.bind(ontology_id, ns, override=True)
+            # Rebuild bindings so the old prefix is actually removed (rdflib's
+            # bind(override=True) only overrides by the *new* prefix name).
+            kept = [
+                (prefix, namespace_uri)
+                for prefix, namespace_uri in self.graph.namespaces()
+                if prefix and prefix != old_prefix
+            ]
+            new_manager = NamespaceManager(self.graph)
+            for prefix, namespace_uri in kept:
+                new_manager.bind(prefix, namespace_uri, override=True)
+            new_manager.bind(ontology_id, ns, override=True)
+            self.graph.namespace_manager = new_manager
 
-            # If old prefix is different, we can optionally remove it
-            # But keep it for now to avoid breaking existing references in the graph
-            # The new prefix will be used going forward
             logger.debug(
                 f"Rebound prefix: '{old_prefix}' -> '{ontology_id}' "
                 f"for namespace '{ontology_namespace}'"
@@ -915,6 +970,9 @@ class Ontology(OntologyPropertiesWithLineage):
         if not g or len(g) == 0:
             return
 
+        if self._identity_locked:
+            return
+
         # Only proceed if this subject is explicitly typed as owl:Ontology
         onto_triple = [
             subj
@@ -922,32 +980,16 @@ class Ontology(OntologyPropertiesWithLineage):
             if o == OWL.Ontology
         ]
         if not onto_triple:
-            # No owl:Ontology found - try to extract IRI from prefixes as fallback
-            if not self.iri or self.iri == ONTOLOGY_NULL_IRI:
-                # Look for prefixes that might indicate the ontology IRI
-                for prefix, namespace_uri in g.namespaces():
-                    namespace_str = str(namespace_uri).rstrip("#/")
-                    # Skip standard prefixes
-                    if prefix and prefix not in [
-                        "rdf",
-                        "rdfs",
-                        "owl",
-                        "xsd",
-                        "dc",
-                        "dcterms",
-                        "skos",
-                        "foaf",
-                        "schema",
-                        "prov",
-                    ]:
-                        # Use this namespace as potential IRI
-                        self.iri = namespace_str
-                        self.ontology_id = prefix
-                        logger.debug(
-                            f"No owl:Ontology found, extracted IRI '{self.iri}' and "
-                            f"ontology_id '{self.ontology_id}' from prefix '{prefix}'"
-                        )
-                        return
+            # No owl:Ontology: do not invent identity from a random @prefix.
+            return
+
+        if len(onto_triple) > 1:
+            # Multi-ontology graphs are working contexts, not catalog entries.
+            # Do not pick an arbitrary owl:Ontology subject as this ontology's IRI.
+            logger.debug(
+                "Graph contains %s owl:Ontology subjects; skipping identity sync",
+                len(onto_triple),
+            )
             return
 
         onto_iri = onto_triple[0]
@@ -982,21 +1024,10 @@ class Ontology(OntologyPropertiesWithLineage):
             )
             self.iri = iri_str
 
-        # Extract ontology_id: prefer derivation from IRI over prefix
-        # If both exist, use IRI-derived ontology_id and rebind prefix to match
+        # Extract ontology_id: prefer derivation from IRI over prefix.
+        # Keep author-declared short prefixes; only replace degenerate ones.
         if not self.ontology_id:
-            # First try to derive from IRI (preferred)
-            derived_id = derive_ontology_id(self.iri)
-            prefix_id = self._extract_ontology_id_from_prefixes()
-
-            if derived_id:
-                self.ontology_id = derived_id
-                # If prefix exists but doesn't match ontology_id, rebind it
-                if prefix_id and prefix_id != derived_id:
-                    self._rebind_prefix_to_ontology_id(prefix_id, derived_id)
-            elif prefix_id:
-                # Fallback to prefix if IRI derivation fails
-                self.ontology_id = prefix_id
+            self._assign_ontology_id_from_iri_or_prefix()
 
         # Collect all predicates and objects for this subject in one pass
         pred_map = defaultdict(list)
@@ -1107,14 +1138,37 @@ class Ontology(OntologyPropertiesWithLineage):
         ontology.graph.bind_implicit_namespaces(prefix_base=ontology.ontology_id)
         return ontology
 
+    @staticmethod
+    def strip_ontology_header_triples(graph: RDFGraph) -> RDFGraph:
+        """Remove ``owl:Ontology`` subject triples so identity sync cannot resurrect them."""
+        for onto_subject in {
+            s for s, _, _ in graph.triples((None, RDF.type, OWL.Ontology))
+        }:
+            for triple in list(graph.triples((onto_subject, None, None))):
+                graph.remove(triple)
+        return graph
+
+    @classmethod
+    def from_working_context(cls, *args, **kwargs):  # pragma: no cover
+        """Removed: use :class:`~ontocast.onto.ontology_snapshot.OntologySnapshot`.
+
+        Raises:
+            RuntimeError: Always — callers must migrate to OntologySnapshot.
+        """
+        raise RuntimeError(
+            "Ontology.from_working_context was removed; use "
+            "OntologySnapshot.from_graph / from_ontology instead."
+        )
+
     def describe(self) -> str:
         """Get a human-readable description of the ontology.
 
         Returns:
-            str: A formatted description string.
+            str: A formatted description string including id, prefix, and IRI.
         """
         return (
             f"Ontology id: {self.ontology_id}\n"
+            f"Prefix: {self.prefix}\n"
             f"Description: {self.description}\n"
             f"Ontology IRI: {self.iri}\n"
         )
@@ -1132,10 +1186,10 @@ class Ontology(OntologyPropertiesWithLineage):
         Example:
             >>> ont = Ontology(iri="https://example.org/ont", hash="abc123", parent_hashes=["def456"])
             >>> node = ont.to_lineage_node()
-            >>> node["hash"]
-            'abc123'
-            >>> node["parents"]
-            ['def456']
+            >>> node["hash"] == "abc123"
+            True
+            >>> node["parents"] == ["def456"]
+            True
         """
         return {
             "hash": self.hash,

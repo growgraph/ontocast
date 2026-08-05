@@ -1,10 +1,13 @@
 from rdflib import RDF, Literal, URIRef
-from rdflib.namespace import XSD
+from rdflib.namespace import DCTERMS, FOAF, RDFS, XSD
 
 from ontocast.onto.constants import DEFAULT_IRI, PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType
+from ontocast.onto.iri_policy import join_namespace_local, normalize_namespace_iri
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.tool.agg.aggregate import apply_document_metadata_provenance
 from ontocast.tool.agg.rewriter import GraphRewriter
+from ontocast.tool.triple_manager.core import TripleStoreManager
 
 
 def test_merge_graphs_with_provenance_adds_chunk_metadata(
@@ -119,3 +122,177 @@ def test_merge_graphs_with_provenance_skips_empty_unit_graph(
     )
     merged = graph_rewriter.merge_graphs_with_provenance([unit], mapping={})
     assert len(merged) == 0
+
+
+def test_apply_document_metadata_provenance_emits_identity_triples() -> None:
+    graph = RDFGraph()
+    doc_iri = URIRef("https://example.org/doc/abc")
+    apply_document_metadata_provenance(
+        doc_iri,
+        {
+            "title": "Annual Report",
+            "doi": "10.1234/example",
+            "identifiers": [{"scheme": "erp:doc", "value": "INV-2024-001"}],
+        },
+        graph,
+    )
+
+    assert (doc_iri, RDF.type, PROV.Entity) in graph
+    assert (doc_iri, RDF.type, FOAF.Document) in graph
+    assert (doc_iri, DCTERMS.title, Literal("Annual Report")) in graph
+    assert (doc_iri, DCTERMS.identifier, Literal("10.1234/example")) in graph
+
+    structured = list(graph.objects(doc_iri, DCTERMS.identifier))
+    bnodes = [n for n in structured if not isinstance(n, Literal)]
+    assert len(bnodes) == 1
+    schemes = {str(o) for b in bnodes for o in graph.objects(b, DCTERMS.type)}
+    assert "erp:doc" in schemes
+
+    cleaned = TripleStoreManager.strip_provenance(graph)
+    assert (doc_iri, DCTERMS.title, Literal("Annual Report")) in cleaned
+    assert (doc_iri, DCTERMS.identifier, Literal("10.1234/example")) in cleaned
+
+
+def test_apply_document_metadata_provenance_noop_when_empty() -> None:
+    graph = RDFGraph()
+    apply_document_metadata_provenance(
+        URIRef("https://example.org/doc/abc"),
+        {},
+        graph,
+    )
+    assert len(graph) == 0
+
+
+def test_author_string_mints_schema_person() -> None:
+    graph = RDFGraph()
+    doc_iri = URIRef("https://example.org/doc/abc")
+    ns = normalize_namespace_iri(str(doc_iri), context="facts")
+    apply_document_metadata_provenance(
+        doc_iri,
+        {"author": "Jane Doe"},
+        graph,
+        entity_namespace=ns,
+    )
+    person = URIRef(join_namespace_local(ns, "janeDoe", context="facts"))
+    assert (doc_iri, DCTERMS.creator, person) in graph
+    assert (person, RDF.type, SCHEMA.Person) in graph
+    assert (person, RDFS.label, Literal("Jane Doe")) in graph
+
+    cleaned = TripleStoreManager.strip_provenance(graph)
+    assert (person, RDF.type, SCHEMA.Person) in cleaned
+    assert (doc_iri, DCTERMS.creator, person) in cleaned
+
+
+def test_authors_list_mints_two_persons() -> None:
+    graph = RDFGraph()
+    doc_iri = URIRef("https://example.org/doc/abc")
+    ns = normalize_namespace_iri(str(doc_iri), context="facts")
+    apply_document_metadata_provenance(
+        doc_iri,
+        {"authors": ["Jane Doe", "John Smith"]},
+        graph,
+        entity_namespace=ns,
+    )
+    jane = URIRef(join_namespace_local(ns, "janeDoe", context="facts"))
+    john = URIRef(join_namespace_local(ns, "johnSmith", context="facts"))
+    assert (doc_iri, DCTERMS.creator, jane) in graph
+    assert (doc_iri, DCTERMS.creator, john) in graph
+    assert (jane, RDF.type, SCHEMA.Person) in graph
+    assert (john, RDF.type, SCHEMA.Person) in graph
+
+
+def test_author_dict_type_override() -> None:
+    graph = RDFGraph()
+    doc_iri = URIRef("https://example.org/doc/abc")
+    ns = normalize_namespace_iri(str(doc_iri), context="facts")
+    apply_document_metadata_provenance(
+        doc_iri,
+        {"author": {"name": "Acme Corp", "type": "schema:Organization"}},
+        graph,
+        entity_namespace=ns,
+    )
+    org = URIRef(join_namespace_local(ns, "acmeCorp", context="facts"))
+    assert (doc_iri, DCTERMS.creator, org) in graph
+    assert (org, RDF.type, URIRef("http://schema.org/Organization")) in graph
+    assert (org, RDFS.label, Literal("Acme Corp")) in graph
+
+
+def test_project_string_mints_prov_entity() -> None:
+    graph = RDFGraph()
+    doc_iri = URIRef("https://example.org/doc/abc")
+    ns = normalize_namespace_iri(str(doc_iri), context="facts")
+    apply_document_metadata_provenance(
+        doc_iri,
+        {"project": "Perovskite Survey"},
+        graph,
+        entity_namespace=ns,
+    )
+    project = URIRef(join_namespace_local(ns, "perovskiteSurvey", context="facts"))
+    assert (doc_iri, DCTERMS.relation, project) in graph
+    assert (project, RDF.type, PROV.Entity) in graph
+    assert (project, RDFS.label, Literal("Perovskite Survey")) in graph
+    # Not a blank-node identifier
+    bnodes = [
+        n
+        for n in graph.objects(doc_iri, DCTERMS.identifier)
+        if not isinstance(n, Literal)
+    ]
+    assert bnodes == []
+
+
+def test_project_dict_with_identifier() -> None:
+    graph = RDFGraph()
+    doc_iri = URIRef("https://example.org/doc/abc")
+    ns = normalize_namespace_iri(str(doc_iri), context="facts")
+    apply_document_metadata_provenance(
+        doc_iri,
+        {
+            "project": {
+                "name": "Perovskite Survey",
+                "identifier": "PRJ-2024-07",
+            }
+        },
+        graph,
+        entity_namespace=ns,
+    )
+    project = URIRef(join_namespace_local(ns, "perovskiteSurvey", context="facts"))
+    assert (doc_iri, DCTERMS.relation, project) in graph
+    assert (project, RDF.type, PROV.Entity) in graph
+    assert (project, RDFS.label, Literal("Perovskite Survey")) in graph
+    assert (project, DCTERMS.identifier, Literal("PRJ-2024-07")) in graph
+
+
+def test_custom_key_string_mints_prov_entity() -> None:
+    graph = RDFGraph()
+    doc_iri = URIRef("https://example.org/doc/abc")
+    ns = normalize_namespace_iri(str(doc_iri), context="facts")
+    apply_document_metadata_provenance(
+        doc_iri,
+        {"department": "R&D"},
+        graph,
+        entity_namespace=ns,
+    )
+    dept = URIRef(join_namespace_local(ns, "rd", context="facts"))
+    assert (doc_iri, DCTERMS.relation, dept) in graph
+    assert (dept, RDF.type, PROV.Entity) in graph
+    assert (dept, RDFS.label, Literal("R&D")) in graph
+
+
+def test_custom_key_dict_type_override() -> None:
+    graph = RDFGraph()
+    doc_iri = URIRef("https://example.org/doc/abc")
+    ns = normalize_namespace_iri(str(doc_iri), context="facts")
+    apply_document_metadata_provenance(
+        doc_iri,
+        {
+            "department": {
+                "name": "R&D",
+                "type": "schema:Organization",
+            }
+        },
+        graph,
+        entity_namespace=ns,
+    )
+    dept = URIRef(join_namespace_local(ns, "rd", context="facts"))
+    assert (doc_iri, DCTERMS.relation, dept) in graph
+    assert (dept, RDF.type, URIRef("http://schema.org/Organization")) in graph

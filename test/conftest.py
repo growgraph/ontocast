@@ -41,6 +41,13 @@ from test.qdrant_util import QdrantSessionTestContext, qdrant_reachable
 
 logger = logging.getLogger(__name__)
 
+# Tests that construct a ToolBox with default LLMConfig (provider=OPENAI) build a
+# real ChatOpenAI client, which validates credentials at construction time, not at
+# call time. These tests never call the LLM, but need *a* key-shaped value to avoid
+# openai.OpenAIError in a clean checkout (no .env). setdefault preserves a real key
+# from a local .env or CI secret if one is already set.
+os.environ.setdefault("LLM_API_KEY", "sk-test-placeholder-not-a-real-key")
+
 
 @pytest.fixture(scope="session")
 def qdrant_session_test_context(

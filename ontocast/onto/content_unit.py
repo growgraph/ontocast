@@ -57,6 +57,13 @@ class SourceUnit(BaseModel):
         default=None,
         description="LLM-compressed summary of this chunk used for extraction prompts",
     )
+    is_citation_metadata: bool = Field(
+        default=False,
+        description=(
+            "Unit detected as bibliography/reference-list content; facts "
+            "rendering extracts citation metadata only, never domain facts."
+        ),
+    )
     _hid: str = PrivateAttr(default="")
 
     @field_validator("doc_iri", mode="before")

@@ -6,13 +6,32 @@ from rdflib import OWL, RDF, BNode, Node, URIRef
 
 from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit
+from ontocast.onto.namespace_merge import merge_namespace_bindings
+from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.state import AgentState
+from ontocast.onto.util import is_rdflib_default_namespace
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
+
+
+def _working_anchor_from_graph(graph: RDFGraph) -> str | None:
+    """Pick a stable working-context IRI from the first non-standard namespace.
+
+    Used when aggregating unit deltas without a catalog base ontology. Does not
+    set ``ontology_id`` from the prefix name.
+    """
+    for prefix, namespace in graph.namespaces():
+        if not prefix:
+            continue
+        ns = str(namespace)
+        if is_rdflib_default_namespace(ns):
+            continue
+        return ns.rstrip("/#")
+    return None
 
 
 def split_ontology_and_provenance_graph(
@@ -97,19 +116,22 @@ def normalize_ontology_units(
     tools: ToolBox,
     base_ontology: Ontology | None = None,
     require_base: bool = False,
+    delete_graph: RDFGraph | None = None,
 ) -> tuple[Ontology, list[GraphUpdate], RDFGraph]:
     """Merge ontology unit deltas as TripleOps, then apply to base ontology.
 
-    Units contain ontology delta graphs (insert triples only). To preserve the
-    exact unit output shape (and avoid ontology/facts aggregation rewrites), we
-    convert each unit graph into an ``insert`` TripleOp and apply them as one
-    GraphUpdate.
+    Units contain ontology insert delta graphs; ``delete_graph`` carries the
+    reconciled delete delta (triples to remove from the base). Deletes execute
+    first, then inserts, as one ordered GraphUpdate — so the applied update
+    list feeds version-bump analysis with true operation types.
 
     Args:
         units: ContentUnits with type=ONTOLOGIES and delta graph from each unit.
         tools: ToolBox instance.
         base_ontology: Optional ontology to use as base; merged delta is applied to it.
         require_base: Whether map/reduce caller expects a base ontology.
+        delete_graph: Optional triples to delete from the base before inserts.
+            Requires a catalog base; ignored (with a warning) otherwise.
 
     Returns:
         Tuple of (
@@ -118,7 +140,8 @@ def normalize_ontology_units(
             provenance artifact graph stripped from ontology output,
         ).
     """
-    if not units:
+    has_deletes = delete_graph is not None and len(delete_graph) > 0
+    if not units and not has_deletes:
         if base_ontology is not None:
             return base_ontology, [], RDFGraph()
         return Ontology(graph=RDFGraph()), [], RDFGraph()
@@ -133,17 +156,22 @@ def normalize_ontology_units(
             "continuing with merged aggregated ontology output."
         )
 
-    # Unit delta graphs contain insert-only triples produced by build_ontology_delta_graph.
-    # Delete operations are intentionally excluded at the map stage and are not
-    # represented here. This is a deliberate policy: parallel unit deletes cannot
-    # be safely reconciled without a consensus pass, which is not yet implemented.
-    merged_update = GraphUpdate(
-        triple_operations=[
-            TripleOp(type="insert", graph=unit.graph)
-            for unit in units
-            if len(unit.graph) > 0
-        ]
+    operations: list[TripleOp] = []
+    if has_deletes:
+        if base_ontology is None or base_ontology.is_null():
+            logger.warning(
+                "normalize_ontology_units received %d delete triple(s) without a "
+                "catalog base; deletes are dropped (nothing to delete from).",
+                len(delete_graph) if delete_graph is not None else 0,
+            )
+        else:
+            operations.append(TripleOp(type="delete", graph=delete_graph))
+    operations.extend(
+        TripleOp(type="insert", graph=unit.graph)
+        for unit in units
+        if len(unit.graph) > 0
     )
+    merged_update = GraphUpdate(triple_operations=operations)
     if not merged_update.triple_operations:
         merged_update = None
 
@@ -171,21 +199,40 @@ def normalize_ontology_units(
         return result, applied, provenance_graph
 
     aggregated_delta = RDFGraph()
+    bindings: dict[str, str] = {}
     for unit in units:
         for triple in unit.graph:
             aggregated_delta.add(triple)
-        for prefix, namespace in unit.graph.namespaces():
-            if prefix:
-                aggregated_delta.bind(prefix, namespace)
+        incoming = {
+            prefix: str(namespace)
+            for prefix, namespace in unit.graph.namespaces()
+            if prefix
+        }
+        bindings = merge_namespace_bindings(bindings, incoming)
+    for prefix, namespace in bindings.items():
+        aggregated_delta.bind(prefix, namespace)
 
     cleaned_graph, provenance_graph = split_ontology_and_provenance_graph(
         aggregated_delta
     )
-    result = Ontology(
-        graph=cleaned_graph,
-        ontology_id=base_ontology.ontology_id if base_ontology else None,
-        title=base_ontology.title if base_ontology else None,
-        description=base_ontology.description if base_ontology else None,
-    )
+    if base_ontology is not None and not base_ontology.is_null():
+        result = Ontology(
+            graph=cleaned_graph,
+            ontology_id=base_ontology.ontology_id,
+            title=base_ontology.title,
+            description=base_ontology.description,
+            iri=base_ontology.iri,
+        )
+    else:
+        # No catalog base: provisional Ontology from first domain namespace stem.
+        anchor = _working_anchor_from_graph(cleaned_graph) or NULL_ONTOLOGY.iri
+        result = Ontology(
+            graph=cleaned_graph,
+            ontology_id=None,
+            iri=anchor if anchor != NULL_ONTOLOGY.iri else NULL_ONTOLOGY.iri,
+            title=None,
+            description=None,
+            skip_graph_identity_sync=True,
+        )
     applied = [merged_update] if merged_update else []
     return result, applied, provenance_graph

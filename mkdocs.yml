@@ -32,7 +32,8 @@ plugins:
 -   gen-files:
         scripts:
         -   docs/gen_pages.py
--   literate-nav
+-   literate-nav:
+        nav_file: SUMMARY.md
 -   mkdocstrings:
         default_handler: python
         handlers:
@@ -67,6 +68,8 @@ nav:
     -   Triple Store Configuration: user_guide/triple_stores.md
     -   LLM Caching: user_guide/llm_caching.md
     -   User Instructions: user_guide/user_instructions.md
+-   Architecture:
+    -   Ontology Catalog: architecture/ontology_catalog.md
 -   API Reference: reference/
 -   Contributing: contributing.md
 

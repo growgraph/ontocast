@@ -14,7 +14,11 @@ from langchain_core.prompts import PromptTemplate
 from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
-from ontocast.onto.model import FactsRenderReport, GraphUpdateRenderReport
+from ontocast.onto.model import (
+    FactsRenderReport,
+    GraphRepairRecord,
+    GraphUpdateRenderReport,
+)
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import (
     UnitFactsOntologyAccess,
@@ -30,13 +34,61 @@ from ontocast.prompt.ontology_context import (
     format_ontologies_clause,
 )
 from ontocast.prompt.render_facts import (
+    build_citation_metadata_instruction,
     preamble,
     template_prompt,
 )
 from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
 from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.facts_invariants import (
+    format_findings_for_prompt,
+    normalize_literals_against_schema,
+    repair_literal_type_objects,
+    repair_property_aliases,
+)
+from ontocast.tool.validate import partition_object_property_literal_triples
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_and_repair_graph(
+    graph: RDFGraph,
+    ontology_context_graph: RDFGraph,
+    *,
+    min_ratio: float,
+) -> tuple[RDFGraph, list[GraphRepairRecord]]:
+    """Apply deterministic parse-time fixes to a rendered graph in place.
+
+    Retypes untyped numeric literals against declared numeric ranges, coerces
+    literal ``rdf:type`` objects into IRIs, and rewrites unambiguous near-miss
+    predicates in catalog namespaces (e.g. ``qudt:value`` ->
+    ``qudt:numericValue``). Ambiguous near-misses and unresolvable type
+    literals are left for findings collection.
+
+    Returns:
+        Tuple of (repaired graph, applied-repair records for provenance).
+    """
+    retyped = normalize_literals_against_schema(graph, ontology_context_graph)
+    type_repaired, _type_findings, type_records = repair_literal_type_objects(graph)
+    rewritten, _alias_findings, alias_records = repair_property_aliases(
+        graph, ontology_context_graph, min_ratio=min_ratio
+    )
+    if retyped or rewritten or type_repaired:
+        logger.info(
+            "Deterministic graph repair: retyped %d literal(s), coerced %d "
+            "rdf:type literal(s), rewrote %d alias triple(s)",
+            retyped,
+            type_repaired,
+            rewritten,
+        )
+    return graph, [*type_records, *alias_records]
+
+
+def _findings_instruction(state: UnitFactsState) -> str:
+    """Render pending deterministic findings as a prompt block, if any."""
+    if not state.deterministic_findings:
+        return ""
+    return "\n\n" + format_findings_for_prompt(state.deterministic_findings)
 
 
 async def render_facts(
@@ -76,6 +128,8 @@ def _prepare_prompt_data(
     access: UnitFactsOntologyAccess,
     profile,
     *,
+    citation_vocabulary: dict[str, str] | None = None,
+    quantity_fallback_vocabulary: dict[str, str] | None = None,
     search_guidelines: str = "",
 ) -> dict[str, str]:
     """Prepare common prompt data for both fresh and update rendering.
@@ -103,6 +157,7 @@ def _prepare_prompt_data(
     facts_instruction_str = profile.facts_operational_guidelines(
         facts_namespace=DEFAULT_IRI,
         domain_ontologies_clause=format_ontologies_clause(domain_pairs),
+        quantity_fallback_vocabulary=quantity_fallback_vocabulary,
         search_guidelines=search_guidelines,
     )
 
@@ -115,6 +170,11 @@ def _prepare_prompt_data(
         if state.facts_user_instruction
         else ""
     )
+    if state.content_unit.is_citation_metadata:
+        user_instruction = (
+            build_citation_metadata_instruction(citation_vocabulary or {})
+            + user_instruction
+        )
 
     return {
         "ontology_chapter": ontology_chapter,
@@ -199,6 +259,8 @@ async def render_facts_fresh(
         state,
         access,
         profile,
+        citation_vocabulary=tools.citation_vocabulary,
+        quantity_fallback_vocabulary=tools.quantity_fallback_vocabulary,
         search_guidelines=search_guidelines_for(
             WorkflowNode.TEXT_TO_FACTS, web_search_enabled
         ),
@@ -237,11 +299,23 @@ async def render_facts_fresh(
         )
         render_report.semantic_graph.sanitize_prefixes_namespaces()
         clean_graph, rejected = finalize_llm_graph(render_report.semantic_graph)
+        ontology_context_graph = access.effective_ontology_for_prompt().graph
+        clean_graph, repair_records = _normalize_and_repair_graph(
+            clean_graph,
+            ontology_context_graph,
+            min_ratio=tools.property_alias_min_ratio,
+        )
+        state.applied_repairs.extend(repair_records)
+        if tools.object_property_literal_check:
+            clean_graph, op_rejected = partition_object_property_literal_triples(
+                clean_graph, ontology_context_graph
+            )
+            rejected = rejected + op_rejected
         state.content_unit.graph = clean_graph
         state.quarantined_literal_triples = rejected
         if rejected:
             logger.warning(
-                "Fresh facts quarantined %d triple(s) with invalid typed literals",
+                "Fresh facts quarantined %d triple(s) with invalid literals",
                 len(rejected),
             )
 
@@ -289,6 +363,8 @@ async def render_facts_update(
         state,
         access,
         profile,
+        citation_vocabulary=tools.citation_vocabulary,
+        quantity_fallback_vocabulary=tools.quantity_fallback_vocabulary,
         search_guidelines=search_guidelines_for(
             WorkflowNode.TEXT_TO_FACTS, web_search_enabled
         ),
@@ -297,7 +373,8 @@ async def render_facts_update(
         "preamble": preamble,
         "improvement_instruction": render_suggestions_prompt(
             state.suggestions, WorkflowNode.TEXT_TO_FACTS
-        ),
+        )
+        + _findings_instruction(state),
         "output_instruction": profile.render_update_output_instruction(),
         "fact_chapter": profile.format_facts_chapter(state.content_unit.graph),
     }
@@ -333,18 +410,35 @@ async def render_facts_update(
         )
         graph_update = render_report.graph_update
         all_rejected = []
+        ontology_context_graph = access.effective_ontology_for_prompt().graph
         for op in graph_update.triple_operations:
             clean_graph, rejected = finalize_llm_graph(op.graph)
+            # Only insert ops are normalized/checked: deleting a bad literal
+            # (or a bad alias triple) is desirable and must match verbatim.
+            if op.type == "insert":
+                clean_graph, repair_records = _normalize_and_repair_graph(
+                    clean_graph,
+                    ontology_context_graph,
+                    min_ratio=tools.property_alias_min_ratio,
+                )
+                state.applied_repairs.extend(repair_records)
+            if tools.object_property_literal_check and op.type == "insert":
+                clean_graph, op_rejected = partition_object_property_literal_triples(
+                    clean_graph, ontology_context_graph
+                )
+                rejected = rejected + op_rejected
             op.graph = clean_graph
             all_rejected.extend(rejected)
         state.quarantined_literal_triples = all_rejected
         if all_rejected:
             logger.warning(
-                "Facts update quarantined %d triple(s) with invalid typed literals",
+                "Facts update quarantined %d triple(s) with invalid literals",
                 len(all_rejected),
             )
         state.facts_updates.append(graph_update)
         state.update_facts()
+        # Findings were consumed by this render; the loop re-collects fresh.
+        state.deterministic_findings = []
 
         num_operations, num_triples = graph_update.count_total_triples()
         logger.info(

@@ -1,30 +1,46 @@
+import asyncio
 import logging
 from collections import Counter
 
 from pydantic import BaseModel, Field
-from rdflib.namespace import OWL, RDF
 
 from ontocast.agent.select_ontology_catalog import select_catalog_ontology_for_excerpt
 from ontocast.onto.content_unit import SourceUnit
 from ontocast.onto.enum import OntologyAssemblyMode, OntologyContextMode
 from ontocast.onto.null import NULL_ONTOLOGY
-from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import document_ontology_access
+from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import require_vector_retrieval
 from ontocast.onto.state import AgentState
-from ontocast.tool.chunk.util import split_proposition_windows
+from ontocast.tool.chunk.proposition import split_proposition_windows
+from ontocast.tool.llm import use_budget_tracker
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
 
 
 class UnitOntologyContext(BaseModel):
-    anchor_iri: str
-    ontology_snapshot: Ontology
-    patch_sources: list[str] = Field(default_factory=list)
-    assembly_mode: OntologyAssemblyMode
+    """Assembled prompt context: snapshot view + writable catalog IRIs for apply."""
+
+    snapshot: OntologySnapshot
+    writable_iris: list[str] = Field(default_factory=list)
     confidence: float = 0.0
+
+    @property
+    def assembly_mode(self) -> OntologyAssemblyMode:
+        return self.snapshot.assembly_mode
+
+    @property
+    def patch_sources(self) -> list[str]:
+        return list(self.snapshot.source_iris)
+
+    @property
+    def primary_writable_iri(self) -> str:
+        """Primary catalog IRI for metrics (first writable, else null)."""
+        if self.writable_iris:
+            return self.writable_iris[0]
+        return NULL_ONTOLOGY.iri
 
 
 def _unit_queries(unit: SourceUnit, tools: ToolBox) -> list[str]:
@@ -44,7 +60,7 @@ def _unit_queries(unit: SourceUnit, tools: ToolBox) -> list[str]:
 def build_merged_document_ontology_context(
     state: AgentState,
 ) -> UnitOntologyContext | None:
-    """Build one deterministic merged ontology context from reduced document artifacts."""
+    """Build merged ontology context from reduced document artifacts."""
     artifacts = [
         ontology
         for ontology in document_ontology_access(state).reduced_artifacts()
@@ -62,22 +78,19 @@ def build_merged_document_ontology_context(
             patch_sources.append(ontology.iri)
     merged_graph.sanitize_prefixes_namespaces()
 
-    anchor_iri = patch_sources[0] if patch_sources else NULL_ONTOLOGY.iri
-    snapshot = Ontology(
-        ontology_id=None,
+    snapshot = OntologySnapshot.from_graph(
+        merged_graph,
+        source_iris=patch_sources,
+        assembly_mode=OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED,
         title="Merged document ontology context",
         description=(
             "Deterministic merge of reduced ontology artifacts used for facts context."
         ),
-        graph=merged_graph,
-        iri=anchor_iri,
-        current_domain=state.current_domain,
+        strip_headers=True,
     )
     return UnitOntologyContext(
-        anchor_iri=anchor_iri,
-        ontology_snapshot=snapshot,
-        patch_sources=patch_sources,
-        assembly_mode=OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED,
+        snapshot=snapshot,
+        writable_iris=list(patch_sources),
         confidence=1.0,
     )
 
@@ -88,25 +101,29 @@ async def _resolve_selected_single_ontology_context(
     unit: SourceUnit,
 ) -> UnitOntologyContext:
     """One catalog ontology chosen by the LLM from the unit text."""
-    selected = await select_catalog_ontology_for_excerpt(
-        tools.ontology_manager,
-        tools.llm,
-        unit.text,
-        state.ontology_selection_user_instruction,
-    )
+    # Scoped so the selection call is charged to the calling unit's budget
+    # rather than to whichever tracker was bound last.
+    with use_budget_tracker(state.budget_tracker):
+        selected = await select_catalog_ontology_for_excerpt(
+            tools.ontology_manager,
+            tools.llm,
+            unit.text,
+            state.ontology_selection_user_instruction,
+        )
+    mode = OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM
     if selected.is_null():
         return UnitOntologyContext(
-            anchor_iri=NULL_ONTOLOGY.iri,
-            ontology_snapshot=NULL_ONTOLOGY,
-            patch_sources=[],
-            assembly_mode=OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM,
+            snapshot=OntologySnapshot.empty(
+                assembly_mode=mode,
+                title="Null ontology",
+                description="No catalog ontology selected.",
+            ),
+            writable_iris=[],
             confidence=0.0,
         )
     return UnitOntologyContext(
-        anchor_iri=selected.iri,
-        ontology_snapshot=selected,
-        patch_sources=[selected.iri],
-        assembly_mode=OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM,
+        snapshot=OntologySnapshot.from_ontology(selected, assembly_mode=mode),
+        writable_iris=[selected.iri] if selected.iri else [],
         confidence=0.5,
     )
 
@@ -119,12 +136,15 @@ async def _resolve_fixed_single_ontology_context(
     """Catalog ontology fixed by ontology_id (fresh terminal revision)."""
     _ = unit
     cleaned = state.ontology_context_fixed_ontology_id.strip()
+    mode = OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY
     if not cleaned:
         return UnitOntologyContext(
-            anchor_iri=NULL_ONTOLOGY.iri,
-            ontology_snapshot=NULL_ONTOLOGY,
-            patch_sources=[],
-            assembly_mode=OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY,
+            snapshot=OntologySnapshot.empty(
+                assembly_mode=mode,
+                title="Null ontology",
+                description="No fixed ontology id provided.",
+            ),
+            writable_iris=[],
             confidence=0.0,
         )
     mgr = tools.ontology_manager
@@ -132,21 +152,21 @@ async def _resolve_fixed_single_ontology_context(
     if selected is None:
         logger.warning(
             "No catalog ontology match for ontology_context_fixed_ontology_id=%r; "
-            "using NULL_ONTOLOGY",
+            "using empty snapshot",
             cleaned,
         )
         return UnitOntologyContext(
-            anchor_iri=NULL_ONTOLOGY.iri,
-            ontology_snapshot=NULL_ONTOLOGY,
-            patch_sources=[],
-            assembly_mode=OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY,
+            snapshot=OntologySnapshot.empty(
+                assembly_mode=mode,
+                title="Null ontology",
+                description=f"No catalog match for {cleaned!r}.",
+            ),
+            writable_iris=[],
             confidence=0.0,
         )
     return UnitOntologyContext(
-        anchor_iri=selected.iri,
-        ontology_snapshot=selected,
-        patch_sources=[selected.iri],
-        assembly_mode=OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY,
+        snapshot=OntologySnapshot.from_ontology(selected, assembly_mode=mode),
+        writable_iris=[selected.iri] if selected.iri else [],
         confidence=1.0,
     )
 
@@ -157,21 +177,16 @@ async def _resolve_ensemble_context(
     unit: SourceUnit,
 ) -> UnitOntologyContext:
     """Stitched induced subgraphs from vector retrieval."""
+    mode = OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE
     queries = _unit_queries(unit, tools)
     if not queries:
-        empty = Ontology(
-            ontology_id=None,
-            title="Empty unit (no text queries for retrieval)",
-            description="No proposition queries; ensemble graph is empty.",
-            graph=RDFGraph(),
-            iri=NULL_ONTOLOGY.iri,
-            current_domain=state.current_domain,
-        )
         return UnitOntologyContext(
-            anchor_iri=NULL_ONTOLOGY.iri,
-            ontology_snapshot=empty,
-            patch_sources=[],
-            assembly_mode=OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE,
+            snapshot=OntologySnapshot.empty(
+                assembly_mode=mode,
+                title="Empty unit (no text queries for retrieval)",
+                description="No proposition queries; ensemble graph is empty.",
+            ),
+            writable_iris=[],
             confidence=0.0,
         )
     retriever = tools.patch_retriever
@@ -184,45 +199,67 @@ async def _resolve_ensemble_context(
         subgraph_depth=vcfg.induced_subgraph_depth,
         max_total_triples=vcfg.induced_subgraph_max_total_triples,
         estimated_triples_per_query=vcfg.induced_subgraph_estimated_triples_per_query,
+        trigger_text=unit.text.strip(),
     )
     metrics = retriever.last_retrieval_metrics
+    writable = list(source_iris)
     if metrics:
         state.retrieval_metrics["patch_retrieval"] = metrics
+        expanded = metrics.get("expanded_ontology_iris") or []
+        if isinstance(expanded, list):
+            for iri in expanded:
+                if isinstance(iri, str) and iri and iri not in writable:
+                    writable.append(iri)
         logger.info(
-            "Patch retrieval: queries=%s atoms_final=%s source_iris=%s expanded=%s triples=%s",
+            "Patch retrieval: queries=%s atoms_final=%s "
+            "source_iris=%s expanded=%s triples=%s",
             metrics.get("query_count"),
             metrics.get("atoms_final"),
             metrics.get("source_ontology_iris"),
             metrics.get("expanded_ontology_iris"),
             metrics.get("snapshot_triple_count"),
         )
-    anchor_iri = source_iris[0] if source_iris else NULL_ONTOLOGY.iri
-    for onto_subject in {
-        s for s, _, _ in patch_graph.triples((None, RDF.type, OWL.Ontology))
-    }:
-        for triple in list(patch_graph.triples((onto_subject, None, None))):
-            patch_graph.remove(triple)
-    patch_graph.sanitize_prefixes_namespaces()
+    if not len(patch_graph):
+        # An empty snapshot reaching the renderer means it will extract with no
+        # vocabulary at all. Distinguish the causes: an empty index is a
+        # deployment problem, everything-below-threshold is a tuning problem,
+        # and neither should read as "this passage had no relevant terms".
+        indexed_iris: set[str] = set()
+        if tools.vector_store is not None:
+            try:
+                indexed_iris = await asyncio.to_thread(
+                    tools.vector_store.list_indexed_ontology_iris
+                )
+            except Exception as exc:
+                logger.warning("Could not inspect the vector index: %s", exc)
+        if not indexed_iris:
+            reason = "vector index is empty or unreadable"
+        elif metrics and metrics.get("atoms_after_dedupe"):
+            reason = "all candidate atoms scored below the retrieval thresholds"
+        else:
+            reason = "no candidate atoms matched the unit's queries"
+        state.retrieval_metrics["empty_snapshot_reason"] = reason
+        logger.warning(
+            "Ontology context for this unit is empty (%s); extraction will "
+            "proceed with no catalog vocabulary.",
+            reason,
+        )
 
-    ontology_snapshot = Ontology(
-        ontology_id=None,
-        title=None,
-        description=None,
-        graph=patch_graph,
-        iri=anchor_iri,
-        current_domain=state.current_domain,
+    preferred = tools.ontology_manager.preferred_namespace_prefixes or None
+    patch_graph.sanitize_prefixes_namespaces(preferred_namespace_prefixes=preferred)
+
+    snapshot = OntologySnapshot.from_graph(
+        patch_graph,
+        source_iris=source_iris,
+        assembly_mode=mode,
+        title="Vector search ensemble context",
+        description="Stitched induced subgraphs from hybrid retrieval.",
+        strip_headers=True,
     )
-    for onto_subject in {
-        s for s, _, _ in ontology_snapshot.graph.triples((None, RDF.type, OWL.Ontology))
-    }:
-        for triple in list(ontology_snapshot.graph.triples((onto_subject, None, None))):
-            ontology_snapshot.graph.remove(triple)
 
     return UnitOntologyContext(
-        anchor_iri=anchor_iri,
-        ontology_snapshot=ontology_snapshot,
-        patch_sources=source_iris,
-        assembly_mode=OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE,
+        snapshot=snapshot,
+        writable_iris=writable,
         confidence=1.0 if source_iris else 0.5,
     )
 
@@ -256,7 +293,7 @@ async def resolve_effective_facts_ontology_context(
     return await resolve_unit_ontology_context(state, tools, unit)
 
 
-def aggregate_anchor_metrics(
+def aggregate_writable_metrics(
     unit_contexts: dict[int, UnitOntologyContext]
     | dict[int, tuple[str, list[str], OntologyAssemblyMode]],
 ) -> tuple[
@@ -265,24 +302,33 @@ def aggregate_anchor_metrics(
     dict[int, OntologyAssemblyMode],
     dict[str, int],
 ]:
-    unit_anchor_assignment: dict[int, str] = {}
+    """Aggregate per-unit writable IRI / source / mode metrics.
+
+    Accepts either :class:`UnitOntologyContext` or legacy
+    ``(primary_iri, patch_sources, mode)`` tuples for map-stage collect.
+    """
+    unit_primary_assignment: dict[int, str] = {}
     unit_patch_sources: dict[int, list[str]] = {}
     unit_context_mode_used: dict[int, OntologyAssemblyMode] = {}
-    anchor_counts: Counter[str] = Counter()
+    primary_counts: Counter[str] = Counter()
     for unit_index, context in unit_contexts.items():
         if isinstance(context, tuple):
-            anchor_iri, patch_sources, assembly_mode = context
+            primary_iri, patch_sources, assembly_mode = context
         else:
-            anchor_iri = context.anchor_iri
+            primary_iri = context.primary_writable_iri
             patch_sources = context.patch_sources
             assembly_mode = context.assembly_mode
-        unit_anchor_assignment[unit_index] = anchor_iri
+        unit_primary_assignment[unit_index] = primary_iri
         unit_patch_sources[unit_index] = patch_sources
         unit_context_mode_used[unit_index] = assembly_mode
-        anchor_counts[anchor_iri] += 1
+        primary_counts[primary_iri] += 1
     return (
-        unit_anchor_assignment,
+        unit_primary_assignment,
         unit_patch_sources,
         unit_context_mode_used,
-        dict(anchor_counts),
+        dict(primary_counts),
     )
+
+
+# Back-compat alias used by older call sites / tests during migration.
+aggregate_anchor_metrics = aggregate_writable_metrics

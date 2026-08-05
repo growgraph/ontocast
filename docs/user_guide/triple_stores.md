@@ -15,8 +15,8 @@ When `FUSEKI_URI` and `FUSEKI_AUTH` are set, Fuseki is used. Otherwise OntoCast 
 
 ```bash
 # Fuseki (optional — production)
-FUSEKI_URI=http://localhost:3032
-FUSEKI_AUTH=admin:password
+FUSEKI_URI=http://localhost:3030
+FUSEKI_AUTH=admin/admin
 #FUSEKI_DATASET=ontocast--test--facts
 #FUSEKI_ONTOLOGIES_DATASET=ontocast--test--ontologies
 
@@ -25,6 +25,8 @@ ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/seed/ttl
 ```
 
 Persistence is handled by the triple store only. Local TTL export to `working_directory` is no longer used.
+
+Ontology **catalog reads** (headers, by-IRI graphs, merged working graphs) go through `OntologyManager`, not ad-hoc `fetch_ontologies()` from callers — see [Ontology Catalog](../architecture/ontology_catalog.md).
 
 ### Tenancy and Partitions
 
@@ -65,7 +67,7 @@ Configure OntoCast:
 
 ```bash
 FUSEKI_URI=http://localhost:3032
-FUSEKI_AUTH=admin:your-password
+FUSEKI_AUTH=admin/your-password
 ```
 
 ---
@@ -78,9 +80,58 @@ Use Fuseki for production deployments. The in-memory backend supports the same t
 
 ---
 
+## Known Limitation: Integer Subtypes Collapse on Insert
+
+pyoxigraph normalizes literals into its value space when a quad is added:
+`"1"^^xsd:nonNegativeInteger` is stored — and served back — as
+`"1"^^xsd:integer`, independent of serialization format. OWL 2 requires
+`xsd:nonNegativeInteger` on `owl:qualifiedCardinality` /
+`owl:maxQualifiedCardinality`, so an ontology round-tripped through the store
+is no longer OWL 2 DL conformant on those axioms, and an external reasoner may
+reject or ignore them.
+
+Content hashing is insensitive to this (literals are canonicalized onto the
+value-space normal form before hashing), so it causes no identity drift inside
+OntoCast — but the *served* ontology is lossy. If strict OWL 2 DL conformance
+of exported ontologies matters, keep the authored Turtle as the source of
+truth (e.g. under `ONTOCAST_ONTOLOGY_DIRECTORY`) rather than re-exporting from
+the store.
+
+---
+
 ## Seed Ontologies
 
 Place `.ttl` files in `ONTOCAST_ONTOLOGY_DIRECTORY`. On startup, `ToolBox` scans that directory and materializes any ontologies not already present in the triple store. This is a one-way bootstrap path — ongoing persistence is through the triple store.
+
+---
+
+## Targeted Catalog Reads
+
+`fetch_ontologies()` materializes every stored ontology into rdflib. That is the right call at startup, but it is far too much for the per-content-unit retrieval path, which only needs to know *which* ontologies to pull. `TripleStoreManager` therefore exposes three narrower reads:
+
+| Method | Returns | Cost |
+|---|---|---|
+| `aselect(query, *, use_ontologies_dataset=True)` | `list[dict[str, str]]` — one dict per SPARQL SELECT solution | One query |
+| `aconstruct(query, *, use_ontologies_dataset=True)` | `RDFGraph` — real RDF terms, no prefix bindings | One query |
+| `afetch_ontology_catalog()` | `list[OntologyHeader]` — `iri`, `version`, `hash`, `parent_hashes`, `created_at`, `graph_uri` per stored version | One query, no graphs |
+| `afetch_ontologies_by_iri(iris)` | `list[Ontology]` with graphs, restricted to `iris` (empty means no restriction) | Only the named graphs requested |
+
+`aselect` rows carry each term's **lexical value** only — term kind and datatype are dropped, so constrain kinds in the query itself (`FILTER(isIRI(?x))`). Unbound variables are simply absent from the row. `aconstruct` has no such loss: blank nodes and datatypes survive. What it *cannot* carry is prefix bindings — those are serialization metadata rather than triples, so a caller that needs them must source them elsewhere.
+
+Both raise rather than returning an empty result on failure, because empty is indistinguishable from "nothing matched".
+
+`OntologyHeader` is deliberately not an `Ontology`: constructing an `Ontology` recomputes its hash from the graph, so a graph-less one would carry fabricated lineage. Run `dedupe_terminal_ontologies()` over headers to pick terminal versions without downloading anything — it accepts headers and ontologies alike, as does `select_relevant_ontologies()`.
+
+### Custom Backends
+
+Implementing a `TripleStoreManager` subclass still requires only `fetch_ontologies()`. Every method above has a working base-class default expressed in terms of it, so a custom backend keeps working unchanged — it just fetches more than it needs.
+
+Two independent opt-ins into the fast paths, both dispatched on a predicate rather than on the concrete type:
+
+- `supports_sparql_select()` → `True` plus `aselect()` — enables targeted catalog reads and reference expansion.
+- `supports_sparql_construct()` → `True` plus `aconstruct()` — enables the optional [candidate pushdown](ontology_context.md#catalog-io).
+
+They are separate because a backend can answer row queries without returning triples: Fuseki's SELECT path speaks `application/sparql-results+json` only, and needs a different `Accept` header for CONSTRUCT.
 
 ---
 
@@ -89,7 +140,9 @@ Place `.ttl` files in `ONTOCAST_ONTOLOGY_DIRECTORY`. On startup, `ToolBox` scans
 | Feature | Fuseki | In-Memory |
 |---------|--------|-----------|
 | **Persistence** | Yes | No (process lifetime) |
-| **SPARQL** | Full 1.1 | Internal only |
+| **SPARQL** | Full 1.1 | Full 1.1 (pyoxigraph) |
+| **`aselect` fast path** | Yes | Yes |
+| **`aconstruct` fast path** | Yes | Yes |
 | **Tenancy partitions** | Yes | Yes |
 | **Setup** | Docker + env | Automatic |
 

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Protocol
 
 from pydantic import Field
-from rdflib import DCTERMS, OWL, RDF, RDFS, SKOS, BNode, Literal, URIRef
+from rdflib import DCTERMS, OWL, RDF, RDFS, SKOS, BNode, Literal, Namespace, URIRef
 from rdflib.term import Node
 
 from ontocast.onto.embedding_policy import (
@@ -23,10 +23,14 @@ from ontocast.tool.onto import Tool
 from ontocast.tool.representation_text import (
     normalize_text,
     normalize_uri_local_name,
-    role_from_predicate_usage,
+    role_from_declaration,
     stable_sorted_triples,
 )
 from ontocast.tool.vector_store.core import GraphAtom
+from ontocast.tool.vector_store.lexical_trigger import (
+    dedupe_preserve_case,
+    looks_like_lexical_code,
+)
 from ontocast.util.hash import render_text_hash
 
 # rdf:type values that add little embedding signal (OWL/RDFS scaffolding).
@@ -52,6 +56,76 @@ _GENERIC_TYPE_IRIS: frozenset[URIRef] = frozenset(
     }
 )
 
+# rdf:type values that declare an entity to be a property. OWL property
+# characteristics (functional, transitive, …) are included: they are only ever
+# asserted of properties, and an ontology that states a characteristic without
+# also stating owl:ObjectProperty is still describing a predicate.
+_PROPERTY_TYPE_IRIS: frozenset[URIRef] = frozenset(
+    {
+        RDF.Property,
+        OWL.ObjectProperty,
+        OWL.DatatypeProperty,
+        OWL.AnnotationProperty,
+        OWL.FunctionalProperty,
+        OWL.InverseFunctionalProperty,
+        OWL.TransitiveProperty,
+        OWL.SymmetricProperty,
+        OWL.AsymmetricProperty,
+        OWL.ReflexiveProperty,
+        OWL.IrreflexiveProperty,
+    }
+)
+
+QUDT = Namespace("http://qudt.org/schema/qudt/")
+
+# Declared surface forms, in descending priority. Defaults only -- see
+# ``GraphAtomizer.label_predicates``.
+DEFAULT_LABEL_PREDICATES: list[str] = [
+    str(RDFS.label),
+    str(SKOS.prefLabel),
+    str(DCTERMS.title),
+    str(SKOS.altLabel),
+    str(DCTERMS.alternative),
+]
+
+# QUDT publishes an authoritative symbol and UCUM code per unit. Those are the forms
+# prose actually uses — "meV", not "millielectronvolt" — so a corpus reporting
+# measurements is queried by symbol. They are collected against their own budget rather
+# than queued behind labels: a QUDT unit may declare a dozen labels (one per language),
+# which would exhaust the surface-form cap before any symbol is reached.
+#
+# Defaults only. A catalog that publishes symbols under different predicates
+# overrides ``GraphAtomizer.symbol_predicates``; the retrieval side has always
+# been configurable this way, and having only one half of the pair configurable
+# meant setting the knob changed what surfaced without changing what was
+# indexed.
+DEFAULT_SYMBOL_PREDICATES: list[str] = [
+    str(SKOS.notation),
+    str(QUDT.symbol),
+    str(QUDT.ucumCode),
+]
+
+
+def _language_rank(value: Literal) -> int:
+    """Sort key putting English and untagged literals ahead of other languages.
+
+    Sorting literals alphabetically makes atomization reproducible, but it also picks
+    the display name: a term declaring one label per language is named by whichever
+    language happens to sort first (QUDT's ``unit:DEG_C`` declares 23 and would be named
+    in Hungarian). Ranking by language first keeps the ordering total and deterministic
+    while giving an English-language corpus a readable name, and spends the
+    surface-form cap on forms a reader might actually type.
+
+    Args:
+        value: Literal whose language tag is inspected.
+
+    Returns:
+        int: ``0`` for untagged or English literals, ``1`` otherwise.
+    """
+    language = value.language
+    return 0 if not language or language.lower().startswith("en") else 1
+
+
 # Predicates whose objects are usually literal glosses — kept out of neighborhood clues.
 _ANNOTATION_PREDICATES: frozenset[URIRef] = frozenset(
     {
@@ -67,6 +141,10 @@ _ANNOTATION_PREDICATES: frozenset[URIRef] = frozenset(
         DCTERMS.title,
         DCTERMS.description,
         DCTERMS.abstract,
+        DCTERMS.alternative,
+        SKOS.notation,
+        QUDT.symbol,
+        QUDT.ucumCode,
     }
 )
 
@@ -112,10 +190,16 @@ def _normalize_vocab_exclude_prefix(prefix: str) -> str:
 class GraphAtomizer(Tool):
     """Extract natural-language atoms around graph focal entities.
 
-    By default, ontology atomization skips focal IRIs in common W3C and DC vocabulary
-    namespaces (see module-level exclusions). Set ``embed_standard_vocab_iris=True`` to
-    restore legacy behavior (embed every URIRef in the graph). Facts sources are still
-    restricted to ``facts_namespace`` only; vocabulary exclusion does not apply to them.
+    Two defaults narrow what an ontology contributes, both restorable:
+
+    * Focal IRIs in common W3C and DC vocabulary namespaces are skipped (see
+      module-level exclusions); ``embed_standard_vocab_iris=True`` embeds them.
+    * An IRI is atomized only when this graph *describes* it — a subject-position triple
+      or a label. ``index_undescribed_iris=True`` restores atomizing every URIRef,
+      object-position references included.
+
+    Facts sources are restricted to ``facts_namespace`` only; neither narrowing applies
+    to them.
     """
 
     embed_standard_vocab_iris: bool = Field(
@@ -126,6 +210,82 @@ class GraphAtomizer(Tool):
         default_factory=list,
         description="Additional IRI prefixes excluded from focal entities (ontology sources).",
     )
+    index_undescribed_iris: bool = Field(
+        default=False,
+        description=(
+            "If True, atomize every IRI in the graph, including ones appearing only in "
+            "object or predicate position. Default False: an ontology mints an atom "
+            "only for terms it describes (a subject-position triple, or a label). A "
+            "referenced IRI has no local text, so its atom is its mangled local name -- "
+            "'a0e0l2i0m1h0t 3d0' for a QUDT dimension vector -- and such strings embed "
+            "near the corpus centroid, making them hubs that rank against every query. "
+            "Measured on the 8-module matsci catalog: 247 of 690 atoms (36%) were "
+            "undescribed references, and dimension vectors alone took 51 of 140 dense "
+            "retrieval slots on one document, crowding four ontologies out entirely. "
+            "Referenced IRIs are still reachable -- induced-subgraph expansion walks "
+            "into them from seeds; they just stop being seeds themselves. Changing this "
+            "changes which atoms exist and requires a reindex."
+        ),
+    )
+    minimal_representation_label_limit: int = Field(
+        default=5,
+        ge=0,
+        description=(
+            "Maximum declared surface forms (label/prefLabel/title/altLabel) folded "
+            "into the sparse BM25 representation. A vocabulary may declare more "
+            "aliases than this -- symbol aliases in particular sort last and are the "
+            "first to be dropped -- so raising it widens what the sparse lane can "
+            "match. Changing it changes stored vectors and requires a reindex."
+        ),
+    )
+    label_predicates: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_LABEL_PREDICATES),
+        description=(
+            "Predicate IRIs whose literal objects are treated as declared "
+            "labels, in descending priority. Changing this changes stored "
+            "vectors and requires a reindex."
+        ),
+    )
+    symbol_predicates: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_SYMBOL_PREDICATES),
+        description=(
+            "Predicate IRIs whose literal objects are treated as symbols/"
+            "notations, collected against their own budget so they are not "
+            "crowded out by multilingual labels. Should agree with "
+            "VECTOR_STORE_INDUCED_SUBGRAPH_SYMBOL_PREDICATES, which controls "
+            "the retrieval half of the same contract. Changing this changes "
+            "stored vectors and requires a reindex."
+        ),
+    )
+    lexical_trigger_enabled: bool = Field(
+        default=True,
+        description="Collect case-preserved lexical triggers on each atom.",
+    )
+    lexical_trigger_predicates: list[str] = Field(
+        default_factory=lambda: [
+            "http://www.w3.org/2004/02/skos/core#notation",
+            "http://qudt.org/schema/qudt/symbol",
+            "http://qudt.org/schema/qudt/ucumCode",
+        ],
+        description="Predicate IRIs whose literal objects become lexical triggers.",
+    )
+    lexical_trigger_heuristic_enabled: bool = Field(
+        default=True,
+        description=(
+            "Promote code-shaped labels/altLabels when no notation is declared."
+        ),
+    )
+    lexical_trigger_min_len: int = Field(default=2, ge=1)
+    lexical_trigger_max_len: int = Field(default=24, ge=1)
+    lexical_trigger_heuristic_max_per_entity: int = Field(default=2, ge=0)
+
+    def _label_predicate_refs(self) -> list[URIRef]:
+        """Configured label predicates as rdflib terms."""
+        return [URIRef(iri) for iri in self.label_predicates]
+
+    def _symbol_predicate_refs(self) -> list[URIRef]:
+        """Configured symbol/notation predicates as rdflib terms."""
+        return [URIRef(iri) for iri in self.symbol_predicates]
 
     class _VectorizationSource(Protocol):
         graph: RDFGraph
@@ -151,21 +311,34 @@ class GraphAtomizer(Tool):
         raw_graph = source.graph
         embedding_graph = strip_provenance_triples_for_embedding(raw_graph)
         focal_namespace = source.facts_namespace if isinstance(source, Facts) else None
+        is_ontology_source = not isinstance(source, Facts)
         excluded_vocab: frozenset[str] | None = None
-        if not isinstance(source, Facts) and not self.embed_standard_vocab_iris:
+        if is_ontology_source and not self.embed_standard_vocab_iris:
             excluded_vocab = self._merged_excluded_vocab_prefixes()
         entities = self._collect_focal_entities(
             graph=embedding_graph,
             focal_namespace=focal_namespace,
             excluded_vocab_prefixes=excluded_vocab,
+            # Facts are already confined to ``facts_namespace``, where every individual
+            # is a subject; the describes-only rule targets ontology cross-references.
+            require_description=is_ontology_source and not self.index_undescribed_iris,
         )
         predicate_uris = {p for (_, p, _) in embedding_graph if isinstance(p, URIRef)}
+        declared_property_uris = {
+            subject
+            for property_type in _PROPERTY_TYPE_IRIS
+            for subject in embedding_graph.subjects(RDF.type, property_type)
+            if isinstance(subject, URIRef)
+        }
         generated_at = datetime.now(timezone.utc)
 
         atoms_by_id: dict[str, GraphAtom] = {}
         seen_payload_keys: set[tuple[str, str, str, str | None, str | None]] = set()
         for entity in entities:
-            role = role_from_predicate_usage(is_predicate=entity in predicate_uris)
+            role = role_from_declaration(
+                is_declared_property=entity in declared_property_uris,
+                is_predicate=entity in predicate_uris,
+            )
             patch_graph = self._build_neighborhood_graph(
                 graph=embedding_graph, root=entity, depth=depth
             )
@@ -175,7 +348,13 @@ class GraphAtomizer(Tool):
             core_representation = self._build_core_representation(
                 entity=entity, graph=patch_graph, role=role
             )
-            minimal_representation = self._build_minimal_representation(entity)
+            minimal_representation = self._build_minimal_representation(
+                entity, embedding_graph
+            )
+            lexical_triggers = self._build_lexical_triggers(entity, embedding_graph)
+            symbol_surfaces = self._collect_raw_literals(
+                embedding_graph, entity, self._symbol_predicate_refs(), max_items=8
+            )
             neighborhood_variants = self._build_neighborhood_variants(
                 entity=entity, graph=patch_graph, entity_role=role
             )
@@ -215,6 +394,8 @@ class GraphAtomizer(Tool):
                     core_representation=core_representation,
                     minimal_representation=minimal_representation,
                     neighborhood_representation=neighborhood_representation,
+                    lexical_triggers=lexical_triggers,
+                    symbol_surfaces=symbol_surfaces,
                     created_at=generated_at,
                 )
         return list(atoms_by_id.values())
@@ -255,11 +436,26 @@ class GraphAtomizer(Tool):
             if prefix:
                 result.bind(prefix, namespace)
 
+    def _describes(self, graph: RDFGraph, entity: URIRef) -> bool:
+        """True when this graph says something *about* ``entity``, not merely with it.
+
+        Subject-position triples are the primary evidence. A label alone also counts:
+        a vocabulary may name a term it otherwise only references, and that name is
+        exactly what retrieval needs.
+        """
+        for _ in graph.triples((entity, None, None)):
+            return True
+        return any(
+            next(graph.objects(entity, predicate), None) is not None
+            for predicate in self._label_predicate_refs()
+        )
+
     def _collect_focal_entities(
         self,
         graph: RDFGraph,
         focal_namespace: str | None = None,
         excluded_vocab_prefixes: frozenset[str] | None = None,
+        require_description: bool = False,
     ) -> list[URIRef]:
         ns_prefix = focal_namespace.rstrip("/") if focal_namespace is not None else None
         entities: set[URIRef] = set()
@@ -279,17 +475,15 @@ class GraphAtomizer(Tool):
                 if not any(str(e).startswith(p) for p in excluded_vocab_prefixes)
             }
 
+        if require_description:
+            entities = {e for e in entities if self._describes(graph, e)}
+
         return sorted(entities, key=lambda entity: str(entity))
 
     def _parent_resource_phrase(self, graph: RDFGraph, parent: URIRef) -> str:
         """Local name plus optional label gloss when it adds information."""
         base = self._normalize_uri(parent)
-        literals = self._collect_literals(
-            graph,
-            parent,
-            [RDFS.label, SKOS.prefLabel, DCTERMS.title, SKOS.altLabel],
-            1,
-        )
+        literals = self._collect_surface_forms(graph, parent, 1)
         if not literals:
             return base
         gloss = literals[0]
@@ -423,23 +617,42 @@ class GraphAtomizer(Tool):
                 clues.append(f"{d_label} {prop_verb} it")
             self._append_inverse_of_clues_for_property(prop, graph, clues)
 
-    def _build_minimal_representation(self, entity: URIRef) -> str:
-        """IRI local name as keyword-oriented tokens: split camelCase/PascalCase, etc.
+    def _build_minimal_representation(
+        self, entity: URIRef, graph: RDFGraph | None = None
+    ) -> str:
+        """Keyword-oriented text for the sparse BM25 lane.
 
-        Compact text for sparse BM25 (no labels or gloss); only the focal entity IRI
-        is tokenized (see ``normalize_uri_local_name``).
+        The IRI local name (camelCase/PascalCase split, see ``normalize_uri_local_name``)
+        plus any human labels. Lexical match is the strongest available signal for
+        technical vocabulary that appears near-verbatim in source text, but an IRI local
+        name is often an opaque identifier — Wikidata-derived ``Q36834`` carries no
+        tokens at all, and the term is only findable through its ``rdfs:label``.
+        Descriptions are deliberately excluded: they would dominate term frequency
+        without naming the entity.
         """
-        return normalize_uri_local_name(entity)
+        local_name = normalize_uri_local_name(entity)
+        if graph is None:
+            return local_name
+        labels = self._collect_surface_forms(
+            graph,
+            entity,
+            self.minimal_representation_label_limit,
+            lead_with_symbol=True,
+        )
+        parts = [local_name, *labels]
+        seen: set[str] = set()
+        tokens: list[str] = []
+        for part in parts:
+            normalized = normalize_text(part)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                tokens.append(normalized)
+        return " ".join(tokens)
 
     def _build_core_representation(
         self, entity: URIRef, graph: RDFGraph, role: str
     ) -> str:
-        labels = self._collect_literals(
-            graph,
-            entity,
-            [RDFS.label, SKOS.prefLabel, DCTERMS.title, SKOS.altLabel],
-            5,
-        )
+        labels = self._collect_surface_forms(graph, entity, 5)
         descriptions = self._collect_literals(
             graph, entity, [RDFS.comment, DCTERMS.description, SKOS.definition], 2
         )
@@ -626,20 +839,153 @@ class GraphAtomizer(Tool):
     def _collect_literals(
         self, graph: RDFGraph, subject: URIRef, predicates: list[URIRef], max_items: int
     ) -> list[str]:
+        """Collect literal surface forms, deterministically, in predicate priority order.
+
+        ``graph.triples`` yields in unspecified order, so truncating its output at
+        ``max_items`` picked an arbitrary subset of a term's labels: a term declaring
+        more aliases than the cap allows would embed differently between runs over
+        identical input, which makes retrieval measurements irreproducible. Values are
+        sorted within each predicate before truncation; predicate order is still
+        honoured, keeping ``rdfs:label`` ahead of ``skos:altLabel``.
+
+        Args:
+            graph: Graph to read literals from.
+            subject: Subject whose literals are collected.
+            predicates: Predicates to read, in descending priority.
+            max_items: Maximum number of distinct values to return.
+
+        Returns:
+            list[str]: Normalized literal values, at most ``max_items``.
+        """
         values: list[str] = []
         seen: set[str] = set()
         for predicate in predicates:
-            for _, _, obj in graph.triples((subject, predicate, None)):
-                if not isinstance(obj, Literal):
-                    continue
-                normalized = self._normalize_string(str(obj))
-                if not normalized or normalized in seen:
+            candidates = sorted(
+                {
+                    (_language_rank(obj), normalized)
+                    for _, _, obj in graph.triples((subject, predicate, None))
+                    if isinstance(obj, Literal)
+                    and (normalized := self._normalize_string(str(obj)))
+                }
+            )
+            for _, normalized in candidates:
+                if normalized in seen:
                     continue
                 values.append(normalized)
                 seen.add(normalized)
                 if len(values) >= max_items:
                     return values
         return values
+
+    def _collect_surface_forms(
+        self,
+        graph: RDFGraph,
+        subject: URIRef,
+        max_items: int,
+        *,
+        lead_with_symbol: bool = False,
+    ) -> list[str]:
+        """Declared labels plus QUDT symbols, with symbols guaranteed a slot.
+
+        ``_collect_literals`` honours predicate priority, so appending the symbol
+        predicates to the label list would let a term that declares many labels crowd
+        the symbols out entirely — and QUDT units routinely declare one label per
+        language. The two families are therefore collected against separate budgets and
+        merged, so a unit stays findable by the symbol a reader actually types.
+
+        Args:
+            graph: Graph to read literals from.
+            subject: Entity whose surface forms are collected.
+            max_items: Maximum number of distinct values to return.
+            lead_with_symbol: Put symbols first, for the sparse lexical lane. When
+                ``False`` the primary label leads so the entity keeps a readable name.
+
+        Returns:
+            list[str]: Normalized surface forms, at most ``max_items``.
+        """
+        labels = self._collect_literals(
+            graph, subject, self._label_predicate_refs(), max_items
+        )
+        symbols = self._collect_literals(
+            graph, subject, self._symbol_predicate_refs(), max_items
+        )
+        if not symbols:
+            return labels[:max_items]
+        if lead_with_symbol:
+            ordered = [*symbols, *labels]
+        else:
+            ordered = [*labels[:1], *symbols, *labels[1:]]
+
+        merged: list[str] = []
+        seen: set[str] = set()
+        for value in ordered:
+            if value in seen:
+                continue
+            seen.add(value)
+            merged.append(value)
+            if len(merged) >= max_items:
+                break
+        return merged
+
+    def _resolved_lexical_trigger_predicates(self) -> list[URIRef]:
+        return [URIRef(iri) for iri in self.lexical_trigger_predicates if iri.strip()]
+
+    def _collect_raw_literals(
+        self,
+        graph: RDFGraph,
+        subject: URIRef,
+        predicates: list[URIRef],
+        max_items: int,
+    ) -> list[str]:
+        """Collect literal values preserving original case (for lexical triggers)."""
+        values: list[str] = []
+        seen: set[str] = set()
+        for predicate in predicates:
+            candidates = sorted(
+                {
+                    (_language_rank(obj), str(obj).strip())
+                    for _, _, obj in graph.triples((subject, predicate, None))
+                    if isinstance(obj, Literal) and str(obj).strip()
+                }
+            )
+            for _, raw in candidates:
+                if raw in seen:
+                    continue
+                values.append(raw)
+                seen.add(raw)
+                if len(values) >= max_items:
+                    return values
+        return values
+
+    def _build_lexical_triggers(self, entity: URIRef, graph: RDFGraph) -> list[str]:
+        if not self.lexical_trigger_enabled:
+            return []
+        predicate_iris = self._resolved_lexical_trigger_predicates()
+        declared = self._collect_raw_literals(
+            graph, entity, predicate_iris, max_items=16
+        )
+        if declared:
+            return dedupe_preserve_case(declared)
+
+        if not self.lexical_trigger_heuristic_enabled:
+            return []
+
+        heuristic: list[str] = []
+        for candidate in self._collect_raw_literals(
+            graph,
+            entity,
+            [RDFS.label, SKOS.altLabel],
+            max_items=self.lexical_trigger_heuristic_max_per_entity + 4,
+        ):
+            if looks_like_lexical_code(
+                candidate,
+                min_len=self.lexical_trigger_min_len,
+                max_len=self.lexical_trigger_max_len,
+            ):
+                heuristic.append(candidate)
+            if len(heuristic) >= self.lexical_trigger_heuristic_max_per_entity:
+                break
+        return dedupe_preserve_case(heuristic)
 
     def _normalize_uri(self, uri: URIRef) -> str:
         return normalize_uri_local_name(uri)

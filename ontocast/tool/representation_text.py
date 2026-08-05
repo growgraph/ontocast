@@ -59,3 +59,25 @@ def stable_sorted_triples(
 def role_from_predicate_usage(*, is_predicate: bool) -> str:
     """Map predicate-position usage to vector-store role vocabulary."""
     return ROLE_PREDICATE if is_predicate else ROLE_RESOURCE
+
+
+def role_from_declaration(*, is_declared_property: bool, is_predicate: bool) -> str:
+    """Map property declaration *or* predicate-position usage to role vocabulary.
+
+    Predicate-position usage alone under-reports badly: a TBox-only ontology
+    asserts its properties as subjects (``ex:hasResult a owl:ObjectProperty ;
+    rdfs:domain … ; rdfs:range …``) and never uses them as predicates, so a
+    catalog of pure schema modules classifies nearly every property as a
+    resource. Those atoms then get a resource-shaped neighborhood
+    representation — empty, for a term with no outgoing domain assertions —
+    and the neighborhood channel goes blind to the predicates that carry the
+    graph structure.
+
+    Args:
+        is_declared_property: Entity is declared an OWL/RDF property.
+        is_predicate: Entity occurs in predicate position in the source graph.
+
+    Returns:
+        str: ``ROLE_PREDICATE`` when either signal holds, else ``ROLE_RESOURCE``.
+    """
+    return ROLE_PREDICATE if (is_declared_property or is_predicate) else ROLE_RESOURCE

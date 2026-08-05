@@ -212,16 +212,17 @@ class GraphRewriter:
         # Bind base namespace
         merged.bind("facts", base_namespace)
 
-        # Collect all namespaces from all graphs
-        all_namespaces = {}
+        # Collect all namespaces from all graphs (conflict-rename, never override)
+        from ontocast.onto.namespace_merge import merge_namespace_bindings
+
+        all_namespaces: dict[str, str] = {"facts": str(base_namespace)}
         for graph in graphs:
-            for prefix, namespace in graph.namespaces():
-                if prefix not in all_namespaces:
-                    all_namespaces[prefix] = namespace
-                elif all_namespaces[prefix] != namespace:
-                    # Handle prefix conflicts
-                    new_prefix = f"{prefix}_{len(all_namespaces)}"
-                    all_namespaces[new_prefix] = namespace
+            incoming = {
+                prefix: str(namespace)
+                for prefix, namespace in graph.namespaces()
+                if prefix
+            }
+            all_namespaces = merge_namespace_bindings(all_namespaces, incoming)
 
         # Bind all namespaces
         for prefix, namespace in all_namespaces.items():

@@ -1,4 +1,5 @@
 import pathlib
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -528,6 +529,109 @@ class OntologyRenderReport(BaseModel):
         default_factory=ExternalEvidenceRequest,
         description="Optional request to run web search before retrying.",
     )
+
+
+class FactsUnitFindingKind(StrEnum):
+    """Kinds of deterministic per-unit facts findings."""
+
+    QUARANTINED_LITERAL = "quarantined_literal"
+    UNKNOWN_TERM = "unknown_term"
+    PROPERTY_ALIAS = "property_alias"
+    CLOSED_RANGE_LITERAL = "closed_range_literal"
+    LITERAL_TYPE_OBJECT = "literal_type_object"
+    NUMERIC_COVERAGE = "numeric_coverage"
+
+
+class FactsUnitFinding(BaseModel):
+    """One deterministic, machine-found issue in a rendered facts graph.
+
+    Mandatory findings are schema/namespace violations the renderer must fix;
+    non-mandatory findings (numeric coverage) list candidates the renderer
+    adjudicates item by item.
+    """
+
+    kind: FactsUnitFindingKind
+    mandatory: bool = True
+    message: str
+    subject: str = ""
+    predicate: str = ""
+    value: str = ""
+    suggestions: list[str] = Field(default_factory=list)
+
+
+class GraphRepairRecord(BaseModel):
+    """One machine-applied deterministic rewrite on a rendered facts graph.
+
+    Records what the repair passes changed (near-miss predicate rewrites,
+    literal ``rdf:type`` coercions) so downstream consumers can distinguish
+    machine-altered triples from what the LLM asserted.
+    """
+
+    kind: FactsUnitFindingKind
+    source: str
+    target: str
+    triple_count: int = 1
+
+
+class UnitFailure(BaseModel):
+    """One content unit that produced no usable output.
+
+    Carried to the document level so a caller can tell "nothing to extract"
+    from "every unit failed" -- previously both produced an empty result with
+    ``status: success``.
+    """
+
+    unit_index: int
+    phase: Literal["ontology", "facts", "summarize"]
+    stage: str | None = None
+    reason: str | None = None
+
+
+class FactsLoopAttempt(BaseModel):
+    """Telemetry record for one attempt inside the per-unit facts loop.
+
+    ``n_deterministic_findings`` / ``n_mandatory_findings`` count findings
+    against the graph as of this record: for ``repair`` records that is the
+    residual *after* the repair render, so summing the last repair record per
+    unit yields the true document-level residual.
+    """
+
+    render_attempt: int = 0
+    critic_attempt: int = 0
+    kind: Literal["render", "critic", "repair"] = "render"
+    score: float | None = None
+    success: bool | None = None
+    n_actionable_fixes: int = 0
+    n_deterministic_findings: int = 0
+    n_mandatory_findings: int = 0
+    repair_failed: bool = False
+    triple_count: int = 0
+
+
+class FactsValidationFindingKind(StrEnum):
+    """Kinds of deterministic post-aggregation facts findings."""
+
+    FUNCTIONAL_VIOLATION = "functional_violation"
+    SUSPECT_MULTI_VALUE = "suspect_multi_value"
+    DEGENERATE_COREFERENCE = "degenerate_coreference"
+    SHACL = "shacl"
+    NON_CATALOG_VOCABULARY = "non_catalog_vocabulary"
+
+
+class FactsValidationFinding(BaseModel):
+    """One invariant violation detected in the aggregated facts graph.
+
+    Error-severity findings on subjects that resulted from an identity merge
+    drive the deterministic un-merge repair (full-cluster pair vetoes plus
+    re-aggregation); warning findings are telemetry only.
+    """
+
+    kind: FactsValidationFindingKind
+    severity: Literal["error", "warning"] = "error"
+    message: str
+    subject: str = ""
+    predicate: str = ""
+    values: list[str] = Field(default_factory=list)
 
 
 class Suggestions(BaseModel):

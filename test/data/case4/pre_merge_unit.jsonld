@@ -1,0 +1,339 @@
+{
+    "@context": {
+        "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+        "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+        "owl": "http://www.w3.org/2002/07/owl#",
+        "xsd": "http://www.w3.org/2001/XMLSchema#",
+        "schema": "https://schema.org/",
+        "cd": "https://growgraph.dev/facts/",
+        "matsci": "https://growgraph.dev/ontologies/matsci#",
+        "matsciunits": "https://growgraph.dev/ontologies/matsci-units#",
+        "perovmat": "https://growgraph.dev/ontologies/perovskitemat#",
+        "obs": "https://growgraph.dev/ontologies/observation#",
+        "qudt": "http://qudt.org/schema/qudt/",
+        "unit": "http://qudt.org/vocab/unit/"
+    },
+    "@graph": [
+        {
+            "@id": "cd:growth_process_1",
+            "@type": [
+                "obs:Process"
+            ],
+            "rdfs:label": {
+                "@value": "solvent diffusion growth process for CsPbBr3 superlattices",
+                "@language": "en"
+            },
+            "obs:usesMethod": {
+                "@id": "cd:solvent_diffusion_technique_1"
+            },
+            "matsci:usedSolvent": {
+                "@id": "matsci:hexane"
+            },
+            "matsci:usedAntisolvent": {
+                "@id": "cd:pfd_1"
+            }
+        },
+        {
+            "@id": "cd:solvent_diffusion_technique_1",
+            "@type": [
+                "matsci:SelfAssemblyTechnique"
+            ],
+            "rdfs:label": {
+                "@value": "solvent diffusion technique",
+                "@language": "en"
+            }
+        },
+        {
+            "@id": "cd:pfd_1",
+            "@type": [
+                "matsci:Material"
+            ],
+            "rdfs:label": {
+                "@value": "perfluorodecalin (PFD)",
+                "@language": "en"
+            },
+            "rdfs:comment": {
+                "@value": "Inert perfluorinated liquid, partially miscible with hexane; acts as an antisolvent in the reported method.",
+                "@language": "en"
+            }
+        },
+        {
+            "@id": "cd:cs_nc_sample_1",
+            "@type": [
+                "matsci:NanocrystalSample"
+            ],
+            "rdfs:label": {
+                "@value": "cube-shaped CsPbBr3 nanocrystals",
+                "@language": "en"
+            },
+            "matsci:describesMaterial": {
+                "@id": "perovmat:CsPbBr3"
+            },
+            "rdfs:comment": {
+                "@value": "Quantum-confined nanocrystals used as the constituent NCs of the superlattices.",
+                "@language": "en"
+            }
+        },
+        {
+            "@id": "cd:sl_sample_1",
+            "@type": [
+                "matsci:SuperlatticeSample"
+            ],
+            "rdfs:label": {
+                "@value": "three-dimensional nearly isotropic CsPbBr3 superlattice",
+                "@language": "en"
+            },
+            "matsci:hasConstituentNanocrystalSample": {
+                "@id": "cd:cs_nc_sample_1"
+            },
+            "obs:producedByProcess": {
+                "@id": "cd:growth_process_1"
+            },
+            "schema:measurement": [
+                {
+                    "@id": "cd:sl_dimension_1"
+                },
+                {
+                    "@id": "cd:pl_redshift_clean_sl_1"
+                },
+                {
+                    "@id": "cd:pl_redshift_agg_sl_1"
+                }
+            ],
+            "matsci:hasLuminescentImpurity": {
+                "@id": "cd:impurity_particle_1"
+            },
+            "matsci:exhibitsPhenomenon": {
+                "@id": "cd:photon_propagation_effect_1"
+            }
+        },
+        {
+            "@id": "cd:sl_dimension_1",
+            "@type": [
+                "qudt:QuantityValue"
+            ],
+            "rdfs:label": {
+                "@value": "superlattice maximum dimension",
+                "@language": "en"
+            },
+            "qudt:numericValue": {
+                "@value": "70",
+                "@type": "xsd:decimal"
+            },
+            "qudt:unit": {
+                "@id": "unit:MicroM"
+            },
+            "rdfs:comment": {
+                "@value": "Reported maximum dimension up to approximately 70 \u03bcm.",
+                "@language": "en"
+            }
+        },
+        {
+            "@id": "cd:pl_redshift_clean_sl_1",
+            "@type": [
+                "qudt:QuantityValue"
+            ],
+            "rdfs:label": {
+                "@value": "PL red shift for individual clean SLs vs dilute NCs",
+                "@language": "en"
+            },
+            "qudt:numericValue": {
+                "@value": "12.5",
+                "@type": "xsd:decimal"
+            },
+            "qudt:unit": {
+                "@id": "matsciunits:millielectronvolt"
+            },
+            "rdfs:comment": {
+                "@value": "Reported approximately 10\u201315 meV red shift for individual SLs with a clean surface compared to NCs in dilute solution.",
+                "@language": "en"
+            }
+        },
+        {
+            "@id": "cd:pl_redshift_agg_sl_1",
+            "@type": [
+                "qudt:QuantityValue"
+            ],
+            "rdfs:label": {
+                "@value": "PL red shift for macroscopic aggregated SL sample",
+                "@language": "en"
+            },
+            "qudt:numericValue": {
+                "@value": "96",
+                "@type": "xsd:decimal"
+            },
+            "qudt:unit": {
+                "@id": "matsciunits:millielectronvolt"
+            },
+            "rdfs:comment": {
+                "@value": "Macroscopic aggregated sample of NC superlattices shows a PL red shift of up to ~96 meV.",
+                "@language": "en"
+            }
+        },
+        {
+            "@id": "cd:impurity_particle_1",
+            "@type": [
+                "matsci:LuminescentImpurity"
+            ],
+            "rdfs:label": {
+                "@value": "submicrometer CsPbBr3 impurity particle",
+                "@language": "en"
+            },
+            "matsci:describesMaterial": {
+                "@id": "perovmat:CsPbBr3"
+            },
+            "rdfs:comment": {
+                "@value": "Identified as submicrometer particles of CsPbBr3 that have red-shifted PL and can increase observed PL red shift of aggregated samples.",
+                "@language": "en"
+            },
+            "schema:measurement": {
+                "@id": "cd:impurity_contrib_1"
+            }
+        },
+        {
+            "@id": "cd:impurity_contrib_1",
+            "@type": [
+                "qudt:QuantityValue"
+            ],
+            "rdfs:label": {
+                "@value": "impurity contribution to PL red shift",
+                "@language": "en"
+            },
+            "qudt:numericValue": {
+                "@value": "30",
+                "@type": "xsd:decimal"
+            },
+            "qudt:unit": {
+                "@id": "matsciunits:millielectronvolt"
+            },
+            "rdfs:comment": {
+                "@value": "Impurities (submicrometer CsPbBr3 particles) can add up to ~30 meV to the PL red shift.",
+                "@language": "en"
+            }
+        },
+        {
+            "@id": "cd:photon_propagation_effect_1",
+            "@type": [
+                "matsci:PhotonPropagationEffect"
+            ],
+            "rdfs:label": {
+                "@value": "photon propagation effect (self-absorption)",
+                "@language": "en"
+            },
+            "rdfs:comment": {
+                "@value": "Photon propagation effects, including self-absorption, can add roughly 10\u201350 meV or more to the measured PL red shift in aggregated samples.",
+                "@language": "en"
+            },
+            "schema:measurement": {
+                "@id": "cd:photon_prop_contrib_1"
+            }
+        },
+        {
+            "@id": "cd:photon_prop_contrib_1",
+            "@type": [
+                "qudt:QuantityValue"
+            ],
+            "rdfs:label": {
+                "@value": "photon-propagation contribution to PL red shift",
+                "@language": "en"
+            },
+            "qudt:numericValue": {
+                "@value": "30",
+                "@type": "xsd:decimal"
+            },
+            "qudt:unit": {
+                "@id": "matsciunits:millielectronvolt"
+            },
+            "rdfs:comment": {
+                "@value": "Reported contribution range approximately 10\u201350 meV (nominal value shown); arises from self-absorption / photon propagation.",
+                "@language": "en"
+            }
+        },
+        {
+            "@id": "cd:synthesis_process_1",
+            "@type": [
+                "obs:Process"
+            ],
+            "rdfs:label": {
+                "@value": "hot-injection synthesis of cube-shaped CsPbBr3 NCs (modified)",
+                "@language": "en"
+            },
+            "obs:usesMethod": {
+                "@id": "matsci:hot_injection"
+            },
+            "matsci:hasInputMaterial": [
+                {
+                    "@id": "cd:cesium_oleate_1"
+                },
+                {
+                    "@id": "cd:lead_bromide_1"
+                }
+            ],
+            "matsci:usedLigand": [
+                {
+                    "@id": "matsci:oleylamine"
+                },
+                {
+                    "@id": "matsci:oleicAcid"
+                }
+            ],
+            "rdfs:comment": {
+                "@value": "NCs were prepared by a modified hot-injection method (cesium oleate injected into lead bromide dissolved in oleic acid / oleylamine mixture).",
+                "@language": "en"
+            }
+        },
+        {
+            "@id": "cd:cesium_oleate_1",
+            "@type": [
+                "matsci:Material"
+            ],
+            "rdfs:label": {
+                "@value": "cesium oleate precursor",
+                "@language": "en"
+            }
+        },
+        {
+            "@id": "cd:lead_bromide_1",
+            "@type": [
+                "matsci:Material"
+            ],
+            "rdfs:label": {
+                "@value": "lead bromide",
+                "@language": "en"
+            }
+        },
+        {
+            "@id": "cd:article_1",
+            "@type": [
+                "schema:ScholarlyArticle"
+            ],
+            "rdfs:label": {
+                "@value": "article: solvent-diffusion growth of CsPbBr3 nanocrystal superlattices (2019)",
+                "@language": "en"
+            },
+            "schema:dateReceived": {
+                "@value": "2019-01-21",
+                "@type": "xsd:date"
+            },
+            "schema:dateAccepted": {
+                "@value": "2019-01-24",
+                "@type": "xsd:date"
+            },
+            "schema:datePublished": {
+                "@value": "2019-01-24",
+                "@type": "xsd:date"
+            },
+            "schema:mentions": [
+                {
+                    "@id": "cd:growth_process_1"
+                },
+                {
+                    "@id": "cd:sl_sample_1"
+                },
+                {
+                    "@id": "cd:pl_redshift_agg_sl_1"
+                }
+            ]
+        }
+    ]
+}

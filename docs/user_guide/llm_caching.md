@@ -79,9 +79,7 @@ shared_cache = Cacher()
 
 # Create LLM tool with shared cache
 llm_config = LLMConfig(
-    provider="openai",
-    model_name="gpt-4o-mini",
-    api_key="your-api-key"
+    provider="openai", model_name="gpt-4o-mini", api_key="your-api-key"
 )
 
 llm_tool = LLMTool.create(config=llm_config, cache=shared_cache)
@@ -266,6 +264,7 @@ from ontocast.tool.llm import LLMTool
 from ontocast.tool.cache import Cacher
 from pathlib import Path
 
+
 class CustomLLMTool(LLMTool):
     def __init__(self, config, **kwargs):
         super().__init__(config, **kwargs)
@@ -386,7 +385,9 @@ from ontocast.tool.chunk.chunker import ChunkerTool
 # Get cache statistics
 converter = ConverterTool()
 stats = converter.cache.get_cache_stats()
-print(f"Converter cache: {stats['total_files']} files, {stats['total_size_bytes']} bytes")
+print(
+    f"Converter cache: {stats['total_files']} files, {stats['total_size_bytes']} bytes"
+)
 
 # Clear cache if needed
 converter.cache.clear()

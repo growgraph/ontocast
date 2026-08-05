@@ -234,19 +234,19 @@ async def merge_terminal_ontologies(
         Ontology: The final merged ontology, or None if no ontologies found
     """
     logger.info(f"Fetching ontologies for IRI: {iri}")
-    all_ontologies = await triple_store_manager.afetch_ontologies()
-
-    # Filter by IRI and add to ontology manager
-    matching_ontologies = [o for o in all_ontologies if o.iri == iri]
+    # ``afetch_ontologies_by_iri`` returns terminal versions only, which is exactly
+    # what pair-wise terminal merging consumes -- superseded versions would be
+    # re-merged into their own descendants.
+    matching_ontologies = await triple_store_manager.afetch_ontologies_by_iri([iri])
     if not matching_ontologies:
         logger.warning(f"No ontologies found for IRI: {iri}")
         return None
 
     logger.info(f"Found {len(matching_ontologies)} ontologies for IRI: {iri}")
 
-    # Add all to ontology manager
+    # Add all to ontology manager (async reindex when a vector store is registered)
     for onto in matching_ontologies:
-        ontology_manager.add_ontology(onto)
+        await ontology_manager.aadd_ontology(onto)
 
     # Get terminal ontologies
     terminals = ontology_manager.get_terminal_ontologies_by_iri(iri)
@@ -255,14 +255,15 @@ async def merge_terminal_ontologies(
     # Merge pair-wise until only one remains
     while len(terminals) > 1:
         # Sort by created_at (oldest first)
-        terminals_with_time = [t for t in terminals if t.created_at is not None]
-        terminals_without_time = [t for t in terminals if t.created_at is None]
-
-        # Sort terminals with time by created_at
-        terminals_with_time.sort(key=lambda x: x.created_at)
-
-        # Combine: terminals with time (sorted) + terminals without time
-        sorted_terminals = terminals_with_time + terminals_without_time
+        timed = [
+            (created_at, t)
+            for t in terminals
+            if (created_at := t.created_at) is not None
+        ]
+        timed.sort(key=lambda pair: pair[0])
+        sorted_terminals = [t for _, t in timed] + [
+            t for t in terminals if t.created_at is None
+        ]
 
         if len(sorted_terminals) < 2:
             break
@@ -280,7 +281,7 @@ async def merge_terminal_ontologies(
         merged = merge_ontologies(onto1, onto2)
 
         # Add merged ontology to manager
-        ontology_manager.add_ontology(merged)
+        await ontology_manager.aadd_ontology(merged)
 
         # Update terminals list
         terminals = ontology_manager.get_terminal_ontologies_by_iri(iri)

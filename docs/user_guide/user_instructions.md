@@ -57,6 +57,8 @@ OntoCast always applies the following rules during facts rendering (see also [Fa
 4. **Typing** — Every `cd:` entity gets `rdf:type` to a domain or core class (e.g. `schema:Person`); never type facts as `rdfs:Class` or `rdf:Property`.
 5. **Opaque IDs** (Wikidata-style Q/P codes) — Map mentions via labels and the term index; never guess or construct IRIs from label strings.
 
+Prefix bindings in the prompt already exclude rdflib default namespaces and keep author-declared short prefixes canonical — you do not need to restate that in `facts_user_instruction`.
+
 Use `facts_user_instruction` to steer *what* to extract (domains, metrics, relationships), not to override namespace or IRI policy.
 
 ---
@@ -100,7 +102,7 @@ state = AgentState(
     input_text="Your document text...",
     ontology_selection_user_instruction="Prefer legal/compliance ontologies when multiple options are relevant",
     ontology_user_instruction="Focus on extracting geographical locations and organizations",
-    facts_user_instruction="Extract financial data and numerical values"
+    facts_user_instruction="Extract financial data and numerical values",
 )
 ```
 

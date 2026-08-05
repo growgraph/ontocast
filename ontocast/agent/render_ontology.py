@@ -1,10 +1,7 @@
 """Ontology triple rendering agent for OntoCast.
 
-This module provides functionality for rendering RDF triples from ontologies into
-human-readable formats, making the ontological knowledge more accessible and
-understandable.
-The agent decides between generating bare Turtle for fresh ontologies and structured graph updates for patches.
-
+Structured hybrid renderer: bare Turtle for fresh ontologies, GraphUpdate patches
+for complementing an existing snapshot.
 """
 
 import logging
@@ -31,7 +28,8 @@ from ontocast.prompt.ontology_context import format_ontologies_clause
 from ontocast.prompt.render_ontology import (
     general_ontology_instruction,
     intro_instruction_fresh,
-    intro_instruction_update,
+    intro_instruction_update_multi,
+    intro_instruction_update_single,
     template_prompt,
 )
 from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
@@ -85,41 +83,40 @@ def _prepare_ontology_common_prompt_layers(
     return general_ontology_instruction_str, text_chapter, external_evidence
 
 
+def _build_update_intro(state: UnitOntologyState, access: UnitOntologyAccess) -> str:
+    writable = access.writable_iris()
+    ontology_desc = access.prompt_ontology_description()
+    if len(writable) <= 1:
+        ontology_iri = writable[0] if writable else "(unspecified)"
+        return intro_instruction_update_single.format(
+            ontology_iri=ontology_iri,
+            ontology_desc=ontology_desc,
+        )
+    sources = state.ontology_patch_sources or writable
+    source_list = "\n".join(f"- <{iri}>" for iri in sources[:20])
+    return intro_instruction_update_multi.format(
+        ontology_desc=ontology_desc,
+        source_list=source_list or "- (none listed)",
+    )
+
+
 async def render_ontology(
     state: UnitOntologyState,
     tools: AtomicToolBox,
     supplemental_ontologies: Sequence[Ontology] | None = None,
 ) -> UnitOntologyState:
-    """Structured hybrid ontology renderer: fresh Turtle or structured graph updates.
-
-    This function decides between generating bare Turtle for fresh ontologies
-    and structured TripleOp graph patches for updates based on whether the ontology exists.
-
-    Args:
-        state: The current unit ontology state
-        tools: The toolbox containing necessary tools
-
-    Returns:
-        UnitOntologyState: Updated state with rendered ontology
-    """
+    """Structured hybrid ontology renderer: fresh Turtle or structured graph updates."""
 
     progress_info = state.get_content_unit_progress_string()
     logger.info(
         f"Ontology Renderer for {progress_info}: visit {state.node_visits[WorkflowNode.TEXT_TO_ONTOLOGY]}/{state.max_visits_per_node}"
     )
     access = ontology_access_for_unit_ontology(state)
-    current = access.effective_ontology_for_prompt()
-    # Guardrail for map/reduce flow: if a non-null snapshot exists, stay in update mode.
-    has_seed_ontology = access.has_non_null_seed_snapshot()
-    has_no_seed_ontology = current.is_null() and not has_seed_ontology
-
+    has_seed = access.has_non_empty_seed()
     extras = list(supplemental_ontologies or ())
-    if has_no_seed_ontology:
+    if not has_seed:
         return await render_ontology_fresh(state, tools, supplemental_ontologies=extras)
-    else:
-        return await render_ontology_update(
-            state, tools, supplemental_ontologies=extras
-        )
+    return await render_ontology_update(state, tools, supplemental_ontologies=extras)
 
 
 async def render_ontology_fresh(
@@ -127,19 +124,7 @@ async def render_ontology_fresh(
     tools: AtomicToolBox,
     supplemental_ontologies: Sequence[Ontology] | None = None,
 ) -> UnitOntologyState:
-    """Render ontology triples into a human-readable format.
-
-    This function takes the triples from the current ontology and renders them
-    into a more accessible format, making the ontological knowledge easier to
-    understand.
-
-    Args:
-        state: The current agent state containing the ontology to render.
-        tools: The toolbox instance providing utility functions.
-
-    Returns:
-        AgentState: Updated state with rendered triples.
-    """
+    """Create a brand-new catalog ontology from text (empty seed path)."""
 
     profile = get_graph_format_profile(state.llm_graph_format)
     parser = PydanticOutputParser(pydantic_object=OntologyRenderReport)
@@ -168,7 +153,7 @@ async def render_ontology_fresh(
 
     prompt = _create_ontology_render_prompt_template()
     known_prefixes = build_llm_prefix_map(
-        access.ontology_for_prefixes(),
+        access.ontology_graph_for_prefixes(),
         supplemental_ontologies or (),
     )
 
@@ -202,13 +187,17 @@ async def render_ontology_fresh(
             render_report.external_evidence_request,
             web_search_enabled,
         )
-        state.current_ontology = render_report.ontology
-        state.current_ontology.graph.sanitize_prefixes_namespaces()
+        ontology = render_report.ontology
+        ontology.graph.sanitize_prefixes_namespaces()
+        state.fresh_ontology = ontology
+        state.working_graph = ontology.graph.copy()
+        if ontology.iri:
+            state.writable_iris = [ontology.iri]
+            state.assembly_anchor_iri = ontology.iri
 
-        num_triples = len(state.current_ontology.graph)
+        num_triples = len(state.working_graph)
         logger.info(f"New ontology created with {num_triples} triple(s).")
 
-        # Track triples in budget tracker (fresh ontology)
         state.budget_tracker.add_ontology_update(
             num_operations=1, num_triples=num_triples
         )
@@ -230,40 +219,15 @@ async def render_ontology_update(
     tools: AtomicToolBox,
     supplemental_ontologies: Sequence[Ontology] | None = None,
 ) -> UnitOntologyState:
-    """Render ontology triples into a human-readable format.
-
-    This function takes the triples from the current ontology and renders them
-    into a more accessible format, making the ontological knowledge easier to
-    understand.
-
-    Args:
-        state: The current unit ontology state containing the ontology to render.
-        tools: The toolbox instance providing utility functions.
-
-    Returns:
-        UnitOntologyState: Updated state with rendered triples.
-    """
+    """Complement an existing snapshot via GraphUpdate inserts."""
 
     profile = get_graph_format_profile(state.llm_graph_format)
     parser = PydanticOutputParser(pydantic_object=GraphUpdateRenderReport)
     access = ontology_access_for_unit_ontology(state)
-    current = access.effective_ontology_for_prompt()
-    ontology_iri = current.iri
-    ontology_desc = current.describe()
-    multi_source_note = ""
-    if state.ontology_patch_sources:
-        joined_sources = ", ".join(state.ontology_patch_sources[:10])
-        multi_source_note = (
-            "\nThe provided ontology context may combine patches from multiple source "
-            f"ontologies: {joined_sources}. Preserve existing IRIs, namespace boundaries, "
-            "and avoid collapsing distinct source namespaces unless explicitly justified."
-        )
-    intro_instruction = intro_instruction_update.format(
-        ontology_iri=ontology_iri,
-        ontology_desc=ontology_desc,
-        multi_source_note=multi_source_note,
+    intro_instruction = _build_update_intro(state, access)
+    ontology_chapter = profile.format_ontology_chapter(
+        access.effective_graph_for_prompt()
     )
-    ontology_chapter = profile.format_ontology_chapter(current.graph)
     output_instruction = profile.render_update_output_instruction()
     improvement_instruction_str = render_suggestions_prompt(
         state.suggestions, WorkflowNode.TEXT_TO_ONTOLOGY
@@ -286,7 +250,7 @@ async def render_ontology_update(
 
     prompt = _create_ontology_render_prompt_template()
     known_prefixes = build_llm_prefix_map(
-        access.ontology_for_prefixes(),
+        access.ontology_graph_for_prefixes(),
         supplemental_ontologies or (),
     )
 
@@ -331,7 +295,6 @@ async def render_ontology_update(
             f"with {num_triples} total triple(s)."
         )
 
-        # Track triples in budget tracker
         state.budget_tracker.add_ontology_update(num_operations, num_triples)
 
         state.clear_failure()
@@ -343,5 +306,4 @@ async def render_ontology_update(
             state, e, FailureStage.GENERATE_GRAPH_UPDATE_FOR_ONTOLOGY
         )
     finally:
-        # Clear the context after parsing
         RDFGraph.set_known_prefixes(None)

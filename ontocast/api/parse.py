@@ -9,6 +9,23 @@ from ontocast.onto.enum import LLMGraphFormat, OntologyContextMode, RenderMode
 logger = logging.getLogger(__name__)
 
 
+class RequestParamError(ValueError):
+    """A request parameter was malformed.
+
+    Carries the offending parameter name so handlers can answer 400 by type
+    rather than by comparing exception message strings -- the previous scheme,
+    which meant every parameter error except one well-known message surfaced as
+    a 500, and reworded messages silently changed status codes.
+
+    Subclasses :class:`ValueError` so existing ``except ValueError`` callers
+    (and library users calling the parsers directly) keep working.
+    """
+
+    def __init__(self, param: str, message: str) -> None:
+        super().__init__(message)
+        self.param = param
+
+
 def parse_render_mode_param(value, default: RenderMode) -> RenderMode:
     if value is None:
         return default
@@ -112,8 +129,18 @@ def _normalise_section_tokens(raw_tokens: list[str]) -> list[str]:
     return result
 
 
-def parse_sections_list_param(value: str | list[str] | None) -> list[str]:
-    """Parse a section list from comma-separated text or JSON array."""
+def parse_sections_list_param(
+    value: str | list[str] | None, param: str = "sections"
+) -> list[str]:
+    """Parse a section list from comma-separated text or JSON array.
+
+    Args:
+        value: Raw parameter value.
+        param: Parameter name, used only in error messages.
+
+    Raises:
+        RequestParamError: The value started with ``[`` but was not a JSON array.
+    """
     if value is None:
         return []
     if isinstance(value, list):
@@ -123,9 +150,14 @@ def parse_sections_list_param(value: str | list[str] | None) -> list[str]:
     if not raw:
         return []
     if raw.startswith("["):
-        parsed = json.loads(raw)
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RequestParamError(
+                param, f"{param} must be valid JSON or a comma-separated list"
+            ) from exc
         if not isinstance(parsed, list):
-            raise ValueError("section list JSON must be an array")
+            raise RequestParamError(param, f"{param} JSON must be an array")
         raw_tokens = [str(item).strip() for item in parsed if str(item).strip()]
         return _normalise_section_tokens(raw_tokens)
     raw_tokens = [part.strip() for part in raw.split(",") if part.strip()]
@@ -155,9 +187,13 @@ def parse_summary_max_sentences_param(value: str | int | None, default: int) -> 
     try:
         parsed = int(str(value).strip())
     except (TypeError, ValueError) as exc:
-        raise ValueError("summary_max_sentences must be a positive integer") from exc
+        raise RequestParamError(
+            "summary_max_sentences", "summary_max_sentences must be a positive integer"
+        ) from exc
     if parsed < 1:
-        raise ValueError("summary_max_sentences must be a positive integer")
+        raise RequestParamError(
+            "summary_max_sentences", "summary_max_sentences must be a positive integer"
+        )
     return parsed
 
 
@@ -168,7 +204,41 @@ def parse_max_visits_param(value: str | int | None, default: int) -> int:
     try:
         parsed = int(str(value).strip())
     except (TypeError, ValueError) as exc:
-        raise ValueError("max_visits must be an integer >= 1") from exc
+        raise RequestParamError(
+            "max_visits", "max_visits must be an integer >= 1"
+        ) from exc
     if parsed < 1:
-        raise ValueError("max_visits must be an integer >= 1")
+        raise RequestParamError("max_visits", "max_visits must be an integer >= 1")
     return parsed
+
+
+def parse_document_metadata_param(
+    value: str | dict[str, object] | None,
+) -> dict[str, object]:
+    """Parse optional ``document_metadata`` from query/form/JSON.
+
+    Accepts a dict (already-parsed JSON) or a JSON object string. Empty /
+    missing values yield ``{}``.
+    """
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return {str(k): v for k, v in value.items() if v is not None}
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise RequestParamError(
+                "document_metadata", "document_metadata must be a JSON object"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise RequestParamError(
+                "document_metadata", "document_metadata must be a JSON object"
+            )
+        return {str(k): v for k, v in parsed.items() if v is not None}
+    raise RequestParamError(
+        "document_metadata", "document_metadata must be a JSON object"
+    )

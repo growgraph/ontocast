@@ -1,3 +1,0 @@
-# `ontocast.agent`
-
-::: ontocast.agent

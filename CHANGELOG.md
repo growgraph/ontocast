@@ -5,6 +5,265 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Terms used in these entries
+
+Retrieval and aggregation changes are justified against measurements, and the
+entries name the evaluation sets and metrics involved. For readers outside the
+project:
+
+- **Evaluation corpora.** *Text2KGBench* is a public benchmark used here as a
+  regression guard. The *materials-science corpus* is an internal evaluation
+  set: eight mutually referencing ontology modules (a domain vocabulary, a
+  units vocabulary, a qualified-value vocabulary, and others) with passages of
+  real scientific prose. Individual passages used for tuning are referred to by
+  a case number. Results measured only on the internal corpus are single-corpus
+  fits and are flagged as such.
+- **Seed recall vs. snapshot recall.** *Seed recall* is the share of expected
+  ontology terms that survive retrieval ranking and budget truncation.
+  *Snapshot recall* is the share that are actually defined in the ontology
+  graph handed to the model — a term can be absent from the seeds yet still
+  reach the model by being pulled in as a neighbour of one that was retrieved.
+- **On-topic precision.** The share of terms in the assembled ontology context
+  that belong to the ontology a given passage is about. It is reported for
+  context, not optimised: a missing term cannot be used at all, whereas a
+  surplus one only consumes prompt space. The measure also penalises correct
+  multi-ontology contexts, since a units or provenance term legitimately
+  drawn in from a sibling module counts against it.
+- **Surface-form contract (`sf3`, `sf4`, …).** A version stamp on how ontology
+  terms are converted into indexed text. Changing it changes the stored
+  vectors, so a bump requires re-indexing existing collections; entries that
+  bump it say so explicitly.
+
+
+## [0.5.0]
+
+### Breaking
+
+- **CLI is a Click group: `ontocast serve` / `ontocast process`.** Bare
+  `ontocast` no longer starts the API; batch extraction moves from
+  `ontocast --input-path …` to `ontocast process --input-path …`. Batch mode
+  writes provenance-stripped `*.facts.ttl` / `*.ontology.ttl` beside each
+  input (or under `--output-dir`, with optional `--facts-output-dir` /
+  `--ontology-output-dir`). `--max-visits` overrides the server/batch visit
+  budget. Filename → `dcterms:title` when `--document-metadata` is omitted is
+  unchanged.
+- **`ontocast serve` binds loopback by default.** Bind interface is `HOST`
+  (default `127.0.0.1`; was hardcoded `0.0.0.0`). The server has no auth and a
+  destructive `POST /flush`, so non-loopback bind is explicit. Containers must
+  set `HOST=0.0.0.0` (logs a warning recommending an authenticating proxy).
+- **`/process` answers 422 when no content unit produced output** (was HTTP
+  200 with `status: "success"` and empty facts). Malformed request parameters
+  answer 400 rather than 500; conversion failure maps to 422 for parity with
+  `/process_unit`.
+- **Install extras and hard dependencies reshaped.** A base
+  `pip install ontocast` was unimportable (`docling_core` imported at module
+  scope while only declared under `all`). `docling-core[chunking]` is now a
+  hard dependency; heavy Docling/OCR/embeddings stay under `doc-processing`
+  (the extra docs already named, which previously did not exist). `torch` /
+  `hdbscan` / `umap-learn` / `langchain-huggingface` move to
+  `semantic-chunking`; `duckduckgo-search` to `web-search`. Unused hard deps
+  dropped (`asyncio` PyPI backport, `httpx2`, `numba`, `simsimd`,
+  `rapidfuzz`, `owlready2`, `langchain-experimental`); previously transitive
+  imports declared (`pydantic-settings`, `numpy`, `scikit-learn`,
+  `starlette`, `python-dotenv`). Wheel no longer ships a top-level `data`
+  package (~15 MB sample PDFs); sdist excludes `data/` / `docs/` / `demo/`.
+  Runtime dependency ranges gain floors matching what is actually tested and
+  upper bounds.
+- **Embedding / surface-form contract through `sf6` — reindex required.**
+  Existing collections raise `EmbeddingContractMismatchError` and must be
+  dropped (`VECTOR_STORE_WIPE_ON_INIT` / `--wipe-vector-store`). Across this
+  release the stored atom text and payloads changed to: atomize only IRIs an
+  ontology *describes* (`sf3`→`sf4`); derive `entity_role` from property
+  *declaration*, not incidental predicate use (`sf4`→`sf5`); index
+  `dcterms:alternative`, case-preserved `symbol_surfaces`, and
+  `qudt:symbol` / `qudt:ucumCode` as retrieval surfaces; BM25 with query
+  encoder + IDF modifier and label-bearing minimal text; English-first
+  literal ranking for multilingual labels. Ontology content hashes also move
+  to RDF value-space canonicalization (round-trip stable) — `versioned_iri`
+  and `atom_id` change, so Fuseki named graphs and the vector index need a
+  one-time rebuild together.
+- **`VECTOR_STORE_CONSISTENCY_CRITIC_SIMILARITY_THRESHOLD` →
+  `VECTOR_STORE_CONSISTENCY_CRITIC_MIN_FUSED_SCORE`**, default `0.7` → `0.5`.
+  The value was always a fused reciprocal-rank score, never a cosine cutoff;
+  `0.5` means top-ranked in the dominant dense channel.
+- **Public apply / aggregation shapes changed.** Ontology apply:
+  `partition_triples_by_namespace` / `apply_partitioned_updates` (delete
+  propagation + `base_overrides`); `build_ontology_delta_graph` returns
+  `OntologyDelta`; `normalize_ontology_units` takes `delete_graph`;
+  `repair_property_aliases` returns `(rewritten, findings, applied_records)`.
+  Facts aggregation: `aggregate_graphs` / `postprocess_facts_units` return
+  `AggregationResult` and accept `merge_vetoes`.
+  `EntityNormalizer.extract_entity_context` returns `EntityContext` instead of
+  a 6-tuple.
+
+### Added
+
+- **CI and publish guards.** Non-slow pytest on Python 3.12/3.13; wheel
+  import-smoke with no extras; tag-vs-`pyproject.toml` version check on
+  publish; `py.typed` marker; packaging metadata (`authors`, `keywords`,
+  project URLs, trove classifiers); startup bounds on `PORT`,
+  `BASE_RECURSION_LIMIT`, `ESTIMATED_CHUNKS`, `PARALLEL_WORKERS`,
+  `ONTOLOGY_MAX_TRIPLES`.
+- **Declared HTTP contract** on `/process`, `/process_unit`, `/flush`,
+  `/health` (`response_model` + per-status bodies); uniform `StatusErrorBody`;
+  `/info` reports converters the install actually supports.
+- **Response / telemetry provenance.** `ProcessResultMetadata.failed_units`,
+  `facts_repairs` (`GraphRepairRecord`s for deterministic rewrites), and
+  `improvement_suggestions`; per-attempt facts-loop telemetry on
+  `UnitFactsState.attempt_log` → `AgentState.facts_loop_telemetry`.
+- **Document-level provenance from payload metadata.** Optional
+  `document_metadata` on `/process`, `/process_unit`, and
+  `ontocast process --document-metadata` attaches caller identity to
+  `doc_iri` (`prov:Entity` / `foaf:Document`, bibliographic ids, typed
+  people/projects). Survives chunk-level `strip_provenance`.
+- **Post-aggregation validation gate (`VALIDATE_FACTS`).** After
+  `MERGE_FACTS`, deterministic invariants on the merged graph (functional /
+  cardinality, suspect multi-values, degenerate coreference, optional SHACL
+  via `FACTS_SHAPES_DIR` / inline shapes; extra `shacl`). Error findings veto
+  whole merge clusters and re-aggregate (`FACTS_MERGE_REPAIR_PASSES`). Closes
+  the transitive coreference gap pairwise merge guards cannot see. Findings on
+  `AgentState.facts_validation_findings`.
+- **Bibliography routing (`CHUNK_BIBLIOGRAPHY_MODE`, default
+  `citations_only`).** Reference-list chunks extract as citation metadata only
+  (or `skip` / legacy `domain_facts`). Configurable citation vocabulary
+  (`CHUNK_CITATION_VOCABULARY`); domain nouns removed from the citation prompt.
+- **Configurable facts vocabulary policy.**
+  `FACTS_QUANTITY_FALLBACK_VOCABULARY` (QUDT default; empty forbids out-of-
+  context fallbacks), `FACTS_ADDITIONAL_STANDARD_NAMESPACES` (meta-vocabs
+  built-in; domain vocabs opt-in). `NON_CATALOG_VOCABULARY` warning when the
+  graph uses terms the ontology context never supplied.
+- **Object-property literal quarantine** (`FACTS_OBJECT_PROPERTY_LITERAL_CHECK`,
+  default on): string literals on class-ranged / `owl:ObjectProperty`
+  predicates go to the critic with the declared range as hint.
+- **Ontology snapshot / catalog read path.** `OntologySnapshot` prompt view;
+  catalog key is ontology IRI (`ontology_id` / author prefix are aliases);
+  `OntologyHeader` + targeted `TripleStoreManager` reads (`aselect`,
+  `afetch_ontology_catalog`, `afetch_ontologies_by_iri`, `aconstruct`);
+  `OntologyManager` caches graphs by `versioned_iri` and serves per-document
+  rather than per-unit catalog merges. Author prefixes persist via SHACL
+  `sh:declare`. Optional
+  `VECTOR_STORE_INDUCED_SUBGRAPH_CANDIDATE_PUSHDOWN`. Documented in
+  [Ontology Catalog](docs/architecture/ontology_catalog.md).
+- **Lexical-trigger retrieval lane** (`VECTOR_STORE_LEXICAL_TRIGGER_*`):
+  case-sensitive match on notation / symbol / UCUM (and optional code-shaped
+  labels) injects additive seeds outside the semantic budget; calibrated
+  score + `max_merge` fusion so trigger evidence is not discarded when the
+  semantic lane already found the IRI. Optional query-side unit signals
+  (`VECTOR_STORE_QUERY_UNIT_SIGNALS_ENABLED`, default off). BM25
+  case-mismatch policy for symbol surfaces
+  (`VECTOR_STORE_SYMBOL_CASE_MISMATCH_*`).
+- **Snapshot assembly controls.** Schema closure over `rdfs:domain` /
+  `rdfs:range` (`ONTOLOGY_PATCH_SCHEMA_CLOSURE_*`); per-ontology and
+  per-role atom floors; small-module closure; window-scaled seed caps
+  (`ONTOLOGY_PATCH_SEEDS_PER_WINDOW` / `ONTOLOGY_PATCH_MAX_ATOMS_BASE`);
+  induced-subgraph symbol predicates and type-promotion score preservation;
+  `sum_score` cross-window merge mode (non-default); `EMBEDDING_QUERY_PREFIX` /
+  `EMBEDDING_DOCUMENT_PREFIX`; vector init hygiene
+  (`VECTOR_STORE_WIPE_ON_INIT`, orphan prune, reindex concurrency).
+- **Docling converter configuration** via `CONVERTER_*` (including
+  `born_digital` preset).
+- **Retrieval recall harness** (`test/test_retrieval_recall.py`,
+  `test/retrieval_gt.py`): real embeddings + Qdrant; seed / snapshot /
+  term-level recall and per-stage funnel; Text2KGBench and prebuilt-corpus
+  tiers (`ONTOCAST_RECALL_*`); ablation controls that flip index/retrieval
+  axes without editing corpus files on disk.
+
+### Changed
+
+- **Retrieval defaults retuned against measured recall** (Text2KGBench +
+  materials-science corpus; single-corpus fits flagged in the configuration
+  guide). Notable defaults: `ONTOLOGY_PATCH_MAX_ATOMS` / `_BASE` → 96;
+  `VECTOR_STORE_TOP_K` 10 → 20; per-ontology seed quota 3 → 0; sparse fusion
+  weight 0.2 → 0.8 and neighborhood 0.3 → 0.15; induced-subgraph triple
+  budget 550 → 1200; per-ontology atom floor 0 → 2; small-module closure
+  0 → 300. Patch-retrieval defaults lean toward max-score dedupe →
+  best-first round-robin → window-scaled hard cap (relative floors / MMR /
+  hybrid off). Label and symbol predicates are configuration-driven
+  (`VECTOR_STORE_LABEL_PREDICATES` / `VECTOR_STORE_SYMBOL_PREDICATES`) and
+  contribute to the embedding fingerprint when non-default.
+- **Ontology snapshot / writeback decoupling.** Assemble
+  `O* → OntologySnapshot`, propose complements on a scratchpad, apply
+  namespace-owned updates onto catalog terminals. Cross-ontology reference
+  ownership is deterministic (longest namespace, then lexicographic IRI).
+  Seed round-robin visits best-scoring ontologies first.
+- **Startup performance.** Batched dense embeds; overlap sparse with dense;
+  lazy Docling converter; defer heavy ML imports; slim package `__init__`.
+  OntologyManager patch/reindex paths are async-first.
+- **Prefix / namespace hygiene for facts prompts.** Drop rdflib default
+  bindings from the domain clause; keep author short prefixes canonical;
+  leave reserved namespaces (`xml:`) alone; state the two-namespace contract
+  once. Prompt JSON-LD `@context` lists only referenced prefixes.
+- **Conversion.** `ConverterTool` builds Docling's PDF pipeline from typed
+  config with config-aware cache keys; optional ligature-gap workaround.
+- **Docs.** User-guide / `.env.example` defaults aligned with code; full
+  patch-retrieval parameter table and tuning presets; snapshot vs catalog;
+  catalog I/O metrics; pyoxigraph integer-subtype collapse documented as an
+  accepted limitation.
+
+### Removed
+
+- **`PARALLEL_FACTS_RETRIES` / `PARALLEL_ONTOLOGY_RETRIES`.** Never read; the
+  per-unit budget is `MAX_VISITS_PER_NODE`. Passing them now fails fast as
+  unknown settings.
+- **`FactsLoopAttempt.graph_hash`.** Replaced by `n_mandatory_findings` /
+  `repair_failed`; the hash had no consumer and forced a URDNA2015
+  canonicalization per attempt inside the async fan-out.
+- **`ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE=rrf`.** Re-ranked an unsorted
+  concatenation (not reciprocal-rank fusion). Non-default and unused;
+  `max_score` / `hybrid` unchanged.
+- **`Ontology.from_working_context` identity lock** — snapshot / writeback
+  decouple (see Changed).
+
+### Fixed
+
+- **Catalog / vector integrity.** Transient Fuseki list errors no longer
+  look like an empty catalog and prune the ontology index; partial catalog
+  fetches suppress prune; empty keep-sets are refused. Concurrent `?tenant=`
+  retargets are locked; tenancy switches reset `ontology_manager`. Vector
+  init is delayed until after wipe-on-init. Embedding fingerprint includes
+  atomizer knobs that change stored payloads. Public retrieval wrappers
+  default to configured budgets (were hardcoded 4× smaller).
+- **Ontology delete and consolidation writeback.** GraphUpdate deletes
+  propagate through map/reduce to catalog terminals (delete-then-reinsert
+  nets out; cross-unit delete vs insert is conservative). Consolidation
+  applies onto the map-stage artifact via `base_overrides`, not a stale
+  pre-run base. Author-prefix collisions degrade instead of blocking ingest.
+- **Facts repair and validation.** Deterministic repair runs at
+  `MAX_VISITS=1` (`FACTS_REPAIR_VISITS`); gates on mandatory findings only;
+  literal `rdf:type` objects coerced; parse-time numeric retyping and
+  unambiguous property-alias rewrites; closed-range suggestions are
+  case-exact. Validation gate output reaches the batch path and
+  `/process_unit`; non-improving merge-repair passes revert;
+  `DEGENERATE_COREFERENCE` / IRI multi-value vetoes read `values`;
+  `owl:sameAs` excluded from multi-value checks; cross-document vetoes cover
+  the whole canonical cluster; SHACL misconfiguration warns instead of
+  silent pass; `FACTS_FUNCTIONAL_MIN_SINGLE_SUPPORT` is actually passed
+  through. `facts_findings_residual` measures post-repair residual.
+  `NON_CATALOG_VOCABULARY` and `UNKNOWN_TERM` agree on catalog membership;
+  empty ontology context is reported by validate (and
+  `empty_snapshot_reason` on the ensemble resolver).
+- **Aggregation over-merge.** Merge guards block identity merges across
+  disjoint numeric/temporal values, functional-ish IRI objects, co-objects,
+  and fuzzy label matches on literal-bearing entities (`AGG_*`; regression
+  fixtures under `test/data/case{4,5}`).
+- **Retrieval correctness.** Induced subgraph keeps all seed-bearing
+  components; individuals stay alongside promoted types; BFS admits by
+  predicate role; proposition windows stride across long chunks; relative
+  score floors handle negative similarities; version/hash filters relax per
+  IRI instead of emptying context; snapshot prefixes bind only used
+  namespaces; lexical triggers honour non-ASCII symbols and token
+  boundaries; small-module closure works against triple-store catalogs and
+  is blank-node idempotent; catalog identity no longer drifts after store
+  round-trips; Turtle no longer rounds floats; `ontocast-turtle`
+  serialization works for oxigraph stores with RDF 1.2 triple terms;
+  ensemble retrieval no longer materializes the full catalog twice per unit.
+- **Ops / CLI / config.** `FUSEKI_AUTH=user:password` accepted; `ontocast
+  process` exits non-zero when every file fails; `AgentState(current_domain=…)`
+  honours the caller; per-unit LLM budget uses a `ContextVar`;
+  `LLM_MAX_INFLIGHT` aliased (was silently `LLM_LLM_MAX_INFLIGHT`);
+  `ToolBox.aclose()` closes Fuseki and Qdrant (`QDRANT_TIMEOUT_SECONDS`);
+  backend connections close on app shutdown.
+
 ## [0.4.3] - 2026-06-08
 
 ### Added

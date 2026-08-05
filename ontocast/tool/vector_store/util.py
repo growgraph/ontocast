@@ -8,14 +8,39 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ontocast.config import EmbeddingConfig, VectorStoreConfig, VectorStoreDedupMode
+from ontocast.tool.vector_store.atomizer import GraphAtomizer
 from ontocast.tool.vector_store.core import (
     GraphAtom,
     OntologySearchHit,
     canonicalize_entity_role,
 )
+from ontocast.util.hash import render_text_hash
 
 META_EMBEDDING_DIMENSION = "embedding_dimension"
 META_EMBEDDING_MODEL = "embedding_model"
+
+# Mirrors VectorStoreConfig.minimal_label_limit; only a divergence is fingerprinted.
+_DEFAULT_MINIMAL_LABEL_LIMIT = 5
+
+# Bumped whenever the atomizer changes *which* literals become surface forms, or which
+# entities become atoms at all. Unlike the cap, such a change alters the stored index at
+# the default setting, so it is fingerprinted unconditionally. ``sf2``: added
+# qudt:symbol / qudt:ucumCode, and ranked untagged and English literals ahead of other
+# languages. ``sf3``: added lexical_triggers for the exact-match retrieval lane.
+# ``sf4``: ontology sources atomize only IRIs they describe, so object-position
+# references (dimension vectors, systems of units, version IRIs) no longer become atoms.
+# A collection built under sf3 still holds those atoms; serving it would silently mix
+# pruned and unpruned sources, so the fingerprint forces a reindex rather than allowing
+# a half-pruned index. ``sf5``: entity_role is derived from property *declaration* as
+# well as predicate-position usage, so a TBox-only module's properties become
+# predicate-role atoms and gain a non-empty neighborhood representation. Both the role
+# payload and the embedded neighborhood text change, so the old vectors cannot be served
+# alongside the new ones. ``sf6``: dcterms:alternative joins the label predicates (its
+# synonyms previously vanished from both retrieval lanes and the prompt), and atoms
+# carry case-preserved symbol_surfaces so merge-time can demote counterfeit
+# case-folded symbol matches (prose "meV" retrieving symbol "MeV"); both change the
+# stored surface forms and the payload schema.
+_SURFACE_FORM_CONTRACT = "sf6"
 
 
 class EmbeddingContractMismatchError(ValueError):
@@ -30,26 +55,136 @@ def embedding_contract_help(*, backend: str = "vector store") -> str:
     )
 
 
-def embedding_model_fingerprint(embedding_config: EmbeddingConfig) -> str:
+def atom_scope_fingerprint(store_config: VectorStoreConfig) -> str | None:
+    """Fingerprint fragment for settings that change what gets stored per atom.
+
+    Covers both *which entities* become atoms and *which literals* become their
+    surface forms and lexical triggers. All of these change the stored payload,
+    so serving an index built under different values silently degrades
+    retrieval instead of raising.
+
+    Returns ``None`` at the defaults, so collections built under them keep the
+    fingerprint they already have and need no reindex on upgrade.
+
+    Args:
+        store_config: Active vector-store settings.
+
+    Returns:
+        str | None: Compact divergence marker, or ``None`` when nothing diverges.
+    """
+    defaults = VectorStoreConfig.model_fields
+    parts: list[str] = []
+    if store_config.index_undescribed_iris:
+        parts.append("undescribed")
+    if store_config.embed_standard_vocab_iris:
+        parts.append("stdvocab")
+    for prefix in sorted(store_config.extra_excluded_namespace_prefixes):
+        parts.append(f"x:{prefix}")
+
+    def _diverges(name: str) -> bool:
+        factory = defaults[name].default_factory
+        default = factory() if factory is not None else defaults[name].default
+        return getattr(store_config, name) != default
+
+    # The surface-form and trigger settings are pushed into the atomizer and
+    # decide what lands in the stored payload, so they belong in the identity of
+    # the vectors. They were previously omitted, which meant changing one served
+    # a stale index rather than raising EmbeddingContractMismatchError.
+    for name in ("label_predicates", "symbol_predicates", "lexical_trigger_predicates"):
+        if _diverges(name):
+            joined = ",".join(sorted(getattr(store_config, name)))
+            parts.append(f"{name}={render_text_hash(joined)[:12]}")
+    for name in (
+        "lexical_trigger_enabled",
+        "lexical_trigger_heuristic_enabled",
+        "lexical_trigger_min_len",
+        "lexical_trigger_max_len",
+        "lexical_trigger_heuristic_max_per_entity",
+    ):
+        if _diverges(name):
+            parts.append(f"{name}={getattr(store_config, name)}")
+    return ",".join(parts) if parts else None
+
+
+def embedding_model_fingerprint(
+    embedding_config: EmbeddingConfig,
+    *,
+    minimal_label_limit: int | None = None,
+    atom_scope: str | None = None,
+) -> str:
+    """Identity of the vectors a config produces, stored alongside the collection.
+
+    Query/document prefixes belong here: they change the embedded text, so an index
+    built without them is not comparable to queries issued with them, and the mismatch
+    would otherwise show up only as quietly degraded retrieval. The sparse surface-form
+    cap is included for the same reason -- it decides how many of a term's aliases enter
+    the BM25 text. It contributes only when set to a non-default value, so collections
+    built under the default keep their existing fingerprint. ``atom_scope`` follows the
+    same rule for settings that decide which entities are atomized at all.
+
+    The surface-form contract (``sf=``) is separate and always contributes: it records
+    *which* literals become surface forms and which entities become atoms, both of which
+    change the stored index even at default settings.
+
+    Args:
+        embedding_config: Dense/sparse model configuration.
+        minimal_label_limit: Sparse surface-form cap, when it differs from the default.
+        atom_scope: Atom-scope divergence from :func:`atom_scope_fingerprint`, if any.
+
+    Returns:
+        str: Stable fingerprint stored alongside the collection.
+    """
     ec = embedding_config
     dense_part = f"dense:{ec.provider.value}:{ec.model_name}"
-    return f"{dense_part}|bm25={ec.bm25_model_name}"
+    affixes = f"|q={ec.query_prefix}|d={ec.document_prefix}"
+    fingerprint = (
+        f"{dense_part}|bm25={ec.bm25_model_name}{affixes}|sf={_SURFACE_FORM_CONTRACT}"
+    )
+    if (
+        minimal_label_limit is not None
+        and minimal_label_limit != _DEFAULT_MINIMAL_LABEL_LIMIT
+    ):
+        fingerprint += f"|minlabels={minimal_label_limit}"
+    if atom_scope:
+        fingerprint += f"|atoms={atom_scope}"
+    return fingerprint
 
 
 def embedding_fingerprint_matches(
-    stored: str, embedding_config: EmbeddingConfig
+    stored: str,
+    embedding_config: EmbeddingConfig,
+    *,
+    minimal_label_limit: int | None = None,
+    atom_scope: str | None = None,
 ) -> bool:
-    return stored == embedding_model_fingerprint(embedding_config)
+    """Whether ``stored`` is the fingerprint the given config would produce.
+
+    Takes the same optional components as :func:`embedding_model_fingerprint`.
+    Omitting them previously made this disagree with
+    ``validate_embedding_contract_metadata`` for any non-default collection --
+    it would report a match the validator rejects.
+    """
+    return stored == embedding_model_fingerprint(
+        embedding_config,
+        minimal_label_limit=minimal_label_limit,
+        atom_scope=atom_scope,
+    )
 
 
 def collection_embedding_metadata(
     embedding_config: EmbeddingConfig,
     *,
     metadata_dim: int,
+    minimal_label_limit: int | None = None,
+    atom_scope: str | None = None,
 ) -> dict[str, Any]:
     return {
         META_EMBEDDING_DIMENSION: metadata_dim,
-        META_EMBEDDING_MODEL: embedding_model_fingerprint(embedding_config),
+        META_EMBEDDING_MODEL: embedding_model_fingerprint(
+            embedding_config,
+            minimal_label_limit=minimal_label_limit,
+            atom_scope=atom_scope,
+        ),
     }
 
 
@@ -78,6 +213,8 @@ def validate_embedding_contract_metadata(
     *,
     embedding_config: EmbeddingConfig,
     expected_meta_dim: int,
+    minimal_label_limit: int | None = None,
+    atom_scope: str | None = None,
 ) -> None:
     if raw_metadata is None:
         meta: dict[str, Any] = {}
@@ -99,15 +236,17 @@ def validate_embedding_contract_metadata(
         raise ValueError(
             f"Vector store '{collection}' metadata {model_key!r} must be a string"
         )
-    if stored_dim != expected_meta_dim or not embedding_fingerprint_matches(
-        stored_model, embedding_config
-    ):
+    expected_model = embedding_model_fingerprint(
+        embedding_config,
+        minimal_label_limit=minimal_label_limit,
+        atom_scope=atom_scope,
+    )
+    if stored_dim != expected_meta_dim or stored_model != expected_model:
         raise EmbeddingContractMismatchError(
             f"Vector store '{collection}' embedding contract mismatch: "
             f"store has dimension={stored_dim}, model={stored_model!r}; "
             f"current config expects dimension={expected_meta_dim}, "
-            f"model={embedding_model_fingerprint(embedding_config)!r}. "
-            + embedding_contract_help()
+            f"model={expected_model!r}. " + embedding_contract_help()
         )
 
 
@@ -207,6 +346,8 @@ def atom_payload(atom: GraphAtom) -> dict[str, Any]:
         "core_representation": atom.core_representation,
         "minimal_representation": atom.minimal_representation,
         "neighborhood_representation": atom.neighborhood_representation,
+        "lexical_triggers": list(atom.lexical_triggers),
+        "symbol_surfaces": list(atom.symbol_surfaces),
         "created_at": atom.created_at.isoformat(),
     }
 
@@ -229,9 +370,20 @@ def atom_from_payload(
         core_representation=str(payload.get("core_representation", "")),
         minimal_representation=str(payload.get("minimal_representation", "")),
         neighborhood_representation=str(payload.get("neighborhood_representation", "")),
+        lexical_triggers=_payload_str_list(payload, "lexical_triggers"),
+        symbol_surfaces=_payload_str_list(payload, "symbol_surfaces"),
         created_at=parse_created_at(created_at_raw),
         score=score,
     )
+
+
+def _payload_str_list(payload: Mapping[str, Any], key: str) -> list[str]:
+    raw = payload.get(key)
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(item) for item in raw if str(item).strip()]
+    return []
 
 
 def identity_key_for_atom(
@@ -295,6 +447,30 @@ def dedupe_hits_by_identity(
         )
     )
     return deduped
+
+
+def sync_atomizer_from_store_config(
+    atomizer: GraphAtomizer, store_config: VectorStoreConfig
+) -> None:
+    """Mirror vector-store representation settings onto the atomizer."""
+    atomizer.minimal_representation_label_limit = store_config.minimal_label_limit
+    atomizer.label_predicates = list(store_config.label_predicates)
+    atomizer.symbol_predicates = list(store_config.symbol_predicates)
+    atomizer.index_undescribed_iris = store_config.index_undescribed_iris
+    atomizer.embed_standard_vocab_iris = store_config.embed_standard_vocab_iris
+    atomizer.extra_excluded_namespace_prefixes = list(
+        store_config.extra_excluded_namespace_prefixes
+    )
+    atomizer.lexical_trigger_enabled = store_config.lexical_trigger_enabled
+    atomizer.lexical_trigger_predicates = list(store_config.lexical_trigger_predicates)
+    atomizer.lexical_trigger_heuristic_enabled = (
+        store_config.lexical_trigger_heuristic_enabled
+    )
+    atomizer.lexical_trigger_min_len = store_config.lexical_trigger_min_len
+    atomizer.lexical_trigger_max_len = store_config.lexical_trigger_max_len
+    atomizer.lexical_trigger_heuristic_max_per_entity = (
+        store_config.lexical_trigger_heuristic_max_per_entity
+    )
 
 
 def effective_top_k(store_config: VectorStoreConfig, top_k: int | None) -> int:

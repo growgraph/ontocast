@@ -8,7 +8,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeAlias, cast
 
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, model_validator
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
 
@@ -33,11 +33,13 @@ from ontocast.tool.vector_store.embedding import (
     EmbeddingTool,
     FastembedBm25SparseTool,
 )
+from ontocast.tool.vector_store.lexical_trigger import LexicalTriggerIndex
 from ontocast.tool.vector_store.util import (
     META_EMBEDDING_MODEL,
     EmbeddingContractMismatchError,
     atom_from_payload,
     atom_payload,
+    atom_scope_fingerprint,
     collection_embedding_metadata,
     dedupe_hits_by_identity,
     effective_top_k,
@@ -49,6 +51,7 @@ from ontocast.tool.vector_store.util import (
     point_id_for_atom,
     rank_fuse_channel_hits,
     require_embedding_vector_length,
+    sync_atomizer_from_store_config,
     validate_embedding_contract_metadata,
 )
 
@@ -66,6 +69,58 @@ class QdrantVectorStoreManager(VectorStoreManager):
     sparse_embedding: FastembedBm25SparseTool | None = Field(default=None, exclude=True)
     atomizer: GraphAtomizer = Field(default_factory=GraphAtomizer, exclude=True)
     _client: QdrantClient | None = PrivateAttr(default=None)
+    _lexical_trigger_index: LexicalTriggerIndex | None = PrivateAttr(default=None)
+
+    @model_validator(mode="after")
+    def _sync_atomizer_with_store_config(self) -> "QdrantVectorStoreManager":
+        """Mirror representation settings from store config onto the atomizer."""
+        sync_atomizer_from_store_config(self.atomizer, self.store_config)
+        return self
+
+    def _get_lexical_trigger_index(self) -> LexicalTriggerIndex:
+        if self._lexical_trigger_index is None:
+            self._lexical_trigger_index = LexicalTriggerIndex(
+                max_match_atoms=self.store_config.lexical_trigger_max_atoms
+            )
+        return self._lexical_trigger_index
+
+    def _register_lexical_triggers(self, atoms: list[GraphAtom]) -> None:
+        if not self.store_config.lexical_trigger_enabled:
+            return
+        self._get_lexical_trigger_index().register_atoms(atoms)
+
+    def _rebuild_lexical_trigger_index(self) -> None:
+        index = LexicalTriggerIndex(
+            max_match_atoms=self.store_config.lexical_trigger_max_atoms
+        )
+        self._lexical_trigger_index = index
+        if not self.store_config.lexical_trigger_enabled:
+            return
+        for atom in self._scroll_all_atoms():
+            index.register_atom(atom)
+
+    def _scroll_all_atoms(self, *, batch_size: int = 512) -> list[GraphAtom]:
+        collection_name = self._ontology_collection_name()
+        if not self.client.collection_exists(collection_name=collection_name):
+            return []
+        atoms: list[GraphAtom] = []
+        offset: Any = None
+        while True:
+            points, next_offset = self.client.scroll(
+                collection_name=collection_name,
+                with_payload=True,
+                with_vectors=False,
+                offset=offset,
+                limit=batch_size,
+            )
+            if not points:
+                break
+            for point in points:
+                atoms.append(self._point_to_atom(point))
+            if next_offset is None:
+                break
+            offset = next_offset
+        return atoms
 
     @property
     def embedding_config(self) -> EmbeddingConfig:
@@ -91,14 +146,14 @@ class QdrantVectorStoreManager(VectorStoreManager):
         n = len(queries)
         if n == 0:
             return []
-        dense_vecs = self.embedding.embed(queries)
+        dense_vecs = self.embedding.embed_query(queries)
         if len(dense_vecs) != n:
             raise ValueError(
                 "Embedding provider returned mismatched vectors for queries"
             )
         for i, vec in enumerate(dense_vecs):
             self._require_embedding_vector_length(vec, role=f"Query embedding[{i}]")
-        sparse_vecs = self._require_sparse_embedding_tool().embed_sparse(queries)
+        sparse_vecs = self._require_sparse_embedding_tool().embed_sparse_query(queries)
         if len(sparse_vecs) != n:
             raise ValueError(
                 "BM25 embedder returned mismatched sparse vectors for queries"
@@ -117,8 +172,18 @@ class QdrantVectorStoreManager(VectorStoreManager):
                 api_key=self.qdrant_config.api_key,
                 grpc_port=self.qdrant_config.grpc_port,
                 prefer_grpc=self.qdrant_config.use_grpc,
+                timeout=self.qdrant_config.timeout_seconds,
             )
         return self._client
+
+    def close(self) -> None:
+        """Release the Qdrant connection, if one was opened."""
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception as exc:  # pragma: no cover - teardown best effort
+                logger.debug("Ignoring error while closing Qdrant client: %s", exc)
+            self._client = None
 
     def _ontology_collection_name(self) -> str:
         name = self.qdrant_config.ontology_collection
@@ -151,6 +216,19 @@ class QdrantVectorStoreManager(VectorStoreManager):
             collection_name=ontology_col, field_name="ontology_hash"
         )
         self._ensure_payload_index(collection_name=ontology_col, field_name="iri")
+        self._ensure_payload_index(collection_name=ontology_col, field_name="atom_id")
+        await asyncio.to_thread(self._rebuild_lexical_trigger_index)
+
+    async def wipe_store(self) -> None:
+        """Drop the currently configured ontology and facts collections."""
+        for name in (
+            self.qdrant_config.ontology_collection,
+            self.qdrant_config.facts_collection,
+        ):
+            if name and self.client.collection_exists(collection_name=name):
+                self.client.delete_collection(collection_name=name)
+                logger.info("Wiped Qdrant collection %s", name)
+        self._lexical_trigger_index = None
 
     async def clean_tenancy(
         self,
@@ -212,6 +290,8 @@ class QdrantVectorStoreManager(VectorStoreManager):
             meta,
             embedding_config=self.embedding_config,
             expected_meta_dim=self._metadata_embedding_dimension(),
+            minimal_label_limit=self.store_config.minimal_label_limit,
+            atom_scope=atom_scope_fingerprint(self.store_config),
         )
 
     def _vectors_and_sparse_for_create(
@@ -230,8 +310,13 @@ class QdrantVectorStoreManager(VectorStoreManager):
                 size=dense_dim, distance=distance
             ),
         }
+        # BM25 without IDF degenerates to a term-frequency dot product, where common
+        # tokens dominate and a distinctive technical term carries no more weight than
+        # "the". Qdrant applies the IDF factor at query time via this modifier.
         sparse: dict[str, qdrant_models.SparseVectorParams] = {
-            BM25_VECTOR_NAME: qdrant_models.SparseVectorParams(modifier=None)
+            BM25_VECTOR_NAME: qdrant_models.SparseVectorParams(
+                modifier=qdrant_models.Modifier.IDF
+            )
         }
         return (vectors, sparse)
 
@@ -278,11 +363,13 @@ class QdrantVectorStoreManager(VectorStoreManager):
                 f"Qdrant collection '{collection}' missing sparse vector "
                 f"{BM25_VECTOR_NAME!r}; have sparse keys {set(sparse_map.keys())}"
             )
-        if bm25_cfg.modifier is not None:
-            raise ValueError(
+        if bm25_cfg.modifier != qdrant_models.Modifier.IDF:
+            raise EmbeddingContractMismatchError(
                 f"Qdrant collection '{collection}' sparse vector {BM25_VECTOR_NAME!r} "
-                f"uses modifier {bm25_cfg.modifier!r}; expected no modifier "
-                "(dot-product sparse scoring). Recreate the collection."
+                f"uses modifier {bm25_cfg.modifier!r}; expected "
+                f"{qdrant_models.Modifier.IDF!r}. Collections created before BM25 IDF "
+                "scoring was enabled must be recreated — drop the collection or start "
+                "with VECTOR_STORE_WIPE_ON_INIT=true / --wipe-vector-store."
             )
 
     def _ensure_named_vector_collection(self, collection: str) -> None:
@@ -290,6 +377,8 @@ class QdrantVectorStoreManager(VectorStoreManager):
         embedding_meta = collection_embedding_metadata(
             self.embedding_config,
             metadata_dim=metadata_dim,
+            minimal_label_limit=self.store_config.minimal_label_limit,
+            atom_scope=atom_scope_fingerprint(self.store_config),
         )
         vectors_cfg, sparse_cfg = self._vectors_and_sparse_for_create()
         if not self.client.collection_exists(collection_name=collection):
@@ -316,19 +405,27 @@ class QdrantVectorStoreManager(VectorStoreManager):
         atoms = self.atomizer.atomize(source=ontology, depth=1)
         if not atoms:
             return 0
-        core_texts = [atom.core_representation for atom in atoms]
-        neighborhood_texts = [atom.neighborhood_representation for atom in atoms]
+        n = len(atoms)
+        dense_texts = [atom.core_representation for atom in atoms] + [
+            atom.neighborhood_representation for atom in atoms
+        ]
         minimal_texts = [atom.minimal_representation for atom in atoms]
 
-        core_vectors = self._embed_texts_batched(core_texts)
-        neighborhood_vectors = self._embed_texts_batched(neighborhood_texts)
-        bm25_vectors = self._embed_texts_batched_sparse(minimal_texts)
+        # Dense and BM25 use different embedders — overlap them for wall-clock gain.
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            bm25_future = executor.submit(
+                self._embed_texts_batched_sparse, minimal_texts
+            )
+            dense_vectors = self._embed_texts_batched(dense_texts)
+            bm25_vectors = bm25_future.result()
 
-        if len(core_vectors) != len(atoms) or len(neighborhood_vectors) != len(atoms):
+        if len(dense_vectors) != 2 * n:
             raise ValueError(
                 "Embedding provider returned mismatched vector counts for atoms"
             )
-        if len(bm25_vectors) != len(atoms):
+        core_vectors = dense_vectors[:n]
+        neighborhood_vectors = dense_vectors[n:]
+        if len(bm25_vectors) != n:
             raise ValueError(
                 "BM25 embedder returned mismatched sparse vector counts for atoms"
             )
@@ -350,6 +447,7 @@ class QdrantVectorStoreManager(VectorStoreManager):
         collection = self._ontology_collection_name()
         for points_batch in iter_batches(points, self.qdrant_config.upsert_batch_size):
             self.client.upsert(collection_name=collection, points=points_batch)
+        self._register_lexical_triggers(atoms)
         return len(points)
 
     def search_patches(
@@ -536,6 +634,59 @@ class QdrantVectorStoreManager(VectorStoreManager):
             out[atom_id] = (core, neighborhood)
         return out
 
+    def fetch_atoms_by_ids(self, atom_ids: list[str]) -> list[GraphAtom]:
+        if not atom_ids:
+            return []
+        collection = self._ontology_collection_name()
+        if not self.client.collection_exists(collection_name=collection):
+            return []
+        wanted = set(atom_ids)
+        found: dict[str, GraphAtom] = {}
+        offset: Any = None
+        while wanted - found.keys():
+            points, next_offset = self.client.scroll(
+                collection_name=collection,
+                scroll_filter=qdrant_models.Filter(
+                    must=[
+                        qdrant_models.FieldCondition(
+                            key="atom_id",
+                            match=qdrant_models.MatchAny(any=list(wanted)),
+                        )
+                    ]
+                ),
+                with_payload=True,
+                with_vectors=False,
+                offset=offset,
+                limit=512,
+            )
+            if not points:
+                break
+            for point in points:
+                atom = self._point_to_atom(point)
+                found[atom.atom_id] = atom
+            if next_offset is None:
+                break
+            offset = next_offset
+        return [found[aid] for aid in atom_ids if aid in found]
+
+    def match_lexical_triggers(
+        self, text: str, *, max_atoms: int | None = None
+    ) -> list[GraphAtom]:
+        if not self.store_config.lexical_trigger_enabled or not text.strip():
+            return []
+        limit = (
+            self.store_config.lexical_trigger_max_atoms
+            if max_atoms is None
+            else max_atoms
+        )
+        if limit <= 0:
+            return []
+        index = self._get_lexical_trigger_index()
+        matched_ids = index.match(text, max_atoms=limit)
+        atoms = self.fetch_atoms_by_ids(matched_ids)
+        trigger_score = self.store_config.lexical_trigger_score
+        return [atom.model_copy(update={"score": trigger_score}) for atom in atoms]
+
     def search_by_vector(
         self,
         core_vector: list[float],
@@ -648,8 +799,7 @@ class QdrantVectorStoreManager(VectorStoreManager):
                     == "no neighborhood facts available"
                 ):
                     score = 0.0
-            atom = self._point_to_atom(point)
-            atom.score = score
+            atom = self._point_to_atom(point, score=score)
             hits.append(OntologySearchHit(atom=atom, score=score))
         return hits
 
@@ -665,6 +815,7 @@ class QdrantVectorStoreManager(VectorStoreManager):
         )
         if delete_filter is None:
             return
+        self._get_lexical_trigger_index().unregister_ontology(iri)
         self.client.delete(
             collection_name=self._ontology_collection_name(),
             points_selector=qdrant_models.FilterSelector(filter=delete_filter),
@@ -701,9 +852,15 @@ class QdrantVectorStoreManager(VectorStoreManager):
             return None
         return qdrant_models.Filter(must=conditions)
 
-    def _point_to_atom(self, point: Any) -> GraphAtom:
+    def _point_to_atom(self, point: Any, *, score: float | None = None) -> GraphAtom:
+        """Build a ``GraphAtom`` from a Qdrant point payload.
+
+        ``score`` must be supplied explicitly by the caller rather than read off
+        ``point`` here: ``ScoredPoint`` (from ``search``/``query_points``) carries a
+        score, but ``Record`` (from ``scroll``/``retrieve``) has no such field at
+        all, so probing ``point.score`` would raise for id-based lookups.
+        """
         payload = point.payload or {}
-        score = float(point.score) if point.score is not None else None
         return atom_from_payload(
             payload,
             score=score,
@@ -759,6 +916,8 @@ class QdrantVectorStoreManager(VectorStoreManager):
     def count_points_by_ontology_iri(self, *, batch_size: int = 512) -> dict[str, int]:
         """Count indexed atoms grouped by ``ontology_iri`` payload (diagnostics)."""
         collection_name = self._ontology_collection_name()
+        if not self.client.collection_exists(collection_name=collection_name):
+            return {}
         counts: dict[str, int] = defaultdict(int)
         offset: Any = None
         while True:
@@ -780,6 +939,10 @@ class QdrantVectorStoreManager(VectorStoreManager):
                 break
             offset = next_offset
         return dict(counts)
+
+    def list_indexed_ontology_iris(self, *, batch_size: int = 512) -> set[str]:
+        """Return distinct ``ontology_iri`` values in the ontology collection."""
+        return set(self.count_points_by_ontology_iri(batch_size=batch_size))
 
     def _query_named_vector(
         self,

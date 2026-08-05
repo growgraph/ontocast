@@ -43,6 +43,10 @@ def _build_unit() -> ContentUnit:
     )
 
 
+def _stub_ontology_manager(**kwargs: object) -> SimpleNamespace:
+    return SimpleNamespace(preferred_namespace_prefixes={}, **kwargs)
+
+
 def _build_tools(
     *,
     patch_retriever: _StubPatchRetriever | None,
@@ -75,7 +79,7 @@ def test_resolver_vector_retrieval_prefers_ensemble() -> None:
     tools = _build_tools(
         patch_retriever=_StubPatchRetriever(graph=graph, sources=[ontology_iri]),
         vector_store=object(),
-        ontology_manager=SimpleNamespace(),
+        ontology_manager=_stub_ontology_manager(),
     )
     state = AgentState(
         ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
@@ -83,8 +87,8 @@ def test_resolver_vector_retrieval_prefers_ensemble() -> None:
 
     result = asyncio.run(resolve_unit_ontology_context(state, tools, _build_unit()))
 
-    assert result.anchor_iri == ontology_iri
-    assert len(result.ontology_snapshot.graph) > 0
+    assert result.primary_writable_iri == ontology_iri
+    assert len(result.snapshot.graph) > 0
     assert result.assembly_mode == OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE
 
 
@@ -95,7 +99,7 @@ def test_resolver_vector_retrieval_raises_when_vector_stack_missing() -> None:
     tools = _build_tools(
         patch_retriever=None,
         vector_store=None,
-        ontology_manager=SimpleNamespace(),
+        ontology_manager=_stub_ontology_manager(),
     )
     with pytest.raises(OntologyContextConfigError):
         asyncio.run(resolve_unit_ontology_context(state, tools, _build_unit()))
@@ -123,7 +127,7 @@ def test_resolver_selected_single_ontology_uses_mocked_llm_selection(
     tools = _build_tools(
         patch_retriever=None,
         vector_store=None,
-        ontology_manager=SimpleNamespace(),
+        ontology_manager=_stub_ontology_manager(),
         llm=AsyncMock(),
     )
     state = AgentState(
@@ -131,8 +135,8 @@ def test_resolver_selected_single_ontology_uses_mocked_llm_selection(
     )
     result = asyncio.run(resolve_unit_ontology_context(state, tools, _build_unit()))
     assert result.assembly_mode == OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM
-    assert result.anchor_iri == finance_iri
-    assert result.ontology_snapshot.iri == finance_iri
+    assert result.primary_writable_iri == finance_iri
+    assert result.snapshot.source_iris == [finance_iri]
 
 
 def test_build_merged_document_ontology_context_merges_sorted_artifacts() -> None:
@@ -164,8 +168,8 @@ def test_build_merged_document_ontology_context_merges_sorted_artifacts() -> Non
         "https://example.org/onto/a",
         "https://example.org/onto/b",
     ]
-    assert context.anchor_iri == "https://example.org/onto/a"
-    assert len(context.ontology_snapshot.graph) >= 2
+    assert context.primary_writable_iri == "https://example.org/onto/a"
+    assert len(context.snapshot.graph) >= 2
     assert context.assembly_mode == OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED
 
 
@@ -194,14 +198,14 @@ async def test_resolve_effective_facts_ontology_context_prefers_merged_artifacts
     tools = _build_tools(
         patch_retriever=None,
         vector_store=None,
-        ontology_manager=SimpleNamespace(),
+        ontology_manager=_stub_ontology_manager(),
     )
 
     result = await resolve_effective_facts_ontology_context(state, tools, _build_unit())
 
-    assert result.anchor_iri == merged.iri
+    assert result.primary_writable_iri == merged.iri
     assert result.patch_sources == [merged.iri]
-    assert len(result.ontology_snapshot.graph) >= 1
+    assert len(result.snapshot.graph) >= 1
     assert result.assembly_mode == OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED
 
 
@@ -216,6 +220,8 @@ def test_resolver_fixed_single_ontology_resolves_from_manager() -> None:
     )
 
     class _StubOntologyManager:
+        preferred_namespace_prefixes: dict[str, str] = {}
+
         def get_freshest_terminal_ontology(
             self, ontology_id: str | None = None
         ) -> Ontology | None:
@@ -234,4 +240,4 @@ def test_resolver_fixed_single_ontology_resolves_from_manager() -> None:
     )
     result = asyncio.run(resolve_unit_ontology_context(state, tools, _build_unit()))
     assert result.assembly_mode == OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY
-    assert result.anchor_iri == finance_iri
+    assert result.primary_writable_iri == finance_iri

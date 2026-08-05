@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import abc
 import importlib
+import threading
 from typing import Any
 
 import httpx
@@ -16,6 +17,11 @@ from qdrant_client.http import models as qdrant_models
 from ontocast.config import EmbeddingConfig, EmbeddingProvider
 from ontocast.tool.onto import Tool
 
+# Shared across EmbeddingTool instances so parallel ontology reindex does not
+# race HuggingFace SentenceTransformer.encode / remote client state.
+_EMBED_LOCK = threading.Lock()
+_SPARSE_EMBED_LOCK = threading.Lock()
+
 
 class EmbeddingTool(Tool):
     """Base embedding tool with provider-specific implementations."""
@@ -23,12 +29,36 @@ class EmbeddingTool(Tool):
     config: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
 
     @abc.abstractmethod
+    def _embed_unlocked(self, texts: list[str]) -> list[list[float]]:
+        """Return vectors for all given texts (caller holds the embed lock)."""
+
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Return vectors for all given texts."""
+        """Return vectors for all given texts as *documents* (thread-safe)."""
+        if not texts:
+            return []
+        with _EMBED_LOCK:
+            return self._embed_unlocked(self._apply(self.config.document_prefix, texts))
+
+    def embed_query(self, texts: list[str]) -> list[list[float]]:
+        """Return vectors for all given texts as *queries* (thread-safe).
+
+        Asymmetric retrieval models are trained with distinct query and document
+        instructions and lose accuracy when both sides are encoded identically. With
+        empty prefixes — the default, suiting a symmetric paraphrase model — this is
+        exactly :meth:`embed`.
+        """
+        if not texts:
+            return []
+        with _EMBED_LOCK:
+            return self._embed_unlocked(self._apply(self.config.query_prefix, texts))
+
+    @staticmethod
+    def _apply(prefix: str, texts: list[str]) -> list[str]:
+        return texts if not prefix else [f"{prefix}{text}" for text in texts]
 
     def embed_one(self, text: str) -> list[float]:
-        """Return a vector for one text."""
-        vectors = self.embed([text])
+        """Return a vector for one query text."""
+        vectors = self.embed_query([text])
         if not vectors:
             raise ValueError("Embedding provider returned no vectors for query text")
         return vectors[0]
@@ -65,9 +95,7 @@ class HuggingFaceEmbeddingTool(EmbeddingTool):
         )
         return self._embedder
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        if not texts:
-            return []
+    def _embed_unlocked(self, texts: list[str]) -> list[list[float]]:
         vectors = self._get_embedder().encode(
             texts, convert_to_numpy=True, show_progress_bar=len(texts) > 100
         )
@@ -88,9 +116,7 @@ class _LangChainEmbeddingTool(EmbeddingTool):
             self._embedder = self._build_embedder()
         return self._embedder
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        if not texts:
-            return []
+    def _embed_unlocked(self, texts: list[str]) -> list[list[float]]:
         return self._get_embedder().embed_documents(texts)
 
 
@@ -117,11 +143,9 @@ class OllamaEmbeddingTool(_LangChainEmbeddingTool):
             base_url=self.config.base_url,
         )
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        if not texts:
-            return []
+    def _embed_unlocked(self, texts: list[str]) -> list[list[float]]:
         try:
-            return super().embed(texts)
+            return super()._embed_unlocked(texts)
         except Exception:
             return self._embed_via_http(texts)
 
@@ -169,12 +193,32 @@ class FastembedBm25SparseTool(Tool):
         return self._embedder
 
     def embed_sparse(self, texts: list[str]) -> list[qdrant_models.SparseVector]:
-        """Return Qdrant sparse vectors for all given texts."""
+        """Return Qdrant sparse vectors for indexing all given texts (thread-safe)."""
         if not texts:
             return []
+        with _SPARSE_EMBED_LOCK:
+            return self._embed_sparse_unlocked(texts)
+
+    def embed_sparse_query(self, texts: list[str]) -> list[qdrant_models.SparseVector]:
+        """Return Qdrant sparse vectors for *querying* with all given texts.
+
+        BM25 is asymmetric: documents carry term-frequency saturation weights, queries
+        carry flat per-term weights, and the IDF factor is applied by the store. Encoding
+        queries with the document encoder instead squares the term-frequency weighting and
+        drops the query/document distinction entirely.
+        """
+        if not texts:
+            return []
+        with _SPARSE_EMBED_LOCK:
+            return self._embed_sparse_unlocked(texts, query=True)
+
+    def _embed_sparse_unlocked(
+        self, texts: list[str], *, query: bool = False
+    ) -> list[qdrant_models.SparseVector]:
         model = self._get_embedder()
+        encode = model.query_embed if query else model.embed
         out: list[qdrant_models.SparseVector] = []
-        for sparse_emb in model.embed(texts):
+        for sparse_emb in encode(texts):
             payload = sparse_emb.as_object()
             indices_raw = payload["indices"]
             values_raw = payload["values"]
@@ -191,7 +235,7 @@ class FastembedBm25SparseTool(Tool):
         return out
 
     def embed_one_sparse(self, text: str) -> qdrant_models.SparseVector:
-        vectors = self.embed_sparse([text])
+        vectors = self.embed_sparse_query([text])
         if not vectors:
             raise ValueError("BM25 embedder returned no sparse vector for query text")
         return vectors[0]

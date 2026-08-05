@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, PrivateAttr, model_validator
 
 from ontocast.config import EmbeddingConfig, LanceDBConfig, VectorStoreConfig
 from ontocast.onto.ontology import Ontology
@@ -29,9 +29,11 @@ from ontocast.tool.vector_store.embedding import (
     EmbeddingTool,
     FastembedBm25SparseTool,
 )
+from ontocast.tool.vector_store.lexical_trigger import LexicalTriggerIndex
 from ontocast.tool.vector_store.util import (
     atom_from_payload,
     atom_payload,
+    atom_scope_fingerprint,
     collection_embedding_metadata,
     dedupe_hits_by_identity,
     effective_top_k,
@@ -40,6 +42,7 @@ from ontocast.tool.vector_store.util import (
     point_id_for_atom,
     rank_fuse_channel_hits,
     require_embedding_vector_length,
+    sync_atomizer_from_store_config,
     validate_embedding_contract_metadata,
 )
 
@@ -66,6 +69,57 @@ class LanceDBVectorStoreManager(VectorStoreManager):
     embedding: EmbeddingTool = Field(..., exclude=True)
     sparse_embedding: FastembedBm25SparseTool | None = Field(default=None, exclude=True)
     atomizer: GraphAtomizer = Field(default_factory=GraphAtomizer, exclude=True)
+    _lexical_trigger_index: LexicalTriggerIndex | None = PrivateAttr(default=None)
+
+    @model_validator(mode="after")
+    def _sync_atomizer_with_store_config(self) -> "LanceDBVectorStoreManager":
+        """Mirror representation settings from store config onto the atomizer."""
+        sync_atomizer_from_store_config(self.atomizer, self.store_config)
+        return self
+
+    def _get_lexical_trigger_index(self) -> LexicalTriggerIndex:
+        if self._lexical_trigger_index is None:
+            self._lexical_trigger_index = LexicalTriggerIndex(
+                max_match_atoms=self.store_config.lexical_trigger_max_atoms
+            )
+        return self._lexical_trigger_index
+
+    def _register_lexical_triggers(self, atoms: list[GraphAtom]) -> None:
+        if not self.store_config.lexical_trigger_enabled:
+            return
+        self._get_lexical_trigger_index().register_atoms(atoms)
+
+    def _rebuild_lexical_trigger_index(self) -> None:
+        index = LexicalTriggerIndex(
+            max_match_atoms=self.store_config.lexical_trigger_max_atoms
+        )
+        self._lexical_trigger_index = index
+        if not self.store_config.lexical_trigger_enabled:
+            return
+        for atom in self._load_all_atoms():
+            index.register_atom(atom)
+
+    def _load_all_atoms(self) -> list[GraphAtom]:
+        db = self._connect()
+        table_name = self._ontology_table_name()
+        if table_name not in self._list_tables(db):
+            return []
+        table = db.open_table(table_name)
+        n = table.count_rows()
+        if n == 0:
+            return []
+        rows = table.search().limit(n).to_list()
+        atoms: list[GraphAtom] = []
+        for row in rows:
+            payload = {
+                k: v
+                for k, v in row.items()
+                if k not in ("core_vector", "neighborhood_vector")
+            }
+            atoms.append(
+                atom_from_payload(payload, default_id=str(row.get("point_id", "")))
+            )
+        return atoms
 
     @property
     def embedding_config(self) -> EmbeddingConfig:
@@ -136,6 +190,22 @@ class LanceDBVectorStoreManager(VectorStoreManager):
         self.store_config.ontology_table = ontology_name
         self.store_config.facts_table = facts_name
 
+    async def wipe_store(self) -> None:
+        """Drop the currently configured ontology and facts tables (+ embedding meta)."""
+        await asyncio.to_thread(self._wipe_store_sync)
+
+    def _wipe_store_sync(self) -> None:
+        db = self._connect()
+        existing = self._list_tables(db)
+        for name in (self._ontology_table_name(), self._facts_table_name()):
+            if name in existing:
+                db.drop_table(name)
+                logger.info("Wiped LanceDB table %s", name)
+            meta = self._meta_path(name)
+            if meta.exists():
+                meta.unlink()
+        self._lexical_trigger_index = None
+
     async def clean_tenancy(
         self,
         tenant: str,
@@ -158,6 +228,7 @@ class LanceDBVectorStoreManager(VectorStoreManager):
             meta = self._meta_path(name)
             if meta.exists():
                 meta.unlink()
+        self._lexical_trigger_index = None
 
     def _dense_dimension(self) -> int:
         return self.embedding_config.dimension
@@ -166,6 +237,8 @@ class LanceDBVectorStoreManager(VectorStoreManager):
         meta = collection_embedding_metadata(
             self.embedding_config,
             metadata_dim=self._dense_dimension(),
+            minimal_label_limit=self.store_config.minimal_label_limit,
+            atom_scope=atom_scope_fingerprint(self.store_config),
         )
         self._meta_path().write_text(json.dumps(meta), encoding="utf-8")
 
@@ -182,6 +255,8 @@ class LanceDBVectorStoreManager(VectorStoreManager):
             self._read_embedding_meta() or None,
             embedding_config=self.embedding_config,
             expected_meta_dim=self._dense_dimension(),
+            minimal_label_limit=self.store_config.minimal_label_limit,
+            atom_scope=atom_scope_fingerprint(self.store_config),
         )
 
     async def initialize(self) -> None:
@@ -213,20 +288,22 @@ class LanceDBVectorStoreManager(VectorStoreManager):
             self._ensure_indexes(table)
         elif not self._meta_path().exists():
             self._write_embedding_meta()
+        self._rebuild_lexical_trigger_index()
 
     def _ensure_indexes(self, table: Any) -> None:
+        from lancedb.index import FTS, IvfPq
+
+        cosine = IvfPq(distance_type="cosine")
         try:
-            table.create_index(metric="cosine", vector_column_name="core_vector")
+            table.create_index("core_vector", config=cosine)
         except Exception:
             logger.debug("LanceDB core_vector index already exists or skipped")
         try:
-            table.create_index(
-                metric="cosine", vector_column_name="neighborhood_vector"
-            )
+            table.create_index("neighborhood_vector", config=cosine)
         except Exception:
             logger.debug("LanceDB neighborhood_vector index already exists or skipped")
         try:
-            table.create_fts_index("minimal_representation")
+            table.create_index("minimal_representation", config=FTS())
         except Exception:
             logger.debug("LanceDB FTS index already exists or skipped")
 
@@ -247,12 +324,17 @@ class LanceDBVectorStoreManager(VectorStoreManager):
         if not atoms:
             return 0
 
-        core_vectors = self._embed_texts_batched(
-            [atom.core_representation for atom in atoms]
-        )
-        neighborhood_vectors = self._embed_texts_batched(
-            [atom.neighborhood_representation for atom in atoms]
-        )
+        n = len(atoms)
+        dense_texts = [atom.core_representation for atom in atoms] + [
+            atom.neighborhood_representation for atom in atoms
+        ]
+        dense_vectors = self._embed_texts_batched(dense_texts)
+        if len(dense_vectors) != 2 * n:
+            raise ValueError(
+                "Embedding provider returned mismatched vector counts for atoms"
+            )
+        core_vectors = dense_vectors[:n]
+        neighborhood_vectors = dense_vectors[n:]
 
         records = [
             self._record_from_atom(atom, core_vectors[i], neighborhood_vectors[i])
@@ -267,6 +349,7 @@ class LanceDBVectorStoreManager(VectorStoreManager):
             self._write_embedding_meta()
             table = db.open_table(table_name)
             self._ensure_indexes(table)
+            self._register_lexical_triggers(atoms)
             return len(records)
 
         table = db.open_table(table_name)
@@ -275,6 +358,7 @@ class LanceDBVectorStoreManager(VectorStoreManager):
         ).when_matched_update_all().when_not_matched_insert_all().execute(  # type: ignore[attr-defined]
             records
         )
+        self._register_lexical_triggers(atoms)
         return len(records)
 
     def _encode_single_query_vectors(
@@ -289,7 +373,7 @@ class LanceDBVectorStoreManager(VectorStoreManager):
         n = len(queries)
         if n == 0:
             return []
-        dense_vecs = self.embedding.embed(queries)
+        dense_vecs = self.embedding.embed_query(queries)
         if len(dense_vecs) != n:
             raise ValueError(
                 "Embedding provider returned mismatched vectors for queries"
@@ -596,6 +680,48 @@ class LanceDBVectorStoreManager(VectorStoreManager):
                 )
         return out
 
+    def fetch_atoms_by_ids(self, atom_ids: list[str]) -> list[GraphAtom]:
+        if not atom_ids:
+            return []
+        db = self._connect()
+        table_name = self._ontology_table_name()
+        if table_name not in self._list_tables(db):
+            return []
+        table = db.open_table(table_name)
+        found: dict[str, GraphAtom] = {}
+        for atom_id in atom_ids:
+            escaped = atom_id.replace("'", "''")
+            rows = table.search().where(f"atom_id = '{escaped}'").limit(1).to_list()
+            if not rows:
+                continue
+            row = rows[0]
+            payload = {
+                k: v
+                for k, v in row.items()
+                if k not in ("core_vector", "neighborhood_vector")
+            }
+            atom = atom_from_payload(payload, default_id=str(row.get("point_id", "")))
+            found[atom.atom_id] = atom
+        return [found[aid] for aid in atom_ids if aid in found]
+
+    def match_lexical_triggers(
+        self, text: str, *, max_atoms: int | None = None
+    ) -> list[GraphAtom]:
+        if not self.store_config.lexical_trigger_enabled or not text.strip():
+            return []
+        limit = (
+            self.store_config.lexical_trigger_max_atoms
+            if max_atoms is None
+            else max_atoms
+        )
+        if limit <= 0:
+            return []
+        index = self._get_lexical_trigger_index()
+        matched_ids = index.match(text, max_atoms=limit)
+        atoms = self.fetch_atoms_by_ids(matched_ids)
+        trigger_score = self.store_config.lexical_trigger_score
+        return [atom.model_copy(update={"score": trigger_score}) for atom in atoms]
+
     def delete_ontology(
         self,
         iri: str,
@@ -609,6 +735,7 @@ class LanceDBVectorStoreManager(VectorStoreManager):
         )
         if where is None:
             return
+        self._get_lexical_trigger_index().unregister_ontology(iri)
         db = self._connect()
         table_name = self._ontology_table_name()
         tables = self._list_tables(db)
@@ -616,6 +743,19 @@ class LanceDBVectorStoreManager(VectorStoreManager):
             return
         table = db.open_table(table_name)
         table.delete(where)
+
+    def list_indexed_ontology_iris(self) -> set[str]:
+        """Return distinct ``ontology_iri`` values in the ontology table."""
+        db = self._connect()
+        table_name = self._ontology_table_name()
+        if table_name not in self._list_tables(db):
+            return set()
+        table = db.open_table(table_name)
+        n = table.count_rows()
+        if n == 0:
+            return set()
+        rows = table.search().select(["ontology_iri"]).limit(n).to_list()
+        return {str(row["ontology_iri"]) for row in rows if row.get("ontology_iri")}
 
     def _embed_texts_batched(self, texts: list[str]) -> list[list[float]]:
         if not texts:

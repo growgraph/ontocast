@@ -11,8 +11,6 @@ from typing import Any
 
 import numpy as np
 from rdflib import URIRef
-from sklearn.cluster import DBSCAN
-from sklearn.metrics.pairwise import cosine_similarity
 
 from .normalizer import EntityRepresentation
 
@@ -126,6 +124,9 @@ class EntityClusterer:
         """
         if not embeddings:
             return []
+
+        from sklearn.cluster import DBSCAN
+        from sklearn.metrics.pairwise import cosine_similarity
 
         entities = list(embeddings.keys())
         embedding_matrix = np.array([embeddings[e] for e in entities])

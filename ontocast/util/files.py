@@ -1,6 +1,7 @@
 import logging
 import pathlib
 
+from ontocast.config import ConverterConfig
 from ontocast.tool.converter import ConverterTool
 
 logger = logging.getLogger(__name__)
@@ -25,10 +26,14 @@ def crawl_directories(
     return file_paths
 
 
-def pdf2markdown(file_path: pathlib.Path, converter: ConverterTool | None = None):
+def pdf2markdown(
+    file_path: pathlib.Path,
+    converter: ConverterTool | None = None,
+    converter_config: ConverterConfig | None = None,
+):
     if file_path.suffix == ".pdf":
         if converter is None:
-            converter = ConverterTool()
+            converter = ConverterTool(converter_config=converter_config)
         doc = converter(file_path)
         return doc.export_to_markdown()
     else:

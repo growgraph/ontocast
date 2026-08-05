@@ -21,7 +21,7 @@ The loops run sequentially:
    :func:`~ontocast.stategraph.context_resolver.resolve_unit_ontology_context`
    call inside the loop.
 3. **Facts loop** (if ``render_mode`` includes facts): extracts facts from the
-   input text. When the ontology loop ran, its ``current_ontology`` is passed as
+   input text. When the ontology loop ran, its working snapshot is passed as
    pre-resolved context so facts reuse that output instead of re-querying the
    catalog or triple store.
 """
@@ -32,7 +32,7 @@ from copy import deepcopy
 from ontocast.agent.convert_document import convert_document
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import Status
-from ontocast.onto.null import NULL_ONTOLOGY
+from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.atomic import facts_loop, ontology_loop
@@ -50,30 +50,65 @@ class DocumentConversionError(Exception):
         self.stage = stage
 
 
+def _empty_snapshot() -> OntologySnapshot:
+    return OntologySnapshot.empty(
+        title="Pending context resolve",
+        description="Placeholder until resolve_unit_ontology_context runs.",
+    )
+
+
+def _facts_context_from_ontology_result(
+    onto_result: UnitOntologyState,
+) -> UnitOntologyContext | None:
+    """Build facts context from ontology-loop scratchpad / fresh ontology."""
+    if (
+        onto_result.fresh_ontology is not None
+        and not onto_result.fresh_ontology.is_null()
+    ):
+        snap = OntologySnapshot.from_ontology(
+            onto_result.fresh_ontology,
+            assembly_mode=onto_result.assembly_mode_used,
+        )
+        return UnitOntologyContext(
+            snapshot=snap,
+            writable_iris=list(onto_result.writable_iris)
+            or (
+                [onto_result.fresh_ontology.iri]
+                if onto_result.fresh_ontology.iri
+                else []
+            ),
+            confidence=1.0,
+        )
+    if (
+        onto_result.working_graph_changed()
+        or not onto_result.ontology_snapshot.is_empty()
+    ):
+        # Prefer working graph (includes complements) for facts schema context.
+        graph = (
+            onto_result.working_graph.copy()
+            if len(onto_result.working_graph) > 0
+            else onto_result.ontology_snapshot.graph.copy()
+        )
+        snap = OntologySnapshot.from_graph(
+            graph,
+            source_iris=list(onto_result.ontology_patch_sources),
+            assembly_mode=onto_result.assembly_mode_used,
+            title="Post-ontology-loop context",
+            strip_headers=False,
+        )
+        return UnitOntologyContext(
+            snapshot=snap,
+            writable_iris=list(onto_result.writable_iris),
+            confidence=1.0,
+        )
+    return None
+
+
 async def run_unit_pipeline(
     agent_state: AgentState,
     tools: ToolBox,
 ) -> tuple[UnitOntologyState | None, UnitFactsState | None]:
-    """Run conversion, ontology, and facts loops for a single content unit.
-
-    Accepts a raw ``AgentState`` with ``raw_input`` set and handles document
-    conversion internally as its first step, matching the contract of the full
-    :func:`~ontocast.stategraph.create.create_agent_graph` workflow.
-
-    Args:
-        agent_state: Fully configured agent state with ``raw_input`` populated.
-            ``render_mode``, ``ontology_context_mode``,
-            ``ontology_user_instruction``, ``facts_user_instruction``, and
-            budget/visit settings are all read from this state.
-        tools: Configured tool-box.
-
-    Returns:
-        A ``(onto_result, facts_result)`` tuple.  Either element is ``None``
-        when the corresponding loop was skipped based on ``render_mode``.
-
-    Raises:
-        DocumentConversionError: If document conversion fails.
-    """
+    """Run conversion, ontology, and facts loops for a single content unit."""
     convert_document(agent_state, tools)
     if agent_state.failure_stage is not None or agent_state.status == Status.FAILED:
         raise DocumentConversionError(
@@ -101,7 +136,7 @@ async def run_unit_pipeline(
     if agent_state.render_ontology:
         ontology_state = UnitOntologyState(
             content_unit=unit,
-            ontology_snapshot=NULL_ONTOLOGY,
+            ontology_snapshot=_empty_snapshot(),
             ontology_patch_sources=[],
             ontology_user_instruction=agent_state.ontology_user_instruction,
             budget_tracker=deepcopy(agent_state.budget_tracker),
@@ -116,22 +151,22 @@ async def run_unit_pipeline(
             "run_unit_pipeline: ontology loop finished (status=%s)", onto_result.status
         )
         agent_state.budget_tracker = onto_result.budget_tracker
-        if not onto_result.current_ontology.is_null():
-            agent_state.reduced_ontology_artifacts = [onto_result.current_ontology]
+        if (
+            onto_result.fresh_ontology is not None
+            and not onto_result.fresh_ontology.is_null()
+        ):
+            agent_state.reduced_ontology_artifacts = [onto_result.fresh_ontology]
 
-    facts_pre_resolved_context: UnitOntologyContext | None = None
-    if onto_result is not None and not onto_result.current_ontology.is_null():
-        facts_pre_resolved_context = UnitOntologyContext(
-            anchor_iri=onto_result.assembly_anchor_iri,
-            ontology_snapshot=onto_result.current_ontology,
-            patch_sources=list(onto_result.ontology_patch_sources),
-            assembly_mode=onto_result.assembly_mode_used,
-        )
+    facts_pre_resolved_context = (
+        _facts_context_from_ontology_result(onto_result)
+        if onto_result is not None
+        else None
+    )
 
     if agent_state.render_facts:
         facts_state = UnitFactsState(
             content_unit=unit,
-            ontology_snapshot=NULL_ONTOLOGY,
+            ontology_snapshot=_empty_snapshot(),
             ontology_patch_sources=[],
             facts_user_instruction=agent_state.facts_user_instruction,
             budget_tracker=deepcopy(agent_state.budget_tracker),

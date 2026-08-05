@@ -43,6 +43,7 @@ OntoCast extracts semantic triples from documents using an agentic, ontology-dri
 - [API Endpoints](user_guide/api.md)
 - [Tenancy](user_guide/tenancy.md)
 - [Ontology Context](user_guide/ontology_context.md)
+- [Ontology Catalog](architecture/ontology_catalog.md)
 - [Triple Stores](user_guide/triple_stores.md)
 - [LLM Caching](user_guide/llm_caching.md)
 - [API Reference](reference/onto/state.md)
@@ -67,7 +68,7 @@ Optional PDF/DOCX conversion: `pip install "ontocast[doc-processing]"`
 cp .env.example .env
 # Edit LLM_API_KEY and paths
 
-ontocast --env-path .env
+ontocast serve
 
 curl -X POST http://localhost:8999/process -F "file=@document.pdf"
 ```
@@ -117,11 +118,11 @@ ontocast/
 ├── agent/           # Render, critic, normalize, serialize agents
 ├── api/             # FastAPI routers (ontologies, schemas, tenancy)
 ├── cli/             # Server and utility CLIs
+├── config/          # Pydantic settings (settings.py + section labels)
 ├── onto/            # Ontology, RDFGraph, state models
 ├── prompt/          # LLM prompt templates
 ├── stategraph/      # LangGraph workflow
 ├── tool/            # Triple stores, chunking, vector store, aggregation
-├── config.py        # Pydantic settings
 └── toolbox.py       # Tool dependency container
 ```
 

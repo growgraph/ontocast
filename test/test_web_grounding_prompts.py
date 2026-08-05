@@ -20,6 +20,7 @@ from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.llm import LLMTool
+from test.snapshot_helpers import snapshot_from_ontology
 
 render_ontology_module = importlib.import_module("ontocast.agent.render_ontology")
 render_facts_module = importlib.import_module("ontocast.agent.render_facts")
@@ -95,7 +96,7 @@ async def test_render_ontology_fresh_omits_search_when_disabled(monkeypatch) -> 
     tools = _tools_with_web_search(web_search_enabled=False)
     state = UnitOntologyState(
         content_unit=_build_content_unit(),
-        ontology_snapshot=_build_ontology(),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
     )
 
     await render_ontology_module.render_ontology_fresh(state, tools=tools)
@@ -122,7 +123,7 @@ async def test_criticise_ontology_omits_search_when_disabled(monkeypatch) -> Non
     tools = _tools_with_web_search(web_search_enabled=False)
     state = UnitOntologyState(
         content_unit=_build_content_unit(),
-        ontology_snapshot=_build_ontology(),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
     )
 
     await criticise_ontology_module.criticise_ontology(state, tools=tools)
@@ -144,7 +145,7 @@ async def test_render_facts_fresh_omits_search_when_disabled(monkeypatch) -> Non
     tools = _tools_with_web_search(web_search_enabled=False)
     state = UnitFactsState(
         content_unit=_build_content_unit(),
-        ontology_snapshot=_build_ontology(),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
     )
 
     await render_facts_module.render_facts_fresh(state, tools=tools)
@@ -171,7 +172,7 @@ async def test_criticise_facts_omits_search_when_disabled(monkeypatch) -> None:
     tools = _tools_with_web_search(web_search_enabled=False)
     state = UnitFactsState(
         content_unit=_build_content_unit(),
-        ontology_snapshot=_build_ontology(),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
     )
 
     await criticise_facts_module.criticise_facts(state, tools=tools)
@@ -207,13 +208,13 @@ async def test_per_node_facts_render_stripped_while_ontology_render_keeps_search
 
     ontology_state = UnitOntologyState(
         content_unit=_build_content_unit(),
-        ontology_snapshot=_build_ontology(),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
     )
     await render_ontology_module.render_ontology_update(ontology_state, tools=tools)
 
     facts_state = UnitFactsState(
         content_unit=_build_content_unit(),
-        ontology_snapshot=_build_ontology(),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
     )
     await render_facts_module.render_facts_fresh(facts_state, tools=tools)
 

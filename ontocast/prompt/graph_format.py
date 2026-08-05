@@ -170,12 +170,14 @@ class GraphFormatProfile:
         *,
         facts_namespace: str,
         domain_ontologies_clause: str,
+        quantity_fallback_vocabulary: dict[str, str] | None = None,
         search_guidelines: str = "",
     ) -> str:
         return format_facts_operational_guidelines(
             facts_namespace=facts_namespace,
             domain_ontologies_clause=domain_ontologies_clause,
             jsonld=self.format == LLMGraphFormat.JSONLD,
+            quantity_fallback_vocabulary=quantity_fallback_vocabulary,
             search_guidelines=search_guidelines,
         )
 

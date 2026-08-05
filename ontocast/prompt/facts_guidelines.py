@@ -1,5 +1,16 @@
 """Facts rendering operational guidelines (format-specific)."""
 
+# Fallback vocabulary for bounded/approximate quantities when retrieval supplied
+# no suitable class. QUDT by default because it is the most widely deployed
+# quantity vocabulary -- but a default, not a compiled-in assumption: override
+# via FACTS_QUANTITY_FALLBACK_VOCABULARY, or set it empty to forbid reaching
+# outside the provided context at all.
+DEFAULT_QUANTITY_FALLBACK_VOCABULARY: dict[str, str] = {
+    "value_class": "qudt:QuantityValue",
+    "numeric_value": "qudt:numericValue",
+    "unit": "qudt:unit",
+}
+
 facts_instruction_shared = """\n\n
 # OPERATIONAL GUIDELINES
 
@@ -20,9 +31,20 @@ facts_instruction_shared = """\n\n
     - WRONG: `cd:patient_1 onto:underwentTrial onto:ClinicalTrial .` (Using a Class as a factual instance slot)
     - CORRECT: `cd:patient_1 onto:underwentTrial cd:trial_1 . cd:trial_1 a onto:ClinicalTrial .`
 
-2. Use the provided {domain_ontologies_clause} (below) and standard ontologies (RDFS, OWL, schema.org, etc.) to identify/infer entities, classes, types, and relationships
-3. Thoroughly Extract and Link: extract all possible text mentions that correspond to entities, classes, types, or relationships defined in {domain_ontologies_clause}
-4. Enforce typing: all `cd:` entities (facts) are data instances and must be linked via `rdf:type` to a valid operational Class from either {domain_ontologies_clause} or standard core vocabularies (e.g., `schema:Person`, `schema:Organization`, `onto:Trial`).
+1d. SPECIFICITY RULE (ancestor vs. descendant terms):
+    - The provided ontology context may include both an ancestor (abstract) term and one or more
+      `rdfs:subClassOf` / `rdfs:subPropertyOf` descendants of it. They appear together
+      deliberately so you can read domain/range context — not as interchangeable synonyms.
+    - Always use the most specific descendant class or property whose stated domain, range, and
+      restrictions fit the concrete entities in the fact. Fall back to the ancestor only when no
+      descendant fits or the source text is genuinely stated at the abstract level.
+    - WRONG: `cd:assembly_1 ex:hasPart cd:widget_1 .` when `ex:hasComponent` is a
+      `rdfs:subPropertyOf` of `ex:hasPart` and its domain/range fit the subject and object.
+    - CORRECT: `cd:assembly_1 ex:hasComponent cd:widget_1 .`
+
+2. Use the provided domain ontology namespace(s) above and standard ontologies (RDFS, OWL, schema.org, etc.) to identify/infer entities, classes, types, and relationships
+3. Thoroughly Extract and Link: extract all possible text mentions that correspond to entities, classes, types, or relationships defined in the domain ontology namespace(s) above
+4. Enforce typing: all `cd:` entities (facts) are data instances and must be linked via `rdf:type` to a valid operational Class from either the domain ontology namespace(s) above or standard core vocabularies (e.g., `schema:Person`, `schema:Organization`, `onto:Trial`).
    - CRITICAL: NEVER type a `cd:` instance as `rdfs:Class` or `rdf:Property`. You are extracting data occurrences, not rewriting or defining the schema.
 5. Declare every namespace prefix you use (rdf, rdfs, owl, schema, domain ontologies, cd, etc.).
 5a. PREFIX HYGIENE: Use **only** prefix aliases declared in the ontology context above. Do not invent alternative aliases.
@@ -62,12 +84,33 @@ facts_instruction_shared = """\n\n
        * If found, instantiate it and use its typed decimal properties for
          the numeric components (nominal value, lower/upper bound, uncertainty)
          and its qualifier properties for the epistemic marker.
-       * If no such class is found in the domain ontology, use qudt:QuantityValue
-         as the type and attach the numeric parts with qudt:numericValue /
-         qudt:unit, adding a plain qualifier annotation (e.g. rdfs:comment
-         or a well-known approximation property).
+{quantity_fallback_clause}
    - Prose restatements of a measurement in dcterms:description are redundant
      once typed numeric properties exist — omit them.
+   - VERBATIM VALUES AND UNITS: transcribe every measurement with its exact
+     source value and source unit. NEVER convert units — not between scale
+     prefixes, not between related quantity kinds, not into a "preferred"
+     unit — and never round or re-derive values —
+     canonicalization happens downstream in code. If the exact source unit
+     has no individual in the provided context, keep the value verbatim and
+     preserve the unit token per rule 8a's fallback.
+
+8a. OBJECT PROPERTIES TAKE IRIs, NOT STRINGS:
+   - A property whose range is a class (declared `owl:ObjectProperty`, or with an
+     `rdfs:range` pointing to a class — e.g. `qudt:unit` with range `qudt:Unit`)
+     MUST have an IRI as its object, never a string literal.
+   - Resolve the surface token to an individual in the provided ontology context by
+     matching its `rdfs:label`, `skos:notation`, symbol, or code annotations,
+     preserving case exactly (a lowercase symbol and its uppercase variant denote
+     DIFFERENT individuals — match character-for-character).
+   - WRONG:   `cd:value_1 qudt:unit "nm" .` — string on an object property
+   - CORRECT: `cd:value_1 qudt:unit unit:NanoM .` — when that individual's
+     label/notation matches the text token; use only unit IRIs that appear
+     verbatim in the provided context, never invent one
+   - Only if NO individual in the provided context matches the token: keep the raw
+     token in a literal-code annotation property (e.g. `qudt:ucumCode` or
+     `rdfs:comment`) on the `cd:` node instead of putting a string on the
+     object property, so the surface form is preserved without breaking typing.
 
 9. To extract data from tables, use CSV on the Web (CSVW) to describe tables.
 
@@ -102,11 +145,48 @@ facts_output_hygiene_jsonld = (
 )
 
 
+_QUANTITY_FALLBACK_TEMPLATE = """       * If no such class is found in the domain ontology, use {value_class}
+         as the type and attach the numeric parts with {numeric_value} /
+         {unit}, adding a plain qualifier annotation (e.g. rdfs:comment
+         or a well-known approximation property)."""
+
+_QUANTITY_FALLBACK_NONE = """       * If no such class is found in the domain ontology, keep the numeric
+         parts as typed literals on the entity itself and record the
+         qualifier with rdfs:comment. Do NOT borrow a class from a
+         vocabulary outside the provided context."""
+
+
+def format_quantity_fallback_clause(vocabulary: dict[str, str]) -> str:
+    """Render the bounded-quantity fallback for a configured vocabulary.
+
+    The fallback is what the renderer reaches for when retrieval supplied no
+    bounded-quantity class. Which vocabulary that is belongs to the deployment,
+    not to the prompt: a catalog modelling quantities with anything other than
+    QUDT would otherwise be told to emit QUDT terms it never declared.
+
+    Args:
+        vocabulary: Role -> term mapping (``FACTS_QUANTITY_FALLBACK_VOCABULARY``).
+            Empty disables the fallback and keeps the renderer inside the
+            provided context.
+
+    Returns:
+        str: The guideline bullet for the configured fallback.
+    """
+    if not vocabulary:
+        return _QUANTITY_FALLBACK_NONE
+    return _QUANTITY_FALLBACK_TEMPLATE.format(
+        value_class=vocabulary.get("value_class", "a quantity-value class"),
+        numeric_value=vocabulary.get("numeric_value", "its numeric-value property"),
+        unit=vocabulary.get("unit", "its unit property"),
+    )
+
+
 def format_facts_operational_guidelines(
     *,
     facts_namespace: str,
     domain_ontologies_clause: str,
     jsonld: bool,
+    quantity_fallback_vocabulary: dict[str, str] | None = None,
     search_guidelines: str = "",
 ) -> str:
     """Build operational guidelines for the active graph format."""
@@ -117,6 +197,11 @@ def format_facts_operational_guidelines(
         facts_namespace=facts_namespace,
         literal_encoding_rules=literal_rules,
         output_hygiene_rule=hygiene,
+        quantity_fallback_clause=format_quantity_fallback_clause(
+            quantity_fallback_vocabulary
+            if quantity_fallback_vocabulary is not None
+            else DEFAULT_QUANTITY_FALLBACK_VOCABULARY
+        ),
         search_guidelines=search_guidelines,
     )
     if jsonld:

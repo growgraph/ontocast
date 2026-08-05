@@ -11,6 +11,7 @@ import pytest
 from ontocast.config import (
     Config,
     EmbeddingConfig,
+    FusekiConfig,
     PathConfig,
     QdrantConfig,
     ToolConfig,
@@ -91,6 +92,7 @@ def test_initialize_materializes_then_adds_with_skip_vector(monkeypatch, test_on
         triple_store_manager = None
         llm = MagicMock()
         ontology_manager: MagicMock
+        config = Config()
 
         def __init__(self) -> None:
             self.ontology_manager = MagicMock()
@@ -101,6 +103,9 @@ def test_initialize_materializes_then_adds_with_skip_vector(monkeypatch, test_on
             return ToolBox.should_initialize_vector_store(
                 cast(ToolBox, self), ontology_context_mode
             )
+
+        def is_vector_store_ready(self):
+            return ToolBox.is_vector_store_ready(cast(ToolBox, self))
 
         _synchronize_ontologies = fake_sync
         _materialize_ontology = fake_mat
@@ -115,6 +120,9 @@ def test_initialize_materializes_then_adds_with_skip_vector(monkeypatch, test_on
 
     assert materialized == [test_ontology]
     assert added == [(test_ontology, True)]
+    # Catalog registration happens before materialize so enrich can overlap.
+    assert added  # registration recorded
+    assert materialized
 
 
 def test_toolbox_rejects_mismatched_qdrant_vector_size_and_embedding_dim() -> None:
@@ -157,6 +165,7 @@ def test_initialize_skips_vector_store_in_full_ttl_mode(monkeypatch) -> None:
         triple_store_manager = None
         llm = MagicMock()
         ontology_manager: MagicMock
+        config = Config()
 
         def __init__(self) -> None:
             self.vector_store = MagicMock()
@@ -175,6 +184,9 @@ def test_initialize_skips_vector_store_in_full_ttl_mode(monkeypatch) -> None:
             return ToolBox.should_initialize_vector_store(
                 cast(ToolBox, self), ontology_context_mode
             )
+
+        def is_vector_store_ready(self):
+            return ToolBox.is_vector_store_ready(cast(ToolBox, self))
 
     st = Stub()
     asyncio.run(
@@ -199,6 +211,7 @@ def test_initialize_vector_store_failure_is_non_fatal_when_configured(
         triple_store_manager = None
         llm = MagicMock()
         ontology_manager: MagicMock
+        config = Config()
 
         def __init__(self) -> None:
             self.vector_store = MagicMock()
@@ -219,6 +232,9 @@ def test_initialize_vector_store_failure_is_non_fatal_when_configured(
             return ToolBox.should_initialize_vector_store(
                 cast(ToolBox, self), ontology_context_mode
             )
+
+        def is_vector_store_ready(self):
+            return ToolBox.is_vector_store_ready(cast(ToolBox, self))
 
     st = Stub()
     asyncio.run(
@@ -271,3 +287,276 @@ def test_ingest_ontology_ttl_rejects_identity_conflict_before_persisting() -> No
             asyncio.run(ToolBox.ingest_ontology_ttl(cast(ToolBox, stub), incoming_ttl))
 
         stub._materialize_ontology.assert_not_awaited()
+
+
+def test_initialize_materializes_with_bounded_concurrency(
+    monkeypatch, test_ontology
+) -> None:
+    monkeypatch.setattr(
+        "ontocast.toolbox.update_ontology_manager",
+        AsyncMock(),
+    )
+
+    active = 0
+    max_active = 0
+    lock = asyncio.Lock()
+
+    ontologies = [
+        Ontology(
+            graph=RDFGraph(),
+            iri=f"https://example.org/o{i}",
+            ontology_id=f"o{i}",
+        )
+        for i in range(4)
+    ]
+
+    async def fake_sync(self):
+        return ontologies
+
+    async def fake_mat(self, o):
+        nonlocal active, max_active
+        async with lock:
+            active += 1
+            max_active = max(max_active, active)
+        await asyncio.sleep(0.05)
+        async with lock:
+            active -= 1
+
+    class Stub:
+        vector_store = None
+        triple_store_manager = None
+        llm = MagicMock()
+        ontology_manager: MagicMock
+        config = Config()
+
+        def __init__(self) -> None:
+            self.ontology_manager = MagicMock()
+            self.vector_store_ready = False
+            self.vector_store_last_error = None
+            self.config.tool_config.vector_store.reindex_concurrency = 2
+
+        def should_initialize_vector_store(self, ontology_context_mode):
+            return ToolBox.should_initialize_vector_store(
+                cast(ToolBox, self), ontology_context_mode
+            )
+
+        def is_vector_store_ready(self):
+            return ToolBox.is_vector_store_ready(cast(ToolBox, self))
+
+        _synchronize_ontologies = fake_sync
+        _materialize_ontology = fake_mat
+
+    st = Stub()
+    st.ontology_manager.add_ontology = MagicMock()
+
+    asyncio.run(ToolBox.initialize(cast(ToolBox, st)))
+    assert max_active <= 2
+    assert max_active >= 2
+
+
+def test_initialize_wipes_and_prunes_orphan_iris(monkeypatch, test_ontology) -> None:
+    monkeypatch.setattr(
+        "ontocast.toolbox.update_ontology_manager",
+        AsyncMock(),
+    )
+
+    class Stub:
+        triple_store_manager = None
+        llm = MagicMock()
+        ontology_manager: MagicMock
+        config = Config()
+
+        def __init__(self) -> None:
+            self.vector_store = MagicMock()
+            self.vector_store.initialize = AsyncMock()
+            self.vector_store.wipe_store = AsyncMock()
+            self.vector_store.prune_orphan_ontology_iris = MagicMock(
+                return_value=["https://example.org/legacy"]
+            )
+            self.vector_store_ready = False
+            self.vector_store_last_error = None
+            self.ontology_manager = MagicMock()
+
+        async def _synchronize_ontologies(self):
+            return [test_ontology]
+
+        async def _materialize_ontology(self, _):
+            return None
+
+        def should_initialize_vector_store(self, ontology_context_mode):
+            return ToolBox.should_initialize_vector_store(
+                cast(ToolBox, self), ontology_context_mode
+            )
+
+        def is_vector_store_ready(self):
+            return self.vector_store_ready
+
+    st = Stub()
+    asyncio.run(
+        ToolBox.initialize(
+            cast(ToolBox, st),
+            ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY,
+            wipe_vector_store=True,
+            prune_orphan_iris=True,
+        )
+    )
+    st.vector_store.wipe_store.assert_awaited_once()
+    st.vector_store.initialize.assert_awaited_once()
+    st.vector_store.prune_orphan_ontology_iris.assert_called_once_with(
+        {test_ontology.iri}
+    )
+    assert st.vector_store_ready is True
+
+
+def test_initialize_skips_wipe_and_prune_when_disabled(
+    monkeypatch, test_ontology
+) -> None:
+    monkeypatch.setattr(
+        "ontocast.toolbox.update_ontology_manager",
+        AsyncMock(),
+    )
+
+    class Stub:
+        triple_store_manager = None
+        llm = MagicMock()
+        ontology_manager: MagicMock
+        config = Config()
+
+        def __init__(self) -> None:
+            self.vector_store = MagicMock()
+            self.vector_store.initialize = AsyncMock()
+            self.vector_store.wipe_store = AsyncMock()
+            self.vector_store.prune_orphan_ontology_iris = MagicMock(return_value=[])
+            self.vector_store_ready = False
+            self.vector_store_last_error = None
+            self.ontology_manager = MagicMock()
+
+        async def _synchronize_ontologies(self):
+            return [test_ontology]
+
+        async def _materialize_ontology(self, _):
+            return None
+
+        def should_initialize_vector_store(self, ontology_context_mode):
+            return ToolBox.should_initialize_vector_store(
+                cast(ToolBox, self), ontology_context_mode
+            )
+
+        def is_vector_store_ready(self):
+            return self.vector_store_ready
+
+    st = Stub()
+    st.config.tool_config.vector_store.wipe_on_init = False
+    st.config.tool_config.vector_store.prune_orphan_iris_on_init = False
+    asyncio.run(
+        ToolBox.initialize(
+            cast(ToolBox, st),
+            ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY,
+        )
+    )
+    st.vector_store.wipe_store.assert_not_awaited()
+    st.vector_store.prune_orphan_ontology_iris.assert_not_called()
+
+
+def _skip_if_qdrant_configured_but_down() -> None:
+    """Skip when a configured Qdrant is unreachable.
+
+    These build a real ToolBox, so they use whatever vector backend the
+    environment configures. With no QDRANT_URI (a clean CI checkout) that is
+    the in-memory store and they run offline; with QDRANT_URI set but the
+    service down they used to fail with a bare connection error instead of
+    skipping like every other service-dependent test.
+    """
+    from ontocast.config import QdrantConfig
+    from test.qdrant_util import qdrant_reachable
+
+    qdrant = QdrantConfig()
+    if qdrant.uri and not qdrant_reachable(uri=qdrant.uri, api_key=qdrant.api_key):
+        pytest.skip(f"Qdrant not reachable at {qdrant.uri}")
+
+
+def _tenancy_toolbox(tmp: str) -> ToolBox:
+    _skip_if_qdrant_configured_but_down()
+    wd = Path(tmp)
+    od = wd / "ontologies"
+    od.mkdir()
+    # Force the in-memory backend: the test environment may define FUSEKI_URI.
+    return ToolBox(
+        Config(
+            tool_config=ToolConfig(
+                path_config=PathConfig(working_directory=wd, ontology_directory=od),
+                embedding=EmbeddingConfig(dimension=384),
+                fuseki=FusekiConfig(uri=None, auth=None),
+            )
+        )
+    )
+
+
+def _tenant_ontology(iri: str, ontology_id: str) -> Ontology:
+    graph = RDFGraph._from_turtle_str(
+        f"""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix ex: <{iri}#> .
+
+        <{iri}> a owl:Ontology ; rdfs:label "Tenant ontology" .
+        ex:Thing a owl:Class .
+        """
+    )
+    return Ontology(graph=graph, iri=iri, ontology_id=ontology_id)
+
+
+def test_tenancy_switch_clears_the_in_memory_catalog() -> None:
+    """A tenancy switch must not leave the previous tenant's ontologies visible."""
+    with tempfile.TemporaryDirectory() as tmp:
+        toolbox = _tenancy_toolbox(tmp)
+        onto_a = _tenant_ontology("https://example.org/tenant-a", "shared")
+
+        async def main() -> None:
+            await toolbox.update_tenancy("alpha", "one")
+            await toolbox.triple_store_manager.aserialize(onto_a)
+            toolbox.ontology_manager.add_ontology(onto_a, skip_vector_index=True)
+            assert toolbox.ontology_manager.get_ontology_iris() == [onto_a.iri]
+
+            await toolbox.update_tenancy("beta", "one")
+            assert toolbox.ontology_manager.get_ontology_iris() == []
+
+            # The alias ledger went with it: a different IRI may reuse the id.
+            onto_b = _tenant_ontology("https://example.org/tenant-b", "shared")
+            toolbox.ontology_manager.add_ontology(onto_b, skip_vector_index=True)
+            assert toolbox.ontology_manager.get_ontology_iris() == [onto_b.iri]
+
+        asyncio.run(main())
+
+
+def test_tenancy_switch_back_repopulates_from_the_store() -> None:
+    """Switching back must restore the catalog rather than leave it empty."""
+    with tempfile.TemporaryDirectory() as tmp:
+        toolbox = _tenancy_toolbox(tmp)
+        onto_a = _tenant_ontology("https://example.org/tenant-a", "alpha-onto")
+
+        async def main() -> None:
+            await toolbox.update_tenancy("alpha", "one")
+            await toolbox.triple_store_manager.aserialize(onto_a)
+            toolbox.ontology_manager.add_ontology(onto_a, skip_vector_index=True)
+
+            await toolbox.update_tenancy("beta", "one")
+            await toolbox.update_tenancy("alpha", "one")
+            assert toolbox.ontology_manager.get_ontology_iris() == [onto_a.iri]
+
+        asyncio.run(main())
+
+
+def test_repeated_tenancy_call_does_not_drop_the_catalog() -> None:
+    """Re-asserting the same tenancy is a no-op, not a reset."""
+    with tempfile.TemporaryDirectory() as tmp:
+        toolbox = _tenancy_toolbox(tmp)
+        onto = _tenant_ontology("https://example.org/tenant-a", "alpha-onto")
+
+        async def main() -> None:
+            await toolbox.update_tenancy("alpha", "one")
+            toolbox.ontology_manager.add_ontology(onto, skip_vector_index=True)
+            await toolbox.update_tenancy("alpha", "one")
+            assert toolbox.ontology_manager.get_ontology_iris() == [onto.iri]
+
+        asyncio.run(main())

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import pathlib
 from io import BytesIO
@@ -24,7 +25,7 @@ from ontocast.tool.agg.entity_aligner import EntityAligner
 from ontocast.tool.cache import Cacher
 from ontocast.tool.graph_diff import DiffTool
 from ontocast.tool.graph_version_manager import GraphVersionManager
-from ontocast.tool.llm import LLMTool
+from ontocast.tool.llm import LLMTool, _active_budget_tracker
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.sparql import SPARQLTool
 from ontocast.tool.triple_manager.core import TripleStoreManager
@@ -53,18 +54,50 @@ async def update_ontology_properties(o: Ontology, llm_tool: LLMTool):
         o.set_properties(**props.model_dump())
 
 
-async def update_ontology_manager(om: OntologyManager, llm_tool: LLMTool):
+async def update_ontology_manager(
+    om: OntologyManager,
+    llm_tool: LLMTool,
+    *,
+    max_concurrency: int | None = None,
+):
     """Update properties for all ontologies in the manager.
 
-    This function iterates through all ontologies in the manager and updates
-    their properties using the LLM tool.
+    Ontologies that already have title, ontology_id, and description are skipped.
+    Remaining LLM calls run concurrently up to ``max_concurrency`` (defaults to
+    the LLM tool's ``llm_max_inflight``).
 
     Args:
         om: The ontology manager containing ontologies to update.
         llm_tool: The LLM tool instance for analysis.
+        max_concurrency: Optional override for parallel LLM enrich calls.
     """
-    for o in om.ontologies:
-        await update_ontology_properties(o, llm_tool)
+    import asyncio
+    import time
+
+    pending = [
+        o
+        for o in om.ontologies
+        if (o.title is None) or (o.ontology_id is None) or (o.description is None)
+    ]
+    if not pending:
+        return
+
+    limit = max_concurrency
+    if limit is None:
+        limit = max(1, getattr(llm_tool.config, "llm_max_inflight", 1))
+    semaphore = asyncio.Semaphore(max(1, limit))
+
+    async def _one(ontology: Ontology) -> None:
+        async with semaphore:
+            await update_ontology_properties(ontology, llm_tool)
+
+    started = time.perf_counter()
+    await asyncio.gather(*[_one(o) for o in pending])
+    logger.info(
+        "Ontology property enrich finished for %d ontolog(ies) in %.2fs",
+        len(pending),
+        time.perf_counter() - started,
+    )
 
 
 class ToolBox:
@@ -108,6 +141,8 @@ class ToolBox:
             llm_provider=self,
             search_provider=self.search_provider,
             web_search_config=tool_config.web_search,
+            facts_validation_config=tool_config.facts_validation,
+            citation_vocabulary=tool_config.chunk_config.citation_vocabulary,
         )
 
         # Create triple store manager: Fuseki when configured, otherwise in-memory.
@@ -123,13 +158,37 @@ class ToolBox:
             self.triple_store_manager = InMemoryTripleStoreManager()
 
         self.ontology_manager: OntologyManager = OntologyManager()
-        self.converter: ConverterTool = ConverterTool(cache=self.shared_cache)
+        self.ontology_manager.register_triple_store(self.triple_store_manager)
+        # Tenancy the in-memory catalog currently reflects; None until first set.
+        self._active_tenancy: tuple[str, str] | None = None
+        # Guards the tenancy retarget, which mutates ToolBox-wide state (dataset
+        # names, the ontology catalog, vector-store table names) across awaits.
+        # It is driven by a per-request query parameter with no concurrency cap,
+        # so without this two requests for different tenants can interleave and
+        # read or write each other's partition. Created lazily: __init__ may run
+        # outside an event loop.
+        self._tenancy_lock: asyncio.Lock | None = None
+        self._tenancy_lock_loop: asyncio.AbstractEventLoop | None = None
+        self.converter: ConverterTool = ConverterTool(
+            cache=self.shared_cache,
+            converter_config=tool_config.converter_config,
+        )
         self.chunker: ChunkerTool = ChunkerTool(
             chunk_config=tool_config.chunk_config, cache=self.shared_cache
         )
         self.aggregator: EmbeddingBasedAggregator = EmbeddingBasedAggregator(
             embedding_model=tool_config.aggregation.embedding_model,
             similarity_threshold=tool_config.aggregation.similarity_threshold,
+            candidate_similarity_threshold=(
+                tool_config.aggregation.candidate_similarity_threshold
+            ),
+            lexical_label_jaccard=tool_config.aggregation.lexical_label_jaccard,
+            lexical_sequence_ratio=tool_config.aggregation.lexical_sequence_ratio,
+            lexical_token_jaccard=tool_config.aggregation.lexical_token_jaccard,
+            functional_min_empirical_support=(
+                tool_config.aggregation.functional_min_empirical_support
+            ),
+            sibling_guard_scope=str(tool_config.aggregation.sibling_guard_scope),
         )
         self._entity_aligners: dict[tuple[str, float], EntityAligner] = {}
 
@@ -162,6 +221,7 @@ class ToolBox:
                 vector_store=vector_store,
                 sparql_tool=self.sparql_tool,
                 patch=tool_config.patch_retrieval,
+                ontology_manager=self.ontology_manager,
             )
             self.ontology_manager.register_vector_store(self.patch_retriever)
 
@@ -189,15 +249,21 @@ class ToolBox:
         return aligner
 
     async def get_llm_tool(self, budget_tracker):
-        """Return the shared LLM tool with the given budget tracker attached.
+        """Return the shared LLM tool, charging usage to ``budget_tracker``.
+
+        The tracker is bound to the *calling task* rather than to the shared
+        tool instance. Assigning it to the instance -- as this did previously --
+        meant that with ``PARALLEL_WORKERS`` unit workers in flight, whichever
+        one bound last collected every concurrent call's usage; document totals
+        still summed correctly, but per-unit attribution was arbitrary.
 
         Args:
-            budget_tracker: The budget tracker instance to use.
+            budget_tracker: The budget tracker to charge for this task's calls.
 
         Returns:
-            LLMTool: Shared LLM tool with the specified budget tracker.
+            LLMTool: The shared LLM tool.
         """
-        self.llm.budget_tracker = budget_tracker
+        _active_budget_tracker.set(budget_tracker)
         return self.llm
 
     def require_triple_store_manager(self) -> TripleStoreManager:
@@ -206,6 +272,35 @@ class ToolBox:
         if manager is None:
             raise RuntimeError("Triple store backend is not configured")
         return manager
+
+    async def aclose(self) -> None:
+        """Release every backend connection this ToolBox opened.
+
+        The ToolBox owns an httpx client (Fuseki) and a Qdrant client, neither
+        of which was previously closed anywhere -- ``FusekiTripleStoreManager``
+        even defined ``close()`` that nothing called. Long-lived hosts that
+        build a ToolBox per tenant, and tests that build many, leaked sockets.
+
+        Safe to call more than once, and never raises: teardown failures are
+        logged, since a caller shutting down cannot act on them.
+        """
+        if self.triple_store_manager is not None:
+            try:
+                await self.triple_store_manager.close()
+            except Exception as exc:
+                logger.warning("Error closing triple store manager: %s", exc)
+
+        if self.vector_store is not None:
+            try:
+                await asyncio.to_thread(self.vector_store.close)
+            except Exception as exc:
+                logger.warning("Error closing vector store: %s", exc)
+
+    async def __aenter__(self) -> "ToolBox":
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.aclose()
 
     async def update_tenancy(self, tenant: str, project: str) -> None:
         """Retarget Fuseki datasets and Qdrant collections for ``tenant`` / ``project``."""
@@ -216,6 +311,19 @@ class ToolBox:
             fail_on_vector_store_error=True,
         )
 
+    def _get_tenancy_lock(self) -> asyncio.Lock:
+        """Return the tenancy lock bound to the running loop.
+
+        Rebuilt when the loop changes: the CLI bootstrap runs several
+        ``asyncio.run`` calls, and an ``asyncio.Lock`` created on a closed loop
+        cannot be awaited on a later one.
+        """
+        loop = asyncio.get_running_loop()
+        if self._tenancy_lock is None or self._tenancy_lock_loop is not loop:
+            self._tenancy_lock = asyncio.Lock()
+            self._tenancy_lock_loop = loop
+        return self._tenancy_lock
+
     async def update_tenancy_with_vector_mode(
         self,
         tenant: str,
@@ -224,10 +332,34 @@ class ToolBox:
         initialize_vector_store: bool,
         fail_on_vector_store_error: bool,
     ) -> None:
-        """Retarget tenancy and optionally initialize vector store collections."""
+        """Retarget tenancy and optionally initialize vector store collections.
+
+        Serialized: the body mutates ToolBox-wide state across awaits, and the
+        HTTP layer calls this per request from a ``?tenant=`` query parameter
+        with no concurrency cap. Interleaving two switches leaves the catalog
+        and the store handles describing different tenants.
+        """
+        async with self._get_tenancy_lock():
+            await self._update_tenancy_with_vector_mode_locked(
+                tenant,
+                project,
+                initialize_vector_store=initialize_vector_store,
+                fail_on_vector_store_error=fail_on_vector_store_error,
+            )
+
+    async def _update_tenancy_with_vector_mode_locked(
+        self,
+        tenant: str,
+        project: str,
+        *,
+        initialize_vector_store: bool,
+        fail_on_vector_store_error: bool,
+    ) -> None:
         t, p = tenant.strip(), project.strip()
         if not t or not p:
             raise ValueError("tenant and project must be non-empty")
+
+        tenancy_changed = (t, p) != self._active_tenancy
 
         triple = self.triple_store_manager
         if triple is not None and triple.supports_tenancy_partition():
@@ -236,6 +368,24 @@ class ToolBox:
                 fuseki_cfg = self.config.tool_config.fuseki
                 fuseki_cfg.dataset = triple.dataset
                 fuseki_cfg.ontologies_dataset = triple.ontologies_dataset
+
+        if tenancy_changed:
+            # The catalog, its alias-collision ledger, and the graph caches are all
+            # partition-scoped. Carrying them across a switch leaks one tenant's
+            # ontologies into another's requests -- and its alias ledger can reject
+            # a legitimately distinct ontology that reuses an ontology_id.
+            # ``None`` means this is the first assignment, which happens at startup
+            # before ``initialize()``; leave the population to it rather than
+            # fetching twice. Any later switch must repopulate -- including when the
+            # partition we are leaving was empty. Seed TTLs are deliberately not
+            # replayed here: writing them into a different tenant as a side effect
+            # of a query parameter would be a surprise.
+            is_first_assignment = self._active_tenancy is None
+            self.ontology_manager.reset_catalog()
+            self._active_tenancy = (t, p)
+            if not is_first_assignment and triple is not None:
+                for ontology in await triple.afetch_ontologies():
+                    self.ontology_manager.add_ontology(ontology, skip_vector_index=True)
 
         if self.vector_store is not None:
             self.vector_store.apply_tenancy(t, p)
@@ -258,22 +408,28 @@ class ToolBox:
                     )
 
     async def clean_tenancy_data(self, tenant: str, project: str) -> None:
-        """Flush triple-store and vector-store partitions for ``tenant`` / ``project``."""
+        """Flush triple-store and vector-store partitions for ``tenant`` / ``project``.
+
+        Takes the tenancy lock: this is destructive, and a concurrent retarget
+        would let it resolve partition names against a scope that changed
+        mid-flight.
+        """
         t, p = tenant.strip(), project.strip()
         if not t or not p:
             raise ValueError("tenant and project must be non-empty")
 
-        triple = self.triple_store_manager
-        if triple is not None:
-            if not triple.supports_tenancy_partition():
-                raise NotImplementedError(
-                    f"Triple store {type(triple).__name__} has no tenant/project partitions"
-                )
-            await triple.clean_tenancy(t, p)
+        async with self._get_tenancy_lock():
+            triple = self.triple_store_manager
+            if triple is not None:
+                if not triple.supports_tenancy_partition():
+                    raise NotImplementedError(
+                        f"Triple store {type(triple).__name__} has no tenant/project partitions"
+                    )
+                await triple.clean_tenancy(t, p)
 
-        vector = self.vector_store
-        if vector is not None and vector.supports_tenancy_partition():
-            await vector.clean_tenancy(t, p)
+            vector = self.vector_store
+            if vector is not None and vector.supports_tenancy_partition():
+                await vector.clean_tenancy(t, p)
 
     def get_atomic_tools(self) -> AtomicToolBox:
         """Return the minimal toolbox used by atomic render/critic paths."""
@@ -313,13 +469,36 @@ class ToolBox:
         *,
         ontology_context_mode: OntologyContextMode | None = None,
         fail_on_vector_store_error: bool = True,
+        wipe_vector_store: bool | None = None,
+        prune_orphan_iris: bool | None = None,
     ) -> None:
         """Initialize the toolbox with ontologies and their properties.
 
         This method synchronizes ontologies between filesystem and triple store,
         then fetches ontologies from the triple store and updates their properties
         using the LLM tool.
+
+        Args:
+            ontology_context_mode: When vector search mode, ensure the vector store
+                is ready before materializing atoms.
+            fail_on_vector_store_error: Raise on vector init failure when True.
+            wipe_vector_store: Drop the current vector partition before init.
+                ``None`` uses ``VECTOR_STORE_WIPE_ON_INIT`` (default False).
+            prune_orphan_iris: Delete indexed IRIs absent from the sync catalog.
+                ``None`` uses ``VECTOR_STORE_PRUNE_ORPHAN_IRIS_ON_INIT`` (default True).
         """
+        import asyncio
+        import time
+
+        init_started = time.perf_counter()
+        vsc = self.config.tool_config.vector_store
+        do_wipe = vsc.wipe_on_init if wipe_vector_store is None else wipe_vector_store
+        do_prune = (
+            vsc.prune_orphan_iris_on_init
+            if prune_orphan_iris is None
+            else prune_orphan_iris
+        )
+
         if self.triple_store_manager is not None:
             await self.triple_store_manager.async_init()
 
@@ -337,6 +516,12 @@ class ToolBox:
                 )
             else:
                 try:
+                    if do_wipe:
+                        logger.warning(
+                            "Wiping vector store partition before initialize "
+                            "(wipe_vector_store=True)"
+                        )
+                        await vector_store.wipe_store()
                     await vector_store.initialize()
                     self.vector_store_ready = True
                     self.vector_store_last_error = None
@@ -350,13 +535,70 @@ class ToolBox:
                         exc,
                     )
 
-        # Synchronize ontologies, push to remote triple store + vector index, then register
+        sync_started = time.perf_counter()
         synchronized_ontologies = await self._synchronize_ontologies()
-        for ontology in synchronized_ontologies:
-            await self._materialize_ontology(ontology)
+        logger.info(
+            "Ontology sync finished: %d ontolog(ies) in %.2fs",
+            len(synchronized_ontologies),
+            time.perf_counter() - sync_started,
+        )
+
+        if do_prune and self.is_vector_store_ready() and self.vector_store is not None:
+            triple = self.triple_store_manager
+            catalog_is_authoritative = (
+                triple is None or triple.last_catalog_was_complete()
+            )
+            if not catalog_is_authoritative:
+                # Pruning deletes indexed ontologies that the catalog no longer
+                # mentions. A catalog that only partly loaded mentions fewer
+                # ontologies than exist, so pruning against it deletes live
+                # data on the strength of a network error.
+                logger.warning(
+                    "Skipping vector-store orphan prune: the ontology catalog "
+                    "loaded incompletely, so absent IRIs are not evidence of "
+                    "deletion."
+                )
+            else:
+                keep_iris = {o.iri for o in synchronized_ontologies if o.iri}
+                orphans = await asyncio.to_thread(
+                    self.vector_store.prune_orphan_ontology_iris, keep_iris
+                )
+                if orphans:
+                    logger.info(
+                        "Pruned %d orphan ontology IRI(s) from vector store: %s",
+                        len(orphans),
+                        orphans,
+                    )
+
         for ontology in synchronized_ontologies:
             self.ontology_manager.add_ontology(ontology, skip_vector_index=True)
-        await update_ontology_manager(om=self.ontology_manager, llm_tool=self.llm)
+
+        concurrency = max(1, vsc.reindex_concurrency)
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def _materialize_one(ontology: Ontology) -> None:
+            async with semaphore:
+                onto_started = time.perf_counter()
+                await self._materialize_ontology(ontology)
+                logger.info(
+                    "Materialized ontology %s in %.2fs",
+                    ontology.iri,
+                    time.perf_counter() - onto_started,
+                )
+
+        materialize_started = time.perf_counter()
+        await asyncio.gather(
+            asyncio.gather(*[_materialize_one(o) for o in synchronized_ontologies]),
+            update_ontology_manager(om=self.ontology_manager, llm_tool=self.llm),
+        )
+        logger.info(
+            "Ontology materialize + enrich finished for %d ontolog(ies) in %.2fs "
+            "(reindex_concurrency=%d); initialize total %.2fs",
+            len(synchronized_ontologies),
+            time.perf_counter() - materialize_started,
+            concurrency,
+            time.perf_counter() - init_started,
+        )
 
     def _load_seed_ontologies_from_directory(self) -> list[Ontology]:
         """Load seed ontologies from ``ontology_directory`` (*.ttl)."""

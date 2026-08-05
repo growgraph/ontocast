@@ -1,3 +1,0 @@
-# `ontocast.cli`
-
-::: ontocast.cli

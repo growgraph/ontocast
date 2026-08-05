@@ -24,7 +24,7 @@ from ontocast.api.process_request import (
 )
 from ontocast.api.responses import ontology_context_config_error_response
 from ontocast.api.schemas import ProcessResultData
-from ontocast.config import ServerConfig
+from ontocast.config import Config, ServerConfig
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.docling_helpers import plain_text_to_docling_doc
 from ontocast.onto.enum import OntologyContextMode
@@ -36,6 +36,7 @@ from ontocast.onto.retrieval_capabilities import (
     validate_ontology_context_mode,
 )
 from ontocast.onto.state import AgentState
+from ontocast.tool.agg.aggregate import AggregationResult
 from ontocast.toolbox import ToolBox
 
 
@@ -112,6 +113,7 @@ def test_build_agent_state_from_parsed_sets_max_visits() -> None:
         summary_max_sentences=5,
         document_type_hint=None,
         section_schema_id=None,
+        document_metadata={},
     )
     state = build_agent_state_from_parsed(
         parsed,
@@ -121,6 +123,39 @@ def test_build_agent_state_from_parsed_sets_max_visits() -> None:
         max_chunks=1,
     )
     assert state.max_visits == 6
+
+
+def test_build_agent_state_from_parsed_sets_document_metadata() -> None:
+    parsed = ParsedProcessRequest(
+        files_dict={"input.json": b'{"text": "hello"}'},
+        max_visits=1,
+        strip_provenance=False,
+        ontology_user_instruction="",
+        ontology_selection_user_instruction="",
+        facts_user_instruction="",
+        ontology_context_fixed_ontology_id="",
+        render_mode=None,
+        llm_graph_format=None,
+        ontology_context_mode_value=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
+        target_sections=None,
+        summarize_sections=None,
+        summary_max_sentences=5,
+        document_type_hint=None,
+        section_schema_id=None,
+        document_metadata={
+            "doi": "10.1234/example",
+            "identifiers": [{"scheme": "erp:doc", "value": "INV-1"}],
+        },
+    )
+    state = build_agent_state_from_parsed(
+        parsed,
+        server_config=ServerConfig(max_visits_per_node=1),
+        resolved_tenant="t",
+        resolved_project="p",
+        max_chunks=1,
+    )
+    assert state.document_metadata["doi"] == "10.1234/example"
+    assert state.document_metadata["identifiers"][0]["value"] == "INV-1"
 
 
 def _tools(vector_store: object | None, patch_retriever: object | None) -> ToolBox:
@@ -196,41 +231,59 @@ def _graph_with_one_triple(suffix: str) -> RDFGraph:
 
 
 def test_select_unit_facts_ontology_graph_prefers_facts_snapshot() -> None:
+    from ontocast.onto.enum import OntologyAssemblyMode
+    from ontocast.onto.ontology_snapshot import OntologySnapshot
+
     facts_graph = _graph_with_one_triple("facts")
     onto_graph = _graph_with_one_triple("onto")
     facts_result = SimpleNamespace(
-        ontology_snapshot=Ontology(
-            graph=facts_graph, iri="https://example.org/facts-onto"
+        ontology_snapshot=OntologySnapshot.from_graph(
+            facts_graph,
+            source_iris=["https://example.org/facts-onto"],
+            assembly_mode=OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY,
+            strip_headers=False,
         ),
     )
     onto_result = SimpleNamespace(
-        current_ontology=Ontology(graph=onto_graph, iri="https://example.org/onto"),
+        fresh_ontology=Ontology(graph=onto_graph, iri="https://example.org/onto"),
+        working_graph=RDFGraph(),
+        ontology_snapshot=OntologySnapshot.empty(),
     )
 
     selected = select_unit_facts_ontology_graph(onto_result, facts_result)
 
-    assert selected is facts_graph
+    assert selected is facts_result.ontology_snapshot.graph
 
 
 def test_select_unit_facts_ontology_graph_falls_back_to_onto_result() -> None:
+    from ontocast.onto.ontology_snapshot import OntologySnapshot
+
     onto_graph = _graph_with_one_triple("onto")
     onto_result = SimpleNamespace(
-        current_ontology=Ontology(graph=onto_graph, iri="https://example.org/onto"),
+        fresh_ontology=Ontology(graph=onto_graph, iri="https://example.org/onto"),
+        working_graph=RDFGraph(),
+        ontology_snapshot=OntologySnapshot.empty(),
     )
 
     selected = select_unit_facts_ontology_graph(onto_result, None)
 
     assert len(selected) > 0
-    assert set(selected) == set(onto_result.current_ontology.graph)
+    assert set(selected) == set(onto_result.fresh_ontology.graph)
 
 
 def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from ontocast.onto.enum import OntologyAssemblyMode
+    from ontocast.onto.ontology_snapshot import OntologySnapshot
+
     facts_graph = _graph_with_one_triple("facts")
     facts_result = SimpleNamespace(
-        ontology_snapshot=Ontology(
-            graph=facts_graph, iri="https://example.org/facts-onto"
+        ontology_snapshot=OntologySnapshot.from_graph(
+            facts_graph,
+            source_iris=["https://example.org/facts-onto"],
+            assembly_mode=OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY,
+            strip_headers=False,
         ),
         content_unit=ContentUnit(
             text="unit",
@@ -239,23 +292,32 @@ def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
         ),
     )
     onto_result = SimpleNamespace(
-        current_ontology=Ontology(graph=RDFGraph(), iri="https://example.org/onto"),
+        fresh_ontology=None,
+        working_graph=RDFGraph(),
+        ontology_snapshot=OntologySnapshot.empty(),
     )
     state = AgentState(docling_doc=plain_text_to_docling_doc("x", "doc"))
-    captured: dict[str, RDFGraph] = {}
+    captured: dict[str, object] = {}
 
     class _Aggregator:
         def postprocess_facts_units(
             self,
             units: list[ContentUnit],
             ontology_graph: RDFGraph,
-        ) -> RDFGraph:
+            **kwargs,
+        ) -> AggregationResult:
             captured["ontology_graph"] = ontology_graph
+            captured["kwargs"] = kwargs
             graph = RDFGraph()
             graph += units[0].graph
-            return graph
+            return AggregationResult(graph=graph)
 
-    tools = cast(ToolBox, SimpleNamespace(aggregator=_Aggregator()))
+    # persist_unit_pipeline_outputs now runs the post-aggregation invariant gate,
+    # which reads the facts-validation config the same way the graph node does.
+    tools = cast(
+        ToolBox,
+        SimpleNamespace(aggregator=_Aggregator(), config=Config()),
+    )
     monkeypatch.setattr(
         "ontocast.api.process_helpers.serialize_agent_state", lambda *_: None
     )
@@ -269,7 +331,9 @@ def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
         )
     )
 
-    assert captured["ontology_graph"] is facts_graph
+    ontology_graph = captured["ontology_graph"]
+    assert isinstance(ontology_graph, RDFGraph)
+    assert set(ontology_graph) == set(facts_graph)
 
 
 def _match_test_app(monkeypatch: pytest.MonkeyPatch):
@@ -448,3 +512,171 @@ def test_derive_matches_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     matches = response.json()["data"]["entity_matches"]
     assert len(matches) == 1
     assert matches[0]["predicted_entity"] == "http://predicted.example/a"
+
+
+def test_parse_document_metadata_param_accepts_dict_and_json() -> None:
+    from ontocast.api.parse import parse_document_metadata_param
+
+    assert parse_document_metadata_param(None) == {}
+    assert parse_document_metadata_param("") == {}
+    assert parse_document_metadata_param({"doi": "10.1/x"}) == {"doi": "10.1/x"}
+    assert parse_document_metadata_param('{"title": "Report"}') == {"title": "Report"}
+
+
+def test_parse_document_metadata_param_rejects_non_object() -> None:
+    from ontocast.api.parse import parse_document_metadata_param
+
+    with pytest.raises(ValueError, match="document_metadata must be a JSON object"):
+        parse_document_metadata_param("[1, 2]")
+
+
+def test_expand_input_to_states_filename_fallback(tmp_path) -> None:
+    from ontocast.api.process_helpers import expand_input_to_states
+    from ontocast.config import Config
+
+    doc = tmp_path / "annual-report.pdf"
+    doc.write_bytes(b"%PDF-1.4 fake")
+    config = Config()
+    states = expand_input_to_states(
+        doc,
+        config=config,
+        head_chunks=1,
+        ontology_context_mode_value=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
+        tenant="t",
+        project="p",
+        document_metadata=None,
+    )
+    assert len(states) == 1
+    assert states[0].document_metadata == {"title": "annual-report.pdf"}
+
+
+def test_expand_input_to_states_keeps_explicit_metadata(tmp_path) -> None:
+    from ontocast.api.process_helpers import expand_input_to_states
+    from ontocast.config import Config
+
+    doc = tmp_path / "annual-report.pdf"
+    doc.write_bytes(b"%PDF-1.4 fake")
+    config = Config()
+    states = expand_input_to_states(
+        doc,
+        config=config,
+        head_chunks=1,
+        ontology_context_mode_value=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
+        tenant="t",
+        project="p",
+        document_metadata={"doi": "10.1234/x", "title": "Custom"},
+    )
+    assert states[0].document_metadata == {"doi": "10.1234/x", "title": "Custom"}
+
+
+def test_facts_ttl_output_path_and_dump(tmp_path) -> None:
+    from rdflib import DCTERMS, Literal
+
+    from ontocast.api.process_helpers import (
+        dump_facts_ttl,
+        dump_ontology_ttls,
+        facts_ttl_output_path,
+        ontology_ttl_output_path,
+        resolve_batch_output_dirs,
+    )
+    from ontocast.onto.constants import PROV
+    from ontocast.onto.docling_helpers import plain_text_to_docling_doc
+
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"x")
+    out_dir = tmp_path / "out"
+    facts_dir = tmp_path / "facts"
+    onto_dir = tmp_path / "ontologies"
+
+    assert facts_ttl_output_path(src) == tmp_path / "paper.facts.ttl"
+    assert facts_ttl_output_path(src, line_number=3) == tmp_path / "paper.L3.facts.ttl"
+    assert facts_ttl_output_path(src, output_dir=out_dir) == out_dir / "paper.facts.ttl"
+    assert (
+        facts_ttl_output_path(src, line_number=3, output_dir=out_dir)
+        == out_dir / "paper.L3.facts.ttl"
+    )
+    assert ontology_ttl_output_path(src) == tmp_path / "paper.ontology.ttl"
+    assert (
+        ontology_ttl_output_path(src, ontology_id="matsci", output_dir=onto_dir)
+        == onto_dir / "paper.matsci.ontology.ttl"
+    )
+    assert resolve_batch_output_dirs(out_dir, None, None) == (out_dir, out_dir)
+    assert resolve_batch_output_dirs(out_dir, facts_dir, onto_dir) == (
+        facts_dir,
+        onto_dir,
+    )
+    assert resolve_batch_output_dirs(None, facts_dir, None) == (facts_dir, None)
+
+    state = AgentState(docling_doc=plain_text_to_docling_doc("hello", "doc"))
+    state.aggregated_facts = RDFGraph()
+    state.aggregated_facts.add((state.doc_iri, DCTERMS.title, Literal("paper.pdf")))
+    state.aggregated_facts.add((state.doc_iri, RDF.type, PROV.Entity))
+    out = dump_facts_ttl(state, src)
+    assert out is not None
+    assert out.exists()
+    text = out.read_text(encoding="utf-8")
+    assert "paper.pdf" in text
+
+    out2 = dump_facts_ttl(state, src, output_dir=out_dir)
+    assert out2 == out_dir / "paper.facts.ttl"
+
+    onto_graph = RDFGraph()
+    onto_graph.add(
+        (
+            URIRef("https://example.com/onto#Thing"),
+            RDF.type,
+            URIRef("http://www.w3.org/2002/07/owl#Class"),
+        )
+    )
+    ontology = Ontology(graph=onto_graph, iri="https://example.com/onto")
+    state.reduced_ontology_artifacts = [ontology]
+    written = dump_ontology_ttls(state, src, output_dir=onto_dir)
+    assert written == [onto_dir / "paper.ontology.ttl"]
+    assert written[0].exists()
+
+    second = Ontology(
+        graph=onto_graph,
+        iri="https://example.com/other",
+        ontology_id="other",
+    )
+    state.reduced_ontology_artifacts = [ontology, second]
+    written_multi = dump_ontology_ttls(state, src, output_dir=onto_dir)
+    assert {p.name for p in written_multi} == {
+        "paper.onto.ontology.ttl",
+        "paper.other.ontology.ttl",
+    }
+
+
+def test_cli_serve_process_help() -> None:
+    from click.testing import CliRunner
+
+    from ontocast.cli.server import cli
+
+    runner = CliRunner()
+    root = runner.invoke(cli, ["--help"])
+    assert root.exit_code == 0
+    assert "serve" in root.output
+    assert "process" in root.output
+
+    serve_help = runner.invoke(cli, ["serve", "--help"])
+    assert serve_help.exit_code == 0
+    assert "--wipe-vector-store" in serve_help.output
+    assert "--input-path" not in serve_help.output
+
+    process_help = runner.invoke(cli, ["process", "--help"])
+    assert process_help.exit_code == 0
+    assert "--input-path" in process_help.output
+    assert "--output-dir" in process_help.output
+    assert "--facts-output-dir" in process_help.output
+    assert "--ontology-output-dir" in process_help.output
+    assert "dcterms:title" in process_help.output
+
+
+def test_cli_requires_subcommand() -> None:
+    from click.testing import CliRunner
+
+    from ontocast.cli.server import cli
+
+    runner = CliRunner()
+    result = runner.invoke(cli, [])
+    assert result.exit_code != 0

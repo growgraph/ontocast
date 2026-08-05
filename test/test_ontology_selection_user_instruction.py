@@ -15,6 +15,7 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import context_resolver as cr
 from ontocast.stategraph.context_resolver import resolve_unit_ontology_context
+from ontocast.tool.converter import ConverterTool
 from ontocast.tool.llm import LLMTool
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.toolbox import ToolBox
@@ -41,7 +42,7 @@ def test_convert_document_sets_ontology_selection_user_instruction_from_json() -
     }
     state = AgentState(raw_input={"input.json": json.dumps(payload).encode("utf-8")})
     tools = ToolBox.__new__(ToolBox)
-    tools.converter = SimpleNamespace(supported_extensions=())
+    tools.converter = ConverterTool.model_construct(supported_extensions=set())
 
     out = convert_document(state, tools)
 
@@ -118,5 +119,5 @@ async def test_context_resolver_forwards_selection_instruction(monkeypatch) -> N
 
     result = await resolve_unit_ontology_context(state, tools, unit)
 
-    assert result.anchor_iri == selected.iri
+    assert result.primary_writable_iri == selected.iri
     assert captured_instruction["value"] == "Prefer healthcare ontologies"

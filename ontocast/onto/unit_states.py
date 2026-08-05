@@ -1,7 +1,6 @@
 """Dedicated state models for parallel unit loops."""
 
 from collections import defaultdict
-from copy import deepcopy
 
 from pydantic import Field
 
@@ -20,9 +19,13 @@ from ontocast.onto.model import (
     ExternalEvidenceHit,
     ExternalEvidencePlan,
     ExternalEvidenceRequest,
+    FactsLoopAttempt,
+    FactsUnitFinding,
+    GraphRepairRecord,
     Suggestions,
 )
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
 from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.state import AgentState, BudgetTracker
@@ -38,10 +41,17 @@ def _render_updated_graph(
 class UnitState(BasePydanticModel):
     """Common per-unit workflow state."""
 
-    ontology_snapshot: Ontology = Field(description="Immutable ontology snapshot")
+    ontology_snapshot: OntologySnapshot = Field(
+        default_factory=OntologySnapshot.empty,
+        description="Immutable ontology snapshot (prompt view, no catalog id).",
+    )
     ontology_patch_sources: list[str] = Field(
         default_factory=list,
         description="Ontology IRIs that contributed to the snapshot context.",
+    )
+    writable_iris: list[str] = Field(
+        default_factory=list,
+        description="Catalog IRIs that apply() may update from this unit's deltas.",
     )
     suggestions: Suggestions = Field(default_factory=Suggestions)
     budget_tracker: BudgetTracker = Field(default_factory=BudgetTracker)
@@ -159,9 +169,28 @@ class UnitFactsState(UnitState):
         default_factory=list,
         description="Triples excluded from the applied graph due to invalid XSD typed literals.",
     )
+    deterministic_findings: list[FactsUnitFinding] = Field(
+        default_factory=list,
+        description=(
+            "Machine-found violations/coverage gaps injected as MANDATORY "
+            "fixes into the next repair render."
+        ),
+    )
+    applied_repairs: list[GraphRepairRecord] = Field(
+        default_factory=list,
+        description=(
+            "Deterministic rewrites the machine applied to rendered graphs "
+            "(alias repairs, rdf:type literal coercions) — the provenance "
+            "trail distinguishing machine-altered triples from LLM output."
+        ),
+    )
+    attempt_log: list[FactsLoopAttempt] = Field(
+        default_factory=list,
+        description="Per-attempt telemetry (render/critic/repair) for this unit.",
+    )
     assembly_anchor_iri: str = Field(
         default="",
-        description="Anchor IRI from context assembly (or merged document primary).",
+        description="Primary writable IRI from context assembly (metrics / logging).",
     )
     assembly_mode_used: OntologyAssemblyMode = Field(
         default=OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM,
@@ -189,15 +218,20 @@ class UnitOntologyState(UnitState):
     content_unit: SourceUnit = Field(description="Unit under processing")
     assembly_anchor_iri: str = Field(
         default="",
-        description="Anchor IRI from resolve_unit_ontology_context prelude.",
+        description="Primary writable IRI from resolve_unit_ontology_context prelude.",
     )
     assembly_mode_used: OntologyAssemblyMode = Field(
         default=OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM,
         description="Ontology assembly mode from the context prelude.",
     )
     ontology_user_instruction: str = Field(default="")
-    current_ontology: Ontology = Field(
-        default_factory=Ontology, description="Current ontology under refinement"
+    working_graph: RDFGraph = Field(
+        default_factory=RDFGraph,
+        description="Mutable scratchpad graph for in-loop GraphUpdate application.",
+    )
+    fresh_ontology: Ontology | None = Field(
+        default=None,
+        description="Full Ontology produced on the fresh-create path (empty seed).",
     )
     ontology_updates: list[GraphUpdate] = Field(default_factory=list)
     ontology_updates_applied: list[GraphUpdate] = Field(default_factory=list)
@@ -209,8 +243,9 @@ class UnitOntologyState(UnitState):
         return f"content unit {self.content_unit.index + 1}"
 
     def model_post_init(self, __context) -> None:
-        """Initialize mutable ontology state from immutable snapshot."""
-        self.current_ontology = deepcopy(self.ontology_snapshot)
+        """Initialize mutable working graph from immutable snapshot."""
+        if len(self.working_graph) == 0 and not self.ontology_snapshot.is_empty():
+            self.working_graph = self.ontology_snapshot.graph.copy()
 
     @property
     def all_updates(self) -> list[GraphUpdate]:
@@ -218,18 +253,24 @@ class UnitOntologyState(UnitState):
         return [*self.ontology_updates_applied, *self.ontology_updates]
 
     def update_ontology(self) -> None:
-        """Apply ontology_updates to current_ontology and clear the list."""
+        """Apply ontology_updates to working_graph and clear the list."""
         if not self.ontology_updates:
             return
         updated_graph, was_applied = _render_updated_graph(
-            self.current_ontology.graph,
+            self.working_graph,
             self.ontology_updates,
             max_triples=self.ontology_max_triples,
         )
         if not was_applied:
             return
 
-        updated_ontology = self.current_ontology.derive_updated_version(updated_graph)
         self.ontology_updates_applied += self.ontology_updates
-        self.current_ontology = updated_ontology
+        self.working_graph = updated_graph
         self.ontology_updates = []
+
+    def working_graph_changed(self) -> bool:
+        """True when scratchpad content hash differs from the seed snapshot."""
+        if self.ontology_snapshot.is_empty() and len(self.working_graph) == 0:
+            return False
+        current_hash = self.working_graph.hash() if len(self.working_graph) > 0 else ""
+        return current_hash != self.ontology_snapshot.content_hash

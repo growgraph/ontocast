@@ -27,6 +27,18 @@ jobs:
             uses: astral-sh/setup-uv@v7
             with:
                 version: "0.10.12"
+        # 0.4.4 was bumped in pyproject.toml but never tagged, so the release
+        # tag and the published version could drift apart unnoticed. Fail loudly
+        # instead of publishing a version nobody tagged.
+        -   name: Verify tag matches pyproject version
+            run: |
+                project_version="$(uv version --short)"
+                tag_version="${GITHUB_REF_NAME#v}"
+                echo "pyproject: ${project_version} / tag: ${tag_version}"
+                if [ "${project_version}" != "${tag_version}" ]; then
+                  echo "::error::Release tag ${GITHUB_REF_NAME} does not match pyproject version ${project_version}"
+                  exit 1
+                fi
         -   name: Build and publish
             run: |
                 uv build

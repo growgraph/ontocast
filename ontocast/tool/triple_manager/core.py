@@ -7,6 +7,7 @@ abstract interfaces and concrete implementations for different triple store back
 import abc
 import asyncio
 import os
+from collections.abc import Sequence
 from typing import ClassVar
 
 from pydantic import Field
@@ -14,9 +15,20 @@ from rdflib import RDF, Graph
 
 from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_header import OntologyHeader
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.tenancy import TENANCY_SEP
 from ontocast.tool import Tool
+
+
+class TripleStoreUnavailableError(RuntimeError):
+    """The triple store could not answer a read that must not degrade silently.
+
+    Raised instead of returning an empty result when the difference between
+    "the store is unreachable" and "the store is empty" is load-bearing --
+    catalog listing being the case that matters, since an empty catalog is
+    grounds for pruning the vector index.
+    """
 
 
 class TripleStoreManager(Tool):
@@ -156,6 +168,131 @@ class TripleStoreManager(Tool):
         """True if this backend isolates facts/ontologies by :func:`tenant_project_*` names."""
         return False
 
+    async def close(self) -> None:
+        """Release any connection held by this backend.
+
+        Default is a no-op for in-process backends.
+        """
+        return None
+
+    def last_catalog_was_complete(self) -> bool:
+        """True when the most recent full catalog fetch returned every graph.
+
+        Consulted before destructive reconciliation (vector-store orphan
+        pruning): a backend that fetched only part of its catalog reports False
+        so callers treat the result as non-authoritative rather than concluding
+        that the missing ontologies were deleted. Backends that cannot fetch
+        partially always report True.
+        """
+        return True
+
+    def supports_sparql_select(self) -> bool:
+        """True when :meth:`aselect` reaches a real SPARQL engine.
+
+        Callers branch on this to choose targeted queries over materializing the
+        whole catalog. Backends returning ``False`` still answer every catalog
+        method correctly, just by fetching more than they need.
+        """
+        return False
+
+    async def aselect(
+        self, query: str, *, use_ontologies_dataset: bool = True
+    ) -> list[dict[str, str]]:
+        """Run a SPARQL SELECT against the active partition.
+
+        Rows map variable name to the term's **lexical value** only; term kind and
+        datatype are not preserved, so constrain kinds in the query itself
+        (``FILTER(isIRI(?x))``). Unbound variables are absent from the row dict.
+
+        Implementations must raise rather than return an empty list on failure --
+        an empty result set is indistinguishable from "nothing matched", which
+        would silently disable callers that treat no-rows as a valid answer.
+
+        Args:
+            query: A SPARQL SELECT query.
+            use_ontologies_dataset: Query the ontologies partition rather than facts.
+
+        Returns:
+            list[dict[str, str]]: One dict per solution.
+
+        Raises:
+            NotImplementedError: If the backend has no SPARQL engine.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support aselect()")
+
+    def supports_sparql_construct(self) -> bool:
+        """True when :meth:`aconstruct` reaches a real SPARQL engine.
+
+        Separate from :meth:`supports_sparql_select` because a backend can answer
+        row queries without being able to return triples: the Fuseki SELECT path
+        speaks ``application/sparql-results+json`` only.
+        """
+        return False
+
+    async def aconstruct(
+        self, query: str, *, use_ontologies_dataset: bool = True
+    ) -> RDFGraph:
+        """Run a SPARQL CONSTRUCT against the active partition.
+
+        Unlike :meth:`aselect`, the result carries real RDF terms, so blank nodes
+        and datatypes survive. Prefix bindings do **not** -- they are serialization
+        metadata rather than triples, and must be re-sourced by the caller.
+
+        Implementations must raise rather than return an empty graph on failure,
+        for the same reason :meth:`aselect` must raise: an empty result is
+        indistinguishable from "nothing matched".
+
+        Args:
+            query: A SPARQL CONSTRUCT (or DESCRIBE) query.
+            use_ontologies_dataset: Query the ontologies partition rather than facts.
+
+        Returns:
+            RDFGraph: The constructed triples, without prefix bindings.
+
+        Raises:
+            NotImplementedError: If the backend has no SPARQL engine.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support aconstruct()"
+        )
+
+    async def afetch_ontology_catalog(self) -> list[OntologyHeader]:
+        """Fetch per-named-graph ontology header metadata.
+
+        Headers carry the lineage fields terminal-version selection needs without
+        the graphs themselves. The default implementation materializes the catalog
+        and derives headers from it; SPARQL-capable backends should override with a
+        single SELECT.
+
+        Note the default returns one header per *terminal* ontology (whatever
+        :meth:`afetch_ontologies` returns), while a native implementation returns
+        one per *stored version*. Callers that re-run terminal selection over the
+        result are correct either way; that is why they should.
+
+        Returns:
+            list[OntologyHeader]: Header metadata for stored ontologies.
+        """
+        return [
+            OntologyHeader.from_ontology(onto)
+            for onto in await self.afetch_ontologies()
+        ]
+
+    async def afetch_ontologies_by_iri(self, iris: Sequence[str]) -> list[Ontology]:
+        """Fetch terminal ontologies restricted to ``iris``.
+
+        Args:
+            iris: Ontology IRIs to fetch. Empty means "no restriction", matching
+                how :meth:`ontocast.tool.sparql.SPARQLTool._build_induced_subgraph`
+                treats an empty ontology filter.
+
+        Returns:
+            list[Ontology]: The requested ontologies, with graphs.
+        """
+        if not iris:
+            return await self.afetch_ontologies()
+        wanted = set(iris)
+        return [onto for onto in await self.afetch_ontologies() if onto.iri in wanted]
+
     async def clean_tenancy(self, tenant: str, project: str) -> None:
         """Remove all triples for datasets derived from ``tenant`` / ``project``.
 
@@ -198,7 +335,8 @@ class TripleStoreManagerWithAuth(TripleStoreManager):
             **kwargs: Additional keyword arguments passed to the parent class.
 
         Raises:
-            ValueError: If authentication string is not in "user/password" format.
+            ValueError: If the authentication string is neither "user/password"
+                nor "user:password".
 
         Example:
             >>> manager = TripleStoreManagerWithAuth(
@@ -211,12 +349,27 @@ class TripleStoreManagerWithAuth(TripleStoreManager):
         auth_env = auth or (os.getenv(env_auth) if env_auth else None)
 
         if auth_env and not isinstance(auth_env, tuple):
-            if "/" in auth_env:
-                user, password = auth_env.split("/", 1)
+            # Both separators are accepted. The colon form is what Fuseki's own
+            # documentation and most HTTP tooling use, and rejecting it meant
+            # `FUSEKI_AUTH=admin:secret` -- recommended by several of our own
+            # docs pages -- failed startup outright. Whichever separator comes
+            # first wins, so a password containing the other still round-trips.
+            positions = [
+                (auth_env.index(sep), sep) for sep in ("/", ":") if sep in auth_env
+            ]
+            if positions:
+                index, _ = min(positions)
+                user, password = auth_env[:index], auth_env[index + 1 :]
+                if not user:
+                    raise ValueError(
+                        f"{env_auth or 'TRIPLESTORE_AUTH'} has an empty username; "
+                        "expected 'user/password' or 'user:password'"
+                    )
                 auth = (user, password)
             else:
                 raise ValueError(
-                    f"{env_auth or 'TRIPLESTORE_AUTH'} must be in 'user/password' format"
+                    f"{env_auth or 'TRIPLESTORE_AUTH'} must be in 'user/password' "
+                    "or 'user:password' format"
                 )
         elif isinstance(auth_env, tuple):
             auth = auth_env

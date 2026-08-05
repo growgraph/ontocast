@@ -43,6 +43,16 @@ We welcome contributions! This document provides guidelines for contributing to 
 - Keep `README.md` concise; put detailed explanations in `docs/`.
 - Update `CHANGELOG.md` for user-visible changes.
 
+### Retrieval recall harness
+
+Ontology retrieval quality is measured by `test/test_retrieval_recall.py` (real embeddings +
+Qdrant). Point `ONTOCAST_RECALL_CORPUS` at a prebuilt corpus, or use `ONTOCAST_RECALL_ROOT`
+for Text2KGBench-style layouts. See [Ontology Context — Diagnostics](user_guide/ontology_context.md#diagnostics).
+
+```bash
+bash -c 'set -a; source .env; set +a; uv run pytest test/test_retrieval_recall.py -v -s'
+```
+
 ## Code Style
 
 - Python 3.12+ with type hints everywhere

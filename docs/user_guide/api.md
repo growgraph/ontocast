@@ -36,7 +36,7 @@ Runs the full document pipeline: convert → chunk → ontology map/reduce → f
 | `strip_provenance` | When true, omit reification/provenance from returned Turtle |
 | `llm_graph_format` | `turtle` or `jsonld` for this request |
 | `ontology_context_mode` | Per-request ontology context mode |
-| `ontology_context_fixed_ontology_id` | Required when mode is `fixed_single_ontology` |
+| `ontology_context_fixed_ontology_id` | Required when mode is `fixed_single_ontology` (IRI, `ontology_id`, or author prefix) |
 | `ontology_user_instruction` | Guide ontology extraction |
 | `ontology_selection_user_instruction` | Guide catalog ontology selection |
 | `facts_user_instruction` | Guide facts extraction |
@@ -45,6 +45,7 @@ Runs the full document pipeline: convert → chunk → ontology map/reduce → f
 | `summary_max_sentences` | Max sentences per summary when summarization runs (default `5`) |
 | `section_schema_id` | Section label schema (`academic`, `financial`, `legal`, …) |
 | `document_type_hint` | Free-text hint to resolve schema when `section_schema_id` is omitted |
+| `document_metadata` | JSON object (or stringified JSON) of caller-asserted document identity — DOI/ISBN, scheme+value ids, title, and typed entities for `author`/`project`/custom keys. See [Concepts — Document-level identity metadata](concepts.md#document-level-identity-metadata). |
 
 **Examples:**
 
@@ -58,6 +59,11 @@ curl -X POST http://localhost:8999/process \
 curl -X POST http://localhost:8999/process \
   -F "file=@document.pdf"
 
+# Document identity metadata with upload (typed author/project entities)
+curl -X POST http://localhost:8999/process \
+  -F "file=@document.pdf" \
+  -F 'document_metadata={"doi":"10.1234/example","author":["Jane Doe"],"project":{"name":"Perovskite Survey","identifier":"PRJ-1"},"identifiers":[{"scheme":"erp:doc","value":"INV-1"}]}'
+
 # Strip provenance from API Turtle output
 curl -X POST "http://localhost:8999/process?strip_provenance=true" \
   -F "file=@document.pdf"
@@ -67,7 +73,20 @@ curl -X POST "http://localhost:8999/process?tenant=acme&project=reports" \
   -F "file=@document.pdf"
 ```
 
-**Response:** JSON with `data.facts` (Turtle), `data.ontology_artifacts` (list of ontology TTL payloads), and `metadata` (status, chunk counts, budget).
+**Response:** JSON with `data.facts` (Turtle), `data.ontology_artifacts` (list of ontology TTL payloads), and `metadata`:
+
+| Field | Meaning |
+|-------|---------|
+| `status` | Terminal workflow status |
+| `chunks_processed` / `chunks_remaining` | Content-unit counts |
+| `budget` | LLM call, cache-hit, character and triple counters |
+| `retrieval_metrics` | Ontology-retrieval telemetry for the run |
+| `facts_repairs` | Deterministic machine rewrites per unit index — lets you tell machine-altered triples from what the model asserted |
+| `failed_units` | Units that produced no output, with phase, stage and reason. Empty on a clean run |
+| `improvement_suggestions` | Advisory notes from the structural check and consistency critic. Nothing in the pipeline acts on them |
+
+A run in which *no* unit produced output returns **422**, not a 200 with empty
+facts.
 
 ---
 
@@ -143,7 +162,7 @@ The `dataset` query parameter is **not** supported. Use `tenant` and `project` i
 
 ## Graph Matching
 
-Benchmark-oriented endpoints for entity alignment and evaluation. Used by the standalone `match-dirs` CLI.
+Benchmark-oriented endpoints for entity alignment and evaluation. Used by the standalone `match-graphs` CLI.
 
 ### `POST /match/entities`
 
@@ -171,7 +190,7 @@ Compute triple and entity precision/recall/F1 given graphs and entity matches. L
 **Standalone CLI:**
 
 ```bash
-match-dirs \
+match-graphs \
   --gt ./benchmark \
   --predicted ./extracted \
   --url http://localhost:8999 \
@@ -185,9 +204,11 @@ match-dirs \
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Invalid parameters (e.g. missing fixed ontology id) |
+| `400` | Invalid parameters (e.g. missing fixed ontology id, malformed `document_metadata`, non-positive `summary_max_sentences`, unparseable section list) |
 | `409` | Vector store unavailable when vector ontology mode requested |
+| `422` | The uploaded document could not be converted |
 | `500` | Processing or store errors |
+| `503` | Server not ready (`/health`) |
 
 Vector mode unavailable:
 

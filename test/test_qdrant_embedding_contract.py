@@ -115,3 +115,53 @@ def test_initialize_rejects_mismatched_embedding_model() -> None:
             asyncio.run(store_b.initialize())
     finally:
         _delete_if_exist(client, (onto, facts))
+
+
+def test_atom_scope_fingerprint_is_none_at_defaults() -> None:
+    """Existing collections must not be invalidated by an upgrade."""
+    from ontocast.config import VectorStoreConfig
+    from ontocast.tool.vector_store.util import atom_scope_fingerprint
+
+    assert atom_scope_fingerprint(VectorStoreConfig()) is None
+
+
+def test_surface_predicate_overrides_change_the_fingerprint() -> None:
+    """These settings change the stored payload, so they must force a reindex.
+
+    Previously they were pushed into the atomizer but omitted from the
+    fingerprint, so changing one silently served a stale index.
+    """
+    from ontocast.config import VectorStoreConfig
+    from ontocast.tool.vector_store.util import atom_scope_fingerprint
+
+    baseline = atom_scope_fingerprint(VectorStoreConfig())
+
+    diverged_configs = [
+        VectorStoreConfig(symbol_predicates=["http://example.com/sym"]),
+        VectorStoreConfig(label_predicates=["http://example.com/label"]),
+        VectorStoreConfig(lexical_trigger_predicates=["http://example.com/trigger"]),
+        VectorStoreConfig(lexical_trigger_min_len=3),
+        VectorStoreConfig(lexical_trigger_max_len=32),
+        VectorStoreConfig(lexical_trigger_enabled=False),
+        VectorStoreConfig(lexical_trigger_heuristic_enabled=False),
+        VectorStoreConfig(lexical_trigger_heuristic_max_per_entity=5),
+    ]
+    for config in diverged_configs:
+        diverged = atom_scope_fingerprint(config)
+        assert diverged is not None
+        assert diverged != baseline
+
+
+def test_symbol_predicate_order_does_not_change_the_fingerprint() -> None:
+    """The same set of predicates indexes the same content."""
+    from ontocast.config import VectorStoreConfig
+    from ontocast.tool.vector_store.util import atom_scope_fingerprint
+
+    a = atom_scope_fingerprint(
+        VectorStoreConfig(symbol_predicates=["http://a.example", "http://b.example"])
+    )
+    b = atom_scope_fingerprint(
+        VectorStoreConfig(symbol_predicates=["http://b.example", "http://a.example"])
+    )
+
+    assert a == b

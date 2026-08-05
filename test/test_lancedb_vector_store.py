@@ -112,6 +112,25 @@ def test_factory_selects_lancedb_when_enabled(
     assert isinstance(manager, LanceDBVectorStoreManager)
 
 
+@pytest.mark.anyio
+async def test_lancedb_wipe_and_prune_orphan_iris(tmp_path: Path) -> None:
+    store = _build_store(tmp_path)
+    await store.initialize()
+    keep = _sample_ontology("https://example.org/keep")
+    orphan = _sample_ontology("https://example.org/orphan")
+    store.index_ontology(keep)
+    store.index_ontology(orphan)
+    assert store.list_indexed_ontology_iris() == {keep.iri, orphan.iri}
+
+    deleted = store.prune_orphan_ontology_iris({keep.iri})
+    assert deleted == [orphan.iri]
+    assert store.list_indexed_ontology_iris() == {keep.iri}
+
+    await store.wipe_store()
+    await store.initialize()
+    assert store.list_indexed_ontology_iris() == set()
+
+
 def test_lancedb_default_tables_use_default_tenant_project(tmp_path: Path) -> None:
     store = _build_store(tmp_path)
     expected = tenant_project_ontologies_name(DEFAULT_TENANT, DEFAULT_PROJECT)

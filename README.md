@@ -117,13 +117,13 @@ See [Configuration Guide](docs/user_guide/configuration.md) and `.env.example` f
 
 ```bash
 # Backend automatically detected from .env configuration
-ontocast --env-path .env
+ontocast serve
 
-# Process a specific file (batch mode)
-ontocast --env-path .env --input-path ./document.pdf
+# Process a specific file (local batch; no HTTP server)
+ontocast process --input-path ./document.pdf --output-dir ./out
 
 # Process only the first N chunks (for testing)
-ontocast --env-path .env --head-chunks 5
+ontocast process --input-path ./document.pdf --head-chunks 5
 ```
 
 Paths and triple-store credentials are configured via `.env` — not CLI overrides.
@@ -158,10 +158,10 @@ curl -X POST http://localhost:8999/process -F "file=@document.pdf"
 
 curl -X POST http://localhost:8999/flush
 
-curl -X POST "http://localhost:8999/flush?dataset=my_dataset"
+curl -X POST "http://localhost:8999/flush?tenant=acme&project=reports"
 ```
 
-For Fuseki, optional `tenant`/`project` query parameters target a specific partition. Without them, the active server scope is flushed.
+For Fuseki, optional `tenant`/`project` query parameters target a specific partition. Without them, the active server scope is flushed. There is no `dataset` parameter — unknown query parameters are ignored, so passing one silently flushes the active scope instead.
 
 Full reference: [API Endpoints](docs/user_guide/api.md).
 
@@ -209,7 +209,7 @@ OntoCast uses a hierarchical configuration system built on Pydantic BaseSettings
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `LLM_API_KEY` | API key for LLM provider | - | Yes (OpenAI) |
-| `LLM_PROVIDER` | LLM provider (openai, ollama) | openai | No |
+| `LLM_PROVIDER` | LLM provider (openai, anthropic, google, ollama) | openai | No |
 | `LLM_MODEL_NAME` | Model name | gpt-4o-mini | No |
 | `LLM_TEMPERATURE` | Temperature setting | 0.0 | No |
 | `ONTOCAST_WORKING_DIRECTORY` | Working directory path | - | No |
@@ -237,10 +237,10 @@ When Fuseki is not configured, OntoCast uses an in-memory pyoxigraph backend aut
 ### CLI Parameters
 
 ```bash
-ontocast --env-path .env
-ontocast --env-path .env --input-path ./document.pdf
-ontocast --env-path .env --head-chunks 5
-ontocast --env-path .env --tenant acme --project reports
+ontocast serve
+ontocast process --input-path ./document.pdf --output-dir ./out
+ontocast process --input-path ./document.pdf --head-chunks 5
+ontocast serve --tenant acme --project reports
 ```
 
 ---
@@ -323,7 +323,7 @@ tools = ToolBox(config)
 ### Server Usage
 
 ```bash
-ontocast --env-path .env --input-path ./document.pdf --head-chunks 10
+ontocast process --input-path ./document.pdf --head-chunks 10 --output-dir ./out
 ```
 
 ---
