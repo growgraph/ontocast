@@ -84,13 +84,17 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                python-version: ['3.12', '3.13']
+                # PRs and non-main pushes: 3.12 only. Pushes to main also run 3.13.
+                python-version: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && fromJSON('["3.12", "3.13"]') || fromJSON('["3.12"]') }}
+        env:
+            UV_PYTHON: ${{ matrix.python-version }}
         steps:
         -   uses: actions/checkout@v5
         -   name: Install uv
             uses: astral-sh/setup-uv@v7
             with:
                 version: "0.10.12"
+                enable-cache: true
         -   name: Install dependencies
             run: uv sync --all-extras
         # No .env exists in a clean checkout; pytest-dotenv no-ops on a missing

@@ -24,6 +24,7 @@ from ontocast.onto.enum import (
 from ontocast.onto.tenancy import (
     DEFAULT_PROJECT,
     DEFAULT_TENANT,
+    TenancyScope,
     tenant_project_facts_name,
     tenant_project_ontologies_name,
 )
@@ -556,6 +557,17 @@ class ServerConfig(BaseSettings):
             "When set, limit concurrent /process and /process_unit handlers. "
             "Requests beyond the limit queue until a slot frees up; they are "
             "not rejected."
+        ),
+    )
+    max_tenancy_scopes: int = Field(
+        default=16,
+        ge=1,
+        description=(
+            "How many tenant/project ToolBoxes to keep resident. Each holds a "
+            "triple store connection and an ontology catalog; the expensive "
+            "tools (LLM client, converter, embedding model) are shared across "
+            "all of them. Least-recently-used scopes are evicted and closed. "
+            "Bounded because scopes come from request parameters."
         ),
     )
 
@@ -1877,6 +1889,40 @@ class Config(BaseSettings):
         config.tool_config.lancedb.enabled = False
         config.tool_config.vector_store.backend = VectorStoreBackend.MEMORY
         return config
+
+    def for_tenancy(self, tenant: str, project: str) -> "Config":
+        """Return a deep copy of this config bound to ``tenant`` / ``project``.
+
+        The copy is what makes per-scope isolation real. Vector store managers
+        receive ``tool_config.vector_store`` and ``tool_config.qdrant`` **by
+        reference** (`tool/vector_store/factory.py`) and mutate them when
+        tenancy is applied, so two scopes sharing a ``Config`` would alias each
+        other's collection names.
+
+        Args:
+            tenant: Tenant identifier.
+            project: Project identifier within the tenant.
+
+        Returns:
+            An independent ``Config`` with dataset, collection and table names
+            resolved for the requested partition.
+
+        Raises:
+            ValueError: If either identifier is blank.
+        """
+        scope = TenancyScope.build(tenant, project)
+        copy = self.model_copy(deep=True)
+        tool_config = copy.tool_config
+
+        tool_config.fuseki.dataset = scope.facts_name
+        tool_config.fuseki.ontologies_dataset = scope.ontologies_name
+        tool_config.qdrant.facts_collection = scope.facts_name
+        tool_config.qdrant.ontology_collection = scope.ontologies_name
+        tool_config.lancedb.facts_table = scope.facts_name
+        tool_config.lancedb.ontology_table = scope.ontologies_name
+        tool_config.vector_store.facts_table = scope.facts_name
+        tool_config.vector_store.ontology_table = scope.ontologies_name
+        return copy
 
     def get_tool_config(self) -> ToolConfig:
         """Get tool configuration.

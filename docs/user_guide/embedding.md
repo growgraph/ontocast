@@ -280,6 +280,21 @@ inspect the topology or add your own nodes before compiling.
 
 ## Tenancy
 
-A `ToolBox` is bound to one tenant/project partition at a time. For a
-single-tenant embedded application this is invisible: build one ToolBox and use
-it. Multi-tenant hosts should read [Tenancy](tenancy.md).
+A `ToolBox` is bound to one tenant/project partition. For a single-tenant
+application this is invisible: build one ToolBox and use it.
+
+To serve several partitions from one process:
+
+```python
+scoped = await tools.for_scope("acme", "reports")
+```
+
+Each scope gets its own triple store, ontology catalog and vector store over a
+deep copy of the configuration, so they cannot see each other. The expensive
+tools — LLM client and cache, converter, chunker, embedding model — are shared
+across scopes, so a second tenant costs a store connection rather than another
+model.
+
+Scopes are cached in a bounded LRU (`MAX_TENANCY_SCOPES`, default 16); evicting
+one closes its connections, and `await tools.aclose()` closes them all. Nothing
+is allocated until you first call `for_scope`. See [Tenancy](tenancy.md).

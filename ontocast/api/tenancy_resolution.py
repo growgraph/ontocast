@@ -2,6 +2,7 @@
 
 from starlette.requests import Request
 
+from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.toolbox import ToolBox
 
@@ -38,26 +39,45 @@ async def apply_request_tenancy(
     active_tenant: str,
     active_project: str,
     initialize_vector_store: bool,
-) -> tuple[str, str]:
-    """Resolve tenant/project and retarget partitioned stores when the client set QS.
+) -> tuple[ToolBox, str, str]:
+    """Resolve tenant/project and return the ToolBox that serves that partition.
 
-    Mirrors ``/process``: if ``tenant`` or ``project`` appears in the query string,
-    resolve with defaults and call :meth:`ToolBox.update_tenancy_with_vector_mode`
-    when Fuseki/Qdrant partitions are in use. Otherwise return ``active_*`` from
-    server startup without retargeting.
+    If ``tenant`` or ``project`` appears in the query string, resolve with
+    defaults and hand back a ToolBox bound to that scope; otherwise return the
+    startup ToolBox and the ``active_*`` scope unchanged.
+
+    This used to retarget the *shared* ToolBox in place, so every request
+    mutated process-wide state -- dataset names, collection names, the ontology
+    catalog -- behind a single lock that serialized all multi-tenant traffic.
+    Now each scope owns a ToolBox (over a deep-copied ``Config``, sharing the
+    expensive runtime), so isolation is structural and different tenants run
+    concurrently.
+
+    Returns:
+        ``(tools, tenant, project)`` -- **use the returned ToolBox**, not the one
+        passed in, for everything downstream of this call.
     """
     if not request_has_tenancy_query_params(request):
-        return active_tenant, active_project
+        return tools, active_tenant, active_project
     request_tenant = request.query_params.get("tenant", None)
     request_project = request.query_params.get("project", None)
     resolved_tenant, resolved_project = resolve_tenant_project(
         request_tenant, request_project
     )
-    if stores_use_tenancy_partitions(tools):
-        await tools.update_tenancy_with_vector_mode(
-            resolved_tenant,
-            resolved_project,
-            initialize_vector_store=initialize_vector_store,
-            fail_on_vector_store_error=False,
-        )
-    return resolved_tenant, resolved_project
+    if not stores_use_tenancy_partitions(tools):
+        return tools, resolved_tenant, resolved_project
+
+    scoped = await tools.for_scope(
+        resolved_tenant,
+        resolved_project,
+        # `initialize_vector_store` already encodes "this request runs in the
+        # vector-search context mode"; pass the mode itself, since that is what
+        # ToolBox.should_initialize_vector_store checks.
+        ontology_context_mode=(
+            OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+            if initialize_vector_store
+            else None
+        ),
+        fail_on_vector_store_error=False,
+    )
+    return scoped, resolved_tenant, resolved_project

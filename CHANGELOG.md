@@ -35,7 +35,7 @@ project:
   bump it say so explicitly.
 
 
-## [Unreleased]
+## [0.5.1]
 
 ### Breaking
 
@@ -79,6 +79,16 @@ project:
   loop** instead of failing with `asyncio.run() cannot be called from a running
   event loop`, which named neither the call nor the fix. The new error names
   the coroutine to await.
+- **Tenancy is served by a ToolBox per scope, not by retargeting a shared one.**
+  `apply_request_tenancy` returns `(ToolBox, tenant, project)` instead of
+  `(tenant, project)`, and callers must use the returned ToolBox. In-repo
+  callers are updated; check `ontocast-worker` before releasing, since it pins
+  `ontocast` from PyPI.
+- **`InMemoryVectorStoreManager.apply_tenancy` drops the index** rather than
+  carrying it into the new partition. The index is partition-scoped, so
+  retargeting a single store across tenants would otherwise leak one tenant's
+  ontology terms into another's retrieval. Re-index after switching. (Scoped
+  ToolBoxes never hit this path -- their stores are separate objects.)
 
 ### Added
 
@@ -144,6 +154,34 @@ project:
   `ontocast_tool_names`, `ontocast_tool_diagnostics`, `make_ontocast_node`,
   `text_in_turtle_out`. All resolved through the existing lazy `__getattr__`, so
   `import ontocast` still costs nothing.
+- **Per-scope tenancy: `ToolBoxRuntime`, `ToolBoxRegistry`, `ToolBox.for_scope`,
+  `Config.for_tenancy`, `TenancyScope`.** Each tenant/project partition gets its
+  own ToolBox over its own deep-copied `Config`, so isolation is structural
+  rather than a discipline enforced by a lock.
+  - **The deep copy is load-bearing.** `create_vector_store_manager` passes
+    `tool_config.vector_store` and `tool_config.qdrant` **by reference**, and
+    the store rewrites them when tenancy is applied — so scopes sharing a
+    `Config` would silently retarget each other. `Config.for_tenancy` is the one
+    place that copy happens; `test_tenancy_scopes.py` asserts every mutated
+    section is a distinct object.
+  - **Different tenants now run concurrently.** The previous design mutated one
+    process-wide ToolBox per request behind a lock, which serialized *all*
+    multi-tenant traffic and rebuilt the ontology catalog on every switch. The
+    registry locks per key instead, so only concurrent first-requests for the
+    *same* cold scope wait on each other.
+  - **`ToolBoxRuntime` keeps the sharing.** The LLM client and response cache,
+    converter, chunker, aggregator, embedding model and entity aligners are
+    tenancy-independent and shared across scopes; without the split a
+    sixteen-scope registry would be sixteen embedding models. Every one is still
+    reachable as a ToolBox attribute (`tools.converter`, `tools.llm`, …), for
+    reading and for substitution.
+  - Scopes live in an LRU bounded by `MAX_TENANCY_SCOPES` (default 16) because
+    scopes come from request parameters; eviction closes the entry, and
+    `ToolBox.aclose()` closes every scope it spawned. A registry is built lazily
+    on first `for_scope`, so a single-tenant embedder never allocates one.
+  - A compiled graph is cached per scope: graph nodes are
+    `partial(fn, tools=tools)` and `make_*_node(tools)` closures, so a graph
+    belongs to exactly one ToolBox.
 - **`ontocast.util.optional.require`** — imports an optional module or raises
   naming the extra that provides it. Every deferred import routes through it, so
   a missing dependency says `pip install "ontocast[documents]"` rather than
@@ -159,6 +197,12 @@ project:
   gains the same assertion against a real base install, plus a `server-install`
   job for the console scripts.
 
+### Changed
+
+- **CI unit matrix:** wire `UV_PYTHON` so 3.12/3.13 jobs actually differ; run
+  3.13 only on pushes to `main` (PRs stay on 3.12); enable uv cache on the unit
+  job.
+
 ### Fixed
 
 - **Dead self-assignment in tenancy application.** `ToolBox` copied
@@ -169,6 +213,8 @@ project:
   why any future per-tenant isolation must deep-copy `Config`.
 - **`langchain` was a hard dependency with zero imports** anywhere in the
   package or the test suite. Dropped.
+- **`test-api` console script routed through the entry shim** like the other
+  five, so a base install gets the install hint rather than an ImportError.
 
 ## [0.5.0]
 

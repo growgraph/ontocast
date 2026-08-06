@@ -31,6 +31,7 @@ from pydantic import Field, PrivateAttr, model_validator
 
 from ontocast.config import EmbeddingConfig, VectorStoreConfig
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.tenancy import TENANCY_SEP, TenancyScope
 from ontocast.tool.vector_store.atomizer import GraphAtomizer
 from ontocast.tool.vector_store.core import (
     GraphAtom,
@@ -132,6 +133,47 @@ class InMemoryVectorStoreManager(VectorStoreManager):
         """Release indexed state; there is no external connection to close."""
         self._records.clear()
         self._invalidate_matrices()
+
+    # -- tenancy -----------------------------------------------------------
+
+    def supports_tenancy_partition(self) -> bool:
+        """True: each partition gets its own index.
+
+        With a ToolBox per scope that is automatic -- the stores are separate
+        objects. When a single store is retargeted instead, :meth:`apply_tenancy`
+        drops the index rather than carrying it across.
+        """
+        return True
+
+    def apply_tenancy(
+        self, tenant: str, project: str, *, sep: str = TENANCY_SEP
+    ) -> None:
+        """Bind this store to ``tenant`` / ``project``, dropping any prior index.
+
+        The index is partition-scoped, so carrying it across a switch would leak
+        one tenant's ontology terms into another's retrieval. Nothing is
+        migrated: re-index after switching.
+        """
+        scope = TenancyScope.build(tenant, project, sep=sep)
+        changed = self.store_config.ontology_table != scope.ontologies_name
+        self.store_config.ontology_table = scope.ontologies_name
+        self.store_config.facts_table = scope.facts_name
+        if changed and self._records:
+            logger.info(
+                "Dropping %d in-memory vector(s) on tenancy switch to %s/%s",
+                len(self._records),
+                scope.tenant,
+                scope.project,
+            )
+            self._records.clear()
+            self._invalidate_matrices()
+            self._lexical_trigger_index = None
+
+    async def clean_tenancy(self, tenant: str, project: str) -> None:
+        """Drop the index when it belongs to the named partition."""
+        scope = TenancyScope.build(tenant, project)
+        if self.store_config.ontology_table == scope.ontologies_name:
+            await self.wipe_store()
 
     # -- matrix cache ------------------------------------------------------
 

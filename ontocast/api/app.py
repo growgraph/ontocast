@@ -84,7 +84,11 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        """Release backend connections when the server stops."""
+        """Release backend connections when the server stops.
+
+        ``ToolBox.aclose`` also closes every per-tenant ToolBox spawned through
+        ``for_scope``, so this covers the whole registry.
+        """
         yield
         await tools.aclose()
 
@@ -118,7 +122,24 @@ def create_app(
         )
     )
 
-    workflow: CompiledStateGraph = create_agent_graph(tools)
+    workflow: CompiledStateGraph = create_agent_graph(tools, name="ontocast")
+
+    def workflow_for(scoped: ToolBox) -> CompiledStateGraph:
+        """Return the compiled graph bound to ``scoped``.
+
+        Nodes are ``partial(fn, tools=tools)`` and ``make_*_node(tools)``
+        closures, so a graph belongs to exactly one ToolBox and a scoped one
+        needs its own. Compilation is in-memory topology work with no I/O, so
+        caching it per scope costs far less than the ToolBox it belongs to.
+        """
+        if scoped is tools:
+            return workflow
+        scope = scoped.scope
+        if scope is None:
+            return create_agent_graph(scoped, name="ontocast")
+        return tools.ensure_tenancy_registry().graph_for(
+            scope, lambda: create_agent_graph(scoped, name="ontocast")
+        )
 
     process_semaphore: asyncio.Semaphore | None = None
     if server_config.max_concurrent_processes is not None:
@@ -324,7 +345,13 @@ def create_app(
             if isinstance(loaded, JSONResponse):
                 return loaded
 
-            resolved_tenant, resolved_project = await apply_request_tenancy(
+            # Use `scoped_tools` from here on: it is bound to this request's
+            # tenant/project partition, and may not be the startup ToolBox.
+            (
+                scoped_tools,
+                resolved_tenant,
+                resolved_project,
+            ) = await apply_request_tenancy(
                 request,
                 tools,
                 active_tenant=active_tenant,
@@ -337,7 +364,7 @@ def create_app(
 
             try:
                 validate_ontology_context_mode(
-                    loaded.ontology_context_mode_value, tools
+                    loaded.ontology_context_mode_value, scoped_tools
                 )
             except OntologyContextConfigError as e:
                 return ontology_context_config_error_response(e)
@@ -355,7 +382,7 @@ def create_app(
                 max_visits_per_node=initial_state.max_visits,
             )
 
-            async for chunk in workflow.astream(
+            async for chunk in workflow_for(scoped_tools).astream(
                 initial_state,
                 stream_mode="values",
                 config=RunnableConfig(recursion_limit=request_recursion_limit),
@@ -521,7 +548,13 @@ def create_app(
             if isinstance(loaded, JSONResponse):
                 return loaded
 
-            resolved_tenant, resolved_project = await apply_request_tenancy(
+            # Use `scoped_tools` from here on: it is bound to this request's
+            # tenant/project partition, and may not be the startup ToolBox.
+            (
+                scoped_tools,
+                resolved_tenant,
+                resolved_project,
+            ) = await apply_request_tenancy(
                 request,
                 tools,
                 active_tenant=active_tenant,
@@ -534,7 +567,7 @@ def create_app(
 
             try:
                 validate_ontology_context_mode(
-                    loaded.ontology_context_mode_value, tools
+                    loaded.ontology_context_mode_value, scoped_tools
                 )
             except OntologyContextConfigError as e:
                 return ontology_context_config_error_response(e)
@@ -549,7 +582,7 @@ def create_app(
 
             try:
                 onto_result, facts_result = await run_unit_pipeline(
-                    initial_state, tools
+                    initial_state, scoped_tools
                 )
             except DocumentConversionError as exc:
                 return document_conversion_error_response(exc, exc.stage)
@@ -611,7 +644,7 @@ def create_app(
                     and "source_uri" not in document_metadata
                 ):
                     document_metadata["source_url"] = initial_state.source_url
-                postprocessed_facts = tools.aggregator.postprocess_facts_units(
+                postprocessed_facts = scoped_tools.aggregator.postprocess_facts_units(
                     units=[facts_result.content_unit],
                     ontology_graph=ontology_graph,
                     doc_iri=initial_state.doc_iri,

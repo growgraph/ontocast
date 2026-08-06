@@ -28,9 +28,27 @@ Tenant and project are **runtime parameters**, not environment variables. They m
 - Multipart form fields
 - JSON body fields on `/process` and `/process_unit`
 
-When `tenant` or `project` appears in the **query string**, the server retargets Fuseki datasets and vector-store partitions to the resolved scope. Requests without tenancy query parameters use the server's active tenant/project from startup (defaults: `ontocast` / `test`).
+When `tenant` or `project` appears in the **query string**, the request is served by a `ToolBox` bound to that scope. Requests without tenancy query parameters use the server's active tenant/project from startup (defaults: `ontocast` / `test`).
 
-A tenancy switch also **resets the in-memory ontology catalog** (`OntologyManager.reset_catalog()` + reload from the retargeted store). Seed TTLs from `ONTOCAST_ONTOLOGY_DIRECTORY` are **not** replayed into the new tenant — they are startup bootstrap only. Details: [Ontology Catalog](../architecture/ontology_catalog.md#why-it-resets-on-a-tenancy-switch).
+Seed TTLs from `ONTOCAST_ONTOLOGY_DIRECTORY` are **not** replayed into a new tenant — they are startup bootstrap only. Details: [Ontology Catalog](../architecture/ontology_catalog.md#why-it-resets-on-a-tenancy-switch).
+
+### One ToolBox per scope
+
+Each scope gets its own `ToolBox` over its own deep copy of the configuration, so isolation is structural: two tenants cannot see each other's datasets, collections or ontology catalog because they do not share the objects that name them.
+
+This replaced retargeting a single process-wide `ToolBox` per request. That approach worked but had two costs: every switch rebuilt the ontology catalog, and the lock protecting the mutation serialized **all** multi-tenant traffic — two tenants could not be served concurrently. Scoped ToolBoxes need no lock, so different tenants now run in parallel.
+
+The expensive tools stay shared. The LLM client and its response cache, the document converter, the chunker, the aggregator and the embedding model live on a `ToolBoxRuntime` that every scope reuses; only the triple store, ontology catalog, SPARQL tool and vector store are per-scope. A second tenant therefore costs a store connection and a catalog, not another embedding model.
+
+Resident scopes are bounded by `MAX_TENANCY_SCOPES` (default 16) in a least-recently-used cache. Evicting a scope closes its backend connections. The bound exists because scopes come from request parameters: without it, a client iterating tenant names would grow the process without limit.
+
+### From your own code
+
+```python
+scoped = await tools.for_scope("acme", "reports")
+```
+
+Returns the same ToolBox when the scope already matches, and otherwise builds (and caches) one. A single-tenant application never allocates a registry at all. `await tools.aclose()` closes every scope the ToolBox spawned.
 
 ## Configuration Interaction
 

@@ -406,7 +406,7 @@ def _match_test_app(monkeypatch: pytest.MonkeyPatch):
         lambda *_args, **_kwargs: [],
     )
     monkeypatch.setattr(
-        app_module, "create_agent_graph", lambda _tools: SimpleNamespace()
+        app_module, "create_agent_graph", lambda _tools, **_kwargs: SimpleNamespace()
     )
     tools = cast(
         ToolBox,
@@ -475,7 +475,7 @@ def test_evaluate_match_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_derive_matches_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        app_module, "create_agent_graph", lambda _tools: SimpleNamespace()
+        app_module, "create_agent_graph", lambda _tools, **_kwargs: SimpleNamespace()
     )
     tools = cast(ToolBox, SimpleNamespace())
     app = create_app(

@@ -64,7 +64,7 @@ license-files = ["LICENSE"]
 name = "ontocast"
 readme = "README.md"
 requires-python = ">=3.12,<4.0"
-version = "0.5.0"
+version = "0.5.1"
 
 [project.optional-dependencies]
 # `plot` is deliberately excluded: pygraphviz builds from source against system
@@ -172,7 +172,7 @@ match-graphs = "ontocast.cli._entry:match_graphs"
 ontocast = "ontocast.cli._entry:ontocast"
 pdfs-to-markdown = "ontocast.cli._entry:pdfs_to_markdown"
 plot-graph = "ontocast.cli._entry:plot_graph"
-test-api = "ontocast.cli.test_api:main"
+test-api = "ontocast.cli._entry:test_api"
 
 [project.urls]
 Changelog = "https://github.com/growgraph/ontocast/blob/main/CHANGELOG.md"
