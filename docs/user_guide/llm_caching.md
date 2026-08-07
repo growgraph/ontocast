@@ -109,11 +109,10 @@ Cache keys hash **normalized prompt text** (LangChain prompt values use `to_stri
 Different configurations never share an entry. Binary inputs (PDFs and other documents fed to the converter) are hashed as raw bytes rather than decoded to text first.
 
 !!! note "Version 2 invalidates existing entries"
-    The key gained the Ollama knobs and the format version, so caches written by
+    The key gained the Ollama knobs and the format version, so entries written by
     earlier releases will not be hit. The first run after upgrading re-pays for
     every call; the stale entries age out under the size ceiling, or can be
-    cleared immediately with `ontocast cache prune --orphaned` and
-    `ontocast cache clear`.
+    cleared immediately with `ontocast cache clear`.
 
 ---
 
@@ -139,11 +138,11 @@ ontocast cache prune --orphaned         # drop subdirectories no current tool wr
 ontocast cache clear --subdir llm       # delete entries outright
 ```
 
-`--orphaned` is deliberately manual: "no live tool claims this directory" is an
-inference a downgrade could invalidate, unlike the size pass, which only ever
-discards entries the current code would regenerate. Older installs accumulated
-`converter/` and `converter_v2/` directories from a time when cache versioning
-was done by renaming the subdirectory; `--orphaned` is what clears them.
+`--orphaned` stays manual because "no live tool claims this directory" is an
+inference, unlike the size pass, which only ever discards entries the current
+code would regenerate. Cache versioning used to be done by renaming the
+subdirectory, so caches carried over from before this release may hold stray
+`converter_v2/` and `converter_v3/` directories; `--orphaned` clears them.
 
 ---
 
@@ -191,7 +190,7 @@ cache_dir/
 ├── llm/                    # LLM responses
 │   ├── <sha256>.json
 │   └── <sha256>.json
-├── converter_v3/           # Document conversion
+├── converter/              # Document conversion
 └── chunker/                # Text chunking
 ```
 
@@ -415,12 +414,12 @@ Caching is organized in subdirectories:
 ```
 ~/.cache/ontocast/
 ├── llm/            # LLM response cache
-├── converter_v3/   # Document conversion cache
+├── converter/      # Document conversion cache
 └── chunker/        # Text chunking cache
 ```
 
 Converter entries carry a format version inside the cache key, so a shape change
-no longer requires a new `converter_v4` directory. Directories from the older
+no longer requires a new numbered directory. Directories left over from the older
 scheme are reported as orphaned by `ontocast cache stats`.
 
 ### Cache Benefits

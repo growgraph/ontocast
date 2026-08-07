@@ -18,7 +18,7 @@ from typing import Any
 
 from ontocast.config import LLMConfig
 from ontocast.tool.cache import Cacher, ToolCacher
-from ontocast.tool.llm import llm_cache_config
+from ontocast.tool.llm import CachedResponse, llm_cache_config
 
 logger = logging.getLogger(__name__)
 
@@ -91,13 +91,14 @@ def import_openai_batch_output_jsonl(
                 logger.warning("Empty choices for custom_id=%s", custom_id)
                 continue
             content = choices[0].get("message", {}).get("content", "")
-            response_data = {
-                "content": content,
-                "prompt": cache_key[:200],
-                "kwargs": {},
-                "source": "openai_batch",
-            }
-            tool_cache.set(cache_key, response_data, config=config_dict)
+            # Same entry model the server reads, so a prewarmed entry is
+            # indistinguishable from one written by a live call.
+            entry = CachedResponse(
+                content=content,
+                prompt=cache_key[:200],
+                response_metadata={"source": "openai_batch"},
+            )
+            tool_cache.set(cache_key, entry.model_dump(), config=config_dict)
             written += 1
     logger.info("Imported %s batch result(s) into LLM cache", written)
     return written

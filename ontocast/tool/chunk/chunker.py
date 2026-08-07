@@ -81,7 +81,8 @@ class ChunkerTool(Tool):
         if cache is not None:
             self.cache = ToolCacher(cache, CHUNKER_CACHE_SUBDIR)
         else:
-            # Fallback for backward compatibility
+            # Standalone use (CLI helpers, direct library use): fall back to a
+            # private Cacher on the configured/default directory.
             shared_cache = Cacher()
             self.cache = ToolCacher(shared_cache, CHUNKER_CACHE_SUBDIR)
 

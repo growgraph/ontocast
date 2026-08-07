@@ -47,10 +47,9 @@ type CacheConfig = dict[str, str | int | float | bool | None]
 # --orphaned` clears those.
 LLM_CACHE_SUBDIR = "llm"
 CHUNKER_CACHE_SUBDIR = "chunker"
-# Kept at the historical name deliberately. Renaming it to "converter" would
-# collide with the v1 directory still present on older installs, whose entries
-# have a different result shape; versioning now happens inside the key instead.
-CONVERTER_CACHE_SUBDIR = "converter_v3"
+# Versioning lives in the cache key (`cache_format_version`), not in this name,
+# so a shape change no longer needs a `converter_v4` directory.
+CONVERTER_CACHE_SUBDIR = "converter"
 KNOWN_CACHE_SUBDIRS = frozenset(
     {LLM_CACHE_SUBDIR, CHUNKER_CACHE_SUBDIR, CONVERTER_CACHE_SUBDIR}
 )

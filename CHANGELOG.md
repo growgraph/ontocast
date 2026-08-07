@@ -102,9 +102,9 @@ project:
   `500MB` as well as a byte count), `ONTOCAST_CACHE_TTL_DAYS`,
   `ONTOCAST_CACHE_PRUNE_EVERY`.
 - Converter cache entries carry a format version in the key, replacing the old
-  practice of bumping the subdirectory name — which is why `converter/` and
-  `converter_v2/` linger on older installs. `ontocast cache prune --orphaned`
-  clears them.
+  practice of bumping the subdirectory name; the subdirectory is back to plain
+  `converter/`. Stray `converter_v2/` and `converter_v3/` directories in an
+  existing cache are cleared by `ontocast cache prune --orphaned`.
 - Typed `CacheStats` / `PruneReport` models and `Cacher.cache_stats()`;
   `get_cache_stats()` still returns a plain dict for JSON responses.
 

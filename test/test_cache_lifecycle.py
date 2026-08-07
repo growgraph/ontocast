@@ -41,11 +41,11 @@ def test_binary_content_is_hashed_not_lossily_decoded(cacher) -> None:
         "utf-8", errors="ignore"
     )
 
-    cacher.set(left, "left result", subdirectory="converter_v3")
-    cacher.set(right, "right result", subdirectory="converter_v3")
+    cacher.set(left, "left result", subdirectory="converter")
+    cacher.set(right, "right result", subdirectory="converter")
 
-    assert cacher.get(left, subdirectory="converter_v3") == "left result"
-    assert cacher.get(right, subdirectory="converter_v3") == "right result"
+    assert cacher.get(left, subdirectory="converter") == "left result"
+    assert cacher.get(right, subdirectory="converter") == "right result"
 
 
 def test_truncated_entry_is_a_miss_and_is_overwritten(cacher) -> None:

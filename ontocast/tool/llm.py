@@ -195,30 +195,23 @@ def _content_to_str(content: Any) -> str:
     return str(content)
 
 
-def _cached_content(cached: Any) -> Any:
-    """Extract the response body from a cache entry.
+class CachedResponse(BaseModel):
+    """A stored LLM response.
 
-    Entries are dicts written by :meth:`LLMTool._invoke_cached`, but a bare
-    string is accepted so that a hand-written or externally imported entry does
-    not raise a ``TypeError`` deep inside the invoke path.
+    ``cache_format_version`` in the key guarantees entries were written by this
+    version of the code, so the shape is known rather than sniffed.
     """
-    if isinstance(cached, dict):
-        return cached.get("content", "")
-    return cached
 
-
-def _cached_metadata(cached: Any) -> dict[str, Any]:
-    """Response metadata stored alongside a cache entry, if any.
-
-    Replaying it keeps a cache hit behaviourally identical to a fresh call;
-    without it, a caller inspecting ``finish_reason`` would silently branch
-    differently on a cached run.
-    """
-    if isinstance(cached, dict):
-        metadata = cached.get("response_metadata")
-        if isinstance(metadata, dict):
-            return metadata
-    return {}
+    content: str = Field(description="Response text, already normalised.")
+    prompt: str = Field(default="", description="Prompt that produced it.")
+    response_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        # Replaying this keeps a cache hit behaviourally identical to a fresh
+        # call; without it a caller inspecting finish_reason would silently
+        # branch differently on a cached run.
+        description="Provider metadata, replayed on a hit.",
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict, description="Invoke kwargs.")
 
 
 class LLMTool(Tool):
@@ -261,7 +254,8 @@ class LLMTool(Tool):
         if cache is not None:
             self.cache = ToolCacher(cache, LLM_CACHE_SUBDIR)
         else:
-            # Fallback for backward compatibility
+            # Standalone use (CLI helpers, direct library use): fall back to a
+            # private Cacher on the configured/default directory.
             shared_cache = Cacher()
             self.cache = ToolCacher(shared_cache, LLM_CACHE_SUBDIR)
 
@@ -489,11 +483,11 @@ class LLMTool(Tool):
             )
             if cached_response is not None:
                 logger.debug("Cache hit: %s...", prompt_str[:50])
-                content_str = _content_to_str(_cached_content(cached_response))
-                self._record_cache_hit(prompt_str, content_str)
+                entry = CachedResponse.model_validate(cached_response)
+                self._record_cache_hit(prompt_str, entry.content)
                 return AIMessage(
-                    content=content_str,
-                    response_metadata=_cached_metadata(cached_response),
+                    content=entry.content,
+                    response_metadata=entry.response_metadata,
                 )
 
         logger.debug("Cache miss, calling LLM: %s...", prompt_str[:50])
@@ -507,13 +501,15 @@ class LLMTool(Tool):
         content_str = _content_to_str(response.content)
         response_metadata = getattr(response, "response_metadata", {}) or {}
         if self.config.cache_enabled and not self.config.cache_read_only:
-            response_data = {
-                "content": content_str,
-                "prompt": prompt_str,
-                "response_metadata": response_metadata,
-                "kwargs": kwds,
-            }
-            await self.cache.aset(prompt_key, response_data, config=config_dict, **kwds)
+            entry = CachedResponse(
+                content=content_str,
+                prompt=prompt_str,
+                response_metadata=response_metadata,
+                kwargs=kwds,
+            )
+            await self.cache.aset(
+                prompt_key, entry.model_dump(), config=config_dict, **kwds
+            )
 
         return AIMessage(content=content_str, response_metadata=response_metadata)
 

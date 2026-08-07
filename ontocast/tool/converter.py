@@ -27,9 +27,8 @@ from .onto import Tool
 
 logger = logging.getLogger(__name__)
 
-# Bumped when the cached DoclingDocument shape changes. Previously done by
-# renaming the cache subdirectory, which is why orphaned `converter/` and
-# `converter_v2/` directories linger on older installs.
+# Bumped when the cached DoclingDocument shape changes, replacing the older
+# practice of renaming the cache subdirectory.
 CONVERTER_CACHE_FORMAT_VERSION = 1
 
 
@@ -175,7 +174,8 @@ class ConverterTool(Tool):
         if cache is not None:
             self.cache = ToolCacher(cache, CONVERTER_CACHE_SUBDIR)
         else:
-            # Fallback for backward compatibility
+            # Standalone use (CLI helpers, direct library use): fall back to a
+            # private Cacher on the configured/default directory.
             shared_cache = Cacher()
             self.cache = ToolCacher(shared_cache, CONVERTER_CACHE_SUBDIR)
 
@@ -201,10 +201,8 @@ class ConverterTool(Tool):
         else:
             raise TypeError(f"Unsupported file input type: {type(file_input).__name__}")
 
-        # Check cache first. The format version lives in the key rather than in
-        # the subdirectory name: bumping it orphans stale entries in place, so a
-        # shape change no longer needs a `converter_v4` directory that leaves the
-        # previous one behind forever (see `ontocast cache prune --orphaned`).
+        # Check cache first. The format version lives in the key, so bumping it
+        # orphans stale entries in place rather than stranding a whole directory.
         config_dict = self.converter_config.model_dump(mode="json")
         config_dict["cache_format_version"] = CONVERTER_CACHE_FORMAT_VERSION
         cached_result = self.cache.get(content_for_cache, config=config_dict)
