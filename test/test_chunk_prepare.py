@@ -197,3 +197,142 @@ def test_chunk_text_resets_content_units_on_each_call() -> None:
     state.set_docling_doc(plain_text_to_docling_doc("second invocation text", "doc"))
     asyncio.run(chunk_text(state, tools))
     assert len(state.content_units) == 1
+
+
+_EXCLUDABLE_DOC = """# Introduction
+We survey prior work on knowledge graphs and their applications in materials science.
+
+# Results
+Accuracy improved by ten percent on the benchmark, and precision remained stable.
+
+# Acknowledgements
+We thank the funding agency and colleagues for helpful discussions of this work.
+
+# Appendix
+Supplementary derivations and additional tables are provided for completeness.
+"""
+
+
+def test_academic_default_exclude_drops_acknowledgements_and_appendix() -> None:
+    doc = doc_from_markdown_lines(_EXCLUDABLE_DOC)
+    chunks = asyncio.run(
+        _prepare(
+            doc,
+            min_size=40,
+            max_size=500,
+            options=PrepareOptions(document_type_hint="research article"),
+        )
+    )
+    labels = {chunk.section_label for chunk in chunks}
+    assert "introduction" in labels
+    assert "results" in labels
+    assert "acknowledgements" not in labels
+    assert "appendix" not in labels
+
+
+def test_explicit_empty_exclude_overrides_schema_default() -> None:
+    doc = doc_from_markdown_lines(_EXCLUDABLE_DOC)
+    chunks = asyncio.run(
+        _prepare(
+            doc,
+            min_size=40,
+            max_size=500,
+            options=PrepareOptions(
+                document_type_hint="research article",
+                exclude_sections=[],
+            ),
+        )
+    )
+    labels = {chunk.section_label for chunk in chunks}
+    assert "acknowledgements" in labels
+    assert "appendix" in labels
+
+
+def test_explicit_exclude_denylist_is_used_verbatim() -> None:
+    doc = doc_from_markdown_lines(_EXCLUDABLE_DOC)
+    chunks = asyncio.run(
+        _prepare(
+            doc,
+            min_size=40,
+            max_size=500,
+            options=PrepareOptions(
+                document_type_hint="research article",
+                exclude_sections=["results"],
+            ),
+        )
+    )
+    labels = {chunk.section_label for chunk in chunks}
+    assert "results" not in labels
+    # Schema defaults do not apply when an explicit denylist is given.
+    assert "acknowledgements" in labels
+
+
+def test_allowlist_and_denylist_compose() -> None:
+    doc = doc_from_markdown_lines(_EXCLUDABLE_DOC)
+    chunks = asyncio.run(
+        _prepare(
+            doc,
+            min_size=40,
+            max_size=500,
+            options=PrepareOptions(
+                document_type_hint="research article",
+                target_sections=["results", "acknowledgements"],
+            ),
+        )
+    )
+    labels = {chunk.section_label for chunk in chunks}
+    # Allowlist admits results+acknowledgements; schema default then drops
+    # acknowledgements.
+    assert labels == {"results"}
+
+
+def test_sections_first_semantic_labels_inherited_without_llm() -> None:
+    """Semantic default: labels come from span blocks, zero LLM calls."""
+    doc = doc_from_markdown_lines(_EXCLUDABLE_DOC)
+
+    async def exploding_llm(_prompt):
+        raise AssertionError("LLM should not be called for fully headed docs")
+
+    chunks = asyncio.run(
+        _prepare(
+            doc,
+            min_size=40,
+            max_size=500,
+            options=PrepareOptions(document_type_hint="research article"),
+            llm=exploding_llm,
+        )
+    )
+    assert chunks
+    assert all(chunk.section_label is not None for chunk in chunks)
+
+
+def test_docling_segmenter_option_still_supported() -> None:
+    doc = doc_from_markdown_lines(_EXCLUDABLE_DOC)
+    config = ChunkConfig(min_size=40, max_size=500, segmenter="docling")
+
+    async def default_llm(_prompt):
+        raise AssertionError("LLM should not be called")
+
+    tools = cast(
+        ToolBox,
+        SimpleNamespace(
+            chunker=ChunkerTool(chunk_config=config),
+            config=SimpleNamespace(
+                chunk_config=config,
+                server=SimpleNamespace(parallel_workers=2),
+            ),
+            llm=default_llm,
+        ),
+    )
+    chunks = asyncio.run(
+        prepare_content_units(
+            doc,
+            tools.chunker,
+            tools.chunker.config,
+            PrepareOptions(document_type_hint="research article"),
+            tools,
+        )
+    )
+    labels = {chunk.section_label for chunk in chunks}
+    assert "results" in labels
+    assert "acknowledgements" not in labels

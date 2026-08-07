@@ -108,6 +108,11 @@ def test_facts_guidelines_domain_clause_appears_once() -> None:
     )
     assert guidelines.count(clause) == 1
     assert "domain ontology namespace(s) above" in guidelines
+    # `ex:` is a MANDATORY repair finding, so the prompt must never advertise it:
+    # every occurrence used to cost a repair render. This is the one behavioural
+    # guard worth keeping from the old prompt-wording smoke tests; the rest
+    # matched section numbers ("1d. SPECIFICITY RULE") and broke on renumbering.
+    assert "ex:" not in guidelines
 
 
 # --- Author-prefix persistence through the triple-store boundary (sh:declare) ---
@@ -252,3 +257,110 @@ def test_jsonld_prompt_context_keeps_datatype_and_reference_prefixes() -> None:
     assert "cd" in context
     assert "qudt" in context
     assert "xsd" in context  # via the compact datatype "@type": "xsd:decimal"
+
+
+def test_normalize_namespace_iri_canonicalizes_schema_org_aliases() -> None:
+    from ontocast.onto.iri_policy import normalize_namespace_iri
+
+    assert normalize_namespace_iri("http://schema.org/") == "https://schema.org/"
+    assert normalize_namespace_iri("<http://schema.org/>") == "https://schema.org/"
+    assert normalize_namespace_iri("http://schema.org") == "https://schema.org/"
+    assert normalize_namespace_iri("https://schema.org/") == "https://schema.org/"
+
+
+def test_sanitize_remaps_http_schema_org_terms_to_https() -> None:
+    graph = RDFGraph()
+    graph.parse(
+        data="""
+@prefix schema: <http://schema.org/> .
+@prefix schema1: <https://schema.org/> .
+
+<https://example.com/a> a schema:Person ;
+    schema:name "A" .
+<https://example.com/b> a schema1:Person ;
+    schema1:name "B" .
+""",
+        format="turtle",
+    )
+    graph.sanitize_prefixes_namespaces()
+
+    subjects_of_https_person = set(
+        graph.subjects(RDF.type, URIRef("https://schema.org/Person"))
+    )
+    assert subjects_of_https_person == {
+        URIRef("https://example.com/a"),
+        URIRef("https://example.com/b"),
+    }
+    assert not list(graph.subjects(RDF.type, URIRef("http://schema.org/Person")))
+
+    schema_bindings = {
+        prefix: str(uri)
+        for prefix, uri in graph.namespaces()
+        if str(uri) in ("http://schema.org/", "https://schema.org/")
+    }
+    assert schema_bindings == {"schema": "https://schema.org/"}
+
+
+def test_postprocess_facts_units_merged_graph_has_single_schema_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ontocast.onto.content_unit import ContentUnit, OutputType
+    from ontocast.tool.agg.aggregate import EmbeddingBasedAggregator
+
+    def _unit(index: int, turtle: str) -> ContentUnit:
+        graph = RDFGraph()
+        graph.parse(data=turtle, format="turtle")
+        return ContentUnit(
+            text=f"unit {index}",
+            index=index,
+            doc_iri="https://growgraph.dev/doc/testdoc",
+            type=OutputType.FACTS,
+            graph=graph,
+        )
+
+    units = [
+        _unit(
+            0,
+            """
+@prefix schema: <http://schema.org/> .
+<https://growgraph.dev/doc/testdoc/a> a schema:Person ; schema:name "A" .
+""",
+        ),
+        _unit(
+            1,
+            """
+@prefix schema: <https://schema.org/> .
+<https://growgraph.dev/doc/testdoc/b> a schema:Person ; schema:name "B" .
+""",
+        ),
+    ]
+    aggregator = EmbeddingBasedAggregator()
+
+    def cluster_by_scheme_insensitive_iri(representations):
+        """Group `http://schema.org/X` with `https://schema.org/X`.
+
+        That pairing is what a real embedding model produces here, and it is the
+        premise of the test rather than its subject: what is under test is that
+        the merged graph ends up with a single `schema:` binding. Stating the
+        grouping directly keeps the assertion honest and off the model.
+        """
+        groups: dict[str, list[URIRef]] = {}
+        for entity in representations:
+            key = str(entity).replace("http://", "https://", 1)
+            groups.setdefault(key, []).append(entity)
+        return list(groups.values()), {}
+
+    monkeypatch.setattr(
+        aggregator.clusterer, "cluster_entities", cluster_by_scheme_insensitive_iri
+    )
+    result = aggregator.postprocess_facts_units(units, RDFGraph())
+
+    serialized = result.graph.serialize(format="turtle")
+    assert "schema1" not in serialized
+    assert "http://schema.org/" not in serialized
+    assert set(
+        result.graph.subjects(RDF.type, URIRef("https://schema.org/Person"))
+    ) == {
+        URIRef("https://growgraph.dev/doc/testdoc/a"),
+        URIRef("https://growgraph.dev/doc/testdoc/b"),
+    }

@@ -48,6 +48,12 @@ Chunk provenance links facts → chunk → parent `doc_iri` (content-hash IRI). 
 | Typed entities | `author` / `creator` / `authors` → `schema:Person`; `project` and any other key → `prov:Entity` (SPARQL-discoverable) |
 | Stable URI | `stable_source_iri` (`owl:sameAs`), `source_uri` / `source_url` (`dcterms:source`) |
 
+Keys are matched **case-insensitively** with camelCase / snake_case / kebab-case tolerance. Bibliographic identifier and source keys also accept an optional leading or trailing `id` affix (so `DOI`, `doi_id`, `arxivId`, and bare `arxiv` all resolve to the bibliographic identifiers above).
+
+Unregistered keys whose last or first token is an **identifier-shaped affix** — `id`, `uid`, `uuid`, `guid`, `ref`, `reference`, `no`, `num`, `number`, `code`, `slug`, `handle`, `accession`, or `key` — become structured `dcterms:identifier` blank nodes with `dcterms:type` set to the stem (e.g. `department_id: "D-42"` → scheme `department`). When the stem matches a typed entity-link key present in the same payload (e.g. `project` + `project_id`), the value attaches as `dcterms:identifier` on that minted entity instead. Bare unknown keys without an affix still mint typed entities. Including `key` in the affix set is an accepted trade-off (`key_finding` is treated as a structured identifier with scheme `finding`).
+
+Canonical names in the table remain the documented contract.
+
 Scalar / identifier example:
 
 ```turtle
@@ -101,19 +107,21 @@ Rules:
 
 **HTTP:** pass `document_metadata` as a JSON object field (JSON body) or stringified JSON (multipart / query).
 
-## Structured documents (optional)
+## Structured documents
 
-For papers and other heading-structured Markdown text, `/process` and `ontocast process --input-path` accept optional parameters. When both `target_sections` and `summarize_sections` are omitted, the pipeline stays `convert → chunk → extract` with no extra graph nodes.
+Section tagging is **on by default** for every document (`CHUNK_SECTION_CLASSIFIER=llm`): each chunk carries a `section_label` from the active schema, usable by the filters below and by summarization. Set `CHUNK_SECTION_CLASSIFIER=off` to restore untagged `convert → chunk → extract` (this also disables section filters and schema default exclusions), or `heading` for deterministic-only labeling with zero LLM cost.
 
 ### Section tagging and section-aligned chunks
 
-When `target_sections` or `summarize_sections` is set, the **Chunk** node runs a single prepare pipeline:
+The **Chunk** node runs a single prepare pipeline:
 
-1. **Segment** — Docling `HybridChunker` segments for layout-aware PDFs/DOCX; if none, semantic chunking on exported markdown (plain or weak structure).
-2. **Coalesce** — undersized segments merge into the right neighbor (trailing tiny segments merge left); short abstract headings are preserved; section boundaries come from heading lines and Docling breadcrumbs.
-3. **Tag** — heading regex on exported markdown (`ontocast.config.section_labels` YAML), optional front-matter abstract span, overlap labeling, then parallel LLM backfill for unlabeled segments at or above `CHUNK_SECTION_TAG_MIN_CHARS` (`PARALLEL_WORKERS`).
-4. **Filter** — `target_sections` allowlist, or `summarize_sections` allowlist when `target_sections` is omitted (not `*`).
+1. **Segment** — sections-first by default (`CHUNK_SEGMENTER=semantic`): section spans are detected on the exported markdown, the text is split at section boundaries, and the semantic chunker splits *within* each oversized section block — so no chunk straddles a section boundary and chunks from detected sections inherit their label deterministically. `CHUNK_SEGMENTER=docling` selects Docling `HybridChunker` structural segments instead (its tokenizer is budgeted from `CHUNK_MAX_SIZE`).
+2. **Coalesce** — undersized segments merge into the right neighbor (trailing tiny segments merge left); short abstract headings are preserved; merges never cross section structure.
+3. **Tag** — heading regex on exported markdown (`ontocast.config.section_labels` YAML), optional front-matter abstract span, overlap labeling, then parallel LLM backfill for still-unlabeled segments at or above `CHUNK_SECTION_TAG_MIN_CHARS` (`PARALLEL_WORKERS`; skipped when `CHUNK_SECTION_CLASSIFIER=heading`).
+4. **Filter** — `target_sections` allowlist (or `summarize_sections` allowlist when `target_sections` is omitted and not `*`), then the `exclude_sections` denylist. When `exclude_sections` is unset, the active schema's `default_exclude` applies — the academic schema drops `acknowledgements` and `appendix`; pass an explicit empty `exclude_sections` to keep everything.
 5. **Size** — split oversized segments (semantic when available), merge undersized consecutive same-label chunks to `min_size` / `max_size`.
+
+Reference lists are handled separately by `CHUNK_BIBLIOGRAPHY_MODE` (default `skip`: dropped before extraction; `citations_only` extracts bibliographic metadata instead).
 
 PDF extraction behavior before chunking is configurable through `CONVERTER_*` settings. For born-digital publisher PDFs, prefer `CONVERTER_PROFILE=born_digital` to favor embedded text and enable OntoCast's temporary ligature-gap workaround.
 
@@ -127,8 +135,9 @@ When `summarize_sections` is present (including empty or `*` for all units), the
 
 | Parameter | Default | Effect |
 |-----------|---------|--------|
-| `target_sections` | omitted | Section prepare + keep only listed sections (e.g. `results,methods`) |
-| `summarize_sections` | omitted | Section prepare + summarization node; omit to skip summaries. `*` or empty = all chunks after prepare |
+| `target_sections` | omitted | Keep only listed sections (e.g. `results,methods`) |
+| `exclude_sections` | omitted (schema `default_exclude`) | Drop listed sections; explicit empty value disables all exclusion |
+| `summarize_sections` | omitted | Summarization node; omit to skip summaries. `*` or empty = all chunks after prepare |
 | `summary_max_sentences` | `5` | Max sentences per summary when summarization runs |
 | `section_schema_id` | omitted (`academic`) | Section label YAML schema (`financial`, `legal`, `clinical`, `manual`, `fiction`, `general`) |
 | `document_type_hint` | omitted | Free-text hint to resolve schema when `section_schema_id` is not set |

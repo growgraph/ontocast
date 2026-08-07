@@ -38,7 +38,11 @@ from ontocast.onto.iri_policy import (
     normalize_namespace_iri,
 )
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.tool.representation_text import normalize_text, normalize_uri_local_name
+from ontocast.tool.representation_text import (
+    normalize_identifier,
+    normalize_text,
+    normalize_uri_local_name,
+)
 
 from .clustering import ClusterRepresentativeSelector
 from .normalizer import EntityNormalizer, EntityRepresentation
@@ -68,10 +72,125 @@ _DOC_METADATA_ENTITY_LINKS: dict[str, tuple[URIRef, URIRef]] = {
     "creator": (DCTERMS.creator, SCHEMA.Person),
     "project": (DCTERMS.relation, PROV.Entity),
 }
+# Canonicals that get optional ``id`` prefix/suffix expansion in the alias map.
+_DOC_METADATA_ID_AFFIX_CANONICALS = (
+    _DOC_METADATA_IDENTIFIER_KEYS
+    | _DOC_METADATA_SOURCE_KEYS
+    | frozenset({"stable_source_iri"})
+)
 _DEFAULT_ENTITY_LINK_PREDICATE = DCTERMS.relation
 _DEFAULT_ENTITY_TYPE = PROV.Entity
 
 _DCTERMS_IDENTIFIER_CLASS = URIRef(str(DCTERMS) + "Identifier")
+
+# Closed set of identifier-shaped affixes for the fallback structured-id path.
+# ``key`` is gated here (never expanded into the registry alias map).
+_IDENTIFIER_AFFIXES = frozenset(
+    {
+        "id",
+        "uid",
+        "uuid",
+        "guid",
+        "ref",
+        "reference",
+        "no",
+        "num",
+        "number",
+        "code",
+        "slug",
+        "handle",
+        "accession",
+        "key",
+    }
+)
+
+
+def _aliases_for(canonical: str, *, with_id_affix: bool = False) -> set[str]:
+    """Expand a canonical metadata key into separator / optional ``id`` aliases."""
+    toks = normalize_identifier(canonical).split()
+    if not toks:
+        return set()
+    forms = {"_".join(toks), "".join(toks)}
+    if not with_id_affix:
+        return forms
+    if toks[-1] == "id":
+        stem = toks[:-1]
+        if stem:
+            forms.add("_".join(stem))
+            forms.add("".join(stem))
+    else:
+        stem = toks
+        forms |= {
+            "_".join([*stem, "id"]),
+            "id_" + "_".join(stem),
+            "".join(stem) + "id",
+            "id" + "".join(stem),
+        }
+    return forms
+
+
+def _build_doc_metadata_key_aliases() -> dict[str, str]:
+    """Map normalized alias forms to canonical registry keys.
+
+    ``id`` affix expansion is scoped to bibliographic identifiers, source keys,
+    and ``stable_source_iri`` so ``project_id`` / ``title_id`` are not silently
+    folded into entity-link or first-class keys (those go through the fallback
+    structured-identifier path instead).
+    """
+    aliases: dict[str, str] = {}
+    for canonical in sorted(_DOC_METADATA_ID_AFFIX_CANONICALS):
+        for alias in _aliases_for(canonical, with_id_affix=True):
+            aliases[alias] = canonical
+
+    plain_canonicals = (
+        set(_DOC_METADATA_FIRST_CLASS)
+        | set(_DOC_METADATA_ENTITY_LINKS)
+        | frozenset({"identifiers"})
+    )
+    for canonical in sorted(plain_canonicals):
+        for alias in _aliases_for(canonical, with_id_affix=False):
+            aliases.setdefault(alias, canonical)
+    return aliases
+
+
+_DOC_METADATA_KEY_ALIASES = _build_doc_metadata_key_aliases()
+
+
+def _resolve_metadata_key(key: str) -> str:
+    """Resolve a caller metadata key to a canonical registry name.
+
+    Matching is case-insensitive and tolerant of camelCase / snake_case /
+    kebab-case. Optional leading/trailing ``id`` affixes apply only to
+    bibliographic identifier and source keys. Unknown keys are returned
+    unchanged.
+    """
+    tokens = normalize_identifier(key).split()
+    if not tokens:
+        return key
+    for form in ("_".join(tokens), "".join(tokens)):
+        canonical = _DOC_METADATA_KEY_ALIASES.get(form)
+        if canonical is not None:
+            return canonical
+    return key
+
+
+def _split_identifier_affix(key: str) -> tuple[str, str] | None:
+    """Split a key into ``(stem, affix)`` when it carries an identifier affix.
+
+    Recognizes a leading or trailing token from :data:`_IDENTIFIER_AFFIXES`
+    after camel/snake/kebab normalization. Returns ``None`` when there is no
+    affix or the stem would be empty.
+    """
+    tokens = normalize_identifier(key).split()
+    if len(tokens) < 2:
+        return None
+    if tokens[-1] in _IDENTIFIER_AFFIXES:
+        stem = "_".join(tokens[:-1])
+        return (stem, tokens[-1]) if stem else None
+    if tokens[0] in _IDENTIFIER_AFFIXES:
+        stem = "_".join(tokens[1:])
+        return (stem, tokens[0]) if stem else None
+    return None
 
 
 def _as_iri_or_literal(value: object) -> URIRef | Literal:
@@ -138,8 +257,10 @@ def _emit_metadata_entities(
     link: URIRef,
     default_type: URIRef,
     value: object,
-) -> None:
+) -> list[URIRef]:
+    """Mint linked entities for a metadata value; return minted IRIs."""
     items = value if isinstance(value, list) else [value]
+    minted: list[URIRef] = []
     for item in items:
         if item is None or item == "":
             continue
@@ -164,6 +285,8 @@ def _emit_metadata_entities(
             identifier=identifier,
         )
         graph.add((doc_iri, link, entity_iri))
+        minted.append(entity_iri)
+    return minted
 
 
 def apply_document_metadata_provenance(
@@ -182,6 +305,13 @@ def apply_document_metadata_provenance(
     Business-oriented keys (``author``, ``project``, and any non-reserved key)
     mint typed RDF entities under ``entity_namespace`` (defaults to the document
     facts namespace) so they are SPARQL-discoverable via ``rdf:type``.
+
+    Registry keys are matched via :func:`_resolve_metadata_key` (case /
+    separator / optional ``id`` affix for identifier and source keys). Keys with
+    an identifier-shaped affix (``id``, ``ref``, ``no``, ``key``, …) that do not
+    resolve to a registry entry become structured ``dcterms:identifier`` blank
+    nodes, or attach to a companion entity-link stem when one was minted in the
+    same payload (e.g. ``project`` + ``project_id``).
     """
     if not metadata:
         return
@@ -197,10 +327,13 @@ def apply_document_metadata_provenance(
     graph.add((doc_iri, RDF.type, FOAF.Document))
 
     ns = entity_namespace or normalize_namespace_iri(str(doc_iri), context="facts")
+    entity_iri_by_stem: dict[str, URIRef] = {}
+    deferred_affix: list[tuple[str, object, tuple[str, str]]] = []
 
-    for key, value in metadata.items():
+    for raw_key, value in metadata.items():
         if value is None or value == "":
             continue
+        key = _resolve_metadata_key(raw_key)
         if key == "stable_source_iri":
             graph.add((doc_iri, OWL.sameAs, _as_iri_or_literal(value)))
             continue
@@ -232,17 +365,51 @@ def apply_document_metadata_provenance(
                 graph.add((doc_iri, predicate, Literal(str(value))))
             continue
 
-        link, default_type = _DOC_METADATA_ENTITY_LINKS.get(
-            key, (_DEFAULT_ENTITY_LINK_PREDICATE, _DEFAULT_ENTITY_TYPE)
-        )
+        if key in _DOC_METADATA_ENTITY_LINKS:
+            link, default_type = _DOC_METADATA_ENTITY_LINKS[key]
+            minted = _emit_metadata_entities(
+                graph,
+                doc_iri,
+                ns,
+                link=link,
+                default_type=default_type,
+                value=value,
+            )
+            # Companion ``*_id`` attachment only for a singular non-list entity.
+            if not isinstance(value, list) and len(minted) == 1:
+                entity_iri_by_stem[key] = minted[0]
+            continue
+
+        split = _split_identifier_affix(key)
+        if split is not None:
+            deferred_affix.append((key, value, split))
+            continue
+
         _emit_metadata_entities(
             graph,
             doc_iri,
             ns,
-            link=link,
-            default_type=default_type,
+            link=_DEFAULT_ENTITY_LINK_PREDICATE,
+            default_type=_DEFAULT_ENTITY_TYPE,
             value=value,
         )
+
+    for _key, value, (stem, _affix) in deferred_affix:
+        entity_iri = entity_iri_by_stem.get(stem)
+        if entity_iri is not None:
+            if isinstance(value, list):
+                for item in value:
+                    if item is not None and item != "":
+                        graph.add((entity_iri, DCTERMS.identifier, Literal(str(item))))
+            else:
+                graph.add((entity_iri, DCTERMS.identifier, Literal(str(value))))
+            continue
+        if isinstance(value, list):
+            for item in value:
+                if item is not None and item != "":
+                    _add_structured_identifier(graph, doc_iri, scheme=stem, value=item)
+        else:
+            _add_structured_identifier(graph, doc_iri, scheme=stem, value=value)
 
 
 class EntityClassification(StrEnum):
@@ -562,11 +729,19 @@ class EmbeddingBasedAggregator:
         if left_label_tokens & right_label_tokens:
             return True
 
-        # Literal-bearing entities (measurements, identifiers, settings) are
+        # Abbreviation-aware tier: "baranov d" vs "dmitry baranov" alias when
+        # every token of one label matches a token of the other exactly or as
+        # a single-character initial, with at least one shared full token.
+        if self._labels_alias_with_initials(left_label_tokens, right_label_tokens):
+            return True
+
+        # Guard-literal-bearing entities (measurements, dated events) are
         # individuated by their payload, not their phrasing: "PL red shift of
         # SL1" vs "PL red shift of SL2" share most tokens yet denote distinct
-        # values. Only the exact tiers above may merge them.
-        if left_rep.has_data_literal and right_rep.has_data_literal:
+        # values. Only the exact tiers above may merge them. String literals
+        # (names, descriptions) do not raise this bar — disjoint identifier
+        # strings are handled by _have_conflicting_literals instead.
+        if left_rep.has_guard_literal and right_rep.has_guard_literal:
             return False
 
         if left_label_tokens and right_label_tokens:
@@ -604,7 +779,71 @@ class EmbeddingBasedAggregator:
         return False
 
     @staticmethod
+    def _tokens_alias_compatible(left: str, right: str) -> bool:
+        """Exact token match, or a (possibly dotted) single-char initial of it."""
+        if left == right:
+            return True
+        shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+        return len(shorter) == 1 and longer.startswith(shorter)
+
+    @classmethod
+    def _labels_alias_with_initials(
+        cls,
+        left_labels: set[str],
+        right_labels: set[str],
+    ) -> bool:
+        """True when a label pair matches token-injectively allowing initials.
+
+        Every token of the shorter label must match a distinct token of the
+        longer one (exactly, or as a single-character initial), and at least
+        one matched token must be a full word (len > 2). Generic abbreviation
+        structure — nothing person-specific.
+        """
+        for left_label in left_labels:
+            left_tokens = left_label.split()
+            for right_label in right_labels:
+                right_tokens = right_label.split()
+                if not left_tokens or not right_tokens:
+                    continue
+                shorter, longer = (
+                    (left_tokens, right_tokens)
+                    if len(left_tokens) <= len(right_tokens)
+                    else (right_tokens, left_tokens)
+                )
+                available = list(longer)
+                shared_full_token = False
+                matched_all = True
+                for token in shorter:
+                    match_index = next(
+                        (
+                            index
+                            for index, candidate in enumerate(available)
+                            if cls._tokens_alias_compatible(token, candidate)
+                        ),
+                        None,
+                    )
+                    if match_index is None:
+                        matched_all = False
+                        break
+                    if token == available[match_index] and len(token) > 2:
+                        shared_full_token = True
+                    del available[match_index]
+                if matched_all and shared_full_token:
+                    return True
+        return False
+
+    @classmethod
+    def _string_values_compatible(cls, left: str, right: str) -> bool:
+        """Compatible when equal, prefix-related, or initial-abbreviations."""
+        if left == right:
+            return True
+        if left.startswith(right) or right.startswith(left):
+            return True
+        return cls._labels_alias_with_initials({left}, {right})
+
+    @classmethod
     def _have_conflicting_literals(
+        cls,
         left_rep: EntityRepresentation,
         right_rep: EntityRepresentation,
     ) -> bool:
@@ -613,12 +852,25 @@ class EmbeddingBasedAggregator:
         A shared predicate with two non-empty, disjoint canonical value sets
         (numeric/temporal) marks the entities as distinct individuals; overlap
         or one-sided values read as re-mention/enrichment and stay mergeable.
+        String payloads (identifiers, codes) conflict only when NO cross-pair
+        is compatible (equality, prefix, or initial-abbreviation) — "d" vs
+        "dmitry" is a re-mention, "S-2024-001" vs "S-2024-002" is a conflict.
         """
         for predicate, left_values in left_rep.predicate_literals.items():
             right_values = right_rep.predicate_literals.get(predicate)
             if not right_values or not left_values:
                 continue
             if left_values.isdisjoint(right_values):
+                return True
+        for predicate, left_strings in left_rep.predicate_string_literals.items():
+            right_strings = right_rep.predicate_string_literals.get(predicate)
+            if not right_strings or not left_strings:
+                continue
+            if not any(
+                cls._string_values_compatible(left_value, right_value)
+                for left_value in left_strings
+                for right_value in right_strings
+            ):
                 return True
         return False
 
@@ -644,6 +896,33 @@ class EmbeddingBasedAggregator:
             if left_objects.isdisjoint(right_objects):
                 return True
         return False
+
+    def _labels_confirm_identity(
+        self,
+        left: URIRef,
+        right: URIRef,
+        representations: dict[URIRef, EntityRepresentation],
+    ) -> bool:
+        """Exact or initials-aware label agreement strong enough to skip cosine."""
+        left_rep = representations.get(left)
+        right_rep = representations.get(right)
+        if left_rep is None or right_rep is None:
+            return False
+        left_labels = {
+            self.normalizer.normalize_string(label)
+            for label in left_rep.labels + left_rep.alt_labels
+            if label.strip()
+        }
+        right_labels = {
+            self.normalizer.normalize_string(label)
+            for label in right_rep.labels + right_rep.alt_labels
+            if label.strip()
+        }
+        if not left_labels or not right_labels:
+            return False
+        if left_labels & right_labels:
+            return True
+        return self._labels_alias_with_initials(left_labels, right_labels)
 
     def _can_merge_as_identity(
         self,
@@ -785,7 +1064,12 @@ class EmbeddingBasedAggregator:
             for left, right in combinations(candidate_cluster, 2):
                 score = self._candidate_similarity(left, right, embeddings)
                 if score is not None and score < self.candidate_similarity_threshold:
-                    continue
+                    # Label-confirmed pairs bypass the cosine gate (mirrors
+                    # EntityAligner): short-string embeddings of aliases like
+                    # "Baranov, D." vs "Dmitry Baranov" hover around the
+                    # threshold, which made identity linking nondeterministic.
+                    if not self._labels_confirm_identity(left, right, representations):
+                        continue
                 if self._can_merge_as_identity(
                     left,
                     right,
@@ -1370,4 +1654,8 @@ class EmbeddingBasedAggregator:
                 result.graph,
                 entity_namespace=doc_namespace,
             )
+        # Cross-unit prefix conflicts surface only on the merged graph (e.g.
+        # aliases of one namespace arriving from different units), so sanitize
+        # once more after aggregation.
+        result.graph.sanitize_prefixes_namespaces()
         return result

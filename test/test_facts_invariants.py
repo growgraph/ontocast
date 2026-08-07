@@ -275,3 +275,172 @@ def test_format_findings_for_prompt_sections() -> None:
     assert "## MANDATORY fixes" in prompt
     assert "## Verify numeric coverage" in prompt
     assert "42.5" in prompt
+
+
+def _bounds_ontology() -> RDFGraph:
+    graph = _ontology()
+    graph.parse(
+        data=f"""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix qudt: <{QUDT}> .
+        @prefix qqval: <{QQVAL}> .
+        qudt:numericValue a owl:FunctionalProperty .
+        qqval:numericLowerBound a owl:DatatypeProperty, owl:FunctionalProperty .
+        qqval:numericUpperBound a owl:DatatypeProperty, owl:FunctionalProperty .
+        qqval:numericUncertainty a owl:DatatypeProperty .
+        """,
+        format="turtle",
+    )
+    return graph
+
+
+def _scalar_as_bounds(findings):
+    return [
+        finding
+        for finding in findings
+        if finding.kind is FactsUnitFindingKind.SCALAR_AS_BOUNDS
+    ]
+
+
+def test_scalar_as_bounds_flags_equal_functional_bounds() -> None:
+    graph = _facts(
+        """
+        cd:qv qqval:numericLowerBound "523"^^xsd:decimal ;
+            qqval:numericUpperBound "523"^^xsd:decimal .
+        """
+    )
+    findings = collect_unit_findings(
+        graph=graph,
+        ontology_graph=_bounds_ontology(),
+        quarantined=[],
+        extraction_text="",
+        fact_namespaces=[FACTS],
+    )
+    flagged = _scalar_as_bounds(findings)
+    assert len(flagged) == 1
+    assert flagged[0].mandatory
+    assert flagged[0].value == "523"
+    assert "numericLowerBound" in flagged[0].message
+    assert "numericUpperBound" in flagged[0].message
+
+
+def test_scalar_as_bounds_matches_across_datatype_spellings() -> None:
+    graph = _facts(
+        """
+        cd:qv qqval:numericLowerBound "5.0"^^xsd:double ;
+            qqval:numericUpperBound "5"^^xsd:decimal .
+        """
+    )
+    findings = collect_unit_findings(
+        graph=graph,
+        ontology_graph=_bounds_ontology(),
+        quarantined=[],
+        extraction_text="",
+        fact_namespaces=[FACTS],
+    )
+    assert len(_scalar_as_bounds(findings)) == 1
+
+
+def test_scalar_as_bounds_ignores_distinct_values() -> None:
+    graph = _facts(
+        """
+        cd:qv qqval:numericLowerBound "500"^^xsd:decimal ;
+            qqval:numericUpperBound "550"^^xsd:decimal .
+        """
+    )
+    findings = collect_unit_findings(
+        graph=graph,
+        ontology_graph=_bounds_ontology(),
+        quarantined=[],
+        extraction_text="",
+        fact_namespaces=[FACTS],
+    )
+    assert _scalar_as_bounds(findings) == []
+
+
+def test_scalar_as_bounds_ignores_non_functional_predicates() -> None:
+    # numericUncertainty is not functional in the fixture schema.
+    graph = _facts(
+        """
+        cd:qv qudt:numericValue "8.5"^^xsd:decimal ;
+            qqval:numericUncertainty "8.5"^^xsd:decimal .
+        """
+    )
+    findings = collect_unit_findings(
+        graph=graph,
+        ontology_graph=_bounds_ontology(),
+        quarantined=[],
+        extraction_text="",
+        fact_namespaces=[FACTS],
+    )
+    assert _scalar_as_bounds(findings) == []
+
+
+def test_scalar_as_bounds_ignores_non_fact_namespace_subjects() -> None:
+    graph = _facts(
+        """
+        qqval:someIndividual qqval:numericLowerBound "3"^^xsd:decimal ;
+            qqval:numericUpperBound "3"^^xsd:decimal .
+        """
+    )
+    findings = collect_unit_findings(
+        graph=graph,
+        ontology_graph=_bounds_ontology(),
+        quarantined=[],
+        extraction_text="",
+        fact_namespaces=[FACTS],
+    )
+    assert _scalar_as_bounds(findings) == []
+
+
+def test_scalar_as_bounds_no_ontology_graph_is_silent() -> None:
+    graph = _facts(
+        """
+        cd:qv qqval:numericLowerBound "3"^^xsd:decimal ;
+            qqval:numericUpperBound "3"^^xsd:decimal .
+        """
+    )
+    findings = collect_unit_findings(
+        graph=graph,
+        ontology_graph=None,
+        quarantined=[],
+        extraction_text="",
+        fact_namespaces=[FACTS],
+    )
+    assert _scalar_as_bounds(findings) == []
+
+
+def test_fact_namespace_class_in_type_position_is_flagged() -> None:
+    graph = _facts("cd:owlSameasLz a cd:Link .")
+    findings = collect_unit_findings(
+        graph=graph,
+        ontology_graph=_ontology(),
+        quarantined=[],
+        extraction_text="",
+        fact_namespaces=[FACTS],
+    )
+    flagged = [
+        finding
+        for finding in findings
+        if finding.kind is FactsUnitFindingKind.UNKNOWN_TERM
+        and finding.predicate == f"{FACTS}Link"
+    ]
+    assert len(flagged) == 1
+    assert flagged[0].mandatory
+    assert "class" in flagged[0].message
+
+
+def test_catalog_class_in_type_position_not_flagged_as_fact_class() -> None:
+    graph = _facts("cd:qv a qudt:Unit .")
+    findings = collect_unit_findings(
+        graph=graph,
+        ontology_graph=_ontology(),
+        quarantined=[],
+        extraction_text="",
+        fact_namespaces=[FACTS],
+    )
+    assert not any(
+        finding.predicate == "http://qudt.org/schema/qudt/Unit"
+        and "facts/document namespace" in finding.message
+        for finding in findings
+    )

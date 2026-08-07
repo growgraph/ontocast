@@ -80,102 +80,86 @@ def _assert_no_search_surface(prompt_kwargs: dict[str, object]) -> None:
         assert marker not in combined
 
 
-@pytest.mark.anyio
-async def test_render_ontology_fresh_omits_search_when_disabled(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    async def fake_call_llm_with_retry(**kwargs):
-        captured.update(kwargs["prompt_kwargs"])
-        return OntologyRenderReport(
-            ontology=_build_ontology(),
-        )
-
-    monkeypatch.setattr(
-        render_ontology_module, "call_llm_with_retry", fake_call_llm_with_retry
-    )
-    tools = _tools_with_web_search(web_search_enabled=False)
-    state = UnitOntologyState(
-        content_unit=_build_content_unit(),
-        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
-    )
-
-    await render_ontology_module.render_ontology_fresh(state, tools=tools)
-
-    _assert_no_search_surface(captured)
-
-
-@pytest.mark.anyio
-async def test_criticise_ontology_omits_search_when_disabled(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    async def fake_call_llm_with_retry(**kwargs):
-        captured.update(kwargs["prompt_kwargs"])
-        return OntologyCritiqueReport(
+# One contract -- "web_search_enabled=False strips every search surface from the
+# prompt kwargs" -- applied to each agent that builds a prompt. These were four
+# copy-pasted bodies differing only in module, report type, and state type.
+_DISABLED_SEARCH_CASES = [
+    pytest.param(
+        lambda: render_ontology_module,
+        lambda: OntologyRenderReport(ontology=_build_ontology()),
+        lambda: UnitOntologyState(
+            content_unit=_build_content_unit(),
+            ontology_snapshot=snapshot_from_ontology(_build_ontology()),
+        ),
+        "render_ontology_fresh",
+        id="render_ontology_fresh",
+    ),
+    pytest.param(
+        lambda: criticise_ontology_module,
+        lambda: OntologyCritiqueReport(
             success=True,
             score=95,
             systemic_critique_summary="Looks good.",
             actionable_ontology_fixes=[],
-        )
-
-    monkeypatch.setattr(
-        criticise_ontology_module, "call_llm_with_retry", fake_call_llm_with_retry
-    )
-    tools = _tools_with_web_search(web_search_enabled=False)
-    state = UnitOntologyState(
-        content_unit=_build_content_unit(),
-        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
-    )
-
-    await criticise_ontology_module.criticise_ontology(state, tools=tools)
-
-    _assert_no_search_surface(captured)
-
-
-@pytest.mark.anyio
-async def test_render_facts_fresh_omits_search_when_disabled(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    async def fake_call_llm_with_retry(**kwargs):
-        captured.update(kwargs["prompt_kwargs"])
-        return FactsRenderReport()
-
-    monkeypatch.setattr(
-        render_facts_module, "call_llm_with_retry", fake_call_llm_with_retry
-    )
-    tools = _tools_with_web_search(web_search_enabled=False)
-    state = UnitFactsState(
-        content_unit=_build_content_unit(),
-        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
-    )
-
-    await render_facts_module.render_facts_fresh(state, tools=tools)
-
-    _assert_no_search_surface(captured)
-
-
-@pytest.mark.anyio
-async def test_criticise_facts_omits_search_when_disabled(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    async def fake_call_llm_with_retry(**kwargs):
-        captured.update(kwargs["prompt_kwargs"])
-        return FactsCritiqueReport(
+        ),
+        lambda: UnitOntologyState(
+            content_unit=_build_content_unit(),
+            ontology_snapshot=snapshot_from_ontology(_build_ontology()),
+        ),
+        "criticise_ontology",
+        id="criticise_ontology",
+    ),
+    pytest.param(
+        lambda: render_facts_module,
+        FactsRenderReport,
+        lambda: UnitFactsState(
+            content_unit=_build_content_unit(),
+            ontology_snapshot=snapshot_from_ontology(_build_ontology()),
+        ),
+        "render_facts_fresh",
+        id="render_facts_fresh",
+    ),
+    pytest.param(
+        lambda: criticise_facts_module,
+        lambda: FactsCritiqueReport(
             success=True,
             score=95,
             systemic_critique_summary="Looks good.",
             actionable_triple_fixes=[],
-        )
+        ),
+        lambda: UnitFactsState(
+            content_unit=_build_content_unit(),
+            ontology_snapshot=snapshot_from_ontology(_build_ontology()),
+        ),
+        "criticise_facts",
+        id="criticise_facts",
+    ),
+]
 
-    monkeypatch.setattr(
-        criticise_facts_module, "call_llm_with_retry", fake_call_llm_with_retry
-    )
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("module_factory", "report_factory", "state_factory", "entrypoint"),
+    _DISABLED_SEARCH_CASES,
+)
+async def test_agent_omits_search_surface_when_disabled(
+    monkeypatch,
+    module_factory,
+    report_factory,
+    state_factory,
+    entrypoint,
+) -> None:
+    module = module_factory()
+    captured: dict[str, object] = {}
+
+    async def fake_call_llm_with_retry(**kwargs):
+        captured.update(kwargs["prompt_kwargs"])
+        return report_factory()
+
+    monkeypatch.setattr(module, "call_llm_with_retry", fake_call_llm_with_retry)
     tools = _tools_with_web_search(web_search_enabled=False)
-    state = UnitFactsState(
-        content_unit=_build_content_unit(),
-        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
-    )
 
-    await criticise_facts_module.criticise_facts(state, tools=tools)
+    await getattr(module, entrypoint)(state_factory(), tools=tools)
 
     _assert_no_search_surface(captured)
 

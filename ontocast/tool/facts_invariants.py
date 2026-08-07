@@ -19,6 +19,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from rdflib import OWL, RDF, RDFS, SKOS, Literal, URIRef
 from rdflib.namespace import DCTERMS, PROV, XSD
+from rdflib.term import Node
 
 from ontocast.onto.model import (
     FactsUnitFinding,
@@ -384,6 +385,153 @@ def repair_property_aliases(
     return rewritten, findings, applied
 
 
+def _superclass_closure(class_iri: URIRef, ontology_graph: RDFGraph) -> set[URIRef]:
+    """Asserted supertypes of *class_iri*, including itself.
+
+    Walks ``rdfs:subClassOf`` and steps through ``owl:equivalentClass``
+    intersections, because a class defined only as an intersection
+    (``LeadHalidePerovskite ≡ Perovskite ⊓ …``) has no asserted subClassOf edge
+    to its genus and would otherwise look unrelated to it.
+    """
+    seen: set[URIRef] = set()
+    frontier: list[Node] = [class_iri]
+    while frontier:
+        current = frontier.pop()
+        if not isinstance(current, URIRef) or current in seen:
+            continue
+        seen.add(current)
+        frontier.extend(ontology_graph.objects(current, RDFS.subClassOf))
+        for equivalent in ontology_graph.objects(current, OWL.equivalentClass):
+            for collection in ontology_graph.objects(equivalent, OWL.intersectionOf):
+                frontier.extend(ontology_graph.items(collection))
+    return seen
+
+
+def _described_classes(ontology_graph: RDFGraph) -> set[URIRef]:
+    """Classes whose position in the hierarchy the context actually states.
+
+    A class named only as the object of an ``rdfs:domain`` or an ``rdf:type``
+    carries no subclass edges here -- typically because it belongs to an
+    imported vocabulary (SOSA, QUDT) that the context does not vendor, since
+    ``owl:imports`` is not dereferenced. Its ancestors are unknown, so nothing
+    can be concluded about whether it relates to another class.
+    """
+    described: set[URIRef] = set()
+    for subject in ontology_graph.subjects(RDF.type, OWL.Class):
+        if isinstance(subject, URIRef):
+            described.add(subject)
+    for subject in ontology_graph.subjects(RDFS.subClassOf, None):
+        if isinstance(subject, URIRef):
+            described.add(subject)
+    return described
+
+
+def _declared_domains(ontology_graph: RDFGraph) -> dict[URIRef, set[URIRef]]:
+    """Predicate -> its declared ``rdfs:domain`` classes, named classes only."""
+    domains: dict[URIRef, set[URIRef]] = {}
+    for predicate, _, domain in ontology_graph.triples((None, RDFS.domain, None)):
+        # Anonymous domains are class expressions (unions, restrictions); they
+        # need a reasoner to decide membership, so they are out of scope here.
+        if isinstance(predicate, URIRef) and isinstance(domain, URIRef):
+            domains.setdefault(predicate, set()).add(domain)
+    return domains
+
+
+def domain_violation_findings(
+    graph: RDFGraph,
+    ontology_graph: RDFGraph | None,
+) -> list[FactsUnitFinding]:
+    """Report subjects whose asserted type contradicts a predicate's domain.
+
+    Asserting a triple whose predicate declares an ``rdfs:domain`` *entails*
+    that the subject belongs to that domain, so an untyped subject is never a
+    violation -- the type is simply left to inference. It becomes one when the
+    subject carries an asserted type that is unrelated to the declared domain:
+    inference then adds the domain class on top of an incompatible one, and
+    the contradiction surfaces later as a confusing failure somewhere else
+    (SHACL reporting a missing property on a class the graph never meant to
+    assert) rather than at the triple that caused it.
+
+    Conservative by construction, since a false accusation costs a render pass.
+    A subject is reported only when it has at least one asserted type and every
+    asserted type is *unrelated* to every declared domain -- neither a subtype
+    nor a supertype of it, following ``rdfs:subClassOf`` and
+    ``owl:equivalentClass`` intersections in both directions. Typing a subject
+    with a supertype of the domain (``sosa:Observation`` where the domain is
+    ``obs:QuantitativeObservation``) is consistent: inference specializes it,
+    it contradicts nothing, and flagging it would bury the real violations.
+
+    Args:
+        graph: Rendered facts graph for one unit.
+        ontology_graph: Ontology context the renderer was given.
+
+    Returns:
+        list: One mandatory finding per offending (subject, predicate) pair,
+        ordered by subject then predicate.
+    """
+    if ontology_graph is None or not len(ontology_graph):
+        return []
+    domains = _declared_domains(ontology_graph)
+    if not domains:
+        return []
+    described = _described_classes(ontology_graph)
+
+    closures: dict[URIRef, set[URIRef]] = {}
+    findings: list[FactsUnitFinding] = []
+    reported: set[tuple[str, str]] = set()
+
+    for subject, predicate, _ in sorted(graph, key=lambda t: (str(t[0]), str(t[1]))):
+        declared = domains.get(predicate)
+        if declared is None or not isinstance(subject, URIRef):
+            continue
+        # Only domains the context places in a hierarchy can be argued about.
+        declared = {value for value in declared if value in described}
+        if not declared:
+            continue
+        asserted = {
+            value
+            for value in graph.objects(subject, RDF.type)
+            if isinstance(value, URIRef)
+        }
+        if not asserted or not asserted <= described:
+            continue
+
+        def closure(class_iri: URIRef) -> set[URIRef]:
+            if class_iri not in closures:
+                closures[class_iri] = _superclass_closure(class_iri, ontology_graph)
+            return closures[class_iri]
+
+        # Compatible in either direction: the asserted type specializes a
+        # declared domain, or a declared domain specializes the asserted type.
+        domain_closure = set().union(*(closure(value) for value in declared))
+        if any(
+            closure(asserted_type) & declared or asserted_type in domain_closure
+            for asserted_type in asserted
+        ):
+            continue
+        key = (str(subject), str(predicate))
+        if key in reported:
+            continue
+        reported.add(key)
+        expected = ", ".join(f"<{value}>" for value in sorted(declared, key=str))
+        actual = ", ".join(f"<{value}>" for value in sorted(asserted, key=str))
+        findings.append(
+            FactsUnitFinding(
+                kind=FactsUnitFindingKind.DOMAIN_VIOLATION,
+                message=(
+                    f"<{subject}> is typed {actual} but carries <{predicate}>, "
+                    f"whose rdfs:domain is {expected}. Either type the subject "
+                    "as the declared domain, or use the property that fits the "
+                    "type it has."
+                ),
+                subject=str(subject),
+                predicate=str(predicate),
+                suggestions=sorted(str(value) for value in declared),
+            )
+        )
+    return findings
+
+
 def _closed_range_suggestions(
     rejected: RejectedLiteralTriple, ontology_graph: RDFGraph | None
 ) -> list[str]:
@@ -410,6 +558,67 @@ def _closed_range_suggestions(
     return sorted(suggestions)[:3]
 
 
+def _scalar_as_bounds_findings(
+    graph: RDFGraph,
+    ontology_graph: RDFGraph | None,
+    fact_namespaces: Sequence[str],
+) -> list[FactsUnitFinding]:
+    """Flag one numeric value duplicated across single-valued numeric predicates.
+
+    An exact scalar written into two distinct schema-constrained (functional /
+    max-1) numeric predicates of one node — the classic case being equal lower
+    and upper bounds — encodes a single measurement as if it carried epistemic
+    structure it does not have. Fully generic: predicates come from the
+    ontology's own functional/cardinality declarations, values compare via
+    :func:`canonical_literal`.
+    """
+    constrained = harvest_max_one_predicates(ontology_graph)
+    if not constrained:
+        return []
+    findings: list[FactsUnitFinding] = []
+    by_subject: dict[URIRef, dict[URIRef, set[str]]] = {}
+    for subject, predicate, obj in graph:
+        if not isinstance(subject, URIRef) or not isinstance(obj, Literal):
+            continue
+        if not isinstance(predicate, URIRef) or predicate not in constrained:
+            continue
+        if not any(str(subject).startswith(ns) for ns in fact_namespaces):
+            continue
+        canonical = canonical_literal(obj)
+        if canonical is None or canonical[1] != "numeric":
+            continue
+        by_subject.setdefault(subject, {}).setdefault(predicate, set()).add(
+            canonical[0]
+        )
+    for subject, per_predicate in by_subject.items():
+        value_to_predicates: dict[str, list[URIRef]] = {}
+        for predicate, values in per_predicate.items():
+            for value in values:
+                value_to_predicates.setdefault(value, []).append(predicate)
+        for value, predicates in value_to_predicates.items():
+            if len(predicates) < 2:
+                continue
+            predicate_list = ", ".join(f"<{p}>" for p in sorted(map(str, predicates)))
+            findings.append(
+                FactsUnitFinding(
+                    kind=FactsUnitFindingKind.SCALAR_AS_BOUNDS,
+                    message=(
+                        f"<{subject}> carries the same numeric value {value} on "
+                        f"multiple single-valued numeric properties "
+                        f"({predicate_list}). This encodes one exact scalar as "
+                        "if it had epistemic structure. Record the value ONCE, "
+                        "on the property the ontology documents as carrying "
+                        "the plain/central value for this class (see its "
+                        "definitions and scope notes), and remove it from the "
+                        "other properties."
+                    ),
+                    subject=str(subject),
+                    value=value,
+                )
+            )
+    return findings
+
+
 def collect_unit_findings(
     *,
     graph: RDFGraph,
@@ -424,9 +633,10 @@ def collect_unit_findings(
 
     Mandatory: quarantined literals (with closed-range individual
     suggestions), forbidden-namespace terms (``example.org``), doc-namespace
-    predicates, and unresolved catalog near-misses. Advisory-strong: numeric
-    mentions of the source text absent from the graph — the renderer decides
-    per item whether each is an extractable quantity or an artifact.
+    predicates, unresolved catalog near-misses, and predicates asserted on a
+    subject whose type contradicts their ``rdfs:domain``. Advisory-strong:
+    numeric mentions of the source text absent from the graph — the renderer
+    decides per item whether each is an extractable quantity or an artifact.
     """
     findings: list[FactsUnitFinding] = []
     standard_namespaces = (
@@ -506,18 +716,22 @@ def collect_unit_findings(
                     )
                 )
                 continue
-            if position == "predicate" and any(
-                text.startswith(ns) for ns in normalized_fact_namespaces
-            ):
+            if any(text.startswith(ns) for ns in normalized_fact_namespaces):
                 flagged_terms.add(text)
+                role_message = (
+                    f"Predicate <{text}> is minted in the facts/document "
+                    "namespace; facts namespaces hold instances only — "
+                    "use a catalog or standard-vocabulary property."
+                    if position == "predicate"
+                    else f"rdf:type object <{text}> is a class minted in the "
+                    "facts/document namespace; facts namespaces hold instances, "
+                    "not classes — type the instance with a catalog or "
+                    "standard-vocabulary class."
+                )
                 findings.append(
                     FactsUnitFinding(
                         kind=FactsUnitFindingKind.UNKNOWN_TERM,
-                        message=(
-                            f"Predicate <{text}> is minted in the facts/document "
-                            "namespace; facts namespaces hold instances only — "
-                            "use a catalog or standard-vocabulary property."
-                        ),
+                        message=role_message,
                         predicate=text,
                         suggestions=_alias_candidates(term, graph, catalog_terms)
                         if catalog_terms
@@ -545,6 +759,11 @@ def collect_unit_findings(
                         suggestions=_alias_candidates(term, graph, catalog_terms),
                     )
                 )
+
+    findings.extend(
+        _scalar_as_bounds_findings(graph, ontology_graph, normalized_fact_namespaces)
+    )
+    findings.extend(domain_violation_findings(graph, ontology_graph))
 
     missing = missing_numeric_mentions(extraction_text, graph, limit=coverage_limit)
     if missing:
@@ -1038,7 +1257,70 @@ def validate_aggregated_facts(
         )
     )
 
+    findings.extend(_dangling_reference_findings(graph, namespaces))
+
     return FactsValidationReport(findings=findings)
+
+
+_DANGLING_REFERENCE_REPORT_CAP = 20
+
+# Identity/provenance bookkeeping: their objects are alias or lineage handles
+# that legitimately carry no description of their own.
+_DANGLING_EXEMPT_PREDICATES = frozenset({OWL.sameAs, PROV.wasDerivedFrom})
+
+
+def _dangling_reference_findings(
+    graph: RDFGraph,
+    fact_namespaces: list[str],
+) -> list[FactsValidationFinding]:
+    """Warning telemetry: fact-namespace objects that are never described.
+
+    A fact-namespace IRI referenced as an object but never appearing as a
+    subject and carrying no ``rdf:type``/``rdfs:label`` is a phantom node —
+    usually a hallucinated or renamed reference. Warning severity only:
+    it never drives un-merge.
+    """
+    subjects: set[URIRef] = {
+        subject for subject in graph.subjects() if isinstance(subject, URIRef)
+    }
+    dangling: dict[URIRef, set[URIRef]] = {}
+    for subject, predicate, obj in graph:
+        if predicate == RDF.type or not isinstance(obj, URIRef):
+            continue
+        if predicate in _DANGLING_EXEMPT_PREDICATES:
+            continue
+        if obj in subjects:
+            continue
+        if not any(str(obj).startswith(ns) for ns in fact_namespaces):
+            continue
+        if not isinstance(predicate, URIRef):
+            continue
+        dangling.setdefault(obj, set()).add(predicate)
+
+    findings: list[FactsValidationFinding] = []
+    for obj in sorted(dangling, key=str)[:_DANGLING_REFERENCE_REPORT_CAP]:
+        predicates = sorted(str(p) for p in dangling[obj])
+        findings.append(
+            FactsValidationFinding(
+                kind=FactsValidationFindingKind.DANGLING_REFERENCE,
+                severity="warning",
+                message=(
+                    f"<{obj}> is referenced via {', '.join(predicates)} but is "
+                    "never described (no triples as subject, no rdf:type or "
+                    "rdfs:label) — likely a hallucinated or renamed node."
+                ),
+                subject=str(obj),
+                predicate=", ".join(predicates),
+            )
+        )
+    remainder = len(dangling) - _DANGLING_REFERENCE_REPORT_CAP
+    if remainder > 0:
+        logger.info(
+            "Dangling-reference report capped at %s; %s more not reported",
+            _DANGLING_REFERENCE_REPORT_CAP,
+            remainder,
+        )
+    return findings
 
 
 def format_findings_for_prompt(findings: list[FactsUnitFinding]) -> str:

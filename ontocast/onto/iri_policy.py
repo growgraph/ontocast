@@ -53,18 +53,34 @@ def _resolve_context(namespace: str, context: URIContext) -> URIContext:
     return "facts"
 
 
+# Known aliases of one canonical namespace. Both spellings appear in the wild
+# (LLM output, upstream ontologies); leaving them split scatters the same terms
+# across two IRIs and silently breaks dedup and SPARQL.
+_NAMESPACE_ALIASES: dict[str, str] = {
+    "http://schema.org/": "https://schema.org/",
+    "http://schema.org#": "https://schema.org/",
+    "https://schema.org#": "https://schema.org/",
+}
+
+
+def canonicalize_namespace_iri(namespace: str) -> str:
+    """Map a delimiter-normalized namespace IRI to its canonical alias."""
+    return _NAMESPACE_ALIASES.get(namespace, namespace)
+
+
 def normalize_namespace_iri(namespace: str, *, context: URIContext = "auto") -> str:
     """Return a namespace IRI with a deterministic terminal delimiter.
 
     Existing trailing ``#`` or ``/`` are preserved. When absent, we append ``#``
-    for ontology contexts and ``/`` for facts/default contexts.
+    for ontology contexts and ``/`` for facts/default contexts. Known namespace
+    aliases (e.g. ``http://schema.org/``) are mapped to their canonical form.
     """
     text = strip_iri_brackets(namespace)
     if text.endswith("#") or text.endswith("/"):
-        return text
+        return canonicalize_namespace_iri(text)
     resolved_context = _resolve_context(text, context)
     suffix = "#" if resolved_context == "ontology" else "/"
-    return f"{text}{suffix}"
+    return canonicalize_namespace_iri(f"{text}{suffix}")
 
 
 def join_namespace_local(

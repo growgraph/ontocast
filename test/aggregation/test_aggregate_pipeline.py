@@ -8,6 +8,7 @@ from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool import EmbeddingBasedAggregator
 from ontocast.util.hash import render_text_hash
+from test.embedding_test_helpers import distinct_encoder, install_fake_encoder
 
 
 def make_fact_unit(
@@ -62,11 +63,9 @@ def test_fact_entities_use_doc_iri_namespace() -> None:
     """
     unit = make_fact_unit("Revenue was $42M.", 0, doc_iri, ttl)
 
-    result = (
-        EmbeddingBasedAggregator()
-        .aggregate_graphs([unit], ontology_graph=RDFGraph())
-        .graph
-    )
+    aggregator = EmbeddingBasedAggregator()
+    install_fake_encoder(aggregator.clusterer, distinct_encoder())
+    result = aggregator.aggregate_graphs([unit], ontology_graph=RDFGraph()).graph
     assert len(result) > 0
 
     fact_subjects = {
@@ -457,11 +456,9 @@ def test_uri_builder_uses_instance_lowercamel_and_structured_snakecase() -> None
     facts:tribunal_correctionnel_1 rdf:type fcaont:Trial .
     """
     unit = make_fact_unit("URI style", 0, doc_iri, ttl)
-    result = (
-        EmbeddingBasedAggregator()
-        .aggregate_graphs([unit], ontology_graph=RDFGraph())
-        .graph
-    )
+    aggregator = EmbeddingBasedAggregator()
+    install_fake_encoder(aggregator.clusterer, distinct_encoder())
+    result = aggregator.aggregate_graphs([unit], ontology_graph=RDFGraph()).graph
 
     uri_nodes = {
         str(node)
@@ -556,6 +553,7 @@ def test_aggregate_passes_explicit_known_ontology_map_to_selector(monkeypatch) -
     ontology_graph = RDFGraph()
     ontology_graph.add((known_court, RDF.type, class_type))
     aggregator = EmbeddingBasedAggregator()
+    install_fake_encoder(aggregator.clusterer, distinct_encoder())
     captured: dict[str, dict[URIRef, bool] | None] = {"map": None}
 
     original_create_mapping = aggregator.selector.create_mapping
@@ -726,11 +724,15 @@ def test_unused_ontology_entities_do_not_create_spurious_sameas() -> None:
     ontology_graph.add((unused_a, RDF.type, court_type))
     ontology_graph.add((unused_b, RDF.type, court_type))
 
-    result = (
-        EmbeddingBasedAggregator()
-        .aggregate_graphs([unit], ontology_graph=ontology_graph)
-        .graph
-    )
+    aggregator = EmbeddingBasedAggregator()
+    install_fake_encoder(aggregator.clusterer, distinct_encoder())
+
+    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph).graph
+
+    # The load-bearing assertion is the last one: the *referenced* court survives.
+    # Unused ontology entities never enter the representation set at all, so the
+    # two `sameAs` checks below are cheap guards against that changing, not proof
+    # that clustering keeps them apart.
 
     assert (unused_a, OWL.sameAs, unused_b) not in result
     assert (unused_b, OWL.sameAs, unused_a) not in result
@@ -871,11 +873,11 @@ def test_hallucinated_ontology_prefixed_instance_maps_to_fact_entity(
             ], {}
         return [list(entities)], {}
 
-    # monkeypatch.setattr(
-    #     aggregator.clusterer,
-    #     "cluster_entities",
-    #     force_fact_and_hallucinated_together,
-    # )
+    monkeypatch.setattr(
+        aggregator.clusterer,
+        "cluster_entities",
+        force_fact_and_hallucinated_together,
+    )
 
     result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph).graph
     punishment_targets = {
@@ -1064,6 +1066,7 @@ def test_cross_chunk_entity_context_is_merged_for_representation(monkeypatch) ->
         make_fact_unit("Second chunk", 1, doc_iri, ttl_chunk_1),
     ]
     aggregator = EmbeddingBasedAggregator()
+    install_fake_encoder(aggregator.clusterer, distinct_encoder())
     original_create_representation = aggregator.normalizer.create_representation
     seen_shared_context: dict[str, set[URIRef]] = {"properties": set()}
 

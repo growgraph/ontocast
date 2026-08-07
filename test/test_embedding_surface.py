@@ -5,21 +5,24 @@ what the HTTP server and CLI drive.
 """
 
 import asyncio
-from typing import cast
+import inspect
+from typing import Any, cast
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.constants import END, START
 from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from ontocast.config import Config, ToolConfig
 from ontocast.config.settings import PathConfig
 from ontocast.integrations.langgraph import text_in_turtle_out
-from ontocast.onto.enum import VectorStoreBackend
+from ontocast.onto.enum import VectorStoreBackend, WorkflowNode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import build_agent_graph, create_agent_graph
+from ontocast.stategraph.create import _timed
 from ontocast.tool.llm import LLMTool
 from ontocast.tool.vector_store.in_memory import InMemoryVectorStoreManager
 from ontocast.toolbox import ToolBox
@@ -112,6 +115,91 @@ def test_compiled_graph_can_be_named(toolbox: ToolBox) -> None:
     assert create_agent_graph(toolbox, name="ontocast").name == "ontocast"
 
 
+# -- node timing wrapper ---------------------------------------------------
+
+
+def _fresh_state() -> AgentState:
+    return AgentState()
+
+
+def test_timed_keeps_a_sync_node_sync() -> None:
+    """LangGraph only threads nodes it sees as sync; wrapping must not hide that.
+
+    A sync node coerced into a coroutine runs inline on the event loop, which
+    blocks it and breaks backends whose sync writes call ``asyncio.run``.
+    """
+
+    def node(state: AgentState) -> AgentState:
+        return state
+
+    wrapped = _timed("probe", node)
+    assert not inspect.iscoroutinefunction(wrapped)
+
+    state = _fresh_state()
+    assert wrapped(state) is state
+    assert "probe" in state.budget_tracker.node_durations
+
+
+def test_timed_keeps_an_async_node_async() -> None:
+    async def node(state: AgentState) -> AgentState:
+        return state
+
+    wrapped = _timed("probe", node)
+    assert inspect.iscoroutinefunction(wrapped)
+
+    state = _fresh_state()
+    assert asyncio.run(wrapped(state)) is state
+    assert "probe" in state.budget_tracker.node_durations
+
+
+def test_timed_records_a_duration_when_the_node_raises() -> None:
+    def node(state: AgentState) -> AgentState:
+        raise ValueError("boom")
+
+    state = _fresh_state()
+    with pytest.raises(ValueError, match="boom"):
+        _timed("probe", node)(state)
+    assert "probe" in state.budget_tracker.node_durations
+
+
+def _runs_in_a_worker_thread(graph: StateGraph, node: WorkflowNode) -> bool:
+    """Whether LangGraph will offload ``node`` instead of running it on the loop.
+
+    ``coerce_to_runnable`` gives a sync callable a ``func`` plus an executor
+    ``afunc``; an async one gets ``func is None``. The spec types the runnable
+    as the node union, so reaching the field needs a cast.
+    """
+    return cast(Any, graph.nodes[node].runnable).func is not None
+
+
+def test_sync_nodes_stay_threadable_in_the_built_graph(toolbox: ToolBox) -> None:
+    """Regression: SERIALIZE reaches Fuseki's sync ``asyncio.run`` write path."""
+    graph = build_agent_graph(toolbox)
+    assert _runs_in_a_worker_thread(graph, WorkflowNode.SERIALIZE)
+    assert _runs_in_a_worker_thread(graph, WorkflowNode.MERGE_FACTS)
+    assert not _runs_in_a_worker_thread(graph, WorkflowNode.RENDER_FACTS)
+
+
+@pytest.mark.anyio
+async def test_sync_node_runs_off_the_event_loop() -> None:
+    """End-to-end guard: a sync node may drive coroutines via ``asyncio.run``."""
+
+    def node(state: AgentState) -> AgentState:
+        async def write() -> None:
+            return None
+
+        asyncio.run(write())
+        return state
+
+    graph = StateGraph(AgentState)
+    graph.add_node("probe", _timed("probe", node))
+    graph.add_edge(START, "probe")
+    graph.add_edge("probe", END)
+
+    result = await graph.compile().ainvoke(AgentState())
+    assert result is not None
+
+
 # -- state mapping ---------------------------------------------------------
 
 
@@ -145,11 +233,6 @@ def test_text_in_turtle_out_rejects_a_non_string() -> None:
 
 
 # -- lifecycle -------------------------------------------------------------
-
-
-def test_agent_state_builds_without_docling() -> None:
-    """docling_doc is typed Any so the model builds without the extra."""
-    assert AgentState().docling_doc is None
 
 
 def test_loop_guard_is_quiet_outside_a_loop() -> None:

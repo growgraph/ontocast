@@ -31,6 +31,14 @@ class SectionLabelSchema(BaseModel):
     id: str
     description: str = ""
     labels: list[SectionLabelDef]
+    default_exclude: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Label ids dropped by default before extraction (boilerplate "
+            "sections); overridden by an explicit exclude_sections request "
+            "option ([] disables exclusion entirely)."
+        ),
+    )
 
     @property
     def compiled_patterns(self) -> tuple[tuple[str, re.Pattern[str]], ...]:

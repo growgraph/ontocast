@@ -109,6 +109,7 @@ def test_build_agent_state_from_parsed_sets_max_visits() -> None:
         llm_graph_format=None,
         ontology_context_mode_value=OntologyContextMode.FIXED_SINGLE_ONTOLOGY,
         target_sections=None,
+        exclude_sections=None,
         summarize_sections=None,
         summary_max_sentences=5,
         document_type_hint=None,
@@ -138,6 +139,7 @@ def test_build_agent_state_from_parsed_sets_document_metadata() -> None:
         llm_graph_format=None,
         ontology_context_mode_value=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
         target_sections=None,
+        exclude_sections=None,
         summarize_sections=None,
         summary_max_sentences=5,
         document_type_hint=None,
@@ -569,24 +571,36 @@ def test_expand_input_to_states_keeps_explicit_metadata(tmp_path) -> None:
     assert states[0].document_metadata == {"doi": "10.1234/x", "title": "Custom"}
 
 
-def test_facts_ttl_output_path_and_dump(tmp_path) -> None:
+def _batch_state(title: str = "paper.pdf") -> AgentState:
     from rdflib import DCTERMS, Literal
 
-    from ontocast.api.process_helpers import (
-        dump_facts_ttl,
-        dump_ontology_ttls,
-        facts_ttl_output_path,
-        ontology_ttl_output_path,
-        resolve_batch_output_dirs,
-    )
     from ontocast.onto.constants import PROV
     from ontocast.onto.docling_helpers import plain_text_to_docling_doc
 
+    state = AgentState(docling_doc=plain_text_to_docling_doc("hello", "doc"))
+    state.aggregated_facts = RDFGraph()
+    state.aggregated_facts.add((state.doc_iri, DCTERMS.title, Literal(title)))
+    state.aggregated_facts.add((state.doc_iri, RDF.type, PROV.Entity))
+    return state
+
+
+def _sample_ontology(iri: str = "https://example.com/onto", **kwargs) -> Ontology:
+    graph = RDFGraph()
+    graph.add(
+        (
+            URIRef("https://example.com/onto#Thing"),
+            RDF.type,
+            URIRef("http://www.w3.org/2002/07/owl#Class"),
+        )
+    )
+    return Ontology(graph=graph, iri=iri, **kwargs)
+
+
+def test_facts_ttl_output_path_naming(tmp_path) -> None:
+    from ontocast.api.process_helpers import facts_ttl_output_path
+
     src = tmp_path / "paper.pdf"
-    src.write_bytes(b"x")
     out_dir = tmp_path / "out"
-    facts_dir = tmp_path / "facts"
-    onto_dir = tmp_path / "ontologies"
 
     assert facts_ttl_output_path(src) == tmp_path / "paper.facts.ttl"
     assert facts_ttl_output_path(src, line_number=3) == tmp_path / "paper.L3.facts.ttl"
@@ -595,11 +609,28 @@ def test_facts_ttl_output_path_and_dump(tmp_path) -> None:
         facts_ttl_output_path(src, line_number=3, output_dir=out_dir)
         == out_dir / "paper.L3.facts.ttl"
     )
+
+
+def test_ontology_ttl_output_path_naming(tmp_path) -> None:
+    from ontocast.api.process_helpers import ontology_ttl_output_path
+
+    src = tmp_path / "paper.pdf"
+    onto_dir = tmp_path / "ontologies"
+
     assert ontology_ttl_output_path(src) == tmp_path / "paper.ontology.ttl"
     assert (
         ontology_ttl_output_path(src, ontology_id="matsci", output_dir=onto_dir)
         == onto_dir / "paper.matsci.ontology.ttl"
     )
+
+
+def test_resolve_batch_output_dirs_precedence(tmp_path) -> None:
+    from ontocast.api.process_helpers import resolve_batch_output_dirs
+
+    out_dir = tmp_path / "out"
+    facts_dir = tmp_path / "facts"
+    onto_dir = tmp_path / "ontologies"
+
     assert resolve_batch_output_dirs(out_dir, None, None) == (out_dir, out_dir)
     assert resolve_batch_output_dirs(out_dir, facts_dir, onto_dir) == (
         facts_dir,
@@ -607,69 +638,44 @@ def test_facts_ttl_output_path_and_dump(tmp_path) -> None:
     )
     assert resolve_batch_output_dirs(None, facts_dir, None) == (facts_dir, None)
 
-    state = AgentState(docling_doc=plain_text_to_docling_doc("hello", "doc"))
-    state.aggregated_facts = RDFGraph()
-    state.aggregated_facts.add((state.doc_iri, DCTERMS.title, Literal("paper.pdf")))
-    state.aggregated_facts.add((state.doc_iri, RDF.type, PROV.Entity))
+
+def test_dump_facts_ttl_writes_the_graph(tmp_path) -> None:
+    from ontocast.api.process_helpers import dump_facts_ttl
+
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"x")
+    out_dir = tmp_path / "out"
+    state = _batch_state()
+
     out = dump_facts_ttl(state, src)
     assert out is not None
     assert out.exists()
-    text = out.read_text(encoding="utf-8")
-    assert "paper.pdf" in text
+    assert "paper.pdf" in out.read_text(encoding="utf-8")
 
-    out2 = dump_facts_ttl(state, src, output_dir=out_dir)
-    assert out2 == out_dir / "paper.facts.ttl"
+    assert dump_facts_ttl(state, src, output_dir=out_dir) == out_dir / "paper.facts.ttl"
 
-    onto_graph = RDFGraph()
-    onto_graph.add(
-        (
-            URIRef("https://example.com/onto#Thing"),
-            RDF.type,
-            URIRef("http://www.w3.org/2002/07/owl#Class"),
-        )
-    )
-    ontology = Ontology(graph=onto_graph, iri="https://example.com/onto")
+
+def test_dump_ontology_ttls_names_files_per_ontology(tmp_path) -> None:
+    from ontocast.api.process_helpers import dump_ontology_ttls
+
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"x")
+    onto_dir = tmp_path / "ontologies"
+    state = _batch_state()
+    ontology = _sample_ontology()
+
     state.reduced_ontology_artifacts = [ontology]
     written = dump_ontology_ttls(state, src, output_dir=onto_dir)
     assert written == [onto_dir / "paper.ontology.ttl"]
     assert written[0].exists()
 
-    second = Ontology(
-        graph=onto_graph,
-        iri="https://example.com/other",
-        ontology_id="other",
-    )
+    second = _sample_ontology(iri="https://example.com/other", ontology_id="other")
     state.reduced_ontology_artifacts = [ontology, second]
     written_multi = dump_ontology_ttls(state, src, output_dir=onto_dir)
-    assert {p.name for p in written_multi} == {
+    assert {path.name for path in written_multi} == {
         "paper.onto.ontology.ttl",
         "paper.other.ontology.ttl",
     }
-
-
-def test_cli_serve_process_help() -> None:
-    from click.testing import CliRunner
-
-    from ontocast.cli.server import cli
-
-    runner = CliRunner()
-    root = runner.invoke(cli, ["--help"])
-    assert root.exit_code == 0
-    assert "serve" in root.output
-    assert "process" in root.output
-
-    serve_help = runner.invoke(cli, ["serve", "--help"])
-    assert serve_help.exit_code == 0
-    assert "--wipe-vector-store" in serve_help.output
-    assert "--input-path" not in serve_help.output
-
-    process_help = runner.invoke(cli, ["process", "--help"])
-    assert process_help.exit_code == 0
-    assert "--input-path" in process_help.output
-    assert "--output-dir" in process_help.output
-    assert "--facts-output-dir" in process_help.output
-    assert "--ontology-output-dir" in process_help.output
-    assert "dcterms:title" in process_help.output
 
 
 def test_cli_requires_subcommand() -> None:

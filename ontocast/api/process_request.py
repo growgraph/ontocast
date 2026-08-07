@@ -45,6 +45,7 @@ class ParsedProcessRequest:
     llm_graph_format: str | None
     ontology_context_mode_value: OntologyContextMode
     target_sections: list[str] | None
+    exclude_sections: list[str] | None
     summarize_sections: list[str] | None
     summary_max_sentences: int
     document_type_hint: str | None
@@ -95,6 +96,12 @@ async def load_parsed_process_request(
             request.query_params.get("target_sections")
         )
 
+    exclude_sections: list[str] | None = None
+    if "exclude_sections" in request.query_params:
+        exclude_sections = parse_sections_list_param(
+            request.query_params.get("exclude_sections")
+        )
+
     summarize_sections: list[str] | None = None
     if "summarize_sections" in request.query_params:
         summarize_sections = parse_sections_list_param(
@@ -138,6 +145,10 @@ async def load_parsed_process_request(
                 if "target_sections" in parsed_obj:
                     target_sections = parse_sections_list_param(
                         parsed_obj.get("target_sections")
+                    )
+                if "exclude_sections" in parsed_obj:
+                    exclude_sections = parse_sections_list_param(
+                        parsed_obj.get("exclude_sections")
                     )
                 if "summarize_sections" in parsed_obj:
                     summarize_sections = parse_sections_list_param(
@@ -191,6 +202,8 @@ async def load_parsed_process_request(
                 llm_graph_format = str(value)
             elif key == "target_sections" and value is not None:
                 target_sections = parse_sections_list_param(str(value))
+            elif key == "exclude_sections" and value is not None:
+                exclude_sections = parse_sections_list_param(str(value))
             elif key == "summarize_sections" and value is not None:
                 summarize_sections = parse_sections_list_param(str(value))
             elif key == "summary_max_sentences" and value:
@@ -243,6 +256,7 @@ async def load_parsed_process_request(
         llm_graph_format=llm_graph_format,
         ontology_context_mode_value=ontology_context_mode_value,
         target_sections=target_sections,
+        exclude_sections=exclude_sections,
         summarize_sections=summarize_sections,
         summary_max_sentences=summary_max_sentences,
         document_type_hint=document_type_hint,
@@ -283,6 +297,7 @@ def build_agent_state_from_parsed(
         facts_user_instruction=parsed.facts_user_instruction,
         ontology_context_fixed_ontology_id=parsed.ontology_context_fixed_ontology_id,
         target_sections=parsed.target_sections,
+        exclude_sections=parsed.exclude_sections,
         summarize_sections=parsed.summarize_sections,
         summary_max_sentences=parsed.summary_max_sentences,
         document_type_hint=parsed.document_type_hint,

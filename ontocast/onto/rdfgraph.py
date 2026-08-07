@@ -1601,6 +1601,21 @@ class RDFGraph(Graph):
         for prefix, namespace in merged.items():
             uri_to_prefixes[namespace].append(prefix)
 
+        # Offer digit-stripped stems as candidates: rdflib mints `schema1` when
+        # `schema` is contested at parse time, and after namespace
+        # canonicalization the stem is often free again. Only stems not claimed
+        # by a different namespace are eligible.
+        for namespace, prefixes in uri_to_prefixes.items():
+            for prefix in list(prefixes):
+                stem = prefix.rstrip("0123456789")
+                if (
+                    stem
+                    and stem != prefix
+                    and stem not in prefixes
+                    and merged.get(stem, namespace) == namespace
+                ):
+                    prefixes.append(stem)
+
         for namespace, prefixes in uri_to_prefixes.items():
             best_prefix = choose_best_prefix(
                 namespace,
@@ -1611,7 +1626,16 @@ class RDFGraph(Graph):
                 bound_ns = Namespace(namespace)
             else:
                 bound_ns = Namespace(normalize_namespace_iri(namespace, context="auto"))
-            new_ns_manager.bind(best_prefix, bound_ns, override=True)
+            # replace=True: this loop is authoritative — a prefix whose namespace
+            # was canonicalized (e.g. http -> https schema.org) must be rebound,
+            # not shadowed by a freshly minted `prefix1`. Losing prefixes are
+            # rebound first so no stale (pre-canonicalization) binding survives
+            # in the store; the best prefix is bound last so it wins the
+            # namespace's reverse lookup used at serialization.
+            for prefix in prefixes:
+                if prefix != best_prefix:
+                    new_ns_manager.bind(prefix, bound_ns, override=True, replace=True)
+            new_ns_manager.bind(best_prefix, bound_ns, override=True, replace=True)
         self.namespace_manager = new_ns_manager
         return self
 

@@ -61,9 +61,19 @@ class PrepareOptions:
     document_type_hint: str | None = None
     target_sections: list[str] | None = None
     summarize_sections: list[str] | None = None
+    exclude_sections: list[str] | None = None
 
     def needs_section_prepare(self) -> bool:
-        return self.target_sections is not None or self.summarize_sections is not None
+        """True when a request option explicitly requires section labels.
+
+        Section tagging itself is default-on (see ``CHUNK_SECTION_CLASSIFIER``);
+        this only reports whether the request carries section-dependent options.
+        """
+        return (
+            self.target_sections is not None
+            or self.summarize_sections is not None
+            or self.exclude_sections is not None
+        )
 
     def filter_allowlist(self) -> list[str] | None:
         if self.target_sections is not None:
@@ -75,6 +85,16 @@ class PrepareOptions:
         ):
             return self.summarize_sections
         return None
+
+    def filter_denylist(self, schema: SectionLabelSchema) -> list[str]:
+        """Effective exclusion denylist.
+
+        ``None`` means "use the resolved schema's default_exclude"; an explicit
+        ``[]`` opts out of exclusion entirely; a non-empty list is used as-is.
+        """
+        if self.exclude_sections is not None:
+            return list(self.exclude_sections)
+        return list(schema.default_exclude)
 
 
 def _filter_segments(
@@ -91,6 +111,29 @@ def _filter_segments(
         if segment.section_label is not None
         and segment.section_label.lower() in allowed
     ]
+
+
+def _filter_segments_excluding(
+    segments: list[PrepareSegment], denylist: list[str]
+) -> list[PrepareSegment]:
+    """Drop labeled segments whose label is in the denylist; keep unlabeled ones."""
+    denied = {section.strip().lower() for section in denylist if section.strip()}
+    if not denied:
+        return segments
+    kept = [
+        segment
+        for segment in segments
+        if segment.section_label is None or segment.section_label.lower() not in denied
+    ]
+    dropped = len(segments) - len(kept)
+    if dropped:
+        logger.info(
+            "Section exclusion %s: dropped %s/%s segment(s) before sizing",
+            sorted(denied),
+            dropped,
+            len(segments),
+        )
+    return kept
 
 
 def _hybrid_segments(
@@ -121,14 +164,87 @@ def _hybrid_segments(
 
 
 def _semantic_full_doc_segments(
-    document_text: str, splitter: ChunkerTool
+    document_text: str, splitter: ChunkerTool, max_size: int
 ) -> list[PrepareSegment]:
     text = document_text.strip()
     if not text:
         return []
+    if len(text) <= max_size:
+        return [PrepareSegment(text=text)]
     return [
         PrepareSegment(text=part.strip()) for part in splitter(text) if part.strip()
     ]
+
+
+def _heading_breadcrumb(block_text: str) -> list[str] | None:
+    """First line of the block when it is a markdown heading, as a breadcrumb."""
+    for line in block_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            return [stripped.lstrip("#").strip()]
+        return None
+    return None
+
+
+def _section_blocks(
+    document_text: str, spans: list[SectionSpan]
+) -> list[tuple[str | None, str]]:
+    """Cover the document with ordered ``(label, text)`` blocks.
+
+    Detected section spans become labeled blocks; text between/around spans
+    becomes unlabeled blocks (later labeled by the LLM classifier, when on).
+    """
+    blocks: list[tuple[str | None, str]] = []
+    if not spans:
+        return [(None, document_text)]
+    cursor = 0
+    for span in sorted(spans, key=lambda item: item.start):
+        if span.start > cursor:
+            blocks.append((None, document_text[cursor : span.start]))
+        blocks.append((span.label, document_text[span.start : span.end]))
+        cursor = max(cursor, span.end)
+    if cursor < len(document_text):
+        blocks.append((None, document_text[cursor:]))
+    return blocks
+
+
+def _semantic_section_segments(
+    document_text: str,
+    spans: list[SectionSpan],
+    splitter: ChunkerTool,
+    max_size: int,
+) -> list[PrepareSegment]:
+    """Sections-first segmentation: split at section boundaries, then chunk within.
+
+    Chunking inside each section block means no chunk straddles a section
+    boundary and every chunk from a detected section inherits its label
+    deterministically — the LLM classifier only handles unheaded material.
+    Blocks already within the chunk budget are kept whole (the semantic
+    splitter needs enough sentences to embed and cluster).
+    """
+    if not document_text.strip():
+        return []
+    segments: list[PrepareSegment] = []
+    for label, block_text in _section_blocks(document_text, spans):
+        block_text = block_text.strip()
+        if not block_text:
+            continue
+        headings = _heading_breadcrumb(block_text)
+        parts = [block_text] if len(block_text) <= max_size else splitter(block_text)
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            segments.append(
+                PrepareSegment(
+                    text=part,
+                    headings=headings,
+                    section_label=label,
+                )
+            )
+    return segments
 
 
 def _tag_segments(
@@ -149,6 +265,13 @@ def _tag_segments(
     """
     search_from = 0
     for segment in segments:
+        if segment.section_label is not None:
+            # Sections-first segmentation labels at split time; keep the label
+            # but advance the cursor so span search stays ordered.
+            _, search_from = label_text_from_spans(
+                segment.text, document_text, spans, search_from
+            )
+            continue
         heading_label = label_from_headings(segment.headings, schema)
         if heading_label is not None:
             segment.section_label = heading_label
@@ -276,14 +399,71 @@ def _size_segments(
     return _merge_prepared_chunks(expanded, config.min_size, config.max_size)
 
 
+def _build_hybrid_chunker(config: ChunkConfig) -> HybridChunker:
+    """Docling HybridChunker sized to our chunk budget.
+
+    A bare ``HybridChunker()`` inherits the MiniLM tokenizer's 512-token limit
+    while OntoCast re-merges segments up to ``config.max_size`` chars, which
+    floods logs with "headers and captions … will be ignored" warnings. Budget
+    the tokenizer from the configured chunk size instead (~4 chars per token).
+    """
+    hybrid_module = require(
+        "docling_core.transforms.chunker.hybrid_chunker", feature="Hybrid chunking"
+    )
+    try:
+        tokenizer_module = require(
+            "docling_core.transforms.chunker.tokenizer.huggingface",
+            feature="Hybrid chunking",
+        )
+        transformers_module = require("transformers", feature="Hybrid chunking")
+        max_tokens = max(512, config.max_size // 4)
+        hf_tokenizer = transformers_module.AutoTokenizer.from_pretrained(
+            "sentence-transformers/all-MiniLM-L6-v2",
+            model_max_length=max_tokens,
+        )
+        tokenizer = tokenizer_module.HuggingFaceTokenizer(
+            tokenizer=hf_tokenizer, max_tokens=max_tokens
+        )
+        return hybrid_module.HybridChunker(tokenizer=tokenizer)
+    except Exception as exc:  # pragma: no cover - environment dependent
+        logger.debug("Falling back to default HybridChunker tokenizer: %s", exc)
+        return hybrid_module.HybridChunker()
+
+
+def _primary_segments(
+    docling_doc: DoclingDocument,
+    document_text: str,
+    spans: list[SectionSpan],
+    splitter: ChunkerTool,
+    config: ChunkConfig,
+) -> list[PrepareSegment]:
+    """Segment via the configured segmenter, falling back to the other one."""
+    if config.segmenter == "docling":
+        segments = _hybrid_segments(docling_doc, _build_hybrid_chunker(config))
+        if not segments:
+            segments = _semantic_section_segments(
+                document_text, spans, splitter, config.max_size
+            )
+        return segments
+    segments = _semantic_section_segments(
+        document_text, spans, splitter, config.max_size
+    )
+    if not segments:
+        segments = _hybrid_segments(docling_doc, _build_hybrid_chunker(config))
+    return segments
+
+
 def _simple_prepare(
     docling_doc: DoclingDocument,
     document_text: str,
     splitter: ChunkerTool,
     config: ChunkConfig,
-    hybrid_chunker: HybridChunker,
 ) -> list[PreparedChunk]:
-    segments = _hybrid_segments(docling_doc, hybrid_chunker)
+    """Untagged preparation (section classifier off)."""
+    if config.segmenter == "docling":
+        segments = _hybrid_segments(docling_doc, _build_hybrid_chunker(config))
+    else:
+        segments = _semantic_full_doc_segments(document_text, splitter, config.max_size)
     if not segments:
         text = document_text.strip()
         if not text:
@@ -299,16 +479,22 @@ async def prepare_content_units(
     options: PrepareOptions,
     tools: "ToolBox",
 ) -> list[PreparedChunk]:
-    """Segment, tag, filter, and size document text into prepared chunks."""
-    document_text = document_text_for_section_tagging(docling_doc)
-    hybrid_chunker = require(
-        "docling_core.transforms.chunker.hybrid_chunker", feature="Hybrid chunking"
-    ).HybridChunker()
+    """Segment, tag, filter, and size document text into prepared chunks.
 
-    if not options.needs_section_prepare():
-        return _simple_prepare(
-            docling_doc, document_text, splitter, config, hybrid_chunker
-        )
+    Section tagging is default-on: the sections-first flow runs unless
+    ``CHUNK_SECTION_CLASSIFIER=off`` (which also disables section filters and
+    schema default exclusions; explicit section options are ignored with a
+    warning in that case).
+    """
+    document_text = document_text_for_section_tagging(docling_doc)
+
+    if config.section_classifier == "off":
+        if options.needs_section_prepare():
+            logger.warning(
+                "Section options requested but CHUNK_SECTION_CLASSIFIER=off; "
+                "section filters are ignored"
+            )
+        return _simple_prepare(docling_doc, document_text, splitter, config)
 
     schema_id = resolve_section_schema_id(
         section_schema_id=options.section_schema_id,
@@ -317,10 +503,7 @@ async def prepare_content_units(
     schema = load_section_label_schema(schema_id)
     spans = detect_section_spans(document_text, schema)
 
-    segments = _hybrid_segments(docling_doc, hybrid_chunker)
-    if not segments:
-        segments = _semantic_full_doc_segments(document_text, splitter)
-
+    segments = _primary_segments(docling_doc, document_text, spans, splitter, config)
     if not segments:
         return []
 
@@ -330,19 +513,20 @@ async def prepare_content_units(
         schema,
     )
     _tag_segments(segments, document_text, spans, schema)
-    await llm_backfill_section_labels(
-        segments,
-        tools,
-        section_schema_id=options.section_schema_id,
-        document_type_hint=options.document_type_hint,
-        section_tag_min_chars=config.section_tag_min_chars,
-    )
+    if config.section_classifier == "llm":
+        await llm_backfill_section_labels(
+            segments,
+            tools,
+            section_schema_id=options.section_schema_id,
+            document_type_hint=options.document_type_hint,
+            section_tag_min_chars=config.section_tag_min_chars,
+        )
     _forward_fill_section_labels(segments, schema)
 
     unlabeled = sum(1 for s in segments if s.section_label is None)
     if unlabeled:
         logger.warning(
-            "%s segment(s) remain without section_label after LLM backfill",
+            "%s segment(s) remain without section_label after classification",
             unlabeled,
         )
 
@@ -361,5 +545,9 @@ async def prepare_content_units(
                 "Section filter %s removed all segments; check headings or allowlist",
                 allowlist,
             )
+
+    denylist = options.filter_denylist(schema)
+    if denylist:
+        segments = _filter_segments_excluding(segments, denylist)
 
     return _size_segments(segments, splitter, config)

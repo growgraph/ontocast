@@ -339,6 +339,24 @@ class ChunkConfig(BaseSettings):
     )
     min_size: int = Field(default=3000, description="Minimum chunk size in characters")
     max_size: int = Field(default=12000, description="Maximum chunk size in characters")
+    segmenter: Literal["semantic", "docling"] = Field(
+        default="semantic",
+        description=(
+            "Primary segmenter: 'semantic' splits the markdown export inside "
+            "detected section boundaries with the built-in semantic chunker "
+            "(naive fallback without torch extras); 'docling' uses docling's "
+            "HybridChunker structural segments."
+        ),
+    )
+    section_classifier: Literal["llm", "heading", "off"] = Field(
+        default="llm",
+        description=(
+            "Chunk section classification: 'llm' = deterministic heading/span "
+            "labels plus LLM backfill for unheaded chunks; 'heading' = "
+            "deterministic only (no LLM cost); 'off' = no section tagging "
+            "(disables section filters and schema default exclusions)."
+        ),
+    )
     section_tag_min_chars: int = Field(
         default=80,
         description=(
@@ -347,12 +365,13 @@ class ChunkConfig(BaseSettings):
         ),
     )
     bibliography_mode: Literal["domain_facts", "citations_only", "skip"] = Field(
-        default="citations_only",
+        default="skip",
         description=(
             "Routing for chunks detected as bibliography/reference lists "
-            "(section label or citation-density heuristics): 'citations_only' "
-            "extracts bibliographic metadata only, 'skip' drops the chunks "
-            "before extraction, 'domain_facts' disables special handling."
+            "(section label or citation-density heuristics): 'skip' (default) "
+            "drops the chunks before extraction, 'citations_only' extracts "
+            "bibliographic metadata only, 'domain_facts' disables special "
+            "handling."
         ),
     )
     citation_vocabulary: dict[str, str] = Field(
@@ -542,9 +561,10 @@ class ServerConfig(BaseSettings):
         "Set to None for unlimited.",
     )
     parallel_workers: int = Field(
-        default=4,
+        default=8,
         ge=1,
-        description="Maximum number of concurrent unit workers in parallel pipeline",
+        description="Maximum number of concurrent unit workers in parallel pipeline "
+        "(keep at or below LLM_MAX_INFLIGHT, which caps provider concurrency)",
     )
     enable_ontology_consolidation: bool = Field(
         default=False,

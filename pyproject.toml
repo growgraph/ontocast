@@ -218,9 +218,21 @@ addopts = [
   "-v"
 ]
 env_files = [".env"]
+# Marker semantics -- keep these honest, the CI job selects on them.
+#
+# The default run must stay offline and model-free: `HF_HUB_OFFLINE=1
+# TRANSFORMERS_OFFLINE=1 uv run pytest -m "not slow"` has to pass. A test that
+# cannot meet that bar belongs behind `slow` (it downloads or loads a model, or
+# takes more than a few seconds) or `integration` (it needs a live service:
+# Qdrant, Fuseki, or an on-disk LanceDB table). Service-gated tests still skip
+# themselves when the service is unreachable -- the marker is what makes that
+# surface *selectable* rather than merely silent.
+#
+# `test/manual/` is opt-in through ONTOCAST_RUN_MANUAL_TESTS=1 and is not
+# collected otherwise (see test/manual/conftest.py); it needs no marker.
 markers = [
-  "integration: marks tests as integration tests",
-  "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+  "integration: needs a live service (Qdrant/Fuseki/LanceDB on disk)",
+  "slow: loads an ML model or otherwise takes >5s (deselect with '-m \"not slow\"')",
   "unit: marks tests as unit tests"
 ]
 python_classes = ["Test*"]
@@ -245,11 +257,14 @@ select = ["E", "F", "I001", "W"]
 "ontocast/prompt/*.py" = ["E501"]
 
 [tool.ty.analysis]
-# Optional extras loaded lazily / only when selected; pre-commit CI syncs
-# `--extra dev` only, so ty must not require them. docling-core is a hard
-# dependency and is deliberately NOT listed here -- whitelisting it previously
-# hid the fact that `ontocast.onto.state` imported it unguarded while it was
-# only in an extra, which made a base `pip install ontocast` unimportable.
+# The heavy tail of the optional tier: loaded lazily / only when selected, and
+# too expensive to install just to type-check. The pre-commit workflow syncs
+# only `dev,server,documents,qdrant,graph`, so anything outside that set must be
+# listed here -- the two lists together have to cover every third-party import
+# under `ontocast/` and `test/`. docling-core is deliberately NOT listed here:
+# whitelisting it previously hid the fact that `ontocast.onto.state` imported it
+# unguarded while it was only in an extra, which made a base
+# `pip install ontocast` unimportable.
 allowed-unresolved-imports = [
   "docling.**",
   "duckduckgo_search.**",

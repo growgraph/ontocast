@@ -57,6 +57,7 @@ def _delete_if_exist(
             client.delete_collection(collection_name=name)
 
 
+@pytest.mark.integration
 def test_initialize_rejects_mismatched_embedding_dimension() -> None:
     base = _require_live_qdrant()
     run = uuid.uuid4().hex[:8]
@@ -87,6 +88,7 @@ def test_initialize_rejects_mismatched_embedding_dimension() -> None:
         _delete_if_exist(client, (onto, facts))
 
 
+@pytest.mark.integration
 def test_initialize_rejects_mismatched_embedding_model() -> None:
     base = _require_live_qdrant()
     run = uuid.uuid4().hex[:8]

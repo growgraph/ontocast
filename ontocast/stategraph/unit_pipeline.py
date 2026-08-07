@@ -37,6 +37,7 @@ from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.atomic import facts_loop, ontology_loop
 from ontocast.stategraph.context_resolver import UnitOntologyContext
+from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -146,10 +147,12 @@ async def run_unit_pipeline(
             llm_graph_format=agent_state.llm_graph_format,
         )
         logger.info("run_unit_pipeline: starting ontology loop")
-        onto_result = await ontology_loop(ontology_state, tools, agent_state)
+        ontology_context = UnitLoopContext.from_agent_state(agent_state)
+        onto_result = await ontology_loop(ontology_state, tools, ontology_context)
         logger.info(
             "run_unit_pipeline: ontology loop finished (status=%s)", onto_result.status
         )
+        agent_state.retrieval_metrics.update(ontology_context.retrieval_metrics)
         agent_state.budget_tracker = onto_result.budget_tracker
         if (
             onto_result.fresh_ontology is not None
@@ -174,15 +177,17 @@ async def run_unit_pipeline(
             llm_graph_format=agent_state.llm_graph_format,
         )
         logger.info("run_unit_pipeline: starting facts loop")
+        facts_context = UnitLoopContext.from_agent_state(agent_state)
         facts_result = await facts_loop(
             facts_state,
             tools,
-            agent_state,
+            facts_context,
             pre_resolved_context=facts_pre_resolved_context,
         )
         logger.info(
             "run_unit_pipeline: facts loop finished (status=%s)", facts_result.status
         )
+        agent_state.retrieval_metrics.update(facts_context.retrieval_metrics)
         agent_state.budget_tracker = facts_result.budget_tracker
 
     return onto_result, facts_result

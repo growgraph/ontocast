@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from ontocast.config import (
     Config,
     EmbeddingConfig,
@@ -67,6 +69,7 @@ def _build_toolbox(ctx: QdrantSessionTestContext) -> ToolBox:
     return ToolBox(Config(tool_config=tool_config))
 
 
+@pytest.mark.integration
 def test_qdrant_vector_store_smoke(
     qdrant_session_test_context: QdrantSessionTestContext,
 ) -> None:

@@ -88,28 +88,14 @@ def test_bare_import_pulls_nothing_optional() -> None:
     _assert_clean("import ontocast")
 
 
-def test_config_import_is_light() -> None:
-    """Reading configuration must not pull a vector backend (PLANNING #68)."""
-    _assert_clean("from ontocast import Config")
-
-
-def test_toolbox_import_is_light() -> None:
-    """The dependency container must be importable on a base install."""
-    _assert_clean("from ontocast import ToolBox")
-
-
-def test_agent_state_import_is_light() -> None:
-    """AgentState must build without docling-core; its field is coerced lazily."""
-    _assert_clean("from ontocast import AgentState")
-
-
-def test_graph_import_is_light() -> None:
-    """The pipeline graph builders must not require an optional backend."""
-    _assert_clean("from ontocast import build_agent_graph, create_agent_graph")
-
-
 def test_documented_entry_points_are_light() -> None:
-    """The full public surface an embedder imports, in one interpreter."""
+    """The full public surface an embedder imports, in one interpreter.
+
+    This subsumes the per-symbol cases (`Config`, `ToolBox`, `AgentState`, the
+    graph builders) that used to sit alongside it: each spawned its own
+    interpreter to assert something this one statement already covers. Keep new
+    entry points in this list rather than adding another subprocess.
+    """
     _assert_clean(
         "from ontocast import ("
         "AgentState, Config, ToolBox, build_agent_graph, create_agent_graph, "

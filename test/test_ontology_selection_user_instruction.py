@@ -15,6 +15,7 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import context_resolver as cr
 from ontocast.stategraph.context_resolver import resolve_unit_ontology_context
+from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.converter import ConverterTool
 from ontocast.tool.llm import LLMTool
 from ontocast.tool.ontology_manager import OntologyManager
@@ -117,7 +118,9 @@ async def test_context_resolver_forwards_selection_instruction(monkeypatch) -> N
         doc_iri=URIRef("https://example.org/doc/1"),
     )
 
-    result = await resolve_unit_ontology_context(state, tools, unit)
+    result = await resolve_unit_ontology_context(
+        UnitLoopContext.from_agent_state(state), tools, unit
+    )
 
     assert result.primary_writable_iri == selected.iri
     assert captured_instruction["value"] == "Prefer healthcare ontologies"

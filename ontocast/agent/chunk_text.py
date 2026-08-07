@@ -28,6 +28,7 @@ async def chunk_text(state: AgentState, tools: ToolBox) -> AgentState:
         document_type_hint=state.document_type_hint,
         target_sections=state.target_sections,
         summarize_sections=state.summarize_sections,
+        exclude_sections=state.exclude_sections,
     )
     prepared = await prepare_content_units(
         state.docling_doc,

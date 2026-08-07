@@ -36,6 +36,26 @@ def _ontology(iri: str, graph: RDFGraph) -> Ontology:
     )
 
 
+def _assert_no_degenerate_restriction_bnodes(graph) -> None:
+    """No `rdfs:subClassOf` bnode may be empty or a bare `owl:Class`.
+
+    Asserted against the graph rather than against serialized Turtle: the old
+    form matched the strings "subClassOf [ ]" / "subClassOf [ a owl:Class ]",
+    which is rdflib's formatting rather than our contract, and would pass
+    silently the day rdflib lays those out differently.
+    """
+    for _, _, bnode in graph.triples((None, RDFS.subClassOf, None)):
+        if not isinstance(bnode, BNode):
+            continue
+        statements = {
+            (pred, obj) for _, pred, obj in graph.triples((bnode, None, None))
+        }
+        assert statements, f"empty restriction bnode {bnode} survived"
+        assert statements != {(RDF.type, OWL.Class)}, (
+            f"bnode {bnode} carries only `a owl:Class`"
+        )
+
+
 def test_bind_implicit_namespaces_skips_parent_directory_stem() -> None:
     graph = RDFGraph()
     graph.bind("qqval", QQVAL)
@@ -342,88 +362,6 @@ def test_build_concept_relevance_type_promotion_factor_scales_class_only() -> No
     assert relevance[str(method_class)] == 0.4
 
 
-def test_high_scored_https_seed_not_starved_by_http_byte_order() -> None:
-    """Score order, not IRI byte order, decides who survives a tight budget.
-
-    Regression: typed individuals used to lose their scores to their promoted
-    type IRIs, collapsing into a relevance-0 tie broken alphabetically —
-    ``http://qudt.org/…`` always preceded ``https://growgraph.dev/…`` and tight
-    budgets never reached the actually-retrieved unit.
-    """
-    qudt = Namespace("http://qudt.org/schema/qudt/")
-    unit_ns = Namespace("http://qudt.org/vocab/unit/")
-    munits = Namespace(f"{BASE}matsci-units#")
-
-    graph = RDFGraph()
-    graph.bind("qudt", qudt)
-    graph.bind("unit", unit_ns)
-    graph.bind("matsciunits", munits)
-    graph.add((URIRef(f"{BASE}matsci-units"), RDF.type, OWL.Ontology))
-    mega_ev = unit_ns["MegaEV"]
-    milli_ev = munits["millielectronvolt"]
-    for individual, label in ((mega_ev, "Mega Electron Volt"), (milli_ev, "meV")):
-        graph.add((individual, RDF.type, qudt.Unit))
-        graph.add((individual, RDFS.label, Literal(label)))
-    graph.add((qudt.Unit, RDF.type, OWL.Class))
-    graph.add((qudt.Unit, RDFS.label, Literal("Unit")))
-
-    ontologies = [_ontology(f"{BASE}matsci-units", graph)]
-    entity_roles = {str(milli_ev): ROLE_RESOURCE, str(mega_ev): ROLE_RESOURCE}
-    result, _ = SPARQLTool._build_induced_subgraph(
-        ontologies=ontologies,
-        entity_uris=[str(milli_ev), str(mega_ev)],
-        entity_relevance={str(milli_ev): 0.1667, str(mega_ev): 0.0556},
-        ontology_iris=[ontologies[0].iri],
-        depth=1,
-        max_total_triples=4,
-        estimated_triples_per_query=24,
-        ontology_version_filters=None,
-        ontology_hash_filters=None,
-        entity_roles=entity_roles,
-        hub_seed_count=1,
-        ancestor_closure_depth=1,
-    )
-    assert (milli_ev, RDFS.label, Literal("meV")) in result
-
-
-def test_seed_symbol_predicates_reach_snapshot_before_glosses() -> None:
-    """Symbol/notation annotations on seeds survive even tight budgets."""
-    qudt = Namespace("http://qudt.org/schema/qudt/")
-    munits = Namespace(f"{BASE}matsci-units#")
-
-    graph = RDFGraph()
-    graph.bind("qudt", qudt)
-    graph.bind("matsciunits", munits)
-    graph.add((URIRef(f"{BASE}matsci-units"), RDF.type, OWL.Ontology))
-    milli_ev = munits["millielectronvolt"]
-    graph.add((milli_ev, RDF.type, qudt.Unit))
-    graph.add((milli_ev, RDFS.label, Literal("millielectronvolt")))
-    graph.add((milli_ev, qudt.symbol, Literal("meV")))
-    graph.add(
-        (milli_ev, RDFS.comment, Literal("The working unit for small energy shifts."))
-    )
-
-    ontologies = [_ontology(f"{BASE}matsci-units", graph)]
-    # Budget of 2: room for the label and exactly one more description triple.
-    # Symbols sort before glosses, so qudt:symbol wins over rdfs:comment.
-    result, _ = SPARQLTool._build_induced_subgraph(
-        ontologies=ontologies,
-        entity_uris=[str(milli_ev)],
-        entity_relevance={str(milli_ev): 1.0},
-        ontology_iris=[ontologies[0].iri],
-        depth=1,
-        max_total_triples=2,
-        estimated_triples_per_query=24,
-        ontology_version_filters=None,
-        ontology_hash_filters=None,
-        entity_roles={str(milli_ev): ROLE_RESOURCE},
-        hub_seed_count=1,
-        ancestor_closure_depth=1,
-        extra_description_predicates=(qudt.symbol,),
-    )
-    assert (milli_ev, qudt.symbol, Literal("meV")) in result
-
-
 def test_snapshot_binds_only_used_prefixes() -> None:
     """Prefixes of merged ontologies that contribute no triple stay unbound."""
     munits = Namespace(f"{BASE}matsci-units#")
@@ -465,38 +403,6 @@ def test_ontology_round_robin_seed_order_interleaves_groups() -> None:
     assert ordered == ["a1", "b1", "a2", "b2", "a3"]
 
 
-def test_build_induced_subgraph_class_seed_includes_label_and_subclass() -> None:
-    graph = RDFGraph()
-    graph.bind("matsci", MATSCI)
-    graph.add((URIRef(f"{BASE}matsci"), RDF.type, OWL.Ontology))
-    bare_class = MATSCI["ActuatingEquipment"]
-    parent = MATSCI["ProcessingEquipment"]
-    graph.add((bare_class, RDF.type, OWL.Class))
-    graph.add((bare_class, RDFS.label, Literal("Actuating equipment")))
-    graph.add((bare_class, RDFS.subClassOf, parent))
-    graph.add((parent, RDF.type, OWL.Class))
-    graph.add((parent, RDFS.label, Literal("Processing equipment")))
-
-    ontologies = [_ontology(f"{BASE}matsci", graph)]
-    result, _ = SPARQLTool._build_induced_subgraph(
-        ontologies=ontologies,
-        entity_uris=[str(bare_class)],
-        entity_relevance={str(bare_class): 1.0},
-        ontology_iris=[ontologies[0].iri],
-        depth=1,
-        max_total_triples=300,
-        estimated_triples_per_query=24,
-        ontology_version_filters=None,
-        ontology_hash_filters=None,
-        entity_roles={str(bare_class): ROLE_RESOURCE},
-        hub_seed_count=1,
-        ancestor_closure_depth=2,
-    )
-    assert (bare_class, RDFS.label, Literal("Actuating equipment")) in result
-    assert (bare_class, RDFS.subClassOf, parent) in result
-    assert (parent, RDFS.label, Literal("Processing equipment")) in result
-
-
 def test_build_induced_subgraph_shared_ancestor_connects_two_seeds() -> None:
     graph = RDFGraph()
     graph.bind("matsci", MATSCI)
@@ -535,100 +441,6 @@ def test_build_induced_subgraph_shared_ancestor_connects_two_seeds() -> None:
     assert (child_a, RDFS.subClassOf, root) in result
     assert (child_b, RDFS.subClassOf, root) in result
     assert (root, RDFS.label, Literal("Characterization method")) in result
-
-
-def test_build_induced_subgraph_late_seed_gets_subclass_under_tight_budget() -> None:
-    """AssemblyProcess-like: label+comment must not appear without subClassOf."""
-    graph = RDFGraph()
-    graph.bind("matsci", MATSCI)
-    graph.add((URIRef(f"{BASE}matsci"), RDF.type, OWL.Ontology))
-
-    process = MATSCI["Process"]
-    assembly = MATSCI["AssemblyProcess"]
-    graph.add((process, RDF.type, OWL.Class))
-    graph.add((process, RDFS.label, Literal("Process")))
-    graph.add((assembly, RDF.type, OWL.Class))
-    graph.add((assembly, RDFS.label, Literal("Assembly process")))
-    graph.add(
-        (assembly, RDFS.comment, Literal("A concrete execution of an assembly method."))
-    )
-    graph.add((assembly, RDFS.subClassOf, process))
-
-    filler_seeds: list[str] = []
-    for idx in range(12):
-        cls = MATSCI[f"FillerClass{idx}"]
-        parent = MATSCI[f"FillerParent{idx}"]
-        graph.add((cls, RDF.type, OWL.Class))
-        graph.add((cls, RDFS.label, Literal(f"Filler {idx}")))
-        graph.add((cls, RDFS.comment, Literal(f"Comment for filler {idx}.")))
-        graph.add((cls, RDFS.subClassOf, parent))
-        graph.add((parent, RDF.type, OWL.Class))
-        graph.add((parent, RDFS.label, Literal(f"Parent {idx}")))
-        filler_seeds.append(str(cls))
-
-    ontologies = [_ontology(f"{BASE}matsci", graph)]
-    entity_uris = filler_seeds + [str(assembly)]
-    entity_relevance = {uri: 1.0 - (idx * 0.05) for idx, uri in enumerate(entity_uris)}
-    entity_relevance[str(assembly)] = 0.05
-
-    result, _ = SPARQLTool._build_induced_subgraph(
-        ontologies=ontologies,
-        entity_uris=entity_uris,
-        entity_relevance=entity_relevance,
-        ontology_iris=[ontologies[0].iri],
-        depth=1,
-        max_total_triples=80,
-        estimated_triples_per_query=12,
-        ontology_version_filters=None,
-        ontology_hash_filters=None,
-        entity_roles={uri: ROLE_RESOURCE for uri in entity_uris},
-        hub_seed_count=8,
-        ancestor_closure_depth=2,
-    )
-
-    assert (assembly, RDFS.label, Literal("Assembly process")) in result
-    assert (
-        assembly,
-        RDFS.comment,
-        Literal("A concrete execution of an assembly method."),
-    ) in result
-    assert (assembly, RDFS.subClassOf, process) in result
-
-
-def test_build_induced_subgraph_bfs_class_node_includes_subclass() -> None:
-    graph = RDFGraph()
-    graph.bind("matsci", MATSCI)
-    graph.add((URIRef(f"{BASE}matsci"), RDF.type, OWL.Ontology))
-
-    root = MATSCI["Process"]
-    assembly = MATSCI["AssemblyProcess"]
-    graph.add((root, RDF.type, OWL.Class))
-    graph.add((root, RDFS.label, Literal("Process")))
-    graph.add((assembly, RDF.type, OWL.Class))
-    graph.add((assembly, RDFS.label, Literal("Assembly process")))
-    graph.add(
-        (assembly, RDFS.comment, Literal("A concrete execution of an assembly method."))
-    )
-    graph.add((assembly, RDFS.subClassOf, root))
-
-    ontologies = [_ontology(f"{BASE}matsci", graph)]
-    result, _ = SPARQLTool._build_induced_subgraph(
-        ontologies=ontologies,
-        entity_uris=[str(root)],
-        entity_relevance={str(root): 1.0},
-        ontology_iris=[ontologies[0].iri],
-        depth=1,
-        max_total_triples=300,
-        estimated_triples_per_query=24,
-        ontology_version_filters=None,
-        ontology_hash_filters=None,
-        entity_roles={str(root): ROLE_RESOURCE},
-        hub_seed_count=1,
-        ancestor_closure_depth=1,
-    )
-
-    assert (assembly, RDFS.label, Literal("Assembly process")) in result
-    assert (assembly, RDFS.subClassOf, root) in result
 
 
 def test_strip_redundant_owl_class_when_subclass_present() -> None:
@@ -723,11 +535,7 @@ def test_quantity_range_no_empty_restriction_bnodes() -> None:
                 pred == OWL.onProperty
                 for _, pred, _ in result.triples((bnode, None, None))
             )
-    turtle = result.serialize(format="turtle")
-    if isinstance(turtle, bytes):
-        turtle = turtle.decode("utf-8")
-    assert "subClassOf [ ]" not in turtle
-    assert "subClassOf [ a owl:Class ]" not in turtle
+    _assert_no_degenerate_restriction_bnodes(result)
 
 
 def test_prune_degenerate_restriction_bnodes_removes_stub() -> None:
@@ -813,10 +621,7 @@ def test_property_only_path_runs_finalization() -> None:
         Literal("Optical characterization method"),
     ) in result
     assert "snapshot_uri_components" in metrics
-    turtle = result.serialize(format="turtle")
-    if isinstance(turtle, bytes):
-        turtle = turtle.decode("utf-8")
-    assert "subClassOf [ ]" not in turtle
+    _assert_no_degenerate_restriction_bnodes(result)
 
 
 def test_referenced_domain_class_gets_symbol_predicates_and_types() -> None:

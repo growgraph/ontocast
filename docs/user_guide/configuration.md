@@ -101,7 +101,7 @@ LLM_GRAPH_FORMAT=turtle                  # turtle | jsonld
 ONTOLOGY_CONTEXT_MODE=selected_single_ontology
 #ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID=catalog_iri_or_id_or_prefix
 ONTOLOGY_MAX_TRIPLES=50000               # empty/unset for unlimited
-PARALLEL_WORKERS=4
+PARALLEL_WORKERS=8
 ENABLE_ONTOLOGY_CONSOLIDATION=false
 # MAX_CONCURRENT_PROCESSES=4      # optional cap on simultaneous /process handlers
 ```
@@ -130,17 +130,32 @@ CHUNK_BREAKPOINT_THRESHOLD_TYPE=percentile  # percentile | standard_deviation | 
 CHUNK_BREAKPOINT_THRESHOLD_AMOUNT=95.0
 CHUNK_MIN_SIZE=3000
 CHUNK_MAX_SIZE=12000
-CHUNK_SECTION_TAG_MIN_CHARS=80   # min size for LLM section backfill; smaller hybrid segments coalesce first
-CHUNK_BIBLIOGRAPHY_MODE=citations_only  # citations_only | skip | domain_facts
+CHUNK_SEGMENTER=semantic         # semantic (sections-first, default) | docling
+CHUNK_SECTION_CLASSIFIER=llm     # llm (default) | heading (no LLM cost) | off (no tagging)
+CHUNK_SECTION_TAG_MIN_CHARS=80   # min size for LLM section backfill; smaller segments coalesce first
+CHUNK_BIBLIOGRAPHY_MODE=skip     # skip | citations_only | domain_facts
 ```
 
-`CHUNK_BIBLIOGRAPHY_MODE` routes chunks detected as bibliography/reference
-lists (via section label or citation-density heuristics): `citations_only`
-(default) extracts bibliographic metadata only (`schema:ScholarlyArticle` +
-`schema:citation`, no domain facts from citation titles), `skip` drops the
-chunks before extraction, `domain_facts` restores the legacy behavior.
+`CHUNK_SEGMENTER=semantic` (default) detects section spans on the markdown
+export, splits at section boundaries, and semantic-chunks within each
+oversized section block, so chunks never straddle sections and inherit their
+section label deterministically. `docling` uses Docling `HybridChunker`
+structural segments instead.
 
-Semantic chunking is configured here. **Section-aligned labels** and filtering are not chunker settings: they run when `/process` or CLI file mode passes `target_sections` and/or `summarize_sections` (see [Structured documents](concepts.md#structured-documents-optional)).
+`CHUNK_SECTION_CLASSIFIER` controls chunk classification, which is **on by
+default**: `llm` adds LLM backfill for unheaded chunks, `heading` labels
+deterministically only, `off` disables tagging entirely (and with it section
+filters and schema default exclusions).
+
+`CHUNK_BIBLIOGRAPHY_MODE` routes chunks detected as bibliography/reference
+lists (via section label or citation-density heuristics): `skip` (default)
+drops the chunks before extraction, `citations_only` extracts bibliographic
+metadata only (`schema:ScholarlyArticle` + `schema:citation`, no domain facts
+from citation titles), `domain_facts` restores the legacy behavior.
+
+Request-level section filtering (`target_sections` allowlist,
+`exclude_sections` denylist with per-schema defaults, `summarize_sections`)
+is documented in [Structured documents](concepts.md#structured-documents).
 
 ### Docling converter
 
@@ -328,7 +343,7 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `VECTOR_STORE_SYMBOL_CASE_MISMATCH_POLICY` | `demote` | Merge-time treatment of atoms whose declared symbol surfaces (`skos:notation`, `qudt:symbol`, `qudt:ucumCode`) match a query token only case-insensitively with no exact-case match anywhere — the BM25/dense text is case-folded, so prose "meV" also retrieves `unit:MegaEV` (symbol "MeV"). `demote` multiplies the atom score, `drop` removes it, `off` keeps legacy behavior; exact-case and label-only matches are never touched |
 | `VECTOR_STORE_SYMBOL_CASE_MISMATCH_DEMOTE_FACTOR` | `0.5` | Score multiplier applied under the `demote` policy |
 | `FACTS_OBJECT_PROPERTY_LITERAL_CHECK` | `true` | Quarantine string literals on predicates whose schema range is a class (e.g. `qudt:unit`); surfaced to the facts critic and the deterministic repair loop |
-| `FACTS_REPAIR_VISITS` | `1` | Deterministic repair budget per unit: extra update renders fed with machine-found MANDATORY fixes (quarantined literals, unknown/near-miss terms) and numeric-coverage candidates. Applies even at `MAX_VISITS=1`, where the LLM critic never runs |
+| `FACTS_REPAIR_VISITS` | `1` | Deterministic repair budget per unit: extra update renders fed with machine-found MANDATORY fixes (quarantined literals, unknown/near-miss terms, `rdfs:domain` contradictions) and numeric-coverage candidates. Applies even at `MAX_VISITS=1`, where the LLM critic never runs |
 | `FACTS_PROPERTY_ALIAS_MIN_RATIO` | `0.85` | SequenceMatcher cutoff for deterministic near-miss property rewrites in catalog namespaces (token containment always qualifies, e.g. `qudt:value` → `qudt:numericValue`) |
 | `FACTS_MERGE_REPAIR_PASSES` | `1` | Un-merge budget at the post-aggregation `VALIDATE_FACTS` gate: error findings on merged subjects become full-cluster pair vetoes and the facts units are re-aggregated. `0` records findings without repairing |
 | `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | `error` | Severity of SUSPECT_MULTI_VALUE gate findings (multiple distinct numeric values on one predicate, or multiple objects on a dominantly single-valued predicate); only `error` findings drive the un-merge repair |

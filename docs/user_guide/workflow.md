@@ -7,7 +7,7 @@ This document describes the document processing pipeline implemented in `stategr
 OntoCast transforms input documents into RDF ontology and facts graphs through a **parallel map/reduce** pipeline:
 
 1. **Document conversion** — PDF, DOCX, TXT, MD, or JSON → Markdown
-2. **Chunking** — prepare pipeline (segment, tag, filter, size) into content units (`--head-chunks` limits count for testing). When `target_sections` and/or `summarize_sections` are set, tagging and section filter run inside **Chunk**; optional **Summarize Chunks** follows (see [Structured documents](concepts.md#structured-documents-optional))
+2. **Chunking** — prepare pipeline (segment, tag, filter, size) into content units (`--head-chunks` limits count for testing). Section tagging runs by default (`CHUNK_SECTION_CLASSIFIER`); `target_sections`/`exclude_sections` filter inside **Chunk**; optional **Summarize Chunks** follows (see [Structured documents](concepts.md#structured-documents))
 3. **Ontology map/reduce** (when `render_mode` includes ontology):
    - Per-unit context assembly (catalog selection or vector retrieval)
    - Render/critic loops with optional web evidence
@@ -143,7 +143,7 @@ Provenance triples (`prov:`, reification, chunk metadata) are kept in `ontology_
 
 When facts rendering is enabled, each unit runs a **facts loop** (render → critic, with optional web evidence), then **merge facts** applies cross-chunk entity disambiguation and aggregation, and **validate facts** checks post-merge invariants (functional violations, suspect multi-values, degenerate coreference, optional SHACL). Error findings on merged subjects trigger a deterministic un-merge: the offending cluster's pairs are vetoed and the retained facts units are re-aggregated (`FACTS_MERGE_REPAIR_PASSES`). Residual findings land in `facts_validation_findings` and the retrieval metrics.
 
-Chunks detected as bibliography/reference lists are routed by `CHUNK_BIBLIOGRAPHY_MODE`: by default they yield citation metadata only (`schema:ScholarlyArticle` + `schema:citation`), never domain facts mined from citation titles.
+Chunks detected as bibliography/reference lists are routed by `CHUNK_BIBLIOGRAPHY_MODE`: by default they are dropped before extraction (`skip`); `citations_only` yields citation metadata only (`schema:ScholarlyArticle` + `schema:citation`), never domain facts mined from citation titles.
 
 ![Facts loop](../assets/facts_loop.png)
 
@@ -166,7 +166,9 @@ Facts output uses the **`cd:` namespace** for text-derived instances; domain ont
 | `MAX_VISITS` / `max_visits` | Render/critic retry budget per loop (at `1`, the default, the LLM critic never runs — the critic is skipped after the final render) |
 | `FACTS_REPAIR_VISITS` | Deterministic repair budget per facts unit: bounded update renders driven by machine-found violations and numeric-coverage gaps; independent of `MAX_VISITS` |
 | `FACTS_MERGE_REPAIR_PASSES` | Un-merge budget at the post-aggregation validation gate (error findings → cluster pair vetoes → re-aggregation) |
-| `CHUNK_BIBLIOGRAPHY_MODE` | Routing for reference-list chunks: `citations_only` (default), `skip`, or `domain_facts` |
+| `CHUNK_SEGMENTER` | `semantic` (sections-first, default) or `docling` structural segments |
+| `CHUNK_SECTION_CLASSIFIER` | Chunk section classification: `llm` (default), `heading`, or `off` |
+| `CHUNK_BIBLIOGRAPHY_MODE` | Routing for reference-list chunks: `skip` (default), `citations_only`, or `domain_facts` |
 | `ENABLE_ONTOLOGY_CONSOLIDATION` | Optional post-normalization consolidation |
 | `ONTOLOGY_CONTEXT_MODE` | How per-unit ontology context is sourced |
 | `LLM_GRAPH_FORMAT` | `turtle` or `jsonld` LLM wire encoding |

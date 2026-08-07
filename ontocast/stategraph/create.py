@@ -1,4 +1,8 @@
+import inspect
+import time
+from collections.abc import Awaitable, Callable
 from functools import partial
+from typing import Any, Protocol
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.constants import END, START
@@ -26,6 +30,52 @@ from ontocast.stategraph.routing import (
     route_after_tag_or_chunk,
 )
 from ontocast.toolbox import ToolBox
+
+
+class _StateNode(Protocol):
+    def __call__(self, state: AgentState) -> Any | Awaitable[Any]: ...
+
+
+def _record(name: str, state: AgentState, result: Any, start: float) -> Any:
+    """Charge the elapsed time to the tracker that survives the node."""
+    target = result if isinstance(result, AgentState) else state
+    target.budget_tracker.add_duration(name, time.perf_counter() - start)
+    return result
+
+
+def _timed(name: str, fn: Callable[[AgentState], Any | Awaitable[Any]]) -> _StateNode:
+    """Wrap a node callable so its wall-clock duration lands on the budget tracker.
+
+    The wrapper keeps the wrapped callable's sync/async nature: LangGraph
+    inspects the registered node and runs coroutine functions on the event loop
+    but offloads plain functions to a worker thread. Coercing a sync node into a
+    coroutine would run it inline on the loop, which blocks the loop and breaks
+    the sync paths that drive coroutines through :func:`asyncio.run` (notably
+    :meth:`FusekiTripleStoreManager.serialize`).
+    """
+    if inspect.iscoroutinefunction(fn):
+
+        async def timed_node_async(state: AgentState) -> Any:
+            start = time.perf_counter()
+            try:
+                result = await fn(state)
+            except BaseException:
+                state.budget_tracker.add_duration(name, time.perf_counter() - start)
+                raise
+            return _record(name, state, result, start)
+
+        return timed_node_async
+
+    def timed_node(state: AgentState) -> Any:
+        start = time.perf_counter()
+        try:
+            result = fn(state)
+        except BaseException:
+            state.budget_tracker.add_duration(name, time.perf_counter() - start)
+            raise
+        return _record(name, state, result, start)
+
+    return timed_node
 
 
 def build_agent_graph(tools: ToolBox) -> StateGraph:
@@ -65,18 +115,22 @@ def build_agent_graph(tools: ToolBox) -> StateGraph:
     structural_check_node = make_structural_check_node(tools)
     consistency_critic_node = make_consistency_critic_node(tools)
 
-    workflow.add_node(WorkflowNode.CONVERT_TO_TEXT, convert_document_node)
-    workflow.add_node(WorkflowNode.CHUNK, chunk_text_node)
-    workflow.add_node(WorkflowNode.SUMMARIZE_CHUNKS, summarize_chunks_node)
-    workflow.add_node(WorkflowNode.RENDER_ONTOLOGY_UPDATE, render_ontology_node)
-    workflow.add_node(WorkflowNode.NORMALIZE_ONTOLOGY_UPDATES, normalize_ontology_node)
-    workflow.add_node(WorkflowNode.CONSOLIDATE_ONTOLOGY, consolidate_ontology_node)
-    workflow.add_node(WorkflowNode.RENDER_FACTS, render_facts_node)
-    workflow.add_node(WorkflowNode.MERGE_FACTS, merge_facts_node)
-    workflow.add_node(WorkflowNode.VALIDATE_FACTS, validate_facts_node)
-    workflow.add_node(WorkflowNode.STRUCTURAL_CHECK, structural_check_node)
-    workflow.add_node(WorkflowNode.CONSISTENCY_CRITIC, consistency_critic_node)
-    workflow.add_node(WorkflowNode.SERIALIZE, serialize_node)
+    node_callables: dict[WorkflowNode, Callable[..., Any]] = {
+        WorkflowNode.CONVERT_TO_TEXT: convert_document_node,
+        WorkflowNode.CHUNK: chunk_text_node,
+        WorkflowNode.SUMMARIZE_CHUNKS: summarize_chunks_node,
+        WorkflowNode.RENDER_ONTOLOGY_UPDATE: render_ontology_node,
+        WorkflowNode.NORMALIZE_ONTOLOGY_UPDATES: normalize_ontology_node,
+        WorkflowNode.CONSOLIDATE_ONTOLOGY: consolidate_ontology_node,
+        WorkflowNode.RENDER_FACTS: render_facts_node,
+        WorkflowNode.MERGE_FACTS: merge_facts_node,
+        WorkflowNode.VALIDATE_FACTS: validate_facts_node,
+        WorkflowNode.STRUCTURAL_CHECK: structural_check_node,
+        WorkflowNode.CONSISTENCY_CRITIC: consistency_critic_node,
+        WorkflowNode.SERIALIZE: serialize_node,
+    }
+    for node, callable_ in node_callables.items():
+        workflow.add_node(node, _timed(str(node), callable_))
     workflow.add_edge(START, WorkflowNode.CONVERT_TO_TEXT)
     workflow.add_edge(WorkflowNode.CONVERT_TO_TEXT, WorkflowNode.CHUNK)
     workflow.add_conditional_edges(

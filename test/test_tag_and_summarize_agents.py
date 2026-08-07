@@ -2,7 +2,7 @@
 
 import logging
 from types import SimpleNamespace
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 from rdflib import URIRef
@@ -39,8 +39,13 @@ def _build_tools(
     parallel_workers: int = 2,
     min_size: int = 50,
     max_size: int = 2000,
+    section_classifier: Literal["llm", "heading", "off"] = "llm",
 ) -> ToolBox:
-    config = ChunkConfig(min_size=min_size, max_size=max_size)
+    config = ChunkConfig(
+        min_size=min_size,
+        max_size=max_size,
+        section_classifier=section_classifier,
+    )
 
     async def default_llm(_prompt):
         raise AssertionError("LLM should not be called")
@@ -78,12 +83,25 @@ def _content_unit(
 
 
 @pytest.mark.anyio
-async def test_chunk_prepare_no_section_options_uses_simple_path() -> None:
+async def test_chunk_prepare_no_section_options_still_classifies() -> None:
+    """Classification is default-on: headed chunks get labels with zero LLM calls."""
     state = AgentState(
         docling_doc=doc_from_markdown_lines(_SAMPLE_DOC),
     )
     assert state.needs_section_prepare is False
     result = await chunk_text(state, _build_tools())
+    assert result.status == Status.SUCCESS
+    assert result.content_units
+    labels = {unit.section_label for unit in result.content_units}
+    assert labels & {"introduction", "methods", "results", "future_work"}
+
+
+@pytest.mark.anyio
+async def test_chunk_prepare_classifier_off_uses_simple_path() -> None:
+    state = AgentState(
+        docling_doc=doc_from_markdown_lines(_SAMPLE_DOC),
+    )
+    result = await chunk_text(state, _build_tools(section_classifier="off"))
     assert result.status == Status.SUCCESS
     assert result.content_units
     assert all(unit.section_label is None for unit in result.content_units)

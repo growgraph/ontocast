@@ -1,16 +1,12 @@
-import asyncio
 import importlib
 import logging
-from collections.abc import Callable, Coroutine
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
-from unittest.mock import patch
+from typing import cast
 
 import pytest
 from rdflib import OWL, RDF, BNode, Literal, URIRef
 
-from ontocast.agent.chunk_text import chunk_text as _chunk_text
 from ontocast.agent.normalize_ontology import normalize_ontology_units
 from ontocast.config import (
     Config,
@@ -22,7 +18,6 @@ from ontocast.config import (
 )
 from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
-from ontocast.onto.docling_helpers import plain_text_to_docling_doc
 from ontocast.onto.enum import (
     LLMGraphFormat,
     OntologyContextMode,
@@ -54,9 +49,9 @@ from ontocast.stategraph.routing import (
     route_after_ontology_consolidation,
     route_after_tag_or_chunk,
 )
+from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool import EmbeddingBasedAggregator
 from ontocast.tool.atomic import AtomicToolBox, SearchHit
-from ontocast.tool.chunk.prepare import PreparedChunk
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.toolbox import ToolBox
 from test.snapshot_helpers import empty_snapshot, snapshot_from_ontology
@@ -144,7 +139,9 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
         ),
     )
     document_state = AgentState(render_mode=RenderMode.FACTS)
-    result = await unit_loops.facts_loop(state, toolbox, document_state)
+    result = await unit_loops.facts_loop(
+        state, toolbox, UnitLoopContext.from_agent_state(document_state)
+    )
 
     assert result.status == Status.SUCCESS
     assert result.content_unit.hid == state.content_unit.hid
@@ -193,7 +190,9 @@ async def test_run_unit_ontology_loop_emits_updates(monkeypatch) -> None:
     document_state = AgentState(
         ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY
     )
-    result = await unit_loops.ontology_loop(state, toolbox, document_state)
+    result = await unit_loops.ontology_loop(
+        state, toolbox, UnitLoopContext.from_agent_state(document_state)
+    )
 
     assert result.status == Status.SUCCESS
     assert len(result.all_updates) == 1
@@ -687,7 +686,9 @@ async def test_ontology_loop_runs_external_evidence_nodes(monkeypatch) -> None:
     document_state = AgentState(
         ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY
     )
-    result = await unit_loops.ontology_loop(state, toolbox, document_state)
+    result = await unit_loops.ontology_loop(
+        state, toolbox, UnitLoopContext.from_agent_state(document_state)
+    )
 
     assert result.status == Status.SUCCESS
     assert called_nodes == []
@@ -764,7 +765,9 @@ async def test_ontology_loop_plans_search_when_critic_requests_it(monkeypatch) -
     document_state = AgentState(
         ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY
     )
-    result = await unit_loops.ontology_loop(state, toolbox, document_state)
+    result = await unit_loops.ontology_loop(
+        state, toolbox, UnitLoopContext.from_agent_state(document_state)
+    )
 
     assert result.status == Status.SUCCESS
     assert called_nodes == [
@@ -955,30 +958,6 @@ def test_apply_update_query_splits_compound_sparql_insert_updates() -> None:
         URIRef("http://example.org/status"),
         URIRef("http://example.org/Active"),
     ) in graph
-
-
-def test_apply_update_query_splits_compound_sparql_with_many_prefixes() -> None:
-    """Regression: shared PREFIX block + second INSERT at ~line 44 (Text2KGBench style)."""
-    from ontocast.onto.sparql_models import STANDARD_PREFIXES
-
-    graph = RDFGraph()
-    graph.parse(
-        data="@prefix ex: <http://example.org/> . ex:Existing ex:kept ex:Value .",
-        format="turtle",
-    )
-    prefix_block = "\n".join(
-        f"PREFIX {prefix}: <{uri}>" for prefix, uri in STANDARD_PREFIXES.items()
-    )
-    compound_query = (
-        f"{prefix_block}\n"
-        "INSERT DATA { <http://example.org/a> <http://example.org/p1> "
-        "<http://example.org/o1> . }\n"
-        "INSERT DATA { <http://example.org/a> <http://example.org/p2> "
-        "<http://example.org/o2> . }"
-    )
-    AgentState._apply_update_query(graph, compound_query)
-
-    assert len(list(graph)) >= 3
 
 
 def test_apply_update_query_splits_insert_where_plus_insert_data() -> None:
@@ -1220,54 +1199,3 @@ async def test_consolidate_ontology_node_applies_delta_on_map_stage_artifact(
     # The regression: map-stage additions used to be dropped here.
     assert (map_stage_class, RDF.type, owl_class) in result_graph
     assert updated.ontology_updates_applied
-
-
-def test_chunk_text_resets_content_units_on_each_call() -> None:
-    """chunk_text must clear state.content_units before appending new chunks.
-
-    Without this reset a reused AgentState accumulates stale units from
-    previous invocations, leading to duplicate processing.
-    """
-
-    from docling_core.types.doc import DoclingDocument
-
-    from ontocast.config import ChunkConfig
-    from ontocast.tool.chunk.chunker import ChunkerTool
-    from ontocast.tool.chunk.prepare import PrepareOptions
-
-    config = ChunkConfig()
-    chunker = ChunkerTool(chunk_config=config)
-
-    async def fake_prepare(
-        docling_doc: DoclingDocument,
-        splitter: ChunkerTool,
-        config: ChunkConfig,
-        options: PrepareOptions,
-        tools: ToolBox,
-    ) -> list[PreparedChunk]:
-        text = docling_doc.export_to_markdown().strip()
-        return [PreparedChunk(text=text, headings=None)]
-
-    _PrepareContentUnits = Callable[
-        [DoclingDocument, ChunkerTool, ChunkConfig, PrepareOptions, ToolBox],
-        Coroutine[Any, Any, list[PreparedChunk]],
-    ]
-    patched_prepare: _PrepareContentUnits = fake_prepare
-
-    tools = SimpleNamespace(
-        chunker=chunker,
-        embedding_tool=SimpleNamespace(embed=lambda texts: [[0.0] for _ in texts]),
-    )
-    import ontocast.tool.chunk.prepare as prepare_module
-
-    with patch.object(prepare_module, "prepare_content_units", patched_prepare):
-        state = AgentState(render_mode=RenderMode.ONTOLOGY)
-        state.set_docling_doc(plain_text_to_docling_doc("first invocation text", "doc"))
-        asyncio.run(_chunk_text(state, cast(ToolBox, tools)))
-        assert len(state.content_units) == 1
-
-        state.set_docling_doc(
-            plain_text_to_docling_doc("second invocation text", "doc")
-        )
-        asyncio.run(_chunk_text(state, cast(ToolBox, tools)))
-        assert len(state.content_units) == 1

@@ -342,3 +342,50 @@ def test_validate_facts_node_noop_on_empty_state() -> None:
     state = AgentState()
     make_validate_facts_node(tools)(state)
     assert state.retrieval_metrics.get("facts_validation_errors") is None
+
+
+def test_dangling_reference_reported_as_warning() -> None:
+    graph = RDFGraph()
+    graph.parse(
+        data=f"""
+@prefix cd: <{CD}> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix q: <{Q}> .
+
+cd:observation_1 a q:Observation ;
+    rdfs:label "obs"@en ;
+    q:hasCondition cd:condition_never_declared .
+""",
+        format="turtle",
+    )
+    report = validate_aggregated_facts(graph, None, fact_namespaces=[DEFAULT_IRI])
+    dangling = [
+        finding
+        for finding in report.findings
+        if finding.kind is FactsValidationFindingKind.DANGLING_REFERENCE
+    ]
+    assert len(dangling) == 1
+    assert dangling[0].severity == "warning"
+    assert "condition_never_declared" in dangling[0].subject
+
+
+def test_described_and_external_objects_are_not_dangling() -> None:
+    graph = RDFGraph()
+    graph.parse(
+        data=f"""
+@prefix cd: <{CD}> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix q: <{Q}> .
+
+cd:observation_1 a q:Observation ;
+    q:hasCondition cd:condition_1 ;
+    q:hasUnit <http://qudt.org/vocab/unit/NanoM> .
+cd:condition_1 rdfs:label "77 K"@en .
+""",
+        format="turtle",
+    )
+    report = validate_aggregated_facts(graph, None, fact_namespaces=[DEFAULT_IRI])
+    assert not any(
+        finding.kind is FactsValidationFindingKind.DANGLING_REFERENCE
+        for finding in report.findings
+    )

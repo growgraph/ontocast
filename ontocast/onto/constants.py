@@ -25,7 +25,7 @@ COMMON_PREFIXES = {
     "dcterms": "<http://purl.org/dc/terms/>",
     "skos": "<http://www.w3.org/2004/02/skos/core#>",
     "foaf": "<http://xmlns.com/foaf/0.1/>",
-    "schema": "<http://schema.org/>",
+    "schema": "<https://schema.org/>",
     "prov": "<http://www.w3.org/ns/prov#>",
     "ex": "<http://example.org/>",
 }

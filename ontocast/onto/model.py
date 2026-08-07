@@ -540,6 +540,8 @@ class FactsUnitFindingKind(StrEnum):
     CLOSED_RANGE_LITERAL = "closed_range_literal"
     LITERAL_TYPE_OBJECT = "literal_type_object"
     NUMERIC_COVERAGE = "numeric_coverage"
+    SCALAR_AS_BOUNDS = "scalar_as_bounds"
+    DOMAIN_VIOLATION = "domain_violation"
 
 
 class FactsUnitFinding(BaseModel):
@@ -616,6 +618,7 @@ class FactsValidationFindingKind(StrEnum):
     DEGENERATE_COREFERENCE = "degenerate_coreference"
     SHACL = "shacl"
     NON_CATALOG_VOCABULARY = "non_catalog_vocabulary"
+    DANGLING_REFERENCE = "dangling_reference"
 
 
 class FactsValidationFinding(BaseModel):

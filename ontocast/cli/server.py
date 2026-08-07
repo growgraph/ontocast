@@ -322,6 +322,16 @@ def serve(
     ),
 )
 @click.option(
+    "--exclude-sections",
+    type=str,
+    default=None,
+    help=(
+        "Comma-separated section labels to drop when chunking (e.g. "
+        "acknowledgements,appendix). Unset = the resolved schema's defaults; "
+        "pass an empty string to disable exclusion."
+    ),
+)
+@click.option(
     "--summarize-sections",
     type=str,
     default=None,
@@ -378,6 +388,7 @@ def process(
     ontology_output_dir: pathlib.Path | None,
     use_unit_pipeline: bool,
     target_sections: str | None,
+    exclude_sections: str | None,
     summarize_sections: str | None,
     summary_max_sentences: int,
     document_type_hint: str | None,
@@ -397,6 +408,11 @@ def process(
         parsed_target_sections = (
             parse_sections_list_param(target_sections, param="target-sections")
             if target_sections is not None
+            else None
+        )
+        parsed_exclude_sections = (
+            parse_sections_list_param(exclude_sections, param="exclude-sections")
+            if exclude_sections is not None
             else None
         )
         parsed_summarize_sections = (
@@ -444,6 +460,7 @@ def process(
             tenant=runtime.tenant,
             project=runtime.project,
             target_sections=parsed_target_sections,
+            exclude_sections=parsed_exclude_sections,
             summarize_sections=parsed_summarize_sections,
             summary_max_sentences=parsed_summary_max_sentences,
             document_type_hint=parsed_document_type_hint,

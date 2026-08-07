@@ -269,8 +269,16 @@ class UnitOntologyState(UnitState):
         self.ontology_updates = []
 
     def working_graph_changed(self) -> bool:
-        """True when scratchpad content hash differs from the seed snapshot."""
-        if self.ontology_snapshot.is_empty() and len(self.working_graph) == 0:
+        """True when the scratchpad graph differs from the seed snapshot.
+
+        Plain set comparison is sound here: the working graph starts as an
+        in-process copy of the snapshot graph (blank-node identity preserved,
+        no serialization round-trip), so canonicalization-grade hashing adds
+        cost without adding correctness.
+        """
+        snapshot_graph = self.ontology_snapshot.graph
+        if len(self.working_graph) != len(snapshot_graph):
+            return True
+        if len(self.working_graph) == 0:
             return False
-        current_hash = self.working_graph.hash() if len(self.working_graph) > 0 else ""
-        return current_hash != self.ontology_snapshot.content_hash
+        return set(self.working_graph) != set(snapshot_graph)

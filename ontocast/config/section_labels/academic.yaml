@@ -1,6 +1,9 @@
 schema_version: "1.0"
 id: academic
 description: IMRaD and common paper or report section headings
+default_exclude:
+-   acknowledgements
+-   appendix
 labels:
 -   id: abstract
     heading_patterns:

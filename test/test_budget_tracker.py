@@ -61,3 +61,34 @@ def test_get_summary_omits_tokens_when_zero() -> None:
     tracker.add_usage(100, 50)
     summary = tracker.get_summary()
     assert "tokens" not in summary
+
+
+def test_add_duration_accumulates_per_name() -> None:
+    tracker = BudgetTracker()
+    tracker.add_duration("Chunk Text", 1.5)
+    tracker.add_duration("Chunk Text", 0.5)
+    tracker.add_duration("Serialize", 0.25)
+    assert tracker.node_durations == {"Chunk Text": 2.0, "Serialize": 0.25}
+
+
+def test_merge_from_sums_node_durations() -> None:
+    left = BudgetTracker()
+    left.add_duration("unit facts loop", 2.0)
+    right = BudgetTracker()
+    right.add_duration("unit facts loop", 3.0)
+    right.add_duration("unit ontology loop", 1.0)
+    left.merge_from(right)
+    assert left.node_durations == {
+        "unit facts loop": 5.0,
+        "unit ontology loop": 1.0,
+    }
+
+
+def test_get_duration_summary_ranks_slowest_first() -> None:
+    tracker = BudgetTracker()
+    assert tracker.get_duration_summary() == ""
+    tracker.add_duration("fast", 0.5)
+    tracker.add_duration("slow", 2.0)
+    summary = tracker.get_duration_summary()
+    assert summary.startswith("Durations: slow 2.0s")
+    assert "fast 0.5s" in summary

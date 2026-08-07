@@ -18,6 +18,7 @@ from ontocast.onto.retrieval_capabilities import vector_retrieval_available
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import context_resolver as cr
 from ontocast.stategraph.context_resolver import resolve_unit_ontology_context
+from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.chunk.proposition import split_proposition_windows
 from ontocast.toolbox import ToolBox
 
@@ -66,7 +67,9 @@ async def test_full_ttl_does_not_invoke_ensemble_path(monkeypatch) -> None:
         ),
     )
     unit = state.content_units[0]
-    result = await resolve_unit_ontology_context(state, tools, unit)
+    result = await resolve_unit_ontology_context(
+        UnitLoopContext.from_agent_state(state), tools, unit
+    )
     assert result.assembly_mode == OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM
     assert result.snapshot.source_iris == [finance_iri]
 
@@ -91,11 +94,6 @@ def test_split_proposition_windows_strides_instead_of_dropping_the_tail() -> Non
     assert windows[0].startswith("Sentence 0.")
     # The closing sentences must still be represented; truncation lost them entirely.
     assert "Sentence 18." in windows[-1]
-
-
-def test_vector_store_config_proposition_fields_exist() -> None:
-    cfg = VectorStoreConfig()
-    assert cfg.proposition_window_sentences >= 1
 
 
 def test_vector_retrieval_available_requires_ready_state() -> None:

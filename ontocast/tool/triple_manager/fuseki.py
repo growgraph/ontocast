@@ -34,6 +34,7 @@ from ontocast.tool.triple_manager.util import (
     headers_from_select_rows,
     ontology_from_named_graph,
 )
+from ontocast.util.loop import require_no_running_loop
 
 logger = logging.getLogger(__name__)
 
@@ -489,7 +490,15 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         """Synchronous wrapper for fetch_ontologies.
 
         For async usage, use afetch_ontologies() instead.
+
+        Raises:
+            RuntimeError: If called from inside a running event loop; await
+                :meth:`afetch_ontologies` there.
         """
+        require_no_running_loop(
+            "FusekiTripleStoreManager.fetch_ontologies",
+            "FusekiTripleStoreManager.afetch_ontologies",
+        )
         # Use a temporary client for this operation to avoid event loop cleanup issues
         return asyncio.run(self._fetch_ontologies_with_cleanup())
 
@@ -729,7 +738,15 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         """Synchronous wrapper for serialize_graph.
 
         For async usage, use aserialize_graph() instead.
+
+        Raises:
+            RuntimeError: If called from inside a running event loop; await
+                :meth:`aserialize_graph` there.
         """
+        require_no_running_loop(
+            "FusekiTripleStoreManager.serialize_graph",
+            "FusekiTripleStoreManager.aserialize_graph",
+        )
         return asyncio.run(self._serialize_graph_with_cleanup(graph, **kwargs))
 
     async def aserialize_graph(self, graph: Graph, **kwargs) -> bool:
@@ -809,7 +826,15 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         """Synchronous wrapper for serialize.
 
         For async usage, use aserialize() instead.
+
+        Raises:
+            RuntimeError: If called from inside a running event loop; await
+                :meth:`aserialize` there.
         """
+        require_no_running_loop(
+            "FusekiTripleStoreManager.serialize",
+            "FusekiTripleStoreManager.aserialize",
+        )
         return asyncio.run(self._serialize_with_cleanup(o, **kwargs))
 
     async def aserialize(self, o: Ontology | RDFGraph, **kwargs) -> bool:

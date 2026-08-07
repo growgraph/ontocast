@@ -104,7 +104,7 @@ _OUTPUT_INSTRUCTION_CRITIQUE_TURTLE = """\n\n
 The deployment emits RDF graph fixes in Turtle syntax.
 For each `incorrect_value` and `correct_value` in actionable fixes, provide a **string**
 containing valid Turtle: `@prefix` declarations when needed, then one or more triples.
-Example: "@prefix ex: <http://example.org/> . ex:alice ex:worksFor ex:acme ."
+Example: "@prefix schema: <https://schema.org/> . cd:alice schema:worksFor cd:acme ."
 """
 
 _OUTPUT_INSTRUCTION_CRITIQUE_JSONLD = """\n\n
@@ -114,7 +114,7 @@ Render output uses embedded JSON-LD objects for graph fields, but critique fixes
 containing JSON for one subject node each.
 For each `incorrect_value` and `correct_value`, provide a **string** with valid JSON for one
 subject node (inline `@context` or compact IRIs only):
-Example: "{\\"@context\\": {\\"ex\\": \\"http://example.org/\\"}, \\"@id\\": \\"ex:alice\\", \\"ex:worksFor\\": {\\"@id\\": \\"ex:acme\\"}}"
+Example: "{\\"@context\\": {\\"schema\\": \\"https://schema.org/\\"}, \\"@id\\": \\"cd:alice\\", \\"schema:worksFor\\": {\\"@id\\": \\"cd:acme\\"}}"
 Use `{"@value": "...", "@type": "xsd:date"}` for typed literals and `{"@value": "...", "@language": "en"}`
 for language-tagged literals. Never use Turtle ^^ syntax inside these JSON strings.
 """

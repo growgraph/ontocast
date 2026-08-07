@@ -33,26 +33,23 @@ from ontocast.onto.model import (
     FactsUnitFinding,
 )
 from ontocast.onto.ontology import Ontology
-from ontocast.onto.ontology_access import document_ontology_access
-from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.context_resolver import (
     UnitOntologyContext,
     resolve_effective_facts_ontology_context,
     resolve_unit_ontology_context,
 )
+from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.facts_invariants import collect_unit_findings
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
 
 
-def _document_supplemental_ontologies(document_state: AgentState) -> list[Ontology]:
+def _document_supplemental_ontologies(context: UnitLoopContext) -> list[Ontology]:
     """Non-null reduced ontology artifacts for LLM ingest prefix repair."""
     return [
-        ontology
-        for ontology in document_ontology_access(document_state).reduced_artifacts()
-        if not ontology.is_null()
+        ontology for ontology in context.reduced_artifacts() if not ontology.is_null()
     ]
 
 
@@ -79,7 +76,7 @@ def _catalog_ontologies_for_patch_sources(
 
 
 def _supplemental_ontologies_for_unit(
-    document_state: AgentState,
+    context: UnitLoopContext,
     unit_state: UnitOntologyState | UnitFactsState,
     tools: ToolBox,
 ) -> list[Ontology]:
@@ -87,7 +84,7 @@ def _supplemental_ontologies_for_unit(
     merged: list[Ontology] = []
     seen: set[str] = set()
     for ontology in (
-        *_document_supplemental_ontologies(document_state),
+        *_document_supplemental_ontologies(context),
         *_catalog_ontologies_for_patch_sources(
             tools, list(unit_state.ontology_patch_sources)
         ),
@@ -253,16 +250,16 @@ def _apply_unit_ontology_context(
 
 async def _apply_facts_ontology_context(
     unit_state: UnitFactsState,
-    document_state: AgentState,
+    context: UnitLoopContext,
     tools: ToolBox,
 ) -> UnitFactsState:
     """Set ontology_snapshot for facts from per-unit context resolver."""
     ctx = await resolve_effective_facts_ontology_context(
-        document_state, tools, unit_state.content_unit
+        context, tools, unit_state.content_unit
     )
     logger.info(
         "Ontology context for mode %s: sources=%s writable=%s",
-        document_state.ontology_context_mode,
+        context.ontology_context_mode,
         ctx.patch_sources,
         ctx.writable_iris,
     )
@@ -273,7 +270,7 @@ async def _apply_facts_ontology_context(
 async def facts_loop(
     state: UnitFactsState,
     tools: ToolBox,
-    document_state: AgentState,
+    document_context: UnitLoopContext,
     max_visits_per_node: int | None = None,
     pre_resolved_context: UnitOntologyContext | None = None,
 ) -> UnitFactsState:
@@ -284,12 +281,18 @@ async def facts_loop(
     """
     atomic = tools.get_atomic_tools()
     unit_state = state.model_copy(deep=True)
+    # Charge resolver LLM calls (e.g. ontology selection) to this unit's
+    # tracker — the copy that survives the loop and is merged by the caller.
+    # Shallow copy: retrieval_metrics stays shared with the caller's context.
+    document_context = document_context.model_copy(
+        update={"budget_tracker": unit_state.budget_tracker}
+    )
     try:
         if pre_resolved_context is not None:
             _apply_unit_ontology_context(unit_state, pre_resolved_context)
         else:
             unit_state = await _apply_facts_ontology_context(
-                unit_state, document_state, tools
+                unit_state, document_context, tools
             )
         max_visits = _resolve_max_visits_limit(
             unit_state.max_visits_per_node, max_visits_per_node
@@ -300,7 +303,7 @@ async def facts_loop(
             unit_state.node_visits[WorkflowNode.TEXT_TO_FACTS] += 1
             _reset_node_evidence_context(unit_state, WorkflowNode.TEXT_TO_FACTS)
             supplemental = _supplemental_ontologies_for_unit(
-                document_state, unit_state, tools
+                document_context, unit_state, tools
             )
             unit_state = await render_facts(
                 unit_state, atomic, supplemental_ontologies=supplemental
@@ -430,7 +433,7 @@ async def facts_loop(
 async def ontology_loop(
     state: UnitOntologyState,
     tools: ToolBox,
-    document_state: AgentState,
+    document_context: UnitLoopContext,
     max_visits_per_node: int | None = None,
 ) -> UnitOntologyState:
     """Run ontology render/critic loop for one content unit.
@@ -440,9 +443,14 @@ async def ontology_loop(
     """
     atomic = tools.get_atomic_tools()
     unit_state = state.model_copy(deep=True)
+    # Charge resolver LLM calls to this unit's surviving tracker; shallow copy
+    # keeps retrieval_metrics shared with the caller's context.
+    document_context = document_context.model_copy(
+        update={"budget_tracker": unit_state.budget_tracker}
+    )
     try:
         ctx = await resolve_unit_ontology_context(
-            document_state, tools, unit_state.content_unit
+            document_context, tools, unit_state.content_unit
         )
         _apply_unit_ontology_context(unit_state, ctx)
         unit_state.working_graph = unit_state.ontology_snapshot.graph.copy()
@@ -456,7 +464,7 @@ async def ontology_loop(
             unit_state.node_visits[WorkflowNode.TEXT_TO_ONTOLOGY] += 1
             _reset_node_evidence_context(unit_state, WorkflowNode.TEXT_TO_ONTOLOGY)
             supplemental = _supplemental_ontologies_for_unit(
-                document_state, unit_state, tools
+                document_context, unit_state, tools
             )
             unit_state = await render_ontology(
                 unit_state, atomic, supplemental_ontologies=supplemental

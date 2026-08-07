@@ -6,7 +6,7 @@ writeback (``U → O*``) targets real :class:`Ontology` instances by namespace o
 
 from __future__ import annotations
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from ontocast.onto.enum import OntologyAssemblyMode
 from ontocast.onto.llm_graph_payload import LLMGraphWire
@@ -41,14 +41,12 @@ class OntologySnapshot(BasePydanticModel):
     )
     content_hash: str = Field(
         default="",
-        description="Content hash of graph (set on construction / refresh).",
+        description=(
+            "Content hash of graph. Lazy: empty until refresh_content_hash() "
+            "is called — canonical hashing is too expensive for the per-unit "
+            "hot path."
+        ),
     )
-
-    @model_validator(mode="after")
-    def _ensure_content_hash(self) -> OntologySnapshot:
-        if not self.content_hash and isinstance(self.graph, RDFGraph):
-            self.content_hash = self.graph.hash() if len(self.graph) > 0 else ""
-        return self
 
     def is_empty(self) -> bool:
         """True when the snapshot graph has no triples."""
@@ -131,7 +129,6 @@ class OntologySnapshot(BasePydanticModel):
             assembly_mode=assembly_mode,
             title=title or ontology.title,
             description=description or ontology.description,
-            content_hash=graph.hash() if len(graph) > 0 else "",
         )
 
     @classmethod
@@ -155,5 +152,4 @@ class OntologySnapshot(BasePydanticModel):
             assembly_mode=assembly_mode,
             title=title,
             description=description,
-            content_hash=working.hash() if len(working) > 0 else "",
         )

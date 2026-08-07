@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 
 from rdflib import RDFS, Literal, URIRef
 
@@ -38,6 +39,7 @@ from ontocast.stategraph.helpers import (
     build_ontology_delta_graph,
     merge_unit_deltas,
 )
+from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.facts_invariants import (
     collect_shacl_shapes,
     validate_aggregated_facts,
@@ -92,8 +94,8 @@ def make_render_ontology_node(tools: ToolBox):
             unit_index: int,
         ) -> tuple[int, UnitOntologyState, str, list[str], OntologyAssemblyMode]:
             async with semaphore:
-                base_state = state.model_copy(deep=True)
                 unit_budget = BudgetTracker()
+                unit_context = UnitLoopContext.from_agent_state(state, unit_budget)
                 ontology_state = UnitOntologyState(
                     content_unit=state.content_units[unit_index],
                     ontology_snapshot=_empty_unit_snapshot(),
@@ -105,7 +107,14 @@ def make_render_ontology_node(tools: ToolBox):
                     ontology_max_triples=tools.config.server.ontology_max_triples,
                     llm_graph_format=state.llm_graph_format,
                 )
-                result = await ontology_loop(ontology_state, tools, base_state)
+                loop_start = time.perf_counter()
+                result = await ontology_loop(ontology_state, tools, unit_context)
+                result.budget_tracker.add_duration(
+                    "unit ontology loop", time.perf_counter() - loop_start
+                )
+                # Per-unit resolver metrics previously landed on a discarded
+                # deep copy; fold them back (last writer wins on shared keys).
+                state.retrieval_metrics.update(unit_context.retrieval_metrics)
                 return (
                     unit_index,
                     result,
@@ -424,8 +433,8 @@ def make_render_facts_node(tools: ToolBox):
             unit_index: int,
         ) -> tuple[int, UnitFactsState, str, list[str], OntologyAssemblyMode]:
             async with semaphore:
-                base_state = state.model_copy(deep=True)
                 unit_budget = BudgetTracker()
+                unit_context = UnitLoopContext.from_agent_state(state, unit_budget)
                 facts_state = UnitFactsState(
                     content_unit=state.content_units[unit_index],
                     ontology_snapshot=_empty_unit_snapshot(),
@@ -435,11 +444,18 @@ def make_render_facts_node(tools: ToolBox):
                     max_visits_per_node=state.max_visits,
                     llm_graph_format=state.llm_graph_format,
                 )
+                loop_start = time.perf_counter()
                 result = await facts_loop(
                     facts_state,
                     tools,
-                    base_state,
+                    unit_context,
                 )
+                result.budget_tracker.add_duration(
+                    "unit facts loop", time.perf_counter() - loop_start
+                )
+                # Per-unit resolver metrics previously landed on a discarded
+                # deep copy; fold them back (last writer wins on shared keys).
+                state.retrieval_metrics.update(unit_context.retrieval_metrics)
                 return (
                     unit_index,
                     result,
@@ -535,7 +551,9 @@ def make_render_facts_node(tools: ToolBox):
 def _facts_aggregation_inputs(state: AgentState) -> tuple[RDFGraph, dict]:
     """Ontology context and document metadata shared by merge and validate."""
     ontology_graph = RDFGraph()
-    merged_context = build_merged_document_ontology_context(state)
+    merged_context = build_merged_document_ontology_context(
+        UnitLoopContext.from_agent_state(state)
+    )
     if merged_context is not None and len(merged_context.snapshot.graph) > 0:
         ontology_graph = merged_context.snapshot.graph
     document_metadata = dict(state.document_metadata)

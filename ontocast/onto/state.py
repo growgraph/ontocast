@@ -90,6 +90,15 @@ class BudgetTracker(BasePydanticModel):
         default=0, description="Total number of facts update operations"
     )
 
+    node_durations: dict[str, float] = Field(
+        default_factory=dict,
+        description="Accumulated wall-clock seconds per pipeline node/stage",
+    )
+
+    def add_duration(self, name: str, seconds: float) -> None:
+        """Accumulate wall-clock seconds for a named node or stage."""
+        self.node_durations[name] = self.node_durations.get(name, 0.0) + seconds
+
     def add_usage(
         self,
         chars_sent: int,
@@ -145,6 +154,8 @@ class BudgetTracker(BasePydanticModel):
         self.facts_triples_generated += other.facts_triples_generated
         self.ontology_operations_count += other.ontology_operations_count
         self.facts_operations_count += other.facts_operations_count
+        for name, seconds in other.node_durations.items():
+            self.add_duration(name, seconds)
 
     def get_summary(self) -> str:
         """Get a summary of LLM usage and generated triples."""
@@ -168,6 +179,17 @@ class BudgetTracker(BasePydanticModel):
             )
 
         return " | ".join(parts)
+
+    def get_duration_summary(self) -> str:
+        """Get per-node wall-clock durations, slowest first."""
+        if not self.node_durations:
+            return ""
+        ranked = sorted(
+            self.node_durations.items(), key=lambda item: item[1], reverse=True
+        )
+        return "Durations: " + ", ".join(
+            f"{name} {seconds:.1f}s" for name, seconds in ranked
+        )
 
 
 class AgentState(BasePydanticModel):
@@ -432,6 +454,14 @@ class AgentState(BasePydanticModel):
         default=None,
         description="Sections to include when chunking. None = no filter.",
     )
+    exclude_sections: list[str] | None = Field(
+        default=None,
+        description=(
+            "Sections to drop when chunking. None = use the resolved section "
+            "schema's default_exclude; [] = no exclusion; list = explicit "
+            "denylist."
+        ),
+    )
     summarize_sections: list[str] | None = Field(
         default=None,
         description="Sections to summarize. None = skip summarization node.",
@@ -502,8 +532,17 @@ class AgentState(BasePydanticModel):
 
     @property
     def needs_section_prepare(self) -> bool:
-        """Whether chunk prepare runs section tagging and optional filter."""
-        return self.target_sections is not None or self.summarize_sections is not None
+        """Whether the request carries explicit section-dependent options.
+
+        Section tagging itself is default-on in chunk prepare (driven by
+        ``CHUNK_SECTION_CLASSIFIER``); schema-default exclusions apply even
+        when this is False.
+        """
+        return (
+            self.target_sections is not None
+            or self.summarize_sections is not None
+            or self.exclude_sections is not None
+        )
 
     @property
     def use_summarization(self) -> bool:

@@ -49,8 +49,13 @@ class EntityRepresentation:
         predicate_iri_objects: Per-predicate outgoing IRI objects
             (subject-position only)
         has_data_literal: Whether the entity holds any literal beyond
-            rdf:type/rdfs:label/rdfs:comment — literal-bearing entities get a
-            strict lexical merge bar
+            rdf:type/rdfs:label/rdfs:comment
+        has_guard_literal: Whether any such literal is guard-relevant
+            (numeric/temporal payload) — those entities get a strict lexical
+            merge bar; string-bearing entities (names, descriptions) do not
+        predicate_string_literals: Per-predicate normalized non-guard string
+            values ``pred -> {normalized}`` used for identifier-style conflict
+            detection
     """
 
     iri: URIRef
@@ -69,6 +74,10 @@ class EntityRepresentation:
     )
     predicate_iri_objects: dict[URIRef, frozenset[URIRef]] = field(default_factory=dict)
     has_data_literal: bool = False
+    has_guard_literal: bool = False
+    predicate_string_literals: dict[URIRef, frozenset[str]] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         if not self.core_representation:
@@ -92,6 +101,8 @@ class EntityContext:
     predicate_literals: dict[URIRef, frozenset[tuple[str, str]]]
     predicate_iri_objects: dict[URIRef, frozenset[URIRef]]
     has_data_literal: bool
+    has_guard_literal: bool
+    predicate_string_literals: dict[URIRef, frozenset[str]]
 
 
 class EntityNormalizer:
@@ -186,7 +197,9 @@ class EntityNormalizer:
         is_predicate = False
         is_type_value = False
         has_data_literal = False
+        has_guard_literal = False
         predicate_literals: dict[URIRef, set[tuple[str, str]]] = {}
+        predicate_string_literals: dict[URIRef, set[str]] = {}
         predicate_iri_objects: dict[URIRef, set[URIRef]] = {}
         schema_predicates = {RDF.type, RDFS.label, RDFS.comment}
 
@@ -211,7 +224,14 @@ class EntityNormalizer:
                     if isinstance(p, URIRef):
                         canonical = canonical_literal(o)
                         if canonical is not None:
+                            has_guard_literal = True
                             predicate_literals.setdefault(p, set()).add(canonical)
+                        else:
+                            normalized_value = self.normalize_string(str(o))
+                            if normalized_value:
+                                predicate_string_literals.setdefault(p, set()).add(
+                                    normalized_value
+                                )
                     if o.datatype is None:
                         value = str(o).strip()
                         if len(value) >= 3 and not value.isnumeric():
@@ -246,6 +266,11 @@ class EntityNormalizer:
                 for predicate, objects in predicate_iri_objects.items()
             },
             has_data_literal=has_data_literal,
+            has_guard_literal=has_guard_literal,
+            predicate_string_literals={
+                predicate: frozenset(values)
+                for predicate, values in predicate_string_literals.items()
+            },
         )
 
     def _render_term(self, term: Node) -> str:
@@ -418,6 +443,8 @@ class EntityNormalizer:
             predicate_literals=context.predicate_literals,
             predicate_iri_objects=context.predicate_iri_objects,
             has_data_literal=context.has_data_literal,
+            has_guard_literal=context.has_guard_literal,
+            predicate_string_literals=context.predicate_string_literals,
         )
 
     def create_representations_batch(

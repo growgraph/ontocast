@@ -61,8 +61,8 @@ def test_section_label_overrides_heuristics() -> None:
     assert not is_bibliography_unit(_RESULTS_PROSE, None)
 
 
-def test_bibliography_mode_default_is_citations_only() -> None:
-    assert ChunkConfig().bibliography_mode == "citations_only"
+def test_bibliography_mode_default_is_skip() -> None:
+    assert ChunkConfig().bibliography_mode == "skip"
 
 
 def _unit(text: str, *, citation: bool) -> ContentUnit:

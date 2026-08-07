@@ -258,9 +258,19 @@ class ChunkerTool(Tool):
                         sentence_split_regex=SENTENCE_SPLIT_REGEX,
                     )
 
-                    # SemanticChunker now handles max_size internally
-                    result_docs = text_splitter.create_documents(documents)
-                    result = [doc.page_content for doc in result_docs]
+                    try:
+                        # SemanticChunker now handles max_size internally
+                        result_docs = text_splitter.create_documents(documents)
+                        result = [doc.page_content for doc in result_docs]
+                    except ValueError as exc:
+                        # Degenerate inputs (too few distinct sentences for the
+                        # HDBSCAN neighborhood) must not fail chunking outright.
+                        logger.warning(
+                            "Semantic chunking failed (%s); falling back to "
+                            "naive chunking for this text.",
+                            exc,
+                        )
+                        result = self._naive_chunk(doc)
 
                     # Log chunk lengths for debugging
                     lens = [len(chunk) for chunk in result]
