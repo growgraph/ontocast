@@ -626,3 +626,36 @@ class TestOntologyManagerVectorAndRemoval:
         ontology_manager.remove_ontology_by_iri(sample_ontology.iri)
         assert sample_ontology.iri not in ontology_manager.ontology_versions
         assert sample_ontology.iri not in ontology_manager._cached_ontologies
+
+    def test_remove_ontology_by_iri_evicts_the_graph_cache(
+        self, ontology_manager, sample_ontology
+    ):
+        """Eviction must use the key entries were inserted under.
+
+        Entries are cached by the header's ``graph_uri``; popping
+        ``versioned_iri`` instead silently missed whenever the recomputed hash
+        differed from the stored graph URI, leaving a removed ontology still
+        resolvable from cache.
+        """
+        graph_uri = "urn:tenant:acme:onto:test-v1"
+        ontology_manager._cache_graph(sample_ontology, graph_uri)
+        assert graph_uri in ontology_manager._graph_cache
+
+        ontology_manager.remove_ontology_by_iri(sample_ontology.iri)
+
+        assert graph_uri not in ontology_manager._graph_cache
+        assert sample_ontology.iri not in ontology_manager._graph_uris_by_iri
+
+    def test_graph_cache_is_bounded(self, ontology_manager, sample_ontology):
+        """It holds whole rdflib graphs, so a long-lived server needs a bound."""
+        from ontocast.tool.ontology_manager import _GRAPH_CACHE_MAX_ENTRIES
+
+        for index in range(_GRAPH_CACHE_MAX_ENTRIES + 10):
+            ontology_manager._cache_graph(sample_ontology, f"urn:graph:{index}")
+
+        assert len(ontology_manager._graph_cache) == _GRAPH_CACHE_MAX_ENTRIES
+        # Oldest evicted, newest retained.
+        assert "urn:graph:0" not in ontology_manager._graph_cache
+        assert (
+            f"urn:graph:{_GRAPH_CACHE_MAX_ENTRIES + 9}" in ontology_manager._graph_cache
+        )

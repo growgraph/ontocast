@@ -22,10 +22,15 @@ from ontocast.util.optional import require
 if TYPE_CHECKING:
     from docling_core.types.doc import DoclingDocument
 
-from .cache import Cacher, ToolCacher
+from .cache import CONVERTER_CACHE_SUBDIR, Cacher, ToolCacher
 from .onto import Tool
 
 logger = logging.getLogger(__name__)
+
+# Bumped when the cached DoclingDocument shape changes. Previously done by
+# renaming the cache subdirectory, which is why orphaned `converter/` and
+# `converter_v2/` directories linger on older installs.
+CONVERTER_CACHE_FORMAT_VERSION = 1
 
 
 def _build_layout_options(config: ConverterConfig) -> Any:
@@ -168,11 +173,11 @@ class ConverterTool(Tool):
 
         # Initialize cache - use shared cacher or create new one
         if cache is not None:
-            self.cache = ToolCacher(cache, "converter_v3")
+            self.cache = ToolCacher(cache, CONVERTER_CACHE_SUBDIR)
         else:
             # Fallback for backward compatibility
             shared_cache = Cacher()
-            self.cache = ToolCacher(shared_cache, "converter_v3")
+            self.cache = ToolCacher(shared_cache, CONVERTER_CACHE_SUBDIR)
 
     def __call__(self, file_input: bytes | str | pathlib.Path) -> DoclingDocument:
         """Convert a document to a DoclingDocument.
@@ -196,8 +201,12 @@ class ConverterTool(Tool):
         else:
             raise TypeError(f"Unsupported file input type: {type(file_input).__name__}")
 
-        # Check cache first
+        # Check cache first. The format version lives in the key rather than in
+        # the subdirectory name: bumping it orphans stale entries in place, so a
+        # shape change no longer needs a `converter_v4` directory that leaves the
+        # previous one behind forever (see `ontocast cache prune --orphaned`).
         config_dict = self.converter_config.model_dump(mode="json")
+        config_dict["cache_format_version"] = CONVERTER_CACHE_FORMAT_VERSION
         cached_result = self.cache.get(content_for_cache, config=config_dict)
         if cached_result is not None:
             logger.debug("Cache hit for document conversion")

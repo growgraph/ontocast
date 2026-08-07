@@ -40,7 +40,14 @@ class ToolBoxRuntime:
     would tie the shared half to one scope.
     """
 
-    def __init__(self, config: Config, *, llm: LLMTool | None = None):
+    def __init__(
+        self,
+        config: Config,
+        *,
+        llm: LLMTool | None = None,
+        cache: Cacher | None = None,
+        prune_cache: bool = True,
+    ):
         """Build the shared tools.
 
         Args:
@@ -50,10 +57,19 @@ class ToolBoxRuntime:
                 :meth:`~ontocast.toolbox.ToolBox.acreate`; otherwise
                 ``LLMTool.create`` runs, which cannot be called inside a running
                 event loop.
+            cache: Pre-built shared cache. Supply the same instance that
+                ``llm`` was built with; otherwise the two would end up with
+                separate ``Cacher`` objects and separate prune counters.
+            prune_cache: Bound the cache on construction. :meth:`acreate` sets
+                this False because it has already pruned off the event loop.
         """
         tool_config = config.get_tool_config()
 
-        self.shared_cache = Cacher(config=config)
+        self.shared_cache = cache or Cacher(config=config)
+        # Bound the cache once per process start, so short CLI runs are covered
+        # too; steady-state trimming rides on the write counter inside Cacher.
+        if prune_cache:
+            self.shared_cache.prune()
         self.llm_provider = tool_config.llm_config.provider
         self.llm: LLMTool = llm or LLMTool.create(
             config=tool_config.llm_config, cache=self.shared_cache
@@ -107,10 +123,12 @@ class ToolBoxRuntime:
     @classmethod
     async def acreate(cls, config: Config) -> "ToolBoxRuntime":
         """Build the shared tools from inside a running event loop."""
+        cache = Cacher(config=config)
+        await cache.aprune()
         llm = await LLMTool.acreate(
-            config=config.get_tool_config().llm_config, cache=Cacher(config=config)
+            config=config.get_tool_config().llm_config, cache=cache
         )
-        return cls(config, llm=llm)
+        return cls(config, llm=llm, cache=cache, prune_cache=False)
 
     async def get_llm_tool(self, budget_tracker):
         """Return the shared LLM tool, charging usage to ``budget_tracker``.

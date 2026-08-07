@@ -42,10 +42,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import weakref
 from contextlib import contextmanager
 from contextvars import ContextVar
-from functools import wraps
-from typing import Any, Callable, Type, TypeVar
+from typing import Any, Type, TypeVar
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages.ai import AIMessage
@@ -56,15 +56,26 @@ from ontocast.config import LLMConfig, LLMProvider
 from ontocast.util.loop import require_no_running_loop
 from ontocast.util.optional import require
 
-from .cache import Cacher, ToolCacher
+from .cache import LLM_CACHE_SUBDIR, Cacher, ToolCacher
 from .onto import Tool
 
 T = TypeVar("T", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
 
-# Shared across all LLMTool instances with the same max_inflight setting.
-_inflight_semaphores: dict[int, asyncio.Semaphore] = {}
+# Bumped whenever the cache entry shape or the set of key inputs changes, so
+# stale entries miss instead of being deserialised under the wrong assumptions.
+# Version 2 added the Ollama generation knobs to the key.
+LLM_CACHE_FORMAT_VERSION = 2
+
+# Shared across all LLMTool instances with the same max_inflight setting, but
+# partitioned per event loop: asyncio.Semaphore binds to the running loop the
+# first time it has to wait, so a single process-wide instance breaks the second
+# ``asyncio.run`` in a process as soon as it sees contention. Keyed weakly on the
+# loop itself rather than on id(), which is recycled once a loop is collected.
+_inflight_semaphores: "weakref.WeakKeyDictionary[Any, dict[int, asyncio.Semaphore]]" = (
+    weakref.WeakKeyDictionary()
+)
 
 # The budget tracker usage should be charged to, scoped to the running task.
 #
@@ -91,10 +102,46 @@ def use_budget_tracker(budget_tracker: Any):
         _active_budget_tracker.reset(token)
 
 
+def llm_cache_config(
+    config: LLMConfig, **extra: Any
+) -> dict[str, str | int | float | bool | None]:
+    """Cache-key inputs for a given LLM configuration.
+
+    Every field here changes the provider's response, so it must take part in
+    the key. This is the single definition: :class:`LLMTool` and the batch
+    import in :mod:`ontocast.tool.llm_batch` both call it, and any divergence
+    between them silently produces entries that are written but never read.
+
+    Args:
+        config: The LLM configuration a response would be produced under.
+        **extra: Additional discriminators (e.g. an output schema name).
+
+    Returns:
+        dict: JSON-serialisable mapping used as the cache key's config part.
+    """
+    config_dict: dict[str, str | int | float | bool | None] = {
+        "cache_format_version": LLM_CACHE_FORMAT_VERSION,
+        "provider": config.provider,
+        "model_name": config.model_name,
+        "temperature": config.temperature,
+        "base_url": config.base_url,
+        # Ollama generation knobs: these bound reasoning and output length, so
+        # the same prompt under a different num_ctx is a different response.
+        "think": config.think,
+        "num_predict": config.num_predict,
+        "num_ctx": config.num_ctx,
+    }
+    config_dict.update(extra)
+    return config_dict
+
+
 def _inflight_semaphore(max_inflight: int) -> asyncio.Semaphore:
-    if max_inflight not in _inflight_semaphores:
-        _inflight_semaphores[max_inflight] = asyncio.Semaphore(max_inflight)
-    return _inflight_semaphores[max_inflight]
+    """Return the in-flight limiter for ``max_inflight`` on the running loop."""
+    loop = asyncio.get_running_loop()
+    per_loop = _inflight_semaphores.setdefault(loop, {})
+    if max_inflight not in per_loop:
+        per_loop[max_inflight] = asyncio.Semaphore(max_inflight)
+    return per_loop[max_inflight]
 
 
 def _usage_from_llm_result(result: Any) -> tuple[int | None, int | None]:
@@ -148,30 +195,30 @@ def _content_to_str(content: Any) -> str:
     return str(content)
 
 
-def track_llm_usage(func: Callable) -> Callable:
-    """Decorator to track LLM usage for methods that always hit the provider."""
+def _cached_content(cached: Any) -> Any:
+    """Extract the response body from a cache entry.
 
-    def _record_usage(tool: LLMTool, prompt_str: str, result: Any) -> None:
-        bt = tool.budget_tracker
-        if bt is None:
-            return
-        input_tokens, output_tokens = _usage_from_llm_result(result)
-        bt.add_usage(
-            len(prompt_str),
-            _chars_received_from_result(result),
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-        )
+    Entries are dicts written by :meth:`LLMTool._invoke_cached`, but a bare
+    string is accepted so that a hand-written or externally imported entry does
+    not raise a ``TypeError`` deep inside the invoke path.
+    """
+    if isinstance(cached, dict):
+        return cached.get("content", "")
+    return cached
 
-    @wraps(func)
-    async def async_wrapper(self: LLMTool, *args, **kwargs):
-        prompt = args[0] if args else ""
-        prompt_str = self._prompt_to_string(prompt)
-        result = await func(self, *args, **kwargs)
-        _record_usage(self, prompt_str, result)
-        return result
 
-    return async_wrapper
+def _cached_metadata(cached: Any) -> dict[str, Any]:
+    """Response metadata stored alongside a cache entry, if any.
+
+    Replaying it keeps a cache hit behaviourally identical to a fresh call;
+    without it, a caller inspecting ``finish_reason`` would silently branch
+    differently on a cached run.
+    """
+    if isinstance(cached, dict):
+        metadata = cached.get("response_metadata")
+        if isinstance(metadata, dict):
+            return metadata
+    return {}
 
 
 class LLMTool(Tool):
@@ -212,11 +259,11 @@ class LLMTool(Tool):
 
         # Initialize cache - use shared cacher or create new one
         if cache is not None:
-            self.cache = ToolCacher(cache, "llm")
+            self.cache = ToolCacher(cache, LLM_CACHE_SUBDIR)
         else:
             # Fallback for backward compatibility
             shared_cache = Cacher()
-            self.cache = ToolCacher(shared_cache, "llm")
+            self.cache = ToolCacher(shared_cache, LLM_CACHE_SUBDIR)
 
     @classmethod
     def create(
@@ -338,14 +385,8 @@ class LLMTool(Tool):
             raise ValueError(f"Unsupported provider: {self.config.provider}")
 
     def _cache_config_dict(self, **extra: Any) -> dict[str, Any]:
-        config_dict: dict[str, Any] = {
-            "provider": self.config.provider,
-            "model_name": self.config.model_name,
-            "temperature": self.config.temperature,
-            "base_url": self.config.base_url,
-        }
-        config_dict.update(extra)
-        return config_dict
+        """Cache-key config for this tool's settings; see :func:`llm_cache_config`."""
+        return dict(llm_cache_config(self.config, **extra))
 
     def _cache_key_content(self, *args: Any) -> str:
         """Stable string for disk cache keys from invoke arguments."""
@@ -387,29 +428,73 @@ class LLMTool(Tool):
         )
 
     def get_cache_stats(
-        self,
+        self, include_disk: bool = True
     ) -> dict[str, int | dict[str, int | dict[str, int] | dict[str, dict[str, int]]]]:
-        """Return in-memory hit/miss counters and on-disk cache file stats."""
-        disk_stats = self.cache.get_cache_stats()
-        return {
+        """Return in-memory hit/miss counters and, optionally, on-disk file stats.
+
+        Args:
+            include_disk: Whether to walk the cache directory. The walk stats
+                every file, so callers on a hot path (or on an event loop)
+                should pass False or use :meth:`aget_cache_stats`.
+        """
+        stats: dict[
+            str, int | dict[str, int | dict[str, int] | dict[str, dict[str, int]]]
+        ] = {
             "cache_hits": self._cache_hits,
             "cache_misses": self._cache_misses,
-            "disk": disk_stats,
         }
+        if include_disk:
+            stats["disk"] = self.cache.get_cache_stats()
+        return stats
 
-    async def _invoke_cached(self, *args: Any, **kwds: Any) -> Any:
-        """Invoke the LLM with optional disk cache and global in-flight limiting."""
+    async def aget_cache_stats(
+        self,
+    ) -> dict[str, int | dict[str, int | dict[str, int] | dict[str, dict[str, int]]]]:
+        """Async :meth:`get_cache_stats`, with the directory walk off the loop."""
+        stats = self.get_cache_stats(include_disk=False)
+        stats["disk"] = await asyncio.to_thread(self.cache.get_cache_stats)
+        return stats
+
+    async def _invoke_cached(
+        self,
+        *args: Any,
+        cache_config_extra: dict[str, Any] | None = None,
+        **kwds: Any,
+    ) -> AIMessage:
+        """Invoke the LLM with optional disk cache and global in-flight limiting.
+
+        This is the single cache-aware entry point; :meth:`__call__`,
+        :meth:`acall`, :meth:`complete`, and :meth:`extract` all route through
+        it so that content normalisation, key construction, budget accounting,
+        and in-flight limiting cannot drift apart between them.
+
+        Args:
+            *args: Positional arguments forwarded to the provider's ``ainvoke``.
+                The first is treated as the prompt for keying and accounting.
+            cache_config_extra: Extra cache-key discriminators beyond the LLM
+                config (e.g. the structured-output schema name).
+            **kwds: Keyword arguments forwarded to ``ainvoke`` and folded into
+                the cache key.
+
+        Returns:
+            AIMessage: Response with content normalised to a plain string.
+        """
         prompt_key = self._cache_key_content(*args)
         prompt_str = self._prompt_to_string(args[0]) if args else ""
-        config_dict = self._cache_config_dict()
+        config_dict = self._cache_config_dict(**(cache_config_extra or {}))
 
         if self.config.cache_enabled:
-            cached_response = self.cache.get(prompt_key, config=config_dict, **kwds)
+            cached_response = await self.cache.aget(
+                prompt_key, config=config_dict, **kwds
+            )
             if cached_response is not None:
                 logger.debug("Cache hit: %s...", prompt_str[:50])
-                content_str = _content_to_str(cached_response["content"])
+                content_str = _content_to_str(_cached_content(cached_response))
                 self._record_cache_hit(prompt_str, content_str)
-                return AIMessage(content=content_str)
+                return AIMessage(
+                    content=content_str,
+                    response_metadata=_cached_metadata(cached_response),
+                )
 
         logger.debug("Cache miss, calling LLM: %s...", prompt_str[:50])
 
@@ -420,18 +505,17 @@ class LLMTool(Tool):
         self._record_api_usage(prompt_str, response)
 
         content_str = _content_to_str(response.content)
+        response_metadata = getattr(response, "response_metadata", {}) or {}
         if self.config.cache_enabled and not self.config.cache_read_only:
             response_data = {
                 "content": content_str,
                 "prompt": prompt_str,
+                "response_metadata": response_metadata,
                 "kwargs": kwds,
             }
-            self.cache.set(prompt_key, response_data, config=config_dict, **kwds)
+            await self.cache.aset(prompt_key, response_data, config=config_dict, **kwds)
 
-        return AIMessage(
-            content=content_str,
-            response_metadata=getattr(response, "response_metadata", {}),
-        )
+        return AIMessage(content=content_str, response_metadata=response_metadata)
 
     async def __call__(self, *args: Any, **kwds: Any) -> Any:
         """Call the language model directly (asynchronous)."""
@@ -479,76 +563,40 @@ class LLMTool(Tool):
             return str(content_attr)
         return str(prompt)
 
-    async def complete(self, prompt: str, **kwargs) -> Any:
-        """Generate a completion for the given prompt."""
-        config_dict = self._cache_config_dict()
-        prompt_key = self._prompt_to_string(prompt)
+    async def complete(self, prompt: str, **kwargs) -> str:
+        """Generate a completion for the given prompt.
 
-        if self.config.cache_enabled:
-            cached_response = self.cache.get(prompt_key, config=config_dict, **kwargs)
-            if cached_response is not None:
-                logger.debug("Cache hit for prompt: %s...", prompt_key[:50])
-                content = cached_response["content"]
-                content_str = content if isinstance(content, str) else str(content)
-                self._record_cache_hit(prompt_key, content_str)
-                return content_str
+        Args:
+            prompt: The prompt to complete.
+            **kwargs: Forwarded to the provider and folded into the cache key.
 
-        logger.debug("Cache miss, calling LLM for prompt: %s...", prompt_key[:50])
-
-        max_inflight = max(1, self.config.llm_max_inflight)
-        async with _inflight_semaphore(max_inflight):
-            response = await self.llm.ainvoke(prompt, **kwargs)
-
-        self._record_api_usage(prompt_key, response)
-
-        if self.config.cache_enabled and not self.config.cache_read_only:
-            response_data = {
-                "content": response.content,
-                "prompt": prompt_key,
-                "kwargs": kwargs,
-            }
-            self.cache.set(prompt_key, response_data, config=config_dict, **kwargs)
-
-        content = response.content
-        return content if isinstance(content, str) else str(content)
+        Returns:
+            str: The response text, normalised from provider content blocks.
+        """
+        response = await self._invoke_cached(prompt, **kwargs)
+        return _content_to_str(response.content)
 
     async def extract(self, prompt: str, output_schema: Type[T], **kwargs) -> T:
-        """Extract structured data from the prompt according to a schema."""
+        """Extract structured data from the prompt according to a schema.
+
+        Args:
+            prompt: The prompt describing what to extract.
+            output_schema: Pydantic model the response is parsed into.
+            **kwargs: Forwarded to the provider and folded into the cache key.
+
+        Returns:
+            T: The parsed model instance.
+        """
         parser = PydanticOutputParser(pydantic_object=output_schema)
         format_instructions = parser.get_format_instructions()
 
+        # The format instructions embed the full JSON schema, so schema changes
+        # already alter the key; the name is carried as an explicit
+        # discriminator so entries stay attributable when inspected on disk.
         full_prompt = f"{prompt}\n\n{format_instructions}"
-        config_dict = self._cache_config_dict(
-            output_schema=output_schema.__name__,
+        response = await self._invoke_cached(
+            full_prompt,
+            cache_config_extra={"output_schema": output_schema.__name__},
+            **kwargs,
         )
-
-        if self.config.cache_enabled:
-            cached_response = self.cache.get(full_prompt, config=config_dict, **kwargs)
-            if cached_response is not None:
-                logger.debug("Cache hit for extraction: %s...", prompt[:50])
-                content = cached_response["content"]
-                content_str = content if isinstance(content, str) else str(content)
-                self._record_cache_hit(full_prompt, content_str)
-                if isinstance(content, str):
-                    return parser.parse(content)
-                return parser.parse(str(content))
-
-        logger.debug("Cache miss, calling LLM for extraction: %s...", prompt[:50])
-
-        max_inflight = max(1, self.config.llm_max_inflight)
-        async with _inflight_semaphore(max_inflight):
-            response = await self.llm.ainvoke(full_prompt, **kwargs)
-
-        self._record_api_usage(full_prompt, response)
-
-        if self.config.cache_enabled and not self.config.cache_read_only:
-            response_data = {
-                "content": response.content,
-                "prompt": full_prompt,
-                "output_schema": output_schema.__name__,
-                "kwargs": kwargs,
-            }
-            self.cache.set(full_prompt, response_data, config=config_dict, **kwargs)
-
-        content = response.content
-        return parser.parse(content if isinstance(content, str) else str(content))
+        return parser.parse(_content_to_str(response.content))

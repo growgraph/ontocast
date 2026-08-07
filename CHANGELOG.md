@@ -35,6 +35,85 @@ project:
   bump it say so explicitly.
 
 
+## [Unreleased]
+
+### Breaking
+
+- **LLM cache key gained fields, invalidating every existing entry.** The key
+  now carries a `cache_format_version` (now `2`) plus the Ollama generation
+  knobs `think` / `num_predict` / `num_ctx`. Caches written by earlier releases
+  will not be hit, so the first run after upgrading re-pays for every call.
+- **The on-disk cache now evicts on its own,** capped at 1 GB by default
+  (`ONTOCAST_CACHE_MAX_BYTES`). This is new deletion behaviour; set the variable
+  to `0` to restore unbounded growth.
+
+### Fixed
+
+- **Batch cache prewarming was a no-op.** `ontocast.tool.llm_batch` built its own
+  cache-key config and dropped `base_url` when it was `None` — the default — so
+  every imported entry hashed differently from what `LLMTool` looked up.
+  Both sides now call one `llm_cache_config()`, covered by a regression test
+  that asserts through the real read path rather than against the importer itself.
+- **`complete()` and `extract()` mangled Anthropic and Google responses.** Those
+  providers return a list of typed content blocks; the two methods stringified
+  the list into a Python repr, returned it, and cached it. All four entry points
+  (`__call__`, `acall`, `complete`, `extract`) now genuinely share
+  `_invoke_cached`, so content normalisation cannot drift between them again.
+- **Ollama generation settings were absent from the cache key,** so changing
+  `num_ctx` returned the previous, truncated response from cache.
+- **`remove_ontology_by_iri` evicted the ontology graph cache under the wrong
+  key.** Entries are inserted under the header's `graph_uri` but were popped by
+  `versioned_iri`; the two coincide only while content hashing is round-trip
+  stable, so a removed ontology could stay resolvable. `_graph_cache` is now
+  also LRU-bounded rather than an unbounded dict of rdflib graphs.
+- **Cache writes are atomic** (temp file + `os.replace`). A truncating write with
+  `PARALLEL_WORKERS` units in flight, or a Ctrl-C mid-write, left readers seeing
+  half a JSON document.
+- **Cache I/O no longer blocks the event loop.** Disk reads and writes on the
+  async path run in a thread, and `GET /info` no longer `stat()`s every cache
+  file inline — tens of thousands of syscalls per request on a warm cache.
+- **Test cache isolation actually works.** Pytest was detected via the shell's
+  `$_` variable, which holds the path to `uv` under `uv run pytest`, so the
+  `.test_cache` branch never fired and tests read and wrote the developer's real
+  cache.
+- **Binary cache keys are no longer lossy.** PDF bytes were decoded with
+  `errors="ignore"` before hashing, leaving the key resting on whichever bytes
+  happened to form valid UTF-8.
+- **The in-flight semaphore is per event loop.** `asyncio.Semaphore` binds to a
+  loop on its first contended acquire, so a single process-wide instance raised
+  "bound to a different event loop" on the second `asyncio.run` in a process.
+- Cache-hit responses replay the provider's `response_metadata`, so a cached call
+  is behaviourally identical to a fresh one.
+- `ToolBoxRuntime.acreate` built a second `Cacher` instead of reusing the shared
+  one, defeating the documented single-instance design.
+
+### Added
+
+- **Automatic cache eviction.** `Cacher.prune()` drops TTL-expired entries, then
+  evicts least-recently-*used* entries until the total fits under
+  `ONTOCAST_CACHE_MAX_BYTES`. Recency comes from access time, so an entry written
+  once and read constantly outlives one written recently and never touched.
+  Runs at process start and after every `ONTOCAST_CACHE_PRUNE_EVERY` (256)
+  writes, which keeps a long-lived `ontocast serve` bounded between restarts.
+- **`ontocast cache` command group**: `stats` (per-tool size, flags orphaned
+  subdirectories), `prune` (`--max-bytes`, `--ttl-days`, `--orphaned`), and
+  `clear [--subdir]`.
+- **`PathConfig` cache settings**: `ONTOCAST_CACHE_MAX_BYTES` (accepts `1GB` /
+  `500MB` as well as a byte count), `ONTOCAST_CACHE_TTL_DAYS`,
+  `ONTOCAST_CACHE_PRUNE_EVERY`.
+- Converter cache entries carry a format version in the key, replacing the old
+  practice of bumping the subdirectory name — which is why `converter/` and
+  `converter_v2/` linger on older installs. `ontocast cache prune --orphaned`
+  clears them.
+- Typed `CacheStats` / `PruneReport` models and `Cacher.cache_stats()`;
+  `get_cache_stats()` still returns a plain dict for JSON responses.
+
+### Removed
+
+- Dead `track_llm_usage` decorator, which had no call sites and still used the
+  instance-attribute budget-tracker pattern the `ContextVar` replaced.
+
+
 ## [0.5.1] - 2026-08-07
 
 ### Breaking

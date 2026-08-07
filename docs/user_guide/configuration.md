@@ -508,7 +508,17 @@ CURRENT_DOMAIN=https://example.com
 ONTOCAST_WORKING_DIRECTORY=/path/to/working/directory
 ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files
 ONTOCAST_CACHE_DIR=/path/to/cache/directory
+
+# Cache eviction. The cache bounds itself: once it exceeds the ceiling,
+# least-recently-used entries are deleted. Set to 0 to disable.
+# Accepts a byte count or a human size ("1GB", "500MB").
+ONTOCAST_CACHE_MAX_BYTES=1GB
+ONTOCAST_CACHE_TTL_DAYS=30
+ONTOCAST_CACHE_PRUNE_EVERY=256
 ```
+
+See [LLM Caching](llm_caching.md#cache-size-and-eviction) for how eviction is
+scheduled and the `ontocast cache` commands that drive it manually.
 
 ### Aggregation
 

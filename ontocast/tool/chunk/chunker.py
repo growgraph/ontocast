@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from ontocast.config import ChunkConfig
-from ontocast.tool.cache import Cacher, ToolCacher
+from ontocast.tool.cache import CHUNKER_CACHE_SUBDIR, Cacher, ToolCacher
 from ontocast.tool.chunk.proposition import SENTENCE_SPLIT_REGEX
 from ontocast.tool.chunk.sizing import size_bounded_text
 from ontocast.tool.onto import Tool
@@ -79,11 +79,11 @@ class ChunkerTool(Tool):
 
         # Initialize cache - use shared cacher or create new one
         if cache is not None:
-            self.cache = ToolCacher(cache, "chunker")
+            self.cache = ToolCacher(cache, CHUNKER_CACHE_SUBDIR)
         else:
             # Fallback for backward compatibility
             shared_cache = Cacher()
-            self.cache = ToolCacher(shared_cache, "chunker")
+            self.cache = ToolCacher(shared_cache, CHUNKER_CACHE_SUBDIR)
 
         # Override config if provided
         if chunk_config is not None:

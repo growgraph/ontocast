@@ -18,22 +18,9 @@ from typing import Any
 
 from ontocast.config import LLMConfig
 from ontocast.tool.cache import Cacher, ToolCacher
+from ontocast.tool.llm import llm_cache_config
 
 logger = logging.getLogger(__name__)
-
-
-def _llm_cache_config_dict(
-    llm_config: LLMConfig,
-) -> dict[str, str | int | float | bool]:
-    """Build a cache config dict without optional None values."""
-    cfg: dict[str, str | int | float | bool] = {
-        "provider": llm_config.provider,
-        "model_name": llm_config.model_name,
-        "temperature": llm_config.temperature,
-    }
-    if llm_config.base_url is not None:
-        cfg["base_url"] = llm_config.base_url
-    return cfg
 
 
 def write_openai_chat_batch_jsonl(
@@ -79,7 +66,10 @@ def import_openai_batch_output_jsonl(
         Number of cache entries written.
     """
     tool_cache = ToolCacher(shared_cache, "llm")
-    config_dict = _llm_cache_config_dict(llm_config)
+    # Must be the *same* builder LLMTool uses: any divergence (this once
+    # omitted base_url when it was None, which is the default) produces entries
+    # that are written here and never read back by the server.
+    config_dict = llm_cache_config(llm_config)
     written = 0
     with output_path.open("r", encoding="utf-8") as handle:
         for raw_line in handle:

@@ -39,6 +39,7 @@ from ontocast.api.tenancy_resolution import (
     resolve_tenant_project,
     stores_use_tenancy_partitions,
 )
+from ontocast.cli.cache import cache as cache_cli
 from ontocast.config import Config
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.retrieval_capabilities import validate_ontology_context_mode
@@ -226,6 +227,9 @@ def _shared_runtime_options(fn: F) -> F:
 @click.group()
 def cli() -> None:
     """OntoCast: start the API server or process local files in batch mode."""
+
+
+cli.add_command(cache_cli)
 
 
 @cli.command("serve")

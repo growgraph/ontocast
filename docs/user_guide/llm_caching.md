@@ -23,6 +23,14 @@ The LLM caching system automatically caches responses from language model provid
 | `cache_read_only` | `LLM_CACHE_READ_ONLY` | `false` | Use cache without writing new entries |
 | `llm_max_inflight` | `LLM_MAX_INFLIGHT` | `16` | Max concurrent provider requests (all documents) |
 
+Cache size is bounded automatically — see [Cache size and eviction](#cache-size-and-eviction):
+
+| Setting | Env | Default | Description |
+|---------|-----|---------|-------------|
+| `cache_max_bytes` | `ONTOCAST_CACHE_MAX_BYTES` | `1GB` | Ceiling for the whole cache directory; `0` disables eviction |
+| `cache_ttl_days` | `ONTOCAST_CACHE_TTL_DAYS` | unset | Drop entries unused for this many days |
+| `cache_prune_every` | `ONTOCAST_CACHE_PRUNE_EVERY` | `256` | Writes between size checks |
+
 Server-wide process concurrency (separate from LLM in-flight limit):
 
 | Setting | Env | Description |
@@ -91,7 +99,51 @@ response1 = llm_tool("What is the capital of France?")
 response2 = llm_tool("What is the capital of France?")
 ```
 
-Cache keys hash **normalized prompt text** (LangChain prompt values use `to_string()`) together with provider, model, temperature, base URL, and schema-specific fields (for structured `extract` calls). Different configurations never share an entry.
+Cache keys hash **normalized prompt text** (LangChain prompt values use `to_string()`) together with every setting that changes the provider's answer:
+
+- provider, model name, temperature, base URL
+- the Ollama generation knobs `think`, `num_predict`, `num_ctx` — these bound reasoning and output length, so the same prompt under a different `num_ctx` is a different response
+- the output schema name, for structured `extract` calls
+- a `cache_format_version` constant, bumped whenever the entry shape or the set of key inputs changes
+
+Different configurations never share an entry. Binary inputs (PDFs and other documents fed to the converter) are hashed as raw bytes rather than decoded to text first.
+
+!!! note "Version 2 invalidates existing entries"
+    The key gained the Ollama knobs and the format version, so caches written by
+    earlier releases will not be hit. The first run after upgrading re-pays for
+    every call; the stale entries age out under the size ceiling, or can be
+    cleared immediately with `ontocast cache prune --orphaned` and
+    `ontocast cache clear`.
+
+---
+
+## Cache size and eviction
+
+The cache bounds itself. Entries are regenerable, so once the directory exceeds
+`ONTOCAST_CACHE_MAX_BYTES` (1 GB by default) the least-recently-**used** entries
+are deleted until the total fits. Recency comes from each file's access time, so
+an entry that is written once and read constantly outlives one that was written
+recently and never touched again.
+
+Pruning runs at process start and then after every `ONTOCAST_CACHE_PRUNE_EVERY`
+writes, which keeps a long-lived `ontocast serve` bounded between restarts. Set
+`ONTOCAST_CACHE_MAX_BYTES=0` to disable eviction entirely.
+
+### The `ontocast cache` commands
+
+```bash
+ontocast cache stats                    # size per tool; flags orphaned subdirectories
+ontocast cache prune                    # force a trim now
+ontocast cache prune --max-bytes 500000000 --ttl-days 30
+ontocast cache prune --orphaned         # drop subdirectories no current tool writes to
+ontocast cache clear --subdir llm       # delete entries outright
+```
+
+`--orphaned` is deliberately manual: "no live tool claims this directory" is an
+inference a downgrade could invalidate, unlike the size pass, which only ever
+discards entries the current code would regenerate. Older installs accumulated
+`converter/` and `converter_v2/` directories from a time when cache versioning
+was done by renaming the subdirectory; `--orphaned` is what clears them.
 
 ---
 
@@ -131,19 +183,16 @@ ontocast --env-path .env --working-directory ./work --cache-dir /custom/cache/pa
 
 ### Cache Structure
 
-The cache directory contains organized subdirectories:
+The cache directory holds one flat subdirectory per tool. Provider and model are
+part of the key hash, not the path:
 
 ```
 cache_dir/
-├── openai/
-│   ├── gpt-4o-mini/
-│   │   ├── prompt_hash_1.json
-│   │   └── prompt_hash_2.json
-│   └── gpt-4/
-│       └── prompt_hash_3.json
-└── ollama/
-    └── llama2/
-        └── prompt_hash_4.json
+├── llm/                    # LLM responses
+│   ├── <sha256>.json
+│   └── <sha256>.json
+├── converter_v3/           # Document conversion
+└── chunker/                # Text chunking
 ```
 
 ### Cache Files
@@ -151,8 +200,11 @@ cache_dir/
 Each cached response is stored as a JSON file containing:
 - Original prompt and parameters
 - Response content
-- Metadata (timestamp, model info)
+- Provider response metadata, replayed on a cache hit so cached and fresh calls behave identically
 - Cache key hash
+
+Writes go to a temporary file and are renamed into place, so a reader never sees
+a half-written entry even with `PARALLEL_WORKERS` units in flight.
 
 ---
 
@@ -198,13 +250,13 @@ Each test run uses a separate cache directory (`.test_cache/llm/`) to avoid inte
 
 1. **Use Default Locations**: Let the system choose appropriate cache directories
 2. **Version Control**: Add cache directories to `.gitignore`
-3. **Cleanup**: Periodically clean old cache files
+3. **Cleanup**: Automatic — inspect with `ontocast cache stats` if you want to see what is stored
 
 ### Production
 
 1. **Persistent Storage**: Use persistent cache directories
 2. **Monitoring**: Monitor cache hit rates
-3. **Maintenance**: Implement cache cleanup strategies
+3. **Sizing**: Set `ONTOCAST_CACHE_MAX_BYTES` to whatever the deployment can spare; eviction handles the rest
 
 ### Testing
 
@@ -362,10 +414,14 @@ Caching is organized in subdirectories:
 
 ```
 ~/.cache/ontocast/
-├── llm/           # LLM response cache
-├── converter/     # Document conversion cache
-└── chunker/       # Text chunking cache
+├── llm/            # LLM response cache
+├── converter_v3/   # Document conversion cache
+└── chunker/        # Text chunking cache
 ```
+
+Converter entries carry a format version inside the cache key, so a shape change
+no longer requires a new `converter_v4` directory. Directories from the older
+scheme are reported as orphaned by `ontocast cache stats`.
 
 ### Cache Benefits
 

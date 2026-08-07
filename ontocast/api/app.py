@@ -179,7 +179,10 @@ def create_app(
     async def info():
         llm_cache = None
         if tools.llm is not None:
-            llm_cache = tools.llm.get_cache_stats()
+            # Async variant: the disk stats walk every cache file, which is tens
+            # of thousands of stat() calls on a warm cache and must not run on
+            # the event loop.
+            llm_cache = await tools.llm.aget_cache_stats()
         return InfoResponse(
             version=__version__,
             llm_cache=llm_cache,

@@ -13,7 +13,11 @@ from typing import Any, Literal
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from ontocast.onto.constants import DEFAULT_DOMAIN
+from ontocast.onto.constants import (
+    DEFAULT_CACHE_MAX_BYTES,
+    DEFAULT_CACHE_PRUNE_EVERY,
+    DEFAULT_DOMAIN,
+)
 from ontocast.onto.enum import (
     LLMGraphFormat,
     OntologyContextMode,
@@ -675,6 +679,50 @@ class PathConfig(BaseSettings):
     cache_dir: Path | None = Field(
         default=None, description="Cache directory for LLM responses and tool outputs"
     )
+    cache_max_bytes: int | None = Field(
+        default=DEFAULT_CACHE_MAX_BYTES,
+        description=(
+            "Size ceiling for the whole cache directory. Once exceeded, "
+            "least-recently-used entries are deleted until the total fits. "
+            "Accepts a byte count or a human size such as '1GB' or '500MB'. "
+            "Set to 0 to disable automatic pruning. Set via "
+            "ONTOCAST_CACHE_MAX_BYTES."
+        ),
+    )
+    cache_ttl_days: int | None = Field(
+        default=None,
+        description=(
+            "Delete cache entries not used for this many days, applied before "
+            "the size ceiling. None disables the age cut. Set via "
+            "ONTOCAST_CACHE_TTL_DAYS."
+        ),
+    )
+    cache_prune_every: int = Field(
+        default=DEFAULT_CACHE_PRUNE_EVERY,
+        ge=1,
+        description=(
+            "Re-check the cache size ceiling after this many writes. The check "
+            "walks the cache tree, so it is amortised rather than run per write."
+        ),
+    )
+
+    @field_validator("cache_max_bytes", mode="before")
+    @classmethod
+    def _parse_cache_max_bytes(cls, value: object) -> object:
+        """Accept human-readable sizes ('1GB', '500MB') alongside raw byte counts."""
+        if not isinstance(value, str):
+            return value
+        text = value.strip().upper().replace("IB", "B")
+        if not text:
+            return None
+        units = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
+        for suffix, factor in sorted(units.items(), key=lambda kv: -len(kv[0])):
+            if text.endswith(suffix):
+                number = text[: -len(suffix)].strip()
+                if not number:
+                    break
+                return int(float(number) * factor)
+        return int(float(text))
 
     model_config = SettingsConfigDict(
         env_prefix="ONTOCAST_",

@@ -8,6 +8,13 @@ from ontocast.onto.tenancy import (
 )
 
 DEFAULT_DOMAIN = "https://growgraph.dev"
+
+# Cache entries are regenerable, so the on-disk cache is bounded automatically
+# rather than growing without limit. Defined here rather than in tool.cache so
+# that config.settings can carry the defaults without importing the tool layer.
+DEFAULT_CACHE_MAX_BYTES = 1024**3  # 1 GB
+DEFAULT_CACHE_PRUNE_EVERY = 256
+
 ONTOLOGY_NULL_ID = "__null__"
 ONTOLOGY_NULL_IRI = f"{DEFAULT_DOMAIN}/{ONTOLOGY_NULL_ID}/"
 DEFAULT_IRI = f"{DEFAULT_DOMAIN}/facts/"
