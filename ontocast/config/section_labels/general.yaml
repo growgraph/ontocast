@@ -1,6 +1,10 @@
 schema_version: "1.0"
 id: general
 description: Memos, internal reports, and mixed Markdown documents
+# Residual cell of the partition, deliberately left without a document_profile:
+# six of its seven labels are strict subsets of other schemas, so it must never
+# be a positive detection -- only where documents land when nothing else fits.
+document_profile: ""
 labels:
 -   id: summary
     heading_patterns:

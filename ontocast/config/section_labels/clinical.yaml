@@ -1,69 +1,137 @@
-schema_version: "1.0"
+schema_version: "1.1"
 id: clinical
 description: Clinical trial protocols, CSRs, and registry entries
+document_profile: >-
+    A clinical trial protocol or study report governing the treatment of human
+    participants, specifying eligibility criteria, treatment arms, dosing,
+    endpoints and adverse-event reporting.
 labels:
 -   id: synopsis
     heading_patterns:
     -   '^synopsis\s*$'
     -   '^study\s+synopsis\s*$'
     -   '^brief\s+summary\s*$'
+    keywords:
+    -   synopsis
+    -   brief summary
+    -   plain language summary
 -   id: background
     heading_patterns:
     -   '^background\s*$'
     -   '^introduction\s*$'
     -   '^rationale\s*$'
+    keywords:
+    -   background and rationale
+    -   rationale
 -   id: objectives
     heading_patterns:
     -   '^objectives?\s*$'
     -   '^study\s+objectives?\s*$'
     -   '^primary\s+objective\s*$'
+    keywords:
+    -   objectives
+    -   study objectives
+    -   aims
 -   id: endpoints
     heading_patterns:
     -   '^endpoints?\s*$'
     -   '^study\s+endpoints?\s*$'
     -   '^primary\s+endpoint\s*$'
+    keywords:
+    -   endpoints
+    -   primary endpoint
+    -   secondary endpoint
 -   id: study_design
     heading_patterns:
     -   '^study\s+design\s*$'
     -   '^trial\s+design\s*$'
     -   '^design\s*$'
+    keywords:
+    -   trial design
+    -   study design
+    -   study setting
+    -   study status
 -   id: population
     heading_patterns:
     -   '^population\s*$'
     -   '^study\s+population\s*$'
+    keywords:
+    -   study population
+    -   participants
+    -   sample size
+    -   recruitment
 -   id: eligibility
     heading_patterns:
     -   '^eligibility\s*$'
     -   '^inclusion\s+(?:and\s+exclusion\s+)?criteria\s*$'
     -   '^exclusion\s+criteria\s*$'
+    keywords:
+    -   eligibility criteria
+    -   inclusion criteria
+    -   exclusion criteria
+    -   eligibility
 -   id: interventions
     heading_patterns:
     -   '^interventions?\s*$'
     -   '^study\s+interventions?\s*$'
     -   '^treatments?\s*$'
+    keywords:
+    -   interventions
+    -   study intervention
+    -   imaging protocol
+    -   dosing
+    -   treatment arms
 -   id: outcomes
     heading_patterns:
     -   '^outcomes?\s*$'
     -   '^study\s+outcomes?\s*$'
+    keywords:
+    -   outcomes
+    -   outcome measures
+    -   follow-up
 -   id: adverse_events
     heading_patterns:
     -   '^adverse\s+events?\s*$'
     -   '^safety\s*$'
     -   '^safety\s+outcomes?\s*$'
+    keywords:
+    -   adverse events
+    -   safety
+    -   harms
+    -   monitoring
 -   id: statistical_analysis
     heading_patterns:
     -   '^statistical\s+(?:analysis|methods?|considerations)\s*$'
     -   '^statistics?\s*$'
+    keywords:
+    -   statistical analysis
+    -   sample size calculation
+    -   power calculation
 -   id: ethics
     heading_patterns:
     -   '^ethics?\s*$'
     -   '^ethical\s+considerations\s*$'
     -   '^institutional\s+review\s+board\s*$'
+    keywords:
+    -   ethics and dissemination
+    -   ethics approval
+    -   ethical approval
+    -   informed consent
+    -   consent to participate
+    -   institutional review board
 -   id: data_management
     heading_patterns:
     -   '^data\s+management\s*$'
     -   '^data\s+handling\s*$'
+    keywords:
+    -   data management
+    -   data collection
+    -   tissue collection
+    -   data handling
 -   id: references
     heading_patterns:
     -   '^references\s*$'
     -   '^bibliography\s*$'
+    keywords:
+    -   references
+    -   bibliography

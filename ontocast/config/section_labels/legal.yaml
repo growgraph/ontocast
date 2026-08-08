@@ -1,64 +1,118 @@
-schema_version: "1.0"
+schema_version: "1.1"
 id: legal
 description: Contracts, policies, statutes, and terms of use
+document_profile: >-
+    A binding agreement between named parties, setting out defined terms, mutual
+    obligations, representations and warranties, liability, indemnity,
+    termination and governing law.
 labels:
 -   id: definitions
     heading_patterns:
     -   '^definitions?\s*$'
     -   '^defined\s+terms\s*$'
+    keywords:
+    -   definitions
+    -   defined terms
 -   id: recitals
     heading_patterns:
     -   '^recitals?\s*$'
     -   '^whereas\s*$'
     -   '^background\s*$'
+    keywords:
+    -   recitals
+    -   whereas
 -   id: scope
     heading_patterns:
     -   '^scope\s*$'
     -   '^purpose\s*$'
+    keywords:
+    -   scope
+    -   license grant
+    -   grant of rights
 -   id: obligations
     heading_patterns:
     -   '^obligations?\s*$'
     -   '^duties\s*$'
+    keywords:
+    -   obligations
+    -   duties
+    -   license conditions
+    -   conditions
 -   id: representations_warranties
     heading_patterns:
     -   '^representations?\s+and\s+warranties\s*$'
     -   '^warranties\s*$'
+    keywords:
+    -   representations and warranties
+    -   warranties
+    -   disclaimer of warranties
 -   id: covenants
     heading_patterns:
     -   '^covenants?\s*$'
+    keywords:
+    -   covenants
 -   id: liability
     heading_patterns:
     -   '^liability\s*$'
     -   '^limitation\s+of\s+liability\s*$'
+    keywords:
+    -   limitation of liability
+    -   liability
 -   id: indemnity
     heading_patterns:
     -   '^indemnit(?:y|ies|ification)\s*$'
+    keywords:
+    -   indemnity
+    -   indemnification
 -   id: termination
     heading_patterns:
     -   '^termination\s*$'
     -   '^term\s+and\s+termination\s*$'
+    keywords:
+    -   term and termination
+    -   termination
 -   id: dispute_resolution
     heading_patterns:
     -   '^dispute\s+resolution\s*$'
     -   '^arbitration\s*$'
     -   '^governing\s+law\s+and\s+jurisdiction\s*$'
+    keywords:
+    -   dispute resolution
+    -   arbitration
 -   id: governing_law
     heading_patterns:
     -   '^governing\s+law\s*$'
     -   '^applicable\s+law\s*$'
+    keywords:
+    -   governing law
+    -   applicable law
+    -   interpretation
 -   id: notices
     heading_patterns:
     -   '^notices?\s*$'
+    keywords:
+    -   notices
 -   id: schedules
     heading_patterns:
     -   '^schedules?\s*$'
     -   '^attachments?\s*$'
+    keywords:
+    -   schedules
+    -   attachments
+    -   other terms and conditions
 -   id: signatures
     heading_patterns:
     -   '^signatures?\s*$'
     -   '^execution\s*$'
     -   '^in\s+witness\s+whereof\s*$'
+    keywords:
+    -   signatures
+    -   in witness whereof
+    -   execution
 -   id: amendments
     heading_patterns:
     -   '^amendments?\s*$'
     -   '^modifications?\s*$'
+    keywords:
+    -   amendments
+    -   modifications

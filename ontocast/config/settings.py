@@ -352,13 +352,16 @@ class ChunkConfig(BaseSettings):
             "HybridChunker structural segments."
         ),
     )
-    section_classifier: Literal["llm", "heading", "off"] = Field(
-        default="llm",
+    section_classifier: Literal["llm", "heuristic", "heading", "off"] = Field(
+        default="heuristic",
         description=(
-            "Chunk section classification: 'llm' = deterministic heading/span "
-            "labels plus LLM backfill for unheaded chunks; 'heading' = "
-            "deterministic only (no LLM cost); 'off' = no section tagging "
-            "(disables section filters and schema default exclusions)."
+            "Chunk section classification cascade, in increasing cost: "
+            "'off' = no section tagging (disables section filters and schema "
+            "default exclusions); 'heading' = document outline plus heading "
+            "pattern/keyword matching; 'heuristic' (default) = heading plus "
+            "content-density classification for regions with no usable "
+            "heading; 'llm' = heuristic plus a batched LLM pass over whatever "
+            "remains unlabeled. Only 'llm' makes LLM calls during chunking."
         ),
     )
     section_tag_min_chars: int = Field(
@@ -366,6 +369,74 @@ class ChunkConfig(BaseSettings):
         description=(
             "Min stripped length for LLM section tagging; smaller segments merge "
             "into neighbors before tagging"
+        ),
+    )
+    section_text_headings: bool = Field(
+        default=True,
+        description=(
+            "Detect headings from plain-text layout (short, blank-line "
+            "delimited, upper-case or numbered lines) in documents whose "
+            "conversion produced no markdown heading structure at all."
+        ),
+    )
+    section_density: Literal["off", "conservative", "aggressive"] = Field(
+        default="conservative",
+        description=(
+            "Content-density section classification for regions with no usable "
+            "heading. 'conservative' (default) recognises only reference lists "
+            "and acknowledgements, whose surface form is near-unique. "
+            "'aggressive' also guesses methods/results/introduction from "
+            "figure-reference, quantity and citation densities -- these do not "
+            "separate those sections cleanly, and a wrong label is silently "
+            "acted on by the section filters, so it is opt-in. Requires "
+            "CHUNK_SECTION_CLASSIFIER=heuristic or llm."
+        ),
+    )
+    section_schema_detect: Literal["off", "lexical", "headings", "auto"] = Field(
+        default="headings",
+        description=(
+            "Infer the document-type schema when the request supplies neither "
+            "section_schema_id nor a document_type_hint that matches one. "
+            "'off' always uses the manifest default; 'lexical' scores headings "
+            "against each schema's vocabulary (free, no model); 'headings' "
+            "(default) adds an embedding-based heading tier when the semantic "
+            "extras are installed; 'auto' additionally allows a much weaker "
+            "content-based tier for documents with almost no headings. "
+            "Detection never overrides an explicit schema or a matching hint, "
+            "and abstains to the default rather than guessing."
+        ),
+    )
+    section_schema_detect_min_score: float = Field(
+        default=2.0,
+        description=(
+            "Minimum distinctive evidence (headings recognised by exactly one "
+            "candidate schema) before a detection is accepted."
+        ),
+    )
+    section_schema_detect_min_margin: float = Field(
+        default=1.8,
+        description=(
+            "Factor by which the winning schema must beat the runner-up. The "
+            "tightest correct case in the reference corpus -- a published trial "
+            "protocol, which shares IMRaD headings with academic papers -- sits "
+            "at 2.0x."
+        ),
+    )
+    section_schema_detect_content_min_margin: float = Field(
+        default=4.0,
+        description=(
+            "Stricter margin for the content-based tier, which is measurably "
+            "less reliable than the heading tiers: body prose from one domain "
+            "readily resembles another (scientific prose reads like a technical "
+            "specification). Only used when CHUNK_SECTION_SCHEMA_DETECT=auto."
+        ),
+    )
+    section_llm_batch_size: int = Field(
+        default=40,
+        description=(
+            "Excerpts per LLM call when CHUNK_SECTION_CLASSIFIER=llm. One call "
+            "covers a whole document's residual instead of one call per chunk; "
+            "0 restores per-chunk calls."
         ),
     )
     bibliography_mode: Literal["domain_facts", "citations_only", "skip"] = Field(

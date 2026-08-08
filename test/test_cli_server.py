@@ -37,6 +37,7 @@ from ontocast.onto.retrieval_capabilities import (
 )
 from ontocast.onto.state import AgentState
 from ontocast.tool.agg.aggregate import AggregationResult
+from ontocast.tool.converter import ConverterTool
 from ontocast.toolbox import ToolBox
 
 
@@ -686,3 +687,49 @@ def test_cli_requires_subcommand() -> None:
     runner = CliRunner()
     result = runner.invoke(cli, [])
     assert result.exit_code != 0
+
+
+def test_inspect_sections_reads_json_and_text_documents(tmp_path) -> None:
+    """`ontocast sections` must read the inputs the pipeline is driven with.
+
+    JSON and plain-text documents are routed *around* the Docling converter by
+    the Convert node -- Docling rejects them outright -- so a CLI that called
+    the converter for everything could not inspect `data/json/*.json` at all.
+    """
+    import json as _json
+
+    from ontocast.cli.inspect_sections import _load_document
+    from ontocast.tool.chunk.sections import document_text_for_section_tagging
+
+    converter = SimpleNamespace(supported_extensions={".pdf", ".docx"})
+
+    json_path = tmp_path / "doc.json"
+    json_path.write_text(
+        _json.dumps({"text": "# Risk Factors\n\nOur business is subject to risk.\n"}),
+        encoding="utf-8",
+    )
+    doc = _load_document(json_path, cast(ConverterTool, converter))
+    assert "Risk Factors" in document_text_for_section_tagging(doc)
+
+    txt_path = tmp_path / "doc.txt"
+    txt_path.write_text("Plain body text.\n", encoding="utf-8")
+    assert "Plain body text." in document_text_for_section_tagging(
+        _load_document(txt_path, cast(ConverterTool, converter))
+    )
+
+
+def test_inspect_sections_rejects_a_json_payload_with_no_text(tmp_path) -> None:
+    import json as _json
+
+    import click
+
+    from ontocast.cli.inspect_sections import _load_document
+
+    path = tmp_path / "record.json"
+    # The shape of data/json/clinical.trials.*.json: a registry API record, not
+    # a document -- it must fail loudly rather than inspect as an empty document.
+    path.write_text(_json.dumps({"protocolSection": {"id": 1}}), encoding="utf-8")
+    with pytest.raises(click.ClickException):
+        _load_document(
+            path, cast(ConverterTool, SimpleNamespace(supported_extensions=set()))
+        )

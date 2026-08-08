@@ -167,7 +167,14 @@ Facts output uses the **`cd:` namespace** for text-derived instances; domain ont
 | `FACTS_REPAIR_VISITS` | Deterministic repair budget per facts unit: bounded update renders driven by machine-found violations and numeric-coverage gaps; independent of `MAX_VISITS` |
 | `FACTS_MERGE_REPAIR_PASSES` | Un-merge budget at the post-aggregation validation gate (error findings → cluster pair vetoes → re-aggregation) |
 | `CHUNK_SEGMENTER` | `semantic` (sections-first, default) or `docling` structural segments |
-| `CHUNK_SECTION_CLASSIFIER` | Chunk section classification: `llm` (default), `heading`, or `off` |
+| `CHUNK_SECTION_CLASSIFIER` | Section classification cascade: `heuristic` (default, no LLM calls), `heading`, `llm`, or `off` |
+| `CHUNK_SECTION_DENSITY` | Content-based tier for heading-free regions: `conservative` (default), `aggressive`, or `off` |
+| `CHUNK_SECTION_TEXT_HEADINGS` | Detect headings in documents with no markdown heading structure (default `true`) |
+| `CHUNK_SECTION_LLM_BATCH_SIZE` | Excerpts per LLM call when `CHUNK_SECTION_CLASSIFIER=llm` (default `40`; `0` = one call per chunk) |
+| `CHUNK_SECTION_SCHEMA_DETECT` | Infer the document-type schema when no `section_schema_id`/`document_type_hint` is given: `headings` (default), `lexical` (no model), `auto` (adds the weak content tier), or `off` |
+| `CHUNK_SECTION_SCHEMA_DETECT_MIN_SCORE` | Evidence the winning schema must clear before detection is accepted (default `2.0`) |
+| `CHUNK_SECTION_SCHEMA_DETECT_MIN_MARGIN` | Factor by which the winner must beat the runner-up (default `1.8`); below it, detection abstains to the default schema |
+| `CHUNK_SECTION_SCHEMA_DETECT_CONTENT_MIN_MARGIN` | Stricter margin for the content tier (default `4.0`) |
 | `CHUNK_BIBLIOGRAPHY_MODE` | Routing for reference-list chunks: `skip` (default), `citations_only`, or `domain_facts` |
 | `ENABLE_ONTOLOGY_CONSOLIDATION` | Optional post-normalization consolidation |
 | `ONTOLOGY_CONTEXT_MODE` | How per-unit ontology context is sourced |

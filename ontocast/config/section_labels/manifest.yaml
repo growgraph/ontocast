@@ -1,4 +1,4 @@
-catalog_version: "1.0"
+catalog_version: "1.1"
 default_schema: academic
 schemas:
 -   id: academic
@@ -13,6 +13,12 @@ schemas:
     file: manual.yaml
 -   id: fiction
     file: fiction.yaml
+-   id: patent
+    file: patent.yaml
+-   id: standard
+    file: standard.yaml
+-   id: news
+    file: news.yaml
 -   id: general
     file: general.yaml
 document_type_hints:
@@ -23,23 +29,46 @@ document_type_hints:
     "annual report": financial
     "sec filing": financial
     "quarterly report": financial
+    "earnings": financial
     "clinical trial": clinical
     "clinical study": clinical
-    "protocol": clinical
+    "study protocol": clinical
     "csr": clinical
     "case report": clinical
     "contract": legal
     "agreement": legal
     "terms of service": legal
     "privacy policy": legal
-    "novel": fiction
+    # Deliberately not "novel": word boundaries cannot separate the noun from
+    # the far more common adjective ("a study of novel materials"), which would
+    # send an academic paper to the fiction schema. Fiction is the strongest
+    # signal the detector has -- chapter headings score it at full share -- so
+    # dropping the needle costs nothing.
+    "novella": fiction
     "fiction": fiction
+    "short story": fiction
     "user guide": manual
     "installation guide": manual
     "operator manual": manual
     "runbook": manual
+    "documentation": manual
+    "patent": patent
+    "patent application": patent
+    "uspto": patent
+    "epo": patent
+    "rfc": standard
+    "standard": standard
+    "specification": standard
+    # Needles match on word boundaries, so no trailing-space hack is needed to
+    # keep "iso" out of "isotope".
+    "iso": standard
+    "astm": standard
+    "press release": news
+    "news article": news
     "paper": academic
     "manuscript": academic
     "research article": academic
+    "thesis": academic
+    "dissertation": academic
     "memo": general
     "internal report": general

@@ -336,3 +336,56 @@ def test_docling_segmenter_option_still_supported() -> None:
     labels = {chunk.section_label for chunk in chunks}
     assert "results" in labels
     assert "acknowledgements" not in labels
+
+
+_UNRECOGNISED_HEADINGS_DOC = """# Introduction
+Perovskite solar cells have attracted attention for a decade now.
+
+# Experimental Section
+Films were deposited by spin coating from a precursor solution at speed.
+
+# Results and Discussion
+The efficiency reached 24.1% after 500 hours of continuous operation.
+
+# Conclusions and Outlook
+We demonstrated an approach to substantially improved operational stability.
+"""
+
+
+def test_target_sections_selects_only_the_requested_section():
+    """End-to-end guard for the span-smear regression.
+
+    Every heading here except ``Introduction`` is invisible to the anchored
+    patterns. Before the outline fix, the ``introduction`` span ran to the end
+    of the document and ``target_sections=["results"]`` returned introduction
+    text. No LLM is involved: the stub raises if it is called.
+    """
+    chunks = asyncio.run(
+        _prepare(
+            doc_from_markdown_lines(_UNRECOGNISED_HEADINGS_DOC),
+            min_size=1,
+            max_size=5000,
+            options=PrepareOptions(target_sections=["results"]),
+        )
+    )
+
+    assert chunks
+    assert {chunk.section_label for chunk in chunks} == {"results"}
+    body = "\n".join(chunk.text for chunk in chunks)
+    assert "24.1%" in body
+    assert "Perovskite solar cells" not in body
+    assert "spin coating" not in body
+
+
+def test_unlabeled_chunks_from_distinct_sections_are_not_merged():
+    """A run of unresolved chunks must not be merged back together."""
+    doc = doc_from_markdown_lines(
+        "# Notes\nFirst unnamed section body text here.\n\n"
+        "# Vocabulary\nSecond unnamed section body text here.\n"
+    )
+    chunks = asyncio.run(
+        _prepare(doc, min_size=5000, max_size=8000, options=PrepareOptions())
+    )
+
+    unlabeled = [chunk for chunk in chunks if chunk.section_label is None]
+    assert len(unlabeled) == 2

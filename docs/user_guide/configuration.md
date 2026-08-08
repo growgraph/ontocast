@@ -130,10 +130,17 @@ CHUNK_BREAKPOINT_THRESHOLD_TYPE=percentile  # percentile | standard_deviation | 
 CHUNK_BREAKPOINT_THRESHOLD_AMOUNT=95.0
 CHUNK_MIN_SIZE=3000
 CHUNK_MAX_SIZE=12000
-CHUNK_SEGMENTER=semantic         # semantic (sections-first, default) | docling
-CHUNK_SECTION_CLASSIFIER=llm     # llm (default) | heading (no LLM cost) | off (no tagging)
-CHUNK_SECTION_TAG_MIN_CHARS=80   # min size for LLM section backfill; smaller segments coalesce first
-CHUNK_BIBLIOGRAPHY_MODE=skip     # skip | citations_only | domain_facts
+CHUNK_SEGMENTER=semantic            # semantic (sections-first, default) | docling
+CHUNK_SECTION_CLASSIFIER=heuristic  # off | heading | heuristic (default) | llm
+CHUNK_SECTION_DENSITY=conservative  # off | conservative (default) | aggressive
+CHUNK_SECTION_TEXT_HEADINGS=true    # detect headings in documents with no markdown structure
+CHUNK_SECTION_LLM_BATCH_SIZE=40     # excerpts per LLM call when classifier=llm; 0 = one call each
+CHUNK_SECTION_TAG_MIN_CHARS=80      # min size for section tagging; smaller segments coalesce first
+CHUNK_SECTION_SCHEMA_DETECT=headings  # off | lexical | headings (default) | auto
+CHUNK_SECTION_SCHEMA_DETECT_MIN_SCORE=2.0           # evidence the winner must clear
+CHUNK_SECTION_SCHEMA_DETECT_MIN_MARGIN=1.8          # factor over the runner-up
+CHUNK_SECTION_SCHEMA_DETECT_CONTENT_MIN_MARGIN=4.0  # stricter margin for the content tier
+CHUNK_BIBLIOGRAPHY_MODE=skip        # skip | citations_only | domain_facts
 ```
 
 `CHUNK_SEGMENTER=semantic` (default) detects section spans on the markdown
@@ -142,10 +149,66 @@ oversized section block, so chunks never straddle sections and inherit their
 section label deterministically. `docling` uses Docling `HybridChunker`
 structural segments instead.
 
-`CHUNK_SECTION_CLASSIFIER` controls chunk classification, which is **on by
-default**: `llm` adds LLM backfill for unheaded chunks, `heading` labels
-deterministically only, `off` disables tagging entirely (and with it section
-filters and schema default exclusions).
+#### Section classification
+
+`CHUNK_SECTION_CLASSIFIER` selects how far the classification cascade runs.
+Each tier only sees what the previous one left unlabeled, so cost rises only
+where cheaper evidence ran out:
+
+| Value | Tiers | LLM calls |
+|---|---|---|
+| `off` | none — no tagging, and section filters and schema default exclusions are disabled | 0 |
+| `heading` | document outline, heading patterns and keywords, order-guarded fill | 0 |
+| `heuristic` **(default)** | the above plus content-density classification | 0 |
+| `llm` | the above plus one batched call over whatever remains | ~1 per document |
+
+Only `llm` costs anything during chunking. The default changed from `llm` in
+0.5.x: the deterministic tiers now resolve the headings that previously needed
+a model, so `--target-sections results` is free.
+
+`CHUNK_SECTION_DENSITY` controls the content tier, which labels regions that
+carry no usable heading. `conservative` (default) recognises only reference
+lists and acknowledgements, whose surface form is near-unique. `aggressive`
+also guesses methods/results/introduction from figure-reference, quantity and
+citation densities — these signals do **not** separate those sections cleanly,
+and a wrong label is acted on silently by the section filters, so it is opt-in.
+
+`CHUNK_SECTION_TEXT_HEADINGS` enables heading detection from plain-text layout
+(short, blank-line-delimited, upper-case or numbered lines) for documents whose
+conversion produced no markdown heading structure at all.
+
+#### Schema detection
+
+The cascade above labels sections *within* a schema; `CHUNK_SECTION_SCHEMA_DETECT`
+decides **which** schema, when the request supplies neither `section_schema_id`
+nor a matching `document_type_hint`. Without it, a 10-Q submitted with no hint is
+scored against the academic default and comes back entirely unlabeled.
+
+| Value | Tiers | Cost |
+|---|---|---|
+| `off` | none — always the manifest default (`academic`) | 0 |
+| `lexical` | headings only one schema recognises | 0, no model |
+| `headings` **(default)** | the above plus embedding-based heading voting | reuses the chunker's model |
+| `auto` | the above plus content classification on heading-poor documents | same model, more text |
+
+`headings` is the default rather than `auto` because the content tier is
+measurably unsafe. On the nine-document corpus it ranks 7/9 correctly, but its
+one confident error is severe: chemistry body prose scores `standard` over
+`academic` by more than the acceptance margin, so a heading-free paper would be
+relabeled wholesale. It is therefore gated to documents with essentially no
+headings, excludes `news` (a measured semantic attractor), and demands
+`CONTENT_MIN_MARGIN` (4.0) rather than the heading tiers' 1.8. Enable `auto`
+only for corpora of heading-free documents you have checked.
+
+In practice the free tier does the work: all nine corpus cells and all five
+in-repo documents resolve on `lexical` alone, so `headings` loads no model for
+them. Lowering `MIN_SCORE` or `MIN_MARGIN` trades abstentions for confident
+errors — the tightest correct margin in the corpus is a trial protocol at 2.0×
+against `academic`, which is what the 1.8 default leaves room for.
+
+Use `ontocast sections --input-path <file>` to see the resolved schema, the tier
+that chose it, and the ranked candidate evidence, along with what the classifier
+decided — see [Structured documents](concepts.md#structured-documents).
 
 `CHUNK_BIBLIOGRAPHY_MODE` routes chunks detected as bibliography/reference
 lists (via section label or citation-density heuristics): `skip` (default)

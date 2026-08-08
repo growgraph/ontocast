@@ -1,0 +1,147 @@
+schema_version: "1.1"
+id: standard
+description: Technical standard and specification section headings (RFC, ISO/ASTM, W3C)
+document_profile: >-
+    A technical standard or specification stating normative requirements,
+    terminology and conformance criteria that implementers must satisfy. It
+    prescribes what a conforming implementation shall do, rather than
+    instructing a user how to operate a particular product.
+ordered: true
+default_exclude:
+-   acknowledgements
+labels:
+-   id: status
+    order: 10
+    heading_patterns:
+    -   '^status\s+of\s+this\s+memo\s*$'
+    -   '^status\s+of\s+this\s+document\s*$'
+    -   '^abstract\s*$'
+    -   '^foreword\s*$'
+    keywords:
+    -   status of this memo
+    -   status of this document
+    -   copyright notice
+    -   foreword
+-   id: introduction
+    order: 20
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?introduction\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?motivation\s*$'
+    keywords:
+    -   introduction
+    -   motivation
+-   id: scope
+    order: 30
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?scope\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?applicability\s*$'
+    keywords:
+    -   scope
+    -   applicability
+    -   field of application
+-   id: normative_references
+    order: 40
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?normative\s+references\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?informative\s+references\s*$'
+    keywords:
+    -   normative references
+    -   informative references
+-   id: terms_and_definitions
+    order: 50
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?terms\s+and\s+definitions\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:terminology|notation|conventions)\s*$'
+    -   '^requirements\s+language\s*$'
+    keywords:
+    -   terms and definitions
+    -   terminology
+    -   requirements language
+    -   notational conventions
+    -   syntax notation
+    -   symbols and abbreviated terms
+-   id: requirements
+    order: 60
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?requirements?\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:general\s+requirements?|specification|protocol\s+(?:overview|specification))\s*$'
+    keywords:
+    -   requirements
+    -   general requirements
+    -   protocol specification
+    -   message format
+    -   syntax
+    -   request methods
+    -   header fields
+    -   status codes
+    -   method definitions
+    -   representation
+    -   representations
+    -   representation metadata
+    -   content negotiation
+    -   content codings
+    -   payload semantics
+    -   media type
+-   id: test_methods
+    order: 70
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?test\s+methods?\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:test\s+procedures?|sampling)\s*$'
+    keywords:
+    -   test method
+    -   test methods
+    -   test procedure
+    -   sampling
+-   id: conformance
+    order: 80
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?conformance\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:compliance|interoperability)\s*$'
+    keywords:
+    -   conformance
+    -   compliance
+    -   interoperability considerations
+    -   error handling
+    -   idempotent
+    -   cacheable
+    -   safe methods
+-   id: security_considerations
+    order: 85
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?security\s+considerations\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?privacy\s+considerations\s*$'
+    keywords:
+    -   security considerations
+    -   privacy considerations
+-   id: iana_considerations
+    order: 88
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?iana\s+considerations\s*$'
+    keywords:
+    -   iana considerations
+    -   registration procedures
+-   id: acknowledgements
+    order: 90
+    heading_patterns:
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?acknowledg(?:e?ments?|ments?)\s*$'
+    -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?contributors?\s*$'
+    keywords:
+    -   acknowledgments
+    -   acknowledgements
+    -   contributors
+-   id: annex
+    order: 95
+    heading_patterns:
+    -   '^annex\s*(?:[A-Z]|\d+)?\s*$'
+    -   '^appendi(?:x|ces)\s*(?:[A-Z]|\d+)?\s*$'
+    keywords:
+    -   annex
+    -   appendix
+-   id: references
+    order: 100
+    heading_patterns:
+    -   '^references\s*$'
+    -   '^bibliography\s*$'
+    keywords:
+    -   references
+    -   bibliography

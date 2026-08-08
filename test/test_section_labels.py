@@ -22,7 +22,7 @@ def _clear_caches():
 
 def test_manifest_loads_all_schemas() -> None:
     manifest = load_manifest()
-    assert manifest.catalog_version == "1.0"
+    assert manifest.catalog_version == "1.1"
     assert manifest.default_schema == "academic"
     schema_ids = {entry.id for entry in manifest.schemas}
     assert schema_ids == {
@@ -32,8 +32,24 @@ def test_manifest_loads_all_schemas() -> None:
         "clinical",
         "manual",
         "fiction",
+        "patent",
+        "standard",
+        "news",
         "general",
     }
+
+
+def test_schema_catalog_is_a_partition() -> None:
+    """Every cell but the residual declares what makes it exclusive."""
+    manifest = load_manifest()
+    for entry in manifest.schemas:
+        schema = load_section_label_schema(entry.id)
+        if entry.id == "general":
+            # The residual cell: deliberately profile-less so it can never be a
+            # positive detection.
+            assert schema.document_profile.strip() == ""
+        else:
+            assert schema.document_profile.strip(), entry.id
 
 
 @pytest.mark.parametrize(

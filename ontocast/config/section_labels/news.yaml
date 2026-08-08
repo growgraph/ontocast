@@ -1,0 +1,85 @@
+schema_version: "1.1"
+id: news
+description: News article and press release section headings
+document_profile: >-
+    A news article or press release announcing a recent event, carrying a
+    dateline, quotations attributed to named people, and closing organisational
+    boilerplate about the issuing company.
+ordered: true
+default_exclude:
+-   boilerplate
+-   contact
+labels:
+-   id: headline
+    order: 10
+    heading_patterns:
+    -   '^headline\s*$'
+    -   '^(?:for\s+)?immediate\s+release\s*$'
+    -   '^press\s+release\s*$'
+    -   '^news\s+release\s*$'
+    keywords:
+    -   for immediate release
+    -   press release
+    -   news release
+    -   media release
+-   id: summary
+    order: 20
+    heading_patterns:
+    -   '^summary\s*$'
+    -   '^key\s+points\s*$'
+    -   '^highlights?\s*$'
+    -   '^at\s+a\s+glance\s*$'
+    keywords:
+    -   key points
+    -   at a glance
+    -   key takeaways
+    -   highlights
+-   id: body
+    order: 30
+    heading_patterns:
+    -   '^body\s*$'
+    -   '^story\s*$'
+    -   '^details?\s*$'
+    keywords:
+    -   full story
+    -   story
+-   id: quotes
+    order: 40
+    heading_patterns:
+    -   '^quotes?\s*$'
+    -   '^statements?\s*$'
+    -   '^reactions?\s*$'
+    keywords:
+    -   quotes
+    -   statement from
+    -   reaction
+-   id: background
+    order: 50
+    heading_patterns:
+    -   '^background\s*$'
+    -   '^context\s*$'
+    keywords:
+    -   background
+    -   related news
+-   id: boilerplate
+    order: 60
+    heading_patterns:
+    -   '^about\s+.{0,60}$'
+    -   '^boilerplate\s*$'
+    -   '^forward[\s-]looking\s+statements?\s*$'
+    keywords:
+    -   forward-looking statements
+    -   about the company
+-   id: contact
+    order: 70
+    heading_patterns:
+    -   '^(?:media\s+|press\s+|investor\s+)?contacts?\s*$'
+    -   '^(?:media|press)\s+enquiries\s*$'
+    -   '^for\s+more\s+information\s*$'
+    keywords:
+    -   media contact
+    -   press contact
+    -   investor relations
+    -   media enquiries
+    -   sources
+    -   for more information

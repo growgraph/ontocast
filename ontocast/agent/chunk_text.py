@@ -4,6 +4,7 @@ Prepares content units via segment → tag → filter → size (see ``tool.chunk
 """
 
 import logging
+from collections import Counter
 
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import Status
@@ -79,6 +80,8 @@ async def chunk_text(state: AgentState, tools: ToolBox) -> AgentState:
                 headings=chunk.headings,
                 doc_item_refs=list(chunk.doc_item_refs),
                 section_label=chunk.section_label,
+                section_label_source=chunk.section_label_source,
+                section_label_confidence=chunk.section_label_confidence,
                 is_citation_metadata=is_bibliography,
             )
         )
@@ -93,6 +96,13 @@ async def chunk_text(state: AgentState, tools: ToolBox) -> AgentState:
         "Created %s content units: %s",
         len(state.content_units),
         [len(c.text) for c in state.content_units],
+    )
+    histogram = Counter(
+        unit.section_label or "(unlabeled)" for unit in state.content_units
+    )
+    logger.info(
+        "Section labels: %s",
+        ", ".join(f"{label}={count}" for label, count in sorted(histogram.items())),
     )
     state.status = Status.SUCCESS
     return state

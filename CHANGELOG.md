@@ -46,8 +46,171 @@ project:
 - **The on-disk cache now evicts on its own,** capped at 1 GB by default
   (`ONTOCAST_CACHE_MAX_BYTES`). This is new deletion behaviour; set the variable
   to `0` to restore unbounded growth.
+- **`CHUNK_SECTION_CLASSIFIER` now defaults to `heuristic`, not `llm`,** so
+  chunking makes no LLM calls. The deterministic tiers now resolve the headings
+  that previously required a model; set it back to `llm` to keep a model pass
+  over headings none of them can name.
+- **`SectionSpan.label` is now `str | None`.** A region whose section type is
+  unknown is represented explicitly rather than being absorbed into its
+  neighbour. Callers that assumed a non-null label must handle `None`.
 
 ### Fixed
+
+- **Section labels smeared across the document when a heading was
+  unrecognised.** `_build_spans_from_heading_starts` ended each section span at
+  the next *recognised* heading, so one unmatched heading let the previous label
+  run on. On a paper with headings `Introduction / Experimental Section /
+  Results and Discussion / Conclusions and Outlook / References`, only two spans
+  were produced — `introduction` covering everything up to `References`. Because
+  the label was stamped onto segments at split time and both the tagger and the
+  LLM backfill skip already-labeled segments, the wrong label could never be
+  corrected, and `target_sections=["results"]` returned introduction text or
+  nothing. Every heading now closes the preceding span, and unrecognised ones
+  open an explicitly unresolved span. Forward-fill and chunk merging respect
+  that unresolved state, so neither reintroduces the smear.
+- **Heading matching missed most real-world headings.** The anchored patterns
+  required the heading to be exactly a canonical section name, so `Results and
+  Discussion`, `RESULTS AND DISCUSSION`, `Experimental Section`, `Conclusions
+  and Outlook`, `Device fabrication`, `Data Availability` and `Author
+  Contributions` all failed. Publisher decoration defeated matching outright
+  (`■ REFERENCES`, `■ ACKNOWLEDGMENTS`, `*sı Supporting Information`), as did
+  section numbering (`2.1 Synthesis of thin films`). Measured on real docling
+  conversions of three journal PDFs, 26 of 31 detected headings were unmatched
+  and two of the three documents produced **no spans at all**.
+- **Unheaded front matter was not recovered unless the paper opened with an
+  IMRaD section.** `inject_front_matter_spans` bailed when the first labeled
+  span was not `introduction`/`related_work`/`background`, leaving the title,
+  abstract and introduction of papers that open with `Results` unlabeled.
+- **`document_type_hint` matched needles buried inside longer words.** Hint
+  matching was a bare substring test, so `epo` matched "r*epo*rt" (routing any
+  unrecognised "…report" hint to the patent schema), `paper` matched
+  "news*paper*", and `iso` matched "isotope". Needles now match on word
+  boundaries, longest first, so the most specific hint wins regardless of YAML
+  order. The `novel` → `fiction` needle was dropped rather than anchored: no
+  word boundary separates the noun from the far more common adjective ("a study
+  of novel materials" resolved to `fiction`), and detection scores real fiction
+  at full share anyway. This gates detection as well as labeling — a false
+  positive here suppressed detection entirely and imposed an unrelated schema.
+- **The label schema was resolved three times per document, from the raw
+  request each time** (`prepare.py` twice, `section_llm.py`, `inspect_sections.py`).
+  Harmless while resolution was a pure function of the request, but it becomes
+  silent label loss the moment it depends on document text: the deterministic
+  tiers tag against the detected schema while the LLM backfill validates against
+  the default, and `normalise_llm_label` *drops* labels absent from its schema
+  rather than erroring. Resolution now happens once in
+  `resolve_prepare_schema`, and the resolved schema is threaded to the backfill
+  and to the CLI — so the schema `ontocast sections` reports is necessarily the
+  one the chunks were labeled against.
+- **`manual.yaml`'s `^using\s+` and `^how\s+to\s+` patterns were unbounded at
+  the tail** — the catalog's only open-ended patterns, so `^using\s+` claimed
+  headings such as "Using Creative Commons Public Licenses" for the manual
+  schema. Harmless while schemas were only ever matched one at a time; a
+  cross-schema scorer reads it as evidence. Both now bound the trailing words,
+  matching short instructional headings ("Using the API") as intended.
+- **`ontocast sections` could not read JSON or plain-text documents.** It called
+  the Docling converter for every input, but the Convert node routes `.json` and
+  `.txt` *around* the converter (Docling rejects them), so inspecting the files
+  the pipeline is normally driven with — `data/json/*.json` — failed with
+  "Input document is not valid". The routing and the JSON text heuristic now
+  live in `onto/docling_helpers.py::json_payload_text` and are shared, so the
+  CLI and the pipeline cannot disagree about what a file's text is. A JSON
+  payload holding no document text (the shape of `clinical.trials.*.json`) now
+  fails with a clear message rather than inspecting as an empty document.
+
+### Added
+
+- **Section classification cascade** (`ontocast/tool/chunk/outline.py`,
+  `density.py`). Classification runs over the document outline rather than per
+  chunk, through tiers of increasing cost: outline → heading patterns → heading
+  keywords → canonical-order fill → content density → batched LLM. Only the last
+  costs anything, and it is off by default.
+- **Heading genericity discrimination.** Docling reports a flat heading level
+  for PDF conversions, so hierarchy cannot be read from the structure. Headings
+  are instead classified by content-word count: generic section names open a new
+  section, while descriptive subsection titles (and document titles) inherit
+  their parent's label. Without this, a subsection such as `Cooperative ensemble
+  breaks the population-inversion limitation` would split several thousand
+  characters of results text out of the results section.
+- **`keywords` and `order` in the section-label YAML schemas**, plus a schema
+  level `ordered` flag. Keywords are the recall tier for compound and decorated
+  headings; `order` is used only to refuse a fill that would run backwards.
+  Both are optional, so existing schemas load unchanged.
+- **Content-density classification** for regions with no usable heading
+  (`CHUNK_SECTION_DENSITY`). `conservative` (default) recognises only reference
+  lists and acknowledgements; `aggressive` additionally guesses
+  methods/results/introduction and is opt-in, because those features do not
+  separate those sections reliably and a wrong label is acted on silently.
+- **Batched LLM section classification** (`CHUNK_SECTION_LLM_BATCH_SIZE`,
+  default 40). When `CHUNK_SECTION_CLASSIFIER=llm`, one call now classifies a
+  whole document's residual instead of one call per chunk; a response that
+  cannot be used falls back to the per-chunk path.
+- **`ontocast sections`** — prints the detected outline and every chunk's label,
+  deciding tier and confidence, without running extraction. Makes no LLM calls
+  and needs no provider credentials unless `--section-classifier llm` is passed.
+- **`section_label_source` and `section_label_confidence`** on `ContentUnit`,
+  `PreparedChunk` and `PrepareSegment`, recording which tier decided a label.
+  The source is load-bearing, not diagnostic: it is what stops forward-fill from
+  overwriting an explicitly unresolved section.
+- **Plain-text heading detection** (`CHUNK_SECTION_TEXT_HEADINGS`) for documents
+  whose conversion produced no markdown heading structure.
+- **Automatic document-type schema detection**
+  (`ontocast/tool/chunk/schema_detect.py`, `CHUNK_SECTION_SCHEMA_DETECT`,
+  default `headings`). Section labels are only meaningful relative to a schema,
+  and a 10-Q submitted without `section_schema_id` or a matching
+  `document_type_hint` was scored against the academic default and came back
+  entirely unlabeled. Three tiers, cheapest first: headings that only one schema
+  recognises (free, no model), then embedding-based heading voting reusing the
+  chunker's model, then body prose against document-type profiles. Precedence is
+  explicit id → hint → detection → manifest default, so caller intent is never
+  overridden. Every tier abstains rather than guessing — a wrong schema
+  relabels an entire document silently.
+  - The lexical tier scores on **exclusive** evidence only: a heading several
+    schemas recognise counts zero, not a fraction. Weighting shared headings
+    fractionally measured strictly worse (clinical 1.4× → 2.0×, standard
+    4.2× → 14×, academic 6.1× → 600×) — `References` genuinely carries no
+    information about which cell a document is in.
+  - The content tier ships **off** (`auto`, not the default). It ranks 7/9 on
+    the corpus but its one confident error is severe: chemistry prose scores
+    `standard` over `academic` past the acceptance margin. It is gated to
+    documents with essentially no headings, excludes `news` (a measured
+    semantic attractor), and demands a 4.0 margin against the heading tiers'
+    1.8.
+- **Three new section-label schemas** — `patent`, `standard` and `news` —
+  completing the document-type partition. No `thesis` cell: a thesis shares the
+  IMRaD body of a paper and differs only in front and back matter, so it is a
+  subtype of `academic` rather than a sibling and belongs to the planned
+  `academic → paper → experimental` funnel. `thesis`/`dissertation` hints
+  resolve to `academic`.
+- **`document_profile` on `SectionLabelSchema`** — one sentence per cell stating
+  what makes it exclusive. It is the artifact that enforces the partition (two
+  profiles that could describe the same document mean the partition is broken)
+  and doubles as the content tier's prototype. `general` deliberately has none,
+  which is what keeps the residual cell out of detection entirely.
+- **Verified keyword tiers for every schema.** All eight non-academic schemas
+  gained corpus-grounded `keywords`, with `order`/`ordered` where a canonical
+  order exists. Every keyword was authored against a real document in
+  `test/data/schema_corpus.json` and cut if it matched nothing — the baseline
+  before this was 4/9 cells detected, now 9/9.
+- **Document-type detection corpus** (`test/data/schema_corpus.json`,
+  `run/fetch_schema_samples.py`). One real document per cell — RFC 7231, *Pride
+  and Prejudice*, a USPTO patent, the CC BY 4.0 legal code, the nginx guide, a
+  Europe PMC trial protocol, a Wikinews article, plus the in-repo 10-Q and
+  chemistry paper. Only heading sequences and sampled paragraphs are committed,
+  each with its source URL and licence, so the suite stays offline and a few
+  tens of kB. Tuning a nine-way classifier on the two document types previously
+  in `data/` was not sound.
+- **Schema reporting in `ontocast sections`** — the resolved schema, the tier
+  that chose it, its margin over the runner-up, and the ranked candidate
+  evidence. The only way to see a weak-but-accepted detection; free in
+  `lexical` mode.
+
+Measured on the Apple 10-Q, which is what the change is for: with detection off
+the document resolves to the academic default and 1 of 102 chunks receives a
+label — and that one is `methods`, i.e. wrong. With detection on it resolves to
+`financial` on the free lexical tier at an 8.7× margin and 17 of 75 chunks are
+labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
+`financial_statements`, `business_overview`, `highlights`, `cover`), so
+`--target-sections md_and_a` selects text for the first time.
 
 - **Batch cache prewarming was a no-op.** `ontocast.tool.llm_batch` built its own
   cache-key config and dropped `base_url` when it was `None` — the default — so

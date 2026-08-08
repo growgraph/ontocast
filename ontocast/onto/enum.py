@@ -26,6 +26,26 @@ class FactsDecision(StrEnum):
     SERIALIZE = "skip to serialize"
 
 
+class SectionLabelSource(StrEnum):
+    """How a chunk's ``section_label`` was decided.
+
+    Ordered from strongest to weakest evidence. The source is not bookkeeping:
+    the chunk-prepare cascade uses it to decide whether a label may still be
+    overwritten by a later tier, and forward-fill refuses to cross a span whose
+    source is :attr:`OUTLINE_UNRESOLVED`.
+    """
+
+    HEADING_PATTERN = "heading_pattern"
+    HEADING_KEYWORD = "heading_keyword"
+    HEADING_INHERITED = "heading_inherited"
+    FRONT_MATTER = "front_matter"
+    SPAN_OVERLAP = "span_overlap"
+    CONTENT_DENSITY = "content_density"
+    LLM = "llm"
+    FORWARD_FILL = "forward_fill"
+    OUTLINE_UNRESOLVED = "outline_unresolved"
+
+
 class RenderMode(StrEnum):
     """Enumeration of supported rendering modes."""
 

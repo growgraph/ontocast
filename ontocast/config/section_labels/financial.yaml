@@ -1,62 +1,140 @@
-schema_version: "1.0"
+schema_version: "1.1"
 id: financial
 description: SEC filings, annual and quarterly reports, investor documents
+document_profile: >-
+    A corporate financial disclosure to shareholders or a securities regulator,
+    reporting revenue, margins, cash flow, taxes, segment performance and
+    business risk for a fiscal period.
 labels:
 -   id: cover
     heading_patterns:
     -   '^form\s+10[-\s]?[qk]\s*$'
     -   '^cover\s+page\s*$'
+    keywords:
+    -   form 10-q
+    -   form 10-k
+    -   securities and exchange commission
+    -   cover page
+    -   fiscal quarter
+    -   fiscal year ended
 -   id: highlights
     heading_patterns:
     -   '^highlights?\s*$'
     -   '^financial\s+highlights?\s*$'
+    keywords:
+    -   quarterly highlights
+    -   financial highlights
+    -   segment operating performance
+    -   macroeconomic conditions
 -   id: business_overview
     heading_patterns:
     -   '^item\s+1\.?\s*$'
     -   '^business\s*$'
     -   '^business\s+overview\s*$'
     -   '^description\s+of\s+business\s*$'
+    keywords:
+    -   business overview
+    -   products and services
+    -   available information
 -   id: risk_factors
     heading_patterns:
     -   '^item\s+1a\.?\s*$'
     -   '^risk\s+factors\s*$'
+    keywords:
+    -   risk factors
 -   id: md_and_a
     heading_patterns:
     -   '^item\s+7\.?\s*$'
     -   '^management\s+discussion\s+and\s+analysis\s*$'
     -   '^md\s*&\s*a\s*$'
+    keywords:
+    -   management's discussion
+    -   management discussion
+    -   md&a
+    -   gross margin
+    -   operating expenses
+    -   net sales
+    -   provision for income taxes
 -   id: financial_statements
     heading_patterns:
     -   '^item\s+8\.?\s*$'
     -   '^financial\s+statements\s*$'
     -   '^consolidated\s+financial\s+statements\s*$'
+    keywords:
+    -   financial statements
+    -   condensed consolidated
+    -   balance sheet
+    -   balance sheets
+    -   statements of operations
+    -   statements of cash flows
+    -   statements of comprehensive income
+    -   shareholders' equity
+    -   shareholders equity
 -   id: notes_to_financials
     heading_patterns:
     -   '^notes?\s+to\s+(?:consolidated\s+)?financial\s+statements\s*$'
     -   '^notes?\s+to\s+financial\s+statements\s*$'
+    keywords:
+    -   notes to
+    -   summary of significant accounting policies
+    -   basis of presentation
+    -   earnings per share
+    -   financial instruments
+    -   marketable securities
+    -   derivative instruments
+    -   accounts receivable
+    -   trade receivables
+    -   inventories
+    -   property, plant and equipment
+    -   income taxes
+    -   commercial paper
+    -   term debt
+    -   share repurchase
+    -   benefit plans
+    -   commitments and contingencies
+    -   segment information
 -   id: auditor_report
     heading_patterns:
     -   '^report\s+of\s+independent\s+registered\s+public\s+accounting\s+firm\s*$'
     -   '^auditors?\s+report\s*$'
+    keywords:
+    -   independent registered public accounting firm
+    -   auditor's report
 -   id: controls_procedures
     heading_patterns:
     -   '^item\s+9a\.?\s*$'
     -   '^controls\s+and\s+procedures\s*$'
     -   '^internal\s+control\s+over\s+financial\s+reporting\s*$'
+    keywords:
+    -   controls and procedures
+    -   internal control over financial reporting
+    -   disclosure controls
 -   id: legal_proceedings
     heading_patterns:
     -   '^item\s+3\.?\s*$'
     -   '^legal\s+proceedings\s*$'
+    keywords:
+    -   legal proceedings
 -   id: executive_compensation
     heading_patterns:
     -   '^item\s+11\.?\s*$'
     -   '^executive\s+compensation\s*$'
+    keywords:
+    -   executive compensation
 -   id: exhibits
     heading_patterns:
     -   '^item\s+15\.?\s*$'
     -   '^exhibits?\s*$'
     -   '^exhibit\s+index\s*$'
+    keywords:
+    -   exhibit index
+    -   unregistered sales
+    -   defaults upon senior securities
+    -   mine safety disclosures
 -   id: references
     heading_patterns:
     -   '^references\s*$'
     -   '^bibliography\s*$'
+    keywords:
+    -   references
+    -   bibliography

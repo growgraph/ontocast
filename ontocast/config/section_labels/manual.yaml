@@ -1,61 +1,128 @@
-schema_version: "1.0"
+schema_version: "1.1"
 id: manual
 description: Product documentation, SOPs, and runbooks
+document_profile: >-
+    Product or software documentation instructing a user how to install,
+    configure, operate and troubleshoot one specific system, written as
+    practical guidance rather than as requirements binding on implementers.
 labels:
 -   id: overview
     heading_patterns:
     -   '^overview\s*$'
     -   '^introduction\s*$'
     -   '^getting\s+started\s*$'
+    keywords:
+    -   overview
+    -   getting started
+    -   beginner's guide
+    -   beginners guide
+    -   introduction
 -   id: prerequisites
     heading_patterns:
     -   '^prerequisites?\s*$'
     -   '^requirements?\s*$'
     -   '^before\s+you\s+begin\s*$'
+    keywords:
+    -   prerequisites
+    -   requirements
+    -   before you begin
 -   id: installation
     heading_patterns:
     -   '^installation\s*$'
     -   '^install(?:ation)?\s+guide\s*$'
     -   '^setup\s*$'
+    keywords:
+    -   installation
+    -   install
+    -   setup
+    -   setting up
+    -   building from source
 -   id: configuration
     heading_patterns:
     -   '^configuration\s*$'
     -   '^config(?:uration)?\s*$'
     -   '^settings?\s*$'
+    keywords:
+    -   configuration
+    -   config
+    -   settings
+    -   reloading configuration
 -   id: usage
     heading_patterns:
     -   '^usage\s*$'
-    -   '^using\s+'
-    -   '^how\s+to\s+'
+    # Bounded at the tail: unanchored, these were the catalog's only open-ended
+    # patterns, and `^using\s+` claimed headings such as "Using Creative Commons
+    # Public Licenses" for the manual schema. A short instructional heading
+    # ("Using the API") is what they are for.
+    -   '^using\s+\S+(?:\s+\S+){0,2}\s*$'
+    -   '^how\s+to\s+\S+(?:\s+\S+){0,3}\s*$'
+    keywords:
+    -   usage
+    -   serving static content
+    -   serving
+    -   command line
+    -   examples
 -   id: operations
     heading_patterns:
     -   '^operations?\s*$'
     -   '^operation\s*$'
     -   '^day[\s-]?to[\s-]?day\s*$'
+    keywords:
+    -   operations
+    -   starting, stopping
+    -   running
+    -   deployment
+    -   monitoring
 -   id: troubleshooting
     heading_patterns:
     -   '^troubleshooting\s*$'
     -   '^faq\s*$'
     -   '^common\s+issues?\s*$'
+    keywords:
+    -   troubleshooting
+    -   faq
+    -   common issues
+    -   known issues
+    -   debugging
 -   id: api_reference
     heading_patterns:
     -   '^api\s+reference\s*$'
     -   '^api\s+documentation\s*$'
     -   '^reference\s*$'
+    keywords:
+    -   api reference
+    -   api documentation
+    -   directives
+    -   command reference
 -   id: security
     heading_patterns:
     -   '^security\s*$'
     -   '^security\s+considerations\s*$'
+    keywords:
+    -   security
+    -   security considerations
+    -   hardening
 -   id: changelog
     heading_patterns:
     -   '^changelog\s*$'
     -   '^release\s+notes?\s*$'
     -   '^version\s+history\s*$'
+    keywords:
+    -   changelog
+    -   release notes
+    -   version history
+    -   upgrading
 -   id: glossary
     heading_patterns:
     -   '^glossary\s*$'
     -   '^terminology\s*$'
+    keywords:
+    -   glossary
+    -   terminology
 -   id: appendix
     heading_patterns:
     -   '^appendi(?:x|ces)\s*$'
     -   '^supplement(?:ary)?\s*$'
+    keywords:
+    -   appendix
+    -   supplementary

@@ -25,6 +25,36 @@ def plain_text_to_docling_doc(text: str, doc_name: str) -> DoclingDocument:
     return doc
 
 
+def json_payload_text(payload: object) -> str | None:
+    """Document text inside a JSON payload, by a small top-level heuristic.
+
+    ``text`` when present, else the longest top-level string. Lives here rather
+    than in the conversion agent because JSON inputs are routed around the
+    Docling converter entirely -- anything that reads a document from a path has
+    to make the same choice, and two copies of the heuristic would let the CLI
+    and the pipeline disagree about what a file's text even is.
+
+    Args:
+        payload: Parsed JSON, expected to be an object.
+
+    Returns:
+        The document text, or ``None`` when the payload is not an object or
+        holds no string.
+    """
+    if not isinstance(payload, dict):
+        return None
+    text_value = payload.get("text")
+    if isinstance(text_value, str):
+        return text_value
+
+    largest_text: str | None = None
+    for value in payload.values():
+        if isinstance(value, str):
+            if largest_text is None or len(value) > len(largest_text):
+                largest_text = value
+    return largest_text
+
+
 def repair_ligature_gaps(text: str) -> str:
     """TEMP: repair common ASCII ligature gaps in extracted publisher-PDF text."""
     return _LIGATURE_GAP_RE.sub(r"\1", text)

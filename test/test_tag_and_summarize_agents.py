@@ -39,7 +39,7 @@ def _build_tools(
     parallel_workers: int = 2,
     min_size: int = 50,
     max_size: int = 2000,
-    section_classifier: Literal["llm", "heading", "off"] = "llm",
+    section_classifier: Literal["llm", "heuristic", "heading", "off"] = "llm",
 ) -> ToolBox:
     config = ChunkConfig(
         min_size=min_size,
@@ -135,13 +135,14 @@ async def test_chunk_prepare_regex_labels_without_llm() -> None:
 
 
 @pytest.mark.anyio
-async def test_chunk_prepare_llm_classifies_non_regex_chunk() -> None:
+async def test_chunk_prepare_keyword_tier_labels_non_regex_chunk() -> None:
+    """A heading the anchored patterns miss is still resolved without an LLM."""
     llm_calls = 0
 
     async def llm(_prompt):
         nonlocal llm_calls
         llm_calls += 1
-        return SimpleNamespace(content=_chunk_label_json("results"))
+        raise AssertionError("LLM should not be called")
 
     state = AgentState(
         docling_doc=doc_from_markdown_lines(
@@ -153,7 +154,32 @@ async def test_chunk_prepare_llm_classifies_non_regex_chunk() -> None:
     assert result.status == Status.SUCCESS
     assert result.content_units
     assert result.content_units[0].section_label == "results"
-    assert llm_calls >= 1
+    assert llm_calls == 0
+
+
+@pytest.mark.anyio
+async def test_chunk_prepare_llm_classifies_unnamed_chunk() -> None:
+    """Only headings no deterministic tier can name reach the LLM."""
+    llm_calls = 0
+
+    async def llm(_prompt):
+        nonlocal llm_calls
+        llm_calls += 1
+        return SimpleNamespace(
+            content='{"assignments": [{"index": 0, "label": "results"}]}'
+        )
+
+    state = AgentState(
+        docling_doc=doc_from_markdown_lines(
+            "# Widget Telemetry Rollup\nAccuracy improved by 10%.\n"
+        ),
+        target_sections=["results"],
+    )
+    result = await chunk_text(state, _build_tools(llm=llm))
+    assert result.status == Status.SUCCESS
+    assert result.content_units
+    assert result.content_units[0].section_label == "results"
+    assert llm_calls == 1
 
 
 @pytest.mark.anyio

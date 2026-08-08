@@ -40,6 +40,7 @@ from ontocast.api.tenancy_resolution import (
     stores_use_tenancy_partitions,
 )
 from ontocast.cli.cache import cache as cache_cli
+from ontocast.cli.inspect_sections import main as inspect_sections_cli
 from ontocast.config import Config
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.retrieval_capabilities import validate_ontology_context_mode
@@ -230,6 +231,7 @@ def cli() -> None:
 
 
 cli.add_command(cache_cli)
+cli.add_command(inspect_sections_cli)
 
 
 @cli.command("serve")

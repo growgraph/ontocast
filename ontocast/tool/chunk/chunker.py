@@ -130,6 +130,32 @@ class ChunkerTool(Tool):
                         # Set to a sentinel value to prevent repeated failed attempts
                         self._model = None
 
+    def embed_texts(self, texts: list[str]) -> list[list[float]] | None:
+        """Embed short texts with the chunker's model, or ``None`` if unavailable.
+
+        Exposed so document-type detection can reuse the model already loaded
+        for semantic chunking instead of constructing a second one. Returns
+        ``None`` -- rather than raising -- when the semantic extras are absent,
+        so callers degrade to their deterministic tiers exactly as chunking
+        itself degrades to ``naive``.
+
+        Args:
+            texts: Short strings to embed (headings or sampled paragraphs).
+
+        Returns:
+            One embedding per input, or ``None`` when no model is available.
+        """
+        if not texts:
+            return []
+        self._init_model()
+        if self._model is None:
+            return None
+        try:
+            return self._model.embed_documents(texts)
+        except Exception as exc:  # pragma: no cover - environment dependent
+            logger.warning("Embedding failed, skipping semantic tier: %s", exc)
+            return None
+
     def naive_split(self, doc: str) -> list[str]:
         """Split text by paragraph/sentence boundaries up to ``max_size``.
 
