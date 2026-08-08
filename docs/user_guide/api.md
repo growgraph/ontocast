@@ -79,7 +79,7 @@ curl -X POST "http://localhost:8999/process?tenant=acme&project=reports" \
 |-------|---------|
 | `status` | Terminal workflow status |
 | `chunks_processed` / `chunks_remaining` | Content-unit counts |
-| `budget` | LLM call, cache-hit, character and triple counters |
+| `budget` | LLM call, cache-hit, character and triple counters, plus `node_durations` and `counters` timing telemetry — see [Performance](performance.md) |
 | `retrieval_metrics` | Ontology-retrieval telemetry for the run |
 | `facts_repairs` | Deterministic machine rewrites per unit index — lets you tell machine-altered triples from what the model asserted |
 | `failed_units` | Units that produced no output, with phase, stage and reason. Empty on a clean run |

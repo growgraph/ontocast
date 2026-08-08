@@ -1593,20 +1593,6 @@ wheels = [
 ]
 
 [[package]]
-name = "langchain-huggingface"
-version = "1.2.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "huggingface-hub" },
-    { name = "langchain-core" },
-    { name = "tokenizers" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/2c/e8/4068ad02179253f55958e59e442e5b6e8cb95ffc5e805cc4db0b1ef61d4e/langchain_huggingface-1.2.2.tar.gz", hash = "sha256:1dd91ec415190d2704e93ec149618e3145075863ba37e74afc9080d685dc2743", size = 255513, upload-time = "2026-04-16T19:57:41.046Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/0a/ed/648b87f9b67153ade616f360bf4145b76ed428b4adb89525938f611e9828/langchain_huggingface-1.2.2-py3-none-any.whl", hash = "sha256:f94944b0c0d5afc687568d426c87ed5236907464c41e72108ed76eee1a690f6d", size = 31926, upload-time = "2026-04-16T19:57:40.079Z" },
-]
-
-[[package]]
 name = "langchain-ollama"
 version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2751,7 +2737,6 @@ all = [
     { name = "lancedb" },
     { name = "langchain-anthropic" },
     { name = "langchain-google-genai" },
-    { name = "langchain-huggingface" },
     { name = "langchain-ollama" },
     { name = "langchain-openai" },
     { name = "networkx" },
@@ -2825,7 +2810,7 @@ qdrant = [
 ]
 semantic-chunking = [
     { name = "hdbscan" },
-    { name = "langchain-huggingface" },
+    { name = "sentence-transformers" },
     { name = "torch" },
     { name = "umap-learn" },
 ]
@@ -2868,7 +2853,6 @@ requires-dist = [
     { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=1.0,<2" },
     { name = "langchain-core", specifier = ">=1.0,<2" },
     { name = "langchain-google-genai", marker = "extra == 'google'", specifier = ">=4.0,<5" },
-    { name = "langchain-huggingface", marker = "extra == 'semantic-chunking'", specifier = ">=0.2.0" },
     { name = "langchain-ollama", marker = "extra == 'ollama'", specifier = ">=1.0,<2" },
     { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1.0,<2" },
     { name = "langgraph", specifier = ">=1.0,<2" },
@@ -2908,6 +2892,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11.2" },
     { name = "scikit-learn", specifier = ">=1.4,<2" },
     { name = "sentence-transformers", marker = "extra == 'doc-processing'", specifier = ">=5.1.1" },
+    { name = "sentence-transformers", marker = "extra == 'semantic-chunking'", specifier = ">=5.1.1" },
     { name = "starlette", marker = "extra == 'server'", specifier = ">=1.0,<2" },
     { name = "suthing", marker = "extra == 'server'", specifier = ">=0.4.1,<1" },
     { name = "torch", marker = "extra == 'semantic-chunking'", specifier = ">=2.0" },

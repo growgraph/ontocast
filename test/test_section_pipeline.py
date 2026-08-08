@@ -20,7 +20,7 @@ from ontocast.config.section_labels import (
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import OntologyContextMode, RenderMode, Status, WorkflowNode
 from ontocast.onto.state import AgentState
-from ontocast.stategraph.routing import route_after_chunk, route_after_convert
+from ontocast.stategraph.routing import route_after_convert, route_after_tag_or_chunk
 from ontocast.tool.chunk.prepare import (
     PrepareSegment,
     _forward_fill_section_labels,
@@ -126,17 +126,19 @@ def test_agent_state_optional_routing_flags() -> None:
     assert default.needs_section_prepare is False
     assert default.use_summarization is False
     assert route_after_convert(default) == WorkflowNode.CHUNK
-    assert route_after_chunk(default) == WorkflowNode.RENDER_ONTOLOGY_UPDATE
+    assert route_after_tag_or_chunk(default) == WorkflowNode.RENDER_ONTOLOGY_UPDATE
 
     tagged = AgentState(target_sections=["results"])
     assert tagged.needs_section_prepare is True
-    assert route_after_chunk(tagged) == WorkflowNode.RENDER_ONTOLOGY_UPDATE
+    assert route_after_tag_or_chunk(tagged) == WorkflowNode.RENDER_ONTOLOGY_UPDATE
 
+    # Summarization no longer diverts the graph: it runs inside the extraction
+    # fan-outs, so enabling it must not change routing.
     summarized = AgentState(
         summarize_sections=["results"], render_mode=RenderMode.FACTS
     )
     assert summarized.use_summarization is True
-    assert route_after_chunk(summarized) == WorkflowNode.SUMMARIZE_CHUNKS
+    assert route_after_tag_or_chunk(summarized) == WorkflowNode.RENDER_FACTS
 
 
 def test_expand_input_to_states_passes_section_params(tmp_path: Path) -> None:

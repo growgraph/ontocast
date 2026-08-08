@@ -234,13 +234,15 @@ leaves `document_type_hint` in charge.
 
 ### Optional summarization
 
-When `summarize_sections` is present (including empty or `*` for all units), the **Summarize Chunks** node runs an LLM pass per selected unit (bounded by `PARALLEL_WORKERS`). Summaries are stored on `ContentUnit.summary`; render and critic agents read `extraction_text`, which prefers the summary over the raw chunk.
+When `summarize_sections` is present (including empty or `*` for all units), an LLM compression pass runs for each selected unit. Summaries are stored on `ContentUnit.summary`; render and critic agents read `extraction_text`, which prefers the summary over the raw chunk.
+
+The pass runs **inside the extraction fan-out** (bounded by `PARALLEL_WORKERS`), immediately before the unit is rendered, rather than as a separate pipeline stage. A summary depends only on its own unit, so a stage would have been a barrier: every unit waiting on the slowest summary before any extraction could begin. It is computed once per unit even when both ontology and facts extraction run.
 
 | Parameter | Default | Effect |
 |-----------|---------|--------|
 | `target_sections` | omitted | Keep only listed sections (e.g. `results,methods`) |
 | `exclude_sections` | omitted (schema `default_exclude`) | Drop listed sections; explicit empty value disables all exclusion |
-| `summarize_sections` | omitted | Summarization node; omit to skip summaries. `*` or empty = all chunks after prepare |
+| `summarize_sections` | omitted | Per-unit summarization; omit to skip summaries. `*` or empty = all chunks after prepare |
 | `summary_max_sentences` | `5` | Max sentences per summary when summarization runs |
 | `section_schema_id` | omitted (detected, else `academic`) | Section label YAML schema (`academic`, `financial`, `legal`, `clinical`, `manual`, `fiction`, `patent`, `standard`, `news`, `general`) |
 | `document_type_hint` | omitted | Free-text hint to resolve schema when `section_schema_id` is not set; overrides detection |

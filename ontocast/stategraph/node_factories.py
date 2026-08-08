@@ -1,12 +1,15 @@
 import asyncio
 import logging
 import time
+from collections.abc import AsyncIterator, Coroutine, Sequence
+from contextlib import asynccontextmanager
+from typing import Any, TypeVar
 
 from rdflib import RDFS, Literal, URIRef
 
 from ontocast.agent.normalize_ontology import normalize_ontology_units
 from ontocast.agent.render_ontology import render_ontology_update
-from ontocast.agent.summarize_chunks import should_summarize_unit, summarize_chunk
+from ontocast.agent.summarize_chunks import ensure_unit_summary
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
 from ontocast.onto.enum import (
@@ -26,7 +29,7 @@ from ontocast.onto.ontology_apply import (
 )
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.state import AgentState, BudgetTracker
+from ontocast.onto.state import UNIT_SUM_SUFFIX, AgentState, BudgetTracker
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.atomic import facts_loop, ontology_loop
 from ontocast.stategraph.context_resolver import (
@@ -46,8 +49,74 @@ from ontocast.tool.facts_invariants import (
 )
 from ontocast.tool.validate import RDFGraphConnectivityValidator
 from ontocast.toolbox import ToolBox
+from ontocast.util.loop_lag import loop_lag
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+@asynccontextmanager
+async def _unit_slot(semaphore: asyncio.Semaphore) -> AsyncIterator[float]:
+    """Hold a unit-worker slot, yielding how long acquiring it took.
+
+    The wait is yielded rather than recorded, because the unit loops deep-copy
+    the state they are handed -- the tracker that survives is the one on the
+    *returned* state, so the caller must charge it there.
+
+    A non-zero ``"<node>/worker_wait"`` means units queued behind
+    ``PARALLEL_WORKERS``, so widening the fan-out would help. Near zero means
+    the configured width is not what limits the stage.
+    """
+    wait_start = time.perf_counter()
+    async with semaphore:
+        yield time.perf_counter() - wait_start
+
+
+async def _gather_units(
+    node: WorkflowNode,
+    state: AgentState,
+    tasks: Sequence[Coroutine[Any, Any, T]],
+) -> tuple[list[T], int]:
+    """Run per-unit tasks concurrently, recording the stage's event-loop stall.
+
+    Awaited provider calls yield and produce no lag, so ``"<node>/loop_lag_total"``
+    isolates synchronous CPU work that blocked every other unit -- the thing that
+    makes a nominally N-way fan-out behave like a serial loop. Read it together
+    with :meth:`~ontocast.onto.state.BudgetTracker.parallel_efficiency`.
+
+    Failures are isolated to their own unit. The unit loops already catch their
+    own errors, but the code around them (state construction, context
+    projection) does not, and a bare ``gather`` would let one such error abort
+    the node while its siblings kept running as orphans -- their provider spend
+    billed and then discarded.
+
+    Args:
+        node: Fan-out node the tasks belong to; namespaces the metric keys.
+        state: Document state whose tracker the stage metrics land on.
+        tasks: Per-unit coroutines to run concurrently.
+
+    Returns:
+        tuple: Successful results in submission order, and the number of units
+        that raised.
+    """
+    async with loop_lag() as lag:
+        raw = await asyncio.gather(*tasks, return_exceptions=True)
+    state.budget_tracker.add_duration(f"{node}/loop_lag_total", lag.total)
+    state.budget_tracker.add_duration(f"{node}/loop_lag_max", lag.peak)
+
+    results: list[T] = []
+    failures = 0
+    for index, item in enumerate(raw):
+        if isinstance(item, BaseException):
+            failures += 1
+            state.budget_tracker.incr(f"{node}/unit_errors")
+            logger.exception(
+                "Unit %s raised during %s: %s", index, node, item, exc_info=item
+            )
+            continue
+        results.append(item)
+    return results, failures
 
 
 def _index_ontologies_by_anchor(artifacts: list[Ontology]) -> dict[str, Ontology]:
@@ -93,8 +162,11 @@ def make_render_ontology_node(tools: ToolBox):
         async def process_unit(
             unit_index: int,
         ) -> tuple[int, UnitOntologyState, str, list[str], OntologyAssemblyMode]:
-            async with semaphore:
+            async with _unit_slot(semaphore) as worker_wait:
                 unit_budget = BudgetTracker()
+                # Before building the unit state: the loop deep-copies the
+                # content unit, so a later write would not be visible to it.
+                await ensure_unit_summary(state, unit_index, tools, unit_budget)
                 unit_context = UnitLoopContext.from_agent_state(state, unit_budget)
                 ontology_state = UnitOntologyState(
                     content_unit=state.content_units[unit_index],
@@ -110,7 +182,11 @@ def make_render_ontology_node(tools: ToolBox):
                 loop_start = time.perf_counter()
                 result = await ontology_loop(ontology_state, tools, unit_context)
                 result.budget_tracker.add_duration(
-                    "unit ontology loop", time.perf_counter() - loop_start
+                    f"{WorkflowNode.RENDER_ONTOLOGY_UPDATE}{UNIT_SUM_SUFFIX}",
+                    time.perf_counter() - loop_start,
+                )
+                result.budget_tracker.add_duration(
+                    f"{WorkflowNode.RENDER_ONTOLOGY_UPDATE}/worker_wait", worker_wait
                 )
                 # Per-unit resolver metrics previously landed on a discarded
                 # deep copy; fold them back (last writer wins on shared keys).
@@ -124,13 +200,15 @@ def make_render_ontology_node(tools: ToolBox):
                 )
 
         tasks = [process_unit(i) for i, _ in enumerate(state.content_units)]
-        raw_results = await asyncio.gather(*tasks)
+        raw_results, unit_errors = await _gather_units(
+            WorkflowNode.RENDER_ONTOLOGY_UPDATE, state, tasks
+        )
         ordered_results = sorted(raw_results, key=lambda item: item[0])
 
         ontology_units: list[ContentUnit] = []
         unit_deltas: list[OntologyDelta] = []
         fresh_ontologies: list[Ontology] = []
-        failed_without_output_count = 0
+        failed_without_output_count = unit_errors
         salvaged_failed_count = 0
         unit_contexts: dict[int, tuple[str, list[str], OntologyAssemblyMode]] = {}
         all_writable: list[str] = []
@@ -429,11 +507,28 @@ def make_render_facts_node(tools: ToolBox):
         worker_limit = max(1, tools.config.server.parallel_workers)
         semaphore = asyncio.Semaphore(worker_limit)
 
+        # Built once for the whole document, not once per unit. It reads only
+        # reduced_ontology_artifacts, which the ontology stage froze upstream,
+        # so every unit would otherwise pay an identical full rdflib merge plus
+        # two graph copies -- synchronously, on the event loop, stalling every
+        # other unit's in-flight provider call. None means no ontology stage ran
+        # (facts-only mode); units then resolve their own context as before.
+        merged_context = build_merged_document_ontology_context(
+            UnitLoopContext.from_agent_state(state)
+        )
+        if merged_context is not None:
+            # Hand the same graph to merge/validate downstream instead of
+            # letting each rebuild it.
+            state.facts_ontology_context = merged_context.snapshot.graph
+
         async def process_unit(
             unit_index: int,
         ) -> tuple[int, UnitFactsState, str, list[str], OntologyAssemblyMode]:
-            async with semaphore:
+            async with _unit_slot(semaphore) as worker_wait:
                 unit_budget = BudgetTracker()
+                # No-op when the ontology fan-out already summarised this unit;
+                # does the work when facts run without an ontology stage.
+                await ensure_unit_summary(state, unit_index, tools, unit_budget)
                 unit_context = UnitLoopContext.from_agent_state(state, unit_budget)
                 facts_state = UnitFactsState(
                     content_unit=state.content_units[unit_index],
@@ -449,9 +544,14 @@ def make_render_facts_node(tools: ToolBox):
                     facts_state,
                     tools,
                     unit_context,
+                    pre_resolved_context=merged_context,
                 )
                 result.budget_tracker.add_duration(
-                    "unit facts loop", time.perf_counter() - loop_start
+                    f"{WorkflowNode.RENDER_FACTS}{UNIT_SUM_SUFFIX}",
+                    time.perf_counter() - loop_start,
+                )
+                result.budget_tracker.add_duration(
+                    f"{WorkflowNode.RENDER_FACTS}/worker_wait", worker_wait
                 )
                 # Per-unit resolver metrics previously landed on a discarded
                 # deep copy; fold them back (last writer wins on shared keys).
@@ -465,11 +565,13 @@ def make_render_facts_node(tools: ToolBox):
                 )
 
         tasks = [process_unit(i) for i, _ in enumerate(state.content_units)]
-        raw_results = await asyncio.gather(*tasks)
+        raw_results, unit_errors = await _gather_units(
+            WorkflowNode.RENDER_FACTS, state, tasks
+        )
         ordered_results = sorted(raw_results, key=lambda item: item[0])
 
         facts_units: list[ContentUnit] = []
-        failed_without_output_count = 0
+        failed_without_output_count = unit_errors
         salvaged_failed_count = 0
         unit_contexts: dict[int, tuple[str, list[str], OntologyAssemblyMode]] = {}
         for (
@@ -549,13 +651,22 @@ def make_render_facts_node(tools: ToolBox):
 
 
 def _facts_aggregation_inputs(state: AgentState) -> tuple[RDFGraph, dict]:
-    """Ontology context and document metadata shared by merge and validate."""
+    """Ontology context and document metadata shared by merge and validate.
+
+    Reuses the graph the facts fan-out already merged. Only falls back to
+    merging here when the fan-out did not run (facts-only entry points), which
+    is also why the fallback is not cached: there is nothing to reuse it from.
+    """
     ontology_graph = RDFGraph()
-    merged_context = build_merged_document_ontology_context(
-        UnitLoopContext.from_agent_state(state)
-    )
-    if merged_context is not None and len(merged_context.snapshot.graph) > 0:
-        ontology_graph = merged_context.snapshot.graph
+    if len(state.facts_ontology_context) > 0:
+        ontology_graph = state.facts_ontology_context
+    else:
+        merged_context = build_merged_document_ontology_context(
+            UnitLoopContext.from_agent_state(state)
+        )
+        if merged_context is not None and len(merged_context.snapshot.graph) > 0:
+            ontology_graph = merged_context.snapshot.graph
+            state.facts_ontology_context = ontology_graph
     document_metadata = dict(state.document_metadata)
     if (
         state.source_url
@@ -862,60 +973,3 @@ def make_consistency_critic_node(tools: ToolBox):
         return state
 
     return consistency_critic
-
-
-def make_summarize_chunks_node(tools: ToolBox):
-    async def summarize_chunks(state: AgentState) -> AgentState:
-        if not state.content_units or not state.use_summarization:
-            state.status = Status.SUCCESS
-            return state
-
-        worker_limit = max(1, tools.config.server.parallel_workers)
-        semaphore = asyncio.Semaphore(worker_limit)
-
-        async def process_unit(
-            unit_index: int,
-        ) -> tuple[int, str | None, BudgetTracker]:
-            async with semaphore:
-                unit_budget = BudgetTracker()
-                unit = state.content_units[unit_index]
-                if not should_summarize_unit(unit, state.summarize_sections):
-                    return unit_index, None, unit_budget
-                try:
-                    summary = await summarize_chunk(
-                        unit,
-                        tools,
-                        max_sentences=state.summary_max_sentences,
-                        budget_tracker=unit_budget,
-                    )
-                    return unit_index, summary, unit_budget
-                except Exception as exc:
-                    logger.warning(
-                        "Summarization failed for unit %s: %s",
-                        unit_index,
-                        exc,
-                    )
-                    return unit_index, None, unit_budget
-
-        tasks = [process_unit(i) for i in range(len(state.content_units))]
-        raw_results = await asyncio.gather(*tasks)
-        summarized_count = 0
-        for unit_index, summary, unit_budget in sorted(
-            raw_results, key=lambda item: item[0]
-        ):
-            state.budget_tracker.merge_from(unit_budget)
-            if summary is None:
-                continue
-            state.content_units[unit_index].summary = summary
-            summarized_count += 1
-
-        logger.info(
-            "Summarized %s/%s content unit(s)",
-            summarized_count,
-            len(state.content_units),
-        )
-        state.set_node_status(WorkflowNode.SUMMARIZE_CHUNKS, Status.SUCCESS)
-        state.status = Status.SUCCESS
-        return state
-
-    return summarize_chunks

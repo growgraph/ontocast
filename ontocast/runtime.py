@@ -20,13 +20,13 @@ from __future__ import annotations
 
 import logging
 
-from ontocast.config import Config, WebSearchProvider
+from ontocast.config import Config, EmbeddingConfig, WebSearchProvider
 from ontocast.tool import AtomicToolBox, ChunkerTool, ConverterTool
 from ontocast.tool.agg.aggregate import EmbeddingBasedAggregator
 from ontocast.tool.agg.entity_aligner import EntityAligner
 from ontocast.tool.cache import Cacher
 from ontocast.tool.llm import LLMTool, _active_budget_tracker
-from ontocast.tool.vector_store import EmbeddingTool
+from ontocast.tool.vector_store import EmbeddingTool, FastembedBm25SparseTool
 from ontocast.tool.web_search import DuckDuckGoSearchProvider
 
 logger = logging.getLogger(__name__)
@@ -118,7 +118,29 @@ class ToolBoxRuntime:
             sibling_guard_scope=str(tool_config.aggregation.sibling_guard_scope),
         )
         self.embedding_tool: EmbeddingTool = EmbeddingTool.create(tool_config.embedding)
+        # Built lazily and kept here rather than on each ToolBox: the BM25 model
+        # is tenancy-independent, so a per-scope instance meant one ONNX model
+        # per resident tenancy scope.
+        self._sparse_embedding_tool: FastembedBm25SparseTool | None = None
         self.entity_aligners: dict[tuple[str, float], EntityAligner] = {}
+
+    def sparse_embedding_tool(self, config: EmbeddingConfig) -> FastembedBm25SparseTool:
+        """Shared BM25 sparse encoder for the external vector backends.
+
+        Args:
+            config: Embedding config; only consulted on first construction,
+                since the encoder is tenancy-independent.
+
+        Returns:
+            FastembedBm25SparseTool: The process-shared sparse encoder.
+        """
+        # __dict__ rather than attribute access: tests build a runtime via
+        # __new__ to exercise one tool, so __init__ may not have run.
+        tool = self.__dict__.get("_sparse_embedding_tool")
+        if tool is None:
+            tool = FastembedBm25SparseTool(config=config)
+            self.__dict__["_sparse_embedding_tool"] = tool
+        return tool
 
     @classmethod
     async def acreate(cls, config: Config) -> "ToolBoxRuntime":

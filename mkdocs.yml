@@ -68,6 +68,7 @@ nav:
     -   Entity Disambiguation: user_guide/aggregation.md
     -   Triple Store Configuration: user_guide/triple_stores.md
     -   LLM Caching: user_guide/llm_caching.md
+    -   Performance: user_guide/performance.md
     -   User Instructions: user_guide/user_instructions.md
 -   Architecture:
     -   Ontology Catalog: architecture/ontology_catalog.md

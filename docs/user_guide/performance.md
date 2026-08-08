@@ -1,0 +1,164 @@
+# Performance
+
+OntoCast processes content units concurrently, but a fan-out that *looks* wide
+can still behave like a serial loop. This page describes the telemetry that
+tells the two apart, and the protocol for measuring a change without spending a
+single provider token.
+
+## The three concurrency layers
+
+| Layer | Setting | Default | Bounds |
+|---|---|---|---|
+| Unit workers | `PARALLEL_WORKERS` | 16 | Content units in flight within one document |
+| Provider calls | `LLM_MAX_INFLIGHT` | 16 | Concurrent provider requests, **process-wide** across all documents |
+| Documents | `MAX_CONCURRENT_PROCESSES` | unset | Concurrent `/process` and `/process_unit` handlers |
+
+A unit never issues two LLM calls at once, so within a *single* document the
+effective provider concurrency is `PARALLEL_WORKERS`. Across `K` concurrent
+documents it is `min(K x PARALLEL_WORKERS, LLM_MAX_INFLIGHT)` — which is why a
+busy server can stop scaling with `PARALLEL_WORKERS` alone.
+
+## Reading the metrics
+
+Every run reports `budget.node_durations` (seconds) and `budget.counters`
+(counts) in the `/process` response, and logs a summary at `INFO` on completion.
+
+Duration keys follow a convention, because "how long did Render Facts take" has
+two different answers:
+
+| Key | Meaning |
+|---|---|
+| `<node>` | **Wall clock** for the node. Written only by the pipeline's node wrapper. |
+| `<node>/unit_sum` | Per-unit loop time **summed over every worker**. Exceeds wall clock whenever the fan-out is doing its job. |
+| `<node>/worker_wait` | Time units spent queued for a `PARALLEL_WORKERS` slot. |
+| `<node>/loop_lag_total` | Time the event loop could not service ready callbacks. |
+| `<node>/loop_lag_max` | Longest single such stall. Keys ending in `_max` take the maximum on merge, not the sum. |
+| `llm/provider` | Time inside the provider call itself. |
+| `llm/inflight_wait` | Time queued behind `LLM_MAX_INFLIGHT`. |
+| `llm/cache_lookup` | Disk-cache read time. |
+
+The headline number is **effective workers**, logged as
+`Effective workers: Render Facts 4.0x (loop lag 8.0s)` and available
+programmatically:
+
+```python
+budget.parallel_efficiency("Render Facts")   # unit_sum / wall clock
+```
+
+Compare it against `PARALLEL_WORKERS`:
+
+- **Close to `PARALLEL_WORKERS`** — the stage is running at full width. To make
+  it faster, widen the fan-out or reduce work per unit.
+- **Well below, with high `worker_wait`** — units are queued. The width is the
+  constraint; raise `PARALLEL_WORKERS`.
+- **Well below, with high `loop_lag_total`** — units are *not* queued, they are
+  being blocked. Synchronous CPU work on the event loop is stalling every unit
+  at once, and **raising `PARALLEL_WORKERS` will not help** (it usually hurts,
+  by piling more units onto the same serialized work).
+
+`loop_lag` is the decisive signal because awaited I/O yields control and
+therefore produces *zero* lag no matter how slow the provider is. A
+`loop_lag_max` above ~0.3s is an unambiguous fingerprint of one long
+synchronous block, and it cannot be confused with provider latency.
+
+The accounting closes approximately:
+
+```
+wall(node) x effective_workers  ~=  sum(llm/provider)
+                                  + sum(llm/inflight_wait)
+                                  + sum(<node>/worker_wait)
+                                  + <node>/loop_lag_total
+                                  + residual
+```
+
+Named CPU suspects are timed individually so the lag can be attributed rather
+than guessed at: `ctx/merge_document_ontology`, `ctx/snapshot_deepcopy`,
+`ctx/working_graph_copy`, `prompt/ontology_index`, `prompt/ontology_chapter`,
+`repair/deterministic`.
+
+### Counters
+
+`budget.counters` records event counts. The one to watch is
+`ctx/merge_document_ontology.calls`: the merged document ontology depends only
+on document-level state, so this must be **1** per document. A value that grows
+with the unit count means a per-unit regression has reintroduced O(N) full
+rdflib merges into the fan-out.
+
+## Measuring a change without provider tokens
+
+The LLM disk cache is on by default, so a document can be replayed exactly:
+
+```bash
+# 1. Populate the cache (costs tokens, once)
+ontocast process --input-path doc.pdf --head-chunks 30 --output-dir ./out
+
+# 2. Replay. Every call now hits cache, so llm/provider goes to ~0 and the
+#    node wall clock becomes pure CPU plus cache I/O.
+ontocast process --input-path doc.pdf --head-chunks 30 --output-dir ./out
+```
+
+The second run is the repeatable before/after number for any CPU-side change.
+Vary `--head-chunks` (5, 15, 30) to check how a cost scales with unit count:
+per-unit-invariant work shows up as a straight line through the origin, and it
+should be flat instead.
+
+## Local embedding models
+
+Three subsystems use a local sentence-transformer, each with its own setting:
+
+| Setting | Used by | Default |
+|---|---|---|
+| `CHUNK_EMBEDDING_MODEL` | semantic chunking, schema detection | `paraphrase-multilingual-mpnet-base-v2` (~1.1 GB) |
+| `EMBEDDING_MODEL_NAME` | dense retrieval | `paraphrase-multilingual-MiniLM-L12-v2` (~458 MB) |
+| `AGG_EMBEDDING_MODEL` | entity disambiguation | `paraphrase-multilingual-MiniLM-L12-v2` (shared with the above) |
+
+Checkpoints are cached process-wide by `(model name, device)`, so **settings that
+name the same model share one resident copy** — at defaults that is two models.
+Aligning all three drops it to one:
+
+```bash
+CHUNK_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+EMBEDDING_MODEL_NAME=paraphrase-multilingual-MiniLM-L12-v2
+AGG_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+```
+
+Measured on this codebase, loading all three consumers and encoding once each:
+2 resident models / 2252 MB peak RSS at defaults, versus 1 model / 1601 MB
+aligned — **~650 MB**. That is less than the models' 1.1 GB difference on disk,
+because both share the same 250k-token vocabulary and torch's allocator holds
+its own overhead either way.
+
+Read [Configuration](configuration.md) first: changing `CHUNK_EMBEDDING_MODEL`
+invalidates the chunk cache, shifts chunk boundaries, and affects the calibrated
+schema-detection thresholds.
+
+Inference on a shared model is **serialised per model**. That bounds peak
+memory, which is what matters when `PARALLEL_WORKERS` units and several
+documents encode at once — each concurrent encode would otherwise allocate its
+own activation batch. On CPU it costs almost nothing, because parallel encodes
+contend for one intra-op thread pool regardless. Two *different* checkpoints
+never serialise against each other.
+
+Note that sharing weights is not sharing semantics: retrieval applies the
+`EMBEDDING_DOCUMENT_PREFIX` / `EMBEDDING_QUERY_PREFIX` instructions and the
+other two do not. The retrieval model is also the one whose dimension is fixed
+in the vector store's collection schema — changing it requires a reindex, while
+changing the chunker's does not.
+
+## Tuning
+
+Fix the loop stall before widening the fan-out. Raising `PARALLEL_WORKERS`
+while `loop_lag_total` is a large fraction of wall clock makes things worse, not
+better — the extra units queue behind the same synchronous section.
+
+Other knobs that change cost rather than concurrency:
+
+- `MAX_VISITS` (default 1) — at 1 the LLM critic never runs. Raising it to 2
+  roughly doubles the LLM calls per unit.
+- `CONVERTER_PROFILE=born_digital` — skips OCR on digital PDFs.
+- `ONTOLOGY_PATCH_MAX_ATOMS` and
+  `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` — bound prompt size, and so
+  both token cost and provider latency.
+
+See [Configuration](configuration.md) for the full list and
+[LLM Caching](llm_caching.md) for cache behavior.

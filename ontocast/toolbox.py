@@ -34,11 +34,11 @@ from ontocast.tool.sparql import SPARQLTool
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.tool.vector_store import (
     EmbeddingTool,
-    FastembedBm25SparseTool,
     OntologyPatchRetriever,
     VectorStoreManager,
     create_vector_store_manager,
 )
+from ontocast.util.loop import require_no_running_loop
 
 if TYPE_CHECKING:
     from ontocast.registry import ToolBoxRegistry
@@ -216,7 +216,7 @@ class ToolBox:
             tool_config,
             embedding=self.embedding_tool,
             sparse_embedding=(
-                FastembedBm25SparseTool(config=tool_config.embedding)
+                self.runtime.sparse_embedding_tool(tool_config.embedding)
                 if needs_sparse
                 else None
             ),
@@ -636,30 +636,22 @@ class ToolBox:
         return self.atomic_tools
 
     def serialize(self, state: AgentState) -> None:
-        ontologies_to_serialize = document_ontology_access(
-            state
-        ).serialization_targets()
-        for ontology in ontologies_to_serialize:
-            if ontology and ontology.hash:
-                self.ontology_manager.add_ontology(ontology)
+        """Persist the document's ontologies and facts.
 
-        if self.triple_store_manager is not None:
-            for ontology in ontologies_to_serialize:
-                self.triple_store_manager.serialize(ontology)
-            if state.render_facts:
-                self.triple_store_manager.serialize(
-                    state.aggregated_facts,
-                    graph_uri=state.graph_uri,
-                )
+        Drives :meth:`aserialize` under a single :func:`asyncio.run`, so a
+        document with N ontologies costs one event loop and one backend
+        connection rather than N of each -- the per-call sync entry points open
+        (and tear down) a fresh HTTP client every time.
+
+        Raises:
+            RuntimeError: If called from inside a running event loop; await
+                :meth:`aserialize` there instead.
+        """
+        require_no_running_loop("ToolBox.serialize", "ToolBox.aserialize")
+        asyncio.run(self.aserialize(state))
 
     async def aserialize(self, state: AgentState) -> None:
-        """Async-safe form of :meth:`serialize`.
-
-        :meth:`serialize` reaches a Fuseki write path that wraps a coroutine in
-        :func:`asyncio.run`. That is fine on the graph path, where LangGraph
-        offloads sync nodes to a worker thread, and raises for an embedder
-        calling it directly from a coroutine.
-        """
+        """Persist the document's ontologies and facts (async form)."""
         ontologies_to_serialize = document_ontology_access(
             state
         ).serialization_targets()

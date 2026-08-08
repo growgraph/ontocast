@@ -65,7 +65,7 @@ class CountingEmbeddingTool(EmbeddingTool):
     truncate_by_one: bool = False
     seen_texts: list[list[str]] = Field(default_factory=list)
 
-    def _embed_unlocked(self, texts: list[str]) -> list[list[float]]:
+    def _embed_raw(self, texts: list[str]) -> list[list[float]]:
         self.calls += 1
         self.seen_texts.append(list(texts))
         vectors: list[list[float]] = []

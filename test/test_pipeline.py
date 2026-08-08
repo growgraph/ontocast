@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import logging
 from pathlib import Path
@@ -117,9 +118,7 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
 
     monkeypatch.setattr(unit_loops, "render_facts", fake_render)
     monkeypatch.setattr(unit_loops, "criticise_facts", fake_critic)
-    monkeypatch.setattr(
-        unit_loops, "resolve_effective_facts_ontology_context", fake_resolve
-    )
+    monkeypatch.setattr(unit_loops, "resolve_unit_ontology_context", fake_resolve)
 
     state = UnitFactsState(
         content_unit=_build_content_unit(),
@@ -852,7 +851,9 @@ def test_toolbox_serialize_skips_facts_in_ontology_only_mode() -> None:
         def __init__(self) -> None:
             self.calls: list[tuple[object, str | None]] = []
 
-        def serialize(self, payload: object, graph_uri: str | None = None) -> None:
+        async def aserialize(
+            self, payload: object, graph_uri: str | None = None
+        ) -> None:
             self.calls.append((payload, graph_uri))
 
     state = AgentState(render_mode=RenderMode.ONTOLOGY)
@@ -864,7 +865,7 @@ def test_toolbox_serialize_skips_facts_in_ontology_only_mode() -> None:
         triple_store_manager=store,
     )
 
-    ToolBox.serialize(cast(ToolBox, toolbox), state)
+    asyncio.run(ToolBox.aserialize(cast(ToolBox, toolbox), state))
 
     assert len(store.calls) == 1
     assert isinstance(store.calls[0][0], Ontology)
@@ -880,7 +881,9 @@ def test_toolbox_serialize_includes_facts_when_render_facts_enabled() -> None:
         def __init__(self) -> None:
             self.calls: list[tuple[object, str | None]] = []
 
-        def serialize(self, payload: object, graph_uri: str | None = None) -> None:
+        async def aserialize(
+            self, payload: object, graph_uri: str | None = None
+        ) -> None:
             self.calls.append((payload, graph_uri))
 
     state = AgentState(render_mode=RenderMode.ONTOLOGY_AND_FACTS)
@@ -892,7 +895,7 @@ def test_toolbox_serialize_includes_facts_when_render_facts_enabled() -> None:
         triple_store_manager=store,
     )
 
-    ToolBox.serialize(cast(ToolBox, toolbox), state)
+    asyncio.run(ToolBox.aserialize(cast(ToolBox, toolbox), state))
 
     assert len(store.calls) == 2
     assert isinstance(store.calls[0][0], Ontology)
@@ -913,7 +916,9 @@ def test_toolbox_serialize_persists_all_ontology_artifacts() -> None:
         def __init__(self) -> None:
             self.calls: list[tuple[object, str | None]] = []
 
-        def serialize(self, payload: object, graph_uri: str | None = None) -> None:
+        async def aserialize(
+            self, payload: object, graph_uri: str | None = None
+        ) -> None:
             self.calls.append((payload, graph_uri))
 
     state = AgentState(render_mode=RenderMode.ONTOLOGY)
@@ -925,7 +930,7 @@ def test_toolbox_serialize_persists_all_ontology_artifacts() -> None:
         triple_store_manager=store,
     )
 
-    ToolBox.serialize(cast(ToolBox, toolbox), state)
+    asyncio.run(ToolBox.aserialize(cast(ToolBox, toolbox), state))
 
     assert manager.added == 2
     assert len(store.calls) == 2

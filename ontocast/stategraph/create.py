@@ -22,13 +22,9 @@ from ontocast.stategraph.node_factories import (
     make_render_facts_node,
     make_render_ontology_node,
     make_structural_check_node,
-    make_summarize_chunks_node,
     make_validate_facts_node,
 )
-from ontocast.stategraph.routing import (
-    route_after_chunk,
-    route_after_tag_or_chunk,
-)
+from ontocast.stategraph.routing import route_after_tag_or_chunk
 from ontocast.toolbox import ToolBox
 
 
@@ -86,12 +82,17 @@ def build_agent_graph(tools: ToolBox) -> StateGraph:
     :func:`create_agent_graph`, which compiles for you.
 
     Flow: CONVERT -> CHUNK (prepare: segment, tag, filter, size) ->
-          [SUMMARIZE_CHUNKS] -> (conditional extraction)
+          (conditional extraction)
 
     Per-unit ontology context is assembled inside ``ontology_loop`` (not at a
     document-level select node). For ``ONTOLOGY_AND_FACTS``, the full ontology
     block completes before the facts map runs; facts use the merged document
     ontology from ``AgentState``.
+
+    Summarization has no node of its own: a unit's summary depends only on that
+    unit, so it runs inside the extraction fan-outs. As a stage it was a barrier
+    that made every unit wait for the slowest summary before any extraction
+    could begin.
 
     Args:
         tools: The dependency container bound into every node.
@@ -105,7 +106,6 @@ def build_agent_graph(tools: ToolBox) -> StateGraph:
     chunk_text_node = partial(chunk_text, tools=tools)
     serialize_node = partial(serialize, tools=tools)
 
-    summarize_chunks_node = make_summarize_chunks_node(tools)
     render_ontology_node = make_render_ontology_node(tools)
     normalize_ontology_node = make_normalize_ontology_node(tools)
     consolidate_ontology_node = make_consolidate_ontology_node(tools)
@@ -118,7 +118,6 @@ def build_agent_graph(tools: ToolBox) -> StateGraph:
     node_callables: dict[WorkflowNode, Callable[..., Any]] = {
         WorkflowNode.CONVERT_TO_TEXT: convert_document_node,
         WorkflowNode.CHUNK: chunk_text_node,
-        WorkflowNode.SUMMARIZE_CHUNKS: summarize_chunks_node,
         WorkflowNode.RENDER_ONTOLOGY_UPDATE: render_ontology_node,
         WorkflowNode.NORMALIZE_ONTOLOGY_UPDATES: normalize_ontology_node,
         WorkflowNode.CONSOLIDATE_ONTOLOGY: consolidate_ontology_node,
@@ -135,15 +134,6 @@ def build_agent_graph(tools: ToolBox) -> StateGraph:
     workflow.add_edge(WorkflowNode.CONVERT_TO_TEXT, WorkflowNode.CHUNK)
     workflow.add_conditional_edges(
         WorkflowNode.CHUNK,
-        route_after_chunk,
-        {
-            WorkflowNode.SUMMARIZE_CHUNKS: WorkflowNode.SUMMARIZE_CHUNKS,
-            WorkflowNode.RENDER_ONTOLOGY_UPDATE: WorkflowNode.RENDER_ONTOLOGY_UPDATE,
-            WorkflowNode.RENDER_FACTS: WorkflowNode.RENDER_FACTS,
-        },
-    )
-    workflow.add_conditional_edges(
-        WorkflowNode.SUMMARIZE_CHUNKS,
         route_after_tag_or_chunk,
         {
             WorkflowNode.RENDER_ONTOLOGY_UPDATE: WorkflowNode.RENDER_ONTOLOGY_UPDATE,

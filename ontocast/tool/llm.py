@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import weakref
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -92,6 +93,15 @@ _active_budget_tracker: ContextVar[Any | None] = ContextVar(
 )
 
 
+class LLMRequestTimeoutError(RuntimeError):
+    """A provider call exceeded ``LLM_REQUEST_TIMEOUT_SECONDS``.
+
+    Deliberately not an :class:`asyncio.TimeoutError`: the unit loops catch
+    ``Exception`` to fail a single unit gracefully, and a cancellation-flavoured
+    error escaping ``asyncio.gather`` would take the whole fan-out down with it.
+    """
+
+
 @contextmanager
 def use_budget_tracker(budget_tracker: Any):
     """Charge LLM usage inside this block to ``budget_tracker``."""
@@ -100,6 +110,24 @@ def use_budget_tracker(budget_tracker: Any):
         yield
     finally:
         _active_budget_tracker.reset(token)
+
+
+def record_active_span(name: str, seconds: float) -> None:
+    """Charge a latency span to the running task's budget tracker, if any.
+
+    A no-op when no tracker is bound. This reads the context variable directly
+    rather than going through an :class:`LLMTool`, so stages that fan out
+    *around* the LLM (e.g. chunk section classification) can report queue waits
+    without holding a real tool instance -- which also keeps test stubs that
+    substitute a plain callable for the LLM working.
+
+    Args:
+        name: Duration key, e.g. ``"chunk section classify/worker_wait"``.
+        seconds: Elapsed seconds to accumulate.
+    """
+    bt = _active_budget_tracker.get()
+    if bt is not None:
+        bt.add_duration(name, seconds)
 
 
 def llm_cache_config(
@@ -408,6 +436,22 @@ class LLMTool(Tool):
         if bt is not None:
             bt.add_cache_hit(len(prompt_str), len(content_str))
 
+    def record_span(self, name: str, seconds: float) -> None:
+        """Charge a latency span to this call's budget tracker.
+
+        Uses the same context-local tracker as usage accounting, so per-unit
+        attribution under ``asyncio.gather`` is correct for free, and falls back
+        to this tool's own tracker for direct library use. Callers without an
+        :class:`LLMTool` instance should use :func:`record_active_span`.
+
+        Args:
+            name: Duration key, e.g. ``"llm/provider"``.
+            seconds: Elapsed seconds to accumulate.
+        """
+        bt = self._current_budget_tracker()
+        if bt is not None:
+            bt.add_duration(name, seconds)
+
     def _record_api_usage(self, prompt_str: str, result: Any) -> None:
         self._cache_misses += 1
         bt = self._current_budget_tracker()
@@ -478,9 +522,11 @@ class LLMTool(Tool):
         config_dict = self._cache_config_dict(**(cache_config_extra or {}))
 
         if self.config.cache_enabled:
+            lookup_start = time.perf_counter()
             cached_response = await self.cache.aget(
                 prompt_key, config=config_dict, **kwds
             )
+            self.record_span("llm/cache_lookup", time.perf_counter() - lookup_start)
             if cached_response is not None:
                 logger.debug("Cache hit: %s...", prompt_str[:50])
                 entry = CachedResponse.model_validate(cached_response)
@@ -492,10 +538,40 @@ class LLMTool(Tool):
 
         logger.debug("Cache miss, calling LLM: %s...", prompt_str[:50])
 
+        # Three spans, because they have three different fixes: queueing behind
+        # llm_max_inflight wants a higher cap, provider time wants a faster
+        # model or fewer calls, and neither is visible in the node's wall clock.
         max_inflight = max(1, self.config.llm_max_inflight)
+        wait_start = time.perf_counter()
         async with _inflight_semaphore(max_inflight):
-            response = await self.llm.ainvoke(*args, **kwds)
+            provider_start = time.perf_counter()
+            self.record_span("llm/inflight_wait", provider_start - wait_start)
+            timeout = self.config.request_timeout_seconds
+            try:
+                if timeout is None:
+                    response = await self.llm.ainvoke(*args, **kwds)
+                else:
+                    response = await asyncio.wait_for(
+                        self.llm.ainvoke(*args, **kwds), timeout=timeout
+                    )
+            except asyncio.TimeoutError as exc:
+                bt = self._current_budget_tracker()
+                if bt is not None:
+                    bt.incr("llm/timeouts")
+                # Re-raised as a plain error so the unit loop's handler treats
+                # it as a failed render rather than a cancellation: letting a
+                # bare TimeoutError escape asyncio.gather would abort the whole
+                # fan-out and orphan its siblings.
+                raise LLMRequestTimeoutError(
+                    f"LLM request exceeded {timeout}s "
+                    f"({self.config.provider}/{self.config.model_name})"
+                ) from exc
+            finally:
+                self.record_span("llm/provider", time.perf_counter() - provider_start)
 
+        bt = self._current_budget_tracker()
+        if bt is not None:
+            bt.incr("llm/calls_timed")
         self._record_api_usage(prompt_str, response)
 
         content_str = _content_to_str(response.content)

@@ -42,7 +42,7 @@ def qdrant_reachable(*, uri: str, api_key: str | None) -> bool:
 class DeterministicEmbeddingTool(EmbeddingTool):
     """Deterministic embedding for tests (no sentence-transformers)."""
 
-    def _embed_unlocked(self, texts: list[str]) -> list[list[float]]:
+    def _embed_raw(self, texts: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
         for text in texts:
             digest = render_text_hash(text, digits=None)

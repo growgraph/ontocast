@@ -14,13 +14,6 @@ def route_after_convert(state: AgentState) -> str:
     return WorkflowNode.CHUNK
 
 
-def route_after_chunk(state: AgentState) -> str:
-    """Route after chunk prepare: optional summarization or extraction."""
-    if state.use_summarization:
-        return WorkflowNode.SUMMARIZE_CHUNKS
-    return route_after_tag_or_chunk(state)
-
-
 def route_after_ontology_consolidation(state: AgentState) -> str:
     """Route after ontology stage to the ontology-only structural check."""
     return WorkflowNode.STRUCTURAL_CHECK

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from collections import Counter
 
 from pydantic import BaseModel, Field
@@ -59,13 +60,23 @@ def _unit_queries(unit: SourceUnit, tools: ToolBox) -> list[str]:
 def build_merged_document_ontology_context(
     context: UnitLoopContext,
 ) -> UnitOntologyContext | None:
-    """Build merged ontology context from reduced document artifacts."""
+    """Build merged ontology context from reduced document artifacts.
+
+    The result depends only on document-level state, so it should be computed
+    once per document. ``"ctx/merge_document_ontology.calls"`` on the budget
+    tracker exists to make a regression to per-unit calls visible.
+    """
+    started = time.perf_counter()
+    context.budget_tracker.incr("ctx/merge_document_ontology.calls")
     artifacts = [
         ontology
         for ontology in context.reduced_artifacts()
         if not ontology.is_null() and len(ontology.graph) > 0
     ]
     if not artifacts:
+        context.budget_tracker.add_duration(
+            "ctx/merge_document_ontology", time.perf_counter() - started
+        )
         return None
 
     sorted_artifacts = sorted(artifacts, key=lambda ontology: ontology.iri or "")
@@ -86,6 +97,9 @@ def build_merged_document_ontology_context(
             "Deterministic merge of reduced ontology artifacts used for facts context."
         ),
         strip_headers=True,
+    )
+    context.budget_tracker.add_duration(
+        "ctx/merge_document_ontology", time.perf_counter() - started
     )
     return UnitOntologyContext(
         snapshot=snapshot,
@@ -278,18 +292,6 @@ async def resolve_unit_ontology_context(
         require_vector_retrieval(tools)
         return await _resolve_ensemble_context(context, tools, unit)
     raise ValueError(f"Unknown ontology_context_mode: {mode!r}")
-
-
-async def resolve_effective_facts_ontology_context(
-    context: UnitLoopContext,
-    tools: ToolBox,
-    unit: SourceUnit,
-) -> UnitOntologyContext:
-    """Resolve facts context preferring merged document artifacts when available."""
-    merged_context = build_merged_document_ontology_context(context)
-    if merged_context is not None:
-        return merged_context
-    return await resolve_unit_ontology_context(context, tools, unit)
 
 
 def aggregate_writable_metrics(

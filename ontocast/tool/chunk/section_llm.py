@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from langchain_core.output_parsers import PydanticOutputParser
@@ -24,6 +25,7 @@ from ontocast.prompt.section_classification import (
     document_type_context,
     format_batch_items,
 )
+from ontocast.tool.llm import record_active_span
 
 if TYPE_CHECKING:
     from ontocast.toolbox import ToolBox
@@ -236,7 +238,11 @@ async def llm_backfill_section_labels(
     semaphore = asyncio.Semaphore(worker_limit)
 
     async def classify_index(index: int) -> tuple[int, str | None]:
+        wait_start = time.perf_counter()
         async with semaphore:
+            record_active_span(
+                "chunk section classify/worker_wait", time.perf_counter() - wait_start
+            )
             segment = segments[index]
             try:
                 label = await classify_section_with_llm(
@@ -254,10 +260,23 @@ async def llm_backfill_section_labels(
                 )
                 return index, None
 
+    # classify_index catches its own errors, but the gather must not abort the
+    # whole backfill if one slips through -- an unlabeled segment is survivable,
+    # an unchunked document is not.
     results = await asyncio.gather(
-        *[classify_index(index) for index in unlabeled_indices]
+        *[classify_index(index) for index in unlabeled_indices],
+        return_exceptions=True,
     )
-    _apply_llm_labels(segments, dict(results))
+    labels = {
+        index: label
+        for index, label in (
+            item for item in results if not isinstance(item, BaseException)
+        )
+    }
+    for item in results:
+        if isinstance(item, BaseException):
+            logger.warning("Section classification task failed: %s", item)
+    _apply_llm_labels(segments, labels)
 
 
 def _apply_llm_labels(segments: list, labels: dict[int, str | None]) -> None:

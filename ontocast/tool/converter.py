@@ -179,6 +179,29 @@ class ConverterTool(Tool):
             shared_cache = Cacher()
             self.cache = ToolCacher(shared_cache, CONVERTER_CACHE_SUBDIR)
 
+    def ensure_converter(self) -> Any:
+        """Return the Docling converter, building it once on first use.
+
+        Exposed so a server can warm the models at startup instead of making the
+        first request pay for loading the layout, OCR and table-structure models.
+
+        Returns:
+            Any: The shared docling ``DocumentConverter``. Untyped because
+            docling is an optional dependency resolved lazily.
+        """
+        converter = self._converter
+        if converter is not None:
+            return converter
+        with self._converter_lock:
+            if self._converter is None:
+                logger.info("Building Docling DocumentConverter (first conversion)")
+                try:
+                    self._converter = build_document_converter(self.converter_config)
+                except ImportError as e:
+                    logger.error("Could not import DocumentConverter: %s", e)
+                    raise
+            return self._converter
+
     def __call__(self, file_input: bytes | str | pathlib.Path) -> DoclingDocument:
         """Convert a document to a DoclingDocument.
 
@@ -218,38 +241,28 @@ class ConverterTool(Tool):
             if isinstance(cached_result, dict):
                 return docling_document.model_validate(cached_result)
 
-        # Convert document (with thread-safe access to converter)
-        with self._converter_lock:
-            converter = self._converter
-            if converter is None:
-                logger.info("Building Docling DocumentConverter (first conversion)")
-                try:
-                    converter = build_document_converter(self.converter_config)
-                except ImportError as e:
-                    logger.error("Could not import DocumentConverter: %s", e)
-                    raise
-                self._converter = converter
+        converter = self.ensure_converter()
 
-            if isinstance(file_input, bytes):
-                try:
-                    base_models_module = importlib.import_module(
-                        "docling.datamodel.base_models"
-                    )
-                    DocumentStream = getattr(base_models_module, "DocumentStream")
-                    ds = DocumentStream(name="doc", stream=BytesIO(file_input))
-                except ImportError:
-                    raise ImportError(
-                        f"Could not import DocumentConverter: {file_input}"
-                    )
-                result = converter.convert(ds)
-                converted_result = result.document
-            elif isinstance(file_input, pathlib.Path):
-                result = converter.convert(file_input)
-                converted_result = result.document
-            else:
-                raise TypeError(
-                    f"Unsupported file input type: {type(file_input).__name__}"
+        # Deliberately outside the lock: conversion is the multi-second part, and
+        # holding the build lock across it serialised every concurrent document
+        # in the process behind one another. Docling's convert() is a per-call
+        # pipeline over its own result objects.
+        if isinstance(file_input, bytes):
+            try:
+                base_models_module = importlib.import_module(
+                    "docling.datamodel.base_models"
                 )
+                DocumentStream = getattr(base_models_module, "DocumentStream")
+                ds = DocumentStream(name="doc", stream=BytesIO(file_input))
+            except ImportError:
+                raise ImportError(f"Could not import DocumentConverter: {file_input}")
+            result = converter.convert(ds)
+            converted_result = result.document
+        elif isinstance(file_input, pathlib.Path):
+            result = converter.convert(file_input)
+            converted_result = result.document
+        else:
+            raise TypeError(f"Unsupported file input type: {type(file_input).__name__}")
 
         converted_result = apply_text_sanitizers(
             converted_result,

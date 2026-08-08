@@ -134,7 +134,7 @@ qdrant = [
 ]
 semantic-chunking = [
   "hdbscan>=0.8.41",
-  "langchain-huggingface>=0.2.0",
+  "sentence-transformers>=5.1.1",
   "torch>=2.0",
   "umap-learn>=0.5.12"
 ]
@@ -270,7 +270,6 @@ allowed-unresolved-imports = [
   "duckduckgo_search.**",
   "hdbscan.**",
   "lancedb.**",
-  "langchain_huggingface.**",
   "pyshacl.**",
   "umap.**"
 ]

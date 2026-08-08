@@ -57,8 +57,34 @@ def _docling_document_cls() -> Any:
     ).DoclingDocument
 
 
+#: Suffix marking a duration key as *summed across parallel unit workers* rather
+#: than wall clock. See :class:`BudgetTracker` for the full key convention.
+UNIT_SUM_SUFFIX = "/unit_sum"
+
+#: Suffix marking a duration key as a peak rather than an accumulation. Summing
+#: two peaks is meaningless, so :meth:`BudgetTracker.merge_from` takes the max
+#: for these keys instead.
+PEAK_SUFFIX = "_max"
+
+
 class BudgetTracker(BasePydanticModel):
-    """Lightweight tracker for LLM usage statistics and generated triples."""
+    """Lightweight tracker for LLM usage statistics and generated triples.
+
+    ``node_durations`` follows a key convention that distinguishes wall clock
+    from time summed across concurrent workers -- without it, a fan-out node's
+    entry is ambiguous and the two are silently added together:
+
+    ``"<node>"``
+        True wall clock for a pipeline node. Written only by the ``_timed``
+        wrapper in :mod:`ontocast.stategraph.create`.
+    ``"<node>/unit_sum"``
+        Per-unit loop time summed over every parallel worker. Divided by the
+        wall-clock entry this yields *effective workers* -- see
+        :meth:`parallel_efficiency`.
+    ``"<node>/<stage>"``
+        Any other sub-stage measurement (``worker_wait``, ``loop_lag_total``,
+        ``llm/provider``, ...).
+    """
 
     chars_sent: int = Field(default=0, description="Total characters sent to LLM")
     chars_received: int = Field(
@@ -92,12 +118,57 @@ class BudgetTracker(BasePydanticModel):
 
     node_durations: dict[str, float] = Field(
         default_factory=dict,
-        description="Accumulated wall-clock seconds per pipeline node/stage",
+        description="Accumulated seconds per pipeline node/stage (see class docstring)",
+    )
+    counters: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Named event counts (e.g. how often a per-document computation ran). "
+            "Summed on merge, like node_durations."
+        ),
     )
 
     def add_duration(self, name: str, seconds: float) -> None:
-        """Accumulate wall-clock seconds for a named node or stage."""
+        """Accumulate seconds for a named node or stage.
+
+        Keys ending in :data:`PEAK_SUFFIX` take the maximum instead, since
+        adding two peaks would report a stall that never happened.
+        """
+        if name.endswith(PEAK_SUFFIX):
+            self.node_durations[name] = max(self.node_durations.get(name, 0.0), seconds)
+            return
         self.node_durations[name] = self.node_durations.get(name, 0.0) + seconds
+
+    def incr(self, name: str, n: int = 1) -> None:
+        """Increment a named counter.
+
+        Args:
+            name: Counter key, e.g. ``"ctx/merge_document_ontology.calls"``.
+            n: Amount to add.
+        """
+        self.counters[name] = self.counters.get(name, 0) + n
+
+    def parallel_efficiency(self, node: str) -> float | None:
+        """Effective worker count for a fan-out node, or ``None`` if unmeasured.
+
+        The ratio of time summed across unit workers to the node's wall clock.
+        A value near ``parallel_workers`` means the fan-out is running at full
+        width; a value near ``1.0`` means the units are effectively serialised
+        -- typically by synchronous CPU work blocking the event loop, which
+        ``"<node>/loop_lag_total"`` quantifies.
+
+        Args:
+            node: The node key, e.g. ``str(WorkflowNode.RENDER_FACTS)``.
+
+        Returns:
+            float | None: Effective workers, or ``None`` when either the wall
+            clock or the ``/unit_sum`` entry is missing or zero.
+        """
+        wall = self.node_durations.get(node)
+        unit_sum = self.node_durations.get(f"{node}{UNIT_SUM_SUFFIX}")
+        if not wall or unit_sum is None:
+            return None
+        return unit_sum / wall
 
     def add_usage(
         self,
@@ -156,6 +227,8 @@ class BudgetTracker(BasePydanticModel):
         self.facts_operations_count += other.facts_operations_count
         for name, seconds in other.node_durations.items():
             self.add_duration(name, seconds)
+        for name, count in other.counters.items():
+            self.incr(name, count)
 
     def get_summary(self) -> str:
         """Get a summary of LLM usage and generated triples."""
@@ -190,6 +263,32 @@ class BudgetTracker(BasePydanticModel):
         return "Durations: " + ", ".join(
             f"{name} {seconds:.1f}s" for name, seconds in ranked
         )
+
+    def get_parallelism_summary(self) -> str:
+        """Effective worker count and event-loop stall per fan-out node.
+
+        Reports only nodes that recorded a ``/unit_sum`` entry, so it is empty
+        for pipelines without a fan-out. ``lag`` is the time the event loop was
+        blocked by synchronous work while units were meant to be running
+        concurrently -- it is the difference between the width configured and
+        the width achieved.
+        """
+        parts: list[str] = []
+        for key in sorted(self.node_durations):
+            if not key.endswith(UNIT_SUM_SUFFIX):
+                continue
+            node = key[: -len(UNIT_SUM_SUFFIX)]
+            effective = self.parallel_efficiency(node)
+            if effective is None:
+                continue
+            fragment = f"{node} {effective:.1f}x"
+            lag = self.node_durations.get(f"{node}/loop_lag_total")
+            if lag:
+                fragment += f" (loop lag {lag:.1f}s)"
+            parts.append(fragment)
+        if not parts:
+            return ""
+        return "Effective workers: " + ", ".join(parts)
 
 
 class AgentState(BasePydanticModel):
@@ -288,6 +387,15 @@ class AgentState(BasePydanticModel):
         description="RDF triples representing aggregated facts "
         "from the current document",
         default_factory=RDFGraph,
+    )
+    facts_ontology_context: RDFGraph = Field(
+        default_factory=RDFGraph,
+        description=(
+            "Merged reduced-ontology graph used as read-only schema for facts. "
+            "Derived from reduced_ontology_artifacts, which are frozen once the "
+            "ontology stage completes, so the facts fan-out builds it once and "
+            "merge/validate reuse it rather than each repeating the merge."
+        ),
     )
     ontology_user_instruction: str = Field(
         description="Specific user instructions for ontology extraction, e.g. `Focus on extracting places`",

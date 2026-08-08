@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from ontocast.config import ChunkConfig
@@ -659,6 +661,17 @@ def _build_hybrid_chunker(config: ChunkConfig) -> HybridChunker:
     floods logs with "headers and captions … will be ignored" warnings. Budget
     the tokenizer from the configured chunk size instead (~4 chars per token).
     """
+    return _hybrid_chunker_for_max_tokens(max(512, config.max_size // 4))
+
+
+@lru_cache(maxsize=4)
+def _hybrid_chunker_for_max_tokens(max_tokens: int) -> HybridChunker:
+    """Build (and cache) a HybridChunker for one token budget.
+
+    The chunker holds a HuggingFace tokenizer and carries no per-document
+    state, so rebuilding it per document meant an ``AutoTokenizer`` load on
+    every request for an object that only ever depends on ``max_tokens``.
+    """
     hybrid_module = require(
         "docling_core.transforms.chunker.hybrid_chunker", feature="Hybrid chunking"
     )
@@ -668,7 +681,6 @@ def _build_hybrid_chunker(config: ChunkConfig) -> HybridChunker:
             feature="Hybrid chunking",
         )
         transformers_module = require("transformers", feature="Hybrid chunking")
-        max_tokens = max(512, config.max_size // 4)
         hf_tokenizer = transformers_module.AutoTokenizer.from_pretrained(
             "sentence-transformers/all-MiniLM-L6-v2",
             model_max_length=max_tokens,
@@ -755,7 +767,12 @@ async def prepare_content_units(
         raise ValueError(
             "CHUNK_SECTION_CLASSIFIER=llm requires a ToolBox providing an LLM"
         )
-    document_text = document_text_for_section_tagging(docling_doc)
+    # Segmentation is CPU-bound and runs local embedding models, but this
+    # coroutine is awaited on the event loop -- inline, it would freeze every
+    # concurrent document's in-flight provider sockets for its whole duration.
+    document_text = await asyncio.to_thread(
+        document_text_for_section_tagging, docling_doc
+    )
 
     if config.section_classifier == "off":
         if options.needs_section_prepare():
@@ -763,28 +780,36 @@ async def prepare_content_units(
                 "Section options requested but CHUNK_SECTION_CLASSIFIER=off; "
                 "section filters are ignored"
             )
-        return _simple_prepare(docling_doc, document_text, splitter, config)
+        return await asyncio.to_thread(
+            _simple_prepare, docling_doc, document_text, splitter, config
+        )
 
-    decision = resolve_prepare_schema(document_text, config, options, splitter)
+    decision = await asyncio.to_thread(
+        resolve_prepare_schema, document_text, config, options, splitter
+    )
     schema = decision.schema
-    spans = detect_section_spans(
+    spans = await asyncio.to_thread(
+        detect_section_spans,
         document_text,
         schema,
         include_text_headings=config.section_text_headings,
     )
 
-    segments = _primary_segments(docling_doc, document_text, spans, splitter, config)
+    segments = await asyncio.to_thread(
+        _primary_segments, docling_doc, document_text, spans, splitter, config
+    )
     if not segments:
         return []
 
-    segments = coalesce_small_segments_right(
+    segments = await asyncio.to_thread(
+        coalesce_small_segments_right,
         segments,
         config.section_tag_min_chars,
         schema,
     )
-    _tag_segments(segments, document_text, spans, schema)
+    await asyncio.to_thread(_tag_segments, segments, document_text, spans, schema)
     if config.section_classifier in ("heuristic", "llm"):
-        _density_label_segments(segments, schema, config)
+        await asyncio.to_thread(_density_label_segments, segments, schema, config)
     if config.section_classifier == "llm" and tools is not None:
         await llm_backfill_section_labels(
             segments,
@@ -827,4 +852,4 @@ async def prepare_content_units(
     if denylist:
         segments = _filter_segments_excluding(segments, denylist)
 
-    return _size_segments(segments, splitter, config)
+    return await asyncio.to_thread(_size_segments, segments, splitter, config)

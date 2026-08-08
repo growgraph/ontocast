@@ -6,7 +6,9 @@ writeback (``U → O*``) targets real :class:`Ontology` instances by namespace o
 
 from __future__ import annotations
 
-from pydantic import Field
+from typing import Any
+
+from pydantic import Field, PrivateAttr
 
 from ontocast.onto.enum import OntologyAssemblyMode
 from ontocast.onto.llm_graph_payload import LLMGraphWire
@@ -48,6 +50,10 @@ class OntologySnapshot(BasePydanticModel):
         ),
     )
 
+    #: Derived prompt text, keyed by graph identity so a reassigned graph misses.
+    #: Populated only through :meth:`prompt_chapter`.
+    _prompt_cache: dict[tuple[int, int, str], str] = PrivateAttr(default_factory=dict)
+
     def is_empty(self) -> bool:
         """True when the snapshot graph has no triples."""
         return len(self.graph) == 0
@@ -55,6 +61,50 @@ class OntologySnapshot(BasePydanticModel):
     def refresh_content_hash(self) -> None:
         """Recompute ``content_hash`` from the current graph."""
         self.content_hash = self.graph.hash() if len(self.graph) > 0 else ""
+
+    def invalidate_prompt_cache(self) -> None:
+        """Drop memoised prompt text.
+
+        Call this after mutating :attr:`graph` in place. Reassigning ``graph``
+        needs no call -- the cache key includes the graph's identity.
+        """
+        self._prompt_cache.clear()
+
+    def prompt_chapter(self, profile: Any) -> str:
+        """Serialised ontology chapter for prompts, memoised per graph.
+
+        Serialising the ontology is the single most expensive step in building a
+        facts prompt, and under a shared document snapshot every unit -- and
+        every render attempt within a unit -- would otherwise redo it on an
+        identical graph, synchronously, on the event loop.
+
+        The memo is keyed on the graph's identity, length and the profile's wire
+        format. It is therefore correct for a snapshot whose graph is replaced,
+        and *assumes* the graph is not mutated in place, which is the contract
+        this class already documents ("ephemeral" context, read-only in the unit
+        loops). Any code that does mutate it must call
+        :meth:`invalidate_prompt_cache`.
+
+        Args:
+            profile: Graph format profile supplying the serialisation.
+
+        Returns:
+            str: The ``# ONTOLOGY`` chapter, including the index appendix.
+        """
+        from ontocast.prompt.ontology_context import build_ontology_index
+
+        key = (id(self.graph), len(self.graph), str(profile.format))
+        cached = self._prompt_cache.get(key)
+        if cached is not None:
+            return cached
+        chapter = profile.format_ontology_chapter(
+            self.graph, suffix=build_ontology_index(self.graph)
+        )
+        # Bound the memo: a snapshot only ever holds one live graph, so stale
+        # entries are strictly dead weight after a reassignment.
+        self._prompt_cache.clear()
+        self._prompt_cache[key] = chapter
+        return chapter
 
     def domain_prefix_pairs(self) -> list[tuple[str, str]]:
         """Domain prefix/namespace pairs from graph bindings (prompt hygiene)."""

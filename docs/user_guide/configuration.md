@@ -59,7 +59,12 @@ OntoCast uses `LLM_API_KEY` for all cloud providers (not `ANTHROPIC_API_KEY` / `
 LLM_CACHE_ENABLED=true          # read/write disk cache (default true)
 LLM_CACHE_READ_ONLY=false       # use cache without writing new entries
 LLM_MAX_INFLIGHT=16             # max concurrent provider requests (all documents)
+LLM_REQUEST_TIMEOUT_SECONDS=180 # abandon a call after this; empty to wait forever
 ```
+
+A hung provider call holds both a unit-worker slot and an `LLM_MAX_INFLIGHT`
+slot, so without `LLM_REQUEST_TIMEOUT_SECONDS` a couple of them permanently
+shrink the pipeline's effective width. A timed-out call fails only its own unit.
 
 **Ollama-specific generation controls** (ignored by other providers):
 
@@ -101,7 +106,7 @@ LLM_GRAPH_FORMAT=turtle                  # turtle | jsonld
 ONTOLOGY_CONTEXT_MODE=selected_single_ontology
 #ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID=catalog_iri_or_id_or_prefix
 ONTOLOGY_MAX_TRIPLES=50000               # empty/unset for unlimited
-PARALLEL_WORKERS=8
+PARALLEL_WORKERS=16                      # see Performance before raising this
 ENABLE_ONTOLOGY_CONSOLIDATION=false
 # MAX_CONCURRENT_PROCESSES=4      # optional cap on simultaneous /process handlers
 ```
@@ -126,10 +131,9 @@ rejected.
 ### Chunking
 
 ```bash
-CHUNK_BREAKPOINT_THRESHOLD_TYPE=percentile  # percentile | standard_deviation | interquartile | gradient
-CHUNK_BREAKPOINT_THRESHOLD_AMOUNT=95.0
 CHUNK_MIN_SIZE=3000
 CHUNK_MAX_SIZE=12000
+CHUNK_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-mpnet-base-v2
 CHUNK_SEGMENTER=semantic            # semantic (sections-first, default) | docling
 CHUNK_SECTION_CLASSIFIER=heuristic  # off | heading | heuristic (default) | llm
 CHUNK_SECTION_DENSITY=conservative  # off | conservative (default) | aggressive
@@ -148,6 +152,26 @@ export, splits at section boundaries, and semantic-chunks within each
 oversized section block, so chunks never straddle sections and inherit their
 section label deterministically. `docling` uses Docling `HybridChunker`
 structural segments instead.
+
+`CHUNK_EMBEDDING_MODEL` is the sentence-transformers checkpoint used for
+semantic chunking and embedding-based schema detection. It shares one
+process-wide model with `EMBEDDING_MODEL_NAME` (retrieval) and
+`AGG_EMBEDDING_MODEL` (entity disambiguation) whenever the names match, so
+aligning all three is the single-model, low-memory configuration:
+
+```bash
+# One resident local model instead of two (~650 MB of peak RSS, measured).
+CHUNK_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+EMBEDDING_MODEL_NAME=paraphrase-multilingual-MiniLM-L12-v2
+AGG_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+```
+
+Changing `CHUNK_EMBEDDING_MODEL` invalidates the on-disk chunk cache and shifts
+chunk boundaries, which in turn shifts what each unit extracts. It also affects
+the `CHUNK_SECTION_SCHEMA_DETECT_*` thresholds below, which are calibrated
+against the default model's score distribution — re-derive them if you change
+it. Retrieval and chunking dimensions are independent: the vector store's
+dimension is fixed in its collection schema, the chunker's is not.
 
 #### Section classification
 

@@ -1,6 +1,5 @@
 """Pytest configuration for test suite."""
 
-import importlib
 import json
 import logging
 import os
@@ -12,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Generator, Optional
 import pytest
 
 if TYPE_CHECKING:
-    from langchain_huggingface import HuggingFaceEmbeddings
+    from ontocast.tool.sentence_transformer import SharedSentenceTransformerEmbeddings
 
 from ontocast.config import (
     LLMProvider,
@@ -134,29 +133,25 @@ def test_ontology():
 
 
 @pytest.fixture(scope="session")
-def real_embeddings() -> Optional["HuggingFaceEmbeddings"]:
-    """Fixture providing real HuggingFace embeddings if available, otherwise None.
+def real_embeddings() -> Optional["SharedSentenceTransformerEmbeddings"]:
+    """Real local embeddings if available, otherwise None.
 
-    Uses the same model as in split_chunks.py for consistency.
-    Session-scoped so the model is loaded only once per test session and reused.
+    Uses the *configured* chunker model and the process-shared encoder, so this
+    fixture holds no second copy of a checkpoint the code under test already
+    loaded. Session-scoped so it is built once per test session.
     """
-
     try:
-        torch = importlib.import_module("torch")
-        from langchain_huggingface import HuggingFaceEmbeddings
-
-        embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
-            model_kwargs={
-                "device": "cuda"
-                if torch is not None and torch.cuda.is_available()
-                else "cpu"
-            },
-            encode_kwargs={"normalize_embeddings": False},
+        from ontocast.config import ChunkConfig
+        from ontocast.tool.sentence_transformer import (
+            SharedSentenceTransformerEmbeddings,
+            get_shared_encoder,
         )
-        return embeddings
+
+        return SharedSentenceTransformerEmbeddings(
+            get_shared_encoder(ChunkConfig().embedding_model), normalize=False
+        )
     except ImportError as e:
-        logger.error(f"Could not import HuggingFaceEmbeddings: {e}")
+        logger.error(f"Could not load a local sentence-transformer: {e}")
         return None
     except Exception:
         return None

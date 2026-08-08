@@ -13,11 +13,13 @@ from pydantic import Field, PrivateAttr, SecretStr
 from ontocast.config import EmbeddingConfig, EmbeddingProvider
 from ontocast.onto.sparse import SparseVector
 from ontocast.tool.onto import Tool
+from ontocast.tool.sentence_transformer import SharedEncoder, get_shared_encoder
 from ontocast.util.optional import require
 
-# Shared across EmbeddingTool instances so parallel ontology reindex does not
-# race HuggingFace SentenceTransformer.encode / remote client state.
-_EMBED_LOCK = threading.Lock()
+# Local dense embedding is serialised by the SharedEncoder that owns the model,
+# not from here: the model is shared with entity clustering and semantic
+# chunking, so a lock living in this module protected only the callers that
+# happened to import it. Sparse is a separate model family with no such sharing.
 _SPARSE_EMBED_LOCK = threading.Lock()
 
 
@@ -27,18 +29,21 @@ class EmbeddingTool(Tool):
     config: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
 
     @abc.abstractmethod
-    def _embed_unlocked(self, texts: list[str]) -> list[list[float]]:
-        """Return vectors for all given texts (caller holds the embed lock)."""
+    def _embed_raw(self, texts: list[str]) -> list[list[float]]:
+        """Return vectors for all given texts, prefixes already applied."""
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Return vectors for all given texts as *documents* (thread-safe)."""
+        """Return vectors for all given texts as *documents*.
+
+        Serialisation, where it is needed, belongs to whatever owns the model —
+        the shared encoder for local checkpoints, nothing for remote providers.
+        """
         if not texts:
             return []
-        with _EMBED_LOCK:
-            return self._embed_unlocked(self._apply(self.config.document_prefix, texts))
+        return self._embed_raw(self._apply(self.config.document_prefix, texts))
 
     def embed_query(self, texts: list[str]) -> list[list[float]]:
-        """Return vectors for all given texts as *queries* (thread-safe).
+        """Return vectors for all given texts as *queries*.
 
         Asymmetric retrieval models are trained with distinct query and document
         instructions and lose accuracy when both sides are encoded identically. With
@@ -47,8 +52,7 @@ class EmbeddingTool(Tool):
         """
         if not texts:
             return []
-        with _EMBED_LOCK:
-            return self._embed_unlocked(self._apply(self.config.query_prefix, texts))
+        return self._embed_raw(self._apply(self.config.query_prefix, texts))
 
     @staticmethod
     def _apply(prefix: str, texts: list[str]) -> list[str]:
@@ -76,24 +80,25 @@ class EmbeddingTool(Tool):
 class HuggingFaceEmbeddingTool(EmbeddingTool):
     """Local HuggingFace/SentenceTransformer embeddings."""
 
-    _embedder: Any = PrivateAttr(default=None)
+    _embedder: SharedEncoder | None = PrivateAttr(default=None)
 
-    def _get_embedder(self) -> Any:
+    def _get_embedder(self) -> SharedEncoder:
         if self._embedder is not None:
             return self._embedder
-        sentence_transformers = require(
-            "sentence_transformers",
+        # Shared process-wide with entity clustering and semantic chunking, which
+        # default to the same or a configurable checkpoint. The handle owns the
+        # lock, so every one of those consumers is serialised on the same model
+        # without any of them having to know about the others.
+        self._embedder = get_shared_encoder(
+            self.config.model_name,
             feature=(
                 "Local HuggingFace embeddings. For a light install, set "
                 "EMBEDDING_PROVIDER=openai or =ollama to embed via an API instead"
             ),
         )
-        self._embedder = sentence_transformers.SentenceTransformer(
-            self.config.model_name
-        )
         return self._embedder
 
-    def _embed_unlocked(self, texts: list[str]) -> list[list[float]]:
+    def _embed_raw(self, texts: list[str]) -> list[list[float]]:
         vectors = self._get_embedder().encode(
             texts, convert_to_numpy=True, show_progress_bar=len(texts) > 100
         )
@@ -104,17 +109,23 @@ class _LangChainEmbeddingTool(EmbeddingTool):
     """Base adapter for LangChain embedding clients."""
 
     _embedder: Embeddings | None = PrivateAttr(default=None)
+    _build_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
 
     @abc.abstractmethod
     def _build_embedder(self) -> Embeddings:
         """Construct provider-specific LangChain embedding instance."""
 
     def _get_embedder(self) -> Embeddings:
+        # Guards construction only, never the request: these clients are safe to
+        # call concurrently, and holding a lock across the HTTP round trip would
+        # serialise every tenant's embedding calls behind one another.
         if self._embedder is None:
-            self._embedder = self._build_embedder()
+            with self._build_lock:
+                if self._embedder is None:
+                    self._embedder = self._build_embedder()
         return self._embedder
 
-    def _embed_unlocked(self, texts: list[str]) -> list[list[float]]:
+    def _embed_raw(self, texts: list[str]) -> list[list[float]]:
         return self._get_embedder().embed_documents(texts)
 
 
@@ -147,9 +158,9 @@ class OllamaEmbeddingTool(_LangChainEmbeddingTool):
             base_url=self.config.base_url,
         )
 
-    def _embed_unlocked(self, texts: list[str]) -> list[list[float]]:
+    def _embed_raw(self, texts: list[str]) -> list[list[float]]:
         try:
-            return super()._embed_unlocked(texts)
+            return super()._embed_raw(texts)
         except Exception:
             return self._embed_via_http(texts)
 

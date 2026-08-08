@@ -1,13 +1,13 @@
 # OntoCast Workflow
 
-This document describes the document processing pipeline implemented in `stategraph/create.py`. After changing optional nodes (e.g. Summarize Chunks), regenerate workflow diagrams with `uv run plot-graph`.
+This document describes the document processing pipeline implemented in `stategraph/create.py`. After changing the node topology, regenerate workflow diagrams with `uv run plot-graph`.
 
 ## Overview
 
 OntoCast transforms input documents into RDF ontology and facts graphs through a **parallel map/reduce** pipeline:
 
 1. **Document conversion** — PDF, DOCX, TXT, MD, or JSON → Markdown
-2. **Chunking** — prepare pipeline (segment, tag, filter, size) into content units (`--head-chunks` limits count for testing). Section tagging runs by default (`CHUNK_SECTION_CLASSIFIER`); `target_sections`/`exclude_sections` filter inside **Chunk**; optional **Summarize Chunks** follows (see [Structured documents](concepts.md#structured-documents))
+2. **Chunking** — prepare pipeline (segment, tag, filter, size) into content units (`--head-chunks` limits count for testing). Section tagging runs by default (`CHUNK_SECTION_CLASSIFIER`); `target_sections`/`exclude_sections` filter inside **Chunk**; optional per-unit summarization runs inside the extraction fan-out (see [Structured documents](concepts.md#structured-documents))
 3. **Ontology map/reduce** (when `render_mode` includes ontology):
    - Per-unit context assembly (catalog selection or vector retrieval)
    - Render/critic loops with optional web evidence
@@ -104,7 +104,12 @@ When `target_sections` and/or `summarize_sections` are set on `/process` or CLI 
 | Node | When | What it does |
 |------|------|----------------|
 | **Chunk** | Always | Prepare pipeline: Docling segments (or semantic fallback), optional tag/filter/size; builds `content_units` |
-| **Summarize Chunks** | `summarize_sections` set | LLM compresses selected units (already tagged/filtered in Chunk); prompts use `extraction_text` |
+
+Summarization has **no node of its own**. When `summarize_sections` is set, each
+unit is summarized inside the extraction fan-out, immediately before that unit is
+rendered; prompts then use `extraction_text`, which prefers the summary. A unit's
+summary depends only on that unit, so a separate stage was a barrier that made
+every unit wait for the slowest summary before any extraction could start.
 
 - Section LLM tagging during Chunk uses **parallel** workers up to `PARALLEL_WORKERS`
 - Use `--head-chunks N` on the CLI to process only the first N units (testing)

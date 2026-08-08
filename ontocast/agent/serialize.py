@@ -58,6 +58,9 @@ def serialize(state: AgentState, tools: ToolBox) -> AgentState:
         duration_summary = state.budget_tracker.get_duration_summary()
         if duration_summary:
             logger.info(duration_summary)
+        parallelism_summary = state.budget_tracker.get_parallelism_summary()
+        if parallelism_summary:
+            logger.info(parallelism_summary)
 
     provenance_graph_uri = f"{str(state.graph_uri).rstrip('/')}/ontology-provenance"
     if len(state.ontology_provenance_artifact) > 0:

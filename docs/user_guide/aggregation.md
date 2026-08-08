@@ -22,7 +22,7 @@ AGG_SIMILARITY_THRESHOLD=0.80
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `AGG_EMBEDDING_MODEL` | Sentence-transformers model for entity embeddings | `paraphrase-multilingual-MiniLM-L12-v2` |
+| `AGG_EMBEDDING_MODEL` | Sentence-transformers model for entity embeddings. Shares one process-wide model with `EMBEDDING_MODEL_NAME` and `CHUNK_EMBEDDING_MODEL` when the names match — see [Performance](performance.md#local-embedding-models) | `paraphrase-multilingual-MiniLM-L12-v2` |
 | `AGG_SIMILARITY_THRESHOLD` | Cosine similarity threshold for DBSCAN clustering | `0.80` |
 | `AGG_CANDIDATE_SIMILARITY_THRESHOLD` | Lower cosine threshold for permissive merge candidates before symbolic validation | `0.70` |
 | `AGG_LEXICAL_LABEL_JACCARD` | Minimum label token-set Jaccard for the fuzzy lexical-alias tier | `0.5` |

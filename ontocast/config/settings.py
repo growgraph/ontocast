@@ -261,6 +261,16 @@ class LLMConfig(BaseSettings):
             "Set via LLM_MAX_INFLIGHT."
         ),
     )
+    request_timeout_seconds: float | None = Field(
+        default=180.0,
+        gt=0,
+        description=(
+            "Per-request timeout for a provider call, in seconds. A hung call "
+            "otherwise holds both a unit-worker slot and an LLM_MAX_INFLIGHT "
+            "slot indefinitely, so a couple of them permanently shrink the "
+            "pipeline's effective width. Set to None to wait forever."
+        ),
+    )
     think: bool | None = Field(
         default=None,
         description=(
@@ -333,16 +343,18 @@ class LLMConfig(BaseSettings):
 class ChunkConfig(BaseSettings):
     """Chunking configuration settings."""
 
-    breakpoint_threshold_type: Literal[
-        "percentile", "standard_deviation", "interquartile", "gradient"
-    ] = Field(
-        default="percentile", description="Type of threshold calculation for chunking"
-    )
-    breakpoint_threshold_amount: float = Field(
-        default=95.0, description="Threshold amount for breakpoint detection"
-    )
     min_size: int = Field(default=3000, description="Minimum chunk size in characters")
     max_size: int = Field(default=12000, description="Maximum chunk size in characters")
+    embedding_model: str = Field(
+        default="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+        description=(
+            "Sentence-transformers checkpoint for semantic chunking and "
+            "embedding-based schema detection. Shared process-wide with "
+            "EMBEDDING_MODEL_NAME and AGG_EMBEDDING_MODEL when the names match, "
+            "so aligning all three halves resident local-model memory. Changing "
+            "it invalidates the on-disk chunk cache and shifts chunk boundaries."
+        ),
+    )
     segmenter: Literal["semantic", "docling"] = Field(
         default="semantic",
         description=(
@@ -636,10 +648,18 @@ class ServerConfig(BaseSettings):
         "Set to None for unlimited.",
     )
     parallel_workers: int = Field(
-        default=8,
+        default=16,
         ge=1,
-        description="Maximum number of concurrent unit workers in parallel pipeline "
-        "(keep at or below LLM_MAX_INFLIGHT, which caps provider concurrency)",
+        description=(
+            "Maximum concurrent content-unit workers within one document. A unit "
+            "never issues two LLM calls at once, so this is also the provider "
+            "concurrency a single document reaches. LLM_MAX_INFLIGHT is the "
+            "process-wide cap across all documents and is the one to lower if a "
+            "provider rate-limits; raising this one past it buys nothing. "
+            "Check budget.node_durations before raising it: if a stage's "
+            "loop_lag_total is a large share of its wall clock, the units are "
+            "blocked rather than queued and more workers will make it worse."
+        ),
     )
     enable_ontology_consolidation: bool = Field(
         default=False,

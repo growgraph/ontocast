@@ -4,42 +4,29 @@ This module handles the embedding and clustering of entity representations
 to identify groups of similar entities.
 """
 
-import importlib
 import logging
-import threading
-from typing import Any
 
 import numpy as np
 from rdflib import URIRef
+
+from ontocast.tool.sentence_transformer import SharedEncoder, get_shared_encoder
 
 from .normalizer import EntityRepresentation
 
 logger = logging.getLogger(__name__)
 
-_EMBEDDER_CACHE: dict[str, Any] = {}
-_EMBEDDER_LOCK = threading.Lock()
 
+def get_clustering_encoder(model_name: str) -> SharedEncoder:
+    """Return the process-shared guarded encoder for *model_name*.
 
-def get_shared_sentence_transformer(model_name: str) -> Any:
-    """Return a process-wide cached SentenceTransformer for *model_name*."""
-    cached = _EMBEDDER_CACHE.get(model_name)
-    if cached is not None:
-        return cached
-    with _EMBEDDER_LOCK:
-        cached = _EMBEDDER_CACHE.get(model_name)
-        if cached is not None:
-            return cached
-        try:
-            st = importlib.import_module("sentence_transformers")
-        except ImportError as e:
-            raise ImportError(
-                "Entity clustering requires the sentence-transformers package. "
-                "Install it with: uv add sentence-transformers"
-            ) from e
-        logger.info("Loading sentence-transformer model: %s", model_name)
-        cached = st.SentenceTransformer(model_name)
-        _EMBEDDER_CACHE[model_name] = cached
-        return cached
+    Names entity clustering in the missing-dependency message; the encoder
+    itself is shared with retrieval embeddings and semantic chunking, which
+    default to the same or a configurable checkpoint.
+    """
+    return get_shared_encoder(
+        model_name,
+        feature="Entity clustering. Install it with: uv add sentence-transformers",
+    )
 
 
 class EntityClusterer:
@@ -65,12 +52,19 @@ class EntityClusterer:
         self.embedding_model = embedding_model
         self.similarity_threshold = similarity_threshold
         self.min_cluster_size = min_cluster_size
-        self._embedder: Any | None = None
+        self._embedder: SharedEncoder | None = None
 
     @property
-    def embedder(self) -> Any:
+    def embedder(self) -> SharedEncoder:
+        """The shared guarded encoder for this clusterer's model.
+
+        Deliberately the handle rather than the raw model: every ``.encode()``
+        reached through this property — here and in
+        :mod:`ontocast.tool.agg.entity_aligner` — is then serialised against the
+        other subsystems that share the same checkpoint.
+        """
         if self._embedder is None:
-            self._embedder = get_shared_sentence_transformer(self.embedding_model)
+            self._embedder = get_clustering_encoder(self.embedding_model)
         return self._embedder
 
     def embed_representations(

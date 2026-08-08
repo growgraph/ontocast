@@ -102,7 +102,6 @@ class WorkflowNode(StrEnum):
 
     CONVERT_TO_TEXT = "Convert to Text"
     CHUNK = "Chunk Text"
-    SUMMARIZE_CHUNKS = "Summarize Chunks"
     TEXT_TO_ONTOLOGY = "Text to Ontology"
     TEXT_TO_FACTS = "Text to Facts"
     CRITICISE_ONTOLOGY = "Criticise Ontology"

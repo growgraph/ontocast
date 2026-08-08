@@ -28,6 +28,8 @@ _EXTRA_FOR_MODULE: dict[str, str] = {
     "lancedb": "lancedb",
     "networkx": "graph",
     "sentence_transformers": "doc-processing",
+    "hdbscan": "semantic-chunking",
+    "umap": "semantic-chunking",
     "pyshacl": "shacl",
     "fastapi": "server",
     "uvicorn": "server",

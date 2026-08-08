@@ -12,8 +12,8 @@ own ontology context according to mode/policy.
 """
 
 import logging
+import time
 from collections.abc import Sequence
-from copy import deepcopy
 from typing import Literal
 
 from ontocast.agent.criticise_facts import criticise_facts
@@ -36,7 +36,6 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.context_resolver import (
     UnitOntologyContext,
-    resolve_effective_facts_ontology_context,
     resolve_unit_ontology_context,
 )
 from ontocast.stategraph.unit_context import UnitLoopContext
@@ -240,8 +239,16 @@ def _apply_unit_ontology_context(
     unit_state: UnitFactsState | UnitOntologyState,
     ctx: UnitOntologyContext,
 ) -> None:
-    """Copy assemble product onto unit state (snapshot + writable + sources)."""
-    unit_state.ontology_snapshot = deepcopy(ctx.snapshot)
+    """Point unit state at the assembled context (snapshot + writable + sources).
+
+    The snapshot is shared by reference, not copied. Every consumer in both unit
+    loops treats it as read-only schema -- the facts loop mutates only the
+    rendered facts graph, and the ontology loop edits ``working_graph``, keeping
+    the snapshot as its pristine baseline for ``working_graph_changed()``.
+    Deep-copying it per unit cost a full rdflib graph copy each time, on the
+    event loop, for a value that is identical across the whole fan-out.
+    """
+    unit_state.ontology_snapshot = ctx.snapshot
     unit_state.ontology_patch_sources = list(ctx.patch_sources)
     unit_state.writable_iris = list(ctx.writable_iris)
     unit_state.assembly_anchor_iri = ctx.primary_writable_iri
@@ -253,10 +260,12 @@ async def _apply_facts_ontology_context(
     context: UnitLoopContext,
     tools: ToolBox,
 ) -> UnitFactsState:
-    """Set ontology_snapshot for facts from per-unit context resolver."""
-    ctx = await resolve_effective_facts_ontology_context(
-        context, tools, unit_state.content_unit
-    )
+    """Set ontology_snapshot for facts from the per-unit context resolver.
+
+    Only reached when the caller has no merged document context to hand down
+    (single-unit pipelines, or facts-only runs with no ontology stage).
+    """
+    ctx = await resolve_unit_ontology_context(context, tools, unit_state.content_unit)
     logger.info(
         "Ontology context for mode %s: sources=%s writable=%s",
         context.ontology_context_mode,
@@ -276,8 +285,16 @@ async def facts_loop(
 ) -> UnitFactsState:
     """Run facts render/critic loop for one content unit.
 
-    Ontology context is resolved per unit before rendering unless
-    ``pre_resolved_context`` is provided (sequential unit pipelines).
+    Args:
+        state: Unit facts state to run the loop over.
+        tools: Tool container.
+        document_context: Document-level inputs, shared read-only.
+        max_visits_per_node: Override for the render/critic bound.
+        pre_resolved_context: Ontology context resolved once by the caller.
+            The merged document ontology depends only on document-level state,
+            so the fan-out builds it once and hands the *same object* to every
+            unit; resolving it here instead cost one full rdflib merge and two
+            graph copies per unit. Falls back to per-unit resolution when None.
     """
     atomic = tools.get_atomic_tools()
     unit_state = state.model_copy(deep=True)
@@ -453,7 +470,11 @@ async def ontology_loop(
             document_context, tools, unit_state.content_unit
         )
         _apply_unit_ontology_context(unit_state, ctx)
+        working_copy_start = time.perf_counter()
         unit_state.working_graph = unit_state.ontology_snapshot.graph.copy()
+        unit_state.budget_tracker.add_duration(
+            "ctx/working_graph_copy", time.perf_counter() - working_copy_start
+        )
 
         max_visits = _resolve_max_visits_limit(
             unit_state.max_visits_per_node, max_visits_per_node

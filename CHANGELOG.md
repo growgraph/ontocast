@@ -37,8 +37,58 @@ project:
 
 ## [Unreleased]
 
+### Performance
+
+- **Merged facts ontology is built once per document, not once per unit.** It
+  reads only document-level state, but was rebuilt N+2 times — synchronously, on
+  the event loop, so it stalled every other unit's in-flight provider call. At
+  3.6k triples / 30 units the stage went from 6.07 s (5.97 s of it event-loop
+  stall) to 0.21 s.
+- **The ontology snapshot is shared by reference, not deep-copied per unit,** and
+  its prompt chapter is serialised once per document rather than per unit per
+  render attempt (`OntologySnapshot.prompt_chapter`).
+- **Summarization runs inside the extraction fan-outs** instead of as a stage.
+  A summary depends only on its own unit, so the node was a barrier that made
+  the whole document wait for the slowest one.
+- **Chunk preparation no longer blocks the event loop** — its synchronous
+  segmentation and local-embedding phases run via `asyncio.to_thread`.
+- **Aligning `CHUNK_EMBEDDING_MODEL` with `EMBEDDING_MODEL_NAME` and
+  `AGG_EMBEDDING_MODEL` now leaves one resident local model instead of two**
+  (measured: 1601 MB vs 2252 MB peak RSS). Defaults unchanged; opt-in recipe in
+  [Performance](docs/user_guide/performance.md).
+- **Fewer redundant loads and connections:** the docling `HybridChunker`
+  tokenizer is cached instead of rebuilt per document; the docling converter
+  lock guards only the lazy build, not the conversion (which serialised
+  concurrent documents); BM25 moved to `ToolBoxRuntime` instead of one per
+  tenancy scope; `ToolBox.serialize` uses one event loop and one backend
+  connection per document rather than one per ontology.
+- **The embedding lock no longer serialises remote providers**, which had
+  nothing to protect.
+- **`PARALLEL_WORKERS` defaults to 16** (was 8), matching `LLM_MAX_INFLIGHT`.
+
 ### Breaking
 
+- **`CHUNK_BREAKPOINT_THRESHOLD_TYPE` and `CHUNK_BREAKPOINT_THRESHOLD_AMOUNT`
+  removed** — the chunker clusters with PCA → UMAP → HDBSCAN and never read
+  them. Invalidates the chunk cache; does **not** change chunk output.
+- **`langchain-huggingface` is no longer a dependency.** The chunker uses a
+  `langchain_core.embeddings.Embeddings` adapter over the shared encoder,
+  reproducing `HuggingFaceEmbeddings._embed` including its newline collapse,
+  which chunk boundaries depend on.
+- **Removed:** `ChunkerTool.model` (use `ChunkConfig.embedding_model`),
+  `WorkflowNode.SUMMARIZE_CHUNKS`, `route_after_chunk`,
+  `make_summarize_chunks_node`, `resolve_effective_facts_ontology_context`.
+  `EmbeddingTool._embed_unlocked` is renamed `_embed_raw`;
+  `EntityClusterer.embedder` returns a `SharedEncoder`. Regenerate diagrams with
+  `uv run plot-graph`.
+- **Transport failures are no longer retried by `call_llm_with_retry`.** Its
+  retry exists to show the model its own malformed output; retrying tripled the
+  request rate when a provider was rate-limiting. Parse retries back off with
+  jitter.
+- **`ToolBox.serialize` raises inside a running event loop** — await
+  `aserialize` there.
+- **On Apple Silicon the chunker moves from CPU to MPS,** now that it
+  auto-selects like every other consumer. Identical on CPU-only and CUDA hosts.
 - **LLM cache key gained fields, invalidating every existing entry.** The key
   now carries a `cache_format_version` (now `2`) plus the Ollama generation
   knobs `think` / `num_predict` / `num_ctx`. Caches written by earlier releases
@@ -56,6 +106,21 @@ project:
 
 ### Fixed
 
+- **A shared embedding model with a lock in only one of its users.** Once
+  retrieval and clustering shared one `SentenceTransformer`, the lock in the
+  retrieval module protected nothing: `tool/agg/clustering.py`,
+  `tool/agg/entity_aligner.py` and semantic chunking called `.encode()` on the
+  same object unguarded. The lock now belongs to the `SharedEncoder` that owns
+  the model. Concurrent `encode()` is *correct* with default arguments, so this
+  was a broken invariant and a peak-memory risk, not corruption.
+- **One global embedding lock for all checkpoints** — locks are now per model,
+  so unrelated checkpoints no longer queue behind one another.
+- **The `semantic-chunking` extra required `langchain-huggingface` but not
+  `sentence-transformers`,** so installing it alone degraded silently to naive
+  chunking. It now requires `sentence-transformers`, and the probe checks
+  `hdbscan` and `umap` rather than relying on `langchain-huggingface` as a proxy.
+- **A failed chunker model load was retried on every call** — `None` meant both
+  "not loaded" and "load failed". Failure is recorded once.
 - **Section labels smeared across the document when a heading was
   unrecognised.** `_build_spans_from_heading_starts` ended each section span at
   the next *recognised* heading, so one unmatched heading let the previous label
@@ -119,6 +184,39 @@ project:
 
 ### Added
 
+- **Automatic cache eviction.** `Cacher.prune()` drops TTL-expired entries, then
+  evicts least-recently-*used* entries until the total fits under
+  `ONTOCAST_CACHE_MAX_BYTES`. Recency comes from access time, so an entry written
+  once and read constantly outlives one written recently and never touched.
+  Runs at process start and after every `ONTOCAST_CACHE_PRUNE_EVERY` (256)
+  writes, which keeps a long-lived `ontocast serve` bounded between restarts.
+- **`ontocast cache` command group**: `stats` (per-tool size, flags orphaned
+  subdirectories), `prune` (`--max-bytes`, `--ttl-days`, `--orphaned`), and
+  `clear [--subdir]`.
+- **`PathConfig` cache settings**: `ONTOCAST_CACHE_MAX_BYTES` (accepts `1GB` /
+  `500MB` as well as a byte count), `ONTOCAST_CACHE_TTL_DAYS`,
+  `ONTOCAST_CACHE_PRUNE_EVERY`.
+- Converter cache entries carry a format version in the key, replacing the old
+  practice of bumping the subdirectory name; the subdirectory is back to plain
+  `converter/`. Stray `converter_v2/` and `converter_v3/` directories in an
+  existing cache are cleared by `ontocast cache prune --orphaned`.
+- Typed `CacheStats` / `PruneReport` models and `Cacher.cache_stats()`;
+  `get_cache_stats()` still returns a plain dict for JSON responses.
+- **Timing telemetry separating provider latency from event-loop stalls**, in
+  `budget.node_durations` / `budget.counters`, documented in the new
+  [Performance](docs/user_guide/performance.md) guide. `BudgetTracker` gains
+  `counters`/`incr` and `parallel_efficiency`, plus a `<node>` (wall) vs
+  `<node>/unit_sum` (summed across workers) key convention; `_max` keys take the
+  maximum on merge. Adds `llm/provider`, `llm/inflight_wait`,
+  `llm/cache_lookup`, per-stage `worker_wait`, and a `loop_lag` sampler
+  (`ontocast/util/loop_lag.py`) — awaited I/O yields, so lag isolates
+  synchronous blocking that wall clock cannot distinguish from slow providers.
+- **`LLM_REQUEST_TIMEOUT_SECONDS`** (default 180). A hung call previously held a
+  unit-worker slot and an `LLM_MAX_INFLIGHT` slot indefinitely. Raises
+  `LLMRequestTimeoutError`, deliberately not an `asyncio.TimeoutError`, so it
+  fails one unit instead of aborting the fan-out.
+- **`CHUNK_EMBEDDING_MODEL`** (`ChunkConfig.embedding_model`), default unchanged.
+  The chunker's checkpoint was a `ChunkerTool` field nothing ever set.
 - **Section classification cascade** (`ontocast/tool/chunk/outline.py`,
   `density.py`). Classification runs over the document outline rather than per
   chunk, through tiers of increasing cost: outline → heading patterns → heading
@@ -249,27 +347,6 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
   is behaviourally identical to a fresh one.
 - `ToolBoxRuntime.acreate` built a second `Cacher` instead of reusing the shared
   one, defeating the documented single-instance design.
-
-### Added
-
-- **Automatic cache eviction.** `Cacher.prune()` drops TTL-expired entries, then
-  evicts least-recently-*used* entries until the total fits under
-  `ONTOCAST_CACHE_MAX_BYTES`. Recency comes from access time, so an entry written
-  once and read constantly outlives one written recently and never touched.
-  Runs at process start and after every `ONTOCAST_CACHE_PRUNE_EVERY` (256)
-  writes, which keeps a long-lived `ontocast serve` bounded between restarts.
-- **`ontocast cache` command group**: `stats` (per-tool size, flags orphaned
-  subdirectories), `prune` (`--max-bytes`, `--ttl-days`, `--orphaned`), and
-  `clear [--subdir]`.
-- **`PathConfig` cache settings**: `ONTOCAST_CACHE_MAX_BYTES` (accepts `1GB` /
-  `500MB` as well as a byte count), `ONTOCAST_CACHE_TTL_DAYS`,
-  `ONTOCAST_CACHE_PRUNE_EVERY`.
-- Converter cache entries carry a format version in the key, replacing the old
-  practice of bumping the subdirectory name; the subdirectory is back to plain
-  `converter/`. Stray `converter_v2/` and `converter_v3/` directories in an
-  existing cache are cleared by `ontocast cache prune --orphaned`.
-- Typed `CacheStats` / `PruneReport` models and `Cacher.cache_stats()`;
-  `get_cache_stats()` still returns a plain dict for JSON responses.
 
 ### Removed
 

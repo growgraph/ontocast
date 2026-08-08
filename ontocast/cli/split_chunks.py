@@ -148,16 +148,11 @@ def main(input_path, output_path, prefix):
     from ontocast.config import ChunkConfig
 
     chunk_config = ChunkConfig(
-        breakpoint_threshold_amount=95.0,
-        breakpoint_threshold_type="percentile",
         max_size=4000,  # Match the reported issue parameters
         min_size=2000,  # Match the reported issue parameters
     )
 
-    chunker = ChunkerTool(
-        chunk_config=chunk_config,
-        model="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
-    )
+    chunker = ChunkerTool(chunk_config=chunk_config)
 
     files = sorted(
         crawl_directories(input_path.expanduser(), suffixes=(".json",), prefix=prefix)

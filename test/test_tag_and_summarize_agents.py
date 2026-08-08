@@ -8,12 +8,11 @@ import pytest
 from rdflib import URIRef
 
 from ontocast.agent.chunk_text import chunk_text
-from ontocast.agent.summarize_chunks import summarize_chunk
+from ontocast.agent.summarize_chunks import ensure_unit_summary, summarize_chunk
 from ontocast.config import ChunkConfig
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import Status
 from ontocast.onto.state import AgentState
-from ontocast.stategraph.node_factories import make_summarize_chunks_node
 from ontocast.tool.chunk.chunker import ChunkerTool
 from ontocast.tool.chunk.section_llm import ChunkSectionClassification
 from ontocast.toolbox import ToolBox
@@ -230,18 +229,17 @@ async def test_summarize_chunk_raises_on_empty_response() -> None:
 
 
 @pytest.mark.anyio
-async def test_summarize_chunks_node_skips_when_disabled() -> None:
+async def test_ensure_unit_summary_skips_when_disabled() -> None:
     state = AgentState(
         content_units=[_content_unit()],
         summarize_sections=None,
     )
-    node = make_summarize_chunks_node(_build_tools())
-    result = await node(state)
-    assert result.content_units[0].summary is None
+    await ensure_unit_summary(state, 0, _build_tools())
+    assert state.content_units[0].summary is None
 
 
 @pytest.mark.anyio
-async def test_summarize_chunks_node_filters_by_section() -> None:
+async def test_ensure_unit_summary_filters_by_section() -> None:
     summarized: list[str] = []
 
     async def llm(prompt):
@@ -255,15 +253,16 @@ async def test_summarize_chunks_node_filters_by_section() -> None:
         ],
         summarize_sections=["results"],
     )
-    node = make_summarize_chunks_node(_build_tools(llm=llm))
-    result = await node(state)
-    assert result.content_units[0].summary == "Summary text."
-    assert result.content_units[1].summary is None
+    tools = _build_tools(llm=llm)
+    await ensure_unit_summary(state, 0, tools)
+    await ensure_unit_summary(state, 1, tools)
+    assert state.content_units[0].summary == "Summary text."
+    assert state.content_units[1].summary is None
     assert len(summarized) == 1
 
 
 @pytest.mark.anyio
-async def test_summarize_chunks_node_tolerates_per_unit_failure() -> None:
+async def test_ensure_unit_summary_tolerates_per_unit_failure() -> None:
     calls = 0
 
     async def llm(_prompt):
@@ -280,7 +279,29 @@ async def test_summarize_chunks_node_tolerates_per_unit_failure() -> None:
         ],
         summarize_sections=["results"],
     )
-    node = make_summarize_chunks_node(_build_tools(llm=llm))
-    result = await node(state)
-    assert result.content_units[0].summary is None
-    assert result.content_units[1].summary == "ok"
+    tools = _build_tools(llm=llm)
+    await ensure_unit_summary(state, 0, tools)
+    await ensure_unit_summary(state, 1, tools)
+    assert state.content_units[0].summary is None
+    assert state.content_units[1].summary == "ok"
+
+
+@pytest.mark.anyio
+async def test_ensure_unit_summary_is_idempotent() -> None:
+    """Both fan-outs call it, so the second must not re-spend a provider call."""
+    calls = 0
+
+    async def llm(_prompt):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(content="Summary text.")
+
+    state = AgentState(
+        content_units=[_content_unit(text="body", index=0, section_label="results")],
+        summarize_sections=["results"],
+    )
+    tools = _build_tools(llm=llm)
+    await ensure_unit_summary(state, 0, tools)
+    await ensure_unit_summary(state, 0, tools)
+    assert state.content_units[0].summary == "Summary text."
+    assert calls == 1
