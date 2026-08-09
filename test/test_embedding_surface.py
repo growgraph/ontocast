@@ -18,13 +18,11 @@ from ontocast.config import Config, ToolConfig
 from ontocast.config.settings import PathConfig
 from ontocast.integrations.langgraph import text_in_turtle_out
 from ontocast.onto.enum import VectorStoreBackend, WorkflowNode
-from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import build_agent_graph, create_agent_graph
 from ontocast.stategraph.create import _timed
 from ontocast.tool.llm import LLMTool
-from ontocast.tool.vector_store.in_memory import InMemoryVectorStoreManager
 from ontocast.toolbox import ToolBox
 from ontocast.util.loop import require_no_running_loop
 
@@ -275,81 +273,18 @@ async def test_toolbox_is_an_async_context_manager(tmp_path, monkeypatch) -> Non
         assert tools.config is not None
 
 
-# -- in-memory vector store ------------------------------------------------
+# -- vector store backend selection ----------------------------------------
 
 
-def test_in_memory_backend_is_opt_in(tmp_path) -> None:
+def test_auto_backend_without_connection_settings_disables_retrieval(
+    tmp_path,
+) -> None:
     """AUTO must not silently give an unconfigured deployment a vector store."""
     config = _config(tmp_path, VectorStoreBackend.AUTO)
     assert ToolBox(config, llm=STUB_LLM).vector_store is None
-
-
-def test_memory_backend_selects_the_in_memory_store(tmp_path) -> None:
-    tools = ToolBox(_config(tmp_path, VectorStoreBackend.MEMORY), llm=STUB_LLM)
-    assert isinstance(tools.vector_store, InMemoryVectorStoreManager)
-    assert tools.patch_retriever is not None
 
 
 def test_none_backend_disables_retrieval(tmp_path) -> None:
     tools = ToolBox(_config(tmp_path, VectorStoreBackend.NONE), llm=STUB_LLM)
     assert tools.vector_store is None
     assert tools.patch_retriever is None
-
-
-@pytest.fixture
-def indexed_store(tmp_path) -> InMemoryVectorStoreManager:
-    tools = ToolBox(_config(tmp_path, VectorStoreBackend.MEMORY), llm=STUB_LLM)
-    store = tools.vector_store
-    assert isinstance(store, InMemoryVectorStoreManager)
-    graph = RDFGraph()
-    graph.parse(data=ONTOLOGY_TTL, format="turtle")
-    store.index_ontology(
-        Ontology(graph=graph, iri="http://example.org/onto", ontology_id="ex")
-    )
-    return store
-
-
-@pytest.mark.slow
-def test_in_memory_search_ranks_by_meaning(indexed_store) -> None:
-    """Dense search must beat lexical overlap: neither query shares a term."""
-    top = indexed_store.search_patch_hits("solar cell crystal material", top_k=3)[0]
-    assert top.atom.iri == "http://example.org/onto#Perovskite"
-
-    top = indexed_store.search_patch_hits("accelerates a reaction", top_k=3)[0]
-    assert top.atom.iri == "http://example.org/onto#Catalyst"
-
-
-@pytest.mark.slow
-def test_in_memory_delete_removes_atoms(indexed_store) -> None:
-    assert indexed_store.list_indexed_ontology_iris() == {"http://example.org/onto"}
-    indexed_store.delete_ontology("http://example.org/onto")
-    assert indexed_store.list_indexed_ontology_iris() == set()
-    assert indexed_store.search_patch_hits("anything", top_k=3) == []
-
-
-@pytest.mark.slow
-def test_in_memory_wipe_clears_everything(indexed_store) -> None:
-    asyncio.run(indexed_store.wipe_store())
-    assert indexed_store.list_indexed_ontology_iris() == set()
-
-
-@pytest.mark.slow
-def test_in_memory_fetch_vectors_round_trips(indexed_store) -> None:
-    hits = indexed_store.search_patch_hits("perovskite", top_k=1)
-    atom_id = hits[0].atom.atom_id
-    vectors = indexed_store.fetch_vectors([atom_id])
-    core, neighborhood = vectors[atom_id]
-    assert len(core) == len(neighborhood) > 0
-
-
-@pytest.mark.slow
-def test_in_memory_filters_by_ontology_iri(indexed_store) -> None:
-    assert (
-        indexed_store.search_patch_hits(
-            "perovskite", top_k=5, filter_iri="http://other.example/onto"
-        )
-        == []
-    )
-    assert indexed_store.search_patch_hits(
-        "perovskite", top_k=5, filter_iri="http://example.org/onto"
-    )

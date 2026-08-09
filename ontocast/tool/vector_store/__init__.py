@@ -18,7 +18,6 @@ from .embedding import (
     OpenAIEmbeddingTool,
 )
 from .factory import create_vector_store_manager
-from .in_memory import InMemoryVectorStoreManager
 from .patch_retriever import OntologyPatchRetriever
 from .util import EmbeddingContractMismatchError
 
@@ -33,7 +32,6 @@ __all__ = [
     "GraphAtomizer",
     "OntologyPatchRetriever",
     "EmbeddingContractMismatchError",
-    "InMemoryVectorStoreManager",
     "QdrantVectorStoreManager",
     "LanceDBVectorStoreManager",
     "VectorStoreManager",

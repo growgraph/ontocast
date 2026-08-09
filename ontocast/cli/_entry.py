@@ -61,8 +61,3 @@ def match_graphs() -> Any:
 def pdfs_to_markdown() -> Any:
     """Entry point for the `pdfs-to-markdown` command."""
     return _run("pdfs-to-markdown", "ontocast.cli.pdfs_to_markdown", "main")
-
-
-def test_api() -> Any:
-    """Entry point for the `test-api` command."""
-    return _run("test-api", "ontocast.cli.test_api", "main")

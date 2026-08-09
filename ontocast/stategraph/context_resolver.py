@@ -333,7 +333,3 @@ def aggregate_writable_metrics(
         unit_context_mode_used,
         dict(primary_counts),
     )
-
-
-# Back-compat alias used by older call sites / tests during migration.
-aggregate_anchor_metrics = aggregate_writable_metrics

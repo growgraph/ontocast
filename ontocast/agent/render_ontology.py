@@ -78,8 +78,6 @@ def _prepare_ontology_common_prompt_layers(
     )
     text_chapter = text_template.format(text=state.content_unit.extraction_text)
     external_evidence = state.external_evidence_text
-    if external_evidence:
-        state.mark_external_evidence_used(WorkflowNode.TEXT_TO_ONTOLOGY)
     return general_ontology_instruction_str, text_chapter, external_evidence
 
 

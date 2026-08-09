@@ -20,7 +20,7 @@ from ontocast.config.section_labels import (
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import OntologyContextMode, RenderMode, Status, WorkflowNode
 from ontocast.onto.state import AgentState
-from ontocast.stategraph.routing import route_after_convert, route_after_tag_or_chunk
+from ontocast.stategraph.routing import route_after_tag_or_chunk
 from ontocast.tool.chunk.prepare import (
     PrepareSegment,
     _forward_fill_section_labels,
@@ -125,7 +125,6 @@ def test_agent_state_optional_routing_flags() -> None:
     default = AgentState()
     assert default.needs_section_prepare is False
     assert default.use_summarization is False
-    assert route_after_convert(default) == WorkflowNode.CHUNK
     assert route_after_tag_or_chunk(default) == WorkflowNode.RENDER_ONTOLOGY_UPDATE
 
     tagged = AgentState(target_sections=["results"])

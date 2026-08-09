@@ -86,6 +86,7 @@ async def test_run_unit_pipeline_feeds_ontology_loop_output_to_facts(
             config=SimpleNamespace(
                 server=SimpleNamespace(
                     max_visits_per_node=3,
+                    max_critic_visits_per_node=None,
                     ontology_max_triples=50_000,
                 )
             )
@@ -143,6 +144,7 @@ async def test_run_unit_pipeline_uses_agent_state_max_visits(monkeypatch) -> Non
             config=SimpleNamespace(
                 server=SimpleNamespace(
                     max_visits_per_node=2,
+                    max_critic_visits_per_node=None,
                     ontology_max_triples=50_000,
                 )
             )

@@ -2,7 +2,7 @@ import asyncio
 import importlib
 import logging
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from rdflib import OWL, RDF, BNode, Literal, URIRef
@@ -15,6 +15,7 @@ from ontocast.config import (
     OllamaModel,
     PathConfig,
     ToolConfig,
+    WebSearchConfig,
 )
 from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
@@ -46,7 +47,6 @@ from ontocast.stategraph.node_factories import (
     make_normalize_ontology_node,
 )
 from ontocast.stategraph.routing import (
-    route_after_ontology_consolidation,
     route_after_tag_or_chunk,
 )
 from ontocast.stategraph.unit_context import UnitLoopContext
@@ -528,15 +528,16 @@ async def test_criticise_ontology_prompt_includes_graph_format_instruction(
 
 @pytest.mark.anyio
 async def test_plan_external_evidence_uses_fallback_when_planner_disabled() -> None:
-    tools = cast(
-        AtomicToolBox,
-        SimpleNamespace(
-            web_grounding_enabled_for_node=lambda _node: True,
-            web_search_reuse_evidence_across_attempt=False,
-            web_search_planner_enabled=False,
-            web_search_planner_min_query_chars=8,
-            web_search_planner_max_queries=3,
-            web_search_planner_min_confidence=0.35,
+    tools = AtomicToolBox(
+        llm_provider=cast(Any, object()),
+        web_search_config=WebSearchConfig(
+            enabled=True,
+            ontology_render_enabled=True,
+            reuse_evidence_across_attempt=False,
+            planner_enabled=False,
+            planner_min_query_chars=8,
+            planner_max_queries=3,
+            planner_min_confidence=0.35,
         ),
     )
     state = UnitOntologyState(
@@ -558,13 +559,20 @@ async def test_plan_external_evidence_uses_fallback_when_planner_disabled() -> N
 
     assert planned.external_evidence_plan.should_search is True
     assert planned.external_evidence_plan.queries
-    assert planned.external_evidence_planned_at_node == WorkflowNode.TEXT_TO_ONTOLOGY
+    # Assert against the node-scoped cache entry, which is the source of truth:
+    # the plan is stored under the node it was planned for.
+    cached = planned.get_external_evidence_cache_entry(WorkflowNode.TEXT_TO_ONTOLOGY)
+    assert cached.plan.should_search is True
 
 
 @pytest.mark.anyio
 async def test_fetch_external_evidence_filters_domains_and_dedupes() -> None:
-    async def fake_search(query: str, max_results: int | None = None):
-        _ = query, max_results
+    class _FakeSearchProvider:
+        async def search(self, query: str, max_results: int) -> list[SearchHit]:
+            _ = query, max_results
+            return _hits()
+
+    def _hits() -> list[SearchHit]:
         return [
             SearchHit(
                 title="Good result",
@@ -583,16 +591,17 @@ async def test_fetch_external_evidence_filters_domains_and_dedupes() -> None:
             ),
         ]
 
-    tools = cast(
-        AtomicToolBox,
-        SimpleNamespace(
-            web_grounding_enabled_for_node=lambda _node: True,
-            search=fake_search,
-            web_search_allowed_domains={"example.org"},
-            web_search_blocked_domains=set(),
-            web_search_min_snippet_chars=20,
-            web_search_max_snippet_chars=180,
-            web_search_max_total_chars=1200,
+    tools = AtomicToolBox(
+        llm_provider=cast(Any, object()),
+        search_provider=_FakeSearchProvider(),
+        web_search_config=WebSearchConfig(
+            enabled=True,
+            ontology_render_enabled=True,
+            allowed_domains=["example.org"],
+            blocked_domains=[],
+            min_snippet_chars=20,
+            max_snippet_chars=180,
+            max_total_chars=1200,
         ),
     )
     state = UnitOntologyState(
@@ -625,8 +634,9 @@ async def test_fetch_external_evidence_filters_domains_and_dedupes() -> None:
         state, tools, WorkflowNode.TEXT_TO_ONTOLOGY
     )
 
-    assert fetched.external_evidence_source_count == 1
-    assert fetched.external_evidence_domains == ["example.org"]
+    entry = fetched.get_external_evidence_cache_entry(WorkflowNode.TEXT_TO_ONTOLOGY)
+    assert entry.source_count == 1
+    assert entry.domains == ["example.org"]
     assert "https://example.org/ontology" in fetched.external_evidence_text
 
 
@@ -791,20 +801,6 @@ def test_agent_state_render_mode_properties() -> None:
     assert both.render_ontology is True
 
 
-def test_route_after_ontology_consolidation_respects_ontology_only_mode() -> None:
-    ontology_only = AgentState(render_mode=RenderMode.ONTOLOGY)
-    assert (
-        route_after_ontology_consolidation(ontology_only)
-        == WorkflowNode.STRUCTURAL_CHECK
-    )
-
-    ontology_and_facts = AgentState(render_mode=RenderMode.ONTOLOGY_AND_FACTS)
-    assert (
-        route_after_ontology_consolidation(ontology_and_facts)
-        == WorkflowNode.STRUCTURAL_CHECK
-    )
-
-
 def test_agent_graph_structural_check_not_reached_from_facts_edges() -> None:
     # A minimal config: the graph build only needs topology, so this keeps it
     # lightweight and avoids external services.
@@ -831,6 +827,83 @@ def test_agent_graph_structural_check_not_reached_from_facts_edges() -> None:
         if end == structural_check and start in facts_sources
     ]
     assert incoming_from_facts == []
+
+
+def test_agent_graph_topology_is_pinned() -> None:
+    """Pin the whole document graph: every node and every edge.
+
+    The topology is the contract between ``create.py`` and every node factory,
+    and it used to be asserted only negatively (the test above). Pinning it
+    outright means a node or edge cannot be added, dropped or rewired without
+    this test saying so -- which is what makes deletions elsewhere in the
+    package provably topology-neutral.
+    """
+    config = Config(
+        tool_config=ToolConfig(
+            path_config=PathConfig(),
+            llm_config=LLMConfig(
+                provider=LLMProvider.OLLAMA,
+                model_name=OllamaModel.LLAMA3_1,
+                base_url="http://localhost:11434",
+            ),
+        ),
+    )
+    graph = create_agent_graph(ToolBox(config)).get_graph()
+
+    assert {str(n) for n in graph.nodes} == {
+        "__start__",
+        "__end__",
+        str(WorkflowNode.CONVERT_TO_TEXT),
+        str(WorkflowNode.CHUNK),
+        str(WorkflowNode.RENDER_ONTOLOGY_UPDATE),
+        str(WorkflowNode.NORMALIZE_ONTOLOGY_UPDATES),
+        str(WorkflowNode.CONSOLIDATE_ONTOLOGY),
+        str(WorkflowNode.STRUCTURAL_CHECK),
+        str(WorkflowNode.CONSISTENCY_CRITIC),
+        str(WorkflowNode.RENDER_FACTS),
+        str(WorkflowNode.MERGE_FACTS),
+        str(WorkflowNode.VALIDATE_FACTS),
+        str(WorkflowNode.SERIALIZE),
+    }
+
+    # (source, target, is_conditional)
+    assert {
+        (str(start), str(end), bool(conditional))
+        for start, end, _data, conditional in graph.edges
+    } == {
+        ("__start__", str(WorkflowNode.CONVERT_TO_TEXT), False),
+        (str(WorkflowNode.CONVERT_TO_TEXT), str(WorkflowNode.CHUNK), False),
+        # route_after_tag_or_chunk: ontology block, or straight to facts.
+        (str(WorkflowNode.CHUNK), str(WorkflowNode.RENDER_ONTOLOGY_UPDATE), True),
+        (str(WorkflowNode.CHUNK), str(WorkflowNode.RENDER_FACTS), True),
+        (
+            str(WorkflowNode.RENDER_ONTOLOGY_UPDATE),
+            str(WorkflowNode.NORMALIZE_ONTOLOGY_UPDATES),
+            False,
+        ),
+        (
+            str(WorkflowNode.NORMALIZE_ONTOLOGY_UPDATES),
+            str(WorkflowNode.CONSOLIDATE_ONTOLOGY),
+            False,
+        ),
+        (
+            str(WorkflowNode.CONSOLIDATE_ONTOLOGY),
+            str(WorkflowNode.STRUCTURAL_CHECK),
+            False,
+        ),
+        (
+            str(WorkflowNode.STRUCTURAL_CHECK),
+            str(WorkflowNode.CONSISTENCY_CRITIC),
+            False,
+        ),
+        # route_after_consistency_critic: facts block, or stop after ontology.
+        (str(WorkflowNode.CONSISTENCY_CRITIC), str(WorkflowNode.RENDER_FACTS), True),
+        (str(WorkflowNode.CONSISTENCY_CRITIC), str(WorkflowNode.SERIALIZE), True),
+        (str(WorkflowNode.RENDER_FACTS), str(WorkflowNode.MERGE_FACTS), False),
+        (str(WorkflowNode.MERGE_FACTS), str(WorkflowNode.VALIDATE_FACTS), False),
+        (str(WorkflowNode.VALIDATE_FACTS), str(WorkflowNode.SERIALIZE), False),
+        (str(WorkflowNode.SERIALIZE), "__end__", False),
+    }
 
 
 def test_route_after_tag_or_chunk_facts_only_skips_ontology() -> None:

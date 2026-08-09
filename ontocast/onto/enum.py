@@ -145,9 +145,7 @@ class WorkflowNode(StrEnum):
     TEXT_TO_FACTS = "Text to Facts"
     CRITICISE_ONTOLOGY = "Criticise Ontology"
     CRITICISE_FACTS = "Criticise Facts"
-    AGGREGATE_FACTS = "Aggregate Facts"
     SERIALIZE = "Serialize"
-    PARALLEL_MAP_UNITS = "Parallel Map Units"
     RENDER_ONTOLOGY_UPDATE = "Update Ontology"
     RENDER_FACTS = "Render Facts"
     NORMALIZE_ONTOLOGY_UPDATES = "Normalize Ontology Updates"
@@ -174,15 +172,18 @@ class SPARQLOperationType(StrEnum):
 class VectorStoreBackend(StrEnum):
     """Which vector store implementation backs ontology patch retrieval.
 
+    Two backends are supported: ``QDRANT`` (server) and ``LANCEDB`` (embedded),
+    each shipped as its own optional extra.
+
     ``AUTO`` infers the backend from whichever connection setting is populated
     -- Qdrant if ``QDRANT_URI`` is set, LanceDB if it is enabled, otherwise
-    ``NONE`` (vector retrieval disabled; the in-memory store is opt-in via
-    ``VECTOR_STORE_BACKEND=memory``). Naming a backend explicitly makes the
-    choice fail loudly when its configuration is missing.
+    ``NONE``. ``NONE`` is the default for an unconfigured install: ontology
+    context then comes from a single working ontology, which is the default
+    :class:`OntologyContextMode`. Naming a backend explicitly makes the choice
+    fail loudly when its configuration is missing.
     """
 
     AUTO = "auto"
-    MEMORY = "memory"
     QDRANT = "qdrant"
     LANCEDB = "lancedb"
     NONE = "none"

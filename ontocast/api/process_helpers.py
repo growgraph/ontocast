@@ -13,23 +13,14 @@ from langgraph.graph.state import CompiledStateGraph
 from ontocast._version import __version__
 from ontocast.agent.serialize import serialize as serialize_agent_state
 from ontocast.config import Config, ServerConfig
-from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.run_manifest import RunManifest, RunManifestLLM
 from ontocast.onto.state import AgentState
+from ontocast.stategraph.facts_gate import run_facts_gate
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
 from ontocast.tool.chunk.prepare import SectionSelectionEmptyError
-from ontocast.tool.facts_invariants import (
-    FactsValidationReport,
-    ShaclRepairResult,
-    apply_shacl_repairs,
-    collect_shacl_shapes,
-    record_facts_gate_metrics,
-    summarize_conformance,
-    validate_aggregated_facts,
-)
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.toolbox import ToolBox
 
@@ -473,81 +464,17 @@ def validate_unit_pipeline_facts(
     """Run the post-aggregation invariant gate for the single-unit path.
 
     The document graph reaches this gate at VALIDATE_FACTS; the unit pipeline
-    does not run the graph, so both single-unit callers — the CLI
-    ``--use-unit-pipeline`` batch path and the ``/process_unit`` route — invoke
+    does not run the graph, so both single-unit callers -- the CLI
+    ``--use-unit-pipeline`` batch path and the ``/process_unit`` route -- invoke
     it here after aggregation. Without it they would ship facts with no
-    functional-violation, coreference, or SHACL check at all. The LLM-free
-    SHACL autofix applies; the un-merge repair does not — it re-aggregates
-    *retained units against each other*, which has no meaning for a single
-    unit.
+    functional-violation, coreference, or SHACL check at all.
+
+    ``merge_repair=False``: un-merging re-aggregates *retained units against
+    each other*, which has no meaning for a single unit. Everything else is the
+    document path verbatim, so batch dumps stay comparable across the two entry
+    paths.
     """
-    facts_validation = tools.config.get_tool_config().facts_validation
-    shapes_graph = collect_shacl_shapes(ontology_graph, facts_validation.shapes_dir)
-    fact_namespaces = [DEFAULT_IRI, str(state.doc_iri), state.doc_namespace or ""]
-
-    def run_validation() -> FactsValidationReport:
-        return validate_aggregated_facts(
-            state.aggregated_facts,
-            ontology_graph,
-            shapes_graph=shapes_graph,
-            fact_namespaces=fact_namespaces,
-            suspect_multi_value_severity=facts_validation.suspect_multi_value_severity,
-            functional_min_single_support=(
-                facts_validation.functional_min_single_support
-            ),
-            quantity_fallback_vocabulary=(
-                facts_validation.quantity_fallback_vocabulary
-            ),
-            shacl_inference=facts_validation.shacl_inference,
-            shacl_advanced=facts_validation.shacl_advanced,
-            shacl_max_triples=facts_validation.shacl_max_triples,
-        )
-
-    report = run_validation()
-    # The un-merge repair is meaningless for a single unit, but the LLM-free
-    # shape repairs are not: they act on the graph, not on identity decisions.
-    repair_result = ShaclRepairResult(graph=state.aggregated_facts)
-    if shapes_graph is not None:
-        repair_result = apply_shacl_repairs(
-            state.aggregated_facts,
-            shapes_graph,
-            ontology_graph,
-            mode=facts_validation.shacl_autofix,
-            passes=facts_validation.shacl_autofix_passes,
-            fact_namespaces=fact_namespaces,
-            code_predicates=facts_validation.code_predicates,
-            inference=facts_validation.shacl_inference,
-            advanced=facts_validation.shacl_advanced,
-            max_triples=facts_validation.shacl_max_triples,
-            initial_violations=(
-                report.shacl_violations if report.shacl_evaluated else None
-            ),
-        )
-        if repair_result.records:
-            state.aggregated_facts = repair_result.graph
-            state.facts_gate_repairs = repair_result.records
-            report = run_validation()
-
-    state.facts_validation_findings = report.findings
-    state.facts_conformance = summarize_conformance(
-        report.findings,
-        shacl_evaluated=report.shacl_evaluated,
-        repairs=state.facts_gate_repairs,
-    )
-    # Shared with the graph-pipeline gate, so batch dumps stay comparable
-    # across the two entry paths.
-    record_facts_gate_metrics(
-        state.retrieval_metrics,
-        report=report,
-        repair_result=repair_result,
-        ontology_context_empty=not len(ontology_graph),
-    )
-    if report.error_findings:
-        logger.warning(
-            "Unit-pipeline facts validation: %d error finding(s) "
-            "(no un-merge repair in single-unit mode)",
-            len(report.error_findings),
-        )
+    run_facts_gate(state, ontology_graph, tools, merge_repair=False)
 
 
 def _merge_workflow_state_into_agent_state(

@@ -106,6 +106,19 @@ def _skip_critic_after_final_render(render_attempt: int, max_visits: int) -> boo
     return render_attempt == max_visits
 
 
+def _resolve_critic_visits(unit_state: UnitFactsState | UnitOntologyState) -> int:
+    """Critic attempts allowed per render attempt.
+
+    Unset means the legacy coupling to ``max_visits_per_node``: the inner
+    critic loop shares the outer render loop's bound, so the worst case is
+    ``max_visits ** 2`` billed critic calls. Setting it decouples the two.
+    """
+    override = unit_state.max_critic_visits_per_node
+    if override is None:
+        return unit_state.max_visits_per_node
+    return max(1, override)
+
+
 def _collect_facts_findings(
     unit_state: UnitFactsState,
     additional_standard_namespaces: Sequence[str] = (),
@@ -145,6 +158,8 @@ def _record_facts_attempt(
             n_deterministic_findings=n_findings,
             n_mandatory_findings=n_mandatory,
             repair_failed=repair_failed,
+            failure_stage=(str(unit_state.failure_stage) if repair_failed else None),
+            failure_reason=unit_state.failure_reason if repair_failed else None,
             triple_count=len(graph),
         )
     )
@@ -213,10 +228,15 @@ async def _run_finding_driven_repair(
         )
         if repair_failed:
             # The pre-repair graph is intact, so the unit is still usable and
-            # the loop reports SUCCESS -- but the crash is recorded on the
-            # attempt log so "repair converged" stays distinguishable from
-            # "repair never ran".
-            logger.warning("Finding-driven facts repair render failed; keeping graph")
+            # the loop reports SUCCESS. The diagnosis is copied onto the attempt
+            # record *before* the state is cleared -- clearing it outright left
+            # `repair_failed=True` with no stage or reason, so a provider
+            # timeout and an unparseable response looked identical.
+            logger.warning(
+                "Finding-driven facts repair render failed (%s: %s); keeping graph",
+                unit_state.failure_stage,
+                unit_state.failure_reason,
+            )
             unit_state.clear_failure()
             unit_state.status = Status.SUCCESS
             break
@@ -310,6 +330,10 @@ async def facts_loop(
     document_context = document_context.model_copy(
         update={"budget_tracker": unit_state.budget_tracker}
     )
+    # The stage the loop is currently in, so an unhandled exception is
+    # attributed to where it happened. Hardcoding the critique stage reported
+    # a render or context-resolution crash as a failed critique.
+    stage = FailureStage.GENERATE_GRAPH_UPDATE_FOR_FACTS
     try:
         if pre_resolved_context is not None:
             _apply_unit_ontology_context(unit_state, pre_resolved_context)
@@ -323,6 +347,7 @@ async def facts_loop(
         unit_state.max_visits_per_node = max_visits
 
         for render_attempt in range(1, max_visits + 1):
+            stage = FailureStage.GENERATE_GRAPH_UPDATE_FOR_FACTS
             unit_state.node_visits[WorkflowNode.TEXT_TO_FACTS] += 1
             _reset_node_evidence_context(unit_state, WorkflowNode.TEXT_TO_FACTS)
             supplemental = _supplemental_ontologies_for_unit(
@@ -387,7 +412,8 @@ async def facts_loop(
                     render_attempt=render_attempt,
                 )
 
-            for critic_attempt in range(1, max_visits + 1):
+            stage = FailureStage.FACTS_CRITIQUE
+            for critic_attempt in range(1, _resolve_critic_visits(unit_state) + 1):
                 unit_state.node_visits[WorkflowNode.CRITICISE_FACTS] += 1
                 _reset_node_evidence_context(unit_state, WorkflowNode.CRITICISE_FACTS)
                 unit_state.deterministic_findings = _collect_facts_findings(
@@ -450,7 +476,7 @@ async def facts_loop(
         return unit_state
     except Exception as exc:
         logger.exception("Unhandled exception in facts_loop")
-        unit_state.set_failure(FailureStage.FACTS_CRITIQUE, str(exc))
+        unit_state.set_failure(stage, str(exc))
         return unit_state
 
 
@@ -472,6 +498,9 @@ async def ontology_loop(
     document_context = document_context.model_copy(
         update={"budget_tracker": unit_state.budget_tracker}
     )
+    # See facts_loop: the stage an unhandled exception is attributed to tracks
+    # where the loop actually is, rather than always naming the critique.
+    stage = FailureStage.GENERATE_GRAPH_UPDATE_FOR_ONTOLOGY
     try:
         ctx = await resolve_unit_ontology_context(
             document_context, tools, unit_state.content_unit
@@ -489,6 +518,7 @@ async def ontology_loop(
         unit_state.max_visits_per_node = max_visits
 
         for render_attempt in range(1, max_visits + 1):
+            stage = FailureStage.GENERATE_GRAPH_UPDATE_FOR_ONTOLOGY
             unit_state.node_visits[WorkflowNode.TEXT_TO_ONTOLOGY] += 1
             _reset_node_evidence_context(unit_state, WorkflowNode.TEXT_TO_ONTOLOGY)
             supplemental = _supplemental_ontologies_for_unit(
@@ -541,7 +571,8 @@ async def ontology_loop(
                 )
                 return unit_state
 
-            for critic_attempt in range(1, max_visits + 1):
+            stage = FailureStage.ONTOLOGY_CRITIQUE
+            for critic_attempt in range(1, _resolve_critic_visits(unit_state) + 1):
                 unit_state.node_visits[WorkflowNode.CRITICISE_ONTOLOGY] += 1
                 _reset_node_evidence_context(
                     unit_state, WorkflowNode.CRITICISE_ONTOLOGY
@@ -593,5 +624,5 @@ async def ontology_loop(
         return unit_state
     except Exception as exc:
         logger.exception("Unhandled exception in ontology_loop")
-        unit_state.set_failure(FailureStage.ONTOLOGY_CRITIQUE, str(exc))
+        unit_state.set_failure(stage, str(exc))
         return unit_state

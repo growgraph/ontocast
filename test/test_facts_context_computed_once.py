@@ -69,7 +69,12 @@ def _tools() -> ToolBox:
     return cast(
         ToolBox,
         SimpleNamespace(
-            config=SimpleNamespace(server=SimpleNamespace(parallel_workers=4)),
+            config=SimpleNamespace(
+                server=SimpleNamespace(
+                    parallel_workers=4,
+                    max_critic_visits_per_node=None,
+                )
+            ),
         ),
     )
 

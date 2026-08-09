@@ -2,7 +2,7 @@
 
 ``GraphUpdate`` / ``TripleOp`` are the canonical LLM pipeline mutation abstraction
 (ordered insert/delete triple patches). ``SPARQLOperationModel`` is used by tooling
-(``tool/sparql.py``, ``graph_version_manager.py``) — a separate path.
+(``tool/sparql.py``) — a separate path.
 """
 
 import logging

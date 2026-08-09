@@ -131,6 +131,7 @@ PORT=8999
 BASE_RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
 MAX_VISITS=1                             # alias for max_visits_per_node
+#MAX_CRITIC_VISITS_PER_NODE=             # unset: critic shares the MAX_VISITS bound
 RENDER_MODE=ontology_and_facts           # ontology | facts | ontology_and_facts
 LLM_GRAPH_FORMAT=turtle                  # turtle | jsonld
 ONTOLOGY_CONTEXT_MODE=selected_single_ontology
@@ -161,6 +162,20 @@ ENABLE_ONTOLOGY_CONSOLIDATION=false
     `criticise_ontology`. The ontology loop has no repair stage, so there
     `MAX_VISITS=1` really is one call per unit. See
     [Validation](validation.md#how-many-llm-calls-a-facts-unit-really-costs).
+
+!!! note "What `MAX_VISITS=2`+ actually costs"
+
+    Less than the nested loops suggest. The critic loop is bounded by
+    `MAX_VISITS` as well, so its nominal worst case is that value *squared* —
+    but a critic that fails **without requesting external evidence** breaks out
+    of the loop immediately. With web grounding off (the default) the critic
+    therefore runs at most **once per render**, and only the last render is
+    skipped. The quadratic case needs `WEB_SEARCH_ENABLED=true` and a critic
+    that keeps asking for evidence.
+
+    `MAX_CRITIC_VISITS_PER_NODE` caps that path explicitly. Leave it unset to
+    keep the coupling to `MAX_VISITS`; set it to `1` for exactly one critique
+    per render.
 
 `MAX_CONCURRENT_PROCESSES` **queues** requests beyond the limit; they are not
 rejected.
@@ -426,7 +441,7 @@ Applies to both Qdrant and LanceDB:
 
 ```bash
 # auto (default): Qdrant if QDRANT_URI is set, LanceDB if enabled, otherwise
-# vector retrieval is disabled. Explicit: memory | qdrant | lancedb | none.
+# vector retrieval is disabled. Explicit: qdrant | lancedb | none.
 # VECTOR_STORE_BACKEND=auto
 VECTOR_STORE_TOP_K=20
 VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH=2

@@ -220,6 +220,3 @@ def format_facts_operational_guidelines(
             "Map the examples above to compact IRIs and JSON-LD literal objects.\n"
         )
     return guidelines
-
-
-facts_instruction_template = facts_instruction_shared

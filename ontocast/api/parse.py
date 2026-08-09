@@ -2,6 +2,8 @@
 
 import json
 import logging
+from enum import StrEnum
+from typing import TypeVar
 
 from ontocast.config.section_labels import normalise_user_section_label
 from ontocast.onto.enum import LLMGraphFormat, OntologyContextMode, RenderMode
@@ -26,22 +28,53 @@ class RequestParamError(ValueError):
         self.param = param
 
 
-def parse_render_mode_param(value, default: RenderMode) -> RenderMode:
+_EnumT = TypeVar("_EnumT", bound=StrEnum)
+
+
+def _parse_enum_param(
+    value: object,
+    default: _EnumT,
+    enum_cls: type[_EnumT],
+    param: str,
+) -> _EnumT:
+    """Parse one string-enum request parameter, or raise.
+
+    These three parameters used to warn and silently fall back to the default,
+    while every other parser in this module raised
+    :class:`RequestParamError` -> HTTP 400. That split meant a typo'd
+    ``render_mode`` quietly ran the *wrong pipeline* and returned 200, which is
+    a worse outcome than a rejected request. One contract now: unparseable
+    means 400.
+
+    Args:
+        value: Raw parameter value; ``None`` or blank selects the default.
+        default: Value to use when the parameter is absent.
+        enum_cls: The enum to parse into.
+        param: Parameter name, used in the error message.
+
+    Returns:
+        The parsed enum member.
+
+    Raises:
+        RequestParamError: The value was present but not a member.
+    """
     if value is None:
         return default
-    if isinstance(value, RenderMode):
+    if isinstance(value, enum_cls):
         return value
-    if isinstance(value, str):
-        normalized = value.lower().strip()
-        try:
-            return RenderMode(normalized)
-        except ValueError:
-            logger.warning(
-                "Invalid render_mode '%s', using default '%s'",
-                value,
-                default.value,
-            )
-    return default
+    normalized = str(value).lower().strip()
+    if not normalized:
+        return default
+    try:
+        return enum_cls(normalized)
+    except ValueError as exc:
+        allowed = ", ".join(member.value for member in enum_cls)
+        raise RequestParamError(param, f"{param} must be one of: {allowed}") from exc
+
+
+def parse_render_mode_param(value, default: RenderMode) -> RenderMode:
+    """Parse optional ``render_mode`` override from request params."""
+    return _parse_enum_param(value, default, RenderMode, "render_mode")
 
 
 def parse_llm_graph_format_param(
@@ -49,42 +82,17 @@ def parse_llm_graph_format_param(
     default: LLMGraphFormat,
 ) -> LLMGraphFormat:
     """Parse optional ``llm_graph_format`` override from request params."""
-    if value is None:
-        return default
-    if isinstance(value, LLMGraphFormat):
-        return value
-    if isinstance(value, str):
-        normalized = value.lower().strip()
-        try:
-            return LLMGraphFormat(normalized)
-        except ValueError:
-            logger.warning(
-                "Invalid llm_graph_format '%s', using default '%s'",
-                value,
-                default.value,
-            )
-    return default
+    return _parse_enum_param(value, default, LLMGraphFormat, "llm_graph_format")
 
 
 def parse_ontology_context_mode_param(
     value: str | OntologyContextMode | None,
     default: OntologyContextMode,
 ) -> OntologyContextMode:
-    if value is None:
-        return default
-    if isinstance(value, OntologyContextMode):
-        return value
-    if isinstance(value, str):
-        normalized = value.lower().strip()
-        try:
-            return OntologyContextMode(normalized)
-        except ValueError:
-            logger.warning(
-                "Invalid ontology_context_mode '%s', using default '%s'",
-                value,
-                default.value,
-            )
-    return default
+    """Parse optional ``ontology_context_mode`` override from request params."""
+    return _parse_enum_param(
+        value, default, OntologyContextMode, "ontology_context_mode"
+    )
 
 
 def resolve_ontology_context_mode(

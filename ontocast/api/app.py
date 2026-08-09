@@ -29,6 +29,7 @@ from ontocast.api.process_helpers import (
     validate_unit_pipeline_facts,
 )
 from ontocast.api.process_request import (
+    ParsedProcessRequest,
     build_agent_state_from_parsed,
     load_parsed_process_request,
 )
@@ -56,6 +57,7 @@ from ontocast.onto.retrieval_capabilities import (
     OntologyContextConfigError,
     validate_ontology_context_mode,
 )
+from ontocast.onto.state import AgentState
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.stategraph import create_agent_graph
 from ontocast.stategraph.helpers import build_ontology_delta_graph
@@ -143,6 +145,70 @@ def create_app(
         return tools.ensure_tenancy_registry().graph_for(
             scope, lambda: create_agent_graph(scoped, name="ontocast")
         )
+
+    async def prepare_extraction_request(
+        request: Request,
+        *,
+        log_label: str,
+        max_chunks: int | None,
+    ) -> tuple[ToolBox, AgentState, ParsedProcessRequest] | JSONResponse:
+        """Parse, scope and validate one extraction request.
+
+        ``/process`` and ``/process_unit`` share this entire preamble -- read
+        the body, bind the request's tenancy, check the ontology-context mode
+        against the scoped tools, build the state -- and differ only in
+        ``max_chunks``. It was written out twice, so a fix to one route's
+        tenancy or validation wiring silently missed the other.
+
+        Args:
+            request: The incoming request.
+            log_label: Label used in the body-parsing debug logs.
+            max_chunks: Chunk cap for the built state; ``1`` for the
+                single-unit route.
+
+        Returns:
+            The scoped ToolBox, the initial state, and the parsed request
+            (whose ``strip_provenance`` the response assembly still needs), or
+            a ``JSONResponse`` when parsing or validation rejected the request.
+        """
+        loaded = await load_parsed_process_request(
+            request, server_config, log_label=log_label
+        )
+        if isinstance(loaded, JSONResponse):
+            return loaded
+
+        # Use `scoped_tools` from here on: it is bound to this request's
+        # tenant/project partition, and may not be the startup ToolBox.
+        (
+            scoped_tools,
+            resolved_tenant,
+            resolved_project,
+        ) = await apply_request_tenancy(
+            request,
+            tools,
+            active_tenant=active_tenant,
+            active_project=active_project,
+            initialize_vector_store=(
+                loaded.ontology_context_mode_value
+                == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+            ),
+        )
+
+        try:
+            validate_ontology_context_mode(
+                loaded.ontology_context_mode_value, scoped_tools
+            )
+        except OntologyContextConfigError as e:
+            return ontology_context_config_error_response(e)
+
+        initial_state = build_agent_state_from_parsed(
+            loaded,
+            server_config=server_config,
+            resolved_tenant=resolved_tenant,
+            resolved_project=resolved_project,
+            max_chunks=max_chunks,
+        )
+        return scoped_tools, initial_state, loaded
 
     process_semaphore: asyncio.Semaphore | None = None
     if server_config.max_concurrent_processes is not None:
@@ -345,43 +411,12 @@ def create_app(
         if process_semaphore is not None:
             await process_semaphore.acquire()
         try:
-            loaded = await load_parsed_process_request(
-                request, server_config, log_label="process"
+            prepared = await prepare_extraction_request(
+                request, log_label="process", max_chunks=head_chunks
             )
-            if isinstance(loaded, JSONResponse):
-                return loaded
-
-            # Use `scoped_tools` from here on: it is bound to this request's
-            # tenant/project partition, and may not be the startup ToolBox.
-            (
-                scoped_tools,
-                resolved_tenant,
-                resolved_project,
-            ) = await apply_request_tenancy(
-                request,
-                tools,
-                active_tenant=active_tenant,
-                active_project=active_project,
-                initialize_vector_store=(
-                    loaded.ontology_context_mode_value
-                    == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
-                ),
-            )
-
-            try:
-                validate_ontology_context_mode(
-                    loaded.ontology_context_mode_value, scoped_tools
-                )
-            except OntologyContextConfigError as e:
-                return ontology_context_config_error_response(e)
-
-            initial_state = build_agent_state_from_parsed(
-                loaded,
-                server_config=server_config,
-                resolved_tenant=resolved_tenant,
-                resolved_project=resolved_project,
-                max_chunks=head_chunks,
-            )
+            if isinstance(prepared, JSONResponse):
+                return prepared
+            scoped_tools, initial_state, loaded = prepared
             request_recursion_limit = calculate_recursion_limit(
                 head_chunks,
                 server_config,
@@ -567,43 +602,12 @@ def create_app(
         if process_semaphore is not None:
             await process_semaphore.acquire()
         try:
-            loaded = await load_parsed_process_request(
-                request, server_config, log_label="process_unit"
+            prepared = await prepare_extraction_request(
+                request, log_label="process_unit", max_chunks=1
             )
-            if isinstance(loaded, JSONResponse):
-                return loaded
-
-            # Use `scoped_tools` from here on: it is bound to this request's
-            # tenant/project partition, and may not be the startup ToolBox.
-            (
-                scoped_tools,
-                resolved_tenant,
-                resolved_project,
-            ) = await apply_request_tenancy(
-                request,
-                tools,
-                active_tenant=active_tenant,
-                active_project=active_project,
-                initialize_vector_store=(
-                    loaded.ontology_context_mode_value
-                    == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
-                ),
-            )
-
-            try:
-                validate_ontology_context_mode(
-                    loaded.ontology_context_mode_value, scoped_tools
-                )
-            except OntologyContextConfigError as e:
-                return ontology_context_config_error_response(e)
-
-            initial_state = build_agent_state_from_parsed(
-                loaded,
-                server_config=server_config,
-                resolved_tenant=resolved_tenant,
-                resolved_project=resolved_project,
-                max_chunks=1,
-            )
+            if isinstance(prepared, JSONResponse):
+                return prepared
+            scoped_tools, initial_state, loaded = prepared
 
             try:
                 onto_result, facts_result = await run_unit_pipeline(

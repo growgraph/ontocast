@@ -53,11 +53,7 @@ Rules:
 - Cross-links to other listed ontologies via existing IRIs are fine; do not mint terms under foreign namespaces you do not own.
 """
 
-# Back-compat name used by older imports during migration.
-intro_instruction_update = intro_instruction_update_single
-
 prefix_instruction = """Use {domain_ontologies_clause} for entities/properties placed in the domain ontologies. DECLARE all prefixes in preamble! New terms MUST use only those listed domain prefixes."""
-prefix_instruction_fresh = """Define a new prefix for the current domain ontology. DECLARE the prefix in preamble!"""
 
 
 general_ontology_instruction = f"""

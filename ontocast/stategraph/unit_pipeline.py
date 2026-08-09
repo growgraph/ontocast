@@ -142,6 +142,7 @@ async def run_unit_pipeline(
             ontology_user_instruction=agent_state.ontology_user_instruction,
             budget_tracker=deepcopy(agent_state.budget_tracker),
             max_visits_per_node=max_visits,
+            max_critic_visits_per_node=(tools.config.server.max_critic_visits_per_node),
             current_domain=agent_state.current_domain,
             ontology_max_triples=tools.config.server.ontology_max_triples,
             llm_graph_format=agent_state.llm_graph_format,
@@ -174,6 +175,7 @@ async def run_unit_pipeline(
             facts_user_instruction=agent_state.facts_user_instruction,
             budget_tracker=deepcopy(agent_state.budget_tracker),
             max_visits_per_node=max_visits,
+            max_critic_visits_per_node=(tools.config.server.max_critic_visits_per_node),
             llm_graph_format=agent_state.llm_graph_format,
         )
         logger.info("run_unit_pipeline: starting facts loop")

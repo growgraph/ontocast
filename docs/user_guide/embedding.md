@@ -86,10 +86,11 @@ async with await ToolBox.acreate(config) as tools:
 # Fuseki's HTTP client and the Qdrant client are released here.
 ```
 
-`Config.in_memory()` pins the process-local backends so nothing external is
-required. Environment variables still populate every other setting; only the
-store selection is forced. For a real deployment build a `Config()` normally
-and point it at Fuseki and Qdrant.
+`Config.in_memory()` selects the in-memory **triple** store (a full pyoxigraph
+SPARQL engine) and leaves vector retrieval off, so nothing external is required.
+Environment variables still populate every other setting; only the store
+selection is forced. For a real deployment build a `Config()` normally and point
+it at Fuseki and Qdrant.
 
 ## Tools for any agent
 
@@ -136,9 +137,12 @@ made to fail on first call. An agent handed a tool that always errors will keep
 retrying it.
 
 That means the list you get depends on your install and configuration. On a bare
-`pip install "ontocast[openai]"` with `Config.in_memory()` you get five tools —
-enough for an ontology-editing agent, because the in-memory triple store is a
-full SPARQL engine rather than a degraded one.
+`pip install "ontocast[openai]"` with `Config.in_memory()` you get four —
+`ontocast_list_ontologies`, `ontocast_get_ontology`, `ontocast_sparql_select`
+and `ontocast_sparql_construct`. That is already enough for an ontology-editing
+agent, because the in-memory triple store is a full SPARQL engine rather than a
+degraded one. Adding `[documents]` brings in `ontocast_chunk_text` and
+`ontocast_extract`; adding a vector backend brings in the two retrieval tools.
 
 Ask why something is missing:
 
@@ -150,7 +154,7 @@ for name, reason in ontocast_tool_diagnostics(tools).items():
 ```
 
 ```text
-ontocast_search_ontology_terms: no vector store is configured (set VECTOR_STORE_BACKEND=memory)
+ontocast_search_ontology_terms: no vector store is configured (set QDRANT_URI or LANCEDB_ENABLED)
 ontocast_chunk_text: requires docling-core; install with pip install "ontocast[documents]"
 ```
 
@@ -186,26 +190,33 @@ look like a complete graph.
     async, and the rest are CPU-heavy enough that running them on your event
     loop would stall it.
 
-## Vector search without a service
+## Vector search is opt-in
 
-Term search and context retrieval need a vector store. The in-memory backend
-needs no external service:
+Term search and context retrieval need a vector store, and there isn't one by
+default. Without it, each unit is rendered against a **single working ontology**
+— `OntologyContextMode.SELECTED_SINGLE_ONTOLOGY`, which is the default. That is
+a complete extraction path, not a degraded one; vector retrieval exists to
+assemble context from *several* ontologies at once.
+
+Two backends are supported, each its own extra:
+
+| Backend | `VECTOR_STORE_BACKEND` | Service | Extra |
+|---|---|---|---|
+| LanceDB | `lancedb` (or `LANCEDB_ENABLED=true`) | none — embedded, on disk | `ontocast[lancedb]` |
+| Qdrant | `qdrant` (needs `QDRANT_URI`) | Qdrant server | `ontocast[qdrant]` |
+
+LanceDB is the one to reach for when you want retrieval without running a
+service:
 
 ```python
-config = Config.in_memory()  # already selects it
+config = Config.in_memory()  # in-memory triple store, no vector store
+config.tool_config.lancedb.enabled = True  # ... now with embedded retrieval
 config.tool_config.embedding.provider = "openai"  # avoid local model weights
 ```
 
-It keeps vectors in a numpy array and scores BM25 itself, so it needs neither
-`fastembed` nor an ONNX runtime. Exact search over a few thousand ontology atoms
-is faster than building an approximate index.
-
-State lives in the process: it is lost on exit and not shared between workers.
-Use Qdrant or LanceDB when the index must outlive the process.
-
-Set the backend explicitly with `VECTOR_STORE_BACKEND`: `memory`, `qdrant`,
-`lancedb`, `none`, or `auto` (the default, which infers from `QDRANT_URI` /
-`LANCEDB_ENABLED` and otherwise disables vector retrieval).
+`auto` (the default) infers the backend from `QDRANT_URI` / `LANCEDB_ENABLED`
+and resolves to `none` when neither is set. Both backends need the `sparse`
+extra for BM25.
 
 ## Extracting from text
 

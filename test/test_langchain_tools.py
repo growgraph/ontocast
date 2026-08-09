@@ -26,7 +26,6 @@ from ontocast.integrations.serialize import (
 from ontocast.onto.enum import VectorStoreBackend
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.llm import LLMTool
-from ontocast.tool.vector_store.in_memory import InMemoryVectorStoreManager
 from ontocast.toolbox import ToolBox
 
 pytestmark = pytest.mark.unit
@@ -111,7 +110,7 @@ def test_unknown_tool_name_is_rejected(toolbox: ToolBox) -> None:
         ontocast_tools(toolbox, include=["ontocast_nope"])
 
 
-def test_sparql_tools_present_for_in_memory_store(toolbox: ToolBox) -> None:
+def test_sparql_tools_present_for_in_memory_triple_store(toolbox: ToolBox) -> None:
     """The in-memory triple store is a full SPARQL engine, not a degraded one."""
     names = ontocast_tool_names(toolbox)
     assert "ontocast_sparql_select" in names
@@ -130,12 +129,16 @@ def test_vector_tools_gated_off_without_vector_store(tmp_path) -> None:
     assert "ontocast_retrieve_ontology_context" not in names
 
 
-def test_vector_tools_appear_with_in_memory_backend(tmp_path) -> None:
-    """The in-memory backend needs no external service, so the tools show up."""
+@pytest.mark.integration  # builds a real on-disk LanceDB table
+def test_vector_tools_appear_with_lancedb_backend(tmp_path) -> None:
+    """LanceDB is the embedded backend, so it exposes the tools without a server."""
     config = Config.in_memory(tool_config=ToolConfig(path_config=PathConfig()))
+    config.tool_config.lancedb.enabled = True
+    config.tool_config.lancedb.data_dir = tmp_path / "lancedb"
+    config.tool_config.vector_store.backend = VectorStoreBackend.LANCEDB
     tools = ToolBox(config, llm=STUB_LLM)
 
-    assert isinstance(tools.vector_store, InMemoryVectorStoreManager)
+    assert tools.vector_store is not None
     names = ontocast_tool_names(tools)
     assert "ontocast_search_ontology_terms" in names
     assert "ontocast_retrieve_ontology_context" in names

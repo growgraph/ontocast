@@ -616,6 +616,12 @@ class FactsLoopAttempt(BaseModel):
     n_deterministic_findings: int = 0
     n_mandatory_findings: int = 0
     repair_failed: bool = False
+    #: Why the repair render failed. The unit stays SUCCESS -- the pre-repair
+    #: graph is intact and usable -- but clearing the failure used to erase the
+    #: diagnosis with it, leaving ``repair_failed=True`` and no way to tell a
+    #: provider timeout from an unparseable response.
+    failure_stage: str | None = None
+    failure_reason: str | None = None
     triple_count: int = 0
 
 

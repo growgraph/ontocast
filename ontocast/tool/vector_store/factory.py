@@ -28,19 +28,14 @@ def create_vector_store_manager(
     :attr:`~ontocast.onto.enum.VectorStoreBackend.AUTO`, infers the backend from
     whichever connection setting is populated and otherwise resolves to
     :attr:`~ontocast.onto.enum.VectorStoreBackend.NONE`, returning ``None``.
-    It does **not** fall back to the in-memory store: vector retrieval is one of
-    three ontology-context modes and the other two are the defaults, so handing
-    every unconfigured deployment a vector store would change indexing behaviour
-    and embedding cost unasked. See :func:`_resolve_backend`; the in-memory
-    backend is opt-in via ``VECTOR_STORE_BACKEND=memory`` or
-    :meth:`Config.in_memory`.
+    A deployment that configures neither Qdrant nor LanceDB has **no** vector
+    retrieval: ontology context comes from a single working ontology, which is
+    the default :class:`~ontocast.onto.enum.OntologyContextMode`.
 
     Args:
         tool_config: The resolved tool configuration.
         embedding: Dense embedding provider.
-        sparse_embedding: BM25 sparse provider. Required by the Qdrant and
-            LanceDB backends; optional for the in-memory backend, which runs
-            dense-only when it is absent.
+        sparse_embedding: BM25 sparse provider, required by both backends.
 
     Returns:
         A manager for the selected backend, or ``None`` when the backend is
@@ -73,20 +68,11 @@ def create_vector_store_manager(
             sparse_embedding=sparse_embedding,
         )
 
-    if backend is VectorStoreBackend.LANCEDB:
-        from ontocast.tool.vector_store.lancedb import LanceDBVectorStoreManager
+    from ontocast.tool.vector_store.lancedb import LanceDBVectorStoreManager
 
-        return LanceDBVectorStoreManager(
-            store_config=tool_config.vector_store,
-            lancedb_config=tool_config.lancedb,
-            embedding=embedding,
-            sparse_embedding=sparse_embedding,
-        )
-
-    from ontocast.tool.vector_store.in_memory import InMemoryVectorStoreManager
-
-    return InMemoryVectorStoreManager(
+    return LanceDBVectorStoreManager(
         store_config=tool_config.vector_store,
+        lancedb_config=tool_config.lancedb,
         embedding=embedding,
         sparse_embedding=sparse_embedding,
     )
@@ -95,12 +81,12 @@ def create_vector_store_manager(
 def _resolve_backend(tool_config: ToolConfig) -> VectorStoreBackend:
     """Resolve ``AUTO`` against the populated connection settings.
 
-    ``AUTO`` falls back to ``NONE``, not ``MEMORY``. Vector retrieval is one of
-    three ontology-context modes and the other two are the defaults, so an
-    unconfigured deployment has never had a vector store; silently giving every
-    such deployment one would change indexing behaviour and embedding cost
-    without anyone asking. The in-memory backend is opt-in via
-    ``VECTOR_STORE_BACKEND=memory`` or :meth:`Config.in_memory`.
+    ``AUTO`` falls back to ``NONE``. Vector retrieval is one of three
+    ontology-context modes and the single-working-ontology mode is the default,
+    so an unconfigured deployment has never had a vector store; silently giving
+    every such deployment one would change indexing behaviour and embedding cost
+    without anyone asking. The two supported backends are Qdrant (server) and
+    LanceDB (embedded), each shipped as its own optional extra.
     """
     backend = tool_config.vector_store.backend
     if backend is not VectorStoreBackend.AUTO:

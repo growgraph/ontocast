@@ -14,7 +14,7 @@ from rdflib import Literal, URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.content_unit import ContentUnit
-from ontocast.onto.enum import Status
+from ontocast.onto.enum import FailureStage, Status
 from ontocast.onto.model import FactsUnitFindingKind
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitFactsState
@@ -137,7 +137,7 @@ async def test_repair_skipped_when_no_findings(monkeypatch) -> None:
 @pytest.mark.anyio
 async def test_failed_repair_render_keeps_graph_and_success(monkeypatch) -> None:
     async def fake_render(state, tools, supplemental_ontologies=None):
-        state.status = Status.FAILED
+        state.set_failure(FailureStage.GENERATE_GRAPH_UPDATE_FOR_FACTS, "provider 503")
         return state
 
     monkeypatch.setattr(atomic_module, "render_facts", fake_render)
@@ -150,6 +150,32 @@ async def test_failed_repair_render_keeps_graph_and_success(monkeypatch) -> None
 
     assert result.status == Status.SUCCESS
     assert len(result.content_unit.graph) == triples_before
+
+
+@pytest.mark.anyio
+async def test_failed_repair_preserves_the_diagnosis(monkeypatch) -> None:
+    """The unit stays SUCCESS, but *why* the repair failed must survive.
+
+    ``clear_failure()`` used to wipe stage and reason together with the status,
+    leaving ``repair_failed=True`` and no way to tell a provider outage from an
+    unparseable response.
+    """
+
+    async def fake_render(state, tools, supplemental_ontologies=None):
+        state.set_failure(FailureStage.GENERATE_GRAPH_UPDATE_FOR_FACTS, "provider 503")
+        return state
+
+    monkeypatch.setattr(atomic_module, "render_facts", fake_render)
+
+    result = await _run_finding_driven_repair(
+        _unit_state_with_violation(), _atomic_tools(), [], render_attempt=1
+    )
+
+    assert result.status == Status.SUCCESS
+    failed = [record for record in result.attempt_log if record.repair_failed]
+    assert failed, "a failed repair must leave an attempt record"
+    assert failed[-1].failure_reason == "provider 503"
+    assert failed[-1].failure_stage == str(FailureStage.GENERATE_GRAPH_UPDATE_FOR_FACTS)
 
 
 @pytest.mark.anyio

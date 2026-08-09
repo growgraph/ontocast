@@ -17,6 +17,24 @@ published.*
 
 ### Breaking
 
+- Removed in-memory vector store (`VECTOR_STORE_BACKEND=memory`,
+  `VectorStoreBackend.MEMORY`, `tool/vector_store/in_memory.py`). Retrieval
+  requires Qdrant or LanceDB; default path unchanged (`AUTO` → `NONE` when
+  neither is set). `Config.in_memory()` is triple-store only (pyoxigraph).
+- Dropped unread `AgentState` fields (UnitState shadows, never-read writers,
+  unused `graph_uri_override`); `graph_uri` is always `doc_namespace`. Removed
+  unused status/progress helpers; `set_failure` no longer takes `success_score`.
+  UnitState external-evidence mirrors removed — use `ExternalEvidenceCacheEntry`.
+- Removed dead modules: `onto/context.py`, `tool/graph_version_manager.py`,
+  `tool/graph_diff.py` (~1,222 lines).
+- `AtomicToolBox` takes `WebSearchConfig`; `EmbeddingBasedAggregator` takes
+  `AggregationConfig` (flat kwargs removed).
+- Removed `test-api` console script / `cli/test_api.py`; dropped `requests`
+  from the `server` extra.
+- Removed unwired symbols: `route_after_convert`,
+  `route_after_ontology_consolidation`, `WorkflowNode.AGGREGATE_FACTS` /
+  `PARALLEL_MAP_UNITS`, mock triple-store managers, `aggregate_anchor_metrics`,
+  stale prompt templates; refreshed `agent/__init__.py` exports.
 - **A provenance unit node is typed `schema:Text`, not `schema:text`.**
   `https://schema.org/text` is the *property* `text`; the class is
   `schema:Text`. Every provenance node OntoCast has ever emitted was typed with
@@ -116,6 +134,12 @@ published.*
 
 ### Added
 
+- `MAX_CRITIC_VISITS_PER_NODE` — optional cap for the inner critic loop;
+  unset keeps coupling to `MAX_VISITS_PER_NODE`.
+- `test_agent_graph_topology_is_pinned` — asserts full document-graph
+  node/edge topology (including conditional maps).
+- Shared `run_facts_gate` (`merge_repair` flag) and
+  `prepare_extraction_request` for `/process` and `/process_unit`.
 - **Section labels reach the RDF output.** A source unit's `section_label`,
   `section_label_source` and `section_label_confidence` reached the summarizer
   and `ontocast sections` and stopped there, so a finished run could not be
@@ -429,6 +453,15 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
 
 ### Fixed
 
+- Process params unified via `_PARAM_SPECS` across query / JSON / multipart
+  (`render_mode`, `ontology_context_mode`, `*_user_instruction`,
+  `strip_provenance`); previously some were query-only or body-ignored.
+- `render_mode` / `llm_graph_format` / `ontology_context_mode` parsers raise
+  `RequestParamError` → HTTP 400 instead of silent default fallback.
+- Finding-driven repair copies stage/reason onto `FactsLoopAttempt` before
+  `clear_failure()`.
+- `facts_loop` / `ontology_loop` report the failing stage, not always
+  `*_CRITIQUE`.
 - **Deterministic repairs no longer orphan provenance.** The 0.6.0 sweep covered
   `SHACL_PRUNE` only. `SHACL_RETYPE` and `SHACL_CODE_RESOLVED` also remove a
   triple — replacing it with a repaired one — so their
@@ -1379,7 +1412,6 @@ BASE_RECURSION_LIMIT=1000
 
 See [docs/user_guide/](docs/user_guide/) for full guides.
 
-[Unreleased]: https://github.com/growgraph/ontocast/compare/v0.6.0...HEAD
 [0.6.0]: https://github.com/growgraph/ontocast/compare/v0.4.3...v0.6.0
 [0.4.3]: https://github.com/growgraph/ontocast/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/growgraph/ontocast/compare/v0.4.1...v0.4.2

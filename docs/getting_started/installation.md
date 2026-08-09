@@ -44,9 +44,10 @@ for you.
 | `plot` | `plot-graph` workflow diagrams | Builds `pygraphviz` from source; needs system graphviz headers |
 | `all` | Everything above **except** `plot` | `plot` is excluded because its source build fails without system headers |
 
-Vector retrieval needs no extra at all if you use the in-memory backend
-(`VECTOR_STORE_BACKEND=memory`) with an API-based embedding provider
-(`EMBEDDING_PROVIDER=openai` or `=ollama`). See
+Vector retrieval is **off** in a base install: ontology context comes from a
+single working ontology per unit, which is the default. Turning it on means
+picking one of the two backends — `lancedb` (embedded, no server) or `qdrant`
+(server) — and installing its extra. See
 [Embedding OntoCast](../user_guide/embedding.md).
 
 ```bash

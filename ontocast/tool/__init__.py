@@ -22,7 +22,6 @@ from .triple_manager import (
 )
 from .vector_store import (
     EmbeddingTool,
-    InMemoryVectorStoreManager,
     OntologyPatchRetriever,
     VectorStoreManager,
 )
@@ -39,7 +38,6 @@ __all__ = [
     "AtomicToolBox",
     "SearchHit",
     "EmbeddingTool",
-    "InMemoryVectorStoreManager",
     "QdrantVectorStoreManager",
     "LanceDBVectorStoreManager",
     "VectorStoreManager",

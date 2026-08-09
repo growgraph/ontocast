@@ -146,7 +146,6 @@ server = [
   "ontocast[documents]",
   "python-dotenv>=1.0.0,<2",
   "python-multipart>=0.0.22,<1",
-  "requests>=2.32.3,<3",
   "rich>=14.0.0,<16",
   "starlette>=1.0,<2",
   "suthing>=0.4.1,<1",
@@ -172,7 +171,6 @@ match-graphs = "ontocast.cli._entry:match_graphs"
 ontocast = "ontocast.cli._entry:ontocast"
 pdfs-to-markdown = "ontocast.cli._entry:pdfs_to_markdown"
 plot-graph = "ontocast.cli._entry:plot_graph"
-test-api = "ontocast.cli._entry:test_api"
 
 [project.urls]
 Changelog = "https://github.com/growgraph/ontocast/blob/main/CHANGELOG.md"

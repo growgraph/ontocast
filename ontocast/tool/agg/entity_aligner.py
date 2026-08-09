@@ -8,6 +8,7 @@ from itertools import combinations
 import numpy as np
 from rdflib import URIRef
 
+from ontocast.config import AggregationConfig
 from ontocast.onto.iri_policy import split_namespace_local
 
 from .aggregate import EmbeddingBasedAggregator
@@ -40,8 +41,10 @@ class EntityAligner:
             similarity_threshold=similarity_threshold,
         )
         self._compat = EmbeddingBasedAggregator(
-            embedding_model=embedding_model,
-            similarity_threshold=similarity_threshold,
+            AggregationConfig(
+                embedding_model=embedding_model,
+                similarity_threshold=similarity_threshold,
+            ),
             candidate_similarity_threshold=similarity_threshold,
         )
 

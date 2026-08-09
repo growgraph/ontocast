@@ -6,6 +6,7 @@ from typing import cast
 import pytest
 from rdflib import URIRef
 
+from ontocast.config import WebSearchConfig
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.model import (
     FactsCritiqueReport,
@@ -68,9 +69,11 @@ def _tools_with_web_search(
 ) -> AtomicToolBox:
     return AtomicToolBox(
         llm_provider=_FakeLLMProvider(),
-        web_search_enabled=web_search_enabled,
-        web_search_for_ontology_render=web_search_for_ontology_render,
-        web_search_for_facts_render=web_search_for_facts_render,
+        web_search_config=WebSearchConfig(
+            enabled=web_search_enabled,
+            ontology_render_enabled=web_search_for_ontology_render,
+            facts_render_enabled=web_search_for_facts_render,
+        ),
     )
 
 

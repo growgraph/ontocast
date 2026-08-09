@@ -667,6 +667,24 @@ class ServerConfig(BaseSettings):
         ),
         validation_alias=AliasChoices("max_visits_per_node", "max_visits"),
     )
+    max_critic_visits_per_node: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Maximum critic attempts per render attempt. The inner critic loop "
+            "is otherwise bounded by MAX_VISITS_PER_NODE -- the same constant "
+            "as the outer render loop -- so its worst case is that value "
+            "*squared* in billed critic calls. That worst case is only "
+            "reachable when the critic keeps requesting external evidence "
+            "(WEB_SEARCH_ENABLED=true): a critic that fails without a search "
+            "request breaks out of the loop, so with grounding off the critic "
+            "runs at most once per render regardless. None keeps that coupling; "
+            "set it to 1 to cap the evidence-driven retry path explicitly. "
+            "Left unset by default because lowering it changes call counts for "
+            "grounded runs, and that default belongs to a measurement rather "
+            "than to an argument."
+        ),
+    )
     render_mode: RenderMode = Field(
         default=RenderMode.ONTOLOGY_AND_FACTS,
         description="Rendering mode: ontology, facts, or ontology_and_facts.",
@@ -1366,7 +1384,7 @@ class VectorStoreConfig(BaseSettings):
         description=(
             "Which vector store implementation to use: 'auto' (infer from "
             "QDRANT_URI / LANCEDB_ENABLED, disabling vector retrieval when "
-            "neither is configured), 'memory', 'qdrant', 'lancedb', or 'none' "
+            "neither is configured), 'qdrant', 'lancedb', or 'none' "
             "to disable vector retrieval entirely."
         ),
     )
@@ -2163,14 +2181,21 @@ class Config(BaseSettings):
     def in_memory(cls, **overrides: Any) -> "Config":
         """Build a configuration that needs no external services.
 
-        Selects the in-memory triple store (a full pyoxigraph SPARQL engine)
-        and the in-memory vector store, so the whole pipeline runs inside the
-        calling process. This is the recommended starting point for embedding
-        OntoCast in another application:
+        Selects the in-memory **triple** store (a full pyoxigraph SPARQL
+        engine) and disables vector retrieval, so the whole pipeline runs
+        inside the calling process with no server and no embedding index. This
+        is the recommended starting point for embedding OntoCast in another
+        application:
 
         ```python
         tools = await ToolBox.acreate(Config.in_memory())
         ```
+
+        Ontology context then comes from a single working ontology per unit --
+        the default :class:`~ontocast.onto.enum.OntologyContextMode`. Vector
+        retrieval needs one of the two supported backends, Qdrant
+        (``QDRANT_URI``) or LanceDB (``LANCEDB_ENABLED``), each of which is its
+        own optional extra.
 
         Environment variables still populate any section not named in
         ``overrides``; only the store selection is forced.
@@ -2185,7 +2210,7 @@ class Config(BaseSettings):
         config.tool_config.fuseki.uri = None
         config.tool_config.qdrant.uri = None
         config.tool_config.lancedb.enabled = False
-        config.tool_config.vector_store.backend = VectorStoreBackend.MEMORY
+        config.tool_config.vector_store.backend = VectorStoreBackend.NONE
         return config
 
     def for_tenancy(self, tenant: str, project: str) -> "Config":

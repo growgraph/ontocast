@@ -104,18 +104,7 @@ class ToolBoxRuntime:
             chunk_config=tool_config.chunk_config, cache=self.shared_cache
         )
         self.aggregator: EmbeddingBasedAggregator = EmbeddingBasedAggregator(
-            embedding_model=tool_config.aggregation.embedding_model,
-            similarity_threshold=tool_config.aggregation.similarity_threshold,
-            candidate_similarity_threshold=(
-                tool_config.aggregation.candidate_similarity_threshold
-            ),
-            lexical_label_jaccard=tool_config.aggregation.lexical_label_jaccard,
-            lexical_sequence_ratio=tool_config.aggregation.lexical_sequence_ratio,
-            lexical_token_jaccard=tool_config.aggregation.lexical_token_jaccard,
-            functional_min_empirical_support=(
-                tool_config.aggregation.functional_min_empirical_support
-            ),
-            sibling_guard_scope=str(tool_config.aggregation.sibling_guard_scope),
+            tool_config.aggregation
         )
         self.embedding_tool: EmbeddingTool = EmbeddingTool.create(tool_config.embedding)
         # Built lazily and kept here rather than on each ToolBox: the BM25 model

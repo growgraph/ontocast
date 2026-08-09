@@ -237,7 +237,7 @@ def _unavailable_reason(name: str, tools: "ToolBox") -> str | None:
             "use the in-memory or Fuseki triple store"
         )
     if name == "ontocast_search_ontology_terms" and tools.vector_store is None:
-        return "no vector store is configured (set VECTOR_STORE_BACKEND=memory)"
+        return "no vector store is configured (set QDRANT_URI or LANCEDB_ENABLED)"
     if name == "ontocast_retrieve_ontology_context" and tools.patch_retriever is None:
         return "no ontology patch retriever is configured (needs a vector store)"
     if name in (

@@ -2,23 +2,19 @@ from __future__ import annotations
 
 import os
 import re
-from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ConfigDict, Field, field_validator
 from rdflib import URIRef
 
-from ontocast.onto.constants import DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI
+from ontocast.onto.constants import DEFAULT_DOMAIN
 from ontocast.onto.content_unit import ContentUnit
-from ontocast.onto.context import ContextManager
 from ontocast.onto.enum import (
     FailureStage,
     LLMGraphFormat,
-    OntologyAssemblyMode,
     OntologyContextMode,
     RenderMode,
     Status,
-    WorkflowNode,
 )
 from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.model import (
@@ -26,7 +22,6 @@ from ontocast.onto.model import (
     FactsLoopAttempt,
     FactsValidationFinding,
     GraphRepairRecord,
-    Suggestions,
     UnitFailure,
 )
 from ontocast.onto.ontology import Ontology
@@ -396,13 +391,10 @@ class AgentState(BasePydanticModel):
         current_domain: IRI used for forming document namespace.
         doc_hid: An almost unique hash/id for the parent document.
         raw_input: Single raw input payload as {filename: bytes}.
-        ontology_addendum: Additional ontology content.
         failure_stage: Stage where failure occurred.
         failure_reason: Reason for failure.
-        success_score: Score indicating success level.
         status: Current workflow status.
-        node_visits: Number of visits per node.
-        max_visits: Maximum number of visits allowed per node.
+        max_visits: Maximum render attempts per unit loop.
         max_chunks: Maximum number of source content units to split and process.
     """
 
@@ -433,10 +425,6 @@ class AgentState(BasePydanticModel):
         default_factory=list,
         description="Pending content units to process.",
     )
-    ontology_patch_sources: list[str] = Field(
-        default_factory=list,
-        description="Ontology IRIs that contributed to a retrieved multi-source patch context.",
-    )
     ontology_artifacts: list[Ontology] = Field(
         default_factory=list,
         description="Final per-anchor ontology artifacts produced for this document.",
@@ -453,25 +441,9 @@ class AgentState(BasePydanticModel):
         default_factory=dict,
         description="Metrics emitted by ontology reduce stage.",
     )
-    ontology_reduce_provenance: RDFGraph = Field(
-        default_factory=RDFGraph,
-        description="Optional provenance graph emitted by ontology reduce stage.",
-    )
-    candidate_anchor_iris: list[str] = Field(
-        default_factory=list,
-        description="Candidate ontology IRIs discovered during multi-anchor preselection.",
-    )
-    unit_anchor_assignment: dict[int, str] = Field(
-        default_factory=dict,
-        description="Assigned anchor ontology IRI per content unit index.",
-    )
     unit_patch_sources: dict[int, list[str]] = Field(
         default_factory=dict,
         description="Retrieved ontology source IRIs per content unit index.",
-    )
-    unit_context_mode_used: dict[int, OntologyAssemblyMode] = Field(
-        default_factory=dict,
-        description="Per-unit ontology assembly mode (ensemble / vote majority / primary).",
     )
     retrieval_metrics: dict[str, int | float | str | dict[str, Any]] = Field(
         default_factory=dict,
@@ -526,8 +498,6 @@ class AgentState(BasePydanticModel):
         description="Project id when request selected tenancy via query/CLI.",
     )
 
-    graph_uri_override: str | None = Field(default=None)
-
     source_url: str | None = Field(
         description="Source URL from JSON input file (for provenance tracking)",
         default=None,
@@ -541,24 +511,9 @@ class AgentState(BasePydanticModel):
         ),
     )
 
-    ontology_updates: list[GraphUpdate] = Field(
-        default_factory=list,
-        description="A list of graph update that improve the current ontology",
-    )
-
     ontology_updates_applied: list[GraphUpdate] = Field(
         default_factory=list,
         description="A list of graph update that improve the current ontology",
-    )
-
-    facts_updates: list[GraphUpdate] = Field(
-        default_factory=list,
-        description="A list of graph update that improve the current graph of facts (pending)",
-    )
-
-    facts_updates_applied: list[GraphUpdate] = Field(
-        default_factory=list,
-        description="A list of graph update that improve the current graph of facts (applied)",
     )
 
     facts_units: list[ContentUnit] = Field(
@@ -640,18 +595,6 @@ class AgentState(BasePydanticModel):
         description="Provenance/reification triples stripped from normalized ontology.",
     )
 
-    ontology_addendum: Ontology = Field(
-        default_factory=lambda: Ontology(
-            ontology_id=None,
-            title=None,
-            description=None,
-            graph=RDFGraph(),
-            iri=ONTOLOGY_NULL_IRI,
-        ),
-        description="Ontology object that contain the semantic graph "
-        "as well as the description, name, short name, version, "
-        "and IRI of the ontology",
-    )
     failure_stage: FailureStage | None = None
     failure_reason: str | None = None
 
@@ -660,17 +603,14 @@ class AgentState(BasePydanticModel):
         default_factory=list,
     )
 
-    success_score: float = 0.0
     status: Status = Status.SUCCESS
-    statuses: dict[WorkflowNode, Status] = Field(
-        default_factory=dict, description="Status of each node"
-    )
-    node_visits: defaultdict[WorkflowNode, int] = Field(
-        default_factory=lambda: defaultdict(int),
-        description="Number of visits per node",
-    )
     max_visits: int = Field(
-        default=3, description="Maximum number of visits allowed per node"
+        default=1,
+        description=(
+            "Maximum render attempts per unit loop. Mirrors "
+            "``ServerConfig.max_visits_per_node``, which every entry path "
+            "supplies; at 1 the critic never runs."
+        ),
     )
     max_chunks: int | None = None
     target_sections: list[str] | None = Field(
@@ -728,30 +668,11 @@ class AgentState(BasePydanticModel):
             "fixed_single_ontology (catalog ontology_id via ontology_context_fixed_ontology_id)."
         ),
     )
-    ontology_max_triples: int | None = Field(
-        default=50000,
-        description="Maximum number of triples allowed in ontology graph. "
-        "Updates that would exceed this limit are skipped with a warning. "
-        "Set to None for unlimited.",
-    )
-    context_manager: ContextManager = Field(
-        default_factory=ContextManager,
-        description="Context manager for passing information between agents",
-    )
-    suggestions: Suggestions = Field(
-        default_factory=Suggestions,
-        description="Structured critique feedback for the next render/critic pass",
-    )
-
     # Budget Tracking
     budget_tracker: BudgetTracker = Field(
         default_factory=BudgetTracker,
         description="Budget statistics tracker (LLM usage and generated triples)",
     )
-
-    def get_node_status(self, node: WorkflowNode) -> Status:
-        """Get the status of a workflow node, returning NOT_VISITED if not set."""
-        return self.statuses.get(node, Status.NOT_VISITED)
 
     @property
     def needs_section_prepare(self) -> bool:
@@ -769,7 +690,7 @@ class AgentState(BasePydanticModel):
 
     @property
     def use_summarization(self) -> bool:
-        """Whether the summarize_chunks node should run."""
+        """Whether per-unit summaries should be produced in the fan-out."""
         return self.summarize_sections is not None
 
     @property
@@ -788,10 +709,6 @@ class AgentState(BasePydanticModel):
             RenderMode.ONTOLOGY_AND_FACTS,
         )
 
-    def set_node_status(self, node: WorkflowNode, status: Status) -> None:
-        """Set the status of a workflow node."""
-        self.statuses[node] = status
-
     def get_content_unit_progress_info(self) -> tuple[int, int]:
         """Get current content unit number and total content units."""
         total_content_units = len(self.content_units)
@@ -804,22 +721,6 @@ class AgentState(BasePydanticModel):
         if total == 0:
             return "no content units"
         return f"content unit {current}/{total}"
-
-    def get_chunk_progress_info(self) -> tuple[int, int]:
-        """Backward-compatible wrapper for content unit progress.
-
-        Returns:
-            tuple[int, int]: (current_chunk_number, total_chunks)
-        """
-        return self.get_content_unit_progress_info()
-
-    def get_chunk_progress_string(self) -> str:
-        """Backward-compatible wrapper for content unit progress.
-
-        Returns:
-            str: Formatted string like "chunk 3/10"
-        """
-        return self.get_content_unit_progress_string()
 
     @classmethod
     def render_updated_graph(
@@ -923,32 +824,6 @@ class AgentState(BasePydanticModel):
                 parts.append(f"{prefix_block}\n{body}" if prefix_block else body)
         return parts or [stripped]
 
-    def generate_ontology_updates_markdown(self) -> str:
-        """Generate a markdown string representing the chain of ontology updates.
-
-        Returns:
-            Markdown-formatted string showing all pending ontology updates.
-            Returns empty string if no updates are pending.
-        """
-        if not self.ontology_updates:
-            return ""
-
-        markdown_parts = []
-        for i, graph_update in enumerate(self.ontology_updates, 1):
-            diff_summary = graph_update.generate_diff_summary()
-            if diff_summary:
-                markdown_parts.append(f"## Update {i}")
-                markdown_parts.append(diff_summary)
-
-            markdown_parts.append("")
-
-            # Add separator between updates (except for the last one)
-            if i < len(self.ontology_updates):
-                markdown_parts.append("---")
-                markdown_parts.append("")
-
-        return "\n".join(markdown_parts)
-
     def set_docling_doc(self, doc: "DoclingDocument") -> None:
         """Set the parsed document and generate document hash.
 
@@ -970,24 +845,21 @@ class AgentState(BasePydanticModel):
             return docling_document.model_validate(value)
         raise TypeError(f"Expected DoclingDocument or dict, got {type(value).__name__}")
 
-    def set_failure(self, stage: FailureStage, reason: str, success_score: float = 0.0):
+    def set_failure(self, stage: FailureStage, reason: str) -> None:
         """Set failure state with stage and reason.
 
         Args:
             stage: The stage where the failure occurred.
             reason: The reason for the failure.
-            success_score: The success score at failure (default: 0.0).
         """
         self.failure_stage = stage
         self.failure_reason = reason
-        self.success_score = success_score
         self.status = Status.FAILED
 
     def clear_failure(self):
         """Clear failure state and set status to success."""
         self.failure_stage = None
         self.failure_reason = None
-        self.success_score = 0.0
         self.status = Status.SUCCESS
 
     @property
@@ -1010,8 +882,6 @@ class AgentState(BasePydanticModel):
 
     @property
     def graph_uri(self):
-        if self.graph_uri_override is not None:
-            return self.graph_uri_override
         return self.doc_namespace
 
     @property

@@ -26,8 +26,6 @@ from ontocast.tool import (
 )
 from ontocast.tool.agg.entity_aligner import EntityAligner
 from ontocast.tool.cache import Cacher
-from ontocast.tool.graph_diff import DiffTool
-from ontocast.tool.graph_version_manager import GraphVersionManager
 from ontocast.tool.llm import LLMTool
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.sparql import SPARQLTool
@@ -195,12 +193,10 @@ class ToolBox:
         # Set by attach_registry() when this ToolBox fronts a multi-tenant host.
         self._registry: "ToolBoxRegistry | None" = None
 
-        # SPARQL, version management, and diff tools
+        # Graph algorithms over graphs it is handed; it does not fetch.
         self.sparql_tool: SPARQLTool = SPARQLTool(
             triple_store_manager=self.triple_store_manager
         )
-        self.version_manager: GraphVersionManager = GraphVersionManager()
-        self.diff_tool: DiffTool = DiffTool()
 
         self.vector_store: VectorStoreManager | None = None
         self.patch_retriever: OntologyPatchRetriever | None = None
@@ -208,10 +204,10 @@ class ToolBox:
         self.vector_store_last_error: Exception | None = None
 
         # The factory owns backend selection, including resolving AUTO and
-        # returning None when the backend is explicitly disabled. Only the
-        # external backends need a BM25 tool; the in-memory store scores BM25
-        # itself rather than pulling fastembed.
-        needs_sparse = tool_config.qdrant.uri or tool_config.lancedb.enabled
+        # returning None when the backend is explicitly disabled. Both
+        # supported backends need the BM25 tool, so the only case that skips it
+        # is having no vector store at all.
+        needs_sparse = bool(tool_config.qdrant.uri or tool_config.lancedb.enabled)
         vector_store = create_vector_store_manager(
             tool_config,
             embedding=self.embedding_tool,
@@ -376,9 +372,9 @@ class ToolBox:
         """Return the configured vector store or raise a directive error."""
         if self.vector_store is None:
             raise RuntimeError(
-                "No vector store is configured. Set VECTOR_STORE_BACKEND=memory "
-                "for the dependency-free in-memory store, or configure "
-                "QDRANT_URI / LANCEDB_ENABLED."
+                "No vector store is configured. Set QDRANT_URI (Qdrant server) "
+                "or LANCEDB_ENABLED=true (embedded LanceDB); each needs its "
+                "matching extra, ontocast[qdrant] or ontocast[lancedb]."
             )
         return self.vector_store
 
@@ -386,8 +382,8 @@ class ToolBox:
         """Return the ontology patch retriever or raise a directive error."""
         if self.patch_retriever is None:
             raise RuntimeError(
-                "Ontology patch retrieval needs a vector store. Set "
-                "VECTOR_STORE_BACKEND=memory for the dependency-free backend."
+                "Ontology patch retrieval needs a vector store. Set QDRANT_URI "
+                "or LANCEDB_ENABLED=true."
             )
         return self.patch_retriever
 

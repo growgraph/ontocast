@@ -76,8 +76,6 @@ async def criticise_ontology(
 
     user_instruction = state.ontology_user_instruction
     external_evidence = state.external_evidence_text
-    if external_evidence:
-        state.mark_external_evidence_used(WorkflowNode.CRITICISE_ONTOLOGY)
 
     prompt = PromptTemplate(
         template=template_prompt,

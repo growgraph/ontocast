@@ -16,7 +16,7 @@ from ontocast.config import FactsValidationConfig
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.model import FactsValidationFinding, FactsValidationFindingKind
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.stategraph.node_factories import _vetoes_from_findings
+from ontocast.stategraph.facts_gate import vetoes_from_findings
 from ontocast.tool.facts_invariants import (
     apply_shacl_repairs,
     collect_shacl_shapes,
@@ -51,7 +51,7 @@ def test_vetoes_from_findings_uses_iri_values_not_only_subject() -> None:
     )
     clusters = {CD + "merged_endpoint": [CD + "lower", CD + "upper"]}
 
-    assert _vetoes_from_findings([finding], clusters) == {
+    assert vetoes_from_findings([finding], clusters) == {
         frozenset((URIRef(CD + "lower"), URIRef(CD + "upper")))
     }
 
@@ -66,7 +66,7 @@ def test_vetoes_from_findings_ignores_literal_values() -> None:
     )
     clusters = {CD + "merged": [CD + "a", CD + "b"]}
 
-    assert _vetoes_from_findings([finding], clusters) == {
+    assert vetoes_from_findings([finding], clusters) == {
         frozenset((URIRef(CD + "a"), URIRef(CD + "b")))
     }
 
@@ -313,7 +313,7 @@ def test_shacl_findings_never_veto_a_merge() -> None:
     )
     clusters = {CD + "merged": [CD + "a", CD + "b"]}
 
-    assert _vetoes_from_findings([finding], clusters) == set()
+    assert vetoes_from_findings([finding], clusters) == set()
 
 
 # --- LLM-free SHACL repair ---------------------------------------------------

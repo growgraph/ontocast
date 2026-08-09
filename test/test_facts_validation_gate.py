@@ -20,8 +20,8 @@ from ontocast.onto.enum import RetrievalMetric
 from ontocast.onto.model import FactsValidationFinding, FactsValidationFindingKind
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
+from ontocast.stategraph.facts_gate import vetoes_from_findings
 from ontocast.stategraph.node_factories import (
-    _vetoes_from_findings,
     make_merge_facts_node,
     make_validate_facts_node,
 )
@@ -269,7 +269,7 @@ def test_vetoes_from_findings_builds_full_cluster_pairs() -> None:
         CD + "merged": [CD + "a", CD + "b", CD + "c"],
         CD + "other": [CD + "d", CD + "e"],
     }
-    vetoes = _vetoes_from_findings([finding], clusters)
+    vetoes = vetoes_from_findings([finding], clusters)
     assert vetoes == {
         frozenset((URIRef(CD + "a"), URIRef(CD + "b"))),
         frozenset((URIRef(CD + "a"), URIRef(CD + "c"))),

@@ -11,11 +11,9 @@ from rdflib.namespace import OWL, RDF
 
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.tenancy import TENANCY_SEP
 from ontocast.onto.util import derive_ontology_id
 from ontocast.tool.triple_manager.core import (
     TripleStoreManager,
-    TripleStoreManagerWithAuth,
 )
 
 logger = logging.getLogger(__name__)
@@ -102,69 +100,3 @@ class _InMemoryGraphStoreMixin:
 
 class MockTripleStoreManager(_InMemoryGraphStoreMixin, TripleStoreManager):
     """Basic in-memory mock triple store manager."""
-
-
-class MockFusekiTripleStoreManager(
-    _InMemoryGraphStoreMixin, TripleStoreManagerWithAuth
-):
-    """Mock Fuseki triple store manager with tenancy support."""
-
-    dataset: str | None = None
-    ontologies_dataset: str = "ontologies"
-    _tenant: str = "ontocast"
-    _project: str = "test"
-
-    def __init__(
-        self,
-        uri=None,
-        auth=None,
-        dataset=None,
-        ontologies_dataset=None,
-        clean=False,
-        **kwargs,
-    ):
-        super().__init__(uri=uri, auth=auth, **kwargs)
-        self.dataset = dataset or "test"
-        self.ontologies_dataset = ontologies_dataset or "ontologies"
-        if clean:
-            self.clear()
-
-    def supports_tenancy_partition(self) -> bool:
-        return True
-
-    async def update_tenancy(
-        self,
-        tenant: str,
-        project: str,
-        *,
-        sep: str = TENANCY_SEP,
-    ) -> None:
-        _ = sep
-        self._tenant = tenant.strip()
-        self._project = project.strip()
-        self.dataset = f"{self._tenant}--{self._project}--facts"
-        self.ontologies_dataset = f"{self._tenant}--{self._project}--ontologies"
-
-    async def clean_tenancy(self, tenant: str, project: str) -> None:
-        _ = tenant, project
-        self.clear()
-
-    async def drop_named_graph(
-        self, graph_uri: str, *, use_ontologies_dataset: bool = True
-    ) -> None:
-        _ = use_ontologies_dataset
-        self.graphs.pop(graph_uri, None)
-
-    async def drop_all_ontology_graphs_for_iri(self, ontology_iri: str) -> None:
-        prefix = f"{ontology_iri}#"
-        for graph_uri in list(self.graphs):
-            if graph_uri == ontology_iri or graph_uri.startswith(prefix):
-                self.graphs.pop(graph_uri, None)
-        self.ontologies = [o for o in self.ontologies if o.iri != ontology_iri]
-
-
-class MockInMemoryTripleStoreManager(MockFusekiTripleStoreManager):
-    """Alias mock for the in-memory pyoxigraph backend."""
-
-    def __init__(self, *, clean: bool = False, **kwargs):
-        super().__init__(clean=clean, **kwargs)

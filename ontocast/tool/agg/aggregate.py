@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from rdflib import BNode, Literal, URIRef
 from rdflib.namespace import DCTERMS, FOAF, OWL, RDF, RDFS, XSD
 
+from ontocast.config import AggregationConfig
 from ontocast.onto.constants import (
     DEFAULT_IRI,
     PROV,
@@ -534,56 +535,52 @@ class EmbeddingBasedAggregator:
 
     def __init__(
         self,
-        embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2",
-        similarity_threshold: float = 0.80,
-        candidate_similarity_threshold: float = 0.70,
+        config: AggregationConfig | None = None,
+        *,
         add_sameas_links: bool = True,
         base_iri: str = DEFAULT_IRI,
-        lexical_label_jaccard: float = 0.5,
-        lexical_sequence_ratio: float = 0.90,
-        lexical_token_jaccard: float = 0.75,
-        functional_min_empirical_support: int = 2,
-        sibling_guard_scope: str = "subject",
+        candidate_similarity_threshold: float | None = None,
     ):
         """Initialise the embedding-based aggregator.
 
+        Every tunable lives on :class:`AggregationConfig`, so ``settings.py``
+        stays the single source of their defaults rather than restating them in
+        this signature and again at the call site.
+
         Args:
-            embedding_model: Name of sentence transformer model.
-            similarity_threshold: Cosine similarity threshold for clustering (0-1).
-            candidate_similarity_threshold: Lower cosine threshold used to
-                generate permissive merge candidates before symbolic validation.
-            add_sameas_links: Whether to add owl:sameAs for merged entities.
-            base_iri: Base IRI for fact entity URIs (default: DEFAULT_IRI).
-                Entities under this namespace are facts; everything else is
-                treated as an ontology entity and left unchanged.
-            lexical_label_jaccard: Minimum label token-set Jaccard for the
-                fuzzy lexical-alias tier.
-            lexical_sequence_ratio: Minimum SequenceMatcher ratio on normal
-                forms for the fuzzy lexical-alias tier.
-            lexical_token_jaccard: Minimum normal-form token Jaccard for the
-                fuzzy lexical-alias tier (>= 2 tokens on both sides).
-            functional_min_empirical_support: Minimum distinct subjects
-                observed before a predicate counts as empirically
-                single-valued for the functional-object merge guard.
-            sibling_guard_scope: ``"subject"`` forbids merging any two
-                objects of one subject; ``"predicate"`` restricts the
-                prohibition to objects sharing the same predicate.
+            config: Aggregation tunables. Defaults to :class:`AggregationConfig`,
+                i.e. the environment-resolved settings.
+            add_sameas_links: Whether to add ``owl:sameAs`` for merged entities.
+                Not config-driven: callers choose it per use, and the entity
+                aligner wants different behaviour from the pipeline.
+            base_iri: Base IRI for fact entity URIs. Entities under this
+                namespace are facts; everything else is treated as an ontology
+                entity and left unchanged.
+            candidate_similarity_threshold: Overrides the configured permissive
+                candidate threshold. The entity aligner pins it to its own
+                similarity threshold rather than the pipeline's.
         """
+        cfg = config or AggregationConfig()
+
         self.base_iri = base_iri
-        self.candidate_similarity_threshold = candidate_similarity_threshold
-        self.lexical_label_jaccard = lexical_label_jaccard
-        self.lexical_sequence_ratio = lexical_sequence_ratio
-        self.lexical_token_jaccard = lexical_token_jaccard
-        self.functional_min_empirical_support = functional_min_empirical_support
-        self.sibling_guard_scope = sibling_guard_scope
+        self.candidate_similarity_threshold = (
+            cfg.candidate_similarity_threshold
+            if candidate_similarity_threshold is None
+            else candidate_similarity_threshold
+        )
+        self.lexical_label_jaccard = cfg.lexical_label_jaccard
+        self.lexical_sequence_ratio = cfg.lexical_sequence_ratio
+        self.lexical_token_jaccard = cfg.lexical_token_jaccard
+        self.functional_min_empirical_support = cfg.functional_min_empirical_support
+        self.sibling_guard_scope = str(cfg.sibling_guard_scope)
 
         # Pipeline components (EntityClusterer imports sklearn/ST lazily)
         from .clustering import EntityClusterer
 
         self.normalizer = EntityNormalizer(facts_iri=self.base_iri)
         self.clusterer = EntityClusterer(
-            embedding_model=embedding_model,
-            similarity_threshold=similarity_threshold,
+            embedding_model=cfg.embedding_model,
+            similarity_threshold=cfg.similarity_threshold,
         )
         self.selector = ClusterRepresentativeSelector()
         self.uri_builder = URIBuilder(base_iri=self.base_iri)

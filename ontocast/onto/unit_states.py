@@ -39,8 +39,23 @@ def _render_updated_graph(
 
 
 class UnitState(BasePydanticModel):
-    """Common per-unit workflow state."""
+    """Common per-unit workflow state.
 
+    ``content_unit`` is typed to the :class:`SourceUnit` base here and narrowed
+    to :class:`ContentUnit` by :class:`UnitFactsState`, which needs the mutable
+    graph. Declaring it once keeps the progress string and the context-assembly
+    fields below from being written twice.
+    """
+
+    content_unit: SourceUnit = Field(description="Unit under processing")
+    assembly_anchor_iri: str = Field(
+        default="",
+        description="Primary writable IRI from context assembly (metrics / logging).",
+    )
+    assembly_mode_used: OntologyAssemblyMode = Field(
+        default=OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM,
+        description="How ontology_snapshot was assembled for this unit.",
+    )
     ontology_snapshot: OntologySnapshot = Field(
         default_factory=OntologySnapshot.empty,
         description="Immutable ontology snapshot (prompt view, no catalog id).",
@@ -56,6 +71,9 @@ class UnitState(BasePydanticModel):
     suggestions: Suggestions = Field(default_factory=Suggestions)
     budget_tracker: BudgetTracker = Field(default_factory=BudgetTracker)
     max_visits_per_node: int = Field(default=1, ge=1)
+    #: Critic attempts allowed per render attempt. None couples it to
+    #: ``max_visits_per_node``, which makes the worst case quadratic.
+    max_critic_visits_per_node: int | None = Field(default=None, ge=1)
     llm_graph_format: LLMGraphFormat = Field(
         default=LLMGraphFormat.TURTLE,
         description=(
@@ -75,10 +93,6 @@ class UnitState(BasePydanticModel):
     )
     external_evidence_hits: list[ExternalEvidenceHit] = Field(default_factory=list)
     external_evidence_text: str = Field(default="")
-    external_evidence_source_count: int = Field(default=0, ge=0)
-    external_evidence_domains: list[str] = Field(default_factory=list)
-    external_evidence_planned_at_node: WorkflowNode | None = Field(default=None)
-    external_evidence_used_by_nodes: list[WorkflowNode] = Field(default_factory=list)
     external_evidence_requests: dict[WorkflowNode, ExternalEvidenceRequest] = Field(
         default_factory=dict
     )
@@ -87,8 +101,8 @@ class UnitState(BasePydanticModel):
     )
 
     def get_content_unit_progress_string(self) -> str:
-        """Progress string for logging (single unit context)."""
-        return "content unit"
+        """Progress string for logging with content unit index."""
+        return f"content unit {self.content_unit.index + 1}"
 
     def set_node_status(self, node: WorkflowNode, status: Status) -> None:
         """Set workflow node status (for logging)."""
@@ -105,16 +119,6 @@ class UnitState(BasePydanticModel):
         self.failure_stage = None
         self.failure_reason = None
 
-    def clear_external_evidence(self) -> None:
-        """Reset evidence plan, retrieved hits, and rendered evidence block."""
-        self.external_evidence_plan = ExternalEvidencePlan()
-        self.external_evidence_hits = []
-        self.external_evidence_text = ""
-        self.external_evidence_source_count = 0
-        self.external_evidence_domains = []
-        self.external_evidence_planned_at_node = None
-        self.external_evidence_cache = {}
-
     def get_external_evidence_request(
         self, node: WorkflowNode
     ) -> ExternalEvidenceRequest:
@@ -126,10 +130,6 @@ class UnitState(BasePydanticModel):
     ) -> None:
         """Store node-scoped search request."""
         self.external_evidence_requests[node] = request
-
-    def clear_external_evidence_request(self, node: WorkflowNode) -> None:
-        """Clear node-scoped search request."""
-        self.external_evidence_requests.pop(node, None)
 
     def set_external_evidence_cache_entry(
         self, node: WorkflowNode, entry: ExternalEvidenceCacheEntry
@@ -149,14 +149,6 @@ class UnitState(BasePydanticModel):
         self.external_evidence_plan = entry.plan
         self.external_evidence_hits = entry.hits
         self.external_evidence_text = entry.text
-        self.external_evidence_source_count = entry.source_count
-        self.external_evidence_domains = entry.domains
-        self.external_evidence_planned_at_node = node
-
-    def mark_external_evidence_used(self, node: WorkflowNode) -> None:
-        """Record that a workflow node consumed prepared external evidence."""
-        if node not in self.external_evidence_used_by_nodes:
-            self.external_evidence_used_by_nodes.append(node)
 
 
 class UnitFactsState(UnitState):
@@ -188,18 +180,6 @@ class UnitFactsState(UnitState):
         default_factory=list,
         description="Per-attempt telemetry (render/critic/repair) for this unit.",
     )
-    assembly_anchor_iri: str = Field(
-        default="",
-        description="Primary writable IRI from context assembly (metrics / logging).",
-    )
-    assembly_mode_used: OntologyAssemblyMode = Field(
-        default=OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM,
-        description="How ontology_snapshot was assembled for this unit.",
-    )
-
-    def get_content_unit_progress_string(self) -> str:
-        """Progress string for logging with content unit index."""
-        return f"content unit {self.content_unit.index + 1}"
 
     def update_facts(self) -> None:
         """Apply facts_updates to content_unit.graph and clear the list."""
@@ -215,15 +195,6 @@ class UnitFactsState(UnitState):
 class UnitOntologyState(UnitState):
     """Independent per-unit state for ontology improvement loop."""
 
-    content_unit: SourceUnit = Field(description="Unit under processing")
-    assembly_anchor_iri: str = Field(
-        default="",
-        description="Primary writable IRI from resolve_unit_ontology_context prelude.",
-    )
-    assembly_mode_used: OntologyAssemblyMode = Field(
-        default=OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM,
-        description="Ontology assembly mode from the context prelude.",
-    )
     ontology_user_instruction: str = Field(default="")
     working_graph: RDFGraph = Field(
         default_factory=RDFGraph,
@@ -237,10 +208,6 @@ class UnitOntologyState(UnitState):
     ontology_updates_applied: list[GraphUpdate] = Field(default_factory=list)
     current_domain: str = Field(default=DEFAULT_DOMAIN)
     ontology_max_triples: int | None = Field(default=None)
-
-    def get_content_unit_progress_string(self) -> str:
-        """Progress string for logging with content unit index."""
-        return f"content unit {self.content_unit.index + 1}"
 
     def model_post_init(self, __context) -> None:
         """Initialize mutable working graph from immutable snapshot."""
