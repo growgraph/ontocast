@@ -6,11 +6,13 @@ OntoCast exposes a FastAPI server (CLI entry point: `ontocast`). Default port: *
 
 ### `GET /health`
 
-Returns service health. Use for load balancers and readiness probes.
+Returns service health. This is a **liveness** signal, not a readiness one: it
+does not reach the LLM provider, the triple store, or the vector store.
 
 ### `GET /info`
 
-Returns version, configuration summary, and active backend information.
+Returns service name, version, description, capabilities, supported input and
+output types, LLM-cache status, and the concurrent-process limit.
 
 ---
 
@@ -41,6 +43,8 @@ Runs the full document pipeline: convert → chunk → ontology map/reduce → f
 | `ontology_selection_user_instruction` | Guide catalog ontology selection |
 | `facts_user_instruction` | Guide facts extraction |
 | `target_sections` | Comma-separated or JSON list; section prepare + keep only listed sections |
+| `exclude_sections` | Comma-separated or JSON list; section prepare + drop listed sections |
+| `max_chunks` | Cap the number of content units processed for this request |
 | `summarize_sections` | Section prepare + summarization; `*` or empty = all chunks |
 | `summary_max_sentences` | Max sentences per summary when summarization runs (default `5`) |
 | `section_schema_id` | Section label schema (`academic`, `financial`, `legal`, …) |
@@ -84,6 +88,9 @@ curl -X POST "http://localhost:8999/process?tenant=acme&project=reports" \
 | `facts_repairs` | Deterministic machine rewrites per unit index — lets you tell machine-altered triples from what the model asserted |
 | `failed_units` | Units that produced no output, with phase, stage and reason. Empty on a clean run |
 | `improvement_suggestions` | Advisory notes from the structural check and consistency critic. Nothing in the pipeline acts on them |
+| `facts_conformance` | Validation summary for the served graph: whether SHACL ran and it conforms, counts by finding kind / constraint component / shape, repairs applied — see [Validation](validation.md) |
+| `facts_validation_findings` | Residual findings behind the summary, after every repair stage |
+| `facts_gate_repairs` | LLM-free repairs the gate applied to the merged graph (retype, code resolution, prune) |
 
 A run in which *no* unit produced output returns **422**, not a 200 with empty
 facts.
@@ -94,7 +101,7 @@ facts.
 
 Runs the ontology and/or facts loop for a **single content unit** without the full document graph. Useful for debugging prompts and unit-level behavior.
 
-Accepts the same parameters as `/process` (including `strip_provenance`, user instructions, and ontology context settings).
+Accepts the same parameters as `/process` (including `strip_provenance`, user instructions, and ontology context settings). The post-aggregation validation gate runs here too — the response carries `facts_conformance`, `facts_validation_findings`, and `facts_gate_repairs`, and the served graph includes the LLM-free SHACL repairs. Only the un-merge repair is skipped: it re-aggregates retained units against each other, which has no meaning for a single unit.
 
 ```bash
 curl -X POST http://localhost:8999/process_unit \

@@ -733,3 +733,115 @@ def test_inspect_sections_rejects_a_json_payload_with_no_text(tmp_path) -> None:
         _load_document(
             path, cast(ConverterTool, SimpleNamespace(supported_extensions=set()))
         )
+
+
+# --- /process_unit runs the validation gate ----------------------------------
+
+
+def test_process_unit_route_runs_the_validation_gate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The route serves the gate-repaired graph and reports its conformance.
+
+    Previously only the CLI ``--use-unit-pipeline`` path ran the
+    post-aggregation gate; ``/process_unit`` shipped unvalidated facts and no
+    ``facts_conformance``/``facts_gate_repairs`` metadata.
+    """
+    from rdflib import Literal
+    from rdflib.namespace import XSD
+
+    from ontocast.config import FactsValidationConfig
+    from ontocast.onto.constants import DEFAULT_IRI
+    from ontocast.onto.content_unit import OutputType
+    from ontocast.onto.enum import Status
+
+    q = "https://x.org/schema#"
+    (tmp_path / "shapes.ttl").write_text(
+        f"""
+        @prefix sh: <http://www.w3.org/ns/shacl#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix q: <{q}> .
+
+        q:ValueShape a sh:NodeShape ;
+            sh:targetClass q:QuantityValue ;
+            sh:property q:p_numeric .
+
+        # Named, not blank: the retype repair reads sh:datatype off the
+        # reported sh:sourceShape, which is only kept when it is an IRI.
+        q:p_numeric sh:path q:numericValue ;
+            sh:datatype xsd:decimal ;
+            sh:minCount 1 .
+        """,
+        encoding="utf-8",
+    )
+
+    node = URIRef(f"{DEFAULT_IRI}/v1")
+    facts_graph = RDFGraph()
+    facts_graph.add((node, RDF.type, URIRef(q + "QuantityValue")))
+    facts_graph.add((node, URIRef(q + "numericValue"), Literal("230")))
+
+    facts_result = SimpleNamespace(
+        status=Status.SUCCESS,
+        content_unit=ContentUnit(
+            text="unit",
+            index=0,
+            doc_iri=URIRef("https://x.org/doc/1"),
+            graph=facts_graph,
+            type=OutputType.FACTS,
+        ),
+        ontology_snapshot=SimpleNamespace(graph=RDFGraph()),
+    )
+
+    async def fake_run_unit_pipeline(_state, _tools):
+        return None, facts_result
+
+    class _Aggregator:
+        def postprocess_facts_units(self, units, ontology_graph, **kwargs):
+            graph = RDFGraph()
+            graph += units[0].graph
+            return AggregationResult(graph=graph)
+
+    monkeypatch.setattr(app_module, "run_unit_pipeline", fake_run_unit_pipeline)
+    monkeypatch.setattr(
+        app_module, "create_agent_graph", lambda _tools, **_kwargs: SimpleNamespace()
+    )
+    tools = cast(
+        ToolBox,
+        SimpleNamespace(
+            aggregator=_Aggregator(),
+            config=SimpleNamespace(
+                get_tool_config=lambda: SimpleNamespace(
+                    facts_validation=FactsValidationConfig.model_construct(
+                        shapes_dir=str(tmp_path)
+                    )
+                )
+            ),
+        ),
+    )
+    app = create_app(
+        tools=tools,
+        server_config=ServerConfig(),
+        active_tenant="tenant-a",
+        active_project="project-a",
+    )
+
+    response = TestClient(app).post(
+        # Pin the context mode: the ambient .env may select vector search,
+        # which this ToolBox stub deliberately lacks.
+        "/process_unit?ontology_context_mode=selected_single_ontology",
+        json={"text": "230 something"},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    metadata = payload["metadata"]
+    assert metadata["facts_conformance"]["shacl_evaluated"] is True
+    assert metadata["facts_conformance"]["conforms"] is True
+    assert [record["kind"] for record in metadata["facts_gate_repairs"]] == [
+        "shacl_retype"
+    ]
+    # The served Turtle is the repaired graph, not the raw aggregation.
+    assert (
+        str(XSD.decimal) in payload["data"]["facts"]
+        or "xsd:decimal" in (payload["data"]["facts"])
+    )

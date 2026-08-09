@@ -146,7 +146,7 @@ Provenance triples (`prov:`, reification, chunk metadata) are kept in `ontology_
 
 ### 5. Per-Unit Facts Loop
 
-When facts rendering is enabled, each unit runs a **facts loop** (render → critic, with optional web evidence), then **merge facts** applies cross-chunk entity disambiguation and aggregation, and **validate facts** checks post-merge invariants (functional violations, suspect multi-values, degenerate coreference, optional SHACL). Error findings on merged subjects trigger a deterministic un-merge: the offending cluster's pairs are vetoed and the retained facts units are re-aggregated (`FACTS_MERGE_REPAIR_PASSES`). Residual findings land in `facts_validation_findings` and the retrieval metrics.
+When facts rendering is enabled, each unit runs a **facts loop** (render → critic, with optional web evidence), then **merge facts** applies cross-chunk entity disambiguation and aggregation, and **validate facts** checks post-merge invariants (functional violations, suspect multi-values, degenerate coreference, optional SHACL). Merge-signature error findings (functional violation, suspect multi-value, degenerate coreference — never SHACL) on merged subjects trigger a deterministic un-merge: the offending cluster's pairs are vetoed and the retained facts units are re-aggregated (`FACTS_MERGE_REPAIR_PASSES`). Residual findings land in `facts_validation_findings` and the retrieval metrics.
 
 Chunks detected as bibliography/reference lists are routed by `CHUNK_BIBLIOGRAPHY_MODE`: by default they are dropped before extraction (`skip`); `citations_only` yields citation metadata only (`schema:ScholarlyArticle` + `schema:citation`), never domain facts mined from citation titles.
 

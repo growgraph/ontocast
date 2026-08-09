@@ -399,11 +399,11 @@ async def persist_unit_pipeline_outputs(
             document_metadata=_effective_document_metadata(state),
             doc_namespace=state.doc_namespace,
         ).graph
-        _validate_unit_pipeline_facts(state, ontology_graph, tools)
+        validate_unit_pipeline_facts(state, ontology_graph, tools)
     await asyncio.to_thread(serialize_agent_state, state, tools)
 
 
-def _validate_unit_pipeline_facts(
+def validate_unit_pipeline_facts(
     state: AgentState,
     ontology_graph: RDFGraph,
     tools: ToolBox,
@@ -411,10 +411,13 @@ def _validate_unit_pipeline_facts(
     """Run the post-aggregation invariant gate for the single-unit path.
 
     The document graph reaches this gate at VALIDATE_FACTS; the unit pipeline
-    does not run the graph, so without this call ``/process_unit`` would ship
-    facts with no functional-violation, coreference, or SHACL check at all.
-    Detection only: the un-merge repair re-aggregates *retained units against
-    each other*, which has no meaning for a single unit.
+    does not run the graph, so both single-unit callers — the CLI
+    ``--use-unit-pipeline`` batch path and the ``/process_unit`` route — invoke
+    it here after aggregation. Without it they would ship facts with no
+    functional-violation, coreference, or SHACL check at all. The LLM-free
+    SHACL autofix applies; the un-merge repair does not — it re-aggregates
+    *retained units against each other*, which has no meaning for a single
+    unit.
     """
     facts_validation = tools.config.get_tool_config().facts_validation
     shapes_graph = collect_shacl_shapes(ontology_graph, facts_validation.shapes_dir)
@@ -453,11 +456,30 @@ def _validate_unit_pipeline_facts(
             inference=facts_validation.shacl_inference,
             advanced=facts_validation.shacl_advanced,
             max_triples=facts_validation.shacl_max_triples,
+            initial_violations=(
+                report.shacl_violations if report.shacl_evaluated else None
+            ),
         )
         if repair_result.records:
             state.aggregated_facts = repair_result.graph
             state.facts_gate_repairs = repair_result.records
             report = run_validation()
+        if repair_result.ran:
+            # Same metric set as the graph-pipeline gate, so batch dumps are
+            # comparable across the two paths.
+            state.retrieval_metrics["facts_shacl_violations_before"] = (
+                repair_result.violations_before
+            )
+            state.retrieval_metrics["facts_shacl_violations_after"] = (
+                repair_result.violations_after
+            )
+            state.retrieval_metrics["facts_shacl_repairs"] = len(repair_result.records)
+            state.retrieval_metrics["facts_shacl_autofix_passes"] = (
+                repair_result.passes_applied
+            )
+            state.retrieval_metrics["facts_shacl_autofix_reverted"] = (
+                repair_result.reverted
+            )
 
     state.facts_validation_findings = report.findings
     state.facts_conformance = summarize_conformance(

@@ -97,8 +97,8 @@ class ProcessResultMetadata(BaseModel):
         description=(
             "Validation summary for the returned facts graph: whether SHACL "
             "ran and the graph conforms, counts by finding kind and by SHACL "
-            "constraint component, and the LLM-free repairs applied. Empty "
-            "when the validation gate did not run (e.g. /process_unit)."
+            "constraint component, and the LLM-free repairs applied. Set by "
+            "/process and /process_unit alike; empty when the gate did not run."
         ),
     )
     facts_validation_findings: list[dict] = Field(

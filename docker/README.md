@@ -69,8 +69,8 @@ TS_USERNAME="admin"
 cd docker/fuseki
 docker compose --env-file .env up fuseki -d
 
-# Stop (use container name from .env, e.g. ontocast.fuseki)
-docker compose stop ontocast.fuseki
+# Stop (compose takes the service name, not the container name)
+docker compose stop fuseki
 ```
 
 **3. Access:**

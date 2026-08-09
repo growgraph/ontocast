@@ -5,7 +5,7 @@ authors:
   given-names: Alexander
   orcid: 0000-0002-5649-0913
 cff-version: 1.2.0
-date-released: '2026-08-05'
+date-released: '2026-08-09'
 doi: 10.5281/zenodo.17796467
 license: Apache-2.0
 license-url: https://github.com/growgraph/ontocast/blob/main/LICENSE
@@ -13,4 +13,4 @@ message: If you use this software, please cite it using the metadata from this f
 repository-code: https://github.com/growgraph/ontocast
 title: ontocast
 type: software
-version: 0.5.0
+version: 0.6.0

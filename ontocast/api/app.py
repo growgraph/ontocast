@@ -26,6 +26,7 @@ from ontocast.api.process_helpers import (
     get_supported_input_extensions,
     select_unit_facts_ontology_graph,
     turtle_from_graph,
+    validate_unit_pipeline_facts,
 )
 from ontocast.api.process_request import (
     build_agent_state_from_parsed,
@@ -550,10 +551,12 @@ def create_app(
     async def process_unit(request: Request):
         """Process the whole input as one content unit.
 
-        Skips chunking, section tagging, summarization, normalization, and the
-        post-aggregation validation gate, so ``max_chunks`` and the
-        section-selection parameters have no effect here. Use ``/process`` for
-        anything larger than a single passage.
+        Skips chunking, section tagging, summarization, and normalization, so
+        ``max_chunks`` and the section-selection parameters have no effect
+        here. The post-aggregation validation gate (invariant findings, SHACL,
+        LLM-free autofix) does run, minus the un-merge repair, which is
+        meaningless for a single unit. Use ``/process`` for anything larger
+        than a single passage.
         """
         if process_semaphore is not None:
             await process_semaphore.acquire()
@@ -667,8 +670,18 @@ def create_app(
                     document_metadata=document_metadata,
                     doc_namespace=initial_state.doc_namespace,
                 )
+                # Same gate the document pipeline reaches at VALIDATE_FACTS:
+                # invariant findings, SHACL, and the LLM-free autofix, so the
+                # served graph and conformance report match the CLI unit path.
+                initial_state.aggregated_facts = postprocessed_facts.graph
+                await asyncio.to_thread(
+                    validate_unit_pipeline_facts,
+                    initial_state,
+                    ontology_graph,
+                    scoped_tools,
+                )
                 facts_ttl = turtle_from_graph(
-                    postprocessed_facts.graph,
+                    initial_state.aggregated_facts,
                     strip_provenance=loaded.strip_provenance,
                 )
 
@@ -690,6 +703,15 @@ def create_app(
                     chunks_remaining=0,
                     budget=budget_tracker_data,
                     retrieval_metrics=initial_state.retrieval_metrics,
+                    facts_conformance=dict(initial_state.facts_conformance or {}),
+                    facts_validation_findings=[
+                        finding.model_dump(mode="json")
+                        for finding in initial_state.facts_validation_findings
+                    ],
+                    facts_gate_repairs=[
+                        record.model_dump(mode="json")
+                        for record in initial_state.facts_gate_repairs
+                    ],
                 ),
             )
 

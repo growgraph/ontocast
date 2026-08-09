@@ -254,7 +254,8 @@ class LLMConfig(BaseSettings):
         ge=1,
         # Documented as LLM_MAX_INFLIGHT, but the LLM_ env_prefix would otherwise
         # make the real variable LLM_LLM_MAX_INFLIGHT -- the documented name was a
-        # silent no-op. "max_inflight" resolves to LLM_MAX_INFLIGHT under the prefix.
+        # silent no-op. validation_alias bypasses env_prefix, so the aliases bind
+        # the literal variables LLM_MAX_INFLIGHT and (unprefixed) MAX_INFLIGHT.
         validation_alias=AliasChoices("llm_max_inflight", "max_inflight"),
         description=(
             "Maximum concurrent provider LLM requests shared across all documents. "
@@ -712,8 +713,8 @@ class FusekiConfig(BaseSettings):
     ontologies_dataset: str | None = Field(
         default=None,
         description=(
-            "Ontologies dataset; if unset, derived from the same default tenant/project "
-            "as dataset (not read from the environment)."
+            "Ontologies dataset (FUSEKI_ONTOLOGIES_DATASET); if unset, derived "
+            "from the same default tenant/project as dataset."
         ),
     )
 
@@ -1301,9 +1302,9 @@ class VectorStoreConfig(BaseSettings):
         default=VectorStoreBackend.AUTO,
         description=(
             "Which vector store implementation to use: 'auto' (infer from "
-            "QDRANT_URI / LANCEDB_ENABLED, falling back to the in-memory "
-            "store), 'memory', 'qdrant', 'lancedb', or 'none' to disable "
-            "vector retrieval entirely."
+            "QDRANT_URI / LANCEDB_ENABLED, disabling vector retrieval when "
+            "neither is configured), 'memory', 'qdrant', 'lancedb', or 'none' "
+            "to disable vector retrieval entirely."
         ),
     )
     top_k: int = Field(

@@ -29,6 +29,9 @@ def main(input_path, output_path, prefix):
         files = sorted(crawl_directories(input_path, suffixes=(".pdf",), prefix=prefix))
     except ValueError as exc:
         raise click.BadParameter(str(exc), param_hint="--input-path") from exc
+    if not files:
+        # Exiting 0 on an empty crawl is indistinguishable from success (#53).
+        raise click.ClickException(f"No matching .pdf files under {input_path}.")
 
     for f in files:
         logger.debug(f"processing {f}")

@@ -26,7 +26,8 @@ Config
 │   ├── patch_retrieval: PatchRetrievalConfig
 │   ├── vector_store: VectorStoreConfig
 │   ├── qdrant: QdrantConfig
-│   └── lancedb: LanceDBConfig
+│   ├── lancedb: LanceDBConfig
+│   └── facts_validation: FactsValidationConfig
 ├── server: ServerConfig
 ├── logging_level: str | None
 └── clean: bool
@@ -109,6 +110,7 @@ ONTOLOGY_MAX_TRIPLES=50000               # empty/unset for unlimited
 PARALLEL_WORKERS=16                      # see Performance before raising this
 ENABLE_ONTOLOGY_CONSOLIDATION=false
 # MAX_CONCURRENT_PROCESSES=4      # optional cap on simultaneous /process handlers
+# MAX_TENANCY_SCOPES=16           # resident per-tenant/project ToolBoxes (LRU)
 ```
 
 !!! warning "The server has no authentication"
@@ -297,11 +299,13 @@ No environment variables. Pass on `POST /process`, multipart form, JSON body, or
 | Parameter | CLI flag | Description |
 |-----------|----------|-------------|
 | `target_sections` | `--target-sections` | Comma-separated or JSON list; enables tagging and keeps only these sections |
+| `exclude_sections` | `--exclude-sections` | Comma-separated or JSON list; enables tagging and drops these sections |
 | `summarize_sections` | `--summarize-sections` | Enables tagging + summarization; `*` or empty = all chunks |
 | `summary_max_sentences` | `--summary-max-sentences` | Max sentences per summary (default `5`) |
 | `max_visits` | `--max-visits` | Render/critic retry budget per loop (default from `MAX_VISITS`) |
 | `section_schema_id` | `--section-schema-id` | Section label schema (`academic`, `financial`, `legal`, …) |
 | `document_type_hint` | `--document-type-hint` | Free-text hint to resolve schema when `section_schema_id` is omitted |
+| `document_metadata` | `--document-metadata` | JSON object of caller-asserted document identity (DOI/ISBN, ids, title, typed entities) — see [Concepts](concepts.md#document-level-identity-metadata) |
 
 ```bash
 ontocast process --input-path ./papers/ \
@@ -369,6 +373,9 @@ QDRANT_TIMEOUT_SECONDS=30                # whole seconds; the client accepts not
 Applies to both Qdrant and LanceDB:
 
 ```bash
+# auto (default): Qdrant if QDRANT_URI is set, LanceDB if enabled, otherwise
+# vector retrieval is disabled. Explicit: memory | qdrant | lancedb | none.
+# VECTOR_STORE_BACKEND=auto
 VECTOR_STORE_TOP_K=20
 VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH=2
 VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=1200
@@ -465,8 +472,9 @@ Enable when `QDRANT_URI` is unset. Requires the optional extra: `uv sync --extra
 ```bash
 LANCEDB_ENABLED=true
 # LANCEDB_DATA_DIR=~/.lancedb_data
-# LANCEDB_ONTOLOGY_TABLE=ontologies
-# LANCEDB_FACTS_TABLE=facts
+# Table names derive from tenant/project when unset (ontocast--test--ontologies / --facts)
+# LANCEDB_ONTOLOGY_TABLE=
+# LANCEDB_FACTS_TABLE=
 ```
 
 `QDRANT_URI` and `LANCEDB_ENABLED=true` cannot both be set.
@@ -479,18 +487,19 @@ Rarely changed; defaults suit both backends.
 # Qdrant collection geometry — must match the embedding model
 # QDRANT_VECTOR_SIZE=384
 # QDRANT_DISTANCE=Cosine
-# QDRANT_UPSERT_BATCH_SIZE=64
+# QDRANT_UPSERT_BATCH_SIZE=256
 
 # Partition (table/collection) names within the configured backend
-# VECTOR_STORE_ONTOLOGY_TABLE=ontologies
-# VECTOR_STORE_FACTS_TABLE=facts
+# (derived from tenant/project when unset: ontocast--test--ontologies / --facts)
+# VECTOR_STORE_ONTOLOGY_TABLE=
+# VECTOR_STORE_FACTS_TABLE=
 
 # Sparse (BM25) model for the lexical lane
 # EMBEDDING_BM25_MODEL_NAME=Qdrant/bm25
 
 # Atom de-duplication identity
-# VECTOR_STORE_DEDUP_INCLUDE_VERSION=false   # treat ontology versions as distinct
-# VECTOR_STORE_DEDUP_INCLUDE_HASH=false      # treat content hashes as distinct
+# VECTOR_STORE_DEDUP_INCLUDE_VERSION=true    # treat ontology versions as distinct
+# VECTOR_STORE_DEDUP_INCLUDE_HASH=true       # treat content hashes as distinct
 # VECTOR_STORE_DEDUP_QUERY_HITS_BY_IRI=true  # collapse repeat hits on one IRI
 
 # Prompt/diagnostic shaping

@@ -92,11 +92,12 @@ llm_config = LLMConfig(
 
 llm_tool = LLMTool.create(config=llm_config, cache=shared_cache)
 
+# The tool is async — await it (e.g. inside `asyncio.run(...)`).
 # First call - hits API and caches response
-response1 = llm_tool("What is the capital of France?")
+response1 = await llm_tool("What is the capital of France?")
 
 # Second call - returns cached response instantly
-response2 = llm_tool("What is the capital of France?")
+response2 = await llm_tool("What is the capital of France?")
 ```
 
 Cache keys hash **normalized prompt text** (LangChain prompt values use `to_string()`) together with every setting that changes the provider's answer:
@@ -168,12 +169,13 @@ export ONTOCAST_CACHE_DIR=/path/to/custom/cache
 export XDG_CACHE_HOME=/path/to/custom/cache
 ```
 
-### CLI Parameter
+### Per-Invocation Override
 
-Specify cache directory via command line:
+There is no CLI flag for the cache directory — set the environment variable
+for a single invocation:
 
 ```bash
-ontocast --env-path .env --working-directory ./work --cache-dir /custom/cache/path
+ONTOCAST_CACHE_DIR=/custom/cache/path ontocast serve
 ```
 
 ---
@@ -363,8 +365,8 @@ chunks = tools.chunker(text)
 The server automatically uses caching for all LLM operations:
 
 ```bash
-# Start server with automatic caching
-ontocast --env-path .env --working-directory /data/working
+# Start server with automatic caching (paths come from the environment / .env)
+ONTOCAST_WORKING_DIRECTORY=/data/working ontocast serve
 ```
 
 ---
@@ -466,10 +468,10 @@ export ONTOCAST_CACHE_DIR=/custom/cache/path
 export XDG_CACHE_HOME=/custom/cache/path
 ```
 
-#### 2. CLI Parameter
+#### 2. Per-Invocation Environment
 
 ```bash
-ontocast --env-path .env --working-directory ./work --cache-dir /custom/cache/path
+ONTOCAST_CACHE_DIR=/custom/cache/path ontocast process --input-path ./doc.pdf
 ```
 
 #### 3. Programmatic Configuration

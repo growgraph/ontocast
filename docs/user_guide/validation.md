@@ -149,7 +149,9 @@ the gate.
 
 ### Reading the result
 
-`POST /process` returns, under `metadata`:
+`POST /process` and `POST /process_unit` return, under `metadata` (the
+single-unit route runs the same gate minus the un-merge repair, which has no
+meaning for one unit):
 
 ```jsonc
 {

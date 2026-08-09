@@ -15,7 +15,7 @@ from rdflib import BNode, Literal, Node, URIRef
 from ontocast.onto.constants import COMMON_PREFIXES
 from ontocast.onto.enum import SPARQLOperationType
 from ontocast.onto.llm_graph_payload import LLMGraphWire
-from ontocast.onto.rdfgraph import RDFGraph, is_rdflib_triple
+from ontocast.onto.rdfgraph import RDFGraph, copy_triples, is_rdflib_triple
 
 logger = logging.getLogger(__name__)
 
@@ -154,8 +154,9 @@ class GraphUpdate(BaseModel):
         result = RDFGraph()
         for op in self.triple_operations:
             if op.type == "insert" and len(op.graph) > 0:
-                for triple in op.graph:
-                    result.add(triple)
+                copy_triples(
+                    op.graph, result, origin="GraphUpdate.extract_insert_graph"
+                )
                 for prefix, uri in op.graph.namespaces():
                     if prefix:
                         result.bind(prefix, uri)

@@ -21,7 +21,7 @@ def _coerce_free_text(v: object) -> str:
         return ""
     if isinstance(v, str):
         return v
-    if isinstance(v, (list, tuple)):
+    if isinstance(v, list | tuple):
         return "\n".join(part for part in (str(item).strip() for item in v) if part)
     return str(v)
 
@@ -676,9 +676,13 @@ class FactsValidationFindingKind(StrEnum):
 class FactsValidationFinding(BaseModel):
     """One invariant violation detected in the aggregated facts graph.
 
-    Error-severity findings on subjects that resulted from an identity merge
-    drive the deterministic un-merge repair (full-cluster pair vetoes plus
-    re-aggregation); warning findings are telemetry only.
+    Error-severity findings of the merge-signature kinds
+    (``FUNCTIONAL_VIOLATION``, ``SUSPECT_MULTI_VALUE``,
+    ``DEGENERATE_COREFERENCE``) on subjects that resulted from an identity
+    merge drive the deterministic un-merge repair (full-cluster pair vetoes
+    plus re-aggregation). SHACL findings never drive it — a constraint
+    violation says a node is under-specified, not that two entities were
+    wrongly identified. Warning findings are telemetry only.
     """
 
     kind: FactsValidationFindingKind

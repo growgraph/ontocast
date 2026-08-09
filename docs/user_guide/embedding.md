@@ -34,7 +34,11 @@ You always need one provider extra — OntoCast does not pick one for you.
 | `sparse` | `fastembed` | BM25 sparse embeddings on their own |
 | `graph` | `networkx` | ontology lineage graphs |
 | `server` | FastAPI, uvicorn, click, rich | the HTTP server and every console script |
-| `all` | everything above | |
+| `all` | every runtime extra (excludes `plot`, `dev`, `docs`) | |
+
+This table lists the extras relevant to embedding; the complete table
+(`semantic-chunking`, `shacl`, `web-search`, `plot`, …) is in
+[Installation](../getting_started/installation.md).
 
 The base install carries the pipeline, the RDF stack, the in-memory triple and
 vector stores, and the ontology tooling.

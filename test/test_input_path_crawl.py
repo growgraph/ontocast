@@ -32,7 +32,18 @@ def test_single_file_honours_prefix(tmp_path: pathlib.Path) -> None:
     paper.write_bytes(b"%PDF-1.4")
 
     assert crawl_directories(paper, suffixes=(".pdf",), prefix="paper") == [paper]
-    assert crawl_directories(paper, suffixes=(".pdf",), prefix="other") == []
+    # An explicitly named file excluded by the prefix filter is a contradictory
+    # invocation -- silently returning [] is the exact no-op issue #53 removed.
+    with pytest.raises(ValueError, match="does not match prefix"):
+        crawl_directories(paper, suffixes=(".pdf",), prefix="other")
+
+
+def test_suffix_match_is_case_insensitive(tmp_path: pathlib.Path) -> None:
+    upper = tmp_path / "report.PDF"
+    upper.write_bytes(b"%PDF-1.4")
+
+    assert crawl_directories(upper, suffixes=(".pdf",)) == [upper]
+    assert crawl_directories(tmp_path, suffixes=(".pdf",)) == [upper]
 
 
 def test_missing_path_raises(tmp_path: pathlib.Path) -> None:

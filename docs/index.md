@@ -2,7 +2,7 @@
 
 ### Agentic ontology-assisted framework for semantic triple extraction
 
-![Python](https://img.shields.io/badge/python-3.12-blue.svg) 
+![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg) 
 [![PyPI version](https://badge.fury.io/py/ontocast.svg)](https://badge.fury.io/py/ontocast)
 [![PyPI Downloads](https://static.pepy.tech/badge/ontocast)](https://pepy.tech/projects/ontocast)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -104,9 +104,9 @@ Document-level pipeline (regenerated via `uv run plot-graph`):
 
 Landscape variant: [graph.lr.png](assets/graph.lr.png). Per-unit loops: [ontology_loop.png](assets/ontology_loop.png), [facts_loop.png](assets/facts_loop.png) — details in [Workflow](user_guide/workflow.md#per-unit-atomic-loop).
 
-1. Convert → chunk prepare (segment, tag, filter, size) → optional summarize chunks
-2. Parallel ontology render per unit → normalize → optional consolidate → validate
-3. Parallel facts render per unit → merge with disambiguation
+1. Convert → chunk prepare (segment, tag, filter, size, optional in-prepare summarization — there is no separate summarize node)
+2. Parallel ontology render per unit → normalize → optional consolidate → structural check → consistency critic
+3. Parallel facts render per unit → merge with disambiguation → validate facts (invariants, SHACL, LLM-free autofix)
 4. Serialize to triple store; return Turtle in API response
 
 ---

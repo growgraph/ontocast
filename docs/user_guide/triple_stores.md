@@ -14,7 +14,7 @@ When `FUSEKI_URI` and `FUSEKI_AUTH` are set, Fuseki is used. Otherwise OntoCast 
 ### Environment Variables
 
 ```bash
-# Fuseki (optional — production)
+# Fuseki (optional — production; the bundled docker compose maps host port 3032)
 FUSEKI_URI=http://localhost:3030
 FUSEKI_AUTH=admin/admin
 #FUSEKI_DATASET=ontocast--test--facts
@@ -60,7 +60,7 @@ Sample Docker configs: [ontocast/docker](https://github.com/growgraph/ontocast/t
 ```bash
 cd docker/fuseki
 cp .env.example .env
-docker compose --env-file .env fuseki up -d
+docker compose --env-file .env up fuseki -d
 ```
 
 Configure OntoCast:

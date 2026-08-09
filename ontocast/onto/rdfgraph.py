@@ -1873,9 +1873,10 @@ class RDFGraph(Graph):
         # Create new graph
         new_graph = RDFGraph()
 
-        # Copy all triples (URIs are already expanded internally)
-        for triple in self:
-            new_graph.add(triple)
+        # Copy all triples (URIs are already expanded internally); an
+        # oxigraph-backed source may hold RDF 1.2 triple terms a plain rdflib
+        # graph cannot represent.
+        copy_triples(self, new_graph, origin="RDFGraph.unbind_chunk_namespaces")
 
         # Bind only non-chunk namespace prefixes to the new graph
         for prefix, uri_str in prefix_to_normalized.items():

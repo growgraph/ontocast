@@ -2,7 +2,7 @@
 
 ### Agentic ontology-assisted framework for semantic triple extraction
 
-![Python](https://img.shields.io/badge/python-3.12-blue.svg) 
+![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg) 
 [![PyPI version](https://badge.fury.io/py/ontocast.svg)](https://badge.fury.io/py/ontocast)
 [![PyPI Downloads](https://static.pepy.tech/badge/ontocast)](https://pepy.tech/projects/ontocast)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -52,19 +52,26 @@ OntoCast can be used for:
 
 ## Installation
 
+The base package is a minimal embeddable core: pick at least one LLM provider
+extra (`openai`, `anthropic`, `google`, `ollama`), and add `server` for the
+`ontocast` command and the API server:
+
 ```sh
-uv add ontocast[doc-processing] 
+uv add "ontocast[server,openai]"
 # or
-pip install ontocast
+pip install "ontocast[server,openai]"
 ```
 
 ### Optional features: document processing (PDFs, PPT, OCR, semantic chunking), vector mode for ontology retrieval:
 
 ```sh
-uv add "ontocast[doc-processing,lancedb]"
+uv add "ontocast[server,openai,doc-processing,lancedb]"
 # or
-pip install "ontocast[doc-processing,lancedb]"
+pip install "ontocast[server,openai,doc-processing,lancedb]"
 ```
+
+See [Installation](docs/getting_started/installation.md) for the full extras
+table.
 
 ---
 
@@ -101,6 +108,7 @@ ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontologies
 ONTOCAST_CACHE_DIR=/path/to/cache
 
 # Optional: Triple Store Configuration (Fuseki for production persistence)
+# (the bundled docker/fuseki compose maps the server to host port 3032)
 FUSEKI_URI=http://localhost:3030
 FUSEKI_AUTH=admin/admin
 # Datasets default to ontocast--test--facts / ontocast--test--ontologies when unset
@@ -227,7 +235,7 @@ See [Configuration Guide](docs/user_guide/configuration.md) for chunking, Qdrant
 ### Triple Store Configuration
 
 ```bash
-# Fuseki (production persistence)
+# Fuseki (production persistence; the bundled compose maps host port 3032)
 FUSEKI_URI=http://localhost:3030
 FUSEKI_AUTH=admin/admin
 ```
@@ -257,7 +265,7 @@ OntoCast uses a unified triple-store interface with two backends:
 ```bash
 cd docker/fuseki
 cp .env.example .env
-docker compose --env-file .env fuseki up -d
+docker compose --env-file .env up fuseki -d
 ```
 
 See [Triple Store Setup](docs/user_guide/triple_stores.md) for detailed instructions.
@@ -275,7 +283,7 @@ See [Triple Store Setup](docs/user_guide/triple_stores.md) for detailed instruct
 - [Triple Store Setup](docs/user_guide/triple_stores.md) — Fuseki and in-memory backends
 - [LLM Caching](docs/user_guide/llm_caching.md) — Automatic response caching
 - [User Guide](docs/user_guide/concepts.md) — Core concepts
-- [API Reference](docs/reference/onto/state.md) — Python API (MkDocs)
+- [API Reference](https://growgraph.github.io/ontocast/) — Python API, generated at docs build time on the docs site (not present in the repo tree)
 
 Build docs locally: `uv run mkdocs build`
 

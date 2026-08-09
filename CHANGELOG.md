@@ -37,108 +37,11 @@ project:
 
 ## [Unreleased]
 
-### Fixed
+## [0.6.0] - 2026-08-09
 
-- **SHACL findings no longer drive the un-merge repair.** Every error finding
-  reached `_vetoes_from_findings`, and `sh:Violation` maps to error severity —
-  so a missing required property could dissolve a legitimate identity cluster
-  whenever the focus node happened to be merged, and the repair loop's
-  accept test (violations must strictly decrease) was scored on constraints
-  un-merging cannot fix. Vetoes and the loop's objective are now restricted to
-  the merge-signature kinds (`FUNCTIONAL_VIOLATION`, `SUSPECT_MULTI_VALUE`,
-  `DEGENERATE_COREFERENCE`).
-- **SHACL now validates against the ontology context, not the facts alone.**
-  A facts graph states that a value uses `unit:DAY`; that this individual *is*
-  a `qudt:Unit` is stated only in the catalog, so every `sh:class` constraint
-  pointing at a catalog term failed. On the three-document matsci pilot this
-  was **128 of 360** reported violations — phantom findings describing the
-  absent schema.
-- **SHACL runs with RDFS inference by default** (`FACTS_SHACL_INFERENCE`,
-  `FACTS_SHACL_ADVANCED`), matching how the shipped shapes are authored and
-  validated by their own repo harness. SHACL property paths carry no
-  `rdfs:subPropertyOf` entailment, so a shape naming a superproperty reported
-  the specialised predicate the renderer emitted as missing: 268 violations at
-  `none` against 232 at `rdfs` on the same pilot. A `FACTS_SHACL_MAX_TRIPLES`
-  guard skips oversized graphs with a warning rather than stalling, and a
-  skipped run is reported as "did not run", never as "conforms".
-- **Generated API reference navigation.** `docs/gen_pages.py` indexed the
-  literate-nav entries with a path already relative to `reference/`, doubling
-  the prefix, so all 168 generated sidebar links 404'd while the pages
-  themselves rendered — 336 build warnings, exit code 0.
-
-### Added
-
-- **LLM-free repair of SHACL violations** (`FACTS_SHACL_AUTOFIX`, default
-  `prune`) in a bounded validate → repair → revalidate loop
-  (`FACTS_SHACL_AUTOFIX_PASSES`); a pass that does not strictly reduce
-  violations is reverted. `rewrite` retypes a literal to the `sh:datatype` it
-  parses as, and replaces a string literal on an IRI-only path with the single
-  catalog IRI declaring it as a surface form. `prune` additionally drops
-  `sh:minCount` violators that assert nothing beyond `rdf:type`/`rdfs:label`
-  and are referenced by at most one subject — a placeholder value node stands
-  for an extraction that did not happen. `sh:maxCount`, `sh:not`,
-  `sh:qualifiedValueShape` and SPARQL constraints are reported, never
-  repaired. Nothing is invented: a node carrying real data but missing a
-  required property stays a reported finding.
-- **Code resolution at parse time** (`FACTS_CODE_PREDICATES`): a node carrying
-  `qudt:ucumCode "d"` but no unit link gains `qudt:unit unit:DAY` when exactly
-  one catalog individual declares that code. Schema-driven — the connecting
-  property is whichever object property the context declares with a matching
-  range and domain, falling back to the graph's own observed usage when a
-  vendored projection declares no range (the shipped QUDT unit subset does
-  not). Resolved all five ucum-coded nodes in the matsci pilot.
-- **The validation result is reported, not just logged.** `ProcessResultMetadata`
-  gains `facts_conformance` (whether SHACL ran, whether the graph conforms, and
-  counts by finding kind, SHACL constraint component and shape),
-  `facts_validation_findings` and `facts_gate_repairs`. Batch runs write the
-  same payload beside the facts Turtle as `<name>.facts.validation.json`.
-  Grouping by constraint is what makes a residue diagnosable: 36 violations on
-  one shape are one modelling gap, not 36 defects.
-- **[Facts Validation and SHACL](docs/user_guide/validation.md)** documents the
-  three validation layers, which cost a provider call, where shapes come from,
-  what the autofix will and will not do, and how to read the conformance
-  report.
-
-### Changed
-
-- **`FACTS_REPAIR_VISITS` → `FACTS_LLM_REPAIR_VISITS`**, and
-  `_run_deterministic_repair` → `_run_finding_driven_repair`. The old name said
-  "deterministic" for a loop whose every visit is a paid `render_facts_update`
-  call — only its *trigger* is deterministic. This mattered: at the default
-  `MAX_VISITS=1` a facts unit costs up to **two** provider calls, not one, and
-  the documentation claimed otherwise. "Deterministic repair" now names only
-  the LLM-free graph rewrites. Telemetry follows: attempt kind `repair` →
-  `llm_repair`, metric `facts_repair_visits_total` →
-  `facts_llm_repair_renders_total`.
-
-### Performance
-
-- **Merged facts ontology is built once per document, not once per unit.** It
-  reads only document-level state, but was rebuilt N+2 times — synchronously, on
-  the event loop, so it stalled every other unit's in-flight provider call. At
-  3.6k triples / 30 units the stage went from 6.07 s (5.97 s of it event-loop
-  stall) to 0.21 s.
-- **The ontology snapshot is shared by reference, not deep-copied per unit,** and
-  its prompt chapter is serialised once per document rather than per unit per
-  render attempt (`OntologySnapshot.prompt_chapter`).
-- **Summarization runs inside the extraction fan-outs** instead of as a stage.
-  A summary depends only on its own unit, so the node was a barrier that made
-  the whole document wait for the slowest one.
-- **Chunk preparation no longer blocks the event loop** — its synchronous
-  segmentation and local-embedding phases run via `asyncio.to_thread`.
-- **Aligning `CHUNK_EMBEDDING_MODEL` with `EMBEDDING_MODEL_NAME` and
-  `AGG_EMBEDDING_MODEL` now leaves one resident local model instead of two**
-  (measured: 1601 MB vs 2252 MB peak RSS). Defaults unchanged; opt-in recipe in
-  [Performance](docs/user_guide/performance.md).
-- **Fewer redundant loads and connections:** the docling `HybridChunker`
-  tokenizer is cached instead of rebuilt per document; the docling converter
-  lock guards only the lazy build, not the conversion (which serialised
-  concurrent documents); BM25 moved to `ToolBoxRuntime` instead of one per
-  tenancy scope; `ToolBox.serialize` uses one event loop and one backend
-  connection per document rather than one per ontology.
-- **The embedding lock no longer serialises remote providers**, which had
-  nothing to protect.
-- **`PARALLEL_WORKERS` defaults to 16** (was 8), matching `LLM_MAX_INFLIGHT`.
+*First release published to PyPI since 0.4.3: the 0.5.0 and 0.5.1
+sections below were in-tree version bumps that were never tagged or
+published.*
 
 ### Breaking
 
@@ -178,85 +81,46 @@ project:
   unknown is represented explicitly rather than being absorbed into its
   neighbour. Callers that assumed a non-null label must handle `None`.
 
-### Fixed
-
-- **A shared embedding model with a lock in only one of its users.** Once
-  retrieval and clustering shared one `SentenceTransformer`, the lock in the
-  retrieval module protected nothing: `tool/agg/clustering.py`,
-  `tool/agg/entity_aligner.py` and semantic chunking called `.encode()` on the
-  same object unguarded. The lock now belongs to the `SharedEncoder` that owns
-  the model. Concurrent `encode()` is *correct* with default arguments, so this
-  was a broken invariant and a peak-memory risk, not corruption.
-- **One global embedding lock for all checkpoints** — locks are now per model,
-  so unrelated checkpoints no longer queue behind one another.
-- **The `semantic-chunking` extra required `langchain-huggingface` but not
-  `sentence-transformers`,** so installing it alone degraded silently to naive
-  chunking. It now requires `sentence-transformers`, and the probe checks
-  `hdbscan` and `umap` rather than relying on `langchain-huggingface` as a proxy.
-- **A failed chunker model load was retried on every call** — `None` meant both
-  "not loaded" and "load failed". Failure is recorded once.
-- **Section labels smeared across the document when a heading was
-  unrecognised.** `_build_spans_from_heading_starts` ended each section span at
-  the next *recognised* heading, so one unmatched heading let the previous label
-  run on. On a paper with headings `Introduction / Experimental Section /
-  Results and Discussion / Conclusions and Outlook / References`, only two spans
-  were produced — `introduction` covering everything up to `References`. Because
-  the label was stamped onto segments at split time and both the tagger and the
-  LLM backfill skip already-labeled segments, the wrong label could never be
-  corrected, and `target_sections=["results"]` returned introduction text or
-  nothing. Every heading now closes the preceding span, and unrecognised ones
-  open an explicitly unresolved span. Forward-fill and chunk merging respect
-  that unresolved state, so neither reintroduces the smear.
-- **Heading matching missed most real-world headings.** The anchored patterns
-  required the heading to be exactly a canonical section name, so `Results and
-  Discussion`, `RESULTS AND DISCUSSION`, `Experimental Section`, `Conclusions
-  and Outlook`, `Device fabrication`, `Data Availability` and `Author
-  Contributions` all failed. Publisher decoration defeated matching outright
-  (`■ REFERENCES`, `■ ACKNOWLEDGMENTS`, `*sı Supporting Information`), as did
-  section numbering (`2.1 Synthesis of thin films`). Measured on real docling
-  conversions of three journal PDFs, 26 of 31 detected headings were unmatched
-  and two of the three documents produced **no spans at all**.
-- **Unheaded front matter was not recovered unless the paper opened with an
-  IMRaD section.** `inject_front_matter_spans` bailed when the first labeled
-  span was not `introduction`/`related_work`/`background`, leaving the title,
-  abstract and introduction of papers that open with `Results` unlabeled.
-- **`document_type_hint` matched needles buried inside longer words.** Hint
-  matching was a bare substring test, so `epo` matched "r*epo*rt" (routing any
-  unrecognised "…report" hint to the patent schema), `paper` matched
-  "news*paper*", and `iso` matched "isotope". Needles now match on word
-  boundaries, longest first, so the most specific hint wins regardless of YAML
-  order. The `novel` → `fiction` needle was dropped rather than anchored: no
-  word boundary separates the noun from the far more common adjective ("a study
-  of novel materials" resolved to `fiction`), and detection scores real fiction
-  at full share anyway. This gates detection as well as labeling — a false
-  positive here suppressed detection entirely and imposed an unrelated schema.
-- **The label schema was resolved three times per document, from the raw
-  request each time** (`prepare.py` twice, `section_llm.py`, `inspect_sections.py`).
-  Harmless while resolution was a pure function of the request, but it becomes
-  silent label loss the moment it depends on document text: the deterministic
-  tiers tag against the detected schema while the LLM backfill validates against
-  the default, and `normalise_llm_label` *drops* labels absent from its schema
-  rather than erroring. Resolution now happens once in
-  `resolve_prepare_schema`, and the resolved schema is threaded to the backfill
-  and to the CLI — so the schema `ontocast sections` reports is necessarily the
-  one the chunks were labeled against.
-- **`manual.yaml`'s `^using\s+` and `^how\s+to\s+` patterns were unbounded at
-  the tail** — the catalog's only open-ended patterns, so `^using\s+` claimed
-  headings such as "Using Creative Commons Public Licenses" for the manual
-  schema. Harmless while schemas were only ever matched one at a time; a
-  cross-schema scorer reads it as evidence. Both now bound the trailing words,
-  matching short instructional headings ("Using the API") as intended.
-- **`ontocast sections` could not read JSON or plain-text documents.** It called
-  the Docling converter for every input, but the Convert node routes `.json` and
-  `.txt` *around* the converter (Docling rejects them), so inspecting the files
-  the pipeline is normally driven with — `data/json/*.json` — failed with
-  "Input document is not valid". The routing and the JSON text heuristic now
-  live in `onto/docling_helpers.py::json_payload_text` and are shared, so the
-  CLI and the pipeline cannot disagree about what a file's text is. A JSON
-  payload holding no document text (the shape of `clinical.trials.*.json`) now
-  fails with a clear message rather than inspecting as an empty document.
-
 ### Added
+
+- **`/process_unit` runs the post-aggregation validation gate.** The route
+  shipped unvalidated facts while its docstring claimed otherwise; it now runs
+  the same gate as the document pipeline and the CLI unit path — invariant
+  findings, SHACL, and the LLM-free autofix, minus only the un-merge repair
+  (meaningless for a single unit) — and returns `facts_conformance`,
+  `facts_validation_findings` and `facts_gate_repairs`, serving the repaired
+  graph.
+- **LLM-free repair of SHACL violations** (`FACTS_SHACL_AUTOFIX`, default
+  `prune`) in a bounded validate → repair → revalidate loop
+  (`FACTS_SHACL_AUTOFIX_PASSES`); a pass that does not strictly reduce
+  violations is reverted. `rewrite` retypes a literal to the `sh:datatype` it
+  parses as, and replaces a string literal on an IRI-only path with the single
+  catalog IRI declaring it as a surface form. `prune` additionally drops
+  `sh:minCount` violators that assert nothing beyond `rdf:type`/`rdfs:label`
+  and are referenced by at most one subject — a placeholder value node stands
+  for an extraction that did not happen. `sh:maxCount`, `sh:not`,
+  `sh:qualifiedValueShape` and SPARQL constraints are reported, never
+  repaired. Nothing is invented: a node carrying real data but missing a
+  required property stays a reported finding.
+- **Code resolution at parse time** (`FACTS_CODE_PREDICATES`): a node carrying
+  `qudt:ucumCode "d"` but no unit link gains `qudt:unit unit:DAY` when exactly
+  one catalog individual declares that code. Schema-driven — the connecting
+  property is whichever object property the context declares with a matching
+  range and domain, falling back to the graph's own observed usage when a
+  vendored projection declares no range (the shipped QUDT unit subset does
+  not). Resolved all five ucum-coded nodes in the matsci pilot.
+- **The validation result is reported, not just logged.** `ProcessResultMetadata`
+  gains `facts_conformance` (whether SHACL ran, whether the graph conforms, and
+  counts by finding kind, SHACL constraint component and shape),
+  `facts_validation_findings` and `facts_gate_repairs`. Batch runs write the
+  same payload beside the facts Turtle as `<name>.facts.validation.json`.
+  Grouping by constraint is what makes a residue diagnosable: 36 violations on
+  one shape are one modelling gap, not 36 defects.
+- **[Facts Validation and SHACL](docs/user_guide/validation.md)** documents the
+  three validation layers, which cost a provider call, where shapes come from,
+  what the autofix will and will not do, and how to read the conformance
+  report.
+
 
 - **Automatic cache eviction.** `Cacher.prune()` drops TTL-expired entries, then
   evicts least-recently-*used* entries until the total fits under
@@ -422,11 +286,214 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
 - `ToolBoxRuntime.acreate` built a second `Cacher` instead of reusing the shared
   one, defeating the documented single-instance design.
 
+### Changed
+
+- **`FACTS_REPAIR_VISITS` → `FACTS_LLM_REPAIR_VISITS`**, and
+  `_run_deterministic_repair` → `_run_finding_driven_repair`. The old name said
+  "deterministic" for a loop whose every visit is a paid `render_facts_update`
+  call — only its *trigger* is deterministic. This mattered: at the default
+  `MAX_VISITS=1` a facts unit costs up to **two** provider calls, not one, and
+  the documentation claimed otherwise. "Deterministic repair" now names only
+  the LLM-free graph rewrites. Telemetry follows: attempt kind `repair` →
+  `llm_repair`, metric `facts_repair_visits_total` →
+  `facts_llm_repair_renders_total`.
+
+### Fixed
+
+- **The SHACL gate no longer crashes on the aggregated graph's RDF 1.2 triple
+  terms.** The autofix copied the graph with bare `Graph.add`, and `run_shacl`
+  handed the oxigraph-backed graph straight to pyshacl — both assert on the
+  `rdf:reifies <<( s p o )>>` provenance the aggregator emits, so the default
+  configuration (`FACTS_SHACL_AUTOFIX=prune`) failed `VALIDATE_FACTS` on any
+  real document once shapes were configured. Validation now runs on a
+  sanitised copy (reification carries no shape targets, so it loses nothing),
+  and repairs are applied **in place with per-pass rollback** instead of on a
+  copy, so the served graph keeps its provenance triple terms.
+- **A focus node absent from the facts graph can no longer be "pruned".** With
+  the ontology mixed into validation, pyshacl also reports catalog nodes;
+  blank ones bypass the namespace scope check, and "no outgoing triples" read
+  as "asserts nothing". The result was an empty repair record whose no-op pass
+  tripped the strict-decrease revert and threw away genuine repairs in the
+  same round. Scope is now presence-based for blank nodes, and an absent node
+  is never an empty placeholder.
+- **`conforms` and the `facts_shacl_violations_*` metrics count the same
+  population.** The metrics counted raw pyshacl violations (facts + mixed-in
+  ontology) while `conforms` was judged on fact-scoped findings, so a run
+  could report `conforms: true` next to a nonzero `violations_after`. Both now
+  use the fact-scoped population; the autofix loop's accept test still uses
+  the raw count internally.
+- **`crawl_directories` matches suffixes case-insensitively** (`report.PDF` is
+  a PDF) and **raises when an explicitly named file is excluded by the prefix
+  filter** instead of silently returning nothing — the exact no-op failure
+  issue #53 removed. `pdfs-to-markdown` now exits non-zero on an empty crawl,
+  like `ontocast process`.
+- **The Docker image works again.** The build used `--no-group` flags against
+  a project whose tiers are extras (installing the bare core: no server, no
+  provider), the runtime stage lacked `uv` yet the entrypoint invoked it, and
+  bare `ontocast` no longer starts the API. The image now installs every
+  runtime extra and starts `ontocast serve` (override `CMD` for batch runs);
+  the stale `ontocast-mcp-server` / `0.1.1` OCI labels are gone.
+- **Documentation matched the code again** across README, docs and
+  `.env.example`: settings that no longer exist removed
+  (`CHUNK_BREAKPOINT_*`, `CHUNK_STRATEGY`, `PARALLEL_*_RETRIES`,
+  `ONTOCAST_RECALL_*` and the deleted recall-harness instructions); wrong
+  defaults corrected (`CHUNK_SECTION_CLASSIFIER`, fusion/dedup weights,
+  `PARALLEL_WORKERS`, `QDRANT_UPSERT_BATCH_SIZE`, derived table names);
+  examples that fail `Config()` validation fixed (`granite3.3`, the elliptical
+  `FACTS_CODE_PREDICATES` sample); pre-0.5.0 CLI forms in the caching guide;
+  the malformed `docker compose` command; `/health` documented as liveness,
+  not readiness; the vector-store `auto` fallback and
+  `FUSEKI_ONTOLOGIES_DATASET` descriptions un-contradicted.
+- **SHACL findings no longer drive the un-merge repair.** Every error finding
+  reached `_vetoes_from_findings`, and `sh:Violation` maps to error severity —
+  so a missing required property could dissolve a legitimate identity cluster
+  whenever the focus node happened to be merged, and the repair loop's
+  accept test (violations must strictly decrease) was scored on constraints
+  un-merging cannot fix. Vetoes and the loop's objective are now restricted to
+  the merge-signature kinds (`FUNCTIONAL_VIOLATION`, `SUSPECT_MULTI_VALUE`,
+  `DEGENERATE_COREFERENCE`).
+- **SHACL now validates against the ontology context, not the facts alone.**
+  A facts graph states that a value uses `unit:DAY`; that this individual *is*
+  a `qudt:Unit` is stated only in the catalog, so every `sh:class` constraint
+  pointing at a catalog term failed. On the three-document matsci pilot this
+  was **128 of 360** reported violations — phantom findings describing the
+  absent schema.
+- **SHACL runs with RDFS inference by default** (`FACTS_SHACL_INFERENCE`,
+  `FACTS_SHACL_ADVANCED`), matching how the shipped shapes are authored and
+  validated by their own repo harness. SHACL property paths carry no
+  `rdfs:subPropertyOf` entailment, so a shape naming a superproperty reported
+  the specialised predicate the renderer emitted as missing: 268 violations at
+  `none` against 232 at `rdfs` on the same pilot. A `FACTS_SHACL_MAX_TRIPLES`
+  guard skips oversized graphs with a warning rather than stalling, and a
+  skipped run is reported as "did not run", never as "conforms".
+- **Generated API reference navigation.** `docs/gen_pages.py` indexed the
+  literate-nav entries with a path already relative to `reference/`, doubling
+  the prefix, so all 168 generated sidebar links 404'd while the pages
+  themselves rendered — 336 build warnings, exit code 0.
+
+
+- **A shared embedding model with a lock in only one of its users.** Once
+  retrieval and clustering shared one `SentenceTransformer`, the lock in the
+  retrieval module protected nothing: `tool/agg/clustering.py`,
+  `tool/agg/entity_aligner.py` and semantic chunking called `.encode()` on the
+  same object unguarded. The lock now belongs to the `SharedEncoder` that owns
+  the model. Concurrent `encode()` is *correct* with default arguments, so this
+  was a broken invariant and a peak-memory risk, not corruption.
+- **One global embedding lock for all checkpoints** — locks are now per model,
+  so unrelated checkpoints no longer queue behind one another.
+- **The `semantic-chunking` extra required `langchain-huggingface` but not
+  `sentence-transformers`,** so installing it alone degraded silently to naive
+  chunking. It now requires `sentence-transformers`, and the probe checks
+  `hdbscan` and `umap` rather than relying on `langchain-huggingface` as a proxy.
+- **A failed chunker model load was retried on every call** — `None` meant both
+  "not loaded" and "load failed". Failure is recorded once.
+- **Section labels smeared across the document when a heading was
+  unrecognised.** `_build_spans_from_heading_starts` ended each section span at
+  the next *recognised* heading, so one unmatched heading let the previous label
+  run on. On a paper with headings `Introduction / Experimental Section /
+  Results and Discussion / Conclusions and Outlook / References`, only two spans
+  were produced — `introduction` covering everything up to `References`. Because
+  the label was stamped onto segments at split time and both the tagger and the
+  LLM backfill skip already-labeled segments, the wrong label could never be
+  corrected, and `target_sections=["results"]` returned introduction text or
+  nothing. Every heading now closes the preceding span, and unrecognised ones
+  open an explicitly unresolved span. Forward-fill and chunk merging respect
+  that unresolved state, so neither reintroduces the smear.
+- **Heading matching missed most real-world headings.** The anchored patterns
+  required the heading to be exactly a canonical section name, so `Results and
+  Discussion`, `RESULTS AND DISCUSSION`, `Experimental Section`, `Conclusions
+  and Outlook`, `Device fabrication`, `Data Availability` and `Author
+  Contributions` all failed. Publisher decoration defeated matching outright
+  (`■ REFERENCES`, `■ ACKNOWLEDGMENTS`, `*sı Supporting Information`), as did
+  section numbering (`2.1 Synthesis of thin films`). Measured on real docling
+  conversions of three journal PDFs, 26 of 31 detected headings were unmatched
+  and two of the three documents produced **no spans at all**.
+- **Unheaded front matter was not recovered unless the paper opened with an
+  IMRaD section.** `inject_front_matter_spans` bailed when the first labeled
+  span was not `introduction`/`related_work`/`background`, leaving the title,
+  abstract and introduction of papers that open with `Results` unlabeled.
+- **`document_type_hint` matched needles buried inside longer words.** Hint
+  matching was a bare substring test, so `epo` matched "r*epo*rt" (routing any
+  unrecognised "…report" hint to the patent schema), `paper` matched
+  "news*paper*", and `iso` matched "isotope". Needles now match on word
+  boundaries, longest first, so the most specific hint wins regardless of YAML
+  order. The `novel` → `fiction` needle was dropped rather than anchored: no
+  word boundary separates the noun from the far more common adjective ("a study
+  of novel materials" resolved to `fiction`), and detection scores real fiction
+  at full share anyway. This gates detection as well as labeling — a false
+  positive here suppressed detection entirely and imposed an unrelated schema.
+- **The label schema was resolved three times per document, from the raw
+  request each time** (`prepare.py` twice, `section_llm.py`, `inspect_sections.py`).
+  Harmless while resolution was a pure function of the request, but it becomes
+  silent label loss the moment it depends on document text: the deterministic
+  tiers tag against the detected schema while the LLM backfill validates against
+  the default, and `normalise_llm_label` *drops* labels absent from its schema
+  rather than erroring. Resolution now happens once in
+  `resolve_prepare_schema`, and the resolved schema is threaded to the backfill
+  and to the CLI — so the schema `ontocast sections` reports is necessarily the
+  one the chunks were labeled against.
+- **`manual.yaml`'s `^using\s+` and `^how\s+to\s+` patterns were unbounded at
+  the tail** — the catalog's only open-ended patterns, so `^using\s+` claimed
+  headings such as "Using Creative Commons Public Licenses" for the manual
+  schema. Harmless while schemas were only ever matched one at a time; a
+  cross-schema scorer reads it as evidence. Both now bound the trailing words,
+  matching short instructional headings ("Using the API") as intended.
+- **`ontocast sections` could not read JSON or plain-text documents.** It called
+  the Docling converter for every input, but the Convert node routes `.json` and
+  `.txt` *around* the converter (Docling rejects them), so inspecting the files
+  the pipeline is normally driven with — `data/json/*.json` — failed with
+  "Input document is not valid". The routing and the JSON text heuristic now
+  live in `onto/docling_helpers.py::json_payload_text` and are shared, so the
+  CLI and the pipeline cannot disagree about what a file's text is. A JSON
+  payload holding no document text (the shape of `clinical.trials.*.json`) now
+  fails with a clear message rather than inspecting as an empty document.
+
+### Performance
+
+- **SHACL runs once or twice per document, not two to four times.** The
+  autofix reuses the violations the reporting pass just computed
+  (`apply_shacl_repairs(initial_violations=…)`) instead of re-validating the
+  same graph — with RDFS inference and the ontology mixed in, each avoided run
+  was a full materialisation.
+- **`resolve_code_literals` no longer walks the whole catalog per rendered
+  unit for nothing.** A surface index was built and never read (and doubled as
+  a semantically wrong early exit); superclass closures are memoised per call;
+  the no-declared-range fallback collects its usage evidence in one graph scan
+  instead of rescanning per code literal.
+- **Merged facts ontology is built once per document, not once per unit.** It
+  reads only document-level state, but was rebuilt N+2 times — synchronously, on
+  the event loop, so it stalled every other unit's in-flight provider call. At
+  3.6k triples / 30 units the stage went from 6.07 s (5.97 s of it event-loop
+  stall) to 0.21 s.
+- **The ontology snapshot is shared by reference, not deep-copied per unit,** and
+  its prompt chapter is serialised once per document rather than per unit per
+  render attempt (`OntologySnapshot.prompt_chapter`).
+- **Summarization runs inside the extraction fan-outs** instead of as a stage.
+  A summary depends only on its own unit, so the node was a barrier that made
+  the whole document wait for the slowest one.
+- **Chunk preparation no longer blocks the event loop** — its synchronous
+  segmentation and local-embedding phases run via `asyncio.to_thread`.
+- **Aligning `CHUNK_EMBEDDING_MODEL` with `EMBEDDING_MODEL_NAME` and
+  `AGG_EMBEDDING_MODEL` now leaves one resident local model instead of two**
+  (measured: 1601 MB vs 2252 MB peak RSS). Defaults unchanged; opt-in recipe in
+  [Performance](docs/user_guide/performance.md).
+- **Fewer redundant loads and connections:** the docling `HybridChunker`
+  tokenizer is cached instead of rebuilt per document; the docling converter
+  lock guards only the lazy build, not the conversion (which serialised
+  concurrent documents); BM25 moved to `ToolBoxRuntime` instead of one per
+  tenancy scope; `ToolBox.serialize` uses one event loop and one backend
+  connection per document rather than one per ontology.
+- **The embedding lock no longer serialises remote providers**, which had
+  nothing to protect.
+- **`PARALLEL_WORKERS` defaults to 16** (was 8), matching `LLM_MAX_INFLIGHT`.
+
 ### Removed
 
+- Unreachable CLI modules `cli/split_chunks.py`, `cli/merge_ontologies.py`,
+  and `cli/batch_process.py`: click commands with no console-script entry,
+  never registered on the `ontocast` group, referenced by nothing.
 - Dead `track_llm_usage` decorator, which had no call sites and still used the
   instance-attribute budget-tracker pattern the `ContextVar` replaced.
-
 
 ## [0.5.1] - 2026-08-07
 
@@ -506,7 +573,7 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
 - Fan-outs use slim `UnitLoopContext` instead of `AgentState.model_copy(deep=True)`.
 - URDNA2015 hashing off the per-unit hot path (`working_graph_changed` via triple sets; lazy `OntologySnapshot.content_hash`).
 
-## [0.5.0]
+## [0.5.0] - 2026-08-05
 
 ### Breaking
 
@@ -941,6 +1008,23 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
 
 ## Migration Guide
 
+### Upgrading to 0.6.0 (from 0.4.3, the last published release)
+
+Everything under 0.5.0, 0.5.1 and 0.6.0 above applies. The environment-level
+breaks, in one place:
+
+| Old | New |
+|-----|-----|
+| `FACTS_REPAIR_VISITS` | `FACTS_LLM_REPAIR_VISITS` (old name is a silent no-op) |
+| `CHUNK_BREAKPOINT_THRESHOLD_TYPE` / `_AMOUNT` | removed (silent no-ops) |
+| `CHUNK_STRATEGY` | `CHUNK_SEGMENTER` |
+| `pip install ontocast` (full install) | base is the light core — add extras: `ontocast[server,openai]` |
+
+Also: bare `ontocast` no longer starts the API (use `ontocast serve` /
+`ontocast process`); `PARALLEL_WORKERS` default rose 8 → 16; the LLM cache key
+format changed (`cache_format_version` 2), so existing on-disk caches re-fetch;
+a 1 GB LRU cache ceiling applies by default (`ONTOCAST_CACHE_MAX_BYTES`).
+
 ### Upgrading to 0.4.3
 
 **Vector store env vars** — retrieval/indexing settings are backend-agnostic; rename `QDRANT_` → `VECTOR_STORE_` for:
@@ -1011,55 +1095,10 @@ BASE_RECURSION_LIMIT=1000
 
 See [docs/user_guide/](docs/user_guide/) for full guides.
 
-### Upgrading from 0.1.x / 0.3.x (general)
-```bash
-# Old
-OPENAI_API_KEY=your_key_here
-
-# New  
-LLM_API_KEY=your_key_here
-```
-
-### Configuration Usage
-
-```python
-# Old way (no longer supported)
-from ontocast.config import config
-
-llm_provider = config.llm_config.provider
-
-# New way
-from ontocast.config import Config
-
-config = Config()
-llm_provider = config.tool_config.llm_config.provider
-```
-
-### ToolBox Initialization
-```python
-# Old way (no longer supported)
-tools = ToolBox(
-    llm_provider="openai",
-    model_name="gpt-4",
-    # ... many individual parameters
-)
-
-# New way
-tools = ToolBox(config)
-```
-
-### CLI Parameters
-
-### LLM Caching
-```python
-# Caching is now automatic - no configuration needed
-```
-
-```bash
-# Skip ontology critique step
-ontocast --skip-ontology-critique
-
-# Or set environment variable
-export SKIP_ONTOLOGY_DEVELOPMENT=true
-ontocast --env-path .env
-```
+[Unreleased]: https://github.com/growgraph/ontocast/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/growgraph/ontocast/compare/v0.4.3...v0.6.0
+[0.4.3]: https://github.com/growgraph/ontocast/compare/v0.4.2...v0.4.3
+[0.4.2]: https://github.com/growgraph/ontocast/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/growgraph/ontocast/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/growgraph/ontocast/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/growgraph/ontocast/releases/tag/v0.3.0

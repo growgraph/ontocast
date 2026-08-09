@@ -136,8 +136,9 @@ class VectorStoreBackend(StrEnum):
     """Which vector store implementation backs ontology patch retrieval.
 
     ``AUTO`` infers the backend from whichever connection setting is populated
-    -- Qdrant if ``QDRANT_URI`` is set, LanceDB if it is enabled, otherwise the
-    dependency-free in-memory store. Naming a backend explicitly makes the
+    -- Qdrant if ``QDRANT_URI`` is set, LanceDB if it is enabled, otherwise
+    ``NONE`` (vector retrieval disabled; the in-memory store is opt-in via
+    ``VECTOR_STORE_BACKEND=memory``). Naming a backend explicitly makes the
     choice fail loudly when its configuration is missing.
     """
 

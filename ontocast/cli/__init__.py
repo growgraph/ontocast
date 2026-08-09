@@ -8,7 +8,6 @@ Commands (pipeline order):
 
 Preprocess
   - ``pdfs-to-markdown``: Convert PDFs to Markdown JSON
-  - ``split-chunks``: Split documents into chunks
 
 Serve / process
   - ``ontocast serve`` (``cli.server:cli``): Start the API server
@@ -17,11 +16,9 @@ Serve / process
 
 API clients
   - ``test-api``: Smoke-test the ``/process`` endpoint
-  - ``batch_process``: Batch POST files to a running server (no console script)
 
 Dev / analysis
   - ``cmp-states``: Compare serialized agent state JSON files
   - ``match-graphs``: Match TTL graphs locally
-  - ``merge_ontologies``: Merge terminal ontologies from Fuseki (no console script)
   - ``plot-graph``: Generate workflow diagram images for docs
 """

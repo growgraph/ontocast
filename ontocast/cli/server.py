@@ -97,8 +97,8 @@ def _prepare_path_config(config: Config) -> None:
         )
     else:
         raise ValueError(
-            "Working directory must be provided via CLI argument or "
-            "WORKING_DIRECTORY config"
+            "Working directory must be provided via the ONTOCAST_WORKING_DIRECTORY "
+            "environment variable"
         )
 
     if config.tool_config.path_config.ontology_directory is not None:
@@ -343,7 +343,7 @@ def serve(
     default=None,
     help=(
         "Comma-separated section labels to summarize before extraction, or '*' / empty "
-        "for all chunks. When set, runs the summarize_chunks graph node."
+        "for all chunks. When set, summarization runs inside chunk preparation."
     ),
 )
 @click.option(

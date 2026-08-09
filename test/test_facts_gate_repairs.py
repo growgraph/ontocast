@@ -196,7 +196,9 @@ def test_alias_repair_rewrites_toward_a_declared_catalog_term() -> None:
 
 
 def _fake_tools(aggregator, **overrides) -> ToolBox:
-    facts_validation = FactsValidationConfig(**overrides)
+    # model_construct: field defaults + overrides only, no environment reads --
+    # a developer shell with FACTS_* exported must not steer these tests.
+    facts_validation = FactsValidationConfig.model_construct(**overrides)
     return cast(
         ToolBox,
         SimpleNamespace(
@@ -449,6 +451,87 @@ def test_node_with_data_is_never_pruned_and_never_invented() -> None:
         URIRef(Q + "comment"),
         Literal("source states < 1 um"),
     ) in result.graph
+
+
+def test_oxigraph_reified_graph_survives_the_shacl_gate() -> None:
+    """The aggregated graph is oxigraph-backed and carries RDF 1.2 triple terms.
+
+    ``rdflib.Graph.add`` asserts on a triple term, so the gate must neither
+    crash handing such a graph to pyshacl nor drop the reification provenance
+    from the repaired graph (repairs are applied in place, not on a copy).
+    """
+    ox = pytest.importorskip("pyoxigraph")
+    from oxrdflib._converter import to_ox
+
+    from ontocast.onto.constants import RDF_REIFIES
+    from ontocast.onto.rdfgraph import _oxigraph_inner_store, is_rdflib_triple
+
+    graph = RDFGraph(store="oxigraph")
+    node = URIRef(CD + "v1")
+    graph.add((node, RDF.type, VALUE_CLASS))
+    graph.add((node, NUMERIC, Literal("230")))
+    graph.add((node, UNIT, URIRef(Q + "DAY")))
+    # Reified provenance, as tool/agg/rewriter.py emits it.
+    inner = cast(ox.Store, _oxigraph_inner_store(graph.store))
+    graph_ctx = to_ox(graph.identifier)
+    inner.add(
+        ox.Quad(
+            ox.BlankNode(),
+            ox.NamedNode(str(RDF_REIFIES)),
+            ox.Triple(
+                ox.NamedNode(str(node)),
+                ox.NamedNode(str(NUMERIC)),
+                ox.Literal("230"),
+            ),
+            graph_ctx,
+        )
+    )
+    assert any(not is_rdflib_triple(triple) for triple in graph)
+
+    result = _repair(graph)
+
+    assert [record.kind for record in result.records] == ["shacl_retype"]
+    assert (node, NUMERIC, Literal("230", datatype=XSD.decimal)) in result.graph
+    # The provenance triple term is still there.
+    assert any(not is_rdflib_triple(triple) for triple in result.graph)
+
+
+def test_catalog_only_focus_never_produces_a_phantom_prune() -> None:
+    """A focus node that lives only in the mixed-in catalog is not the gate's.
+
+    Blank catalog nodes bypass the namespace scope check (they have no
+    namespace), and a node absent from the facts graph used to read as
+    "asserts nothing" — yielding an empty repair record whose no-op pass
+    tripped the strict-decrease revert and discarded genuine repairs.
+    """
+    from rdflib import BNode
+
+    shapes = _value_shapes()
+    ontology = _unit_catalog()
+    # A blank node typed as the target class, declared only in the catalog.
+    ontology.add((BNode(), RDF.type, VALUE_CLASS))
+
+    graph = RDFGraph()
+    placeholder = URIRef(CD + "v_empty")
+    observation = URIRef(CD + "obs")
+    graph.add((placeholder, RDF.type, VALUE_CLASS))
+    graph.add((placeholder, RDFS.label, Literal("efficiency")))
+    graph.add((observation, URIRef(Q + "hasValue"), placeholder))
+
+    result = apply_shacl_repairs(
+        graph,
+        shapes,
+        ontology,
+        mode="prune",
+        passes=2,
+        fact_namespaces=[CD],
+        code_predicates=[str(UCUM)],
+    )
+
+    assert result.reverted is False
+    assert [record.kind for record in result.records] == ["shacl_prune"]
+    assert all(record.triple_count > 0 for record in result.records)
+    assert len(result.graph) == 0
 
 
 def test_rewrite_mode_does_not_prune() -> None:

@@ -834,10 +834,10 @@ def make_validate_facts_node(tools: ToolBox):
         vetoes: set[frozenset[URIRef]] = set()
         repair_passes = 0
         rejected_repairs = 0
-        while (
-            merge_signature_errors(report)
-            and repair_passes < facts_validation.merge_repair_passes
-        ):
+        while repair_passes < facts_validation.merge_repair_passes:
+            previous_errors = merge_signature_errors(report)
+            if not previous_errors:
+                break
             new_vetoes = _vetoes_from_findings(
                 report.error_findings, state.aggregation_clusters
             )
@@ -847,7 +847,7 @@ def make_validate_facts_node(tools: ToolBox):
             logger.info(
                 "Facts validation gate: %d merge-signature error finding(s), "
                 "re-aggregating with %d merge veto pair(s)",
-                merge_signature_errors(report),
+                previous_errors,
                 len(vetoes),
             )
             result = tools.aggregator.postprocess_facts_units(
@@ -863,18 +863,18 @@ def make_validate_facts_node(tools: ToolBox):
             # coreference for nothing and must not be kept.
             previous_graph = state.aggregated_facts
             previous_clusters = state.aggregation_clusters
-            previous_errors = merge_signature_errors(report)
             state.aggregated_facts = result.graph
             state.aggregation_clusters = result.merged_clusters
             candidate_report = run_validation()
-            if merge_signature_errors(candidate_report) >= previous_errors:
+            candidate_errors = merge_signature_errors(candidate_report)
+            if candidate_errors >= previous_errors:
                 logger.warning(
                     "Facts validation gate: repair pass %d did not reduce "
                     "merge-signature errors (%d -> %d); reverting to the "
                     "pre-repair graph",
                     repair_passes + 1,
                     previous_errors,
-                    merge_signature_errors(candidate_report),
+                    candidate_errors,
                 )
                 state.aggregated_facts = previous_graph
                 state.aggregation_clusters = previous_clusters
@@ -885,7 +885,8 @@ def make_validate_facts_node(tools: ToolBox):
 
         # Shape-driven repair, in code: retype literals against sh:datatype,
         # resolve codes to catalog IRIs, drop placeholder nodes. Runs after
-        # un-merging so it sees the graph that will actually be served.
+        # un-merging so it sees the graph that will actually be served, and
+        # reuses the violations the reporting pass just computed.
         if shapes_graph is not None:
             repair_result = apply_shacl_repairs(
                 state.aggregated_facts,
@@ -898,6 +899,9 @@ def make_validate_facts_node(tools: ToolBox):
                 inference=facts_validation.shacl_inference,
                 advanced=facts_validation.shacl_advanced,
                 max_triples=facts_validation.shacl_max_triples,
+                initial_violations=(
+                    report.shacl_violations if report.shacl_evaluated else None
+                ),
             )
             if repair_result.records:
                 state.aggregated_facts = repair_result.graph
