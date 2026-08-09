@@ -512,7 +512,28 @@ class AgentState(BasePydanticModel):
         description=(
             "Post-aggregation invariant findings (functional violations, "
             "suspect multi-values, degenerate coreference, SHACL) remaining "
-            "after any un-merge repair passes."
+            "after the un-merge and SHACL-autofix repair stages."
+        ),
+    )
+
+    facts_gate_repairs: list[GraphRepairRecord] = Field(
+        default_factory=list,
+        description=(
+            "LLM-free repairs the validation gate applied to the merged graph "
+            "(shape-driven retyping, code resolution, placeholder pruning). "
+            "Document-level counterpart of facts_repairs_applied, which is "
+            "per unit."
+        ),
+    )
+
+    facts_conformance: dict = Field(
+        default_factory=dict,
+        description=(
+            "Rolled-up validation result: whether SHACL ran and the graph "
+            "conforms, plus counts by finding kind, SHACL constraint component "
+            "and shape. Grouping is what makes the residue diagnosable — a "
+            "flat violation list does not distinguish one systematic modelling "
+            "gap from many independent defects."
         ),
     )
 

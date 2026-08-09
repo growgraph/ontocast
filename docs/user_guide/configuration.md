@@ -118,12 +118,18 @@ ENABLE_ONTOLOGY_CONSOLIDATION=false
     can target any tenancy partition. Set `HOST=0.0.0.0` only behind a proxy
     that authenticates; the server logs a warning when you do.
 
-!!! note "`MAX_VISITS=1` means the LLM critic never runs"
+!!! note "`MAX_VISITS=1` means the LLM critic never runs — but not that there is only one LLM call"
 
     A visit budget of 1 makes the single render also the final one, and a
-    critique that cannot drive a retry is skipped. Only the deterministic
-    repair pass (`FACTS_REPAIR_VISITS`) runs at the default. Set `MAX_VISITS=2`
-    or more to enable `criticise_facts` / `criticise_ontology`.
+    critique that cannot drive a retry is skipped. The **finding-driven repair**
+    still runs: up to `FACTS_LLM_REPAIR_VISITS` (default `1`) additional
+    `render_facts_update` calls when mandatory findings remain, so a facts unit
+    costs up to two provider calls at the default. Only its *trigger* is
+    deterministic. Set `FACTS_LLM_REPAIR_VISITS=0` for exactly one call per
+    unit, or `MAX_VISITS=2`+ to enable `criticise_facts` /
+    `criticise_ontology`. The ontology loop has no repair stage, so there
+    `MAX_VISITS=1` really is one call per unit. See
+    [Validation](validation.md#how-many-llm-calls-a-facts-unit-really-costs).
 
 `MAX_CONCURRENT_PROCESSES` **queues** requests beyond the limit; they are not
 rejected.
@@ -430,11 +436,17 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `VECTOR_STORE_SYMBOL_CASE_MISMATCH_POLICY` | `demote` | Merge-time treatment of atoms whose declared symbol surfaces (`skos:notation`, `qudt:symbol`, `qudt:ucumCode`) match a query token only case-insensitively with no exact-case match anywhere — the BM25/dense text is case-folded, so prose "meV" also retrieves `unit:MegaEV` (symbol "MeV"). `demote` multiplies the atom score, `drop` removes it, `off` keeps legacy behavior; exact-case and label-only matches are never touched |
 | `VECTOR_STORE_SYMBOL_CASE_MISMATCH_DEMOTE_FACTOR` | `0.5` | Score multiplier applied under the `demote` policy |
 | `FACTS_OBJECT_PROPERTY_LITERAL_CHECK` | `true` | Quarantine string literals on predicates whose schema range is a class (e.g. `qudt:unit`); surfaced to the facts critic and the deterministic repair loop |
-| `FACTS_REPAIR_VISITS` | `1` | Deterministic repair budget per unit: extra update renders fed with machine-found MANDATORY fixes (quarantined literals, unknown/near-miss terms, `rdfs:domain` contradictions) and numeric-coverage candidates. Applies even at `MAX_VISITS=1`, where the LLM critic never runs |
+| `FACTS_LLM_REPAIR_VISITS` | `1` | Finding-driven repair budget per unit, **in provider calls**: extra update renders fed with machine-found MANDATORY fixes (quarantined literals, unknown/near-miss terms, `rdfs:domain` contradictions) and numeric-coverage candidates. Fires even at `MAX_VISITS=1`, where the LLM critic never runs. `0` leaves the residue to the LLM-free repairs and the gate |
 | `FACTS_PROPERTY_ALIAS_MIN_RATIO` | `0.85` | SequenceMatcher cutoff for deterministic near-miss property rewrites in catalog namespaces (token containment always qualifies, e.g. `qudt:value` → `qudt:numericValue`) |
-| `FACTS_MERGE_REPAIR_PASSES` | `1` | Un-merge budget at the post-aggregation `VALIDATE_FACTS` gate: error findings on merged subjects become full-cluster pair vetoes and the facts units are re-aggregated. `0` records findings without repairing |
+| `FACTS_MERGE_REPAIR_PASSES` | `1` | Un-merge budget at the post-aggregation `VALIDATE_FACTS` gate: *merge-signature* error findings (functional violation, suspect multi-value, degenerate coreference) on merged subjects become full-cluster pair vetoes and the facts units are re-aggregated. `0` records findings without repairing. SHACL findings never drive it |
+| `FACTS_CODE_PREDICATES` | `qudt:ucumCode`, `qudt:symbol`, `skos:notation` | Predicates whose literal objects are machine-resolvable codes. A node carrying `qudt:ucumCode "d"` but no unit link gains the object property pointing at the catalog individual declaring that code, when exactly one does. Exact and case-sensitive — these are codes, not labels |
 | `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | `error` | Severity of SUSPECT_MULTI_VALUE gate findings (multiple distinct numeric values on one predicate, or multiple objects on a dominantly single-valued predicate); only `error` findings drive the un-merge repair |
 | `FACTS_SHAPES_DIR` | — | Directory of SHACL shape files for the gate; `sh:NodeShape` triples inlined in the ontology context are picked up automatically. SHACL runs only when `pyshacl` is installed (`uv sync --extra shacl`). Setting this without the extra, or pointing it at a missing/empty directory, logs a **warning** — it never passes silently |
+| `FACTS_SHACL_INFERENCE` | `rdfs` | Pre-inference for the SHACL run: `none`, `rdfs`, `owlrl`. RDFS by default because SHACL property paths carry no `rdfs:subPropertyOf` entailment, so a shape naming a superproperty reports the specialised predicate the renderer emitted as missing |
+| `FACTS_SHACL_ADVANCED` | `true` | Enable SHACL Advanced Features (`sh:sparql` constraints, node expressions) |
+| `FACTS_SHACL_MAX_TRIPLES` | `200000` | Skip SHACL with a warning above this graph size; `0` disables the guard |
+| `FACTS_SHACL_AUTOFIX` | `prune` | LLM-free repair of SHACL violations at the gate. `rewrite` retypes literals against `sh:datatype` and resolves a literal to the unique catalog IRI declaring it; `prune` additionally drops `sh:minCount` violators that assert nothing beyond `rdf:type`/`rdfs:label`; `off` reports only. Nothing is ever invented — see [Validation](validation.md#llm-free-autofix) |
+| `FACTS_SHACL_AUTOFIX_PASSES` | `1` | Bounded validate → repair → revalidate rounds; a pass that does not strictly reduce violations is reverted |
 | `FACTS_FUNCTIONAL_MIN_SINGLE_SUPPORT` | `3` | Distinct single-valued subjects a predicate needs before the gate treats it as empirically functional. Below this the evidence is too thin to call a second value a violation |
 | `FACTS_QUANTITY_FALLBACK_VOCABULARY` | QUDT | Role → term mapping the facts prompt names as the fallback for bounded/approximate quantities when retrieval supplied no suitable class. Roles: `value_class`, `numeric_value`, `unit`. Override for catalogs modelling quantities with another vocabulary; set to `{}` to forbid the fallback entirely and keep the renderer inside the provided context. Terms in a configured fallback namespace are reported by `NON_CATALOG_VOCABULARY` as a *deliberate* fallback |
 | `FACTS_ADDITIONAL_STANDARD_NAMESPACES` | schema.org | Namespaces exempt from `UNKNOWN_TERM` beyond the RDF/OWL substrate and annotation/provenance terms. Only meta-vocabularies are built in; a domain vocabulary shared across catalogs (SOSA/SSN, CSVW, FOAF, Dublin Core profiles) is exempted here. schema.org is the default because the shipped citation vocabulary uses it |

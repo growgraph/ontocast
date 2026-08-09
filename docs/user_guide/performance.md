@@ -42,7 +42,7 @@ The headline number is **effective workers**, logged as
 programmatically:
 
 ```python
-budget.parallel_efficiency("Render Facts")   # unit_sum / wall clock
+budget.parallel_efficiency("Render Facts")  # unit_sum / wall clock
 ```
 
 Compare it against `PARALLEL_WORKERS`:

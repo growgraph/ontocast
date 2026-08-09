@@ -19,7 +19,11 @@ from ontocast.onto.enum import (
     WorkflowNode,
 )
 from ontocast.onto.iri_policy import split_namespace_local
-from ontocast.onto.model import FactsValidationFinding, UnitFailure
+from ontocast.onto.model import (
+    FactsValidationFinding,
+    FactsValidationFindingKind,
+    UnitFailure,
+)
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.ontology_apply import (
@@ -44,7 +48,10 @@ from ontocast.stategraph.helpers import (
 )
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.facts_invariants import (
+    FactsValidationReport,
+    apply_shacl_repairs,
     collect_shacl_shapes,
+    summarize_conformance,
     validate_aggregated_facts,
 )
 from ontocast.tool.validate import RDFGraphConnectivityValidator
@@ -633,13 +640,13 @@ def make_render_facts_node(tools: ToolBox):
             for attempts in state.facts_loop_telemetry.values()
             for attempt in attempts
         ]
-        state.retrieval_metrics["facts_repair_visits_total"] = sum(
-            1 for attempt in all_attempts if attempt.kind == "repair"
+        state.retrieval_metrics["facts_llm_repair_renders_total"] = sum(
+            1 for attempt in all_attempts if attempt.kind == "llm_repair"
         )
         state.retrieval_metrics["facts_findings_residual"] = sum(
             attempts[-1].n_deterministic_findings
             for attempts in state.facts_loop_telemetry.values()
-            if attempts and attempts[-1].kind == "repair"
+            if attempts and attempts[-1].kind == "llm_repair"
         )
         state.facts_units = facts_units
         state.status = _map_stage_status(
@@ -707,11 +714,29 @@ def make_merge_facts_node(tools: ToolBox):
     return merge_facts
 
 
+# Finding kinds whose signature IS a bad identity merge: two things that were
+# not the same got one IRI. Un-merging them is a plausible repair.
+#
+# Deliberately excludes SHACL. A constraint violation says a node is
+# under-specified or mistyped against a shape -- a missing required property,
+# a datatype mismatch -- which is orthogonal to identity. Feeding it to the
+# repair dissolved legitimate clusters whenever the focus node happened to be
+# merged, and let SHACL dominate the loop's accept test (violations must
+# strictly decrease), so un-merging was scored on constraints it cannot fix.
+_MERGE_SIGNATURE_KINDS = frozenset(
+    {
+        FactsValidationFindingKind.FUNCTIONAL_VIOLATION,
+        FactsValidationFindingKind.SUSPECT_MULTI_VALUE,
+        FactsValidationFindingKind.DEGENERATE_COREFERENCE,
+    }
+)
+
+
 def _vetoes_from_findings(
     findings: list[FactsValidationFinding],
     clusters: dict[str, list[str]],
 ) -> set[frozenset[URIRef]]:
-    """Full-cluster pair vetoes for error findings on merged entities.
+    """Full-cluster pair vetoes for merge-signature error findings.
 
     Both the finding's subject and its IRI-valued objects are candidate merge
     victims. DEGENERATE_COREFERENCE reports the *pointing* node as subject and
@@ -722,6 +747,8 @@ def _vetoes_from_findings(
     """
     vetoes: set[frozenset[URIRef]] = set()
     for finding in findings:
+        if finding.kind not in _MERGE_SIGNATURE_KINDS:
+            continue
         candidates = [finding.subject, *finding.values]
         for candidate in candidates:
             members = clusters.get(candidate, [])
@@ -738,12 +765,14 @@ def make_validate_facts_node(tools: ToolBox):
     facts_validation = tools.config.get_tool_config().facts_validation
 
     def validate_facts(state: AgentState) -> AgentState:
-        """Post-aggregation invariant gate with deterministic un-merge repair.
+        """Post-aggregation invariant gate with two LLM-free repair stages.
 
-        Error findings whose subject resulted from an identity merge turn the
-        offending cluster into pair vetoes; the retained facts units are then
-        re-aggregated, up to ``FACTS_MERGE_REPAIR_PASSES`` times. Residual
-        findings stay on the state as telemetry.
+        First, un-merge: merge-signature error findings whose subject resulted
+        from an identity merge turn the offending cluster into pair vetoes and
+        the retained facts units are re-aggregated, up to
+        ``FACTS_MERGE_REPAIR_PASSES`` times. Then SHACL autofix
+        (``FACTS_SHACL_AUTOFIX``) repairs constraint violations in code.
+        Residual findings stay on the state as telemetry.
         """
         if not state.facts_units or len(state.aggregated_facts) == 0:
             if state.status != Status.FAILED:
@@ -784,6 +813,21 @@ def make_validate_facts_node(tools: ToolBox):
                 quantity_fallback_vocabulary=(
                     facts_validation.quantity_fallback_vocabulary
                 ),
+                shacl_inference=facts_validation.shacl_inference,
+                shacl_advanced=facts_validation.shacl_advanced,
+                shacl_max_triples=facts_validation.shacl_max_triples,
+            )
+
+        def merge_signature_errors(report: FactsValidationReport) -> int:
+            """Errors the un-merge repair can actually act on.
+
+            Scoring the loop on *all* errors let SHACL findings — which
+            un-merging cannot fix — decide whether a pass was an improvement.
+            """
+            return sum(
+                1
+                for finding in report.error_findings
+                if finding.kind in _MERGE_SIGNATURE_KINDS
             )
 
         report = run_validation()
@@ -791,7 +835,7 @@ def make_validate_facts_node(tools: ToolBox):
         repair_passes = 0
         rejected_repairs = 0
         while (
-            report.error_findings
+            merge_signature_errors(report)
             and repair_passes < facts_validation.merge_repair_passes
         ):
             new_vetoes = _vetoes_from_findings(
@@ -801,9 +845,9 @@ def make_validate_facts_node(tools: ToolBox):
                 break
             vetoes |= new_vetoes
             logger.info(
-                "Facts validation gate: %d error finding(s), re-aggregating "
-                "with %d merge veto pair(s)",
-                len(report.error_findings),
+                "Facts validation gate: %d merge-signature error finding(s), "
+                "re-aggregating with %d merge veto pair(s)",
+                merge_signature_errors(report),
                 len(vetoes),
             )
             result = tools.aggregator.postprocess_facts_units(
@@ -819,17 +863,18 @@ def make_validate_facts_node(tools: ToolBox):
             # coreference for nothing and must not be kept.
             previous_graph = state.aggregated_facts
             previous_clusters = state.aggregation_clusters
-            previous_errors = len(report.error_findings)
+            previous_errors = merge_signature_errors(report)
             state.aggregated_facts = result.graph
             state.aggregation_clusters = result.merged_clusters
             candidate_report = run_validation()
-            if len(candidate_report.error_findings) >= previous_errors:
+            if merge_signature_errors(candidate_report) >= previous_errors:
                 logger.warning(
-                    "Facts validation gate: repair pass %d did not reduce errors "
-                    "(%d -> %d); reverting to the pre-repair graph",
+                    "Facts validation gate: repair pass %d did not reduce "
+                    "merge-signature errors (%d -> %d); reverting to the "
+                    "pre-repair graph",
                     repair_passes + 1,
                     previous_errors,
-                    len(candidate_report.error_findings),
+                    merge_signature_errors(candidate_report),
                 )
                 state.aggregated_facts = previous_graph
                 state.aggregation_clusters = previous_clusters
@@ -838,7 +883,49 @@ def make_validate_facts_node(tools: ToolBox):
             repair_passes += 1
             report = candidate_report
 
+        # Shape-driven repair, in code: retype literals against sh:datatype,
+        # resolve codes to catalog IRIs, drop placeholder nodes. Runs after
+        # un-merging so it sees the graph that will actually be served.
+        if shapes_graph is not None:
+            repair_result = apply_shacl_repairs(
+                state.aggregated_facts,
+                shapes_graph,
+                ontology_graph,
+                mode=facts_validation.shacl_autofix,
+                passes=facts_validation.shacl_autofix_passes,
+                fact_namespaces=fact_namespaces,
+                code_predicates=facts_validation.code_predicates,
+                inference=facts_validation.shacl_inference,
+                advanced=facts_validation.shacl_advanced,
+                max_triples=facts_validation.shacl_max_triples,
+            )
+            if repair_result.records:
+                state.aggregated_facts = repair_result.graph
+                state.facts_gate_repairs = repair_result.records
+                report = run_validation()
+            if repair_result.ran:
+                state.retrieval_metrics["facts_shacl_violations_before"] = (
+                    repair_result.violations_before
+                )
+                state.retrieval_metrics["facts_shacl_violations_after"] = (
+                    repair_result.violations_after
+                )
+                state.retrieval_metrics["facts_shacl_repairs"] = len(
+                    repair_result.records
+                )
+                state.retrieval_metrics["facts_shacl_autofix_passes"] = (
+                    repair_result.passes_applied
+                )
+                state.retrieval_metrics["facts_shacl_autofix_reverted"] = (
+                    repair_result.reverted
+                )
+
         state.facts_validation_findings = report.findings
+        state.facts_conformance = summarize_conformance(
+            report.findings,
+            shacl_evaluated=report.shacl_evaluated,
+            repairs=state.facts_gate_repairs,
+        )
         state.retrieval_metrics["facts_validation_findings"] = len(report.findings)
         state.retrieval_metrics["facts_validation_errors"] = len(report.error_findings)
         state.retrieval_metrics["facts_merge_repair_passes"] = repair_passes

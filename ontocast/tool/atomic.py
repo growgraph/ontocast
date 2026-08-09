@@ -68,10 +68,17 @@ class AtomicToolBox:
             if facts_validation_config is not None
             else True
         )
-        self.facts_repair_visits = (
-            facts_validation_config.repair_visits
+        # Finding-driven repair renders: each one is a provider call.
+        self.facts_llm_repair_visits = (
+            facts_validation_config.llm_repair_visits
             if facts_validation_config is not None
             else 1
+        )
+        # Code predicates for the LLM-free code -> catalog IRI repair.
+        self.code_predicates: tuple[str, ...] = (
+            tuple(facts_validation_config.code_predicates)
+            if facts_validation_config is not None
+            else ()
         )
         self.property_alias_min_ratio = (
             facts_validation_config.property_alias_min_ratio

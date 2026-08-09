@@ -25,9 +25,10 @@ def main(input_path, output_path, prefix):
     input_path = input_path.expanduser()
     output_path = output_path.expanduser()
 
-    files = sorted(
-        crawl_directories(input_path.expanduser(), suffixes=(".pdf",), prefix=prefix)
-    )
+    try:
+        files = sorted(crawl_directories(input_path, suffixes=(".pdf",), prefix=prefix))
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--input-path") from exc
 
     for f in files:
         logger.debug(f"processing {f}")

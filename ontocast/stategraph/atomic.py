@@ -127,7 +127,7 @@ def _collect_facts_findings(
 def _record_facts_attempt(
     unit_state: UnitFactsState,
     *,
-    kind: Literal["render", "critic", "repair"],
+    kind: Literal["render", "critic", "llm_repair"],
     render_attempt: int,
     critic_attempt: int = 0,
     n_findings: int = 0,
@@ -150,7 +150,7 @@ def _record_facts_attempt(
     )
 
 
-async def _run_deterministic_repair(
+async def _run_finding_driven_repair(
     unit_state: UnitFactsState,
     atomic,
     supplemental: list[Ontology],
@@ -158,6 +158,12 @@ async def _run_deterministic_repair(
     render_attempt: int,
 ) -> UnitFactsState:
     """Repair machine-found violations with bounded render-update visits.
+
+    Only the *trigger* here is deterministic: each visit is a paid
+    ``render_facts_update`` call fed with the findings. Machine-applied,
+    LLM-free rewrites are a different thing entirely and run at parse time
+    (``agent/render_facts.py::_normalize_and_repair_graph``) and at the
+    post-merge gate (``tool/facts_invariants.py::apply_shacl_repairs``).
 
     Runs after the final render (where the LLM critic is skipped): mandatory
     findings — quarantined literals, unknown/near-miss terms — drive the loop.
@@ -167,7 +173,7 @@ async def _run_deterministic_repair(
     A failed repair leaves the pre-repair graph intact (the patch path applies
     only parsed operations) and is recorded rather than erased.
     """
-    repair_visits = atomic.facts_repair_visits
+    repair_visits = atomic.facts_llm_repair_visits
     findings = _collect_facts_findings(
         unit_state, atomic.additional_standard_namespaces
     )
@@ -176,7 +182,7 @@ async def _run_deterministic_repair(
         if not mandatory:
             break
         logger.info(
-            "Deterministic facts repair %s/%s: %d finding(s) (%d mandatory)",
+            "Finding-driven facts repair render %s/%s: %d finding(s) (%d mandatory)",
             repair_attempt,
             repair_visits,
             len(findings),
@@ -198,7 +204,7 @@ async def _run_deterministic_repair(
         # not what survived it.
         _record_facts_attempt(
             unit_state,
-            kind="repair",
+            kind="llm_repair",
             render_attempt=render_attempt,
             critic_attempt=repair_attempt,
             n_findings=len(findings),
@@ -210,7 +216,7 @@ async def _run_deterministic_repair(
             # the loop reports SUCCESS -- but the crash is recorded on the
             # attempt log so "repair converged" stays distinguishable from
             # "repair never ran".
-            logger.warning("Deterministic facts repair render failed; keeping graph")
+            logger.warning("Finding-driven facts repair render failed; keeping graph")
             unit_state.clear_failure()
             unit_state.status = Status.SUCCESS
             break
@@ -369,11 +375,12 @@ async def facts_loop(
             if _skip_critic_after_final_render(render_attempt, max_visits):
                 logger.info(
                     "Unit facts loop finishing on final render attempt %s/%s "
-                    "(skipping LLM critic; running deterministic repair)",
+                    "(skipping LLM critic; finding-driven repair renders may "
+                    "still run)",
                     render_attempt,
                     max_visits,
                 )
-                return await _run_deterministic_repair(
+                return await _run_finding_driven_repair(
                     unit_state,
                     atomic,
                     supplemental,
@@ -395,7 +402,7 @@ async def facts_loop(
                         critic_attempt,
                         max_visits,
                     )
-                    return await _run_deterministic_repair(
+                    return await _run_finding_driven_repair(
                         unit_state,
                         atomic,
                         supplemental,
@@ -432,7 +439,7 @@ async def facts_loop(
                         critic_attempt,
                         max_visits,
                     )
-                    return await _run_deterministic_repair(
+                    return await _run_finding_driven_repair(
                         unit_state,
                         atomic,
                         supplemental,

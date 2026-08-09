@@ -169,8 +169,9 @@ Facts output uses the **`cd:` namespace** for text-derived instances; domain ont
 | `LLM_MAX_INFLIGHT` | Max concurrent provider LLM requests (shared across units) |
 | `MAX_CONCURRENT_PROCESSES` | Optional cap on simultaneous `/process` pipelines |
 | `MAX_VISITS` / `max_visits` | Render/critic retry budget per loop (at `1`, the default, the LLM critic never runs — the critic is skipped after the final render) |
-| `FACTS_REPAIR_VISITS` | Deterministic repair budget per facts unit: bounded update renders driven by machine-found violations and numeric-coverage gaps; independent of `MAX_VISITS` |
-| `FACTS_MERGE_REPAIR_PASSES` | Un-merge budget at the post-aggregation validation gate (error findings → cluster pair vetoes → re-aggregation) |
+| `FACTS_LLM_REPAIR_VISITS` | Finding-driven repair budget per facts unit, **in provider calls**: bounded update renders driven by machine-found violations; fires even at `MAX_VISITS=1`, so the default costs up to two calls per unit. See [Validation](validation.md#how-many-llm-calls-a-facts-unit-really-costs) |
+| `FACTS_MERGE_REPAIR_PASSES` | Un-merge budget at the post-aggregation validation gate (merge-signature error findings → cluster pair vetoes → re-aggregation) |
+| `FACTS_SHACL_AUTOFIX` | LLM-free repair of SHACL violations at the gate: `off`, `rewrite`, or `prune` (default). See [Validation](validation.md#llm-free-autofix) |
 | `CHUNK_SEGMENTER` | `semantic` (sections-first, default) or `docling` structural segments |
 | `CHUNK_SECTION_CLASSIFIER` | Section classification cascade: `heuristic` (default, no LLM calls), `heading`, `llm`, or `off` |
 | `CHUNK_SECTION_DENSITY` | Content-based tier for heading-free regions: `conservative` (default), `aggressive`, or `off` |

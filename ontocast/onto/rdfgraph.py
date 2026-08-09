@@ -70,6 +70,47 @@ def _oxigraph_inner_store(rdflib_store: object) -> object:
     return inner
 
 
+def is_rdflib_triple(triple: object) -> bool:
+    """True when every position of ``triple`` is an rdflib :class:`~rdflib.Node`.
+
+    Oxigraph-backed graphs may carry RDF 1.2 triple terms (see
+    ``ontocast.tool.agg.rewriter``), which the oxrdflib iterator yields as plain
+    tuples. Those tuples are not rdflib terms: ``Graph.add`` asserts on them and
+    SPARQL has no syntax for them, so every path that copies or serialises
+    triples out of such a graph has to filter first.
+    """
+    if not isinstance(triple, tuple) or len(triple) != 3:
+        return False
+    return all(isinstance(position, Node) for position in triple)
+
+
+def copy_triples(source: Iterable, target: Graph, *, origin: str) -> int:
+    """Add every rdflib triple of ``source`` to ``target``, dropping triple terms.
+
+    Args:
+        source: Any iterable of triples, typically a graph.
+        target: Graph to add to.
+        origin: Caller name, used in the warning when triples are dropped.
+
+    Returns:
+        The number of triples skipped because they were not rdflib triples.
+    """
+    dropped = 0
+    for triple in source:
+        if not is_rdflib_triple(triple):
+            dropped += 1
+            continue
+        target.add(triple)
+    if dropped:
+        logger.warning(
+            "%s: dropped %d RDF 1.2 triple-term triple(s); rdflib graphs cannot "
+            "hold them",
+            origin,
+            dropped,
+        )
+    return dropped
+
+
 PREFIX_PATTERN = re.compile(r"@prefix\s+(\w+):\s+<[^>]+>\s+\.")
 PREFIX_DECLARATION_PATTERN = re.compile(r"@prefix\s+(\w+):\s+<([^>]+)>\s+\.")
 # Pattern to match prefix usage: prefix:something (not in @prefix declarations)
@@ -543,10 +584,8 @@ class RDFGraph(Graph):
         result = RDFGraph()
 
         # Copy all triples from both graphs
-        for triple in self:
-            result.add(triple)
-        for triple in other:
-            result.add(triple)
+        copy_triples(self, result, origin="RDFGraph.__add__")
+        copy_triples(other, result, origin="RDFGraph.__add__")
 
         existing = {prefix: str(uri) for prefix, uri in self.namespaces() if prefix}
         incoming: dict[str, str] = {}
@@ -577,8 +616,7 @@ class RDFGraph(Graph):
         self.remove((None, None, None))  # Remove all triples
 
         # Copy all triples from result
-        for triple in result:
-            self.add(triple)
+        copy_triples(result, self, origin="RDFGraph.__iadd__")
 
         # Copy namespace bindings from result
         for prefix, uri in result.namespaces():
@@ -594,9 +632,10 @@ class RDFGraph(Graph):
         """
         result = RDFGraph()
 
-        # Copy all triples
-        for triple in self:
-            result.add(triple)
+        # Copy all triples. An oxigraph-backed graph may hold RDF 1.2 triple
+        # terms, which a plain rdflib graph cannot represent -- this is the path
+        # __deepcopy__ takes, so it degrades instead of raising.
+        copy_triples(self, result, origin="RDFGraph.copy")
 
         # Copy namespace bindings
         for prefix, uri in self.namespaces():

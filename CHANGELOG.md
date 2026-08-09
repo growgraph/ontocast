@@ -37,6 +37,80 @@ project:
 
 ## [Unreleased]
 
+### Fixed
+
+- **SHACL findings no longer drive the un-merge repair.** Every error finding
+  reached `_vetoes_from_findings`, and `sh:Violation` maps to error severity —
+  so a missing required property could dissolve a legitimate identity cluster
+  whenever the focus node happened to be merged, and the repair loop's
+  accept test (violations must strictly decrease) was scored on constraints
+  un-merging cannot fix. Vetoes and the loop's objective are now restricted to
+  the merge-signature kinds (`FUNCTIONAL_VIOLATION`, `SUSPECT_MULTI_VALUE`,
+  `DEGENERATE_COREFERENCE`).
+- **SHACL now validates against the ontology context, not the facts alone.**
+  A facts graph states that a value uses `unit:DAY`; that this individual *is*
+  a `qudt:Unit` is stated only in the catalog, so every `sh:class` constraint
+  pointing at a catalog term failed. On the three-document matsci pilot this
+  was **128 of 360** reported violations — phantom findings describing the
+  absent schema.
+- **SHACL runs with RDFS inference by default** (`FACTS_SHACL_INFERENCE`,
+  `FACTS_SHACL_ADVANCED`), matching how the shipped shapes are authored and
+  validated by their own repo harness. SHACL property paths carry no
+  `rdfs:subPropertyOf` entailment, so a shape naming a superproperty reported
+  the specialised predicate the renderer emitted as missing: 268 violations at
+  `none` against 232 at `rdfs` on the same pilot. A `FACTS_SHACL_MAX_TRIPLES`
+  guard skips oversized graphs with a warning rather than stalling, and a
+  skipped run is reported as "did not run", never as "conforms".
+- **Generated API reference navigation.** `docs/gen_pages.py` indexed the
+  literate-nav entries with a path already relative to `reference/`, doubling
+  the prefix, so all 168 generated sidebar links 404'd while the pages
+  themselves rendered — 336 build warnings, exit code 0.
+
+### Added
+
+- **LLM-free repair of SHACL violations** (`FACTS_SHACL_AUTOFIX`, default
+  `prune`) in a bounded validate → repair → revalidate loop
+  (`FACTS_SHACL_AUTOFIX_PASSES`); a pass that does not strictly reduce
+  violations is reverted. `rewrite` retypes a literal to the `sh:datatype` it
+  parses as, and replaces a string literal on an IRI-only path with the single
+  catalog IRI declaring it as a surface form. `prune` additionally drops
+  `sh:minCount` violators that assert nothing beyond `rdf:type`/`rdfs:label`
+  and are referenced by at most one subject — a placeholder value node stands
+  for an extraction that did not happen. `sh:maxCount`, `sh:not`,
+  `sh:qualifiedValueShape` and SPARQL constraints are reported, never
+  repaired. Nothing is invented: a node carrying real data but missing a
+  required property stays a reported finding.
+- **Code resolution at parse time** (`FACTS_CODE_PREDICATES`): a node carrying
+  `qudt:ucumCode "d"` but no unit link gains `qudt:unit unit:DAY` when exactly
+  one catalog individual declares that code. Schema-driven — the connecting
+  property is whichever object property the context declares with a matching
+  range and domain, falling back to the graph's own observed usage when a
+  vendored projection declares no range (the shipped QUDT unit subset does
+  not). Resolved all five ucum-coded nodes in the matsci pilot.
+- **The validation result is reported, not just logged.** `ProcessResultMetadata`
+  gains `facts_conformance` (whether SHACL ran, whether the graph conforms, and
+  counts by finding kind, SHACL constraint component and shape),
+  `facts_validation_findings` and `facts_gate_repairs`. Batch runs write the
+  same payload beside the facts Turtle as `<name>.facts.validation.json`.
+  Grouping by constraint is what makes a residue diagnosable: 36 violations on
+  one shape are one modelling gap, not 36 defects.
+- **[Facts Validation and SHACL](docs/user_guide/validation.md)** documents the
+  three validation layers, which cost a provider call, where shapes come from,
+  what the autofix will and will not do, and how to read the conformance
+  report.
+
+### Changed
+
+- **`FACTS_REPAIR_VISITS` → `FACTS_LLM_REPAIR_VISITS`**, and
+  `_run_deterministic_repair` → `_run_finding_driven_repair`. The old name said
+  "deterministic" for a loop whose every visit is a paid `render_facts_update`
+  call — only its *trigger* is deterministic. This mattered: at the default
+  `MAX_VISITS=1` a facts unit costs up to **two** provider calls, not one, and
+  the documentation claimed otherwise. "Deterministic repair" now names only
+  the LLM-free graph rewrites. Telemetry follows: attempt kind `repair` →
+  `llm_repair`, metric `facts_repair_visits_total` →
+  `facts_llm_repair_renders_total`.
+
 ### Performance
 
 - **Merged facts ontology is built once per document, not once per unit.** It
@@ -403,6 +477,26 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
 
 ### Fixed
 
+- **RDF 1.2 triple terms no longer break graph copies or SPARQL generation**
+  (#48, #49). Oxigraph-backed graphs yield triple terms as plain tuples, which
+  rdflib's `Graph.add` rejects and SPARQL cannot express. `is_rdflib_triple` /
+  `copy_triples` (`onto/rdfgraph.py`) filter them in `RDFGraph.copy`,
+  `__add__`, and `__iadd__` — so `__deepcopy__` degrades instead of raising —
+  and `GraphUpdate._serializable_triples` filters them out of INSERT/DELETE
+  queries and diff summaries. `GraphUpdate._serialize_rdf_term` now raises
+  `TypeError` on an unserialisable term rather than emitting a Python repr into
+  the query, which only surfaced as a `ParseException` at apply time.
+- **Critique reports accept free-text fields returned as lists** (#50). Several
+  providers answer `systemic_critique_summary` (and
+  `ExternalEvidenceRequest.rationale`) with an array of bullets; these are now
+  joined with newlines by a `mode="before"` validator instead of failing
+  validation and burning a critic retry.
+- **`--input-path` accepts a single file and rejects a bad path loudly** (#53).
+  `crawl_directories` returns the file itself when given one, and raises
+  `ValueError` for a path that does not exist or has an unsupported suffix; the
+  CLIs surface that as `BadParameter`. `ontocast process` also exits non-zero
+  when a directory matches no supported input, instead of printing a line to
+  stdout and exiting 0.
 - Cross-chunk person/entity identity merge (initials-aware aliases; label-confirmed pairs bypass cosine gate).
 - Per-unit `retrieval_metrics` fold back into document state; Docling chunker tokenizer budgeted from `CHUNK_MAX_SIZE`; semantic chunker guards for tiny sections.
 - Path-dependent ontology/matsci tests; concurrency bound flake; dead tenancy self-assignment; `test-api` entry shim.

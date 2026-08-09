@@ -1,6 +1,7 @@
 """Shared helpers for local batch processing and HTTP response assembly."""
 
 import asyncio
+import json
 import logging
 import pathlib
 import re
@@ -18,7 +19,10 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
 from ontocast.tool.facts_invariants import (
+    FactsValidationReport,
+    apply_shacl_repairs,
     collect_shacl_shapes,
+    summarize_conformance,
     validate_aggregated_facts,
 )
 from ontocast.tool.triple_manager.core import TripleStoreManager
@@ -136,6 +140,45 @@ def dump_facts_ttl(
         "Dumped facts graph with chunk-level provenance stripped to %s",
         output_path,
     )
+    return output_path
+
+
+def dump_validation_report(
+    state: AgentState,
+    file_path: pathlib.Path,
+    *,
+    line_number: int | None = None,
+    output_dir: pathlib.Path | None = None,
+) -> pathlib.Path | None:
+    """Write the conformance summary and residual findings beside the facts TTL.
+
+    A batch run otherwise leaves no record of *why* a graph is non-conformant:
+    the findings live on the state and are logged, and every downstream reader
+    ends up re-running a validator to rebuild what the gate already computed.
+    """
+    if not state.facts_conformance and not state.facts_validation_findings:
+        return None
+    payload = {
+        "source": file_path.name,
+        "conformance": state.facts_conformance,
+        "gate_repairs": [
+            record.model_dump(mode="json") for record in state.facts_gate_repairs
+        ],
+        "findings": [
+            finding.model_dump(mode="json")
+            for finding in state.facts_validation_findings
+        ],
+    }
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    facts_path = facts_ttl_output_path(
+        file_path, line_number=line_number, output_dir=output_dir
+    )
+    output_path = facts_path.with_name(
+        f"{facts_path.name.removesuffix('.ttl')}.validation.json"
+    )
+    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    logger.info("Dumped facts validation report to %s", output_path)
     return output_path
 
 
@@ -375,16 +418,53 @@ def _validate_unit_pipeline_facts(
     """
     facts_validation = tools.config.get_tool_config().facts_validation
     shapes_graph = collect_shacl_shapes(ontology_graph, facts_validation.shapes_dir)
-    report = validate_aggregated_facts(
-        state.aggregated_facts,
-        ontology_graph,
-        shapes_graph=shapes_graph,
-        fact_namespaces=[DEFAULT_IRI, str(state.doc_iri), state.doc_namespace or ""],
-        suspect_multi_value_severity=facts_validation.suspect_multi_value_severity,
-        functional_min_single_support=facts_validation.functional_min_single_support,
-        quantity_fallback_vocabulary=facts_validation.quantity_fallback_vocabulary,
-    )
+    fact_namespaces = [DEFAULT_IRI, str(state.doc_iri), state.doc_namespace or ""]
+
+    def run_validation() -> FactsValidationReport:
+        return validate_aggregated_facts(
+            state.aggregated_facts,
+            ontology_graph,
+            shapes_graph=shapes_graph,
+            fact_namespaces=fact_namespaces,
+            suspect_multi_value_severity=facts_validation.suspect_multi_value_severity,
+            functional_min_single_support=(
+                facts_validation.functional_min_single_support
+            ),
+            quantity_fallback_vocabulary=(
+                facts_validation.quantity_fallback_vocabulary
+            ),
+            shacl_inference=facts_validation.shacl_inference,
+            shacl_advanced=facts_validation.shacl_advanced,
+            shacl_max_triples=facts_validation.shacl_max_triples,
+        )
+
+    report = run_validation()
+    # The un-merge repair is meaningless for a single unit, but the LLM-free
+    # shape repairs are not: they act on the graph, not on identity decisions.
+    if shapes_graph is not None:
+        repair_result = apply_shacl_repairs(
+            state.aggregated_facts,
+            shapes_graph,
+            ontology_graph,
+            mode=facts_validation.shacl_autofix,
+            passes=facts_validation.shacl_autofix_passes,
+            fact_namespaces=fact_namespaces,
+            code_predicates=facts_validation.code_predicates,
+            inference=facts_validation.shacl_inference,
+            advanced=facts_validation.shacl_advanced,
+            max_triples=facts_validation.shacl_max_triples,
+        )
+        if repair_result.records:
+            state.aggregated_facts = repair_result.graph
+            state.facts_gate_repairs = repair_result.records
+            report = run_validation()
+
     state.facts_validation_findings = report.findings
+    state.facts_conformance = summarize_conformance(
+        report.findings,
+        shacl_evaluated=report.shacl_evaluated,
+        repairs=state.facts_gate_repairs,
+    )
     state.retrieval_metrics["facts_validation_findings"] = len(report.findings)
     state.retrieval_metrics["facts_validation_errors"] = len(report.error_findings)
     if report.error_findings:
@@ -427,6 +507,12 @@ def _merge_workflow_state_into_agent_state(
     findings = workflow_state.get("facts_validation_findings")
     if findings is not None:
         state.facts_validation_findings = list(findings)
+    gate_repairs = workflow_state.get("facts_gate_repairs")
+    if gate_repairs is not None:
+        state.facts_gate_repairs = list(gate_repairs)
+    conformance = workflow_state.get("facts_conformance")
+    if conformance:
+        state.facts_conformance = dict(conformance)
     metrics = workflow_state.get("retrieval_metrics")
     if metrics:
         state.retrieval_metrics = dict(metrics)
@@ -543,6 +629,12 @@ async def process_files_input(
                     file_path,
                     line_number=line_number,
                     output_dir=ontology_dir,
+                )
+                dump_validation_report(
+                    state,
+                    file_path,
+                    line_number=line_number,
+                    output_dir=facts_dir,
                 )
         except Exception:
             logger.exception("Error processing %s", file_path)

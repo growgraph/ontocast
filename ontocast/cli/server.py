@@ -448,12 +448,17 @@ def process(
     ontology_dir = (
         ontology_output_dir.expanduser() if ontology_output_dir is not None else None
     )
-    files = sorted(
-        crawl_directories(
-            input_path,
-            suffixes=get_supported_input_extensions(runtime.tools),
+    supported_suffixes = get_supported_input_extensions(runtime.tools)
+    try:
+        files = sorted(crawl_directories(input_path, suffixes=supported_suffixes))
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--input-path") from exc
+    if not files:
+        # An empty crawl used to exit 0 with no output, which reads as success.
+        raise click.ClickException(
+            f"No supported input files under {input_path} "
+            f"(looking for {', '.join(supported_suffixes)})."
         )
-    )
     failed_files = asyncio.run(
         process_files_input(
             files,

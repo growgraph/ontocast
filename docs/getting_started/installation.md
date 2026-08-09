@@ -39,7 +39,7 @@ for you.
 | `sparse` | `fastembed` BM25 sparse embeddings | Implied by `qdrant` and `lancedb`; pulls an ONNX runtime |
 | `semantic-chunking` | Clustering-based chunker (`CHUNK_STRATEGY=semantic`) | Pulls `torch` and `sentence-transformers`; multi-GB download. The model is shared with retrieval and disambiguation when `CHUNK_EMBEDDING_MODEL` matches theirs |
 | `graph` | `networkx` ontology lineage graphs | |
-| `shacl` | SHACL validation of aggregated facts via `FACTS_SHAPES_DIR` | Without it, shape validation logs a warning and does nothing |
+| `shacl` | SHACL validation of aggregated facts (`FACTS_SHAPES_DIR` or inline `sh:NodeShape`) plus the LLM-free shape-driven autofix | Without it, shape validation logs a warning and does nothing — see [Validation](../user_guide/validation.md) |
 | `web-search` | Optional web grounding (`WEB_SEARCH_ENABLED=true`) | |
 | `plot` | `plot-graph` workflow diagrams | Builds `pygraphviz` from source; needs system graphviz headers |
 | `all` | Everything above **except** `plot` | `plot` is excluded because its source build fails without system headers |

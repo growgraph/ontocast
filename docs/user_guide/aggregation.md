@@ -43,16 +43,14 @@ Lower thresholds merge more aggressively (fewer duplicate entities, higher false
 6. **URI rewrite** — merge graphs under canonical entity URIs
 7. **Provenance** — track which unit contributed each merged triple
 8. **Validation gate** (stategraph only) — after merging, the `VALIDATE_FACTS`
-   node checks post-merge invariants: functional violations
-   (`owl:FunctionalProperty` / max-cardinality-1 harvest), suspect
-   multi-values (≥ 2 distinct numeric values on one predicate, or ≥ 2 objects
-   on a dominantly single-valued predicate), degenerate coreference (one
-   object under ≥ 2 single-valued predicates of one subject — collapsed
-   range bounds), and optional SHACL (`FACTS_SHAPES_DIR`, extra `shacl`).
-   The guards are pairwise, so a chain A–B, B–C can still transitively unite
-   conflicting A and C; the gate catches exactly this: error findings on
-   merged subjects turn the offending cluster into pair vetoes and the facts
-   units are re-aggregated (`FACTS_MERGE_REPAIR_PASSES`, default 1).
+   node checks post-merge invariants and applies LLM-free repairs; see
+   [Facts Validation and SHACL](validation.md). The merge guards are pairwise,
+   so a chain A–B, B–C can still transitively unite conflicting A and C; the
+   gate catches exactly this: *merge-signature* error findings on merged
+   subjects turn the offending cluster into pair vetoes and the facts units are
+   re-aggregated (`FACTS_MERGE_REPAIR_PASSES`, default 1). SHACL findings are
+   deliberately not part of that loop — a constraint violation is not evidence
+   of a bad identity merge.
 
 The standalone **EntityAligner** (`tool/agg/entity_aligner.py`) powers global alignment for the `/match/entities` API (benchmark use), using the same embedding and symbolic regime concepts (`ontology_loose` / `ontology_strict`).
 

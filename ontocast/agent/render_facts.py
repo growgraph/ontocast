@@ -47,6 +47,7 @@ from ontocast.tool.facts_invariants import (
     normalize_literals_against_schema,
     repair_literal_type_objects,
     repair_property_aliases,
+    resolve_code_literals,
 )
 from ontocast.tool.validate import partition_object_property_literal_triples
 
@@ -58,20 +59,24 @@ def _normalize_and_repair_graph(
     ontology_context_graph: RDFGraph,
     *,
     min_ratio: float,
+    code_predicates: Sequence[str] = (),
     budget_tracker: BudgetTracker | None = None,
 ) -> tuple[RDFGraph, list[GraphRepairRecord]]:
-    """Apply deterministic parse-time fixes to a rendered graph in place.
+    """Apply LLM-free parse-time fixes to a rendered graph in place.
 
     Retypes untyped numeric literals against declared numeric ranges, coerces
-    literal ``rdf:type`` objects into IRIs, and rewrites unambiguous near-miss
+    literal ``rdf:type`` objects into IRIs, rewrites unambiguous near-miss
     predicates in catalog namespaces (e.g. ``qudt:value`` ->
-    ``qudt:numericValue``). Ambiguous near-misses and unresolvable type
-    literals are left for findings collection.
+    ``qudt:numericValue``), and links nodes to the catalog individual whose
+    code they carry (``qudt:ucumCode "d"`` -> ``qudt:unit unit:DAY``).
+    Ambiguous near-misses and unresolvable type literals are left for findings
+    collection.
 
     Args:
         graph: Rendered facts graph, repaired in place.
         ontology_context_graph: Read-only schema the repairs are checked against.
         min_ratio: Similarity floor for accepting an alias rewrite.
+        code_predicates: Predicates carrying machine-resolvable codes.
         budget_tracker: Charged ``"repair/deterministic"``. Both scans here walk
             the whole ontology graph per call, so this is timed to show how much
             of it is per-unit-invariant work.
@@ -85,19 +90,23 @@ def _normalize_and_repair_graph(
     rewritten, _alias_findings, alias_records = repair_property_aliases(
         graph, ontology_context_graph, min_ratio=min_ratio
     )
+    resolved, code_records = resolve_code_literals(
+        graph, ontology_context_graph, code_predicates
+    )
     if budget_tracker is not None:
         budget_tracker.add_duration(
             "repair/deterministic", time.perf_counter() - started
         )
-    if retyped or rewritten or type_repaired:
+    if retyped or rewritten or type_repaired or resolved:
         logger.info(
             "Deterministic graph repair: retyped %d literal(s), coerced %d "
-            "rdf:type literal(s), rewrote %d alias triple(s)",
+            "rdf:type literal(s), rewrote %d alias triple(s), resolved %d code(s)",
             retyped,
             type_repaired,
             rewritten,
+            resolved,
         )
-    return graph, [*type_records, *alias_records]
+    return graph, [*type_records, *alias_records, *code_records]
 
 
 def _findings_instruction(state: UnitFactsState) -> str:
@@ -334,6 +343,7 @@ async def render_facts_fresh(
             clean_graph,
             ontology_context_graph,
             min_ratio=tools.property_alias_min_ratio,
+            code_predicates=tools.code_predicates,
             budget_tracker=state.budget_tracker,
         )
         state.applied_repairs.extend(repair_records)
@@ -451,6 +461,7 @@ async def render_facts_update(
                     clean_graph,
                     ontology_context_graph,
                     min_ratio=tools.property_alias_min_ratio,
+                    code_predicates=tools.code_predicates,
                     budget_tracker=state.budget_tracker,
                 )
                 state.applied_repairs.extend(repair_records)

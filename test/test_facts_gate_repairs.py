@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from rdflib import OWL, RDF, RDFS, Literal, URIRef
+from rdflib import OWL, RDF, RDFS, Literal, Namespace, URIRef
 from rdflib.namespace import XSD
 
 from ontocast.config import FactsValidationConfig
@@ -18,9 +18,12 @@ from ontocast.onto.model import FactsValidationFinding, FactsValidationFindingKi
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.stategraph.node_factories import _vetoes_from_findings
 from ontocast.tool.facts_invariants import (
-    _shacl_findings,
+    apply_shacl_repairs,
     collect_shacl_shapes,
     repair_property_aliases,
+    resolve_code_literals,
+    run_shacl,
+    summarize_conformance,
     validate_aggregated_facts,
 )
 from ontocast.toolbox import ToolBox
@@ -122,10 +125,11 @@ def test_empty_shapes_dir_warns(caplog, tmp_path) -> None:
 
 
 def test_missing_pyshacl_warns(caplog, monkeypatch) -> None:
-    """Absent extra is reported at warning level, not debug.
+    """Absent extra is reported at warning level, and as "did not run".
 
-    Reaching ``_shacl_findings`` means shapes were found, so the caller expects
+    Reaching ``run_shacl`` means shapes were found, so the caller expects
     validation to run; returning [] quietly is indistinguishable from conforms.
+    ``None`` is what keeps the two apart downstream.
     """
     import builtins
 
@@ -138,8 +142,18 @@ def test_missing_pyshacl_warns(caplog, monkeypatch) -> None:
 
     monkeypatch.setattr(builtins, "__import__", fail_pyshacl)
     with caplog.at_level(logging.WARNING):
-        assert _shacl_findings(RDFGraph(), RDFGraph()) == []
+        assert run_shacl(RDFGraph(), RDFGraph()) is None
     assert "pyshacl is not installed" in caplog.text
+
+
+def test_oversized_graph_skips_shacl_with_a_warning(caplog) -> None:
+    """A skipped run must not read as a clean one."""
+    graph = RDFGraph()
+    for index in range(5):
+        graph.add((URIRef(f"{CD}s{index}"), RDFS.label, Literal(index)))
+    with caplog.at_level(logging.WARNING):
+        assert run_shacl(graph, _value_shapes(), max_triples=2) is None
+    assert "unvalidated, not conformant" in caplog.text
 
 
 # --- repair_property_aliases rewrites against a partial snapshot -------------
@@ -250,7 +264,7 @@ def test_repair_that_does_not_reduce_errors_is_reverted(monkeypatch, caplog) -> 
     assert state.aggregated_facts is original
     assert state.retrieval_metrics["facts_merge_repairs_rejected"] == 1
     assert state.retrieval_metrics["facts_merge_repair_passes"] == 0
-    assert "did not reduce errors" in caplog.text
+    assert "did not reduce merge-signature errors" in caplog.text
 
 
 # --- functional_min_single_support is reachable from config -----------------
@@ -278,3 +292,382 @@ def test_functional_min_single_support_is_honoured(
         functional_min_single_support=min_support,
     )
     assert bool(report.error_findings) is expect_error
+
+
+# --- SHACL findings must not drive the un-merge repair -----------------------
+
+
+def test_shacl_findings_never_veto_a_merge() -> None:
+    """A constraint violation is not evidence that two entities were confused.
+
+    Un-merging cannot fix a missing required property, so letting SHACL reach
+    the veto set dissolved legitimate clusters whenever the focus node happened
+    to be merged.
+    """
+    finding = FactsValidationFinding(
+        kind=FactsValidationFindingKind.SHACL,
+        message="missing qualifier",
+        subject=CD + "merged",
+    )
+    clusters = {CD + "merged": [CD + "a", CD + "b"]}
+
+    assert _vetoes_from_findings([finding], clusters) == set()
+
+
+# --- LLM-free SHACL repair ---------------------------------------------------
+
+SH = Namespace("http://www.w3.org/ns/shacl#")
+VALUE_CLASS = URIRef(Q + "QuantityValue")
+NUMERIC = URIRef(Q + "numericValue")
+UNIT = URIRef(Q + "unit")
+UNIT_CLASS = URIRef(Q + "Unit")
+UCUM = URIRef("http://qudt.org/schema/qudt/ucumCode")
+
+
+def _value_shapes() -> RDFGraph:
+    """Shapes for a quantity value: typed numeric, IRI unit, numeric required."""
+    shapes = RDFGraph()
+    shape = URIRef(Q + "ValueShape")
+    numeric_prop = URIRef(Q + "p_numeric")
+    unit_prop = URIRef(Q + "p_unit")
+    shapes.add((shape, RDF.type, SH.NodeShape))
+    shapes.add((shape, SH.targetClass, VALUE_CLASS))
+    shapes.add((shape, SH.property, numeric_prop))
+    shapes.add((numeric_prop, SH.path, NUMERIC))
+    shapes.add((numeric_prop, SH.datatype, XSD.decimal))
+    shapes.add((numeric_prop, SH.minCount, Literal(1)))
+    shapes.add((shape, SH.property, unit_prop))
+    shapes.add((unit_prop, SH.path, UNIT))
+    shapes.add((unit_prop, SH.nodeKind, SH.IRI))
+    return shapes
+
+
+def _unit_catalog() -> RDFGraph:
+    """One unit individual carrying a UCUM code."""
+    ontology = RDFGraph()
+    day = URIRef(Q + "DAY")
+    ontology.add((UNIT_CLASS, RDF.type, OWL.Class))
+    ontology.add((day, RDF.type, UNIT_CLASS))
+    ontology.add((day, UCUM, Literal("d")))
+    ontology.add((UNIT, RDF.type, OWL.ObjectProperty))
+    ontology.add((UNIT, RDFS.range, UNIT_CLASS))
+    return ontology
+
+
+def _repair(graph: RDFGraph, *, mode: str = "prune", ontology=None):
+    return apply_shacl_repairs(
+        graph,
+        _value_shapes(),
+        ontology if ontology is not None else _unit_catalog(),
+        mode=mode,
+        passes=2,
+        fact_namespaces=[CD],
+        code_predicates=[str(UCUM)],
+    )
+
+
+def test_datatype_violation_is_retyped_not_reported() -> None:
+    """An untyped literal that parses as the declared datatype is repairable."""
+    graph = RDFGraph()
+    node = URIRef(CD + "v1")
+    graph.add((node, RDF.type, VALUE_CLASS))
+    graph.add((node, NUMERIC, Literal("230")))
+    graph.add((node, UNIT, URIRef(Q + "DAY")))
+
+    result = _repair(graph)
+
+    assert result.violations_after == 0
+    assert list(result.graph.objects(node, NUMERIC)) == [
+        Literal("230", datatype=XSD.decimal)
+    ]
+    assert [record.kind for record in result.records] == ["shacl_retype"]
+
+
+def test_literal_on_an_iri_path_resolves_to_the_unique_catalog_term() -> None:
+    """``unit "d"`` becomes ``unit <DAY>`` when exactly one term declares "d"."""
+    graph = RDFGraph()
+    node = URIRef(CD + "v1")
+    graph.add((node, RDF.type, VALUE_CLASS))
+    graph.add((node, NUMERIC, Literal("4", datatype=XSD.decimal)))
+    graph.add((node, UNIT, Literal("d")))
+
+    result = _repair(graph)
+
+    assert list(result.graph.objects(node, UNIT)) == [URIRef(Q + "DAY")]
+    assert result.violations_after == 0
+
+
+def test_ambiguous_surface_form_is_left_reported() -> None:
+    """Two terms claiming one code is not a repairable situation."""
+    ontology = _unit_catalog()
+    twin = URIRef(Q + "DAY_TWIN")
+    ontology.add((twin, RDF.type, UNIT_CLASS))
+    ontology.add((twin, UCUM, Literal("d")))
+
+    graph = RDFGraph()
+    node = URIRef(CD + "v1")
+    graph.add((node, RDF.type, VALUE_CLASS))
+    graph.add((node, NUMERIC, Literal("4", datatype=XSD.decimal)))
+    graph.add((node, UNIT, Literal("d")))
+
+    result = _repair(graph, ontology=ontology)
+
+    assert result.records == []
+    assert list(result.graph.objects(node, UNIT)) == [Literal("d")]
+
+
+def test_placeholder_node_is_pruned_with_its_incoming_edge() -> None:
+    """A value node asserting only a label stands for an extraction that failed."""
+    graph = RDFGraph()
+    placeholder = URIRef(CD + "v_empty")
+    observation = URIRef(CD + "obs")
+    graph.add((placeholder, RDF.type, VALUE_CLASS))
+    graph.add((placeholder, RDFS.label, Literal("efficiency")))
+    graph.add((observation, URIRef(Q + "hasValue"), placeholder))
+
+    result = _repair(graph)
+
+    assert [record.kind for record in result.records] == ["shacl_prune"]
+    assert len(result.graph) == 0
+    assert result.violations_after == 0
+
+
+def test_node_with_data_is_never_pruned_and_never_invented() -> None:
+    """Missing a required property is reported, not filled in or deleted."""
+    graph = RDFGraph()
+    node = URIRef(CD + "v1")
+    graph.add((node, RDF.type, VALUE_CLASS))
+    graph.add((node, UNIT, URIRef(Q + "DAY")))
+    graph.add((node, URIRef(Q + "comment"), Literal("source states < 1 um")))
+
+    result = _repair(graph)
+
+    assert result.records == []
+    assert result.violations_after == result.violations_before == 1
+    assert (
+        node,
+        URIRef(Q + "comment"),
+        Literal("source states < 1 um"),
+    ) in result.graph
+
+
+def test_rewrite_mode_does_not_prune() -> None:
+    """``rewrite`` is the never-remove-a-triple tier."""
+    graph = RDFGraph()
+    placeholder = URIRef(CD + "v_empty")
+    graph.add((placeholder, RDF.type, VALUE_CLASS))
+    graph.add((placeholder, RDFS.label, Literal("efficiency")))
+
+    result = _repair(graph, mode="rewrite")
+
+    assert result.records == []
+    assert len(result.graph) == 2
+
+
+def test_autofix_off_reports_without_repairing() -> None:
+    graph = RDFGraph()
+    node = URIRef(CD + "v1")
+    graph.add((node, RDF.type, VALUE_CLASS))
+    graph.add((node, NUMERIC, Literal("230")))
+
+    result = _repair(graph, mode="off")
+
+    assert not result.ran
+    assert result.records == []
+    assert list(result.graph.objects(node, NUMERIC)) == [Literal("230")]
+
+
+def test_ontology_is_mixed_into_the_data_graph() -> None:
+    """A catalog individual's type lives in the ontology, not in the facts.
+
+    Validating the facts alone failed every ``sh:class`` constraint pointing at
+    a catalog term -- violations describing the absent schema, not the data.
+    """
+    shapes = RDFGraph()
+    shape = URIRef(Q + "UnitShape")
+    unit_prop = URIRef(Q + "p_unit_class")
+    shapes.add((shape, RDF.type, SH.NodeShape))
+    shapes.add((shape, SH.targetClass, VALUE_CLASS))
+    shapes.add((shape, SH.property, unit_prop))
+    shapes.add((unit_prop, SH.path, UNIT))
+    shapes.add((unit_prop, SH["class"], UNIT_CLASS))
+
+    graph = RDFGraph()
+    node = URIRef(CD + "v1")
+    graph.add((node, RDF.type, VALUE_CLASS))
+    graph.add((node, UNIT, URIRef(Q + "DAY")))
+
+    assert len(run_shacl(graph, shapes, ontology_graph=None) or []) == 1
+    assert run_shacl(graph, shapes, ontology_graph=_unit_catalog()) == []
+
+
+def test_rdfs_inference_sees_the_specialised_predicate() -> None:
+    """SHACL paths carry no subPropertyOf entailment.
+
+    The renderer emits the most specific predicate it can. A shape naming the
+    superproperty then reports a statement that *is* there as missing —
+    unless RDFS inference runs first. (Class targets need no help: SHACL
+    resolves those through rdfs:subClassOf itself.)
+    """
+    ontology = _unit_catalog()
+    precise = URIRef(Q + "preciseNumericValue")
+    ontology.add((precise, RDFS.subPropertyOf, NUMERIC))
+
+    graph = RDFGraph()
+    node = URIRef(CD + "v1")
+    graph.add((node, RDF.type, VALUE_CLASS))
+    graph.add((node, precise, Literal("4", datatype=XSD.decimal)))
+    graph.add((node, UNIT, URIRef(Q + "DAY")))
+
+    without = (
+        run_shacl(graph, _value_shapes(), ontology_graph=ontology, inference="none")
+        or []
+    )
+    assert [str(violation.path) for violation in without] == [str(NUMERIC)]
+    assert (
+        run_shacl(graph, _value_shapes(), ontology_graph=ontology, inference="rdfs")
+        == []
+    )
+
+
+# --- code resolution ---------------------------------------------------------
+
+
+def test_code_literal_links_to_the_catalog_individual() -> None:
+    """``ucumCode "d"`` with no unit link gains ``unit <DAY>``."""
+    graph = RDFGraph()
+    node = URIRef(CD + "v1")
+    graph.add((node, RDF.type, VALUE_CLASS))
+    graph.add((node, UCUM, Literal("d")))
+
+    added, records = resolve_code_literals(graph, _unit_catalog(), [str(UCUM)])
+
+    assert added == 1
+    assert list(graph.objects(node, UNIT)) == [URIRef(Q + "DAY")]
+    assert [record.kind for record in records] == ["code_resolved"]
+
+
+def test_code_resolution_leaves_an_existing_link_alone() -> None:
+    graph = RDFGraph()
+    node = URIRef(CD + "v1")
+    graph.add((node, RDF.type, VALUE_CLASS))
+    graph.add((node, UCUM, Literal("d")))
+    graph.add((node, UNIT, URIRef(Q + "OTHER")))
+
+    added, _ = resolve_code_literals(graph, _unit_catalog(), [str(UCUM)])
+
+    assert added == 0
+    assert list(graph.objects(node, UNIT)) == [URIRef(Q + "OTHER")]
+
+
+def test_code_resolution_needs_an_unambiguous_code() -> None:
+    ontology = _unit_catalog()
+    twin = URIRef(Q + "DAY_TWIN")
+    ontology.add((twin, RDF.type, UNIT_CLASS))
+    ontology.add((twin, UCUM, Literal("d")))
+
+    graph = RDFGraph()
+    node = URIRef(CD + "v1")
+    graph.add((node, RDF.type, VALUE_CLASS))
+    graph.add((node, UCUM, Literal("d")))
+
+    added, _ = resolve_code_literals(graph, ontology, [str(UCUM)])
+
+    assert added == 0
+
+
+def test_code_resolution_falls_back_to_observed_usage() -> None:
+    """A vendored projection may declare individuals but no rdfs:range."""
+    ontology = _unit_catalog()
+    ontology.remove((UNIT, RDFS.range, UNIT_CLASS))
+
+    graph = RDFGraph()
+    linked = URIRef(CD + "v_linked")
+    graph.add((linked, RDF.type, VALUE_CLASS))
+    graph.add((linked, UNIT, URIRef(Q + "DAY")))
+    node = URIRef(CD + "v1")
+    graph.add((node, RDF.type, VALUE_CLASS))
+    graph.add((node, UCUM, Literal("d")))
+
+    added, _ = resolve_code_literals(graph, ontology, [str(UCUM)])
+
+    assert added == 1
+    assert list(graph.objects(node, UNIT)) == [URIRef(Q + "DAY")]
+
+
+# --- conformance summary -----------------------------------------------------
+
+
+def test_summary_separates_conforms_from_never_checked() -> None:
+    """ "No SHACL findings" is meaningless without knowing whether it ran."""
+    assert summarize_conformance([], shacl_evaluated=True)["conforms"] is True
+    assert summarize_conformance([], shacl_evaluated=False)["conforms"] is None
+    assert summarize_conformance([], shacl_evaluated=None)["conforms"] is None
+
+
+def test_summary_groups_violations_by_constraint() -> None:
+    """One systematic gap must not read as N independent defects."""
+    findings = [
+        FactsValidationFinding(
+            kind=FactsValidationFindingKind.SHACL,
+            message="missing qualifier",
+            subject=f"{CD}v{index}",
+            component=str(SH.MinCountConstraintComponent),
+            source_shape=Q + "ValueShape",
+        )
+        for index in range(3)
+    ]
+    summary = summarize_conformance(findings, shacl_evaluated=True)
+
+    assert summary["conforms"] is False
+    assert summary["shacl_by_constraint"] == {"MinCountConstraintComponent": 3}
+    assert summary["shacl_by_shape"] == {Q + "ValueShape": 3}
+
+
+def test_gate_repairs_and_reports_through_the_node(tmp_path) -> None:
+    """End-to-end through VALIDATE_FACTS: repair applied, result reported.
+
+    Pins the wiring, not the repair logic: shapes reach the gate, the LLM-free
+    pass mutates the served graph, and the conformance summary plus the repair
+    records land on the state the API and the batch dump read.
+    """
+    from ontocast.onto.content_unit import ContentUnit, OutputType
+    from ontocast.onto.state import AgentState
+    from ontocast.stategraph.node_factories import make_validate_facts_node
+
+    (tmp_path / "shapes.ttl").write_text(
+        _value_shapes().serialize(format="turtle"), encoding="utf-8"
+    )
+
+    node = URIRef(CD + "v1")
+    facts = RDFGraph()
+    facts.add((node, RDF.type, VALUE_CLASS))
+    facts.add((node, NUMERIC, Literal("230")))
+    facts.add((node, UNIT, URIRef(Q + "DAY")))
+
+    state = AgentState()
+    state.current_domain = "https://x.org"
+    state.doc_hid = "1"
+    state.aggregated_facts = facts
+    state.facts_ontology_context = _unit_catalog()
+    state.facts_units = [
+        ContentUnit(
+            text="t",
+            index=0,
+            doc_iri=URIRef("https://x.org/doc/1"),
+            graph=facts,
+            type=OutputType.FACTS,
+        )
+    ]
+
+    tools = _fake_tools(None, shapes_dir=str(tmp_path))
+    make_validate_facts_node(tools)(state)
+
+    assert list(state.aggregated_facts.objects(node, NUMERIC)) == [
+        Literal("230", datatype=XSD.decimal)
+    ]
+    assert [record.kind for record in state.facts_gate_repairs] == ["shacl_retype"]
+    assert state.facts_conformance["conforms"] is True
+    assert state.facts_conformance["repairs_applied"] == {"shacl_retype": 1}
+    assert state.retrieval_metrics["facts_shacl_violations_before"] == 1
+    assert state.retrieval_metrics["facts_shacl_violations_after"] == 0

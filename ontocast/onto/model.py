@@ -10,6 +10,22 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate
 
 
+def _coerce_free_text(v: object) -> str:
+    """Coerce LLM free-text output to a string.
+
+    Several providers answer a single-string field with a bulleted list. The
+    content is usable as-is, so join it rather than rejecting the whole report
+    and burning a retry.
+    """
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, (list, tuple)):
+        return "\n".join(part for part in (str(item).strip() for item in v) if part)
+    return str(v)
+
+
 class BasePydanticModel(BaseModel):
     """Base class for Pydantic models with serialization capabilities."""
 
@@ -165,6 +181,11 @@ class ExternalEvidenceRequest(BaseModel):
         le=1.0,
         description="Confidence in this search decision.",
     )
+
+    @field_validator("rationale", mode="before")
+    @classmethod
+    def coerce_rationale(cls, v: object) -> str:
+        return _coerce_free_text(v)
 
     @field_validator("query_hints", mode="before")
     @classmethod
@@ -404,6 +425,12 @@ class OntologyCritiqueReport(BaseModel):
         default="",
         description="A high-level summary of systemic deficiencies in the ontology (e.g., poor hierarchy structure, redundant concepts, lack of appropriate granularity, or general failures in Domain Coverage). This addresses strategic issues beyond individual term fixes.",
     )
+
+    @field_validator("systemic_critique_summary", mode="before")
+    @classmethod
+    def coerce_systemic_critique_summary(cls, v: object) -> str:
+        return _coerce_free_text(v)
+
     external_evidence_request: ExternalEvidenceRequest = Field(
         default_factory=ExternalEvidenceRequest,
         description="Optional request to run web search before retrying.",
@@ -450,6 +477,12 @@ class FactsCritiqueReport(BaseModel):
             "This guides strategic improvements to the fact-extraction process."
         ),
     )
+
+    @field_validator("systemic_critique_summary", mode="before")
+    @classmethod
+    def coerce_systemic_critique_summary(cls, v: object) -> str:
+        return _coerce_free_text(v)
+
     external_evidence_request: ExternalEvidenceRequest = Field(
         default_factory=ExternalEvidenceRequest,
         description="Optional request to run web search before retrying.",
@@ -561,15 +594,30 @@ class FactsUnitFinding(BaseModel):
     suggestions: list[str] = Field(default_factory=list)
 
 
-class GraphRepairRecord(BaseModel):
-    """One machine-applied deterministic rewrite on a rendered facts graph.
+class FactsGateRepairKind(StrEnum):
+    """Kinds of machine-applied repair at the post-aggregation gate.
 
-    Records what the repair passes changed (near-miss predicate rewrites,
-    literal ``rdf:type`` coercions) so downstream consumers can distinguish
-    machine-altered triples from what the LLM asserted.
+    Distinct from :class:`FactsUnitFindingKind`: these are shape-driven and
+    apply to the merged graph, where the SHACL report is available.
     """
 
-    kind: FactsUnitFindingKind
+    SHACL_RETYPE = "shacl_retype"
+    SHACL_CODE_RESOLVED = "shacl_code_resolved"
+    SHACL_PRUNE = "shacl_prune"
+    CODE_RESOLVED = "code_resolved"
+
+
+class GraphRepairRecord(BaseModel):
+    """One machine-applied deterministic rewrite on a facts graph.
+
+    LLM-free by construction: every repair either rewrites a term the catalog
+    already declares or removes a node that asserts nothing. Records what the
+    repair passes changed (near-miss predicate rewrites, literal ``rdf:type``
+    coercions, shape-driven retyping/pruning) so downstream consumers can
+    distinguish machine-altered triples from what the LLM asserted.
+    """
+
+    kind: FactsUnitFindingKind | FactsGateRepairKind
     source: str
     target: str
     triple_count: int = 1
@@ -593,14 +641,18 @@ class FactsLoopAttempt(BaseModel):
     """Telemetry record for one attempt inside the per-unit facts loop.
 
     ``n_deterministic_findings`` / ``n_mandatory_findings`` count findings
-    against the graph as of this record: for ``repair`` records that is the
+    against the graph as of this record: for ``llm_repair`` records that is the
     residual *after* the repair render, so summing the last repair record per
     unit yields the true document-level residual.
+
+    ``kind="llm_repair"`` is a finding-*driven* render — it costs a provider
+    call. LLM-free machine rewrites are not attempts and are recorded as
+    ``GraphRepairRecord`` instead.
     """
 
     render_attempt: int = 0
     critic_attempt: int = 0
-    kind: Literal["render", "critic", "repair"] = "render"
+    kind: Literal["render", "critic", "llm_repair"] = "render"
     score: float | None = None
     success: bool | None = None
     n_actionable_fixes: int = 0
@@ -635,6 +687,18 @@ class FactsValidationFinding(BaseModel):
     subject: str = ""
     predicate: str = ""
     values: list[str] = Field(default_factory=list)
+    component: str = Field(
+        default="",
+        description=(
+            "SHACL constraint component IRI (sh:MinCountConstraintComponent, "
+            "…) for SHACL findings; empty otherwise. Grouping by it is what "
+            "turns a list of violations into a diagnosis."
+        ),
+    )
+    source_shape: str = Field(
+        default="",
+        description="SHACL shape that reported the violation; empty otherwise.",
+    )
 
 
 class Suggestions(BaseModel):
@@ -653,6 +717,11 @@ class Suggestions(BaseModel):
     systemic_critique_summary: str = Field(
         default="", description="A general improvement suggestion."
     )
+
+    @field_validator("systemic_critique_summary", mode="before")
+    @classmethod
+    def coerce_systemic_critique_summary(cls, v: object) -> str:
+        return _coerce_free_text(v)
 
     @classmethod
     def from_critique_report(

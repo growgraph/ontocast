@@ -43,6 +43,10 @@ ontocast serve --wipe-vector-store
 - Triple store: Fuseki when `FUSEKI_URI` is set; otherwise in-memory pyoxigraph
 - Vector store: Qdrant (`QDRANT_URI`) or LanceDB (`LANCEDB_ENABLED=true`), not both
 - Paths and directories are configured via `.env`
+- `--input-path` takes a single file or a directory (searched recursively). A
+  path that does not exist, a file whose extension is not supported, or a
+  directory holding no supported input is a hard error with a non-zero exit —
+  never a silent no-op
 
 ### Configuration
 

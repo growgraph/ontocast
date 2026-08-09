@@ -15,13 +15,15 @@ import re
 from collections.abc import Sequence
 from difflib import SequenceMatcher
 from pathlib import Path
+from typing import Literal as TypingLiteral
 
 from pydantic import BaseModel, Field
-from rdflib import OWL, RDF, RDFS, SKOS, Literal, URIRef
+from rdflib import OWL, RDF, RDFS, SKOS, Literal, Namespace, URIRef
 from rdflib.namespace import DCTERMS, PROV, XSD
 from rdflib.term import Node
 
 from ontocast.onto.model import (
+    FactsGateRepairKind,
     FactsUnitFinding,
     FactsUnitFindingKind,
     FactsValidationFinding,
@@ -383,6 +385,158 @@ def repair_property_aliases(
             )
         )
     return rewritten, findings, applied
+
+
+def _observed_linking_predicates(
+    graph: RDFGraph,
+    ontology_graph: RDFGraph,
+    subject_types: set[URIRef],
+    object_types: set[URIRef],
+) -> list[URIRef]:
+    """Predicates the graph already uses to link these two kinds of node.
+
+    Evidence, not schema: used only where the schema declares no range, and
+    only when the evidence is unambiguous (exactly one such predicate).
+    """
+    observed: set[URIRef] = set()
+    for subject, predicate, obj in graph:
+        if not isinstance(predicate, URIRef) or not isinstance(obj, URIRef):
+            continue
+        if predicate == RDF.type:
+            continue
+        obj_types: set[URIRef] = set()
+        for type_iri in ontology_graph.objects(obj, RDF.type):
+            if isinstance(type_iri, URIRef):
+                obj_types |= _superclass_closure(type_iri, ontology_graph)
+        if not obj_types & object_types:
+            continue
+        if subject_types:
+            own_types: set[URIRef] = set()
+            for type_iri in graph.objects(subject, RDF.type):
+                if isinstance(type_iri, URIRef):
+                    own_types |= _superclass_closure(type_iri, ontology_graph)
+            if not own_types & subject_types:
+                continue
+        observed.add(predicate)
+    return sorted(observed, key=str)
+
+
+def resolve_code_literals(
+    graph: RDFGraph,
+    ontology_graph: RDFGraph | None,
+    code_predicates: Sequence[str] = (),
+) -> tuple[int, list[GraphRepairRecord]]:
+    """Link nodes to the catalog individual whose code they already carry.
+
+    A renderer that reads ``4-15 days`` often annotates the value node with the
+    code it saw — ``qudt:ucumCode "d"`` — instead of the object property that
+    points at the individual — ``qudt:unit unit:DAY``. The graph is well-formed,
+    so no range check fires, but every query reading the object property gets
+    an unbound result. The code came from the text and the individual is in the
+    catalog, so the link is recoverable without asking the model again.
+
+    Fully schema-driven, no vocabulary compiled in: the connecting property is
+    whichever object property the ontology context declares with a range the
+    resolved individual is typed as, and a domain the subject satisfies. If the
+    schema offers several such properties, or none, nothing is added.
+
+    Args:
+        graph: Rendered facts graph, repaired in place.
+        ontology_graph: Merged ontology context, read-only.
+        code_predicates: Predicates carrying machine-resolvable codes.
+
+    Returns:
+        Tuple of (number of added triples, applied-repair records).
+    """
+    if ontology_graph is None or not code_predicates:
+        return 0, []
+    index = build_surface_index(ontology_graph, code_predicates)
+    if not index:
+        return 0, []
+    code_terms = [URIRef(predicate) for predicate in code_predicates]
+    # Only the code predicates themselves resolve here: a label match is a
+    # different, much weaker signal and belongs to the shapes-driven pass.
+    code_index: dict[str, set[str]] = {}
+    for predicate in code_terms:
+        for subject, value in ontology_graph.subject_objects(predicate):
+            if isinstance(subject, URIRef) and isinstance(value, Literal):
+                text = str(value).strip()
+                if text:
+                    code_index.setdefault(text, set()).add(str(subject))
+    if not code_index:
+        return 0, []
+
+    domains = _declared_domains(ontology_graph)
+    ranges: dict[URIRef, set[URIRef]] = {}
+    for predicate, _, range_iri in ontology_graph.triples((None, RDFS.range, None)):
+        if isinstance(predicate, URIRef) and isinstance(range_iri, URIRef):
+            ranges.setdefault(predicate, set()).add(range_iri)
+
+    added = 0
+    records: list[GraphRepairRecord] = []
+    for code_predicate in code_terms:
+        for subject, value in list(graph.subject_objects(code_predicate)):
+            if not isinstance(subject, URIRef) or not isinstance(value, Literal):
+                continue
+            resolved = resolve_unique_surface(code_index, str(value))
+            if resolved is None:
+                continue
+            resolved_types: set[URIRef] = set()
+            for type_iri in ontology_graph.objects(resolved, RDF.type):
+                if isinstance(type_iri, URIRef):
+                    resolved_types |= _superclass_closure(type_iri, ontology_graph)
+            if not resolved_types:
+                continue
+            subject_types: set[URIRef] = set()
+            for type_iri in graph.objects(subject, RDF.type):
+                if isinstance(type_iri, URIRef):
+                    subject_types |= _superclass_closure(type_iri, ontology_graph)
+
+            candidates = [
+                predicate
+                for predicate, range_set in ranges.items()
+                if range_set & resolved_types
+                and (
+                    predicate not in domains
+                    or not domains[predicate]
+                    or domains[predicate] & subject_types
+                )
+            ]
+            if not candidates:
+                # Vendored vocabulary projections often declare individuals and
+                # their codes but no rdfs:range (the shipped QUDT unit subset is
+                # one). Fall back to how the graph already links this kind of
+                # subject to this kind of individual -- the same
+                # induce-from-usage move the functional-predicate harvest makes.
+                candidates = _observed_linking_predicates(
+                    graph, ontology_graph, subject_types, resolved_types
+                )
+            # Already linked, ambiguous, or unsupported by the schema.
+            candidates = [
+                predicate
+                for predicate in candidates
+                if (subject, predicate, None) not in graph
+            ]
+            if len(candidates) != 1:
+                continue
+            predicate = candidates[0]
+            graph.add((subject, predicate, resolved))
+            added += 1
+            records.append(
+                GraphRepairRecord(
+                    kind=FactsGateRepairKind.CODE_RESOLVED,
+                    source=f"{code_predicate} {value.n3()}",
+                    target=f"{predicate} {resolved}",
+                )
+            )
+            logger.info(
+                "Resolved code %s on <%s> to <%s %s>",
+                value.n3(),
+                subject,
+                predicate,
+                resolved,
+            )
+    return added, records
 
 
 def _superclass_closure(class_iri: URIRef, ontology_graph: RDFGraph) -> set[URIRef]:
@@ -789,11 +943,81 @@ class FactsValidationReport(BaseModel):
     """Invariant findings over one aggregated facts graph."""
 
     findings: list[FactsValidationFinding] = Field(default_factory=list)
+    shacl_evaluated: bool | None = Field(
+        default=None,
+        description=(
+            "True when SHACL ran, False when shapes were configured but it "
+            "could not (pyshacl missing, graph over the size guard), None when "
+            "no shapes were in play. 'No SHACL findings' means nothing without "
+            "this: it reads identically for 'conforms' and 'never checked'."
+        ),
+    )
 
     @property
     def error_findings(self) -> list[FactsValidationFinding]:
-        """Findings that justify a deterministic un-merge repair pass."""
+        """Error-severity findings, whatever their kind."""
         return [finding for finding in self.findings if finding.severity == "error"]
+
+
+def summarize_conformance(
+    findings: Sequence[FactsValidationFinding],
+    *,
+    shacl_evaluated: bool | None = None,
+    repairs: Sequence[GraphRepairRecord] = (),
+) -> dict:
+    """Roll findings up into the shape a report or a client can read.
+
+    Counting by constraint component is what separates "168 violations" from
+    "two systematic defects": 71 missing-qualifier violations on one shape are
+    one modelling gap, not 71 problems to triage.
+
+    Args:
+        findings: Residual findings after any repair.
+        shacl_evaluated: Whether SHACL actually ran (see
+            :class:`FactsValidationReport`).
+        repairs: LLM-free repairs the gate applied.
+
+    Returns:
+        ``conforms`` (None when SHACL did not run), counts by severity, by
+        finding kind, by SHACL constraint component and shape, and the applied
+        repair counts by kind.
+    """
+    shacl_findings = [
+        finding
+        for finding in findings
+        if finding.kind == FactsValidationFindingKind.SHACL
+    ]
+    by_kind: dict[str, int] = {}
+    for finding in findings:
+        by_kind[str(finding.kind)] = by_kind.get(str(finding.kind), 0) + 1
+    by_component: dict[str, int] = {}
+    by_shape: dict[str, int] = {}
+    for finding in shacl_findings:
+        if finding.component:
+            key = _local_name(finding.component) or finding.component
+            by_component[key] = by_component.get(key, 0) + 1
+        if finding.source_shape:
+            by_shape[finding.source_shape] = by_shape.get(finding.source_shape, 0) + 1
+    repairs_by_kind: dict[str, int] = {}
+    for record in repairs:
+        repairs_by_kind[str(record.kind)] = repairs_by_kind.get(str(record.kind), 0) + 1
+
+    return {
+        "shacl_evaluated": shacl_evaluated,
+        "conforms": None if not shacl_evaluated else not shacl_findings,
+        "findings": len(findings),
+        "errors": sum(1 for finding in findings if finding.severity == "error"),
+        "warnings": sum(1 for finding in findings if finding.severity == "warning"),
+        "by_kind": dict(sorted(by_kind.items())),
+        "shacl_violations": len(shacl_findings),
+        "shacl_by_constraint": dict(
+            sorted(by_component.items(), key=lambda item: (-item[1], item[0]))
+        ),
+        "shacl_by_shape": dict(
+            sorted(by_shape.items(), key=lambda item: (-item[1], item[0]))
+        ),
+        "repairs_applied": dict(sorted(repairs_by_kind.items())),
+    }
 
 
 def _in_fact_scope(subject: URIRef, fact_namespaces: list[str]) -> bool:
@@ -840,14 +1064,83 @@ def _dominant_single_valued_predicates(
     }
 
 
-def _shacl_findings(
-    graph: RDFGraph, shapes_graph: RDFGraph
-) -> list[FactsValidationFinding]:
-    """Run pyshacl when available.
+SHACL = "http://www.w3.org/ns/shacl#"
+SH = Namespace(SHACL)
+
+
+class ShaclViolation(BaseModel):
+    """One SHACL validation result, in the form the repair pass needs.
+
+    ``FactsValidationFinding`` is the reporting shape and deliberately flat;
+    this keeps the RDF terms (focus node, path, offending value, constraint
+    component) so a repair can act on them.
+    """
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    focus: Node | None = None
+    path: URIRef | None = None
+    value: Node | None = None
+    component: URIRef | None = None
+    source_shape: URIRef | None = None
+    severity: TypingLiteral["error", "warning"] = "error"
+    message: str = "SHACL constraint violated."
+
+    def as_finding(self) -> FactsValidationFinding:
+        """Project onto the reported finding shape."""
+        return FactsValidationFinding(
+            kind=FactsValidationFindingKind.SHACL,
+            severity=self.severity,
+            message=self.message,
+            subject=str(self.focus) if self.focus is not None else "",
+            predicate=str(self.path) if self.path is not None else "",
+            values=[str(self.value)] if self.value is not None else [],
+            component=str(self.component) if self.component is not None else "",
+            source_shape=(
+                str(self.source_shape) if self.source_shape is not None else ""
+            ),
+        )
+
+
+def run_shacl(
+    graph: RDFGraph,
+    shapes_graph: RDFGraph,
+    *,
+    ontology_graph: RDFGraph | None = None,
+    inference: str = "rdfs",
+    advanced: bool = True,
+    max_triples: int = 0,
+) -> list[ShaclViolation] | None:
+    """Validate ``graph`` against ``shapes_graph``, returning the violations.
 
     Reaching here means shapes were found, so the caller expects validation to
-    happen: a missing extra is reported at warning level, not debug. Silently
-    returning "no findings" is indistinguishable from "conforms".
+    happen: a missing extra or a skipped run is reported at warning level, not
+    debug. Silently returning "no violations" is indistinguishable from
+    "conforms", so those cases return ``None``.
+
+    The ontology context is mixed in (``ont_graph``) rather than left out. A
+    facts graph states that a value uses ``unit:DAY``; that the individual *is*
+    a ``qudt:Unit`` is stated only in the catalog. Validating the facts alone
+    therefore fails every ``sh:class`` constraint pointing at a catalog
+    individual — violations that describe the missing schema, not the data.
+
+    RDFS inference is the default for the same reason. SHACL resolves class
+    targets through ``rdfs:subClassOf`` on its own, but property paths carry no
+    entailment: a shape on ``obs:hasResult`` does not see the
+    ``life:hasStorageResult`` the renderer emitted, and reports the more
+    specific statement as a missing one. Measured on the three-document matsci
+    pilot: 268 violations at ``inference="none"`` against 232 with RDFS.
+
+    Args:
+        graph: Data graph to validate.
+        shapes_graph: Shapes to validate against.
+        ontology_graph: Schema mixed into the data graph for validation.
+        inference: pyshacl pre-inference (``none`` / ``rdfs`` / ``owlrl``).
+        advanced: Enable SHACL Advanced Features.
+        max_triples: Skip validation above this graph size; 0 disables.
+
+    Returns:
+        Violations in report order, or ``None`` when validation did not run.
     """
     try:
         import pyshacl
@@ -856,32 +1149,55 @@ def _shacl_findings(
             "SHACL shapes are configured but pyshacl is not installed; "
             "skipping SHACL validation. Install the extra: uv sync --extra shacl"
         )
-        return []
+        return None
 
-    shacl = "http://www.w3.org/ns/shacl#"
+    if max_triples and len(graph) > max_triples:
+        logger.warning(
+            "Skipping SHACL validation: %d triples exceeds "
+            "FACTS_SHACL_MAX_TRIPLES=%d. The graph is unvalidated, not conformant.",
+            len(graph),
+            max_triples,
+        )
+        return None
+
     conforms, results_graph, _ = pyshacl.validate(
-        graph, shacl_graph=shapes_graph, inference="none", abort_on_first=False
+        graph,
+        shacl_graph=shapes_graph,
+        ont_graph=(
+            ontology_graph
+            if ontology_graph is not None and len(ontology_graph)
+            else None
+        ),
+        inference=inference,
+        advanced=advanced,
+        abort_on_first=False,
     )
     if conforms:
         return []
-    findings: list[FactsValidationFinding] = []
-    for result in results_graph.subjects(RDF.type, URIRef(shacl + "ValidationResult")):
-        severity_iri = results_graph.value(result, URIRef(shacl + "resultSeverity"))
-        focus = results_graph.value(result, URIRef(shacl + "focusNode"))
-        path = results_graph.value(result, URIRef(shacl + "resultPath"))
-        message = results_graph.value(result, URIRef(shacl + "resultMessage"))
-        findings.append(
-            FactsValidationFinding(
-                kind=FactsValidationFindingKind.SHACL,
+
+    violations: list[ShaclViolation] = []
+    for result in results_graph.subjects(RDF.type, SH.ValidationResult):
+        severity_iri = results_graph.value(result, SH.resultSeverity)
+        message = results_graph.value(result, SH.resultMessage)
+        path = results_graph.value(result, SH.resultPath)
+        component = results_graph.value(result, SH.sourceConstraintComponent)
+        source_shape = results_graph.value(result, SH.sourceShape)
+        violations.append(
+            ShaclViolation(
+                focus=results_graph.value(result, SH.focusNode),
+                path=path if isinstance(path, URIRef) else None,
+                value=results_graph.value(result, SH.value),
+                component=component if isinstance(component, URIRef) else None,
+                source_shape=(
+                    source_shape if isinstance(source_shape, URIRef) else None
+                ),
                 severity=(
-                    "error" if str(severity_iri) == shacl + "Violation" else "warning"
+                    "error" if str(severity_iri) == SHACL + "Violation" else "warning"
                 ),
                 message=str(message) if message else "SHACL constraint violated.",
-                subject=str(focus) if focus else "",
-                predicate=str(path) if path else "",
             )
         )
-    return findings
+    return violations
 
 
 def collect_shacl_shapes(
@@ -916,10 +1232,336 @@ def collect_shacl_shapes(
                     shapes.parse(path.as_posix(), format="turtle")
                 except Exception as error:
                     logger.warning("Failed to parse shapes file %s: %s", path, error)
-    node_shape = URIRef("http://www.w3.org/ns/shacl#NodeShape")
+    node_shape = SH.NodeShape
     if ontology_graph is not None and (None, RDF.type, node_shape) in ontology_graph:
         shapes += ontology_graph
     return shapes if len(shapes) else None
+
+
+# --- LLM-free repair of SHACL violations -------------------------------------
+#
+# The contract for everything below: a repair either rewrites a term the
+# catalog already declares, or removes a node that asserts nothing. No repair
+# invents a value. A node carrying real data but missing a required property is
+# left alone and reported -- filling it in would be fabrication, and dropping it
+# would be data loss.
+
+# Predicates that carry no assertion about the world: a node holding only these
+# is a placeholder for an extraction that did not happen.
+_EMPTY_NODE_PREDICATES = frozenset({RDF.type, RDFS.label, SKOS.prefLabel})
+
+_RETYPABLE_COMPONENTS = frozenset({SH.DatatypeConstraintComponent})
+_IRI_RESOLVABLE_COMPONENTS = frozenset(
+    {SH.ClassConstraintComponent, SH.NodeKindConstraintComponent}
+)
+_PRUNABLE_COMPONENTS = frozenset({SH.MinCountConstraintComponent})
+
+
+class ShaclRepairResult(BaseModel):
+    """Outcome of the LLM-free SHACL repair pass."""
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    graph: RDFGraph
+    records: list[GraphRepairRecord] = Field(default_factory=list)
+    violations_before: int = 0
+    violations_after: int = 0
+    passes_applied: int = 0
+    reverted: bool = False
+    ran: bool = False
+
+
+def build_surface_index(
+    ontology_graph: RDFGraph | None,
+    code_predicates: Sequence[str] = (),
+) -> dict[str, set[str]]:
+    """Map exact catalog surface forms to the IRIs declaring them.
+
+    Case-sensitive and exact: these are codes and names a model may have
+    transcribed verbatim (``"d"``, ``"meV"``, ``"CsPbBr3"``), not free text to
+    be fuzzy-matched. A form claimed by more than one IRI stays in the index and
+    is rejected at lookup time — an ambiguous code is not a repairable one.
+
+    Args:
+        ontology_graph: Merged ontology context to index.
+        code_predicates: Extra code-bearing predicates (UCUM codes, symbols,
+            notations) on top of the standard name predicates.
+
+    Returns:
+        Surface form -> set of IRIs declaring it.
+    """
+    index: dict[str, set[str]] = {}
+    if ontology_graph is None:
+        return index
+    predicates: list[URIRef] = [RDFS.label, SKOS.prefLabel, SKOS.notation]
+    predicates.extend(URIRef(predicate) for predicate in code_predicates)
+    for predicate in predicates:
+        for subject, value in ontology_graph.subject_objects(predicate):
+            if not isinstance(subject, URIRef) or not isinstance(value, Literal):
+                continue
+            text = str(value).strip()
+            if text:
+                index.setdefault(text, set()).add(str(subject))
+    return index
+
+
+def resolve_unique_surface(index: dict[str, set[str]], text: str) -> URIRef | None:
+    """The single IRI declaring ``text`` as a surface form, if exactly one does."""
+    candidates = index.get(text.strip(), set())
+    if len(candidates) != 1:
+        return None
+    return URIRef(next(iter(candidates)))
+
+
+def _literal_parses_as(lexical: str, datatype: URIRef) -> bool:
+    """True when ``lexical`` is a well-formed literal of ``datatype``."""
+    return Literal(lexical, datatype=datatype).value is not None
+
+
+def _copy_graph(graph: RDFGraph) -> RDFGraph:
+    """Shallow structural copy, keeping namespace bindings."""
+    clone = RDFGraph()
+    for prefix, namespace in graph.namespaces():
+        clone.bind(prefix, namespace, override=True)
+    for triple in graph:
+        clone.add(triple)
+    return clone
+
+
+def _node_asserts_nothing(graph: RDFGraph, node: Node) -> bool:
+    """True when ``node`` carries no triple beyond typing and labelling."""
+    outgoing = list(graph.predicate_objects(node))
+    if not outgoing:
+        return True
+    return all(predicate in _EMPTY_NODE_PREDICATES for predicate, _ in outgoing)
+
+
+def _shacl_repairs_for(
+    graph: RDFGraph,
+    shapes_graph: RDFGraph,
+    violations: Sequence[ShaclViolation],
+    *,
+    mode: str,
+    surface_index: dict[str, set[str]],
+    fact_namespaces: Sequence[str],
+) -> tuple[list[tuple], list[tuple], list[GraphRepairRecord]]:
+    """Derive (removals, additions, records) for one round of violations."""
+    removals: list[tuple] = []
+    additions: list[tuple] = []
+    records: list[GraphRepairRecord] = []
+    pruned: set[Node] = set()
+
+    for violation in violations:
+        if violation.severity != "error" or violation.focus is None:
+            continue
+        if isinstance(violation.focus, URIRef) and not _in_fact_scope(
+            violation.focus, list(fact_namespaces)
+        ):
+            # Ontology entities are not the gate's business to rewrite.
+            continue
+        component = violation.component
+        shape = violation.source_shape
+
+        if (
+            component in _RETYPABLE_COMPONENTS
+            and violation.path is not None
+            and isinstance(violation.value, Literal)
+            and shape is not None
+        ):
+            target = shapes_graph.value(shape, SH.datatype)
+            lexical = str(violation.value).strip()
+            if (
+                isinstance(target, URIRef)
+                and violation.value.datatype != target
+                and _literal_parses_as(lexical, target)
+            ):
+                retyped = Literal(lexical, datatype=target)
+                removals.append((violation.focus, violation.path, violation.value))
+                additions.append((violation.focus, violation.path, retyped))
+                records.append(
+                    GraphRepairRecord(
+                        kind=FactsGateRepairKind.SHACL_RETYPE,
+                        source=f"{violation.path} {violation.value.n3()}",
+                        target=retyped.n3(),
+                    )
+                )
+            continue
+
+        if (
+            component in _IRI_RESOLVABLE_COMPONENTS
+            and violation.path is not None
+            and isinstance(violation.value, Literal)
+        ):
+            resolved = resolve_unique_surface(surface_index, str(violation.value))
+            if resolved is not None:
+                removals.append((violation.focus, violation.path, violation.value))
+                additions.append((violation.focus, violation.path, resolved))
+                records.append(
+                    GraphRepairRecord(
+                        kind=FactsGateRepairKind.SHACL_CODE_RESOLVED,
+                        source=f"{violation.path} {violation.value.n3()}",
+                        target=str(resolved),
+                    )
+                )
+            continue
+
+        if (
+            mode == "prune"
+            and component in _PRUNABLE_COMPONENTS
+            and violation.focus not in pruned
+            and _node_asserts_nothing(graph, violation.focus)
+        ):
+            referrers = {
+                subject for subject, _ in graph.subject_predicates(violation.focus)
+            }
+            if len(referrers) > 1:
+                # Shared by several subjects: removing it would silently change
+                # statements that were never validated here.
+                continue
+            pruned.add(violation.focus)
+            incoming = list(graph.triples((None, None, violation.focus)))
+            outgoing = [
+                (violation.focus, predicate, obj)
+                for predicate, obj in graph.predicate_objects(violation.focus)
+            ]
+            removals.extend(incoming)
+            removals.extend(outgoing)
+            records.append(
+                GraphRepairRecord(
+                    kind=FactsGateRepairKind.SHACL_PRUNE,
+                    source=str(violation.focus),
+                    target="",
+                    triple_count=len(incoming) + len(outgoing),
+                )
+            )
+
+    return removals, additions, records
+
+
+def apply_shacl_repairs(
+    graph: RDFGraph,
+    shapes_graph: RDFGraph | None,
+    ontology_graph: RDFGraph | None,
+    *,
+    mode: str = "prune",
+    passes: int = 1,
+    fact_namespaces: Sequence[str] = (),
+    code_predicates: Sequence[str] = (),
+    inference: str = "rdfs",
+    advanced: bool = True,
+    max_triples: int = 0,
+) -> ShaclRepairResult:
+    """Repair SHACL violations in code, with no LLM round-trip.
+
+    Bounded ``validate -> repair -> revalidate`` loop. A pass is kept only when
+    it strictly reduces the violation count: a repair that trades triples for
+    no conformance gain is reverted, the same discipline the un-merge repair
+    uses.
+
+    Repairs by constraint component:
+        - ``sh:datatype``: retype a literal that parses as the declared
+          datatype (``"2019"^^xsd:string`` -> ``"2019"^^xsd:gYear``).
+        - ``sh:class`` / ``sh:nodeKind``: replace a string literal with the one
+          catalog IRI declaring it as a surface form (``qudt:unit "meV"`` ->
+          ``unit:MilliElectronVolt``). Ambiguous forms are left reported.
+        - ``sh:minCount`` (mode ``prune`` only): drop a focus node that asserts
+          nothing beyond ``rdf:type``/``rdfs:label`` and is referenced by at
+          most one subject, together with that reference.
+
+    Everything else -- ``sh:maxCount`` (owned by the functional-violation and
+    un-merge machinery), ``sh:not``, ``sh:qualifiedValueShape``, SPARQL
+    constraints -- is reported, never repaired.
+
+    Args:
+        graph: Aggregated facts graph; never mutated (a repaired copy is
+            returned instead).
+        shapes_graph: Shapes to validate against; ``None`` disables the pass.
+        ontology_graph: Merged ontology context, indexed for surface forms.
+        mode: ``off`` | ``rewrite`` (rewrites only) | ``prune`` (also prunes).
+        passes: Maximum repair rounds.
+        fact_namespaces: Only nodes under these namespaces are repaired.
+        code_predicates: Code-bearing predicates for surface resolution.
+        inference: pyshacl pre-inference mode.
+        advanced: Enable SHACL Advanced Features.
+        max_triples: Skip validation above this graph size; 0 disables.
+
+    Returns:
+        The repaired graph (or the original when nothing applied), the applied
+        repair records, and violation counts before and after.
+    """
+    if mode == "off" or shapes_graph is None or not len(shapes_graph) or passes <= 0:
+        return ShaclRepairResult(graph=graph)
+
+    def _validate(target: RDFGraph) -> list[ShaclViolation] | None:
+        return run_shacl(
+            target,
+            shapes_graph,
+            ontology_graph=ontology_graph,
+            inference=inference,
+            advanced=advanced,
+            max_triples=max_triples,
+        )
+
+    violations = _validate(graph)
+    if violations is None:
+        return ShaclRepairResult(graph=graph)
+
+    result = ShaclRepairResult(
+        graph=graph,
+        violations_before=len(violations),
+        violations_after=len(violations),
+        ran=True,
+    )
+    surface_index = build_surface_index(ontology_graph, code_predicates)
+    current = graph
+
+    for _ in range(passes):
+        if not violations:
+            break
+        removals, additions, records = _shacl_repairs_for(
+            current,
+            shapes_graph,
+            violations,
+            mode=mode,
+            surface_index=surface_index,
+            fact_namespaces=fact_namespaces,
+        )
+        if not records:
+            break
+
+        candidate = _copy_graph(current)
+        for triple in removals:
+            candidate.remove(triple)
+        for triple in additions:
+            candidate.add(triple)
+
+        candidate_violations = _validate(candidate)
+        if candidate_violations is None:
+            break
+        if len(candidate_violations) >= len(violations):
+            logger.warning(
+                "SHACL autofix: pass did not reduce violations (%d -> %d); "
+                "keeping the pre-repair graph",
+                len(violations),
+                len(candidate_violations),
+            )
+            result.reverted = True
+            break
+
+        logger.info(
+            "SHACL autofix: %d repair(s) applied, violations %d -> %d",
+            len(records),
+            len(violations),
+            len(candidate_violations),
+        )
+        current = candidate
+        violations = candidate_violations
+        result.records.extend(records)
+        result.passes_applied += 1
+        result.violations_after = len(candidate_violations)
+
+    result.graph = current
+    return result
 
 
 # Scaffolding every facts graph uses regardless of catalog: flagging rdfs:label
@@ -1062,12 +1704,18 @@ def validate_aggregated_facts(
     suspect_multi_value_severity: str = "error",
     functional_min_single_support: int = 3,
     quantity_fallback_vocabulary: dict[str, str] | None = None,
+    shacl_inference: str = "rdfs",
+    shacl_advanced: bool = True,
+    shacl_max_triples: int = 0,
 ) -> FactsValidationReport:
     """Check post-merge invariants over the aggregated facts graph.
 
-    Deterministic defense-in-depth behind the merge guards: violations here
-    are almost always the signature of a bad identity merge, and
-    error-severity findings on merged subjects drive the un-merge repair.
+    Deterministic defense-in-depth behind the merge guards: merge-signature
+    violations here are almost always a bad identity merge, and error-severity
+    findings of those kinds on merged subjects drive the un-merge repair.
+    SHACL findings are reported but never drive it: a constraint violation
+    says a node is under-specified, not that two entities were wrongly
+    identified.
 
     Checks:
         - ``FUNCTIONAL_VIOLATION``: >= 2 distinct objects on a predicate the
@@ -1095,6 +1743,9 @@ def validate_aggregated_facts(
             SUSPECT_MULTI_VALUE findings.
         functional_min_single_support: Minimum single-valued subjects before a
             predicate counts as dominantly single-valued.
+        shacl_inference: pyshacl pre-inference mode (see :func:`run_shacl`).
+        shacl_advanced: Enable SHACL Advanced Features.
+        shacl_max_triples: Skip SHACL above this graph size; 0 disables.
 
     Returns:
         Report with all findings, ordered by subject.
@@ -1243,10 +1894,20 @@ def validate_aggregated_facts(
             )
         )
 
+    shacl_evaluated: bool | None = None
     if shapes_graph is not None and len(shapes_graph):
+        violations = run_shacl(
+            graph,
+            shapes_graph,
+            ontology_graph=ontology_graph,
+            inference=shacl_inference,
+            advanced=shacl_advanced,
+            max_triples=shacl_max_triples,
+        )
+        shacl_evaluated = violations is not None
         findings.extend(
             finding
-            for finding in _shacl_findings(graph, shapes_graph)
+            for finding in (violation.as_finding() for violation in violations or [])
             if not finding.subject
             or _in_fact_scope(URIRef(finding.subject), namespaces)
         )
@@ -1259,7 +1920,7 @@ def validate_aggregated_facts(
 
     findings.extend(_dangling_reference_findings(graph, namespaces))
 
-    return FactsValidationReport(findings=findings)
+    return FactsValidationReport(findings=findings, shacl_evaluated=shacl_evaluated)
 
 
 _DANGLING_REFERENCE_REPORT_CAP = 20

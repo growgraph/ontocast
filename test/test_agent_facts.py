@@ -68,6 +68,7 @@ def _build_tools() -> AtomicToolBox:
             # duplicated literal default, so a rename fails loudly here
             # instead of silently reverting the configured ratio.
             property_alias_min_ratio=0.85,
+            code_predicates=(),
             citation_vocabulary={},
             quantity_fallback_vocabulary=None,
         ),

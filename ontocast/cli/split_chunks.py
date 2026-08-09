@@ -154,9 +154,12 @@ def main(input_path, output_path, prefix):
 
     chunker = ChunkerTool(chunk_config=chunk_config)
 
-    files = sorted(
-        crawl_directories(input_path.expanduser(), suffixes=(".json",), prefix=prefix)
-    )
+    try:
+        files = sorted(
+            crawl_directories(input_path, suffixes=(".json",), prefix=prefix)
+        )
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--input-path") from exc
 
     for f in files:
         process(f, output_path, chunker)

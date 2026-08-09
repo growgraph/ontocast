@@ -1862,15 +1862,18 @@ class FactsValidationConfig(BaseSettings):
             "to an IRI from the ontology context."
         ),
     )
-    repair_visits: int = Field(
+    llm_repair_visits: int = Field(
         default=1,
         ge=0,
         description=(
-            "Deterministic repair budget per unit: extra render_facts_update "
-            "calls fed with machine-found MANDATORY fixes (quarantined "
-            "literals, unknown terms, alias leftovers) and numeric-coverage "
-            "candidates. Applies even at MAX_VISITS=1, where the LLM critic "
-            "never runs."
+            "Finding-driven repair budget per unit, in **LLM calls**: extra "
+            "render_facts_update requests fed with machine-found MANDATORY "
+            "fixes (quarantined literals, unknown terms, alias leftovers) and "
+            "numeric-coverage candidates. Only the trigger is deterministic — "
+            "each visit is billed. They fire even at MAX_VISITS=1, where the "
+            "LLM critic never runs, so the default costs up to two provider "
+            "calls per unit. Set 0 to keep extraction at exactly one call per "
+            "unit and leave findings to the LLM-free repairs and the gate."
         ),
     )
     property_alias_min_ratio: float = Field(
@@ -1949,6 +1952,78 @@ class FactsValidationConfig(BaseSettings):
             "(extra: 'shacl'). Setting this without the extra installed, or "
             "pointing it at a directory with no readable shapes, logs a "
             "warning rather than silently skipping validation."
+        ),
+    )
+    shacl_inference: Literal["none", "rdfs", "owlrl"] = Field(
+        default="rdfs",
+        description=(
+            "Inference pyshacl applies before evaluating shapes. RDFS is the "
+            "default because the renderer emits the most specific predicate it "
+            "can, and SHACL property paths carry no rdfs:subPropertyOf "
+            "entailment: a shape naming the superproperty reports the "
+            "specialised statement as missing. (Class targets need no help — "
+            "SHACL resolves those through rdfs:subClassOf itself.) Measured on "
+            "the matsci pilot: 268 violations at 'none' against 232 at 'rdfs'. "
+            "Set 'none' for shapes written against exactly the terms the graph "
+            "uses, or when validation time dominates."
+        ),
+    )
+    shacl_advanced: bool = Field(
+        default=True,
+        description=(
+            "Enable the SHACL Advanced Features extension (sh:sparql "
+            "constraints, node expressions). Shapes that do not use it are "
+            "unaffected."
+        ),
+    )
+    shacl_max_triples: int = Field(
+        default=200_000,
+        ge=0,
+        description=(
+            "Skip SHACL validation, with a warning, for graphs larger than "
+            "this. pyshacl cost grows with graph x shapes, and a skipped run "
+            "must be visible rather than read as 'conforms'. 0 disables the "
+            "guard."
+        ),
+    )
+    shacl_autofix: Literal["off", "rewrite", "prune"] = Field(
+        default="prune",
+        description=(
+            "LLM-free repair of SHACL violations at the gate. 'rewrite' applies "
+            "only additive/rewriting fixes the catalog can ground: retyping a "
+            "literal to a sh:datatype it parses as, and resolving a string "
+            "literal to the catalog IRI whose surface form it matches exactly "
+            "and uniquely. 'prune' (default) additionally drops nodes that "
+            "violate sh:minCount while asserting nothing themselves (no triple "
+            "beyond rdf:type/rdfs:label, unreferenced elsewhere) — a "
+            "placeholder value node stands for an extraction that did not "
+            "happen. Neither mode invents a value: a node carrying real data "
+            "but missing a required property stays a reported finding. 'off' "
+            "reports without repairing."
+        ),
+    )
+    shacl_autofix_passes: int = Field(
+        default=1,
+        ge=0,
+        description=(
+            "Bounded validate -> autofix -> revalidate loop at the gate. A pass "
+            "is kept only if it strictly reduces the violation count, so a "
+            "repair that trades conformance for nothing is reverted."
+        ),
+    )
+    code_predicates: list[str] = Field(
+        default_factory=lambda: [
+            "http://qudt.org/schema/qudt/ucumCode",
+            "http://qudt.org/schema/qudt/symbol",
+            "http://www.w3.org/2004/02/skos/core#notation",
+        ],
+        description=(
+            "Predicates whose literal objects are machine-resolvable codes "
+            "(UCUM codes, symbols, notations). Used to resolve a code the model "
+            "emitted — e.g. qudt:ucumCode 'd' on a value node with no "
+            "qudt:unit — to the catalog individual declaring it, when exactly "
+            "one does. Matching is exact and case-sensitive: these are codes, "
+            "not labels."
         ),
     )
 

@@ -19,7 +19,7 @@ from ontocast.onto.model import FactsUnitFindingKind
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.stategraph import atomic as atomic_module
-from ontocast.stategraph.atomic import _run_deterministic_repair
+from ontocast.stategraph.atomic import _run_finding_driven_repair
 from ontocast.tool.atomic import AtomicToolBox
 
 _EX_PREDICATE = URIRef("http://example.org/redShiftContribution")
@@ -52,7 +52,7 @@ def _atomic_tools(repair_visits: int = 1) -> AtomicToolBox:
     return cast(
         AtomicToolBox,
         SimpleNamespace(
-            facts_repair_visits=repair_visits,
+            facts_llm_repair_visits=repair_visits,
             additional_standard_namespaces=(),
         ),
     )
@@ -77,7 +77,7 @@ async def test_repair_fires_and_findings_reach_render(monkeypatch) -> None:
     monkeypatch.setattr(atomic_module, "render_facts", fake_render)
     state = _unit_state_with_violation()
 
-    result = await _run_deterministic_repair(
+    result = await _run_finding_driven_repair(
         state, _atomic_tools(), [], render_attempt=1
     )
 
@@ -89,7 +89,7 @@ async def test_repair_fires_and_findings_reach_render(monkeypatch) -> None:
     # Post-repair validation is clean except coverage (96 still missing).
     residual_kinds = {finding.kind for finding in result.deterministic_findings}
     assert FactsUnitFindingKind.UNKNOWN_TERM not in residual_kinds
-    repair_attempts = [a for a in result.attempt_log if a.kind == "repair"]
+    repair_attempts = [a for a in result.attempt_log if a.kind == "llm_repair"]
     assert len(repair_attempts) == 1
     # The record carries the residual AFTER the repair render, not the
     # pre-render count the repair was asked to fix.
@@ -126,7 +126,7 @@ async def test_repair_skipped_when_no_findings(monkeypatch) -> None:
     state = UnitFactsState(content_unit=unit)
     state.status = Status.SUCCESS
 
-    result = await _run_deterministic_repair(
+    result = await _run_finding_driven_repair(
         state, _atomic_tools(), [], render_attempt=1
     )
 
@@ -144,7 +144,7 @@ async def test_failed_repair_render_keeps_graph_and_success(monkeypatch) -> None
     state = _unit_state_with_violation()
     triples_before = len(state.content_unit.graph)
 
-    result = await _run_deterministic_repair(
+    result = await _run_finding_driven_repair(
         state, _atomic_tools(), [], render_attempt=1
     )
 
@@ -165,7 +165,7 @@ async def test_repair_budget_bounds_visits(monkeypatch) -> None:
     monkeypatch.setattr(atomic_module, "render_facts", fake_render)
     state = _unit_state_with_violation()
 
-    result = await _run_deterministic_repair(
+    result = await _run_finding_driven_repair(
         state, _atomic_tools(repair_visits=2), [], render_attempt=1
     )
 
@@ -175,6 +175,6 @@ async def test_repair_budget_bounds_visits(monkeypatch) -> None:
         for finding in result.deterministic_findings
     )
     # A repair that fixed nothing records a non-zero mandatory residual.
-    repair_attempts = [a for a in result.attempt_log if a.kind == "repair"]
+    repair_attempts = [a for a in result.attempt_log if a.kind == "llm_repair"]
     assert repair_attempts
     assert all(a.n_mandatory_findings > 0 for a in repair_attempts)

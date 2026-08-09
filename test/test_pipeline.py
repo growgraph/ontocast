@@ -130,7 +130,7 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
             get_atomic_tools=lambda: cast(
                 AtomicToolBox,
                 SimpleNamespace(
-                    facts_repair_visits=1,
+                    facts_llm_repair_visits=1,
                     additional_standard_namespaces=(),
                 ),
             ),

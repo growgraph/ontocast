@@ -448,6 +448,14 @@ def create_app(
                     "facts_repairs_applied", {}
                 ).items()
             }
+            validation_findings = [
+                finding.model_dump(mode="json")
+                for finding in workflow_state.get("facts_validation_findings", [])
+            ]
+            gate_repairs = [
+                record.model_dump(mode="json")
+                for record in workflow_state.get("facts_gate_repairs", [])
+            ]
 
             if workflow_state["status"] == Status.FAILED:
                 # Every unit failed, or conversion did. Returning 200 here made
@@ -491,6 +499,11 @@ def create_app(
                     improvement_suggestions=list(
                         workflow_state.get("improvements_suggestions", [])
                     ),
+                    facts_conformance=dict(
+                        workflow_state.get("facts_conformance", {}) or {}
+                    ),
+                    facts_validation_findings=validation_findings,
+                    facts_gate_repairs=gate_repairs,
                 ),
             )
 

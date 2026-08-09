@@ -92,6 +92,31 @@ class ProcessResultMetadata(BaseModel):
             "nothing in the pipeline acts on them."
         ),
     )
+    facts_conformance: dict = Field(
+        default_factory=dict,
+        description=(
+            "Validation summary for the returned facts graph: whether SHACL "
+            "ran and the graph conforms, counts by finding kind and by SHACL "
+            "constraint component, and the LLM-free repairs applied. Empty "
+            "when the validation gate did not run (e.g. /process_unit)."
+        ),
+    )
+    facts_validation_findings: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "Residual findings behind the summary, after every repair stage. "
+            "A consumer that needs to know *which* nodes are non-conformant "
+            "reads these; previously they existed only in the server log."
+        ),
+    )
+    facts_gate_repairs: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "LLM-free repairs applied to the merged graph by the gate "
+            "(shape-driven retyping, code resolution, placeholder pruning). "
+            "Per-unit repairs are in facts_repairs."
+        ),
+    )
 
 
 class ProcessOkResponse(BaseModel):

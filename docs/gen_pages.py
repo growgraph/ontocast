@@ -21,7 +21,10 @@ for path in sorted(Path(pname).rglob("*.py")):
 
     full_doc_path = Path("reference", doc_path)
     parts_str: tuple[str, ...] = tuple(parts)
-    nav[parts_str] = str(full_doc_path)
+    # Relative to SUMMARY.md's own directory, which *is* reference/. Indexing
+    # with full_doc_path doubled the prefix (reference/reference/agent.md), so
+    # every generated nav entry 404'd while the pages themselves rendered.
+    nav[parts_str] = str(doc_path)
 
     with mkdocs_gen_files.open(full_doc_path, "w") as f:
         ident = ".".join([pname] + parts)

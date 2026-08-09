@@ -15,7 +15,7 @@ from rdflib import BNode, Literal, Node, URIRef
 from ontocast.onto.constants import COMMON_PREFIXES
 from ontocast.onto.enum import SPARQLOperationType
 from ontocast.onto.llm_graph_payload import LLMGraphWire
-from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.rdfgraph import RDFGraph, is_rdflib_triple
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +191,7 @@ class GraphUpdate(BaseModel):
                     )
                     diff_parts.append(f"   Prefixes: {prefix_list}")
 
-                for subject, predicate, obj in op.graph:
+                for subject, predicate, obj in self._serializable_triples(op.graph):
                     symbol = "+" if op.type == "insert" else "-"
                     diff_parts.append(
                         f"   {symbol} {self._serialize_rdf_term(subject)} {self._serialize_rdf_term(predicate)} {self._serialize_rdf_term(obj)}"
@@ -206,16 +206,41 @@ class GraphUpdate(BaseModel):
 
         return summary
 
+    @staticmethod
+    def _serializable_triples(graph: RDFGraph) -> list[tuple[Node, Node, Node]]:
+        """Return the triples of ``graph`` that SPARQL can express.
+
+        Oxigraph-backed graphs yield RDF 1.2 triple terms as plain tuples, which
+        have no SPARQL syntax. Dropping them keeps the rest of the update valid;
+        emitting them produced a Python repr inside the query and a
+        ``ParseException`` at apply time.
+        """
+        triples: list[tuple[Node, Node, Node]] = []
+        dropped = 0
+        for triple in graph:
+            if not is_rdflib_triple(triple):
+                dropped += 1
+                continue
+            triples.append(triple)
+        if dropped:
+            logger.warning(
+                "Skipped %d RDF 1.2 triple-term triple(s): not expressible in SPARQL",
+                dropped,
+            )
+        return triples
+
     def _generate_insert_query(self, graph: RDFGraph, prefix_block: str) -> str:
         """Generate a SPARQL INSERT query for the given RDFGraph."""
         if len(graph) == 0:
             return ""
 
         triple_patterns = []
-        for subject, predicate, obj in graph:
+        for subject, predicate, obj in self._serializable_triples(graph):
             triple_patterns.append(
                 f"    {self._serialize_rdf_term(subject)} {self._serialize_rdf_term(predicate)} {self._serialize_rdf_term(obj)} ."
             )
+        if not triple_patterns:
+            return ""
 
         triples_block = "\n".join(triple_patterns)
 
@@ -234,10 +259,12 @@ class GraphUpdate(BaseModel):
             return ""
 
         triple_patterns = []
-        for subject, predicate, obj in graph:
+        for subject, predicate, obj in self._serializable_triples(graph):
             triple_patterns.append(
                 f"    {self._serialize_rdf_term(subject)} {self._serialize_rdf_term(predicate)} {self._serialize_rdf_term(obj)} ."
             )
+        if not triple_patterns:
+            return ""
 
         triples_block = "\n".join(triple_patterns)
 
@@ -251,7 +278,14 @@ class GraphUpdate(BaseModel):
         return "\n".join(query_parts)
 
     def _serialize_rdf_term(self, term: Node) -> str:
-        """Serialize an RDF term to its SPARQL string representation."""
+        """Serialize an RDF term to its SPARQL string representation.
+
+        Raises:
+            TypeError: If ``term`` is not a term SPARQL can express. Callers
+                filter with :meth:`_serializable_triples` first; falling back to
+                ``str(term)`` here used to bury a Python repr inside the query,
+                which only surfaced as a ``ParseException`` at apply time.
+        """
         if isinstance(term, URIRef):
             if ":" in str(term) and not str(term).startswith("http"):
                 return str(term)
@@ -267,4 +301,6 @@ class GraphUpdate(BaseModel):
             else:
                 return f'"{term}"'
         else:
-            return str(term)
+            raise TypeError(
+                f"Cannot serialize {type(term).__name__} as a SPARQL term: {term!r}"
+            )
