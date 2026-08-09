@@ -227,32 +227,3 @@ _PROFILES: dict[LLMGraphFormat, GraphFormatProfile] = {
 
 def get_graph_format_profile(fmt: LLMGraphFormat) -> GraphFormatProfile:
     return _PROFILES[fmt]
-
-
-def critique_graph_format_instruction(llm_graph_format: LLMGraphFormat) -> str:
-    """Backward-compatible helper."""
-    return get_graph_format_profile(llm_graph_format).critique_graph_instruction()
-
-
-# Backward-compatible aliases (avoid importing graph_format from common.py at load time)
-output_instruction_ttl = _PROFILES[
-    LLMGraphFormat.TURTLE
-].render_fresh_output_instruction(target="ontology")
-output_instruction_empty = _PROFILES[
-    LLMGraphFormat.TURTLE
-].render_fresh_output_instruction(target="facts")
-output_instruction_jsonld = _PROFILES[
-    LLMGraphFormat.JSONLD
-].render_fresh_output_instruction()
-output_instruction_graph_update = _PROFILES[
-    LLMGraphFormat.TURTLE
-].render_update_output_instruction()
-output_instruction_graph_update_jsonld = _PROFILES[
-    LLMGraphFormat.JSONLD
-].render_update_output_instruction()
-output_instruction_critique_turtle = _PROFILES[
-    LLMGraphFormat.TURTLE
-].critique_graph_instruction()
-output_instruction_critique_jsonld = _PROFILES[
-    LLMGraphFormat.JSONLD
-].critique_graph_instruction()

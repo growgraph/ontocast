@@ -216,7 +216,6 @@ addopts = [
   "--tb=short",
   "-v"
 ]
-env_files = [".env"]
 # Marker semantics -- keep these honest, the CI job selects on them.
 #
 # The default run must stay offline and model-free: `HF_HUB_OFFLINE=1

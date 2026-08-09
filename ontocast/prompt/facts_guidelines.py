@@ -210,8 +210,12 @@ def format_facts_operational_guidelines(
         search_guidelines=search_guidelines,
     )
     if jsonld:
+        # 10a., not 11. or 12.: rule 11 is the conditional search guideline
+        # injected above and is absent whenever web grounding is off, so a fixed
+        # number either collides with it or leaves a gap in the default prompt.
+        # The template already uses this suffix convention for 1a. and 6a.
         guidelines += (
-            "\n12. In structured output, express facts as a JSON-LD object "
+            "\n10a. In structured output, express facts as a JSON-LD object "
             "(`@context` + `@graph`), not as a Turtle string. "
             "Map the examples above to compact IRIs and JSON-LD literal objects.\n"
         )

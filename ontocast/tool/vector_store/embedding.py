@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import abc
+import logging
 import threading
 from typing import Any
 
@@ -15,6 +16,8 @@ from ontocast.onto.sparse import SparseVector
 from ontocast.tool.onto import Tool
 from ontocast.tool.sentence_transformer import SharedEncoder, get_shared_encoder
 from ontocast.util.optional import require
+
+logger = logging.getLogger(__name__)
 
 # Local dense embedding is serialised by the SharedEncoder that owns the model,
 # not from here: the model is shared with entity clustering and semantic
@@ -161,7 +164,12 @@ class OllamaEmbeddingTool(_LangChainEmbeddingTool):
     def _embed_raw(self, texts: list[str]) -> list[list[float]]:
         try:
             return super()._embed_raw(texts)
-        except Exception:
+        except Exception as exc:
+            # Log the real cause: a bad base URL, an auth failure and an absent
+            # langchain integration all reach the fallback identically, and if
+            # the HTTP path then fails too the user is shown an httpx error
+            # unrelated to what actually went wrong.
+            logger.debug("Ollama langchain embedding failed, using HTTP: %s", exc)
             return self._embed_via_http(texts)
 
     def _embed_via_http(self, texts: list[str]) -> list[list[float]]:

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from itertools import product
 
-import numpy as np
 from rdflib import URIRef
 
-from .match_common import build_entity_match_candidates, greedy_one_to_one
+from .match_common import greedy_one_to_one
 from .match_models import EntityCluster, EntityMatch
 
 
@@ -81,39 +79,4 @@ def derive_pair_matches(
             str(item.gt_entity),
         )
     )
-    return matches
-
-
-def derive_pair_matches_with_embeddings(
-    clusters: list[EntityCluster],
-    predicted_graph_id: str,
-    gt_graph_id: str,
-    embeddings: dict[URIRef, np.ndarray],
-    *,
-    similarity_threshold: float,
-    pair_compatible: Callable[[URIRef, URIRef], bool],
-) -> list[EntityMatch]:
-    """Derive matches using embedding similarity when a cluster has multiple members per side."""
-    matches: list[EntityMatch] = []
-    for cluster in clusters:
-        predicted_entities = [
-            member.entity
-            for member in cluster.members
-            if member.graph_id == predicted_graph_id
-        ]
-        gt_entities = [
-            member.entity
-            for member in cluster.members
-            if member.graph_id == gt_graph_id
-        ]
-        if not predicted_entities or not gt_entities:
-            continue
-        candidates = build_entity_match_candidates(
-            predicted_entities,
-            gt_entities,
-            embeddings,
-            similarity_threshold=similarity_threshold,
-            pair_compatible=pair_compatible,
-        )
-        matches.extend(greedy_one_to_one(candidates))
     return matches

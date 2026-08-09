@@ -8,6 +8,7 @@ against a closed individual range.
 """
 
 from rdflib import RDF, Literal, URIRef
+from rdflib.namespace import XSD
 
 from ontocast.onto.model import FactsUnitFindingKind
 from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
@@ -444,3 +445,133 @@ def test_catalog_class_in_type_position_not_flagged_as_fact_class() -> None:
         and "facts/document namespace" in finding.message
         for finding in findings
     )
+
+
+def _dated_ontology() -> RDFGraph:
+    """Ranges exercising the non-numeric and the unsafe-target paths."""
+    graph = RDFGraph()
+    graph.parse(
+        data="""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix ex: <http://example.org/> .
+        ex:publishedYear a owl:DatatypeProperty ; rdfs:range xsd:gYear .
+        ex:measuredOn a owl:DatatypeProperty ; rdfs:range xsd:date .
+        ex:note a owl:DatatypeProperty ; rdfs:range xsd:string .
+        ex:reference a owl:DatatypeProperty ; rdfs:range xsd:anyURI .
+        ex:amount a owl:DatatypeProperty ; rdfs:range xsd:decimal .
+        """,
+        format="turtle",
+    )
+    return graph
+
+
+def test_normalize_literals_retypes_a_declared_non_numeric_range() -> None:
+    """A gYear range receiving an xsd:string was left alone before."""
+    graph = _facts(
+        'cd:doc ex:publishedYear "2019"^^xsd:string ; ex:measuredOn "2021-04-05" .'
+    )
+    retyped = normalize_literals_against_schema(graph, _dated_ontology())
+
+    assert retyped == 2
+    assert (
+        URIRef(f"{FACTS}doc"),
+        URIRef("http://example.org/publishedYear"),
+        Literal("2019", datatype=XSD.gYear),
+    ) in graph
+    assert (
+        URIRef(f"{FACTS}doc"),
+        URIRef("http://example.org/measuredOn"),
+        Literal("2021-04-05", datatype=XSD.date),
+    ) in graph
+
+
+def test_normalize_literals_never_retypes_toward_string_or_anyuri() -> None:
+    """Every lexical form parses as those, so a range declaring one must not fire.
+
+    Admitting them would let a single sloppy ``rdfs:range`` rewrite correctly
+    typed values across the whole graph.
+    """
+    graph = _facts(
+        'cd:doc ex:note "42"^^xsd:decimal ; ex:reference "not-a-uri"^^xsd:decimal .'
+    )
+    retyped = normalize_literals_against_schema(graph, _dated_ontology())
+
+    assert retyped == 0
+    assert (
+        URIRef(f"{FACTS}doc"),
+        URIRef("http://example.org/note"),
+        Literal("42", datatype=XSD.decimal),
+    ) in graph
+
+
+def test_normalize_literals_leaves_language_tagged_literals_alone() -> None:
+    """Retyping an rdf:langString would silently discard the language tag."""
+    graph = _facts('cd:doc ex:publishedYear "2019"@en .')
+    retyped = normalize_literals_against_schema(graph, _dated_ontology())
+
+    assert retyped == 0
+    assert (
+        URIRef(f"{FACTS}doc"),
+        URIRef("http://example.org/publishedYear"),
+        Literal("2019", lang="en"),
+    ) in graph
+
+
+def test_normalize_literals_still_promotes_numeric_to_numeric() -> None:
+    """The pre-existing integer -> decimal promotion must survive the widening."""
+    graph = _facts('cd:doc ex:amount "7"^^xsd:integer .')
+    retyped = normalize_literals_against_schema(graph, _dated_ontology())
+
+    assert retyped == 1
+    assert (
+        URIRef(f"{FACTS}doc"),
+        URIRef("http://example.org/amount"),
+        Literal("7", datatype=XSD.decimal),
+    ) in graph
+
+
+def test_normalize_literals_does_not_retype_an_unparseable_lexical_form() -> None:
+    graph = _facts('cd:doc ex:publishedYear "sometime in 2019" .')
+    assert normalize_literals_against_schema(graph, _dated_ontology()) == 0
+
+
+def test_normalize_literals_never_retypes_toward_boolean_or_time() -> None:
+    """Both accept nonsense, so a range declaring one must not drive a retype.
+
+    ``Literal("2019", datatype=xsd:boolean).value`` is ``False`` rather than
+    ``None``, and ``"2019"`` parses as ``xsd:time`` 20:19 -- so a parse check
+    alone would happily rewrite a year into a boolean or a clock time.
+    """
+    ontology = RDFGraph()
+    ontology.parse(
+        data="""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix ex: <http://example.org/> .
+        ex:flag a owl:DatatypeProperty ; rdfs:range xsd:boolean .
+        ex:at a owl:DatatypeProperty ; rdfs:range xsd:time .
+        """,
+        format="turtle",
+    )
+    graph = _facts('cd:doc ex:flag "2019" ; ex:at "2019" .')
+
+    assert normalize_literals_against_schema(graph, ontology) == 0
+    for predicate in ("flag", "at"):
+        objects = list(
+            graph.objects(
+                URIRef(f"{FACTS}doc"), URIRef(f"http://example.org/{predicate}")
+            )
+        )
+        assert [str(obj) for obj in objects] == ["2019"]
+        literal = objects[0]
+        assert isinstance(literal, Literal)
+        assert literal.datatype in (None, XSD.string)
+
+
+def test_normalize_literals_rejects_a_malformed_gregorian_lexical_form() -> None:
+    """gYear has no rdflib value parser, so its lexical space is checked here."""
+    graph = _facts('cd:doc ex:publishedYear "19" .')
+    assert normalize_literals_against_schema(graph, _dated_ontology()) == 0

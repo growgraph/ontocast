@@ -296,16 +296,16 @@ class LanceDBVectorStoreManager(VectorStoreManager):
         cosine = IvfPq(distance_type="cosine")
         try:
             table.create_index("core_vector", config=cosine)
-        except Exception:
-            logger.debug("LanceDB core_vector index already exists or skipped")
+        except Exception as exc:
+            logger.debug("LanceDB core_vector index not created: %s", exc)
         try:
             table.create_index("neighborhood_vector", config=cosine)
-        except Exception:
-            logger.debug("LanceDB neighborhood_vector index already exists or skipped")
+        except Exception as exc:
+            logger.debug("LanceDB neighborhood_vector index not created: %s", exc)
         try:
             table.create_index("minimal_representation", config=FTS())
-        except Exception:
-            logger.debug("LanceDB FTS index already exists or skipped")
+        except Exception as exc:
+            logger.debug("LanceDB FTS index not created: %s", exc)
 
     def _record_from_atom(
         self,

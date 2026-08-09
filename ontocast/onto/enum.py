@@ -10,22 +10,6 @@ class Status(StrEnum):
     COUNTS_EXCEEDED = "counts exceeded"
 
 
-class OntologyDecision(StrEnum):
-    """Enumeration of Ontology Decisions used in the workflow."""
-
-    SKIP_TO_FACTS = "ontology found; skip to facts"
-    FAILURE_NO_ONTOLOGY = "ontology not found; ffwd to END"
-    IMPROVE_CREATE_ONTOLOGY = "improve/create ontology"
-
-
-class FactsDecision(StrEnum):
-    """Enumeration of routing decisions after ontology quality checks."""
-
-    TEXT_TO_FACTS = "adequate ontology; render facts"
-    TEXT_TO_ONTOLOGY = "inadequate ontology; retry render onto"
-    SERIALIZE = "skip to serialize"
-
-
 class SectionLabelSource(StrEnum):
     """How a chunk's ``section_label`` was decided.
 

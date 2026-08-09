@@ -294,7 +294,7 @@ Build docs locally: `uv run mkdocs build`
 - **Automatic Versioning**: Semantic version increment based on change analysis (MAJOR/MINOR/PATCH)
 - **Hash-Based Lineage**: Git-style versioning with parent hashes for tracking ontology evolution
 - **Multiple Version Storage**: Versions stored as separate named graphs in Fuseki triple stores
-- **Timestamp Tracking**: `updated_at` field tracks when ontology was last modified
+- **Timestamp Tracking**: `created_at` is recorded per version and serialized as `dcterms:created`
 
 ### GraphUpdate System
 

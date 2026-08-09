@@ -94,46 +94,6 @@ class OntologySelectorReport(BasePydanticModel):
     )
 
 
-class SemanticTriplesFactsReport(BaseModel):
-    """Report containing semantic triples and evaluation scores.
-
-    Graph payloads follow ``LLM_GRAPH_FORMAT``; both wire encodings parse to ``RDFGraph``.
-
-    Attributes:
-        semantic_graph: Semantic triples (facts) representing the document.
-        ontology_relevance_score: Score 0-100 for how relevant the ontology
-            is to the document. 0 is the worst, 100 is the best.
-        triples_generation_score: Score 0-100 for how well the facts extraction /
-            triples generation was performed. 0 is the worst, 100 is the best.
-    """
-
-    semantic_graph: LLMGraphWire = Field(
-        default_factory=RDFGraph,
-        description=(
-            "Semantic triples (facts) representing the document. "
-            "Encoding is defined by deployment llm_graph_format and OUTPUT INSTRUCTION."
-        ),
-    )
-    ontology_relevance_score: float | None = Field(
-        default=None,
-        ge=0,
-        le=100,
-        description=(
-            "Score between 0 and 100 of how well "
-            "the ontology represents the domain of the document."
-        ),
-    )
-    triples_generation_score: float | None = Field(
-        default=None,
-        ge=0,
-        le=100,
-        description=(
-            "Score 0-100 for how well the semantic triples "
-            "represent the document. 0 is the worst, 100 is the best."
-        ),
-    )
-
-
 class ExternalEvidenceRequest(BaseModel):
     """Node-level request for optional web search.
 

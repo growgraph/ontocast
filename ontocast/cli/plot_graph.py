@@ -1,6 +1,5 @@
 import importlib
 import logging
-import re
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
@@ -272,25 +271,6 @@ def ontology_loop_flow(*, include_evidence: bool = False) -> FlowGraph:
         start_node="start",
         end_node="done",
     )
-
-
-def update_mermaid_graph_in_markdown(file_path: str, new_graph: str) -> None:
-    md_path = Path(file_path)
-    content = md_path.read_text()
-
-    pattern = r"(### Agent graph\s+```mermaid\n)(.*?)(\n```)"
-    replacement = r"\1" + new_graph + r"\3"
-
-    if re.search(pattern, content, flags=re.DOTALL):
-        new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
-        print("✅ Replaced existing Mermaid block.")
-    else:
-        new_section = f"\n\n### Agent graph\n\n```mermaid\n{new_graph}\n```"
-        new_content = content + new_section
-        print("➕ Appended new Mermaid block at the end.")
-
-    md_path.write_text(new_content)
-    print(f"📄 Updated {file_path}")
 
 
 def _flow_label_for_graphviz(label: str, is_lr: bool) -> str:

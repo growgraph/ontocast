@@ -52,6 +52,32 @@ _NUMERIC_RANGE_DATATYPES = {
     XSD.positiveInteger,
 }
 
+# Datatypes whose rdflib value parser actually rejects a wrong lexical form, so
+# ``_literal_parses_as`` is evidence. Deliberately excluded, each measured:
+#   xsd:string / xsd:anyURI -- every lexical form parses;
+#   xsd:boolean -- Literal("2019", datatype=xsd:boolean).value is False, not None;
+#   xsd:time    -- "2019" parses as 20:19, so a time range would mangle years.
+# Admitting any of those lets one sloppy range declaration rewrite unrelated
+# literals on that predicate, including correctly typed ones.
+_PARSE_CHECKED_RANGE_DATATYPES = {XSD.date, XSD.dateTime, XSD.duration}
+
+# The gregorian datatypes have no rdflib value parser at all -- ``.value`` is
+# always None -- so they need explicit lexical validation or they could never be
+# retyped, which is precisely the "xsd:gYear range receiving a string" case this
+# widening exists for. Patterns are the XSD lexical spaces, timezone included.
+_GREGORIAN_RANGE_PATTERNS = {
+    XSD.gYear: re.compile(r"^-?\d{4,}(Z|[+-]\d{2}:\d{2})?$"),
+    XSD.gYearMonth: re.compile(r"^-?\d{4,}-\d{2}(Z|[+-]\d{2}:\d{2})?$"),
+}
+
+# Ranges a declared ``rdfs:range`` may retype a literal *to*. An allowlist, not
+# "any XSD datatype" -- see the two sets above for why.
+_RETYPABLE_RANGE_DATATYPES = (
+    _NUMERIC_RANGE_DATATYPES
+    | _PARSE_CHECKED_RANGE_DATATYPES
+    | set(_GREGORIAN_RANGE_PATTERNS)
+)
+
 # Meta-vocabularies: the RDF/OWL substrate plus the annotation and provenance
 # terms every facts graph carries regardless of catalog. Exempting these from
 # UNKNOWN_TERM keeps the signal readable -- flagging rdfs:label would bury it.
@@ -117,19 +143,20 @@ def collect_catalog_terms(ontology_graph: RDFGraph | None) -> set[str]:
     return terms
 
 
-def collect_catalog_namespaces(ontology_graph: RDFGraph | None) -> set[str]:
-    """Namespaces of every IRI appearing in the ontology context."""
-    return {_namespace_of(term) for term in collect_catalog_terms(ontology_graph)}
-
-
 def normalize_literals_against_schema(
     graph: RDFGraph, ontology_graph: RDFGraph | None
 ) -> int:
-    """Retype untyped numeric literals whose predicate declares a numeric range.
+    """Retype literals whose predicate declares a compatible ``rdfs:range``.
 
-    Fixes the ``qudt:numericValue 230`` vs ``"230"^^xsd:decimal`` drift at
-    parse time: when the schema says the range is numeric and the lexical form
-    parses as a number, the literal is rewritten with the declared datatype.
+    Fixes the ``qudt:numericValue 230`` vs ``"230"^^xsd:decimal`` drift at parse
+    time, and the same drift for the date-like datatypes: when the schema
+    declares a range in :data:`_RETYPABLE_RANGE_DATATYPES` and the lexical form
+    parses as that datatype, the literal is rewritten with it.
+
+    A literal is only retyped from an untyped, ``xsd:string``, or numeric source
+    -- a string range must never be able to clobber a correctly typed value --
+    and language-tagged literals are left alone, since they are
+    ``rdf:langString`` and retyping would discard the tag.
 
     Returns:
         Number of retyped literals.
@@ -141,7 +168,7 @@ def normalize_literals_against_schema(
         if (
             isinstance(predicate, URIRef)
             and isinstance(range_iri, URIRef)
-            and range_iri in _NUMERIC_RANGE_DATATYPES
+            and range_iri in _RETYPABLE_RANGE_DATATYPES
         ):
             declared_ranges[predicate] = range_iri
 
@@ -155,18 +182,33 @@ def normalize_literals_against_schema(
         target_datatype = declared_ranges.get(predicate)
         if target_datatype is None or obj.datatype == target_datatype:
             continue
-        if obj.datatype is not None and obj.datatype not in _NUMERIC_RANGE_DATATYPES:
+        if obj.language is not None:
             continue
-        if canonical_number(str(obj).strip()) is None:
+        numeric_target = target_datatype in _NUMERIC_RANGE_DATATYPES
+        source_admissible = obj.datatype is None or obj.datatype == XSD.string
+        if numeric_target:
+            # Keep the pre-existing numeric->numeric promotion (integer to
+            # decimal, say), which a source-side "untyped or string" rule alone
+            # would silently drop.
+            source_admissible = (
+                source_admissible or obj.datatype in _NUMERIC_RANGE_DATATYPES
+            )
+        if not source_admissible:
+            continue
+        lexical = str(obj).strip()
+        gregorian = _GREGORIAN_RANGE_PATTERNS.get(target_datatype)
+        if numeric_target:
+            parses = canonical_number(lexical) is not None
+        elif gregorian is not None:
+            parses = gregorian.match(lexical) is not None
+        else:
+            parses = _literal_parses_as(lexical, target_datatype)
+        if not parses:
             continue
         replacements.append(
             (
                 (subject, predicate, obj),
-                (
-                    subject,
-                    predicate,
-                    Literal(str(obj).strip(), datatype=target_datatype),
-                ),
+                (subject, predicate, Literal(lexical, datatype=target_datatype)),
             )
         )
 

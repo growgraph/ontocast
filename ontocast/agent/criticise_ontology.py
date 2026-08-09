@@ -23,6 +23,7 @@ from ontocast.prompt.criticise_ontology import (
     template_prompt,
 )
 from ontocast.prompt.graph_format import get_graph_format_profile
+from ontocast.prompt.ontology_context import build_ontology_index
 from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
 from ontocast.tool import LLMTool
 from ontocast.tool.atomic import AtomicToolBox
@@ -64,7 +65,12 @@ async def criticise_ontology(
     parser = PydanticOutputParser(pydantic_object=OntologyCritiqueReport)
     llm_tool: LLMTool = await tools.get_llm_tool(state.budget_tracker)
 
-    ontology_chapter = profile.format_ontology_chapter(current_graph)
+    # With the index appendix, as the renderer sends it: a critic shown bare
+    # opaque IRIs cannot judge the term choices it is asked about. No memo here
+    # -- effective_graph_for_prompt returns a bare graph, not a snapshot.
+    ontology_chapter = profile.format_ontology_chapter(
+        current_graph, suffix=build_ontology_index(current_graph)
+    )
 
     text_chapter = text_template.format(text=state.content_unit.extraction_text)
 

@@ -25,9 +25,15 @@ def create_vector_store_manager(
     """Return a vector store manager for the configured backend.
 
     Selection is driven by ``VectorStoreConfig.backend``. The default,
-    :attr:`~ontocast.onto.enum.VectorStoreBackend.AUTO`, preserves the historical
-    behaviour of inferring the backend from whichever connection setting is
-    populated, and falls back to the dependency-free in-memory store.
+    :attr:`~ontocast.onto.enum.VectorStoreBackend.AUTO`, infers the backend from
+    whichever connection setting is populated and otherwise resolves to
+    :attr:`~ontocast.onto.enum.VectorStoreBackend.NONE`, returning ``None``.
+    It does **not** fall back to the in-memory store: vector retrieval is one of
+    three ontology-context modes and the other two are the defaults, so handing
+    every unconfigured deployment a vector store would change indexing behaviour
+    and embedding cost unasked. See :func:`_resolve_backend`; the in-memory
+    backend is opt-in via ``VECTOR_STORE_BACKEND=memory`` or
+    :meth:`Config.in_memory`.
 
     Args:
         tool_config: The resolved tool configuration.

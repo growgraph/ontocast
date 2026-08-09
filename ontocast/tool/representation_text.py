@@ -56,11 +56,6 @@ def stable_sorted_triples(
     return sorted(triples, key=lambda triple: str(triple))
 
 
-def role_from_predicate_usage(*, is_predicate: bool) -> str:
-    """Map predicate-position usage to vector-store role vocabulary."""
-    return ROLE_PREDICATE if is_predicate else ROLE_RESOURCE
-
-
 def role_from_declaration(*, is_declared_property: bool, is_predicate: bool) -> str:
     """Map property declaration *or* predicate-position usage to role vocabulary.
 

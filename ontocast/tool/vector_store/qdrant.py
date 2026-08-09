@@ -1029,9 +1029,14 @@ class QdrantVectorStoreManager(VectorStoreManager):
                 field_name=field_name,
                 field_schema=qdrant_models.PayloadSchemaType.KEYWORD,
             )
-        except Exception:
+        except Exception as exc:
+            # "already exists" was asserted, never checked. An auth-scope
+            # rejection or a timeout leaves the index absent while the log says
+            # the opposite, so filtered lookups silently degrade.
             logger.debug(
-                "Qdrant payload index '%s' on '%s' already exists",
+                "Qdrant payload index '%s' on '%s' not created "
+                "(it may already exist): %s",
                 field_name,
                 collection_name,
+                exc,
             )

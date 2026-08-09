@@ -10,16 +10,6 @@ from ontocast.onto.retrieval_capabilities import (
 )
 
 
-def invalid_max_visits_response() -> JSONResponse:
-    return JSONResponse(
-        status_code=400,
-        content=StatusErrorBody(
-            error="max_visits must be an integer >= 1",
-            error_type="ValidationError",
-        ).model_dump(),
-    )
-
-
 def request_param_error_response(error: RequestParamError) -> JSONResponse:
     """400 for any malformed request parameter.
 

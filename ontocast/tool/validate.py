@@ -213,14 +213,6 @@ def validate_and_connect_content_unit(
     return unit
 
 
-def validate_and_connect_chunk(
-    chunk: ContentUnit,
-    auto_connect: bool = True,
-) -> ContentUnit:
-    """Backward-compatible alias for validate_and_connect_content_unit()."""
-    return validate_and_connect_content_unit(unit=chunk, auto_connect=auto_connect)
-
-
 class RDFGraphConnectivityValidator:
     """Validator for RDF graph connectivity.
 

@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **Removed confirmed-dead code (import-visible).** Every symbol below had
+  exactly one reference repo-wide — its own definition — so nothing in-tree
+  changes, but anything importing them out-of-tree breaks. Modules
+  `ontocast/stategraph/util.py` (`count_visits_conditional_success`,
+  `wrap_with`) and `ontocast/tool/agg/promoter.py` (`URIPromoter`), neither ever
+  imported. The `prompt/graph_format.py` "backward-compatible" block —
+  `critique_graph_format_instruction` plus seven eagerly-evaluated
+  `output_instruction_*` aliases. The ten `*_description()` helpers in
+  `onto/llm_graph_payload.py`, superseded by `GraphFormatProfile`. The
+  `OntologyDecision` and `FactsDecision` enums. And the singletons
+  `invalid_max_visits_response`, `SemanticTriplesFactsReport`,
+  `EntityMetadata`, `PredicateMetadata`, `compare_versions`,
+  `validate_and_connect_chunk`, `plot_ontology_graph`,
+  `merge_terminal_ontologies`, `known_prefixes_for_llm_parse`,
+  `collect_catalog_namespaces`, `role_from_predicate_usage`,
+  `derive_pair_matches_with_embeddings`, `update_mermaid_graph_in_markdown`,
+  `CHUNK_NULL_IRI` and `render_ontology_rank_diagnostics`. The last of these
+  was the only presenter of the `ONTOLOGY_PATCH_DUMP_ONTOLOGY_RANKS` payload;
+  the payload itself is still stored under `'ontology_rank_diagnostics'`, which
+  is what the setting actually promises.
 - **`ontology_directory` is now strictly read-only.** It is a seed fixture read
   once at startup, but two methods treated it as a writable store:
   `ingest_ontology_ttl` required it and created it while never writing a file,
@@ -29,6 +49,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The facts critic could not read the ontology it was judging.**
+  `criticise_facts` built its ontology chapter with no index appendix, so on an
+  opaque-IRI catalog (Wikidata-style `Q`/`P` codes) the critic was shown bare
+  IRIs while facts guideline `6a` instructs the renderer to resolve them through
+  the `# TERM INDEX`. It now uses the same memoised chapter the renderer does,
+  which also stops re-serialising the ontology on every visit;
+  `criticise_ontology` gets the same appendix. Costs nothing on readable
+  ontologies — `build_ontology_index` returns `""` when no IRI is opaque.
+- **Parse-time literal retyping is no longer numeric-only.**
+  `normalize_literals_against_schema` retypes against any declared `rdfs:range`
+  in an allowlist that now includes `xsd:date`, `dateTime`, `duration`, `gYear`
+  and `gYearMonth`, so an `xsd:gYear` range receiving `"2019"^^xsd:string` is
+  repaired at parse time rather than only at the SHACL gate, and only where
+  shapes exist. Deliberately **not** "any XSD datatype", each case measured:
+  every lexical form parses as `xsd:string` and `xsd:anyURI`;
+  `Literal("2019", datatype=xsd:boolean).value` is `False`, not `None`; and
+  `"2019"` parses as `xsd:time` 20:19 — so any of those as a range would let one
+  sloppy declaration rewrite correctly typed values. The gregorian datatypes
+  have no rdflib value parser at all (`.value` is always `None`) and are
+  validated against their lexical space instead. Language-tagged literals are
+  skipped, since retyping an `rdf:langString` discards the tag.
+- **Guideline numbering no longer skips 11.** The JSON-LD clause in the facts
+  prompt was numbered `12.` while `11.` came from the *conditional* search
+  guidelines, absent whenever web grounding is off — the default. It is now
+  `10a.`, matching the template's existing `1a.`/`6a.` convention, so it cannot
+  collide with the injected rule or leave a gap.
+- **Two error paths no longer report a cause they never checked.** Qdrant's
+  `_ensure_payload_index` logged "already exists" for every failure including
+  auth rejections and timeouts, leaving the index absent while the log said
+  otherwise; the Ollama embedding fallback discarded the original exception with
+  no log at any level, so a bad `EMBEDDING_BASE_URL` and an absent langchain
+  integration were indistinguishable. Both now log the real exception. LanceDB's
+  three equivalents were reworded to match.
+- **Four documentation claims that were simply false.** `updated_at` /
+  `dcterms:modified` "timestamp tracking" was advertised in `README.md` and
+  `concepts.md` but exists nowhere — `Ontology` carries only `created_at`,
+  serialized as `dcterms:created`. `ontology_context.md` listed
+  `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` as `550` against an actual
+  `1200`. `create_vector_store_manager`'s docstring — which renders in the API
+  reference — said `AUTO` falls back to the in-memory store when it resolves to
+  `NONE`. And `performance.md` gave `CHUNK_EMBEDDING_MODEL` without its
+  `sentence-transformers/` prefix, on the one page whose point is that settings
+  naming the same model share one resident copy, keyed on the literal string.
+- **Default test runs are offline, model-free, and reproducible.** Removed
+  `env_files = [".env"]` from pytest configuration in `pyproject.toml` to
+  prevent local test runs from automatically loading developer-specific `.env`
+  files, avoiding accidental LLM-calling tests and environment leakage (local-green/CI-red).
+  Added a dynamic deselection hook (`pytest_collection_modifyitems`) in `conftest.py`
+  to automatically deselect tests marked as `slow` or `integration` when pytest
+  is invoked without any marker selectors (e.g. standard `uv run pytest`),
+  preserving the ability to run them via explicit commands like
+  `uv run pytest -m slow` or `uv run pytest -m integration`.
 - **SPARQL literals are escaped.** `GraphUpdate._serialize_rdf_term` wrapped a
   literal in bare double quotes, so any `"`, `\`, newline or carriage return —
   routine in extracted text — closed the string early and failed the whole

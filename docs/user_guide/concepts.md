@@ -10,7 +10,7 @@ OntoCast manages ontologies with automatic versioning and timestamp tracking:
 - **Semantic Versioning**: MAJOR/MINOR/PATCH increments from change analysis
 - **Hash-Based Lineage**: Parent hashes track ontology evolution
 - **Multiple Versions**: Stored as separate named graphs (Fuseki or in-memory pyoxigraph)
-- **Timestamp Tracking**: `updated_at` synced as `dcterms:modified`
+- **Timestamp Tracking**: `created_at` synced as `dcterms:created` (there is no modification timestamp — a change produces a new version, not an edit in place)
 - **Versioned IRIs**: Unique IRIs with hash fragments for storage
 - **Working context**: multi-ontology prompt snapshots use `OntologySnapshot` (graph + `source_iris`, no catalog id) instead of inventing a single catalog identity from a union graph
 - **Writeback**: ontology complements are applied to catalog terminals by namespace ownership after subtracting triples already present in the prompt snapshot

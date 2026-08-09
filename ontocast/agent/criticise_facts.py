@@ -76,7 +76,12 @@ async def criticise_facts(
     parser = PydanticOutputParser(pydantic_object=FactsCritiqueReport)
 
     ctx = ontology_access_for_unit_facts(state).effective_ontology_for_prompt()
-    ontology_chapter = profile.format_ontology_chapter(ctx.graph)
+    # Same chapter the renderer gets, index appendix included. Building it
+    # without the suffix left the critic reading opaque IRIs while guideline 6a
+    # told the renderer to resolve them through the TERM INDEX -- so the critic
+    # judged term choices it could not read. Also memoised on the shared
+    # snapshot, so this stops re-serialising the ontology on every visit.
+    ontology_chapter = ctx.prompt_chapter(profile)
     facts_chapter = profile.format_facts_chapter(
         state.content_unit.graph
     ) + _build_quarantine_chapter(state)

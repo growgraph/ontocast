@@ -96,6 +96,21 @@ def pytest_configure(config):
     )
 
 
+def pytest_collection_modifyitems(config, items) -> None:
+    """Deselect slow and integration tests by default unless selected with -m."""
+    if not config.getoption("-m"):
+        selected = []
+        deselected = []
+        for item in items:
+            if "slow" in item.keywords or "integration" in item.keywords:
+                deselected.append(item)
+            else:
+                selected.append(item)
+        if deselected:
+            config.hook.pytest_deselected(items=deselected)
+            items[:] = selected
+
+
 @pytest.fixture
 def provider():
     return os.getenv("LLM_PROVIDER", LLMProvider.OPENAI)
