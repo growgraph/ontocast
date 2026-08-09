@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
-## [0.6.0] - 2026-08-09
+## [0.6.0] - 2026-08-10
 
 *First release published to PyPI since 0.4.3: the 0.5.0 and 0.5.1
 sections below were in-tree version bumps that were never tagged or

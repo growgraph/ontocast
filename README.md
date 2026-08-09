@@ -1,322 +1,81 @@
-# OntoCast <img src="https://raw.githubusercontent.com/growgraph/ontocast/refs/heads/main/docs/assets/favicon.ico" alt="Agentic Ontology Triplecast logo" style="height: 32px; width:32px;"/>
+# OntoCast <img src="https://raw.githubusercontent.com/growgraph/ontocast/refs/heads/main/docs/assets/favicon.ico" alt="OntoCast logo" style="height: 32px; width:32px;"/>
 
-### Agentic ontology-assisted framework for semantic triple extraction
+**Agentic ontology-assisted extraction of RDF knowledge graphs from documents.**
 
-![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg) 
+![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)
 [![PyPI version](https://badge.fury.io/py/ontocast.svg)](https://badge.fury.io/py/ontocast)
 [![PyPI Downloads](https://static.pepy.tech/badge/ontocast)](https://pepy.tech/projects/ontocast)
+[![Docs](https://img.shields.io/badge/docs-growgraph.github.io-orange.svg)](https://growgraph.github.io/ontocast/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![pre-commit](https://github.com/growgraph/ontocast/actions/workflows/pre-commit.yml/badge.svg)](https://github.com/growgraph/ontocast/actions/workflows/pre-commit.yml)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17796467.svg)](https://doi.org/10.5281/zenodo.17796467)
 
----
+OntoCast turns unstructured text into queryable RDF: it **co-evolves** domain ontologies and fact graphs in a parallel map/reduce pipeline, with RDF 1.2 provenance, entity disambiguation across chunks, and optional vector-backed ontology retrieval. Run it as a REST service, a batch CLI, or embed the pipeline in your own LangChain / LangGraph agent.
 
-## Overview
-
-OntoCast is a framework for extracting semantic triples (creating a Knowledge Graph) from documents using an agentic, ontology-driven approach. It combines ontology management, natural language processing, and knowledge graph serialization to turn unstructured text into structured, queryable data.
+**Documentation:** [growgraph.github.io/ontocast](https://growgraph.github.io/ontocast/)
 
 ---
 
-## Key Features
+## Why OntoCast
 
-- **Ontology-Guided Extraction**: Ensures semantic consistency and co-evolves ontologies
-- **Entity Disambiguation**: Resolves references across document chunks (embedding + symbolic alignment)
-- **Parallel Processing**: Per-unit ontology and facts loops with configurable worker concurrency
-- **Multi-Format Support**: Handles text, JSON, PDF, and Markdown
-- **Semantic Chunking**: Splits text based on semantic similarity
-- **RDF Output**: Produces standardized RDF/Turtle (optional JSON-LD LLM wire format)
-- **RDF 1.2 Provenance**: Quoted-triple / reification support; optional `strip_provenance` on API output
-- **Triple Store Integration**: Apache Fuseki (production) or in-memory pyoxigraph (default)
-- **Ontology Context Modes**: Catalog selection, Qdrant vector retrieval, or fixed catalog ontology
-- **Tenancy**: Partition Fuseki datasets and Qdrant collections by tenant and project
-- **REST API**: Document processing, ontology catalog management, and graph-matching endpoints
-- **Hierarchical Configuration**: Type-safe configuration system with environment variable support
-- **Automatic LLM Caching**: Built-in response caching for improved performance and cost reduction
-- **GraphUpdate Operations**: Token-efficient SPARQL-based updates instead of full graph regeneration
-- **Budget Tracking**: Comprehensive tracking of LLM usage and triple generation metrics
-- **Ontology Versioning**: Automatic semantic versioning with hash-based lineage tracking
+Most extractors dump triples and leave ontology drift to you. OntoCast treats schema and instance data as one loop: per-chunk render → critic → merge, with GraphUpdate patches (insert/delete) instead of regenerating whole graphs, SHACL validation with LLM-free autofix, and a light install so you can embed the core without pulling Docling, gRPC, or ONNX.
 
 ---
 
-## Applications
+## Features
 
-OntoCast can be used for:
-
-- **Knowledge Graph Construction**: Build domain-specific or general-purpose knowledge graphs from documents
-- **Semantic Search**: Power search and retrieval with structured triples
-- **GraphRAG**: Enable retrieval-augmented generation over knowledge graphs (e.g., with LLMs)
-- **Ontology Management**: Automate ontology creation, validation, and refinement
-- **Data Integration**: Unify data from diverse sources into a semantic graph
+- **Parallel ontology + facts loops** — concurrent per-unit render/critic with configurable workers
+- **GraphUpdate patches** — token-efficient insert/delete ops, not full-graph regeneration
+- **Entity disambiguation** — embedding + symbolic alignment across chunks
+- **RDF 1.2 provenance** — quoted triples / provenance artifacts; optional `strip_provenance`
+- **Ontology context** — catalog selection, vector retrieval (LanceDB or Qdrant), or a fixed ontology
+- **Facts validation** — invariants, SHACL, and machine repairs without an extra LLM pass
+- **Stores** — in-memory pyoxigraph by default; Fuseki for persistence; tenancy by tenant/project
+- **LLM caching** — disk cache, in-flight limits, optional read-only / batch pre-warm
+- **Embeddable** — `ontocast_tools`, `run_unit_pipeline`, or a LangGraph node
 
 ---
 
-## Installation
+## Install
 
-The base package is a minimal embeddable core: pick at least one LLM provider
-extra (`openai`, `anthropic`, `google`, `ollama`), and add `server` for the
-`ontocast` command and the API server:
+Pick at least one LLM provider extra. Add `server` for the CLI and HTTP API:
 
 ```sh
 uv add "ontocast[server,openai]"
-# or
-pip install "ontocast[server,openai]"
+# or: pip install "ontocast[server,openai]"
 ```
 
-### Optional features: document processing (PDFs, PPT, OCR, semantic chunking), vector mode for ontology retrieval:
+Common add-ons: `doc-processing` (PDF/DOCX), `lancedb` or `qdrant` (ontology retrieval), `shacl` (shape validation).
 
 ```sh
-uv add "ontocast[server,openai,doc-processing,lancedb]"
-# or
-pip install "ontocast[server,openai,doc-processing,lancedb]"
+uv add "ontocast[server,openai,doc-processing,lancedb,shacl]"
 ```
 
-See [Installation](docs/getting_started/installation.md) for the full extras
-table.
+Full extras table: [Installation](https://growgraph.github.io/ontocast/getting_started/installation/).
 
 ---
 
-## Quick Start
-
-### 1. Configuration
-
-Copy the example file and edit as needed:
+## Quick start
 
 ```bash
 cp .env.example .env
-```
+# Set LLM_API_KEY (and LLM_PROVIDER / LLM_MODEL_NAME as needed)
 
-Minimal settings:
-
-```bash
-# LLM Configuration
-LLM_PROVIDER=openai
-LLM_API_KEY=your-api-key-here
-LLM_MODEL_NAME=gpt-4o-mini
-LLM_TEMPERATURE=0.0
-
-# Server Configuration
-PORT=8999
-BASE_RECURSION_LIMIT=1000
-ESTIMATED_CHUNKS=30
-MAX_VISITS=1
-RENDER_MODE=ontology_and_facts
-ONTOLOGY_MAX_TRIPLES=50000
-
-# Path Configuration
-ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontologies
-ONTOCAST_CACHE_DIR=/path/to/cache
-
-# Optional: Triple Store Configuration (Fuseki for production persistence)
-# (the bundled docker/fuseki compose maps the server to host port 3032)
-FUSEKI_URI=http://localhost:3030
-FUSEKI_AUTH=admin/admin
-# Datasets default to ontocast--test--facts / ontocast--test--ontologies when unset
-
-# Optional: Web search grounding (search-later mode)
-WEB_SEARCH_ENABLED=false
-WEB_SEARCH_PROVIDER=duckduckgo
-WEB_SEARCH_TOP_K=3
-```
-
-See [Configuration Guide](docs/user_guide/configuration.md) and `.env.example` for the full surface (embeddings, Qdrant, aggregation, etc.).
-
-### 2. Start Server
-
-```bash
-# Backend automatically detected from .env configuration
 ontocast serve
-
-# Process a specific file (local batch; no HTTP server)
-ontocast process --input-path ./document.pdf --output-dir ./out
-
-# Process only the first N chunks (for testing)
-ontocast process --input-path ./document.pdf --head-chunks 5
-```
-
-Paths and triple-store credentials are configured via `.env` — not CLI overrides.
-
-### 3. Process Documents
-
-```bash
 curl -X POST http://localhost:8999/process -F "file=@document.pdf"
 ```
 
-JSON body example:
+Batch without a server:
 
 ```bash
-curl -X POST http://localhost:8999/process \
-  -H "Content-Type: application/json" \
-  -d '{"text": "Your document text here"}'
+ontocast process --input-path ./document.pdf --head-chunks 5 --output-dir ./out
 ```
 
-### 4. API Endpoints
-
-The OntoCast server exposes a REST API. Common endpoints:
-
-- **POST /process** — full document pipeline (JSON or multipart file upload)
-- **POST /process_unit** — single-unit pipeline (useful for debugging prompts)
-- **POST /ontologies** — upload catalog ontologies (Turtle)
-- **POST /flush** — flush/clean triple store data
-- **GET /health**, **GET /info** — health and service metadata
-- **POST /match/entities** (and related match routes) — entity alignment and evaluation
-
-```bash
-curl -X POST http://localhost:8999/process -F "file=@document.pdf"
-
-curl -X POST http://localhost:8999/flush
-
-curl -X POST "http://localhost:8999/flush?tenant=acme&project=reports"
-```
-
-For Fuseki, optional `tenant`/`project` query parameters target a specific partition. Without them, the active server scope is flushed. There is no `dataset` parameter — unknown query parameters are ignored, so passing one silently flushes the active scope instead.
-
-Full reference: [API Endpoints](docs/user_guide/api.md).
+Omit `FUSEKI_URI` for in-memory pyoxigraph. Details: [Quick Start](https://growgraph.github.io/ontocast/getting_started/quickstart/).
 
 ---
 
-## Workflow
-
-The extraction pipeline converts documents to Markdown, chunks them, runs parallel per-unit ontology and facts loops, then merges and serializes results.
-
-![Workflow diagram](docs/assets/graph.png)
-
-Landscape layout: [docs/assets/graph.lr.png](docs/assets/graph.lr.png). Per-unit loops: [ontology_loop](docs/assets/ontology_loop.png), [facts_loop](docs/assets/facts_loop.png) — [Workflow guide](docs/user_guide/workflow.md#per-unit-atomic-loop).
-
-Regenerate diagrams after graph changes: `uv run plot-graph`
-
----
-
-## LLM Caching
-
-OntoCast includes automatic LLM response caching to improve performance and reduce API costs. Caching is enabled by default and requires no configuration.
-
-### Cache Locations
-
-- **Tests**: `.test_cache/llm/` in the current working directory
-- **Windows**: `%USERPROFILE%\AppData\Local\ontocast\llm\`
-- **Unix/Linux**: `~/.cache/ontocast/llm/` (or `$XDG_CACHE_HOME/ontocast/llm/`)
-
-### Benefits
-
-- **Faster Execution**: Repeated queries return cached responses instantly
-- **Cost Reduction**: Identical requests don't hit the LLM API
-- **Offline Capability**: Tests can run without API access if responses are cached
-- **Transparent**: No configuration required — works automatically
-
-Details: [LLM Caching](docs/user_guide/llm_caching.md)
-
----
-
-## Configuration System
-
-OntoCast uses a hierarchical configuration system built on Pydantic BaseSettings:
-
-### Environment Variables
-
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `LLM_API_KEY` | API key for LLM provider | - | Yes (OpenAI) |
-| `LLM_PROVIDER` | LLM provider (openai, anthropic, google, ollama) | openai | No |
-| `LLM_MODEL_NAME` | Model name | gpt-4o-mini | No |
-| `LLM_TEMPERATURE` | Temperature setting | 0.0 | No |
-| `ONTOCAST_ONTOLOGY_DIRECTORY` | Ontology seed files | - | No |
-| `PORT` | Server port | 8999 | No |
-| `MAX_VISITS` | Maximum render/critic visits per unit loop | 1 | No |
-| `BASE_RECURSION_LIMIT` | Base recursion limit for workflow | 1000 | No |
-| `RENDER_MODE` | `ontology`, `facts`, or `ontology_and_facts` | ontology_and_facts | No |
-| `ONTOLOGY_MAX_TRIPLES` | Maximum triples in ontology graph | 50000 | No |
-| `ONTOCAST_CACHE_DIR` | Custom cache directory | Platform default | No |
-| `WEB_SEARCH_ENABLED` | Optional web grounding (search-later) | false | No |
-
-See [Configuration Guide](docs/user_guide/configuration.md) for chunking, Qdrant, embeddings, aggregation, and web-search variables.
-
-### Triple Store Configuration
-
-```bash
-# Fuseki (production persistence; the bundled compose maps host port 3032)
-FUSEKI_URI=http://localhost:3030
-FUSEKI_AUTH=admin/admin
-```
-
-When Fuseki is not configured, OntoCast uses an in-memory pyoxigraph backend automatically. See [Triple Store Setup](docs/user_guide/triple_stores.md).
-
-### CLI Parameters
-
-```bash
-ontocast serve
-ontocast process --input-path ./document.pdf --output-dir ./out
-ontocast process --input-path ./document.pdf --head-chunks 5
-ontocast serve --tenant acme --project reports
-```
-
----
-
-## Triple Store Setup
-
-OntoCast uses a unified triple-store interface with two backends:
-
-1. **Apache Fuseki** — persistent RDF with SPARQL (production)
-2. **In-Memory (pyoxigraph)** — zero-config default when Fuseki is not configured
-
-### Quick Setup with Docker (Fuseki)
-
-```bash
-cd docker/fuseki
-cp .env.example .env
-docker compose --env-file .env up fuseki -d
-```
-
-See [Triple Store Setup](docs/user_guide/triple_stores.md) for detailed instructions.
-
----
-
-## Documentation
-
-- [Quick Start Guide](docs/getting_started/quickstart.md) — Get started quickly
-- [Workflow](docs/user_guide/workflow.md) — Pipeline and diagrams
-- [Configuration System](docs/user_guide/configuration.md) — Environment variables
-- [API Endpoints](docs/user_guide/api.md) — REST reference
-- [Tenancy](docs/user_guide/tenancy.md) — Multi-tenant stores
-- [Ontology Context](docs/user_guide/ontology_context.md) — Catalog vs vector retrieval
-- [Triple Store Setup](docs/user_guide/triple_stores.md) — Fuseki and in-memory backends
-- [LLM Caching](docs/user_guide/llm_caching.md) — Automatic response caching
-- [User Guide](docs/user_guide/concepts.md) — Core concepts
-- [API Reference](https://growgraph.github.io/ontocast/) — Python API, generated at docs build time on the docs site (not present in the repo tree)
-
-Build docs locally: `uv run mkdocs build`
-
----
-
-## Highlights
-
-### Ontology Management
-
-- **Automatic Versioning**: Semantic version increment based on change analysis (MAJOR/MINOR/PATCH)
-- **Hash-Based Lineage**: Git-style versioning with parent hashes for tracking ontology evolution
-- **Multiple Version Storage**: Versions stored as separate named graphs in Fuseki triple stores
-- **Timestamp Tracking**: `created_at` is recorded per version and serialized as `dcterms:created`
-
-### GraphUpdate System
-
-- **Token Efficiency**: LLM outputs structured SPARQL operations (insert/delete) instead of full TTL graphs
-- **Incremental Updates**: Only changes are generated, dramatically reducing token usage
-- **Structured Operations**: TripleOp operations with explicit prefix declarations for precise updates
-
-### Budget Tracking
-
-- **LLM Statistics**: Tracks API calls, characters sent/received for cost monitoring
-- **Triple Metrics**: Tracks ontology and facts triples generated per operation
-- **Summary Reports**: Budget summaries logged at end of processing
-
-See [CHANGELOG.md](CHANGELOG.md) for release-by-release notes.
-
----
-
-## Examples
-
-### Give an agent ontology tools
-
-`pip install "ontocast[openai]"` — no external services required.
+## Embed in your agent
 
 ```python
 from langchain.agents import create_agent
@@ -328,74 +87,47 @@ await tools.initialize()
 agent = create_agent(
     model,
     tools=[*ontocast_tools(tools)],
-    prompt="You are a helpful agent that edits the ontology based on input.",
+    prompt="Edit the ontology from the user's text.",
 )
 ```
 
-Only tools whose backend is installed and configured are returned;
-`ontocast_tool_diagnostics(tools)` explains any omission.
-
-### Extract from text
-
-```python
-from ontocast import AgentState, run_unit_pipeline
-
-state = AgentState(raw_input={"note.txt": text.encode()})
-ontology_result, facts_result = await run_unit_pipeline(state, tools)
-```
-
-### Run the pipeline inside your own LangGraph
-
-```python
-from langgraph.graph import StateGraph
-from ontocast import make_ontocast_node, text_in_turtle_out
-
-to_state, from_state = text_in_turtle_out()
-
-builder = StateGraph(MyState)
-builder.add_node(
-    "extract",
-    make_ontocast_node(tools, to_agent_state=to_state, from_agent_state=from_state),
-)
-```
-
-See [Embedding OntoCast](https://growgraph.github.io/ontocast/user_guide/embedding/)
-for the tool table, install tiers, and what a base install cannot do.
-
-### Server Usage
-
-```bash
-ontocast process --input-path ./document.pdf --head-chunks 10 --output-dir ./out
-```
+Also: `run_unit_pipeline` for a single passage, or `make_ontocast_node` inside your own LangGraph — see [Embedding OntoCast](https://growgraph.github.io/ontocast/user_guide/embedding/).
 
 ---
 
-## Running tests
+## Workflow
 
-Tests load settings from the process environment. To run the suite with variables from a project `.env` file:
+![Workflow diagram](docs/assets/graph.png)
 
-```bash
-bash -c 'set -a; source .env; set +a; uv run pytest test'
-```
+1. Convert → chunk prepare (segment, tag, filter, size)
+2. Parallel ontology render → normalize → consolidate → structural check → critic
+3. Parallel facts render → merge / disambiguate → validate (invariants, SHACL, autofix)
+4. Serialize to the triple store; return Turtle from the API
 
-Integration tests (for example Qdrant) read optional variables such as `QDRANT_URI` and `QDRANT_API_KEY` from that environment; they skip automatically when the service is unreachable.
+[Workflow guide](https://growgraph.github.io/ontocast/user_guide/workflow/) · landscape: [`graph.lr.png`](docs/assets/graph.lr.png) · per-unit: [`ontology_loop`](docs/assets/ontology_loop.png), [`facts_loop`](docs/assets/facts_loop.png)
+
+---
+
+## Documentation
+
+Everything lives at **[growgraph.github.io/ontocast](https://growgraph.github.io/ontocast/)**:
+
+| | |
+|---|---|
+| [Installation](https://growgraph.github.io/ontocast/getting_started/installation/) · [Quick Start](https://growgraph.github.io/ontocast/getting_started/quickstart/) | Getting started |
+| [Core Concepts](https://growgraph.github.io/ontocast/user_guide/concepts/) · [Workflow](https://growgraph.github.io/ontocast/user_guide/workflow/) · [Configuration](https://growgraph.github.io/ontocast/user_guide/configuration/) | How it works |
+| [API](https://growgraph.github.io/ontocast/user_guide/api/) · [Embedding](https://growgraph.github.io/ontocast/user_guide/embedding/) · [Tenancy](https://growgraph.github.io/ontocast/user_guide/tenancy/) | Integrate |
+| [Ontology Context](https://growgraph.github.io/ontocast/user_guide/ontology_context/) · [Validation / SHACL](https://growgraph.github.io/ontocast/user_guide/validation/) · [Triple Stores](https://growgraph.github.io/ontocast/user_guide/triple_stores/) | Operate |
+| [API Reference](https://growgraph.github.io/ontocast/reference/) | Python API |
+
+Release notes: [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
 ## Contributing
 
-We welcome contributions! Please see our [Contributing Guide](docs/contributing.md) for details.
-
----
+See [Contributing](https://growgraph.github.io/ontocast/contributing/). Issues and discussion: [GitHub](https://github.com/growgraph/ontocast).
 
 ## License
 
-This project is licensed under the Apache License 2.0 — see the [LICENSE](LICENSE) file for details.
-
----
-
-## Support
-
-- **Documentation**: [docs/](docs/)
-- **Issues**: [GitHub Issues](https://github.com/growgraph/ontocast/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/growgraph/ontocast/discussions)
+Apache License 2.0 — see [LICENSE](LICENSE).
