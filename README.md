@@ -73,6 +73,16 @@ ontocast process --input-path ./document.pdf --head-chunks 5 --output-dir ./out
 
 Omit `FUSEKI_URI` for in-memory pyoxigraph. Details: [Quick Start](https://growgraph.github.io/ontocast/getting_started/quickstart/).
 
+### Supplying Your Ontologies
+
+OntoCast uses seed ontologies (in Turtle `.ttl` format) to guide extraction. Provide yours in two ways:
+
+1. **Directory Seed:** Set `ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/your/ontologies` in your `.env`. All `.ttl` files in that folder sync automatically on startup.
+2. **API Upload:** Register schemas dynamically with the running server:
+   ```bash
+   curl -X POST "http://localhost:8999/ontologies?tenant=ontocast&project=test" -F "file=@my_ontology.ttl"
+   ```
+
 ---
 
 ## Embed in your agent
