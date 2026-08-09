@@ -167,7 +167,6 @@ web-search = [
 # `ontocast[server]` install into a directive message instead of a bare
 # ModuleNotFoundError for click.
 [project.scripts]
-cmp-states = "ontocast.cli._entry:cmp_states"
 match-graphs = "ontocast.cli._entry:match_graphs"
 ontocast = "ontocast.cli._entry:ontocast"
 pdfs-to-markdown = "ontocast.cli._entry:pdfs_to_markdown"

@@ -643,6 +643,12 @@ def make_render_facts_node(tools: ToolBox):
         state.retrieval_metrics["facts_llm_repair_renders_total"] = sum(
             1 for attempt in all_attempts if attempt.kind == "llm_repair"
         )
+        # A repair render that itself fails leaves the pre-repair graph intact
+        # and the unit reports SUCCESS, so without this the crash is recorded on
+        # the attempt log and observed nowhere.
+        state.retrieval_metrics["facts_llm_repair_renders_failed"] = sum(
+            1 for attempt in all_attempts if attempt.repair_failed
+        )
         state.retrieval_metrics["facts_findings_residual"] = sum(
             attempts[-1].n_deterministic_findings
             for attempts in state.facts_loop_telemetry.values()

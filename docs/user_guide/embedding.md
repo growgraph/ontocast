@@ -122,7 +122,7 @@ agent = create_agent(
 | `ontocast_chunk_text` | yes † | Split a document into size-bounded chunks |
 | `ontocast_extract` | yes | Run the extraction pipeline over a passage |
 | `ontocast_apply_graph_update` | `mutating=True` | Apply an insert/delete patch |
-| `ontocast_ingest_ontology_ttl` | `mutating=True` † | Register a new ontology |
+| `ontocast_ingest_ontology_ttl` | `mutating=True` | Register a new ontology |
 | `ontocast_delete_ontology` | `mutating=True` | Delete an ontology and its derivatives |
 | `ontocast_convert_document` | `include=` only | Convert a file to markdown |
 | `ontocast_align_entities` | `include=` only | Match equivalent entities across graphs |
@@ -152,7 +152,6 @@ for name, reason in ontocast_tool_diagnostics(tools).items():
 ```text
 ontocast_search_ontology_terms: no vector store is configured (set VECTOR_STORE_BACKEND=memory)
 ontocast_chunk_text: requires docling-core; install with pip install "ontocast[documents]"
-ontocast_ingest_ontology_ttl: ontology_directory is not configured
 ```
 
 `ontocast_tool_names(tools)` returns the same list without building the tools.

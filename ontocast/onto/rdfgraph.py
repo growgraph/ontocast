@@ -4,7 +4,7 @@ import re
 import unicodedata
 import warnings
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
 from typing import Any, Union, cast
@@ -17,7 +17,11 @@ from rdflib.namespace import SH, XSD, NamespaceManager
 from rdflib.plugins.serializers.turtle import _GEN_QNAME_FOR_DT, TurtleSerializer
 from rdflib.serializer import Serializer
 
-from ontocast.onto.constants import COMMON_PREFIXES, prefix_lookup_for_ingest
+from ontocast.onto.constants import (
+    COMMON_PREFIXES,
+    RDF_REIFIES,
+    prefix_lookup_for_ingest,
+)
 from ontocast.onto.enum import LLMGraphFormat
 from ontocast.onto.iri_policy import normalize_namespace_iri, sanitize_prefix_map
 from ontocast.onto.namespace_merge import choose_best_prefix, merge_namespace_bindings
@@ -109,6 +113,57 @@ def copy_triples(source: Iterable, target: Graph, *, origin: str) -> int:
             dropped,
         )
     return dropped
+
+
+def drop_reifiers_mentioning(graph: Graph, nodes: Collection[Node]) -> int:
+    """Delete reifier descriptions whose triple term mentions any of ``nodes``.
+
+    Provenance is RDF 1.2 reification — ``_:r rdf:reifies <<( s p o )>>`` plus
+    ``prov:`` arcs — so a node being removed from the graph is referenced from
+    *inside* a triple term. No subject/object pattern matches that, which left
+    the reifier and its provenance describing a statement that no longer
+    existed once the node's own triples were deleted.
+
+    Goes through pyoxigraph rather than rdflib: ``Graph.remove`` raises
+    ``ValueError`` on a triple whose object is a triple term, so the
+    ``rdf:reifies`` quad is not removable through the rdflib API at all.
+
+    Args:
+        graph: Graph to sweep, mutated in place. A non-oxigraph store cannot
+            hold triple terms, so it is a no-op.
+        nodes: Nodes whose triples have been removed.
+
+    Returns:
+        The number of quads removed.
+    """
+    if not nodes or type(graph.store).__name__ != "OxigraphStore":
+        return 0
+
+    import pyoxigraph as ox
+    from oxrdflib._converter import to_ox
+
+    store = cast("ox.Store", _oxigraph_inner_store(graph.store))
+    graph_ctx_raw = to_ox(graph.identifier)
+    assert isinstance(graph_ctx_raw, (ox.NamedNode, ox.BlankNode, ox.DefaultGraph))
+    graph_ctx: ox.NamedNode | ox.BlankNode | ox.DefaultGraph = graph_ctx_raw
+    targets = {to_ox(node) for node in nodes}
+
+    doomed = set()
+    for quad in store.quads_for_pattern(
+        None, ox.NamedNode(str(RDF_REIFIES)), None, graph_ctx
+    ):
+        term = quad.object
+        if not isinstance(term, ox.Triple):
+            continue
+        if targets & {term.subject, term.predicate, term.object}:
+            doomed.add(quad.subject)
+
+    removed = 0
+    for reifier in doomed:
+        for quad in list(store.quads_for_pattern(reifier, None, None, graph_ctx)):
+            store.remove(quad)
+            removed += 1
+    return removed
 
 
 PREFIX_PATTERN = re.compile(r"@prefix\s+(\w+):\s+<[^>]+>\s+\.")

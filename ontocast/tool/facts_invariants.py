@@ -30,7 +30,12 @@ from ontocast.onto.model import (
     FactsValidationFindingKind,
     GraphRepairRecord,
 )
-from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple, copy_triples
+from ontocast.onto.rdfgraph import (
+    RDFGraph,
+    RejectedLiteralTriple,
+    copy_triples,
+    drop_reifiers_mentioning,
+)
 from ontocast.tool.agg.signatures import canonical_literal, harvest_max_one_predicates
 from ontocast.util.numeric_inventory import canonical_number, missing_numeric_mentions
 
@@ -1121,7 +1126,12 @@ class ShaclViolation(BaseModel):
     path: URIRef | None = None
     value: Node | None = None
     component: URIRef | None = None
-    source_shape: URIRef | None = None
+    # Node, not URIRef: the common authoring style is an inline
+    # ``sh:property [ sh:path … ; sh:datatype … ]``, whose shape is a blank
+    # node. Narrowing to URIRef dropped it and left every such violation
+    # unrepairable. pyshacl reports the same BNode the shapes graph holds, so
+    # the datatype lookup resolves.
+    source_shape: Node | None = None
     severity: TypingLiteral["error", "warning"] = "error"
     message: str = "SHACL constraint violated."
 
@@ -1242,9 +1252,7 @@ def run_shacl(
                 path=path if isinstance(path, URIRef) else None,
                 value=results_graph.value(result, SH.value),
                 component=component if isinstance(component, URIRef) else None,
-                source_shape=(
-                    source_shape if isinstance(source_shape, URIRef) else None
-                ),
+                source_shape=source_shape,
                 severity=("error" if severity_iri == SH.Violation else "warning"),
                 message=str(message) if message else "SHACL constraint violated.",
             )
@@ -1380,6 +1388,25 @@ def _node_in_graph(graph: RDFGraph, node: Node) -> bool:
     return (node, None, None) in graph or (None, None, node) in graph
 
 
+def _violation_in_fact_scope(
+    graph: RDFGraph, focus: Node | None, fact_namespaces: Sequence[str]
+) -> bool:
+    """True when a violation on ``focus`` belongs to the facts graph.
+
+    The gate's boundary, stated once. An IRI is scoped by namespace; a blank
+    node carries none, so presence in the facts graph is the test — the same
+    rule the repair pass applies. Splitting these apart is what let a blank-node
+    violation be repaired while being filtered out of the report, so the
+    findings under-counted exactly the nodes the gate had acted on.
+    """
+    if focus is None:
+        return True
+    if isinstance(focus, URIRef):
+        # _in_fact_scope admits everything when no namespaces are configured.
+        return _in_fact_scope(focus, [ns for ns in fact_namespaces if ns])
+    return _node_in_graph(graph, focus)
+
+
 def _node_asserts_nothing(graph: RDFGraph, node: Node) -> bool:
     """True when ``node`` is in the graph but carries nothing beyond typing/labels."""
     outgoing = list(graph.predicate_objects(node))
@@ -1398,8 +1425,12 @@ def _shacl_repairs_for(
     mode: str,
     surface_index: dict[str, set[str]],
     fact_namespaces: Sequence[str],
-) -> tuple[list[tuple], list[tuple], list[GraphRepairRecord]]:
-    """Derive (removals, additions, records) for one round of violations."""
+) -> tuple[list[tuple], list[tuple], list[GraphRepairRecord], set[Node]]:
+    """Derive (removals, additions, records, pruned nodes) for one round.
+
+    The pruned set is returned because those nodes are also referenced from
+    inside reification triple terms, which the removal list cannot express.
+    """
     removals: list[tuple] = []
     additions: list[tuple] = []
     records: list[GraphRepairRecord] = []
@@ -1408,15 +1439,10 @@ def _shacl_repairs_for(
     for violation in violations:
         if violation.severity != "error" or violation.focus is None:
             continue
-        if isinstance(violation.focus, URIRef):
-            if not _in_fact_scope(violation.focus, list(fact_namespaces)):
-                # Ontology entities are not the gate's business to rewrite.
-                continue
-        elif not _node_in_graph(graph, violation.focus):
-            # Blank nodes carry no namespace to scope by; presence in the
-            # facts graph is the boundary. Catalog blank nodes (OWL
-            # restrictions, property shapes) reported via the mixed-in
-            # ontology stay untouched.
+        # Ontology entities are not the gate's business to rewrite, and catalog
+        # blank nodes (OWL restrictions, property shapes) reported via the
+        # mixed-in ontology stay untouched.
+        if not _violation_in_fact_scope(graph, violation.focus, fact_namespaces):
             continue
         component = violation.component
         shape = violation.source_shape
@@ -1494,31 +1520,25 @@ def _shacl_repairs_for(
                 )
             )
 
-    return removals, additions, records
+    return removals, additions, records, pruned
 
 
 def _fact_scope_violations(
+    graph: RDFGraph,
     violations: Sequence[ShaclViolation],
     fact_namespaces: Sequence[str],
 ) -> list[ShaclViolation]:
     """Violations that would survive the reporting filter.
 
-    Mirrors the filter :func:`validate_aggregated_facts` applies to findings,
+    Shares :func:`_violation_in_fact_scope` with the report and the repair pass,
     so the ``violations_before``/``violations_after`` metrics count the same
     population as ``conforms`` does — with the ontology mixed in, the raw
     pyshacl count includes catalog nodes the report never shows.
     """
-    namespaces = [ns for ns in fact_namespaces if ns]
-    if not namespaces:
-        return list(violations)
     return [
         violation
         for violation in violations
-        if violation.focus is None
-        or (
-            isinstance(violation.focus, URIRef)
-            and _in_fact_scope(violation.focus, namespaces)
-        )
+        if _violation_in_fact_scope(graph, violation.focus, fact_namespaces)
     ]
 
 
@@ -1600,7 +1620,7 @@ def apply_shacl_repairs(
         return ShaclRepairResult(graph=graph)
 
     def _scoped_count(candidates: Sequence[ShaclViolation]) -> int:
-        return len(_fact_scope_violations(candidates, fact_namespaces))
+        return len(_fact_scope_violations(graph, candidates, fact_namespaces))
 
     result = ShaclRepairResult(
         graph=graph,
@@ -1619,7 +1639,7 @@ def apply_shacl_repairs(
     for _ in range(passes):
         if not violations:
             break
-        removals, additions, records = _shacl_repairs_for(
+        removals, additions, records, pruned = _shacl_repairs_for(
             graph,
             shapes_graph,
             violations,
@@ -1660,11 +1680,19 @@ def apply_shacl_repairs(
             result.reverted = True
             break
 
+        # Only once the pass is accepted, and deliberately after the accept test
+        # rather than alongside the removals: reification quads cannot travel
+        # through _rollback (rdflib cannot add or remove a triple-term triple),
+        # and validation runs on a copy with triple terms stripped, so sweeping
+        # here changes no count and needs no undo.
+        swept = drop_reifiers_mentioning(graph, pruned)
+
         logger.info(
-            "SHACL autofix: %d repair(s) applied, violations %d -> %d",
+            "SHACL autofix: %d repair(s) applied, violations %d -> %d%s",
             len(records),
             len(violations),
             len(candidate_violations),
+            f", {swept} orphaned provenance quad(s) swept" if swept else "",
         )
         violations = candidate_violations
         result.records.extend(records)
@@ -2017,11 +2045,15 @@ def validate_aggregated_facts(
         )
         shacl_evaluated = violations is not None
         shacl_violations = list(violations or [])
+        # Filter on the violation, which still holds the focus as an RDF term.
+        # Filtering the projected finding instead compared a stringified blank
+        # node against namespace prefixes, so it matched nothing and every
+        # blank-node violation was dropped from the report — including the ones
+        # the repair pass had just acted on.
         findings.extend(
-            finding
-            for finding in (violation.as_finding() for violation in shacl_violations)
-            if not finding.subject
-            or _in_fact_scope(URIRef(finding.subject), namespaces)
+            violation.as_finding()
+            for violation in shacl_violations
+            if _violation_in_fact_scope(graph, violation.focus, namespaces)
         )
 
     findings.extend(

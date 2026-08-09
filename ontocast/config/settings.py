@@ -798,7 +798,12 @@ class PathConfig(BaseSettings):
     """Path and directory configuration."""
 
     ontology_directory: Path | None = Field(
-        default=None, description="Directory containing ontology files"
+        default=None,
+        description=(
+            "Directory of seed ontology *.ttl files, read once at startup. "
+            "Read-only: ingestion never writes here and deletion never removes "
+            "files from it"
+        ),
     )
     cache_dir: Path | None = Field(
         default=None, description="Cache directory for LLM responses and tool outputs"

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from rdflib import OWL, RDF, RDFS, Literal, Namespace, URIRef
+from rdflib import OWL, RDF, RDFS, BNode, Literal, Namespace, URIRef
 from rdflib.namespace import XSD
 
 from ontocast.config import FactsValidationConfig
@@ -754,3 +754,220 @@ def test_gate_repairs_and_reports_through_the_node(tmp_path) -> None:
     assert state.facts_conformance["repairs_applied"] == {"shacl_retype": 1}
     assert state.retrieval_metrics["facts_shacl_violations_before"] == 1
     assert state.retrieval_metrics["facts_shacl_violations_after"] == 0
+
+
+def test_blank_property_shape_still_drives_the_retype_repair() -> None:
+    """``sh:property [ sh:path … ; sh:datatype … ]`` is the common style.
+
+    The reported ``sh:sourceShape`` is then a blank node. Narrowing it to
+    URIRef discarded it, so the datatype lookup had nothing to resolve and
+    every inline-shaped violation fell through to "reported, not repaired".
+    """
+    shapes = RDFGraph()
+    shape = URIRef(Q + "InlineValueShape")
+    blank_prop = BNode()
+    shapes.add((shape, RDF.type, SH.NodeShape))
+    shapes.add((shape, SH.targetClass, VALUE_CLASS))
+    shapes.add((shape, SH.property, blank_prop))
+    shapes.add((blank_prop, SH.path, NUMERIC))
+    shapes.add((blank_prop, SH.datatype, XSD.decimal))
+
+    graph = RDFGraph()
+    node = URIRef(CD + "v1")
+    graph.add((node, RDF.type, VALUE_CLASS))
+    graph.add((node, NUMERIC, Literal("230")))
+
+    result = apply_shacl_repairs(
+        graph,
+        shapes,
+        _unit_catalog(),
+        mode="prune",
+        passes=2,
+        fact_namespaces=[CD],
+        code_predicates=[str(UCUM)],
+    )
+
+    assert [record.kind for record in result.records] == ["shacl_retype"]
+    assert list(result.graph.objects(node, NUMERIC)) == [
+        Literal("230", datatype=XSD.decimal)
+    ]
+    assert result.violations_after == 0
+
+
+def test_pruning_sweeps_the_provenance_reifier_of_the_removed_triple() -> None:
+    """A pruned node is also named inside ``rdf:reifies <<( s p o )>>``.
+
+    Neither an incoming nor an outgoing pattern matches a node sitting in a
+    triple term, so the reifier and its ``prov:wasDerivedFrom`` used to survive
+    the prune, describing a statement that no longer exists.
+    """
+    ox = pytest.importorskip("pyoxigraph")
+    from oxrdflib._converter import to_ox
+
+    from ontocast.onto.constants import PROV, RDF_REIFIES
+    from ontocast.onto.rdfgraph import _oxigraph_inner_store
+
+    graph = RDFGraph(store="oxigraph")
+    placeholder = URIRef(CD + "v_empty")
+    observation = URIRef(CD + "obs")
+    has_value = URIRef(Q + "hasValue")
+    graph.add((placeholder, RDF.type, VALUE_CLASS))
+    graph.add((placeholder, RDFS.label, Literal("efficiency")))
+    graph.add((observation, has_value, placeholder))
+
+    inner = cast(ox.Store, _oxigraph_inner_store(graph.store))
+    graph_ctx = to_ox(graph.identifier)
+    reifier = ox.BlankNode()
+    inner.add(
+        ox.Quad(
+            reifier,
+            ox.NamedNode(str(RDF_REIFIES)),
+            ox.Triple(
+                ox.NamedNode(str(observation)),
+                ox.NamedNode(str(has_value)),
+                ox.NamedNode(str(placeholder)),
+            ),
+            graph_ctx,
+        )
+    )
+    inner.add(
+        ox.Quad(
+            reifier,
+            ox.NamedNode(str(PROV.wasDerivedFrom)),
+            ox.NamedNode("https://example.org/doc/chunk0"),
+            graph_ctx,
+        )
+    )
+
+    result = _repair(graph)
+
+    assert [record.kind for record in result.records] == ["shacl_prune"]
+    assert len(result.graph) == 0
+    assert (
+        list(
+            inner.quads_for_pattern(
+                None, ox.NamedNode(str(RDF_REIFIES)), None, graph_ctx
+            )
+        )
+        == []
+    )
+    assert (
+        list(
+            inner.quads_for_pattern(
+                None, ox.NamedNode(str(PROV.wasDerivedFrom)), None, graph_ctx
+            )
+        )
+        == []
+    )
+
+
+def test_reverted_pass_leaves_the_provenance_reifier_alone() -> None:
+    """The sweep runs only after a pass is accepted, so a revert keeps it."""
+    ox = pytest.importorskip("pyoxigraph")
+    from oxrdflib._converter import to_ox
+
+    from ontocast.onto.constants import RDF_REIFIES
+    from ontocast.onto.rdfgraph import _oxigraph_inner_store
+
+    graph = RDFGraph(store="oxigraph")
+    node = URIRef(CD + "v1")
+    graph.add((node, RDF.type, VALUE_CLASS))
+    graph.add((node, NUMERIC, Literal("not-a-number")))
+
+    inner = cast(ox.Store, _oxigraph_inner_store(graph.store))
+    graph_ctx = to_ox(graph.identifier)
+    inner.add(
+        ox.Quad(
+            ox.BlankNode(),
+            ox.NamedNode(str(RDF_REIFIES)),
+            ox.Triple(
+                ox.NamedNode(str(node)),
+                ox.NamedNode(str(NUMERIC)),
+                ox.Literal("not-a-number"),
+            ),
+            graph_ctx,
+        )
+    )
+
+    _repair(graph)
+
+    assert (
+        len(
+            list(
+                inner.quads_for_pattern(
+                    None, ox.NamedNode(str(RDF_REIFIES)), None, graph_ctx
+                )
+            )
+        )
+        == 1
+    )
+
+
+def test_blank_node_shacl_violation_reaches_the_report() -> None:
+    """A blank-node focus is repairable, so it must also be reportable.
+
+    Scope was decided on the *projected* finding, whose subject is a
+    stringified blank node matching no namespace prefix. Every blank-node
+    violation was therefore filtered out, and ``facts_validation_findings``
+    under-counted exactly the nodes the repair pass had acted on.
+    """
+    shapes = RDFGraph()
+    shape = URIRef(Q + "BlankFocusShape")
+    numeric_prop = URIRef(Q + "bp_numeric")
+    shapes.add((shape, RDF.type, SH.NodeShape))
+    shapes.add((shape, SH.targetClass, VALUE_CLASS))
+    shapes.add((shape, SH.property, numeric_prop))
+    shapes.add((numeric_prop, SH.path, NUMERIC))
+    shapes.add((numeric_prop, SH.minCount, Literal(1)))
+
+    graph = RDFGraph()
+    anonymous = BNode()
+    graph.add((URIRef(CD + "obs"), URIRef(Q + "hasValue"), anonymous))
+    graph.add((anonymous, RDF.type, VALUE_CLASS))
+    graph.add((anonymous, RDFS.label, Literal("efficiency")))
+
+    report = validate_aggregated_facts(
+        graph, _unit_catalog(), shapes_graph=shapes, fact_namespaces=[CD]
+    )
+
+    shacl_findings = [
+        finding
+        for finding in report.findings
+        if finding.kind == FactsValidationFindingKind.SHACL
+    ]
+    assert shacl_findings, "blank-node violation was dropped from the report"
+    assert any(finding.subject == str(anonymous) for finding in shacl_findings)
+
+
+def test_catalog_blank_node_violation_stays_out_of_the_report() -> None:
+    """Widening the filter must not admit blank nodes from the mixed-in catalog.
+
+    Presence in the facts graph is the boundary, the same test the repair pass
+    applies — not "blank nodes are always in scope".
+    """
+    shapes = RDFGraph()
+    shape = URIRef(Q + "CatalogShape")
+    numeric_prop = URIRef(Q + "cp_numeric")
+    shapes.add((shape, RDF.type, SH.NodeShape))
+    shapes.add((shape, SH.targetClass, VALUE_CLASS))
+    shapes.add((shape, SH.property, numeric_prop))
+    shapes.add((numeric_prop, SH.path, NUMERIC))
+    shapes.add((numeric_prop, SH.minCount, Literal(1)))
+
+    ontology = _unit_catalog()
+    catalog_blank = BNode()
+    ontology.add((catalog_blank, RDF.type, VALUE_CLASS))
+
+    graph = RDFGraph()
+    graph.add((URIRef(CD + "obs"), NUMERIC, Literal("1", datatype=XSD.decimal)))
+
+    report = validate_aggregated_facts(
+        graph, ontology, shapes_graph=shapes, fact_namespaces=[CD]
+    )
+
+    assert not [
+        finding
+        for finding in report.findings
+        if finding.kind == FactsValidationFindingKind.SHACL
+        and finding.subject == str(catalog_blank)
+    ]

@@ -53,11 +53,6 @@ def plot_graph() -> Any:
     return _run("plot-graph", "ontocast.cli.plot_graph", "main")
 
 
-def cmp_states() -> Any:
-    """Entry point for the `cmp-states` command."""
-    return _run("cmp-states", "ontocast.cli.cmp_states", "main")
-
-
 def match_graphs() -> Any:
     """Entry point for the `match-graphs` command."""
     return _run("match-graphs", "ontocast.cli.match_graphs", "main")

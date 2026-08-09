@@ -18,7 +18,6 @@ API clients
   - ``test-api``: Smoke-test the ``/process`` endpoint
 
 Dev / analysis
-  - ``cmp-states``: Compare serialized agent state JSON files
   - ``match-graphs``: Match TTL graphs locally
   - ``plot-graph``: Generate workflow diagram images for docs
 """

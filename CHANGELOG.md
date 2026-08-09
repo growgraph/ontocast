@@ -5,109 +5,78 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Terms used in these entries
-
-Retrieval and aggregation changes are justified against measurements, and the
-entries name the evaluation sets and metrics involved. For readers outside the
-project:
-
-- **Evaluation corpora.** *Text2KGBench* is a public benchmark used here as a
-  regression guard. The *materials-science corpus* is an internal evaluation
-  set: eight mutually referencing ontology modules (a domain vocabulary, a
-  units vocabulary, a qualified-value vocabulary, and others) with passages of
-  real scientific prose. Individual passages used for tuning are referred to by
-  a case number. Results measured only on the internal corpus are single-corpus
-  fits and are flagged as such.
-- **Seed recall vs. snapshot recall.** *Seed recall* is the share of expected
-  ontology terms that survive retrieval ranking and budget truncation.
-  *Snapshot recall* is the share that are actually defined in the ontology
-  graph handed to the model — a term can be absent from the seeds yet still
-  reach the model by being pulled in as a neighbour of one that was retrieved.
-- **On-topic precision.** The share of terms in the assembled ontology context
-  that belong to the ontology a given passage is about. It is reported for
-  context, not optimised: a missing term cannot be used at all, whereas a
-  surplus one only consumes prompt space. The measure also penalises correct
-  multi-ontology contexts, since a units or provenance term legitimately
-  drawn in from a sibling module counts against it.
-- **Surface-form contract (`sf3`, `sf4`, …).** A version stamp on how ontology
-  terms are converted into indexed text. Changing it changes the stored
-  vectors, so a bump requires re-indexing existing collections; entries that
-  bump it say so explicitly.
-
-
 ## [Unreleased]
 
-### Added
-- Token accounting survives a cache replay. `CachedResponse` now stores the
-  provider's usage alongside the response, and `BudgetTracker` reports it as
-  `cached_input_tokens` / `cached_output_tokens`, kept apart from the billed
-  `input_tokens` / `output_tokens` so a replay is not mistaken for spend.
-  Previously `usage_metadata` — a separate `AIMessage` attribute, not part of
-  the `response_metadata` that was persisted — was dropped on write, so the
-  cache-replay protocol in `docs/user_guide/performance.md`, the mode the
-  benchmark and ablation work runs in, reported zero tokens.
-- `BudgetTracker.reasoning_tokens`, `cache_read_input_tokens` and
-  `cache_creation_input_tokens`, read from LangChain's `UsageMetadata` detail
-  keys (and the OpenAI `*_tokens_details` equivalents). Reasoning tokens
-  dominate output cost for the thinking models `LLM_THINK` drives, and
-  provider-cached input bills at a fraction of the fresh rate — folding either
-  into a single total misstates cost in opposite directions.
-- A cache hit now rebuilds its `AIMessage` with `usage_metadata`, so a replayed
-  call looks identical to a live one to anything reading usage off the message.
-  The Batch-API prefill (`ontocast.tool.llm_batch`) carries usage through too.
-- `OllamaModel` presets for current Qwen and Kimi tags: `qwen3.6`, `qwen3.5`,
-  `qwen3`, `qwen3-coder`, `qwen3-coder-next`, `qwen2.5`, `qwen2.5-coder`,
-  `kimi-k3`, `kimi-k2.7-code`, `kimi-k2.6`, `kimi-k2.5`.
-- **Run manifest.** `ontocast process --output-dir DIR` now writes
-  `<stem>.run.json` beside each `<stem>.facts.ttl`: OntoCast version, render
-  mode, tenancy, the LLM settings that shaped the output, the full
-  `BudgetTracker`, and triple counts. The tracker was returned over HTTP and
-  logged at INFO, then discarded, so a finished batch left its TTL with no
-  record of what produced it or what it cost, and two runs could only be
-  compared by rerunning them.
-- `docs/user_guide/observability.md` — the three layers (in-run `BudgetTracker`,
-  the run manifest, and external tracing via LangSmith/Langfuse/OTel, which work
-  today with no OntoCast code) and the caveat that a cache hit emits no provider
-  span, so a replayed run shows a thin trace while the budget shows the real
-  workload.
+### Breaking
 
-### Removed
-- **BREAKING**: `working_directory` / `ONTOCAST_WORKING_DIRECTORY`. Nothing had
-  read it since the filesystem triple-store backend was deleted in `9d3ab77`
-  (2026-06) — but `ontocast serve` and `ontocast process` still *raised* without
-  it and then created an empty directory, and `plot-graph` leaked a
-  `tempfile.mkdtemp()` per invocation to satisfy a field `ToolBox` ignores.
-  Both commands now start with no OntoCast env var set at all. Caches keep using
-  `ONTOCAST_CACHE_DIR`; batch artifacts keep using the explicit `--output-dir`
-  family. A stale `ONTOCAST_WORKING_DIRECTORY` in the environment is ignored.
-
-### Changed
-- **BREAKING (library API)**: `BudgetTracker.add_usage` and `add_cache_hit` take
-  a single `usage: TokenUsage | None` keyword instead of `input_tokens` /
-  `output_tokens` ints. `_usage_from_llm_result` returns a `TokenUsage` rather
-  than a tuple.
-- `LLM_MODEL_NAME` accepts any string. The model enums are presets, not a
-  whitelist: an unrecognised provider/model pairing now logs a warning and is
-  passed through instead of raising. The closed whitelist rejected models newer
-  than the installed package, and blocked the standard way to reach hosted
-  Qwen/Kimi/DeepSeek — `LLM_PROVIDER=openai` plus a vendor `LLM_BASE_URL`
-  (Moonshot, DashScope, OpenRouter, vLLM), which is what `base_url` exists for.
-- A model name that matches a preset exactly is normalised to the enum member
-  rather than warning about itself: `LLM_MODEL_NAME` always arrives as a string,
-  and with `str` in the union pydantic had no reason to prefer the enum.
-- Docs: `LLM_MODEL_NAME` guidance and OpenAI-compatible endpoint recipes in
-  `docs/user_guide/configuration.md`; token-field table and replay-cost note in
-  `docs/user_guide/performance.md`.
+- **`ontology_directory` is now strictly read-only.** It is a seed fixture read
+  once at startup, but two methods treated it as a writable store:
+  `ingest_ontology_ttl` required it and created it while never writing a file,
+  and `delete_ontology_by_iri` globbed it and **unlinked** any TTL declaring the
+  deleted IRI — so `DELETE /ontologies/{iri}` destroyed curated input that the
+  next startup reloads from. Ingestion no longer requires or touches the
+  directory, and deletion no longer removes files from it. An ingested ontology
+  lives in the triple store and vector index only and does not survive a rebuild
+  from seeds; that is now the stated contract rather than an accident.
+  `ToolBox._unlink_ttl_files_if_ontology_iri` is removed, as is the LangChain
+  `ontology_directory is not configured` gate on
+  `ontocast_ingest_ontology_ttl` — the tool is now always offered.
+- **Removed the `cmp-states` console script** and `ontocast/cli/cmp_states.py`.
+  It read `agent_state.onto.update*.json` dumps written by
+  `BasePydanticModel.save_json`, which had no callers anywhere: the dumps were
+  the same debug generation as the removed `working_directory`. Both
+  `save_json` and its unused `load` counterpart are gone.
 
 ### Fixed
-- `demo/README.md` and `docs/user_guide/llm_caching.md` documented CLI flags
-  that do not exist (`--working-directory`, `--ontology-directory`), so the
-  commands failed on invocation. Rewritten as env-var form.
 
-Not bumped: `LLM_CACHE_FORMAT_VERSION` stays at 2. The `usage` field is additive
-and optional, so entries written before it still load and report usage as
-unknown rather than zero — bumping would have evicted every existing entry and
-forced a paid re-run before any replay worked again.
+- **SPARQL literals are escaped.** `GraphUpdate._serialize_rdf_term` wrapped a
+  literal in bare double quotes, so any `"`, `\`, newline or carriage return —
+  routine in extracted text — closed the string early and failed the whole
+  update with a `ParseException` in `_apply_update_query`, losing every triple
+  in the operation. Escapes are emitted explicitly rather than via
+  `Literal.n3()`: n3 writes a raw tab, which rdflib's own SPARQL parser reads
+  back as spaces.
+- **Absolute IRIs outside `http` are no longer emitted as prefixed names.** The
+  same method passed through any IRI containing `:` and not starting with
+  `http`, so `urn:`, `doi:`, `file:` and `mailto:` IRIs reached the parser
+  unbracketed as undefined prefixes. Abbreviations are now recognised against
+  the prefixes the query actually declares instead of by shape.
+- **SHACL retype fires for inline property shapes.** `sh:sourceShape` was kept
+  only when it was a `URIRef`, so a violation from the common
+  `sh:property [ sh:path … ; sh:datatype … ]` style arrived with no shape and
+  the `sh:datatype` retype branch never ran. pyshacl reports the same blank node
+  the shapes graph holds, so the datatype now resolves.
+- **Blank-node SHACL violations reach the report.** Scope was decided on the
+  projected finding, whose subject is a stringified blank node matching no
+  namespace prefix, so every blank-node violation was dropped — while the repair
+  pass acted on exactly those nodes. Report, repair, and the
+  `violations_before`/`violations_after` metrics now share one scope predicate:
+  IRIs by namespace, blank nodes by presence in the facts graph.
+- **`SHACL_PRUNE` sweeps orphaned provenance.** A pruned node is also named
+  inside `rdf:reifies <<( s p o )>>`, which no subject/object pattern matches,
+  so the reifier and its `prov:wasDerivedFrom` survived describing a deleted
+  statement. New `drop_reifiers_mentioning` clears them through pyoxigraph —
+  `rdflib.Graph.remove` raises on a triple-term triple — and runs only after a
+  pass is accepted, so a reverted pass leaves provenance intact.
+- **`TripleFix.text_fragment` and `TripleFix.explanation` coerce free text.**
+  Both are required with no default, so a provider answering either with a
+  bulleted list raised and discarded every fix in the report. Also applied to
+  `ExternalEvidencePlan.rationale`, which had diverged from the identically
+  named field on `ExternalEvidenceRequest`. Graph-syntax fields
+  (`incorrect_value` / `correct_value`) stay strict.
+- **`bibliography.py` names the shipped default.** Its docstring marked
+  `citations_only` as the default; `ChunkConfig.bibliography_mode` has defaulted
+  to `skip` since the flag was introduced.
+
+### Added
+
+- **`facts_llm_repair_renders_failed`** alongside
+  `facts_llm_repair_renders_total`. A repair render that fails leaves the
+  pre-repair graph intact and the unit reports `SUCCESS` by design, so the
+  failure was recorded on the attempt log and aggregated nowhere.
+- **Console-script reference** in the installation guide covering `ontocast
+  serve` / `process` / `sections`, `pdfs-to-markdown`, `test-api`,
+  `match-graphs` and `plot-graph`; three of them appeared in no doc page.
 
 ## [0.6.0] - 2026-08-09
 
@@ -153,7 +122,58 @@ published.*
   unknown is represented explicitly rather than being absorbed into its
   neighbour. Callers that assumed a non-null label must handle `None`.
 
+- **`working_directory` / `ONTOCAST_WORKING_DIRECTORY` removed.** Nothing had
+  read it since the filesystem triple-store backend was deleted in `9d3ab77`
+  (2026-06) — but `ontocast serve` and `ontocast process` still *raised* without
+  it and then created an empty directory, and `plot-graph` leaked a
+  `tempfile.mkdtemp()` per invocation to satisfy a field `ToolBox` ignores.
+  Both commands now start with no OntoCast env var set at all. Caches keep using
+  `ONTOCAST_CACHE_DIR`; batch artifacts keep using the explicit `--output-dir`
+  family. A stale `ONTOCAST_WORKING_DIRECTORY` in the environment is ignored.
+- **`BudgetTracker.add_usage` / `add_cache_hit` take `usage: TokenUsage | None`**
+  instead of `input_tokens` / `output_tokens` ints. `_usage_from_llm_result`
+  returns a `TokenUsage` rather than a tuple.
+
 ### Added
+
+- Token accounting survives a cache replay. `CachedResponse` now stores the
+  provider's usage alongside the response, and `BudgetTracker` reports it as
+  `cached_input_tokens` / `cached_output_tokens`, kept apart from the billed
+  `input_tokens` / `output_tokens` so a replay is not mistaken for spend.
+  Previously `usage_metadata` — a separate `AIMessage` attribute, not part of
+  the `response_metadata` that was persisted — was dropped on write, so the
+  cache-replay protocol in `docs/user_guide/performance.md`, the mode the
+  benchmark and ablation work runs in, reported zero tokens.
+- `BudgetTracker.reasoning_tokens`, `cache_read_input_tokens` and
+  `cache_creation_input_tokens`, read from LangChain's `UsageMetadata` detail
+  keys (and the OpenAI `*_tokens_details` equivalents). Reasoning tokens
+  dominate output cost for the thinking models `LLM_THINK` drives, and
+  provider-cached input bills at a fraction of the fresh rate — folding either
+  into a single total misstates cost in opposite directions.
+- A cache hit now rebuilds its `AIMessage` with `usage_metadata`, so a replayed
+  call looks identical to a live one to anything reading usage off the message.
+  The Batch-API prefill (`ontocast.tool.llm_batch`) carries usage through too.
+- `OllamaModel` presets for current Qwen and Kimi tags: `qwen3.6`, `qwen3.5`,
+  `qwen3`, `qwen3-coder`, `qwen3-coder-next`, `qwen2.5`, `qwen2.5-coder`,
+  `kimi-k3`, `kimi-k2.7-code`, `kimi-k2.6`, `kimi-k2.5`.
+- **Run manifest.** `ontocast process --output-dir DIR` now writes
+  `<stem>.run.json` beside each `<stem>.facts.ttl`: OntoCast version, render
+  mode, tenancy, the LLM settings that shaped the output, the full
+  `BudgetTracker`, and triple counts. The tracker was returned over HTTP and
+  logged at INFO, then discarded, so a finished batch left its TTL with no
+  record of what produced it or what it cost, and two runs could only be
+  compared by rerunning them.
+- `docs/user_guide/observability.md` — the three layers (in-run `BudgetTracker`,
+  the run manifest, and external tracing via LangSmith/Langfuse/OTel, which work
+  today with no OntoCast code) and the caveat that a cache hit emits no provider
+  span, so a replayed run shows a thin trace while the budget shows the real
+  workload.
+
+Not bumped: `LLM_CACHE_FORMAT_VERSION` stays at 2. The `usage` field is additive
+and optional, so entries written before it still load and report usage as
+unknown rather than zero — bumping would have evicted every existing entry and
+forced a paid re-run before any replay worked again.
+
 
 - **`/process_unit` runs the post-aggregation validation gate.** The route
   shipped unvalidated facts while its docstring claimed otherwise; it now runs
@@ -360,6 +380,19 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
 
 ### Changed
 
+- `LLM_MODEL_NAME` accepts any string. The model enums are presets, not a
+  whitelist: an unrecognised provider/model pairing now logs a warning and is
+  passed through instead of raising. The closed whitelist rejected models newer
+  than the installed package, and blocked the standard way to reach hosted
+  Qwen/Kimi/DeepSeek — `LLM_PROVIDER=openai` plus a vendor `LLM_BASE_URL`
+  (Moonshot, DashScope, OpenRouter, vLLM), which is what `base_url` exists for.
+- A model name that matches a preset exactly is normalised to the enum member
+  rather than warning about itself: `LLM_MODEL_NAME` always arrives as a string,
+  and with `str` in the union pydantic had no reason to prefer the enum.
+- Docs: `LLM_MODEL_NAME` guidance and OpenAI-compatible endpoint recipes in
+  `docs/user_guide/configuration.md`; token-field table and replay-cost note in
+  `docs/user_guide/performance.md`.
+
 - **`FACTS_REPAIR_VISITS` → `FACTS_LLM_REPAIR_VISITS`**, and
   `_run_deterministic_repair` → `_run_finding_driven_repair`. The old name said
   "deterministic" for a loop whose every visit is a paid `render_facts_update`
@@ -372,6 +405,9 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
 
 ### Fixed
 
+- `demo/README.md` and `docs/user_guide/llm_caching.md` documented CLI flags
+  that do not exist (`--working-directory`, `--ontology-directory`), so the
+  commands failed on invocation. Rewritten as env-var form.
 - **The SHACL gate no longer crashes on the aggregated graph's RDF 1.2 triple
   terms.** The autofix copied the graph with bare `Graph.add`, and `run_shacl`
   handed the oxigraph-backed graph straight to pyshacl — both assert on the
@@ -561,6 +597,10 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
 
 ### Removed
 
+- **`working_directory` / `ONTOCAST_WORKING_DIRECTORY`.** Nothing had read it since the
+  filesystem triple-store backend was deleted; both commands now start with no OntoCast
+  env var set at all. See Breaking.
+
 - Unreachable CLI modules `cli/split_chunks.py`, `cli/merge_ontologies.py`,
   and `cli/batch_process.py`: click commands with no console-script entry,
   never registered on the `ontocast` group, referenced by nothing.
@@ -680,11 +720,13 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
   Runtime dependency ranges gain floors matching what is actually tested and
   upper bounds.
 - **Embedding / surface-form contract through `sf6` — reindex required.**
-  Existing collections raise `EmbeddingContractMismatchError` and must be
-  dropped (`VECTOR_STORE_WIPE_ON_INIT` / `--wipe-vector-store`). Across this
-  release the stored atom text and payloads changed to: atomize only IRIs an
-  ontology *describes* (`sf3`→`sf4`); derive `entity_role` from property
-  *declaration*, not incidental predicate use (`sf4`→`sf5`); index
+  The surface-form contract versions the protocol defining how ontology terms are converted
+  into indexed text (with `sf6` as the latest revision). Changing it changes stored vectors,
+  so existing collections raise `EmbeddingContractMismatchError` and must be dropped
+  (`VECTOR_STORE_WIPE_ON_INIT` / `--wipe-vector-store`). Across this release, the stored
+  atom text and payloads changed to: atomize only IRIs an ontology *describes* (`sf3`→`sf4`);
+  derive `entity_role` from property *declaration*, not incidental predicate use (`sf4`→`sf5`);
+  index
   `dcterms:alternative`, case-preserved `symbol_surfaces`, and
   `qudt:symbol` / `qudt:ucumCode` as retrieval surfaces; BM25 with query
   encoder + IDF modifier and label-bearing minimal text; English-first
@@ -773,16 +815,19 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
 - **Docling converter configuration** via `CONVERTER_*` (including
   `born_digital` preset).
 - **Retrieval recall harness** (`test/test_retrieval_recall.py`,
-  `test/retrieval_gt.py`): real embeddings + Qdrant; seed / snapshot /
-  term-level recall and per-stage funnel; Text2KGBench and prebuilt-corpus
-  tiers (`ONTOCAST_RECALL_*`); ablation controls that flip index/retrieval
-  axes without editing corpus files on disk.
+  `test/retrieval_gt.py`): real embeddings + Qdrant; measures term-level recall and
+  funnel metrics across both *seed recall* (the share of expected ontology terms that survive
+  retrieval ranking and budget truncation) and *snapshot recall* (the share of expected terms
+  actually defined in the ontology context handed to the model, including neighbor nodes);
+  evaluates against Text2KGBench and prebuilt-corpus tiers (`ONTOCAST_RECALL_*`); and provides
+  ablation controls that flip index/retrieval axes without editing corpus files on disk.
 
 ### Changed
 
-- **Retrieval defaults retuned against measured recall** (Text2KGBench +
-  materials-science corpus; single-corpus fits flagged in the configuration
-  guide). Notable defaults: `ONTOLOGY_PATCH_MAX_ATOMS` / `_BASE` → 96;
+- **Retrieval defaults retuned against measured recall** (evaluated against Text2KGBench and
+  the internal materials-science corpus; configurations optimized only for the internal
+  corpus are flagged as single-corpus fits in the configuration guide to caution against
+  overfitting). Notable defaults: `ONTOLOGY_PATCH_MAX_ATOMS` / `_BASE` → 96;
   `VECTOR_STORE_TOP_K` 10 → 20; per-ontology seed quota 3 → 0; sparse fusion
   weight 0.2 → 0.8 and neighborhood 0.3 → 0.15; induced-subgraph triple
   budget 550 → 1200; per-ontology atom floor 0 → 2; small-module closure
@@ -1089,13 +1134,14 @@ breaks, in one place:
 |-----|-----|
 | `FACTS_REPAIR_VISITS` | `FACTS_LLM_REPAIR_VISITS` (old name is a silent no-op) |
 | `CHUNK_BREAKPOINT_THRESHOLD_TYPE` / `_AMOUNT` | removed (silent no-ops) |
+| `ONTOCAST_WORKING_DIRECTORY` / `working_directory` | removed (ignored if set) |
 | `CHUNK_STRATEGY` | `CHUNK_SEGMENTER` |
 | `pip install ontocast` (full install) | base is the light core — add extras: `ontocast[server,openai]` |
 
 Also: bare `ontocast` no longer starts the API (use `ontocast serve` /
 `ontocast process`); `PARALLEL_WORKERS` default rose 8 → 16; the LLM cache key
 format changed (`cache_format_version` 2), so existing on-disk caches re-fetch;
-a 1 GB LRU cache ceiling applies by default (`ONTOCAST_CACHE_MAX_BYTES`).
+a 1 GB LRU cache ceiling applies by default (`ONTOCAST_CACHE_MAX_BYTES`); `ONTOCAST_WORKING_DIRECTORY` is gone (ignored if still set).
 
 ### Upgrading to 0.4.3
 

@@ -240,10 +240,6 @@ def _unavailable_reason(name: str, tools: "ToolBox") -> str | None:
         return "no vector store is configured (set VECTOR_STORE_BACKEND=memory)"
     if name == "ontocast_retrieve_ontology_context" and tools.patch_retriever is None:
         return "no ontology patch retriever is configured (needs a vector store)"
-    if name == "ontocast_ingest_ontology_ttl" and (
-        tools.config.tool_config.path_config.ontology_directory is None
-    ):
-        return "ontology_directory is not configured"
     if name in (
         "ontocast_convert_document",
         "ontocast_chunk_text",

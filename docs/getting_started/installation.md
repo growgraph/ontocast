@@ -60,6 +60,25 @@ uv add "ontocast[all]"
 uv add "ontocast[plot]"
 ```
 
+## Console scripts
+
+Installing with the `server` extra puts these on your `PATH`. All of them route
+through the same entry point, so without that extra they print an install hint
+instead of a `ModuleNotFoundError`.
+
+| Command | Purpose |
+|---------|---------|
+| `ontocast serve` | Start the HTTP API — see [API](../user_guide/api.md) |
+| `ontocast process` | Local in-process batch extraction over a file or directory |
+| `ontocast sections` | Print the detected section outline for a document without running extraction |
+| `pdfs-to-markdown` | Convert a directory of PDFs to Markdown JSON, so a corpus is converted once and reused |
+| `test-api` | Smoke-test a running server's `/process` endpoint |
+| `match-graphs` | Match two TTL graphs locally — see [Aggregation](../user_guide/aggregation.md) |
+| `plot-graph` | Regenerate the workflow diagrams under `docs/assets/` (needs the `plot` extra) |
+
+`pdfs-to-markdown`, `test-api` and `plot-graph` are development and operations
+helpers rather than part of the extraction pipeline.
+
 ## Next Steps
 
 After installation, you can:

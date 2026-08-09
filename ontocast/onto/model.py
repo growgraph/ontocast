@@ -1,4 +1,3 @@
-import pathlib
 from enum import StrEnum
 from typing import Literal
 
@@ -27,37 +26,16 @@ def _coerce_free_text(v: object) -> str:
 
 
 class BasePydanticModel(BaseModel):
-    """Base class for Pydantic models with serialization capabilities."""
+    """Shared base for the pipeline's Pydantic models.
+
+    Carries no behaviour of its own since the JSON save/load helpers were
+    removed with their only consumer; it is kept as the common ancestor the
+    state and report models already declare.
+    """
 
     def __init__(self, **kwargs):
         """Initialize the model with given keyword arguments."""
         super().__init__(**kwargs)
-
-    def save_json(self, file_path: str | pathlib.Path) -> None:
-        """Write model state to a JSON file.
-
-        Args:
-            file_path: Path to save the JSON file.
-        """
-        state_json = self.model_dump_json(indent=4)
-        if isinstance(file_path, str):
-            file_path = pathlib.Path(file_path)
-        file_path.write_text(state_json)
-
-    @classmethod
-    def load(cls, file_path: str | pathlib.Path):
-        """Load state from a JSON file.
-
-        Args:
-            file_path: Path to the JSON file.
-
-        Returns:
-            The loaded model instance.
-        """
-        if isinstance(file_path, str):
-            file_path = pathlib.Path(file_path)
-        state_json = file_path.read_text()
-        return cls.model_validate_json(state_json)
 
 
 def create_ontology_selector_report_model(
@@ -347,6 +325,19 @@ class TripleFix(BaseModel):
         )
     )
 
+    @field_validator("text_fragment", "explanation", mode="before")
+    @classmethod
+    def coerce_free_text(cls, v: object) -> str:
+        """Coerce the two required free-text fields.
+
+        Both are required with no default, so a provider answering either with a
+        bulleted list raised and discarded the whole critique report. Deliberately
+        not applied to ``incorrect_value``/``correct_value``: those carry graph
+        syntax, where joining a list would corrupt the payload rather than
+        recover it.
+        """
+        return _coerce_free_text(v)
+
     def to_markdown(self) -> str:
         """Convert this TripleFix to markdown format.
 
@@ -526,6 +517,12 @@ class ExternalEvidencePlan(BaseModel):
     queries: list[str] = Field(
         default_factory=list, description="Targeted search queries."
     )
+
+    @field_validator("rationale", mode="before")
+    @classmethod
+    def coerce_rationale(cls, v: object) -> str:
+        """Mirror the coercion on ``ExternalEvidenceRequest.rationale``."""
+        return _coerce_free_text(v)
 
     @field_validator("queries", mode="before")
     @classmethod

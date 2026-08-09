@@ -879,14 +879,14 @@ class ToolBox:
     async def ingest_ontology_ttl(
         self, ttl: bytes, *, filename: str | None = None
     ) -> Ontology:
-        """Persist Turtle to ``ontology_directory``, triple store, and vector index."""
-        import asyncio
+        """Register Turtle in the triple store and the vector index.
 
-        ontology_dir = self.config.tool_config.path_config.ontology_directory
-        if ontology_dir is None:
-            raise ValueError("ontology_directory is not configured")
-        ontology_dir = pathlib.Path(ontology_dir).expanduser()
-        ontology_dir.mkdir(parents=True, exist_ok=True)
+        ``ontology_directory`` is a read-only seed fixture consulted once at
+        init, so nothing is written there: an ingested ontology lives in the
+        triple store and vector index only and does not survive a rebuild from
+        seeds.
+        """
+        import asyncio
 
         graph = RDFGraph()
 
@@ -906,38 +906,23 @@ class ToolBox:
         return o
 
     async def delete_ontology_by_iri(self, ontology_iri: str) -> None:
-        """Remove ontology from manager, vector store, seed files, and triple store."""
+        """Remove ontology from manager, vector store, and triple store.
+
+        ``ontology_directory`` is deliberately untouched. Deletion used to
+        unlink any seed TTL declaring this IRI, which destroyed curated input
+        the next init reloads from — an irreversible edit to the user's files
+        in response to a store-level delete.
+        """
         import asyncio
 
         self.ontology_manager.remove_ontology_by_iri(ontology_iri)
         if self.vector_store is not None:
             await asyncio.to_thread(self.vector_store.delete_ontology, ontology_iri)
 
-        cfg_od = self.config.tool_config.path_config.ontology_directory
-        if cfg_od is not None:
-            self._unlink_ttl_files_if_ontology_iri(
-                ontology_iri, pathlib.Path(cfg_od).expanduser(), "*.ttl"
-            )
-
         if self.triple_store_manager is not None:
             await self.triple_store_manager.drop_all_ontology_graphs_for_iri(
                 ontology_iri
             )
-
-    @staticmethod
-    def _unlink_ttl_files_if_ontology_iri(
-        ontology_iri: str, directory: pathlib.Path, glob_pat: str
-    ) -> None:
-        if not directory.is_dir():
-            return
-        for path in sorted(directory.glob(glob_pat)):
-            try:
-                loaded = Ontology.from_file(path)
-            except Exception:
-                continue
-            if loaded.iri == ontology_iri:
-                path.unlink(missing_ok=True)
-                logger.info("Removed ontology TTL %s", path)
 
 
 async def render_ontology_summary(ontology: Ontology, llm_tool) -> OntologyProperties:
