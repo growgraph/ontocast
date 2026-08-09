@@ -131,7 +131,7 @@ def test_toolbox_rejects_mismatched_qdrant_vector_size_and_embedding_dim() -> No
         od = wd / "ontologies"
         od.mkdir()
         tool_config = ToolConfig(
-            path_config=PathConfig(working_directory=wd, ontology_directory=od),
+            path_config=PathConfig(ontology_directory=od),
             embedding=EmbeddingConfig(dimension=384),
             qdrant=QdrantConfig(uri="http://localhost:6333", vector_size=8),
         )
@@ -145,7 +145,7 @@ def test_toolbox_always_wires_bm25_when_vector_search_enabled() -> None:
         od = wd / "ontologies"
         od.mkdir()
         tool_config = ToolConfig(
-            path_config=PathConfig(working_directory=wd, ontology_directory=od),
+            path_config=PathConfig(ontology_directory=od),
             embedding=EmbeddingConfig(dimension=384),
             qdrant=QdrantConfig(uri="http://localhost:6333"),
         )
@@ -253,9 +253,7 @@ def test_ingest_ontology_ttl_rejects_identity_conflict_before_persisting() -> No
         wd = Path(tmp)
         od = wd / "ontologies"
         od.mkdir()
-        tool_config = ToolConfig(
-            path_config=PathConfig(working_directory=wd, ontology_directory=od)
-        )
+        tool_config = ToolConfig(path_config=PathConfig(ontology_directory=od))
         config = Config(tool_config=tool_config)
         ontology_manager = OntologyManager()
 
@@ -463,7 +461,7 @@ def _tenancy_toolbox(tmp: str) -> ToolBox:
     return ToolBox(
         Config(
             tool_config=ToolConfig(
-                path_config=PathConfig(working_directory=wd, ontology_directory=od),
+                path_config=PathConfig(ontology_directory=od),
                 embedding=EmbeddingConfig(dimension=384),
                 fuseki=FusekiConfig(uri=None, auth=None),
             )

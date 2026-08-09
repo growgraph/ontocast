@@ -57,7 +57,7 @@ def qdrant_session_test_context(
 
     ctx = QdrantSessionTestContext(
         qdrant_config=qcfg,
-        working_directory=workspace,
+        workspace=workspace,
         ontology_directory=ontology_dir,
     )
 
@@ -103,7 +103,10 @@ def provider():
 
 @pytest.fixture
 def model_name():
-    return OpenAIModel(os.getenv("LLM_MODEL_NAME", OpenAIModel.GPT4_O_MINI))
+    # Returned as-is rather than coerced into OpenAIModel: LLM_MODEL_NAME may
+    # legitimately name a model this package has no preset for (a new release,
+    # or another vendor behind an OpenAI-compatible base_url).
+    return os.getenv("LLM_MODEL_NAME", OpenAIModel.GPT4_O_MINI)
 
 
 @pytest.fixture

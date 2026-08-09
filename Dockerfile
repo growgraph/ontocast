@@ -42,8 +42,8 @@ COPY --from=builder /app /app
 ENV PATH="/app/.venv/bin:${PATH}"
 
 # ─── Volume Mounting Notes ──────────────────────────────────────────────────────
-# Paths are configured via .env file (ONTOCAST_WORKING_DIRECTORY,
-# ONTOCAST_ONTOLOGY_DIRECTORY, ONTOCAST_CACHE_DIR) and should be mounted
+# Paths are configured via env vars (ONTOCAST_ONTOLOGY_DIRECTORY,
+# ONTOCAST_CACHE_DIR) and should be mounted
 # as volumes in docker-compose to persist data and allow host access.
 #
 # Example docker-compose volumes:

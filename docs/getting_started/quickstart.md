@@ -73,7 +73,6 @@ PARALLEL_WORKERS=16
 ENABLE_ONTOLOGY_CONSOLIDATION=false
 
 # Paths
-ONTOCAST_WORKING_DIRECTORY=/path/to/working/directory
 ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files
 # ONTOCAST_CACHE_DIR=/path/to/cache/directory
 

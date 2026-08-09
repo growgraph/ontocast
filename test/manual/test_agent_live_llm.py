@@ -47,18 +47,8 @@ def _create_tools_from_env() -> ToolBox:
     elif provider == LLMProvider.OLLAMA:
         _ = _require_env("LLM_BASE_URL")
 
-    _ = _require_env("ONTOCAST_WORKING_DIRECTORY")
-
     config = Config()
     config.validate_llm_config()
-
-    if config.tool_config.path_config.working_directory is None:
-        pytest.fail("ONTOCAST_WORKING_DIRECTORY must be set to run manual agent tests.")
-
-    config.tool_config.path_config.working_directory = Path(
-        config.tool_config.path_config.working_directory
-    ).expanduser()
-    config.tool_config.path_config.working_directory.mkdir(parents=True, exist_ok=True)
 
     if config.tool_config.path_config.ontology_directory is not None:
         config.tool_config.path_config.ontology_directory = Path(

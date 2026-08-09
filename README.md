@@ -103,7 +103,6 @@ RENDER_MODE=ontology_and_facts
 ONTOLOGY_MAX_TRIPLES=50000
 
 # Path Configuration
-ONTOCAST_WORKING_DIRECTORY=/path/to/working
 ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontologies
 ONTOCAST_CACHE_DIR=/path/to/cache
 
@@ -220,7 +219,6 @@ OntoCast uses a hierarchical configuration system built on Pydantic BaseSettings
 | `LLM_PROVIDER` | LLM provider (openai, anthropic, google, ollama) | openai | No |
 | `LLM_MODEL_NAME` | Model name | gpt-4o-mini | No |
 | `LLM_TEMPERATURE` | Temperature setting | 0.0 | No |
-| `ONTOCAST_WORKING_DIRECTORY` | Working directory path | - | No |
 | `ONTOCAST_ONTOLOGY_DIRECTORY` | Ontology seed files | - | No |
 | `PORT` | Server port | 8999 | No |
 | `MAX_VISITS` | Maximum render/critic visits per unit loop | 1 | No |

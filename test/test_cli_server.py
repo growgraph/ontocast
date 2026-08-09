@@ -656,6 +656,65 @@ def test_dump_facts_ttl_writes_the_graph(tmp_path) -> None:
     assert dump_facts_ttl(state, src, output_dir=out_dir) == out_dir / "paper.facts.ttl"
 
 
+def test_dump_run_manifest_records_cost_and_configuration(tmp_path) -> None:
+    import json
+
+    from ontocast.api.process_helpers import dump_run_manifest
+    from ontocast.config import Config, LLMConfig, LLMProvider, ToolConfig
+    from ontocast.onto.token_usage import TokenUsage
+
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"x")
+    out_dir = tmp_path / "out"
+    state = _batch_state()
+    state.reduced_ontology_artifacts = [_sample_ontology()]
+    state.budget_tracker.add_usage(
+        100, 50, usage=TokenUsage(input_tokens=900, output_tokens=300)
+    )
+    state.budget_tracker.add_cache_hit(
+        10, 5, usage=TokenUsage(input_tokens=40, output_tokens=20)
+    )
+    state.budget_tracker.add_duration("Render Facts", 1.5)
+
+    config = Config(
+        tool_config=ToolConfig(
+            llm_config=LLMConfig(
+                provider=LLMProvider.OLLAMA, model_name="kimi-k3", think=True
+            )
+        )
+    )
+
+    out = dump_run_manifest(state, src, config=config, output_dir=out_dir)
+    assert out is not None
+    assert out == out_dir / "paper.run.json"
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["source"] == "paper.pdf"
+    assert payload["llm"] == {
+        "provider": "ollama",
+        "model_name": "kimi-k3",
+        "temperature": 0.0,
+        "think": True,
+    }
+    # Billed and replayed stay distinct all the way to disk -- the whole point
+    # of persisting this is comparing runs, and a replay is not a cost.
+    assert payload["budget"]["input_tokens"] == 900
+    assert payload["budget"]["cached_input_tokens"] == 40
+    assert payload["budget"]["node_durations"] == {"Render Facts": 1.5}
+    assert payload["facts_triples"] == 2
+    assert payload["ontology_triples"] == len(state.reduced_ontology_artifacts[0].graph)
+
+
+def test_dump_run_manifest_uses_the_line_number_for_jsonl_inputs(tmp_path) -> None:
+    from ontocast.api.process_helpers import dump_run_manifest
+    from ontocast.config import Config
+
+    src = tmp_path / "corpus.jsonl"
+    src.write_bytes(b"x")
+    out = dump_run_manifest(_batch_state(), src, config=Config(), line_number=3)
+    assert out == tmp_path / "corpus.L3.run.json"
+
+
 def test_dump_ontology_ttls_names_files_per_ontology(tmp_path) -> None:
     from ontocast.api.process_helpers import dump_ontology_ttls
 

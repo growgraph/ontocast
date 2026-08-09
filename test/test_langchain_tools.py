@@ -50,9 +50,7 @@ def toolbox(tmp_path) -> ToolBox:
     """A light-core ToolBox: in-memory triple store, no vector store."""
     # in_memory() pins the stores so the fixture does not pick up a Fuseki or
     # Qdrant URI from the developer's .env and start asserting against live data.
-    config = Config.in_memory(
-        tool_config=ToolConfig(path_config=PathConfig(working_directory=tmp_path))
-    )
+    config = Config.in_memory(tool_config=ToolConfig(path_config=PathConfig()))
     config.tool_config.vector_store.backend = VectorStoreBackend.NONE
     # Bypass provider setup: none of these tests reach the model, and building
     # a real LLMTool would need provider credentials.
@@ -122,9 +120,7 @@ def test_sparql_tools_present_for_in_memory_store(toolbox: ToolBox) -> None:
 
 def test_vector_tools_gated_off_without_vector_store(tmp_path) -> None:
     """VECTOR_STORE_BACKEND=none must remove the retrieval tools entirely."""
-    config = Config.in_memory(
-        tool_config=ToolConfig(path_config=PathConfig(working_directory=tmp_path))
-    )
+    config = Config.in_memory(tool_config=ToolConfig(path_config=PathConfig()))
     config.tool_config.vector_store.backend = VectorStoreBackend.NONE
     tools = ToolBox(config, llm=STUB_LLM)
 
@@ -136,9 +132,7 @@ def test_vector_tools_gated_off_without_vector_store(tmp_path) -> None:
 
 def test_vector_tools_appear_with_in_memory_backend(tmp_path) -> None:
     """The in-memory backend needs no external service, so the tools show up."""
-    config = Config.in_memory(
-        tool_config=ToolConfig(path_config=PathConfig(working_directory=tmp_path))
-    )
+    config = Config.in_memory(tool_config=ToolConfig(path_config=PathConfig()))
     tools = ToolBox(config, llm=STUB_LLM)
 
     assert isinstance(tools.vector_store, InMemoryVectorStoreManager)

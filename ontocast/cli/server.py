@@ -87,20 +87,7 @@ def _configure_logging(config: Config) -> None:
 
 
 def _prepare_path_config(config: Config) -> None:
-    """Expand configured directories and ensure working directory exists."""
-    if config.tool_config.path_config.working_directory is not None:
-        config.tool_config.path_config.working_directory = pathlib.Path(
-            config.tool_config.path_config.working_directory
-        ).expanduser()
-        config.tool_config.path_config.working_directory.mkdir(
-            parents=True, exist_ok=True
-        )
-    else:
-        raise ValueError(
-            "Working directory must be provided via the ONTOCAST_WORKING_DIRECTORY "
-            "environment variable"
-        )
-
+    """Expand configured directories."""
     if config.tool_config.path_config.ontology_directory is not None:
         config.tool_config.path_config.ontology_directory = pathlib.Path(
             config.tool_config.path_config.ontology_directory

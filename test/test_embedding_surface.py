@@ -48,9 +48,7 @@ STUB_LLM = cast(LLMTool, object())
 
 
 def _config(tmp_path, backend: VectorStoreBackend) -> Config:
-    config = Config.in_memory(
-        tool_config=ToolConfig(path_config=PathConfig(working_directory=tmp_path))
-    )
+    config = Config.in_memory(tool_config=ToolConfig(path_config=PathConfig()))
     config.tool_config.vector_store.backend = backend
     return config
 

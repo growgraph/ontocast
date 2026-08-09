@@ -24,7 +24,7 @@ FUSEKI_AUTH=admin/admin
 ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/seed/ttl
 ```
 
-Persistence is handled by the triple store only. Local TTL export to `working_directory` is no longer used.
+Persistence is handled by the triple store only; batch TTL dumps go to the explicit `--output-dir` family of flags.
 
 Ontology **catalog reads** (headers, by-IRI graphs, merged working graphs) go through `OntologyManager`, not ad-hoc `fetch_ontologies()` from callers — see [Ontology Catalog](../architecture/ontology_catalog.md).
 

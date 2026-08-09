@@ -126,6 +126,91 @@ def test_cache_hit_replays_response_metadata(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_cache_hit_replays_token_usage(tmp_path) -> None:
+    """A replayed run must still be able to report what the workload costs.
+
+    ``usage_metadata`` is a separate ``AIMessage`` attribute, so persisting
+    ``response_metadata`` alone never captured it -- and the cache-replay
+    protocol used for benchmarking reported zero tokens.
+    """
+    config = LLMConfig(provider=LLMProvider.OPENAI, cache_enabled=True)
+    usage = {
+        "input_tokens": 800,
+        "output_tokens": 200,
+        "total_tokens": 1000,
+        "output_token_details": {"reasoning": 150},
+    }
+
+    async def run() -> None:
+        cache_dir = tmp_path / "cache"
+        live = BudgetTracker()
+        tool = await _tool(
+            config, cache_dir, AIMessage(content="hi", usage_metadata=usage), live
+        )
+        await tool("prompt")
+        assert (live.input_tokens, live.output_tokens) == (800, 200)
+        assert live.cached_input_tokens == 0
+
+        replayed = BudgetTracker()
+        cached_tool = await _tool(
+            config,
+            cache_dir,
+            AssertionError("provider must not be called"),
+            replayed,
+        )
+        message = await cached_tool("prompt")
+
+        assert replayed.calls_count == 0, "a hit is not a billed call"
+        assert replayed.cache_hits == 1
+        assert (replayed.input_tokens, replayed.output_tokens) == (0, 0)
+        assert (replayed.cached_input_tokens, replayed.cached_output_tokens) == (
+            800,
+            200,
+        )
+        assert replayed.reasoning_tokens == 150
+        # And the message itself carries usage, so LangChain-native tracers see
+        # the replayed call the same way they saw the live one.
+        assert message.usage_metadata is not None
+        assert message.usage_metadata["input_tokens"] == 800
+
+    asyncio.run(run())
+
+
+def test_cache_entries_written_before_usage_still_load(tmp_path) -> None:
+    """The usage field is additive, so the format version was not bumped.
+
+    An entry lacking it must keep working and report unknown -- not zero, and
+    not a miss that re-pays the provider.
+    """
+    config = LLMConfig(provider=LLMProvider.OPENAI, cache_enabled=True)
+
+    async def run() -> None:
+        cache_dir = tmp_path / "cache"
+        tracker = BudgetTracker()
+        tool = await _tool(
+            config, cache_dir, AssertionError("provider must not be called"), tracker
+        )
+        # Exactly the shape written before `usage` existed.
+        tool.cache.set(
+            "prompt",
+            {
+                "content": "hi",
+                "prompt": "prompt",
+                "response_metadata": {"finish_reason": "stop"},
+                "kwargs": {},
+            },
+            config=tool._cache_config_dict(),
+        )
+        message = await tool("prompt")
+
+        assert message.content == "hi"
+        assert tracker.cache_hits == 1
+        assert tracker.cached_input_tokens == 0
+        assert message.usage_metadata is None
+
+    asyncio.run(run())
+
+
 def test_inflight_semaphore_survives_a_second_event_loop(tmp_path) -> None:
     """asyncio.Semaphore binds to a loop on its first *contended* acquire.
 

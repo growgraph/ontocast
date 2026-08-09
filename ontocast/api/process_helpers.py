@@ -10,12 +10,14 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
+from ontocast._version import __version__
 from ontocast.agent.serialize import serialize as serialize_agent_state
 from ontocast.config import Config, ServerConfig
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.run_manifest import RunManifest, RunManifestLLM
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
 from ontocast.tool.facts_invariants import (
@@ -179,6 +181,62 @@ def dump_validation_report(
     )
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     logger.info("Dumped facts validation report to %s", output_path)
+    return output_path
+
+
+def dump_run_manifest(
+    state: AgentState,
+    file_path: pathlib.Path,
+    *,
+    config: Config,
+    line_number: int | None = None,
+    output_dir: pathlib.Path | None = None,
+) -> pathlib.Path | None:
+    """Write the run's cost and configuration beside the facts TTL.
+
+    ``BudgetTracker`` is returned over HTTP and logged at INFO, then discarded,
+    so a batch run left no record of the model, the settings, or the tokens
+    behind its own output -- and no way to compare two dumps except by rerunning
+    them. One small JSON per document closes that.
+    """
+    llm_config = config.tool_config.llm_config
+    manifest = RunManifest(
+        source=file_path.name,
+        line_number=line_number,
+        ontocast_version=__version__,
+        render_mode=str(state.render_mode),
+        current_domain=state.current_domain,
+        doc_iri=str(state.doc_iri) if state.doc_hid else None,
+        tenant=state.tenant,
+        project=state.project,
+        llm=RunManifestLLM(
+            provider=str(llm_config.provider),
+            model_name=str(llm_config.model_name),
+            temperature=llm_config.temperature,
+            think=llm_config.think,
+            num_ctx=llm_config.num_ctx,
+            num_predict=llm_config.num_predict,
+        ),
+        budget=state.budget_tracker,
+        ontology_triples=sum(
+            len(artifact.graph) for artifact in _ontology_artifacts_for_dump(state)
+        ),
+        facts_triples=(
+            len(state.aggregated_facts) if state.aggregated_facts is not None else 0
+        ),
+    )
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    facts_path = facts_ttl_output_path(
+        file_path, line_number=line_number, output_dir=output_dir
+    )
+    output_path = facts_path.with_name(
+        f"{facts_path.name.removesuffix('.facts.ttl')}.run.json"
+    )
+    output_path.write_text(
+        manifest.model_dump_json(indent=2, exclude_none=True), encoding="utf-8"
+    )
+    logger.info("Dumped run manifest to %s", output_path)
     return output_path
 
 
@@ -655,6 +713,13 @@ async def process_files_input(
                 dump_validation_report(
                     state,
                     file_path,
+                    line_number=line_number,
+                    output_dir=facts_dir,
+                )
+                dump_run_manifest(
+                    state,
+                    file_path,
+                    config=config,
                     line_number=line_number,
                     output_dir=facts_dir,
                 )

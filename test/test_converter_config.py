@@ -116,7 +116,7 @@ def test_toolbox_wires_converter_config() -> None:
         od = wd / "ontologies"
         od.mkdir()
         tool_config = ToolConfig(
-            path_config=PathConfig(working_directory=wd, ontology_directory=od),
+            path_config=PathConfig(ontology_directory=od),
             converter_config=ConverterConfig(profile="born_digital"),
         )
 

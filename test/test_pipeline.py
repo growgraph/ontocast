@@ -1,7 +1,6 @@
 import asyncio
 import importlib
 import logging
-from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
@@ -807,11 +806,11 @@ def test_route_after_ontology_consolidation_respects_ontology_only_mode() -> Non
 
 
 def test_agent_graph_structural_check_not_reached_from_facts_edges() -> None:
-    # Use a minimal config that enables the filesystem triple-store backend.
-    # This keeps the graph build lightweight and avoids external services.
+    # A minimal config: the graph build only needs topology, so this keeps it
+    # lightweight and avoids external services.
     config = Config(
         tool_config=ToolConfig(
-            path_config=PathConfig(working_directory=Path("/tmp")),
+            path_config=PathConfig(),
             llm_config=LLMConfig(
                 provider=LLMProvider.OLLAMA,
                 model_name=OllamaModel.LLAMA3_1,

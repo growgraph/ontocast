@@ -76,6 +76,22 @@ than guessed at: `ctx/merge_document_ontology`, `ctx/snapshot_deepcopy`,
 `ctx/working_graph_copy`, `prompt/ontology_index`, `prompt/ontology_chapter`,
 `repair/deterministic`.
 
+### Token counts
+
+Token reporting is provider-dependent — a provider that stays silent leaves these
+at zero, which is not the same as a run that used no tokens.
+
+| Field | Meaning |
+|---|---|
+| `input_tokens` / `output_tokens` | **Billed**: live provider calls only. |
+| `cached_input_tokens` / `cached_output_tokens` | Replayed from the OntoCast disk cache. Deliberately *not* added to the billed totals — a replay pays nothing — so these are what the workload would cost cold. |
+| `reasoning_tokens` | Thinking tokens, counted **inside** the output totals. Dominates output cost for reasoning models (`LLM_THINK`). |
+| `cache_read_input_tokens` | Served from the **provider's** prompt cache, counted inside the input totals and billed at a reduced rate. Unrelated to OntoCast's disk cache. |
+| `cache_creation_input_tokens` | Written to the provider's prompt cache. |
+
+`calls_count` counts billed calls and `cache_hits` counts replays, so a fully
+replayed run reports `calls_count: 0` with non-zero `cached_*`.
+
 ### Counters
 
 `budget.counters` records event counts. The one to watch is
@@ -101,6 +117,11 @@ The second run is the repeatable before/after number for any CPU-side change.
 Vary `--head-chunks` (5, 15, 30) to check how a cost scales with unit count:
 per-unit-invariant work shows up as a straight line through the origin, and it
 should be flat instead.
+
+The replay still reports the workload's token cost: cache entries carry the
+provider's usage, so `cached_input_tokens` / `cached_output_tokens` on the second
+run are what the first one paid. Entries written before usage was persisted report
+nothing rather than zero — re-run once against the provider to refresh them.
 
 ## Local embedding models
 

@@ -228,22 +228,16 @@ def _prepare_config() -> Config:
     elif provider == LLMProvider.OLLAMA:
         _ = _require_env("LLM_BASE_URL")
 
-    _ = _require_env("ONTOCAST_WORKING_DIRECTORY")
     _ = _require_env("FUSEKI_URI")
     _ = _require_env("FUSEKI_AUTH")
     _ = _require_env("QDRANT_URI")
 
     cfg = Config()
     cfg.validate_llm_config()
-    wd = Path(cfg.tool_config.path_config.working_directory or "").expanduser()
     od = Path(cfg.tool_config.path_config.ontology_directory or "").expanduser()
-    if not wd or not od:
-        pytest.fail(
-            "ONTOCAST_WORKING_DIRECTORY and ONTOCAST_ONTOLOGY_DIRECTORY must be set."
-        )
-    wd.mkdir(parents=True, exist_ok=True)
+    if not od:
+        pytest.fail("ONTOCAST_ONTOLOGY_DIRECTORY must be set.")
     od.mkdir(parents=True, exist_ok=True)
-    cfg.tool_config.path_config.working_directory = wd
     cfg.tool_config.path_config.ontology_directory = od
     return cfg
 

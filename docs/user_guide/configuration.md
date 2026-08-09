@@ -54,6 +54,35 @@ LLM_BASE_URL=http://localhost:11434     # optional (ollama; anthropic proxy URL)
 
 OntoCast uses `LLM_API_KEY` for all cloud providers (not `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY`).
 
+#### `LLM_MODEL_NAME` accepts any string
+
+The model enums in `ontocast.config` (`OpenAIModel`, `OllamaModel`, `ClaudeModel`,
+`GeminiModel`) are **presets, not a whitelist** — they exist so common choices are
+discoverable and type-checkable. Any other string is passed through to the provider,
+which is the authority on whether it exists; OntoCast logs a warning and continues.
+
+That matters for two cases a fixed list cannot serve: a model released after your
+OntoCast version, and an **OpenAI-compatible endpoint** hosting another vendor's
+models. For the second, combine `LLM_PROVIDER=openai` with the vendor's `LLM_BASE_URL`:
+
+```bash
+# Moonshot (Kimi)
+LLM_PROVIDER=openai
+LLM_BASE_URL=https://api.moonshot.ai/v1
+LLM_MODEL_NAME=kimi-k3
+LLM_API_KEY=your_moonshot_key
+
+# Alibaba Model Studio (Qwen)
+LLM_PROVIDER=openai
+LLM_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+LLM_MODEL_NAME=qwen3-max
+LLM_API_KEY=your_dashscope_key
+```
+
+The same shape works for OpenRouter, Together, and a self-hosted vLLM server. Open-weight
+Qwen, Kimi and DeepSeek builds run locally through `LLM_PROVIDER=ollama` instead — see
+the Ollama controls below, and set `LLM_THINK` for the reasoning variants.
+
 **Disk cache and provider concurrency** (see [LLM Caching](llm_caching.md)):
 
 ```bash
@@ -613,7 +642,6 @@ VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=600
 
 ```bash
 CURRENT_DOMAIN=https://example.com
-ONTOCAST_WORKING_DIRECTORY=/path/to/working/directory
 ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files
 ONTOCAST_CACHE_DIR=/path/to/cache/directory
 
@@ -714,7 +742,8 @@ Entity alignment and evaluation endpoints are documented in [API Endpoints](api.
 ## Validation Notes
 
 - `LLM_PROVIDER=openai`, `anthropic`, or `google` requires `LLM_API_KEY`.
-- `LLM_MODEL_NAME` must match the selected provider family.
+- `LLM_MODEL_NAME` outside the provider's preset enum logs a warning and is passed
+  through — the provider validates it, not OntoCast.
 - `MAX_VISITS` is supported as an alias for `max_visits_per_node`.
 - `RECURSION_LIMIT` was renamed to `BASE_RECURSION_LIMIT`.
 - `WEB_SEARCH_ALLOWED_DOMAINS` and `WEB_SEARCH_BLOCKED_DOMAINS` accept comma-separated values.

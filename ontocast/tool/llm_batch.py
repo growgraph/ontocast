@@ -18,7 +18,11 @@ from typing import Any
 
 from ontocast.config import LLMConfig
 from ontocast.tool.cache import Cacher, ToolCacher
-from ontocast.tool.llm import CachedResponse, llm_cache_config
+from ontocast.tool.llm import (
+    CachedResponse,
+    llm_cache_config,
+    token_usage_from_openai_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,11 +96,14 @@ def import_openai_batch_output_jsonl(
                 continue
             content = choices[0].get("message", {}).get("content", "")
             # Same entry model the server reads, so a prewarmed entry is
-            # indistinguishable from one written by a live call.
+            # indistinguishable from one written by a live call -- including its
+            # token accounting, which the batch output reports in the same shape.
+            usage = token_usage_from_openai_payload(body.get("usage"))
             entry = CachedResponse(
                 content=content,
                 prompt=cache_key[:200],
                 response_metadata={"source": "openai_batch"},
+                usage=None if usage.is_empty() else usage,
             )
             tool_cache.set(cache_key, entry.model_dump(), config=config_dict)
             written += 1

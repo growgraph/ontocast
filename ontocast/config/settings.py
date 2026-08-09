@@ -6,6 +6,7 @@ environment variables and usage patterns in the OntoCast system.
 
 from __future__ import annotations
 
+import logging
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
@@ -32,6 +33,8 @@ from ontocast.onto.tenancy import (
     tenant_project_facts_name,
     tenant_project_ontologies_name,
 )
+
+logger = logging.getLogger(__name__)
 
 # Explicit public surface. ``ontocast.config`` re-exports this module with a
 # star import, so without __all__ every imported third-party name (Field,
@@ -118,9 +121,16 @@ class OllamaModel(LLMModelNameAbstract):
     LLAMA3_1_70B = "llama3.1:70b"
 
     # Alibaba Qwen
+    QWEN3_6 = "qwen3.6"
     QWEN3_6_LATEST = "qwen3.6:latest"
     QWEN3_6_27B = "qwen3.6:27b"
     QWEN3_6_35B = "qwen3.6:35b"
+    QWEN3_5 = "qwen3.5"
+    QWEN3 = "qwen3"
+    QWEN3_CODER = "qwen3-coder"
+    QWEN3_CODER_NEXT = "qwen3-coder-next"
+    QWEN2_5 = "qwen2.5"
+    QWEN2_5_CODER = "qwen2.5-coder"
     QWEN2_5_72B = "qwen2.5:72b"
 
     # IBM Granite
@@ -131,7 +141,11 @@ class OllamaModel(LLMModelNameAbstract):
     # Moonshot / DeepSeek
     DEEPSEEK_R1 = "deepseek-r1"
     DEEPSEEK_V3 = "deepseek-v3"
+    KIMI_K3 = "kimi-k3"
+    KIMI_K2_7_CODE = "kimi-k2.7-code"
+    KIMI_K2_6 = "kimi-k2.6"
     KIMI_K2_6_CLOUD = "kimi-k2.6:cloud"
+    KIMI_K2_5 = "kimi-k2.5"
 
 
 class ClaudeModel(LLMModelNameAbstract):
@@ -173,7 +187,22 @@ class GeminiModel(LLMModelNameAbstract):
     GEMINI_2_5_FLASH_LITE = "gemini-2.5-flash-lite"
 
 
-LLMModelName = OpenAIModel | OllamaModel | ClaudeModel | GeminiModel
+#: The enums above are *presets*, not a whitelist: any string is accepted, and
+#: the provider is the authority on whether it exists. A hardcoded list in a
+#: library is stale the day a model ships, and it also blocked the standard way
+#: to reach hosted Qwen/Kimi/DeepSeek -- ``provider=openai`` plus a vendor
+#: ``base_url`` (Moonshot, DashScope, OpenRouter, vLLM, Together), which is
+#: exactly what LLMConfig.base_url exists for.
+LLMModelName = OpenAIModel | OllamaModel | ClaudeModel | GeminiModel | str
+
+#: Which preset enum belongs to which provider, used only to decide whether
+#: :meth:`LLMConfig.validate_model_name` should warn.
+_PRESET_MODELS_BY_PROVIDER: dict[str, type[LLMModelNameAbstract]] = {
+    LLMProvider.OPENAI: OpenAIModel,
+    LLMProvider.OLLAMA: OllamaModel,
+    LLMProvider.ANTHROPIC: ClaudeModel,
+    LLMProvider.GOOGLE: GeminiModel,
+}
 
 
 class WebSearchProvider(StrEnum):
@@ -312,32 +341,39 @@ class LLMConfig(BaseSettings):
     @field_validator("model_name")
     @classmethod
     def validate_model_name(cls, v: LLMModelName, info) -> LLMModelName:
-        """Validate that model_name is compatible with the provider."""
-        if "provider" not in info.data:
+        """Warn when model_name is not a known preset for the provider.
+
+        Deliberately a warning and not an error. A model outside the provider's
+        enum is now a legitimate case in two ways: a release newer than this
+        package, and an OpenAI-compatible endpoint reached through
+        :attr:`LLMConfig.base_url`, where the useful model names are another
+        vendor's entirely. Neither is distinguishable from a typo at config
+        time, and the provider rejects a genuinely bad name on the first call
+        with a better message than this validator could produce.
+        """
+        provider = info.data.get("provider")
+        if provider is None:
             return v
 
-        provider = info.data["provider"]
+        expected = _PRESET_MODELS_BY_PROVIDER.get(provider)
+        if expected is None or isinstance(v, expected):
+            return v
 
-        if provider == LLMProvider.OPENAI and not isinstance(v, OpenAIModel):
-            raise ValueError(
-                f"Model {v} is not compatible with OpenAI provider. Use OpenAIModel values."
-            )
+        # A bare string that names a preset exactly is not a stranger -- with
+        # ``str`` in the union pydantic has no reason to prefer the enum, so
+        # without this every env-supplied model name warned about itself.
+        try:
+            return expected(str(v))
+        except ValueError:
+            pass
 
-        if provider == LLMProvider.OLLAMA and not isinstance(v, OllamaModel):
-            raise ValueError(
-                f"Model {v} is not compatible with Ollama provider. Use OllamaModel values."
-            )
-
-        if provider == LLMProvider.ANTHROPIC and not isinstance(v, ClaudeModel):
-            raise ValueError(
-                f"Model {v} is not compatible with Anthropic provider. Use ClaudeModel values."
-            )
-
-        if provider == LLMProvider.GOOGLE and not isinstance(v, GeminiModel):
-            raise ValueError(
-                f"Model {v} is not compatible with Google provider. Use GeminiModel values."
-            )
-
+        logger.warning(
+            "Model %r is not a known %s preset (%s). Passing it through -- the "
+            "provider decides whether it exists.",
+            str(v),
+            provider.value,
+            expected.__name__,
+        )
         return v
 
 
@@ -761,10 +797,6 @@ class DomainConfig(BaseSettings):
 class PathConfig(BaseSettings):
     """Path and directory configuration."""
 
-    working_directory: Path | None = Field(
-        default=None,
-        description="Working directory for OntoCast caches and artifacts",
-    )
     ontology_directory: Path | None = Field(
         default=None, description="Directory containing ontology files"
     )

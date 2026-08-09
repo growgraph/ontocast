@@ -365,8 +365,8 @@ chunks = tools.chunker(text)
 The server automatically uses caching for all LLM operations:
 
 ```bash
-# Start server with automatic caching (paths come from the environment / .env)
-ONTOCAST_WORKING_DIRECTORY=/data/working ontocast serve
+# Start server with automatic caching (paths come from the environment)
+ONTOCAST_CACHE_DIR=/data/cache ontocast serve
 ```
 
 ---

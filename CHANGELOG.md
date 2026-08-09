@@ -37,6 +37,78 @@ project:
 
 ## [Unreleased]
 
+### Added
+- Token accounting survives a cache replay. `CachedResponse` now stores the
+  provider's usage alongside the response, and `BudgetTracker` reports it as
+  `cached_input_tokens` / `cached_output_tokens`, kept apart from the billed
+  `input_tokens` / `output_tokens` so a replay is not mistaken for spend.
+  Previously `usage_metadata` — a separate `AIMessage` attribute, not part of
+  the `response_metadata` that was persisted — was dropped on write, so the
+  cache-replay protocol in `docs/user_guide/performance.md`, the mode the
+  benchmark and ablation work runs in, reported zero tokens.
+- `BudgetTracker.reasoning_tokens`, `cache_read_input_tokens` and
+  `cache_creation_input_tokens`, read from LangChain's `UsageMetadata` detail
+  keys (and the OpenAI `*_tokens_details` equivalents). Reasoning tokens
+  dominate output cost for the thinking models `LLM_THINK` drives, and
+  provider-cached input bills at a fraction of the fresh rate — folding either
+  into a single total misstates cost in opposite directions.
+- A cache hit now rebuilds its `AIMessage` with `usage_metadata`, so a replayed
+  call looks identical to a live one to anything reading usage off the message.
+  The Batch-API prefill (`ontocast.tool.llm_batch`) carries usage through too.
+- `OllamaModel` presets for current Qwen and Kimi tags: `qwen3.6`, `qwen3.5`,
+  `qwen3`, `qwen3-coder`, `qwen3-coder-next`, `qwen2.5`, `qwen2.5-coder`,
+  `kimi-k3`, `kimi-k2.7-code`, `kimi-k2.6`, `kimi-k2.5`.
+- **Run manifest.** `ontocast process --output-dir DIR` now writes
+  `<stem>.run.json` beside each `<stem>.facts.ttl`: OntoCast version, render
+  mode, tenancy, the LLM settings that shaped the output, the full
+  `BudgetTracker`, and triple counts. The tracker was returned over HTTP and
+  logged at INFO, then discarded, so a finished batch left its TTL with no
+  record of what produced it or what it cost, and two runs could only be
+  compared by rerunning them.
+- `docs/user_guide/observability.md` — the three layers (in-run `BudgetTracker`,
+  the run manifest, and external tracing via LangSmith/Langfuse/OTel, which work
+  today with no OntoCast code) and the caveat that a cache hit emits no provider
+  span, so a replayed run shows a thin trace while the budget shows the real
+  workload.
+
+### Removed
+- **BREAKING**: `working_directory` / `ONTOCAST_WORKING_DIRECTORY`. Nothing had
+  read it since the filesystem triple-store backend was deleted in `9d3ab77`
+  (2026-06) — but `ontocast serve` and `ontocast process` still *raised* without
+  it and then created an empty directory, and `plot-graph` leaked a
+  `tempfile.mkdtemp()` per invocation to satisfy a field `ToolBox` ignores.
+  Both commands now start with no OntoCast env var set at all. Caches keep using
+  `ONTOCAST_CACHE_DIR`; batch artifacts keep using the explicit `--output-dir`
+  family. A stale `ONTOCAST_WORKING_DIRECTORY` in the environment is ignored.
+
+### Changed
+- **BREAKING (library API)**: `BudgetTracker.add_usage` and `add_cache_hit` take
+  a single `usage: TokenUsage | None` keyword instead of `input_tokens` /
+  `output_tokens` ints. `_usage_from_llm_result` returns a `TokenUsage` rather
+  than a tuple.
+- `LLM_MODEL_NAME` accepts any string. The model enums are presets, not a
+  whitelist: an unrecognised provider/model pairing now logs a warning and is
+  passed through instead of raising. The closed whitelist rejected models newer
+  than the installed package, and blocked the standard way to reach hosted
+  Qwen/Kimi/DeepSeek — `LLM_PROVIDER=openai` plus a vendor `LLM_BASE_URL`
+  (Moonshot, DashScope, OpenRouter, vLLM), which is what `base_url` exists for.
+- A model name that matches a preset exactly is normalised to the enum member
+  rather than warning about itself: `LLM_MODEL_NAME` always arrives as a string,
+  and with `str` in the union pydantic had no reason to prefer the enum.
+- Docs: `LLM_MODEL_NAME` guidance and OpenAI-compatible endpoint recipes in
+  `docs/user_guide/configuration.md`; token-field table and replay-cost note in
+  `docs/user_guide/performance.md`.
+
+### Fixed
+- `demo/README.md` and `docs/user_guide/llm_caching.md` documented CLI flags
+  that do not exist (`--working-directory`, `--ontology-directory`), so the
+  commands failed on invocation. Rewritten as env-var form.
+
+Not bumped: `LLM_CACHE_FORMAT_VERSION` stays at 2. The `usage` field is additive
+and optional, so entries written before it still load and report usage as
+unknown rather than zero — bumping would have evicted every existing entry and
+forced a paid re-run before any replay worked again.
+
 ## [0.6.0] - 2026-08-09
 
 *First release published to PyPI since 0.4.3: the 0.5.0 and 0.5.1

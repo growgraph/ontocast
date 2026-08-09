@@ -1,7 +1,6 @@
 import importlib
 import logging
 import re
-import tempfile
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
@@ -512,10 +511,6 @@ def main(output_dir: Path) -> None:
 
     config = Config()
     config.tool_config.path_config.ontology_directory = None
-    if config.tool_config.path_config.working_directory is None:
-        config.tool_config.path_config.working_directory = Path(
-            tempfile.mkdtemp(prefix="ontocast-plot-")
-        )
     toolbox = ToolBox(config)
 
     app = create_agent_graph(toolbox)

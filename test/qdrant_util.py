@@ -17,7 +17,7 @@ class QdrantSessionTestContext:
     """Session Qdrant collection names and temp workspace for integration tests."""
 
     qdrant_config: QdrantConfig
-    working_directory: Path
+    workspace: Path
     ontology_directory: Path
 
 

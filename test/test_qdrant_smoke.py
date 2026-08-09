@@ -57,10 +57,7 @@ def _build_toolbox(ctx: QdrantSessionTestContext) -> ToolBox:
     embedding_config = EmbeddingConfig(dimension=8, model_name="pytest-smoke")
     tool_config = ToolConfig(
         llm_config=LLMConfig(),
-        path_config=PathConfig(
-            working_directory=ctx.working_directory,
-            ontology_directory=ctx.ontology_directory,
-        ),
+        path_config=PathConfig(ontology_directory=ctx.ontology_directory),
         embedding=embedding_config,
         qdrant=ctx.qdrant_config,
         # Isolate from host Fuseki env so tests use the in-memory triple store.

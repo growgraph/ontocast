@@ -54,6 +54,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field, PrivateAttr, SecretStr
 
 from ontocast.config import LLMConfig, LLMProvider
+from ontocast.onto.token_usage import TokenUsage
 from ontocast.util.loop import require_no_running_loop
 from ontocast.util.optional import require
 
@@ -172,25 +173,98 @@ def _inflight_semaphore(max_inflight: int) -> asyncio.Semaphore:
     return per_loop[max_inflight]
 
 
-def _usage_from_llm_result(result: Any) -> tuple[int | None, int | None]:
-    """Extract token usage from an LLM response when the provider reports it."""
-    if isinstance(result, AIMessage):
-        usage = result.usage_metadata
-        if usage is not None:
-            input_tokens = usage.get("input_tokens")
-            output_tokens = usage.get("output_tokens")
-            if input_tokens is not None and output_tokens is not None:
-                return int(input_tokens), int(output_tokens)
+def _opt_int(source: Any, key: str) -> int | None:
+    """Read ``key`` from a mapping as an int, or None when absent/unusable."""
+    if not isinstance(source, dict):
+        return None
+    value = source.get(key)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
-        response_metadata = result.response_metadata or {}
-        token_usage = response_metadata.get("token_usage")
-        if isinstance(token_usage, dict):
-            prompt_tokens = token_usage.get("prompt_tokens")
-            completion_tokens = token_usage.get("completion_tokens")
-            if prompt_tokens is not None and completion_tokens is not None:
-                return int(prompt_tokens), int(completion_tokens)
 
-    return None, None
+def _usage_from_llm_result(result: Any) -> TokenUsage:
+    """Extract token usage from an LLM response when the provider reports it.
+
+    Two tiers, because providers disagree: LangChain normalises everything it
+    can into ``usage_metadata``, but OpenAI-compatible endpoints that predate
+    (or ignore) that convention only populate ``response_metadata["token_usage"]``.
+    An all-``None`` :class:`TokenUsage` means the provider said nothing.
+    """
+    if not isinstance(result, AIMessage):
+        return TokenUsage()
+
+    usage = result.usage_metadata
+    if usage is not None:
+        input_tokens = _opt_int(usage, "input_tokens")
+        output_tokens = _opt_int(usage, "output_tokens")
+        if input_tokens is not None and output_tokens is not None:
+            input_details = usage.get("input_token_details")
+            output_details = usage.get("output_token_details")
+            return TokenUsage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                reasoning_tokens=_opt_int(output_details, "reasoning"),
+                cache_read_input_tokens=_opt_int(input_details, "cache_read"),
+                cache_creation_input_tokens=_opt_int(input_details, "cache_creation"),
+            )
+
+    return token_usage_from_openai_payload(
+        (result.response_metadata or {}).get("token_usage")
+    )
+
+
+def token_usage_from_openai_payload(payload: Any) -> TokenUsage:
+    """Parse an OpenAI-shaped ``usage`` object into a :class:`TokenUsage`.
+
+    Shared with the Batch-API prefill in :mod:`ontocast.tool.llm_batch`, whose
+    JSONL carries the same object under ``response.body.usage`` -- so a
+    prewarmed cache entry accounts for tokens exactly like a live one.
+    """
+    prompt_tokens = _opt_int(payload, "prompt_tokens")
+    completion_tokens = _opt_int(payload, "completion_tokens")
+    if prompt_tokens is None or completion_tokens is None:
+        return TokenUsage()
+    completion_details = payload.get("completion_tokens_details")
+    prompt_details = payload.get("prompt_tokens_details")
+    return TokenUsage(
+        input_tokens=prompt_tokens,
+        output_tokens=completion_tokens,
+        reasoning_tokens=_opt_int(completion_details, "reasoning_tokens"),
+        cache_read_input_tokens=_opt_int(prompt_details, "cached_tokens"),
+    )
+
+
+def _usage_metadata_from(usage: TokenUsage) -> dict[str, Any] | None:
+    """Render a :class:`TokenUsage` back into LangChain's ``usage_metadata`` shape.
+
+    Replayed onto a cached ``AIMessage`` so a hit stays behaviourally identical
+    to a fresh call for anything reading usage off the message -- notably
+    LangChain-native tracers.
+    """
+    if usage.input_tokens is None or usage.output_tokens is None:
+        return None
+    metadata: dict[str, Any] = {
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "total_tokens": usage.input_tokens + usage.output_tokens,
+    }
+    input_details = {
+        key: value
+        for key, value in (
+            ("cache_read", usage.cache_read_input_tokens),
+            ("cache_creation", usage.cache_creation_input_tokens),
+        )
+        if value is not None
+    }
+    if input_details:
+        metadata["input_token_details"] = input_details
+    if usage.reasoning_tokens is not None:
+        metadata["output_token_details"] = {"reasoning": usage.reasoning_tokens}
+    return metadata
 
 
 def _chars_received_from_result(result: Any) -> int:
@@ -240,6 +314,18 @@ class CachedResponse(BaseModel):
         description="Provider metadata, replayed on a hit.",
     )
     kwargs: dict[str, Any] = Field(default_factory=dict, description="Invoke kwargs.")
+    usage: TokenUsage | None = Field(
+        default=None,
+        # Optional rather than a cache_format_version bump: it is purely
+        # additive, and bumping would evict every existing entry and force a
+        # paid re-run before any cache replay works again. Entries written
+        # before this field report usage as unknown, which is the truth.
+        #
+        # usage_metadata is a separate AIMessage attribute, not part of
+        # response_metadata, so persisting the latter never captured it -- which
+        # is why replayed runs used to report zero tokens.
+        description="Token counts, replayed on a hit. None for older entries.",
+    )
 
 
 class LLMTool(Tool):
@@ -430,11 +516,13 @@ class LLMTool(Tool):
         scoped = _active_budget_tracker.get()
         return scoped if scoped is not None else self.budget_tracker
 
-    def _record_cache_hit(self, prompt_str: str, content_str: str) -> None:
+    def _record_cache_hit(
+        self, prompt_str: str, content_str: str, usage: TokenUsage | None
+    ) -> None:
         self._cache_hits += 1
         bt = self._current_budget_tracker()
         if bt is not None:
-            bt.add_cache_hit(len(prompt_str), len(content_str))
+            bt.add_cache_hit(len(prompt_str), len(content_str), usage=usage)
 
     def record_span(self, name: str, seconds: float) -> None:
         """Charge a latency span to this call's budget tracker.
@@ -457,12 +545,10 @@ class LLMTool(Tool):
         bt = self._current_budget_tracker()
         if bt is None:
             return
-        input_tokens, output_tokens = _usage_from_llm_result(result)
         bt.add_usage(
             len(prompt_str),
             _chars_received_from_result(result),
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
+            usage=_usage_from_llm_result(result),
         )
 
     def get_cache_stats(
@@ -530,10 +616,15 @@ class LLMTool(Tool):
             if cached_response is not None:
                 logger.debug("Cache hit: %s...", prompt_str[:50])
                 entry = CachedResponse.model_validate(cached_response)
-                self._record_cache_hit(prompt_str, entry.content)
+                self._record_cache_hit(prompt_str, entry.content, entry.usage)
                 return AIMessage(
                     content=entry.content,
                     response_metadata=entry.response_metadata,
+                    usage_metadata=(
+                        _usage_metadata_from(entry.usage)
+                        if entry.usage is not None
+                        else None
+                    ),
                 )
 
         logger.debug("Cache miss, calling LLM: %s...", prompt_str[:50])
@@ -576,18 +667,24 @@ class LLMTool(Tool):
 
         content_str = _content_to_str(response.content)
         response_metadata = getattr(response, "response_metadata", {}) or {}
+        usage = _usage_from_llm_result(response)
         if self.config.cache_enabled and not self.config.cache_read_only:
             entry = CachedResponse(
                 content=content_str,
                 prompt=prompt_str,
                 response_metadata=response_metadata,
                 kwargs=kwds,
+                usage=None if usage.is_empty() else usage,
             )
             await self.cache.aset(
                 prompt_key, entry.model_dump(), config=config_dict, **kwds
             )
 
-        return AIMessage(content=content_str, response_metadata=response_metadata)
+        return AIMessage(
+            content=content_str,
+            response_metadata=response_metadata,
+            usage_metadata=_usage_metadata_from(usage),
+        )
 
     async def __call__(self, *args: Any, **kwds: Any) -> Any:
         """Call the language model directly (asynchronous)."""
