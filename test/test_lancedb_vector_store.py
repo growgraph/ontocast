@@ -25,6 +25,10 @@ from ontocast.tool.vector_store.factory import create_vector_store_manager
 from ontocast.tool.vector_store.lancedb import LanceDBVectorStoreManager
 from test.test_vector_store_pipeline import CountingEmbeddingTool
 
+# Every test here creates a real on-disk LanceDB table (and imports pyarrow),
+# so the file is an integration surface rather than a unit one.
+pytestmark = pytest.mark.integration
+
 
 def _sample_ontology(iri: str = "https://example.org/smoke") -> Ontology:
     ttl = f"""

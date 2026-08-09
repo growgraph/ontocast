@@ -1,4 +1,3 @@
-import pathlib
 from enum import StrEnum
 from typing import Literal
 
@@ -10,38 +9,33 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate
 
 
+def _coerce_free_text(v: object) -> str:
+    """Coerce LLM free-text output to a string.
+
+    Several providers answer a single-string field with a bulleted list. The
+    content is usable as-is, so join it rather than rejecting the whole report
+    and burning a retry.
+    """
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, list | tuple):
+        return "\n".join(part for part in (str(item).strip() for item in v) if part)
+    return str(v)
+
+
 class BasePydanticModel(BaseModel):
-    """Base class for Pydantic models with serialization capabilities."""
+    """Shared base for the pipeline's Pydantic models.
+
+    Carries no behaviour of its own since the JSON save/load helpers were
+    removed with their only consumer; it is kept as the common ancestor the
+    state and report models already declare.
+    """
 
     def __init__(self, **kwargs):
         """Initialize the model with given keyword arguments."""
         super().__init__(**kwargs)
-
-    def save_json(self, file_path: str | pathlib.Path) -> None:
-        """Write model state to a JSON file.
-
-        Args:
-            file_path: Path to save the JSON file.
-        """
-        state_json = self.model_dump_json(indent=4)
-        if isinstance(file_path, str):
-            file_path = pathlib.Path(file_path)
-        file_path.write_text(state_json)
-
-    @classmethod
-    def load(cls, file_path: str | pathlib.Path):
-        """Load state from a JSON file.
-
-        Args:
-            file_path: Path to the JSON file.
-
-        Returns:
-            The loaded model instance.
-        """
-        if isinstance(file_path, str):
-            file_path = pathlib.Path(file_path)
-        state_json = file_path.read_text()
-        return cls.model_validate_json(state_json)
 
 
 def create_ontology_selector_report_model(
@@ -100,46 +94,6 @@ class OntologySelectorReport(BasePydanticModel):
     )
 
 
-class SemanticTriplesFactsReport(BaseModel):
-    """Report containing semantic triples and evaluation scores.
-
-    Graph payloads follow ``LLM_GRAPH_FORMAT``; both wire encodings parse to ``RDFGraph``.
-
-    Attributes:
-        semantic_graph: Semantic triples (facts) representing the document.
-        ontology_relevance_score: Score 0-100 for how relevant the ontology
-            is to the document. 0 is the worst, 100 is the best.
-        triples_generation_score: Score 0-100 for how well the facts extraction /
-            triples generation was performed. 0 is the worst, 100 is the best.
-    """
-
-    semantic_graph: LLMGraphWire = Field(
-        default_factory=RDFGraph,
-        description=(
-            "Semantic triples (facts) representing the document. "
-            "Encoding is defined by deployment llm_graph_format and OUTPUT INSTRUCTION."
-        ),
-    )
-    ontology_relevance_score: float | None = Field(
-        default=None,
-        ge=0,
-        le=100,
-        description=(
-            "Score between 0 and 100 of how well "
-            "the ontology represents the domain of the document."
-        ),
-    )
-    triples_generation_score: float | None = Field(
-        default=None,
-        ge=0,
-        le=100,
-        description=(
-            "Score 0-100 for how well the semantic triples "
-            "represent the document. 0 is the worst, 100 is the best."
-        ),
-    )
-
-
 class ExternalEvidenceRequest(BaseModel):
     """Node-level request for optional web search.
 
@@ -165,6 +119,11 @@ class ExternalEvidenceRequest(BaseModel):
         le=1.0,
         description="Confidence in this search decision.",
     )
+
+    @field_validator("rationale", mode="before")
+    @classmethod
+    def coerce_rationale(cls, v: object) -> str:
+        return _coerce_free_text(v)
 
     @field_validator("query_hints", mode="before")
     @classmethod
@@ -326,6 +285,19 @@ class TripleFix(BaseModel):
         )
     )
 
+    @field_validator("text_fragment", "explanation", mode="before")
+    @classmethod
+    def coerce_free_text(cls, v: object) -> str:
+        """Coerce the two required free-text fields.
+
+        Both are required with no default, so a provider answering either with a
+        bulleted list raised and discarded the whole critique report. Deliberately
+        not applied to ``incorrect_value``/``correct_value``: those carry graph
+        syntax, where joining a list would corrupt the payload rather than
+        recover it.
+        """
+        return _coerce_free_text(v)
+
     def to_markdown(self) -> str:
         """Convert this TripleFix to markdown format.
 
@@ -404,6 +376,12 @@ class OntologyCritiqueReport(BaseModel):
         default="",
         description="A high-level summary of systemic deficiencies in the ontology (e.g., poor hierarchy structure, redundant concepts, lack of appropriate granularity, or general failures in Domain Coverage). This addresses strategic issues beyond individual term fixes.",
     )
+
+    @field_validator("systemic_critique_summary", mode="before")
+    @classmethod
+    def coerce_systemic_critique_summary(cls, v: object) -> str:
+        return _coerce_free_text(v)
+
     external_evidence_request: ExternalEvidenceRequest = Field(
         default_factory=ExternalEvidenceRequest,
         description="Optional request to run web search before retrying.",
@@ -450,6 +428,12 @@ class FactsCritiqueReport(BaseModel):
             "This guides strategic improvements to the fact-extraction process."
         ),
     )
+
+    @field_validator("systemic_critique_summary", mode="before")
+    @classmethod
+    def coerce_systemic_critique_summary(cls, v: object) -> str:
+        return _coerce_free_text(v)
+
     external_evidence_request: ExternalEvidenceRequest = Field(
         default_factory=ExternalEvidenceRequest,
         description="Optional request to run web search before retrying.",
@@ -493,6 +477,12 @@ class ExternalEvidencePlan(BaseModel):
     queries: list[str] = Field(
         default_factory=list, description="Targeted search queries."
     )
+
+    @field_validator("rationale", mode="before")
+    @classmethod
+    def coerce_rationale(cls, v: object) -> str:
+        """Mirror the coercion on ``ExternalEvidenceRequest.rationale``."""
+        return _coerce_free_text(v)
 
     @field_validator("queries", mode="before")
     @classmethod
@@ -540,6 +530,8 @@ class FactsUnitFindingKind(StrEnum):
     CLOSED_RANGE_LITERAL = "closed_range_literal"
     LITERAL_TYPE_OBJECT = "literal_type_object"
     NUMERIC_COVERAGE = "numeric_coverage"
+    SCALAR_AS_BOUNDS = "scalar_as_bounds"
+    DOMAIN_VIOLATION = "domain_violation"
 
 
 class FactsUnitFinding(BaseModel):
@@ -559,15 +551,30 @@ class FactsUnitFinding(BaseModel):
     suggestions: list[str] = Field(default_factory=list)
 
 
-class GraphRepairRecord(BaseModel):
-    """One machine-applied deterministic rewrite on a rendered facts graph.
+class FactsGateRepairKind(StrEnum):
+    """Kinds of machine-applied repair at the post-aggregation gate.
 
-    Records what the repair passes changed (near-miss predicate rewrites,
-    literal ``rdf:type`` coercions) so downstream consumers can distinguish
-    machine-altered triples from what the LLM asserted.
+    Distinct from :class:`FactsUnitFindingKind`: these are shape-driven and
+    apply to the merged graph, where the SHACL report is available.
     """
 
-    kind: FactsUnitFindingKind
+    SHACL_RETYPE = "shacl_retype"
+    SHACL_CODE_RESOLVED = "shacl_code_resolved"
+    SHACL_PRUNE = "shacl_prune"
+    CODE_RESOLVED = "code_resolved"
+
+
+class GraphRepairRecord(BaseModel):
+    """One machine-applied deterministic rewrite on a facts graph.
+
+    LLM-free by construction: every repair either rewrites a term the catalog
+    already declares or removes a node that asserts nothing. Records what the
+    repair passes changed (near-miss predicate rewrites, literal ``rdf:type``
+    coercions, shape-driven retyping/pruning) so downstream consumers can
+    distinguish machine-altered triples from what the LLM asserted.
+    """
+
+    kind: FactsUnitFindingKind | FactsGateRepairKind
     source: str
     target: str
     triple_count: int = 1
@@ -591,20 +598,30 @@ class FactsLoopAttempt(BaseModel):
     """Telemetry record for one attempt inside the per-unit facts loop.
 
     ``n_deterministic_findings`` / ``n_mandatory_findings`` count findings
-    against the graph as of this record: for ``repair`` records that is the
+    against the graph as of this record: for ``llm_repair`` records that is the
     residual *after* the repair render, so summing the last repair record per
     unit yields the true document-level residual.
+
+    ``kind="llm_repair"`` is a finding-*driven* render — it costs a provider
+    call. LLM-free machine rewrites are not attempts and are recorded as
+    ``GraphRepairRecord`` instead.
     """
 
     render_attempt: int = 0
     critic_attempt: int = 0
-    kind: Literal["render", "critic", "repair"] = "render"
+    kind: Literal["render", "critic", "llm_repair"] = "render"
     score: float | None = None
     success: bool | None = None
     n_actionable_fixes: int = 0
     n_deterministic_findings: int = 0
     n_mandatory_findings: int = 0
     repair_failed: bool = False
+    #: Why the repair render failed. The unit stays SUCCESS -- the pre-repair
+    #: graph is intact and usable -- but clearing the failure used to erase the
+    #: diagnosis with it, leaving ``repair_failed=True`` and no way to tell a
+    #: provider timeout from an unparseable response.
+    failure_stage: str | None = None
+    failure_reason: str | None = None
     triple_count: int = 0
 
 
@@ -616,14 +633,19 @@ class FactsValidationFindingKind(StrEnum):
     DEGENERATE_COREFERENCE = "degenerate_coreference"
     SHACL = "shacl"
     NON_CATALOG_VOCABULARY = "non_catalog_vocabulary"
+    DANGLING_REFERENCE = "dangling_reference"
 
 
 class FactsValidationFinding(BaseModel):
     """One invariant violation detected in the aggregated facts graph.
 
-    Error-severity findings on subjects that resulted from an identity merge
-    drive the deterministic un-merge repair (full-cluster pair vetoes plus
-    re-aggregation); warning findings are telemetry only.
+    Error-severity findings of the merge-signature kinds
+    (``FUNCTIONAL_VIOLATION``, ``SUSPECT_MULTI_VALUE``,
+    ``DEGENERATE_COREFERENCE``) on subjects that resulted from an identity
+    merge drive the deterministic un-merge repair (full-cluster pair vetoes
+    plus re-aggregation). SHACL findings never drive it — a constraint
+    violation says a node is under-specified, not that two entities were
+    wrongly identified. Warning findings are telemetry only.
     """
 
     kind: FactsValidationFindingKind
@@ -632,6 +654,18 @@ class FactsValidationFinding(BaseModel):
     subject: str = ""
     predicate: str = ""
     values: list[str] = Field(default_factory=list)
+    component: str = Field(
+        default="",
+        description=(
+            "SHACL constraint component IRI (sh:MinCountConstraintComponent, "
+            "…) for SHACL findings; empty otherwise. Grouping by it is what "
+            "turns a list of violations into a diagnosis."
+        ),
+    )
+    source_shape: str = Field(
+        default="",
+        description="SHACL shape that reported the violation; empty otherwise.",
+    )
 
 
 class Suggestions(BaseModel):
@@ -650,6 +684,11 @@ class Suggestions(BaseModel):
     systemic_critique_summary: str = Field(
         default="", description="A general improvement suggestion."
     )
+
+    @field_validator("systemic_critique_summary", mode="before")
+    @classmethod
+    def coerce_systemic_critique_summary(cls, v: object) -> str:
+        return _coerce_free_text(v)
 
     @classmethod
     def from_critique_report(

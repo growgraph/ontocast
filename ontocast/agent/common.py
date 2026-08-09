@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import random
 import re
 from typing import Any, TypeVar, cast
 
@@ -23,6 +25,25 @@ from ontocast.tool import LLMTool
 from ontocast.tool.llm import _content_to_str
 
 logger = logging.getLogger(__name__)
+
+#: Base delay for parse-retry backoff, doubled per attempt.
+RETRY_BACKOFF_BASE_SECONDS = 0.5
+#: Upper bound, so a retry never stalls a unit worker for long.
+RETRY_BACKOFF_MAX_SECONDS = 8.0
+
+
+def _retry_backoff_seconds(attempt: int) -> float:
+    """Delay before retry number ``attempt`` (1-based), with jitter.
+
+    Jitter matters more than the delay itself here: without it, the units that
+    failed to parse in the same fan-out wave all re-issue at the same instant,
+    recreating the burst that may have caused the failure.
+    """
+    capped = min(
+        RETRY_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)), RETRY_BACKOFF_MAX_SECONDS
+    )
+    return capped * random.uniform(0.5, 1.0)
+
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -111,6 +132,15 @@ async def call_llm_with_retry(
     On retry, if retry_error_feedback is True, the error message from the previous
     attempt is included in the prompt to help the LLM correct its output format.
 
+    Only *parsing* failures are retried. A transport-level failure (timeout,
+    rate limit, connection error) propagates on the first occurrence: the retry
+    exists to show the model its own malformed output, which is meaningless
+    when no output arrived, and retrying would triple the request rate exactly
+    when the provider is asking for less of it.
+
+    Retries back off exponentially with jitter, so N units failing to parse
+    simultaneously do not re-issue in lockstep.
+
     Args:
         llm_tool: The LLM tool instance to use for generation.
         prompt: The prompt template to format and send to the LLM.
@@ -125,41 +155,45 @@ async def call_llm_with_retry(
         The parsed output of type T.
 
     Raises:
-        Exception: If parsing fails after all retry attempts, raises the last parsing error.
+        Exception: The provider's error on a transport failure, or the last
+            parsing error once retries are exhausted.
     """
     last_error: Exception | None = None
     last_sanitized_content: str | None = None
     original_format_instructions = prompt_kwargs.get("format_instructions", "")
 
     for attempt in range(max_retries):
+        # Create a copy of prompt_kwargs for this attempt
+        attempt_kwargs = prompt_kwargs.copy()
+
+        # On retry, add error feedback to help LLM correct format
+        if attempt > 0 and retry_error_feedback and last_error is not None:
+            # Use sanitized content in error feedback for consistency
+            feedback_content = last_sanitized_content if last_sanitized_content else ""
+            error_feedback = (
+                f"\n\nIMPORTANT: The previous attempt failed to parse the response. "
+                f"Error: {str(last_error)}\n"
+                f"Previous response (for reference):\n{feedback_content}\n\n"
+                f"Please ensure your response strictly follows the format instructions "
+                f"and does not contain any control characters or invalid syntax."
+            )
+            # Add error feedback to format_instructions if present
+            if "format_instructions" in attempt_kwargs:
+                attempt_kwargs["format_instructions"] = (
+                    original_format_instructions + error_feedback
+                )
+            else:
+                # If no format_instructions, add as a new field
+                attempt_kwargs["parsing_error_feedback"] = error_feedback
+
+        if attempt > 0:
+            await asyncio.sleep(_retry_backoff_seconds(attempt))
+
+        # Outside the try below on purpose: a transport failure must propagate
+        # rather than be re-sent with parse-error feedback attached.
+        response = await llm_tool(prompt.format_prompt(**attempt_kwargs))
+
         try:
-            # Create a copy of prompt_kwargs for this attempt
-            attempt_kwargs = prompt_kwargs.copy()
-
-            # On retry, add error feedback to help LLM correct format
-            if attempt > 0 and retry_error_feedback and last_error is not None:
-                # Use sanitized content in error feedback for consistency
-                feedback_content = (
-                    last_sanitized_content if last_sanitized_content else ""
-                )
-                error_feedback = (
-                    f"\n\nIMPORTANT: The previous attempt failed to parse the response. "
-                    f"Error: {str(last_error)}\n"
-                    f"Previous response (for reference):\n{feedback_content}\n\n"
-                    f"Please ensure your response strictly follows the format instructions "
-                    f"and does not contain any control characters or invalid syntax."
-                )
-                # Add error feedback to format_instructions if present
-                if "format_instructions" in attempt_kwargs:
-                    attempt_kwargs["format_instructions"] = (
-                        original_format_instructions + error_feedback
-                    )
-                else:
-                    # If no format_instructions, add as a new field
-                    attempt_kwargs["parsing_error_feedback"] = error_feedback
-
-            # Call LLM
-            response = await llm_tool(prompt.format_prompt(**attempt_kwargs))
             content_to_parse = strip_trailing_commas(
                 strip_json_comments(_content_to_str(response.content))
             )

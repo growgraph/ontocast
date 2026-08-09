@@ -26,8 +26,10 @@ from ontocast.api.process_helpers import (
     get_supported_input_extensions,
     select_unit_facts_ontology_graph,
     turtle_from_graph,
+    validate_unit_pipeline_facts,
 )
 from ontocast.api.process_request import (
+    ParsedProcessRequest,
     build_agent_state_from_parsed,
     load_parsed_process_request,
 )
@@ -35,6 +37,7 @@ from ontocast.api.responses import (
     document_conversion_error_response,
     ontology_context_config_error_response,
     request_param_error_response,
+    section_selection_empty_response,
 )
 from ontocast.api.schemas import (
     FlushOkResponse,
@@ -54,6 +57,7 @@ from ontocast.onto.retrieval_capabilities import (
     OntologyContextConfigError,
     validate_ontology_context_mode,
 )
+from ontocast.onto.state import AgentState
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.stategraph import create_agent_graph
 from ontocast.stategraph.helpers import build_ontology_delta_graph
@@ -61,6 +65,7 @@ from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_
 from ontocast.tool.agg.match_derivation import derive_pair_matches
 from ontocast.tool.agg.match_models import TaggedGraph
 from ontocast.tool.agg.triple_evaluator import TripleSetEvaluator
+from ontocast.tool.chunk.prepare import SectionSelectionEmptyError
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.toolbox import ToolBox
 
@@ -84,7 +89,11 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        """Release backend connections when the server stops."""
+        """Release backend connections when the server stops.
+
+        ``ToolBox.aclose`` also closes every per-tenant ToolBox spawned through
+        ``for_scope``, so this covers the whole registry.
+        """
         yield
         await tools.aclose()
 
@@ -118,7 +127,88 @@ def create_app(
         )
     )
 
-    workflow: CompiledStateGraph = create_agent_graph(tools)
+    workflow: CompiledStateGraph = create_agent_graph(tools, name="ontocast")
+
+    def workflow_for(scoped: ToolBox) -> CompiledStateGraph:
+        """Return the compiled graph bound to ``scoped``.
+
+        Nodes are ``partial(fn, tools=tools)`` and ``make_*_node(tools)``
+        closures, so a graph belongs to exactly one ToolBox and a scoped one
+        needs its own. Compilation is in-memory topology work with no I/O, so
+        caching it per scope costs far less than the ToolBox it belongs to.
+        """
+        if scoped is tools:
+            return workflow
+        scope = scoped.scope
+        if scope is None:
+            return create_agent_graph(scoped, name="ontocast")
+        return tools.ensure_tenancy_registry().graph_for(
+            scope, lambda: create_agent_graph(scoped, name="ontocast")
+        )
+
+    async def prepare_extraction_request(
+        request: Request,
+        *,
+        log_label: str,
+        max_chunks: int | None,
+    ) -> tuple[ToolBox, AgentState, ParsedProcessRequest] | JSONResponse:
+        """Parse, scope and validate one extraction request.
+
+        ``/process`` and ``/process_unit`` share this entire preamble -- read
+        the body, bind the request's tenancy, check the ontology-context mode
+        against the scoped tools, build the state -- and differ only in
+        ``max_chunks``. It was written out twice, so a fix to one route's
+        tenancy or validation wiring silently missed the other.
+
+        Args:
+            request: The incoming request.
+            log_label: Label used in the body-parsing debug logs.
+            max_chunks: Chunk cap for the built state; ``1`` for the
+                single-unit route.
+
+        Returns:
+            The scoped ToolBox, the initial state, and the parsed request
+            (whose ``strip_provenance`` the response assembly still needs), or
+            a ``JSONResponse`` when parsing or validation rejected the request.
+        """
+        loaded = await load_parsed_process_request(
+            request, server_config, log_label=log_label
+        )
+        if isinstance(loaded, JSONResponse):
+            return loaded
+
+        # Use `scoped_tools` from here on: it is bound to this request's
+        # tenant/project partition, and may not be the startup ToolBox.
+        (
+            scoped_tools,
+            resolved_tenant,
+            resolved_project,
+        ) = await apply_request_tenancy(
+            request,
+            tools,
+            active_tenant=active_tenant,
+            active_project=active_project,
+            initialize_vector_store=(
+                loaded.ontology_context_mode_value
+                == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+            ),
+        )
+
+        try:
+            validate_ontology_context_mode(
+                loaded.ontology_context_mode_value, scoped_tools
+            )
+        except OntologyContextConfigError as e:
+            return ontology_context_config_error_response(e)
+
+        initial_state = build_agent_state_from_parsed(
+            loaded,
+            server_config=server_config,
+            resolved_tenant=resolved_tenant,
+            resolved_project=resolved_project,
+            max_chunks=max_chunks,
+        )
+        return scoped_tools, initial_state, loaded
 
     process_semaphore: asyncio.Semaphore | None = None
     if server_config.max_concurrent_processes is not None:
@@ -158,7 +248,10 @@ def create_app(
     async def info():
         llm_cache = None
         if tools.llm is not None:
-            llm_cache = tools.llm.get_cache_stats()
+            # Async variant: the disk stats walk every cache file, which is tens
+            # of thousands of stat() calls on a warm cache and must not run on
+            # the event loop.
+            llm_cache = await tools.llm.aget_cache_stats()
         return InfoResponse(
             version=__version__,
             llm_cache=llm_cache,
@@ -318,44 +411,19 @@ def create_app(
         if process_semaphore is not None:
             await process_semaphore.acquire()
         try:
-            loaded = await load_parsed_process_request(
-                request, server_config, log_label="process"
+            prepared = await prepare_extraction_request(
+                request, log_label="process", max_chunks=head_chunks
             )
-            if isinstance(loaded, JSONResponse):
-                return loaded
-
-            resolved_tenant, resolved_project = await apply_request_tenancy(
-                request,
-                tools,
-                active_tenant=active_tenant,
-                active_project=active_project,
-                initialize_vector_store=(
-                    loaded.ontology_context_mode_value
-                    == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
-                ),
-            )
-
-            try:
-                validate_ontology_context_mode(
-                    loaded.ontology_context_mode_value, tools
-                )
-            except OntologyContextConfigError as e:
-                return ontology_context_config_error_response(e)
-
-            initial_state = build_agent_state_from_parsed(
-                loaded,
-                server_config=server_config,
-                resolved_tenant=resolved_tenant,
-                resolved_project=resolved_project,
-                max_chunks=head_chunks,
-            )
+            if isinstance(prepared, JSONResponse):
+                return prepared
+            scoped_tools, initial_state, loaded = prepared
             request_recursion_limit = calculate_recursion_limit(
                 head_chunks,
                 server_config,
                 max_visits_per_node=initial_state.max_visits,
             )
 
-            async for chunk in workflow.astream(
+            async for chunk in workflow_for(scoped_tools).astream(
                 initial_state,
                 stream_mode="values",
                 config=RunnableConfig(recursion_limit=request_recursion_limit),
@@ -418,6 +486,14 @@ def create_app(
                     "facts_repairs_applied", {}
                 ).items()
             }
+            validation_findings = [
+                finding.model_dump(mode="json")
+                for finding in workflow_state.get("facts_validation_findings", [])
+            ]
+            gate_repairs = [
+                record.model_dump(mode="json")
+                for record in workflow_state.get("facts_gate_repairs", [])
+            ]
 
             if workflow_state["status"] == Status.FAILED:
                 # Every unit failed, or conversion did. Returning 200 here made
@@ -461,12 +537,21 @@ def create_app(
                     improvement_suggestions=list(
                         workflow_state.get("improvements_suggestions", [])
                     ),
+                    facts_conformance=dict(
+                        workflow_state.get("facts_conformance", {}) or {}
+                    ),
+                    facts_validation_findings=validation_findings,
+                    facts_gate_repairs=gate_repairs,
                 ),
             )
 
         except RequestParamError as e:
             # Malformed input is the client's error, not ours.
             return request_param_error_response(e)
+        except SectionSelectionEmptyError as e:
+            # Well-formed parameters that match nothing in *this* document.
+            # /process_unit never chunks, so only this route can raise it.
+            return section_selection_empty_response(e)
         except DocumentConversionError as e:
             return document_conversion_error_response(e, e.stage)
         except Exception as e:
@@ -507,49 +592,26 @@ def create_app(
     async def process_unit(request: Request):
         """Process the whole input as one content unit.
 
-        Skips chunking, section tagging, summarization, normalization, and the
-        post-aggregation validation gate, so ``max_chunks`` and the
-        section-selection parameters have no effect here. Use ``/process`` for
-        anything larger than a single passage.
+        Skips chunking, section tagging, summarization, and normalization, so
+        ``max_chunks`` and the section-selection parameters have no effect
+        here. The post-aggregation validation gate (invariant findings, SHACL,
+        LLM-free autofix) does run, minus the un-merge repair, which is
+        meaningless for a single unit. Use ``/process`` for anything larger
+        than a single passage.
         """
         if process_semaphore is not None:
             await process_semaphore.acquire()
         try:
-            loaded = await load_parsed_process_request(
-                request, server_config, log_label="process_unit"
+            prepared = await prepare_extraction_request(
+                request, log_label="process_unit", max_chunks=1
             )
-            if isinstance(loaded, JSONResponse):
-                return loaded
-
-            resolved_tenant, resolved_project = await apply_request_tenancy(
-                request,
-                tools,
-                active_tenant=active_tenant,
-                active_project=active_project,
-                initialize_vector_store=(
-                    loaded.ontology_context_mode_value
-                    == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
-                ),
-            )
-
-            try:
-                validate_ontology_context_mode(
-                    loaded.ontology_context_mode_value, tools
-                )
-            except OntologyContextConfigError as e:
-                return ontology_context_config_error_response(e)
-
-            initial_state = build_agent_state_from_parsed(
-                loaded,
-                server_config=server_config,
-                resolved_tenant=resolved_tenant,
-                resolved_project=resolved_project,
-                max_chunks=1,
-            )
+            if isinstance(prepared, JSONResponse):
+                return prepared
+            scoped_tools, initial_state, loaded = prepared
 
             try:
                 onto_result, facts_result = await run_unit_pipeline(
-                    initial_state, tools
+                    initial_state, scoped_tools
                 )
             except DocumentConversionError as exc:
                 return document_conversion_error_response(exc, exc.stage)
@@ -611,15 +673,25 @@ def create_app(
                     and "source_uri" not in document_metadata
                 ):
                     document_metadata["source_url"] = initial_state.source_url
-                postprocessed_facts = tools.aggregator.postprocess_facts_units(
+                postprocessed_facts = scoped_tools.aggregator.postprocess_facts_units(
                     units=[facts_result.content_unit],
                     ontology_graph=ontology_graph,
                     doc_iri=initial_state.doc_iri,
                     document_metadata=document_metadata,
                     doc_namespace=initial_state.doc_namespace,
                 )
+                # Same gate the document pipeline reaches at VALIDATE_FACTS:
+                # invariant findings, SHACL, and the LLM-free autofix, so the
+                # served graph and conformance report match the CLI unit path.
+                initial_state.aggregated_facts = postprocessed_facts.graph
+                await asyncio.to_thread(
+                    validate_unit_pipeline_facts,
+                    initial_state,
+                    ontology_graph,
+                    scoped_tools,
+                )
                 facts_ttl = turtle_from_graph(
-                    postprocessed_facts.graph,
+                    initial_state.aggregated_facts,
                     strip_provenance=loaded.strip_provenance,
                 )
 
@@ -641,6 +713,15 @@ def create_app(
                     chunks_remaining=0,
                     budget=budget_tracker_data,
                     retrieval_metrics=initial_state.retrieval_metrics,
+                    facts_conformance=dict(initial_state.facts_conformance or {}),
+                    facts_validation_findings=[
+                        finding.model_dump(mode="json")
+                        for finding in initial_state.facts_validation_findings
+                    ],
+                    facts_gate_repairs=[
+                        record.model_dump(mode="json")
+                        for record in initial_state.facts_gate_repairs
+                    ],
                 ),
             )
 

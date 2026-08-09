@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from datetime import datetime
@@ -67,31 +66,6 @@ def deterministic_turtle_serialization(graph: Graph) -> str:
         for s, p, o in triples_sorted
     ]
     return "\n".join(prefix_lines + [""] + triple_lines)
-
-
-def compare_versions(ver1: str, ver2: str) -> int:
-    """Compare two semantic version strings."""
-
-    def _parse_version(v: str) -> tuple:
-        parts = v.split(".")
-        result = []
-        for part in parts:
-            numeric_part = re.sub(r"[^0-9].*$", "", part)
-            result.append(int(numeric_part) if numeric_part else 0)
-        while len(result) < 3:
-            result.append(0)
-        return tuple(result)
-
-    try:
-        v1_parts = _parse_version(ver1)
-        v2_parts = _parse_version(ver2)
-        if v1_parts < v2_parts:
-            return -1
-        if v1_parts > v2_parts:
-            return 1
-        return 0
-    except Exception:
-        return 1 if ver1 > ver2 else (-1 if ver1 < ver2 else 0)
 
 
 def ontology_iri_for_named_graph(graph_uri: str, ontology_subject: str) -> str:

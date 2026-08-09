@@ -12,6 +12,7 @@ from pydantic import (
 from rdflib import URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI
+from ontocast.onto.enum import SectionLabelSource
 from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.util.hash import render_text_hash
@@ -44,6 +45,18 @@ class SourceUnit(BaseModel):
     section_label: str | None = Field(
         default=None,
         description="Section label assigned during chunk prepare (e.g. results, methods)",
+    )
+    section_label_source: SectionLabelSource | None = Field(
+        default=None,
+        description=(
+            "Which tier of the section-classification cascade decided "
+            "section_label (heading pattern/keyword, span overlap, content "
+            "density, LLM, forward fill)."
+        ),
+    )
+    section_label_confidence: float = Field(
+        default=0.0,
+        description="Confidence in section_label in [0, 1]; 0 when unlabeled.",
     )
     headings: list[str] | None = Field(
         default=None,

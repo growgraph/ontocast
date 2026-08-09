@@ -138,6 +138,7 @@ _ANNOTATION_PREDICATES: frozenset[URIRef] = frozenset(
         SKOS.definition,
         SKOS.hiddenLabel,
         SKOS.note,
+        SKOS.scopeNote,
         DCTERMS.title,
         DCTERMS.description,
         DCTERMS.abstract,
@@ -654,7 +655,10 @@ class GraphAtomizer(Tool):
     ) -> str:
         labels = self._collect_surface_forms(graph, entity, 5)
         descriptions = self._collect_literals(
-            graph, entity, [RDFS.comment, DCTERMS.description, SKOS.definition], 2
+            graph,
+            entity,
+            [RDFS.comment, DCTERMS.description, SKOS.definition, SKOS.scopeNote],
+            2,
         )
         informative_types = []
         for _, _, obj in sorted(

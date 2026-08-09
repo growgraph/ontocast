@@ -10,20 +10,79 @@ class Status(StrEnum):
     COUNTS_EXCEEDED = "counts exceeded"
 
 
-class OntologyDecision(StrEnum):
-    """Enumeration of Ontology Decisions used in the workflow."""
+class SectionLabelSource(StrEnum):
+    """How a chunk's ``section_label`` was decided.
 
-    SKIP_TO_FACTS = "ontology found; skip to facts"
-    FAILURE_NO_ONTOLOGY = "ontology not found; ffwd to END"
-    IMPROVE_CREATE_ONTOLOGY = "improve/create ontology"
+    Ordered from strongest to weakest evidence. The source is not bookkeeping:
+    the chunk-prepare cascade uses it to decide whether a label may still be
+    overwritten by a later tier, and forward-fill refuses to cross a span whose
+    source is :attr:`OUTLINE_UNRESOLVED`.
+    """
+
+    HEADING_PATTERN = "heading_pattern"
+    HEADING_KEYWORD = "heading_keyword"
+    HEADING_INHERITED = "heading_inherited"
+    FRONT_MATTER = "front_matter"
+    SPAN_OVERLAP = "span_overlap"
+    CONTENT_DENSITY = "content_density"
+    LLM = "llm"
+    FORWARD_FILL = "forward_fill"
+    OUTLINE_UNRESOLVED = "outline_unresolved"
 
 
-class FactsDecision(StrEnum):
-    """Enumeration of routing decisions after ontology quality checks."""
+class RetrievalMetric(StrEnum):
+    """Top-level keys of ``AgentState.retrieval_metrics``.
 
-    TEXT_TO_FACTS = "adequate ontology; render facts"
-    TEXT_TO_ONTOLOGY = "inadequate ontology; retry render onto"
-    SERIALIZE = "skip to serialize"
+    These are wire names. The dict is serialized verbatim into
+    ``ProcessResultMetadata.retrieval_metrics`` on ``/process`` and
+    ``/process_unit`` and into the batch run manifest, so a member's *value*
+    may never change without a breaking release; the member name is free to.
+    Collecting them here replaces bare string literals scattered over three
+    modules, where a typo produced a silently missing metric and nothing
+    enumerated what a run should emit.
+
+    Only the flat top level is enumerated. The per-retrieval telemetry that
+    lands nested under :attr:`PATCH_RETRIEVAL` is the patch retriever's own
+    namespace with its own lifecycle, and flattening it here would assert a
+    structure that does not exist.
+    """
+
+    # Ontology context assembly (written per unit, merged onto the document).
+    ONTOLOGY_CONTEXT_MODE = "ontology_context_mode"
+    PATCH_RETRIEVAL = "patch_retrieval"
+    #: Why a unit's ontology snapshot came back empty. Written per unit and
+    #: merged last-writer-wins, so on a multi-unit document only the final
+    #: unit's reason survives.
+    EMPTY_SNAPSHOT_REASON = "empty_snapshot_reason"
+    ONTOLOGY_WRITABLE_COUNT = "ontology_writable_count"
+    ONTOLOGY_PRIMARY_UNITS = "ontology_primary_units"
+
+    # Facts fan-out.
+    FACTS_ANCHOR_COUNT = "facts_anchor_count"
+    FACTS_ANCHOR_UNITS = "facts_anchor_units"
+    FACTS_LLM_REPAIR_RENDERS_TOTAL = "facts_llm_repair_renders_total"
+    FACTS_LLM_REPAIR_RENDERS_FAILED = "facts_llm_repair_renders_failed"
+    FACTS_FINDINGS_RESIDUAL = "facts_findings_residual"
+
+    # Aggregation and the un-merge repair.
+    FACTS_REJECTED_MERGES = "facts_rejected_merges"
+    FACTS_MERGE_REPAIR_PASSES = "facts_merge_repair_passes"
+    FACTS_MERGE_VETOES = "facts_merge_vetoes"
+    FACTS_MERGE_REPAIRS_REJECTED = "facts_merge_repairs_rejected"
+
+    # Validation gate. Written identically by both entry paths.
+    VALIDATED_WITHOUT_ONTOLOGY_CONTEXT = "validated_without_ontology_context"
+    FACTS_VALIDATION_FINDINGS = "facts_validation_findings"
+    FACTS_VALIDATION_ERRORS = "facts_validation_errors"
+    FACTS_SHACL_VIOLATIONS_BEFORE = "facts_shacl_violations_before"
+    FACTS_SHACL_VIOLATIONS_AFTER = "facts_shacl_violations_after"
+    FACTS_SHACL_REPAIRS = "facts_shacl_repairs"
+    FACTS_SHACL_AUTOFIX_PASSES = "facts_shacl_autofix_passes"
+    FACTS_SHACL_AUTOFIX_REVERTED = "facts_shacl_autofix_reverted"
+
+    # Post-aggregation checks.
+    STRUCTURAL_ONTOLOGY_COMPONENTS_MAX = "structural_ontology_components_max"
+    CONSISTENCY_CONFLICTS = "consistency_conflicts"
 
 
 class RenderMode(StrEnum):
@@ -82,14 +141,11 @@ class WorkflowNode(StrEnum):
 
     CONVERT_TO_TEXT = "Convert to Text"
     CHUNK = "Chunk Text"
-    SUMMARIZE_CHUNKS = "Summarize Chunks"
     TEXT_TO_ONTOLOGY = "Text to Ontology"
     TEXT_TO_FACTS = "Text to Facts"
     CRITICISE_ONTOLOGY = "Criticise Ontology"
     CRITICISE_FACTS = "Criticise Facts"
-    AGGREGATE_FACTS = "Aggregate Facts"
     SERIALIZE = "Serialize"
-    PARALLEL_MAP_UNITS = "Parallel Map Units"
     RENDER_ONTOLOGY_UPDATE = "Update Ontology"
     RENDER_FACTS = "Render Facts"
     NORMALIZE_ONTOLOGY_UPDATES = "Normalize Ontology Updates"
@@ -111,3 +167,38 @@ class SPARQLOperationType(StrEnum):
     INSERT = "INSERT"
     UPDATE = "UPDATE"
     DELETE = "DELETE"
+
+
+class VectorStoreBackend(StrEnum):
+    """Which vector store implementation backs ontology patch retrieval.
+
+    Two backends are supported: ``QDRANT`` (server) and ``LANCEDB`` (embedded),
+    each shipped as its own optional extra.
+
+    ``AUTO`` infers the backend from whichever connection setting is populated
+    -- Qdrant if ``QDRANT_URI`` is set, LanceDB if it is enabled, otherwise
+    ``NONE``. ``NONE`` is the default for an unconfigured install: ontology
+    context then comes from a single working ontology, which is the default
+    :class:`OntologyContextMode`. Naming a backend explicitly makes the choice
+    fail loudly when its configuration is missing.
+    """
+
+    AUTO = "auto"
+    QDRANT = "qdrant"
+    LANCEDB = "lancedb"
+    NONE = "none"
+
+
+class VectorDistance(StrEnum):
+    """Vector distance metric used when creating a vector collection.
+
+    Values match ``qdrant_client.http.models.Distance`` exactly, so existing
+    ``QDRANT_DISTANCE`` environment values keep working. Declaring it here
+    rather than importing Qdrant's enum keeps the Qdrant SDK off the import
+    path of :mod:`ontocast.config`, which every entry point loads.
+    """
+
+    COSINE = "Cosine"
+    DOT = "Dot"
+    EUCLID = "Euclid"
+    MANHATTAN = "Manhattan"

@@ -7,8 +7,6 @@ HTTP 200 with empty facts.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from ontocast.config import (
@@ -52,7 +50,7 @@ def toolbox() -> ToolBox:
     return ToolBox(
         Config(
             tool_config=ToolConfig(
-                path_config=PathConfig(working_directory=Path("/tmp")),
+                path_config=PathConfig(),
                 llm_config=LLMConfig(
                     provider=LLMProvider.OLLAMA,
                     model_name=OllamaModel.LLAMA3_1,

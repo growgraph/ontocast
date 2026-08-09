@@ -1,43 +1,50 @@
-import importlib
+import importlib.util
 import logging
 import re
-import threading
+from functools import lru_cache
 from typing import Any, Literal
 
 from pydantic import Field
 
 from ontocast.config import ChunkConfig
-from ontocast.tool.cache import Cacher, ToolCacher
+from ontocast.tool.cache import CHUNKER_CACHE_SUBDIR, Cacher, ToolCacher
 from ontocast.tool.chunk.proposition import SENTENCE_SPLIT_REGEX
 from ontocast.tool.chunk.sizing import size_bounded_text
 from ontocast.tool.onto import Tool
+from ontocast.tool.sentence_transformer import (
+    SharedSentenceTransformerEmbeddings,
+    get_shared_encoder,
+)
 
 logger = logging.getLogger(__name__)
 
-# Resolved lazily in ``_probe_semantic_chunking`` / ``_init_model``.
-torch_module: Any | None = None
-embedding_model_cls: Any | None = None
-_semantic_deps_probed: bool = False
-SEMANTIC_CHUNKING_AVAILABLE: bool = False
+
+@lru_cache(maxsize=1)
+def _embedding_model_available() -> bool:
+    """Whether a local sentence-transformer can be loaded at all.
+
+    This is what :meth:`ChunkerTool.embed_texts` — and therefore
+    embedding-based schema detection — needs. It does **not** imply semantic
+    chunking is available; see :func:`_semantic_chunking_available`.
+    """
+    return importlib.util.find_spec("sentence_transformers") is not None
 
 
-def _probe_semantic_chunking() -> bool:
-    """Import torch / HuggingFaceEmbeddings once; cache availability."""
-    global torch_module, embedding_model_cls, _semantic_deps_probed
-    global SEMANTIC_CHUNKING_AVAILABLE
-    if _semantic_deps_probed:
-        return SEMANTIC_CHUNKING_AVAILABLE
-    _semantic_deps_probed = True
-    try:
-        torch_module = importlib.import_module("torch")
-        langchain_huggingface_module = importlib.import_module("langchain_huggingface")
-        embedding_model_cls = getattr(
-            langchain_huggingface_module, "HuggingFaceEmbeddings", None
-        )
-        SEMANTIC_CHUNKING_AVAILABLE = embedding_model_cls is not None
-    except ImportError:
-        SEMANTIC_CHUNKING_AVAILABLE = False
-    return SEMANTIC_CHUNKING_AVAILABLE
+@lru_cache(maxsize=1)
+def _semantic_chunking_available() -> bool:
+    """Whether the full semantic-chunking stack is importable.
+
+    ``tool.chunk.util`` imports hdbscan, umap and sklearn at module scope, so a
+    model alone is not enough. Probed with ``find_spec`` rather than a real
+    import so constructing a ChunkerTool does not pay umap's numba warm-up on
+    every process start.
+    """
+    if not _embedding_model_available():
+        return False
+    return all(
+        importlib.util.find_spec(name) is not None
+        for name in ("hdbscan", "umap", "sklearn")
+    )
 
 
 class ChunkerTool(Tool):
@@ -47,10 +54,6 @@ class ChunkerTool(Tool):
     Includes caching to avoid re-chunking the same text with the same parameters.
     """
 
-    model: str = Field(
-        default="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
-        description="HuggingFace model name for embeddings",
-    )
     config: ChunkConfig = Field(
         default_factory=ChunkConfig, description="Chunking configuration parameters"
     )
@@ -74,60 +77,90 @@ class ChunkerTool(Tool):
             **kwargs: Additional keyword arguments passed to the parent class.
         """
         super().__init__(**kwargs)
-        self._model: Any | None = None
-        self._model_lock = threading.Lock()  # Lock for thread-safe model initialization
+        # The model itself is process-shared and its construction is locked by
+        # get_shared_encoder; all this holds is the per-tool adapter around it.
+        self._embeddings: SharedSentenceTransformerEmbeddings | None = None
+        self._embeddings_unavailable = False
 
         # Initialize cache - use shared cacher or create new one
         if cache is not None:
-            self.cache = ToolCacher(cache, "chunker")
+            self.cache = ToolCacher(cache, CHUNKER_CACHE_SUBDIR)
         else:
-            # Fallback for backward compatibility
+            # Standalone use (CLI helpers, direct library use): fall back to a
+            # private Cacher on the configured/default directory.
             shared_cache = Cacher()
-            self.cache = ToolCacher(shared_cache, "chunker")
+            self.cache = ToolCacher(shared_cache, CHUNKER_CACHE_SUBDIR)
 
         # Override config if provided
         if chunk_config is not None:
             self.config = chunk_config
 
         # Probe heavy deps only when semantic mode is requested
-        if self.chunking_mode == "semantic" and not _probe_semantic_chunking():
+        if self.chunking_mode == "semantic" and not _semantic_chunking_available():
             self.chunking_mode = "naive"
             logger.warning(
-                "Semantic chunking not available (sentence-transformers not installed). "
+                "Semantic chunking not available (needs the 'semantic-chunking' "
+                "extra: sentence-transformers, hdbscan, umap-learn). "
                 "Falling back to naive chunking."
             )
 
-    def _init_model(self):
-        """Initialize the embedding model in a thread-safe manner.
+    def embeddings(self) -> SharedSentenceTransformerEmbeddings | None:
+        """Embeddings over the process-shared encoder, or ``None`` if unavailable.
 
-        Uses double-checked locking pattern to ensure the model is only
-        initialized once, even when called concurrently from multiple threads.
+        The encoder is shared with retrieval and entity clustering when their
+        model names match, so this loads no weights of its own in that case, and
+        its inference is serialised against theirs.
         """
-        # Fast path: if model already initialized, return immediately
-        if self._model is not None:
-            return
+        if self._embeddings is not None or self._embeddings_unavailable:
+            return self._embeddings
+        if not _embedding_model_available():
+            self._embeddings_unavailable = True
+            return None
+        try:
+            self._embeddings = SharedSentenceTransformerEmbeddings(
+                get_shared_encoder(
+                    self.config.embedding_model,
+                    feature=(
+                        "Semantic chunking and schema detection. Install the "
+                        "'semantic-chunking' extra"
+                    ),
+                ),
+                normalize=False,
+            )
+        except Exception as exc:
+            # Record the failure rather than retrying the load on every call:
+            # a missing or broken checkpoint does not become available later in
+            # the same process.
+            logger.error("Failed to initialize chunker embedding model: %s", exc)
+            self._embeddings_unavailable = True
+            return None
+        return self._embeddings
 
-        # Acquire lock for thread-safe initialization
-        with self._model_lock:
-            # Double-check: another thread might have initialized it while we waited
-            if self._model is None and _probe_semantic_chunking():
-                if embedding_model_cls is not None:
-                    try:
-                        self._model = embedding_model_cls(
-                            model_name=self.model,
-                            model_kwargs={
-                                "device": "cuda"
-                                if torch_module is not None
-                                and torch_module.cuda.is_available()
-                                else "cpu"
-                            },
-                            encode_kwargs={"normalize_embeddings": False},
-                        )
-                        logger.debug(f"Initialized embedding model: {self.model}")
-                    except Exception as e:
-                        logger.error(f"Failed to initialize embedding model: {e}")
-                        # Set to a sentinel value to prevent repeated failed attempts
-                        self._model = None
+    def embed_texts(self, texts: list[str]) -> list[list[float]] | None:
+        """Embed short texts with the chunker's model, or ``None`` if unavailable.
+
+        Exposed so document-type detection can reuse the model already loaded
+        for semantic chunking instead of constructing a second one. Returns
+        ``None`` -- rather than raising -- when the semantic extras are absent,
+        so callers degrade to their deterministic tiers exactly as chunking
+        itself degrades to ``naive``.
+
+        Args:
+            texts: Short strings to embed (headings or sampled paragraphs).
+
+        Returns:
+            One embedding per input, or ``None`` when no model is available.
+        """
+        if not texts:
+            return []
+        embeddings = self.embeddings()
+        if embeddings is None:
+            return None
+        try:
+            return embeddings.embed_documents(texts)
+        except Exception as exc:  # pragma: no cover - environment dependent
+            logger.warning("Embedding failed, skipping semantic tier: %s", exc)
+            return None
 
     def naive_split(self, doc: str) -> list[str]:
         """Split text by paragraph/sentence boundaries up to ``max_size``.
@@ -213,14 +246,14 @@ class ChunkerTool(Tool):
         Returns:
             List of text chunks.
         """
-        # Prepare configuration for caching
+        # Prepare configuration for caching. The "model" key name is kept even
+        # though its source moved to ChunkConfig -- the dict is hashed, so
+        # renaming it would invalidate every cached chunking for no reason.
         config_dict = {
-            "model": self.model,
+            "model": self.config.embedding_model,
             "chunking_mode": self.chunking_mode,
             "max_size": self.config.max_size,
             "min_size": self.config.min_size,
-            "breakpoint_threshold_type": self.config.breakpoint_threshold_type,
-            "breakpoint_threshold_amount": self.config.breakpoint_threshold_amount,
         }
 
         # Check cache first
@@ -230,44 +263,42 @@ class ChunkerTool(Tool):
             return cached_result
 
         # Perform chunking
-        if self.chunking_mode == "naive":
-            result = self._naive_chunk(doc)
-        else:
-            # Semantic chunking (requires sentence-transformers + SemanticChunker)
-            if not _probe_semantic_chunking():
+        embeddings = None if self.chunking_mode == "naive" else self.embeddings()
+        if embeddings is None or not _semantic_chunking_available():
+            if self.chunking_mode != "naive":
                 logger.warning(
                     "Semantic chunking requested but not available. "
                     "Falling back to naive chunking."
                 )
+            result = self._naive_chunk(doc)
+        else:
+            from ontocast.tool.chunk.util import SemanticChunker
+
+            text_splitter = SemanticChunker(
+                embeddings=embeddings,
+                chunk_config=self.config,
+                sentence_split_regex=SENTENCE_SPLIT_REGEX,
+            )
+
+            try:
+                # SemanticChunker now handles max_size internally
+                result_docs = text_splitter.create_documents([doc])
+                result = [chunk.page_content for chunk in result_docs]
+            except ValueError as exc:
+                # Degenerate inputs (too few distinct sentences for the
+                # HDBSCAN neighborhood) must not fail chunking outright.
+                logger.warning(
+                    "Semantic chunking failed (%s); falling back to "
+                    "naive chunking for this text.",
+                    exc,
+                )
                 result = self._naive_chunk(doc)
-            else:
-                self._init_model()
-                documents = [doc]
 
-                if self._model is None:
-                    logger.warning(
-                        "Model not initialized. Falling back to naive chunking."
-                    )
-                    result = self._naive_chunk(doc)
-                else:
-                    from ontocast.tool.chunk.util import SemanticChunker
-
-                    text_splitter = SemanticChunker(
-                        embeddings=self._model,
-                        chunk_config=self.config,
-                        sentence_split_regex=SENTENCE_SPLIT_REGEX,
-                    )
-
-                    # SemanticChunker now handles max_size internally
-                    result_docs = text_splitter.create_documents(documents)
-                    result = [doc.page_content for doc in result_docs]
-
-                    # Log chunk lengths for debugging
-                    lens = [len(chunk) for chunk in result]
-                    logger.info(
-                        f"Semantic chunking produced {len(result)} chunks "
-                        f"with lengths: {lens}"
-                    )
+            # Log chunk lengths for debugging
+            lens = [len(chunk) for chunk in result]
+            logger.info(
+                f"Semantic chunking produced {len(result)} chunks with lengths: {lens}"
+            )
 
         # Cache the result
         self.cache.set(doc, result, config=config_dict)

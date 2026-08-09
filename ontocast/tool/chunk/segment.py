@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 
 from ontocast.config.section_labels import SectionLabelSchema, match_heading_line
+from ontocast.onto.enum import SectionLabelSource
 from ontocast.tool.chunk.sizing import DEFAULT_PART_SEPARATOR
 
 logger = logging.getLogger(__name__)
@@ -13,12 +14,20 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PrepareSegment:
-    """One logical segment prior to min/max sizing."""
+    """One logical segment prior to min/max sizing.
+
+    ``section_label_source`` records *how* the label was decided. It is load
+    bearing, not bookkeeping: forward-fill refuses to overwrite a segment whose
+    section is explicitly unresolved, which is what stops a neighbouring label
+    from being smeared across an unrecognised section.
+    """
 
     text: str
     headings: list[str] | None = None
     doc_item_refs: tuple[str, ...] = ()
     section_label: str | None = None
+    section_label_source: SectionLabelSource | None = None
+    section_label_confidence: float = 0.0
 
 
 def merge_doc_item_refs(
@@ -75,11 +84,14 @@ def merge_into_right(left: PrepareSegment, right: PrepareSegment) -> PrepareSegm
         if left_text and right_text
         else left_text or right_text
     )
+    winner = right if right.section_label is not None else left
     return PrepareSegment(
         text=combined_text,
         headings=right.headings or left.headings,
         doc_item_refs=merge_doc_item_refs(left.doc_item_refs, right.doc_item_refs),
-        section_label=right.section_label or left.section_label,
+        section_label=winner.section_label,
+        section_label_source=winner.section_label_source,
+        section_label_confidence=winner.section_label_confidence,
     )
 
 
@@ -104,11 +116,14 @@ def merge_into_left(left: PrepareSegment, right: PrepareSegment) -> PrepareSegme
         if left_text and right_text
         else left_text or right_text
     )
+    winner = left if left.section_label is not None else right
     return PrepareSegment(
         text=combined_text,
         headings=left.headings or right.headings,
         doc_item_refs=merge_doc_item_refs(left.doc_item_refs, right.doc_item_refs),
-        section_label=left.section_label or right.section_label,
+        section_label=winner.section_label,
+        section_label_source=winner.section_label_source,
+        section_label_confidence=winner.section_label_confidence,
     )
 
 

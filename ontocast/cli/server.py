@@ -39,6 +39,8 @@ from ontocast.api.tenancy_resolution import (
     resolve_tenant_project,
     stores_use_tenancy_partitions,
 )
+from ontocast.cli.cache import cache as cache_cli
+from ontocast.cli.inspect_sections import main as inspect_sections_cli
 from ontocast.config import Config
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.retrieval_capabilities import validate_ontology_context_mode
@@ -85,20 +87,7 @@ def _configure_logging(config: Config) -> None:
 
 
 def _prepare_path_config(config: Config) -> None:
-    """Expand configured directories and ensure working directory exists."""
-    if config.tool_config.path_config.working_directory is not None:
-        config.tool_config.path_config.working_directory = pathlib.Path(
-            config.tool_config.path_config.working_directory
-        ).expanduser()
-        config.tool_config.path_config.working_directory.mkdir(
-            parents=True, exist_ok=True
-        )
-    else:
-        raise ValueError(
-            "Working directory must be provided via CLI argument or "
-            "WORKING_DIRECTORY config"
-        )
-
+    """Expand configured directories."""
     if config.tool_config.path_config.ontology_directory is not None:
         config.tool_config.path_config.ontology_directory = pathlib.Path(
             config.tool_config.path_config.ontology_directory
@@ -228,6 +217,10 @@ def cli() -> None:
     """OntoCast: start the API server or process local files in batch mode."""
 
 
+cli.add_command(cache_cli)
+cli.add_command(inspect_sections_cli)
+
+
 @cli.command("serve")
 @_shared_runtime_options
 def serve(
@@ -322,12 +315,22 @@ def serve(
     ),
 )
 @click.option(
+    "--exclude-sections",
+    type=str,
+    default=None,
+    help=(
+        "Comma-separated section labels to drop when chunking (e.g. "
+        "acknowledgements,appendix). Unset = the resolved schema's defaults; "
+        "pass an empty string to disable exclusion."
+    ),
+)
+@click.option(
     "--summarize-sections",
     type=str,
     default=None,
     help=(
         "Comma-separated section labels to summarize before extraction, or '*' / empty "
-        "for all chunks. When set, runs the summarize_chunks graph node."
+        "for all chunks. When set, summarization runs inside chunk preparation."
     ),
 )
 @click.option(
@@ -378,6 +381,7 @@ def process(
     ontology_output_dir: pathlib.Path | None,
     use_unit_pipeline: bool,
     target_sections: str | None,
+    exclude_sections: str | None,
     summarize_sections: str | None,
     summary_max_sentences: int,
     document_type_hint: str | None,
@@ -397,6 +401,11 @@ def process(
         parsed_target_sections = (
             parse_sections_list_param(target_sections, param="target-sections")
             if target_sections is not None
+            else None
+        )
+        parsed_exclude_sections = (
+            parse_sections_list_param(exclude_sections, param="exclude-sections")
+            if exclude_sections is not None
             else None
         )
         parsed_summarize_sections = (
@@ -426,12 +435,17 @@ def process(
     ontology_dir = (
         ontology_output_dir.expanduser() if ontology_output_dir is not None else None
     )
-    files = sorted(
-        crawl_directories(
-            input_path,
-            suffixes=get_supported_input_extensions(runtime.tools),
+    supported_suffixes = get_supported_input_extensions(runtime.tools)
+    try:
+        files = sorted(crawl_directories(input_path, suffixes=supported_suffixes))
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--input-path") from exc
+    if not files:
+        # An empty crawl used to exit 0 with no output, which reads as success.
+        raise click.ClickException(
+            f"No supported input files under {input_path} "
+            f"(looking for {', '.join(supported_suffixes)})."
         )
-    )
     failed_files = asyncio.run(
         process_files_input(
             files,
@@ -444,6 +458,7 @@ def process(
             tenant=runtime.tenant,
             project=runtime.project,
             target_sections=parsed_target_sections,
+            exclude_sections=parsed_exclude_sections,
             summarize_sections=parsed_summarize_sections,
             summary_max_sentences=parsed_summary_max_sentences,
             document_type_hint=parsed_document_type_hint,

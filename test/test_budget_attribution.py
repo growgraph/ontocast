@@ -50,7 +50,7 @@ async def test_usage_is_charged_to_the_scoped_tracker() -> None:
 
     scoped = BudgetTracker()
     with use_budget_tracker(scoped):
-        tool._record_cache_hit("prompt", "response")
+        tool._record_cache_hit("prompt", "response", None)
 
     assert scoped.cache_hits == 1
     assert instance_default.cache_hits == 0
@@ -64,6 +64,6 @@ def test_falls_back_to_the_instance_tracker_outside_a_scope() -> None:
     tracker = BudgetTracker()
     tool = LLMTool(config=LLMConfig(), budget_tracker=tracker)
 
-    tool._record_cache_hit("prompt", "response")
+    tool._record_cache_hit("prompt", "response", None)
 
     assert tracker.cache_hits == 1

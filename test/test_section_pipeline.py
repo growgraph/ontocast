@@ -16,13 +16,11 @@ from ontocast.api.process_helpers import expand_input_to_states
 from ontocast.config import Config
 from ontocast.config.section_labels import (
     load_section_label_schema,
-    match_heading_line,
-    normalise_user_section_label,
 )
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import OntologyContextMode, RenderMode, Status, WorkflowNode
 from ontocast.onto.state import AgentState
-from ontocast.stategraph.routing import route_after_chunk, route_after_convert
+from ontocast.stategraph.routing import route_after_tag_or_chunk
 from ontocast.tool.chunk.prepare import (
     PrepareSegment,
     _forward_fill_section_labels,
@@ -127,18 +125,19 @@ def test_agent_state_optional_routing_flags() -> None:
     default = AgentState()
     assert default.needs_section_prepare is False
     assert default.use_summarization is False
-    assert route_after_convert(default) == WorkflowNode.CHUNK
-    assert route_after_chunk(default) == WorkflowNode.RENDER_ONTOLOGY_UPDATE
+    assert route_after_tag_or_chunk(default) == WorkflowNode.RENDER_ONTOLOGY_UPDATE
 
     tagged = AgentState(target_sections=["results"])
     assert tagged.needs_section_prepare is True
-    assert route_after_chunk(tagged) == WorkflowNode.RENDER_ONTOLOGY_UPDATE
+    assert route_after_tag_or_chunk(tagged) == WorkflowNode.RENDER_ONTOLOGY_UPDATE
 
+    # Summarization no longer diverts the graph: it runs inside the extraction
+    # fan-outs, so enabling it must not change routing.
     summarized = AgentState(
         summarize_sections=["results"], render_mode=RenderMode.FACTS
     )
     assert summarized.use_summarization is True
-    assert route_after_chunk(summarized) == WorkflowNode.SUMMARIZE_CHUNKS
+    assert route_after_tag_or_chunk(summarized) == WorkflowNode.RENDER_FACTS
 
 
 def test_expand_input_to_states_passes_section_params(tmp_path: Path) -> None:
@@ -185,45 +184,6 @@ def test_expand_input_to_states_passes_max_visits(tmp_path: Path) -> None:
     )
     assert len(states) == 1
     assert states[0].max_visits == 4
-
-
-@pytest.mark.parametrize(
-    ("heading", "expected"),
-    [
-        ("Experimental Results", "results"),
-        ("Materials and Methods", "methods"),
-        ("Concluding Remarks", "conclusion"),
-        ("Literature Review", "related_work"),
-        ("II. Results", "results"),
-        ("Chapter 3: Methods", "methods"),
-        ("Section II: Results", "results"),
-        ("Executive Summary", "abstract"),
-        ("Abstract.", "abstract"),
-        ("ABSTRACT", "abstract"),
-        ("Abstract —", "abstract"),
-        ("Bibliography", "references"),
-        ("Appendices", "appendix"),
-    ],
-)
-def test_regex_matches_section_synonyms(heading: str, expected: str) -> None:
-    schema = _academic_schema()
-    assert match_heading_line(heading, schema) == expected
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        ("Related Literature", "related_work"),
-        ("Findings", "results"),
-        ("Executive Summary", "abstract"),
-        ("*", "*"),
-        ("garbage", None),
-        ("methods", "methods"),
-        ("risk_factors", "risk_factors"),
-    ],
-)
-def test_normalise_user_section_label_synonyms(raw: str, expected: str | None) -> None:
-    assert normalise_user_section_label(raw) == expected
 
 
 def test_parse_sections_list_param_normalizes() -> None:

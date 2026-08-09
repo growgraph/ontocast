@@ -4,7 +4,7 @@ import re
 import unicodedata
 import warnings
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
 from typing import Any, Union, cast
@@ -17,7 +17,11 @@ from rdflib.namespace import SH, XSD, NamespaceManager
 from rdflib.plugins.serializers.turtle import _GEN_QNAME_FOR_DT, TurtleSerializer
 from rdflib.serializer import Serializer
 
-from ontocast.onto.constants import COMMON_PREFIXES, prefix_lookup_for_ingest
+from ontocast.onto.constants import (
+    COMMON_PREFIXES,
+    RDF_REIFIES,
+    prefix_lookup_for_ingest,
+)
 from ontocast.onto.enum import LLMGraphFormat
 from ontocast.onto.iri_policy import normalize_namespace_iri, sanitize_prefix_map
 from ontocast.onto.namespace_merge import choose_best_prefix, merge_namespace_bindings
@@ -68,6 +72,170 @@ def _oxigraph_inner_store(rdflib_store: object) -> object:
     if inner is None:
         raise RuntimeError("Expected an OxigraphStore with a pyoxigraph _inner store")
     return inner
+
+
+def is_rdflib_triple(triple: object) -> bool:
+    """True when every position of ``triple`` is an rdflib :class:`~rdflib.Node`.
+
+    Oxigraph-backed graphs may carry RDF 1.2 triple terms (see
+    ``ontocast.tool.agg.rewriter``), which the oxrdflib iterator yields as plain
+    tuples. Those tuples are not rdflib terms: ``Graph.add`` asserts on them and
+    SPARQL has no syntax for them, so every path that copies or serialises
+    triples out of such a graph has to filter first.
+    """
+    if not isinstance(triple, tuple) or len(triple) != 3:
+        return False
+    return all(isinstance(position, Node) for position in triple)
+
+
+def copy_triples(source: Iterable, target: Graph, *, origin: str) -> int:
+    """Add every rdflib triple of ``source`` to ``target``, dropping triple terms.
+
+    Args:
+        source: Any iterable of triples, typically a graph.
+        target: Graph to add to.
+        origin: Caller name, used in the warning when triples are dropped.
+
+    Returns:
+        The number of triples skipped because they were not rdflib triples.
+    """
+    dropped = 0
+    for triple in source:
+        if not is_rdflib_triple(triple):
+            dropped += 1
+            continue
+        target.add(triple)
+    if dropped:
+        logger.warning(
+            "%s: dropped %d RDF 1.2 triple-term triple(s); rdflib graphs cannot "
+            "hold them",
+            origin,
+            dropped,
+        )
+    return dropped
+
+
+def drop_reifiers_mentioning(graph: Graph, nodes: Collection[Node]) -> int:
+    """Delete reifier descriptions whose triple term mentions any of ``nodes``.
+
+    Provenance is RDF 1.2 reification — ``_:r rdf:reifies <<( s p o )>>`` plus
+    ``prov:`` arcs — so a node being removed from the graph is referenced from
+    *inside* a triple term. No subject/object pattern matches that, which left
+    the reifier and its provenance describing a statement that no longer
+    existed once the node's own triples were deleted.
+
+    Goes through pyoxigraph rather than rdflib: ``Graph.remove`` raises
+    ``ValueError`` on a triple whose object is a triple term, so the
+    ``rdf:reifies`` quad is not removable through the rdflib API at all.
+
+    Args:
+        graph: Graph to sweep, mutated in place. A non-oxigraph store cannot
+            hold triple terms, so it is a no-op.
+        nodes: Nodes whose triples have been removed.
+
+    Returns:
+        The number of quads removed.
+    """
+    if not nodes or type(graph.store).__name__ != "OxigraphStore":
+        return 0
+
+    import pyoxigraph as ox
+    from oxrdflib._converter import to_ox
+
+    store = cast("ox.Store", _oxigraph_inner_store(graph.store))
+    graph_ctx_raw = to_ox(graph.identifier)
+    assert isinstance(graph_ctx_raw, (ox.NamedNode, ox.BlankNode, ox.DefaultGraph))
+    graph_ctx: ox.NamedNode | ox.BlankNode | ox.DefaultGraph = graph_ctx_raw
+    targets = {to_ox(node) for node in nodes}
+
+    doomed = set()
+    for quad in store.quads_for_pattern(
+        None, ox.NamedNode(str(RDF_REIFIES)), None, graph_ctx
+    ):
+        term = quad.object
+        if not isinstance(term, ox.Triple):
+            continue
+        if targets & {term.subject, term.predicate, term.object}:
+            doomed.add(quad.subject)
+
+    removed = 0
+    for reifier in doomed:
+        for quad in list(store.quads_for_pattern(reifier, None, None, graph_ctx)):
+            store.remove(quad)
+            removed += 1
+    return removed
+
+
+def _ox_triple_term(triple: tuple) -> Any:
+    """Convert an rdflib triple to a pyoxigraph triple term, or ``None``.
+
+    Returns ``None`` rather than raising when a position cannot be a triple
+    term (a literal subject, say): a repair plan is best-effort provenance
+    bookkeeping and must never bring down the validation gate.
+    """
+    import pyoxigraph as ox
+    from oxrdflib._converter import to_ox
+
+    if not is_rdflib_triple(triple):
+        return None
+    subject, predicate, obj = (to_ox(position) for position in triple)
+    if not isinstance(subject, (ox.NamedNode, ox.BlankNode)):
+        return None
+    if not isinstance(predicate, ox.NamedNode):
+        return None
+    if not isinstance(obj, (ox.NamedNode, ox.BlankNode, ox.Literal, ox.Triple)):
+        return None
+    return ox.Triple(subject, predicate, obj)
+
+
+def retarget_reifiers(graph: Graph, replacements: Mapping[tuple, tuple]) -> int:
+    """Repoint reifier triple terms from a removed statement onto its replacement.
+
+    Companion to :func:`drop_reifiers_mentioning`, for the repairs that
+    *rewrite* a statement rather than delete it. A SHACL retype or a
+    code-to-IRI resolution removes ``s p o`` and adds ``s p o'``; without this
+    the ``_:r rdf:reifies <<( s p o )>>`` quad keeps describing a statement
+    that no longer exists. The provenance is not wrong, it is dangling — and
+    dropping it instead would lose the derivation of a triple that survived the
+    repair.
+
+    Goes through pyoxigraph for the same reason the sweep does: rdflib cannot
+    add or remove a triple whose object is a triple term. The reifier node
+    itself is untouched, so its ``prov:wasDerivedFrom`` arcs move with it.
+
+    Args:
+        graph: Graph to rewrite, mutated in place. A non-oxigraph store cannot
+            hold triple terms, so it is a no-op.
+        replacements: Removed triple -> the triple that replaced it.
+
+    Returns:
+        The number of ``rdf:reifies`` quads repointed.
+    """
+    if not replacements or type(graph.store).__name__ != "OxigraphStore":
+        return 0
+
+    import pyoxigraph as ox
+    from oxrdflib._converter import to_ox
+
+    store = cast("ox.Store", _oxigraph_inner_store(graph.store))
+    graph_ctx_raw = to_ox(graph.identifier)
+    assert isinstance(graph_ctx_raw, (ox.NamedNode, ox.BlankNode, ox.DefaultGraph))
+    graph_ctx: ox.NamedNode | ox.BlankNode | ox.DefaultGraph = graph_ctx_raw
+    reifies = ox.NamedNode(str(RDF_REIFIES))
+
+    moved = 0
+    for removed, replacement in replacements.items():
+        old_term = _ox_triple_term(removed)
+        new_term = _ox_triple_term(replacement)
+        if old_term is None or new_term is None or old_term == new_term:
+            continue
+        # A triple term is legal in object position, so this is a keyed lookup
+        # rather than a scan over every reifier in the graph.
+        for quad in list(store.quads_for_pattern(None, reifies, old_term, graph_ctx)):
+            store.remove(quad)
+            store.add(ox.Quad(quad.subject, reifies, new_term, graph_ctx))
+            moved += 1
+    return moved
 
 
 PREFIX_PATTERN = re.compile(r"@prefix\s+(\w+):\s+<[^>]+>\s+\.")
@@ -543,10 +711,8 @@ class RDFGraph(Graph):
         result = RDFGraph()
 
         # Copy all triples from both graphs
-        for triple in self:
-            result.add(triple)
-        for triple in other:
-            result.add(triple)
+        copy_triples(self, result, origin="RDFGraph.__add__")
+        copy_triples(other, result, origin="RDFGraph.__add__")
 
         existing = {prefix: str(uri) for prefix, uri in self.namespaces() if prefix}
         incoming: dict[str, str] = {}
@@ -577,8 +743,7 @@ class RDFGraph(Graph):
         self.remove((None, None, None))  # Remove all triples
 
         # Copy all triples from result
-        for triple in result:
-            self.add(triple)
+        copy_triples(result, self, origin="RDFGraph.__iadd__")
 
         # Copy namespace bindings from result
         for prefix, uri in result.namespaces():
@@ -594,9 +759,10 @@ class RDFGraph(Graph):
         """
         result = RDFGraph()
 
-        # Copy all triples
-        for triple in self:
-            result.add(triple)
+        # Copy all triples. An oxigraph-backed graph may hold RDF 1.2 triple
+        # terms, which a plain rdflib graph cannot represent -- this is the path
+        # __deepcopy__ takes, so it degrades instead of raising.
+        copy_triples(self, result, origin="RDFGraph.copy")
 
         # Copy namespace bindings
         for prefix, uri in self.namespaces():
@@ -1601,6 +1767,21 @@ class RDFGraph(Graph):
         for prefix, namespace in merged.items():
             uri_to_prefixes[namespace].append(prefix)
 
+        # Offer digit-stripped stems as candidates: rdflib mints `schema1` when
+        # `schema` is contested at parse time, and after namespace
+        # canonicalization the stem is often free again. Only stems not claimed
+        # by a different namespace are eligible.
+        for namespace, prefixes in uri_to_prefixes.items():
+            for prefix in list(prefixes):
+                stem = prefix.rstrip("0123456789")
+                if (
+                    stem
+                    and stem != prefix
+                    and stem not in prefixes
+                    and merged.get(stem, namespace) == namespace
+                ):
+                    prefixes.append(stem)
+
         for namespace, prefixes in uri_to_prefixes.items():
             best_prefix = choose_best_prefix(
                 namespace,
@@ -1611,7 +1792,16 @@ class RDFGraph(Graph):
                 bound_ns = Namespace(namespace)
             else:
                 bound_ns = Namespace(normalize_namespace_iri(namespace, context="auto"))
-            new_ns_manager.bind(best_prefix, bound_ns, override=True)
+            # replace=True: this loop is authoritative — a prefix whose namespace
+            # was canonicalized (e.g. http -> https schema.org) must be rebound,
+            # not shadowed by a freshly minted `prefix1`. Losing prefixes are
+            # rebound first so no stale (pre-canonicalization) binding survives
+            # in the store; the best prefix is bound last so it wins the
+            # namespace's reverse lookup used at serialization.
+            for prefix in prefixes:
+                if prefix != best_prefix:
+                    new_ns_manager.bind(prefix, bound_ns, override=True, replace=True)
+            new_ns_manager.bind(best_prefix, bound_ns, override=True, replace=True)
         self.namespace_manager = new_ns_manager
         return self
 
@@ -1810,9 +2000,10 @@ class RDFGraph(Graph):
         # Create new graph
         new_graph = RDFGraph()
 
-        # Copy all triples (URIs are already expanded internally)
-        for triple in self:
-            new_graph.add(triple)
+        # Copy all triples (URIs are already expanded internally); an
+        # oxigraph-backed source may hold RDF 1.2 triple terms a plain rdflib
+        # graph cannot represent.
+        copy_triples(self, new_graph, origin="RDFGraph.unbind_chunk_namespaces")
 
         # Bind only non-chunk namespace prefixes to the new graph
         for prefix, uri_str in prefix_to_normalized.items():

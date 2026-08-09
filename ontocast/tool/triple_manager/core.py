@@ -8,7 +8,6 @@ import abc
 import asyncio
 import os
 from collections.abc import Sequence
-from typing import ClassVar
 
 from pydantic import Field
 from rdflib import RDF, Graph
@@ -32,12 +31,6 @@ class TripleStoreUnavailableError(RuntimeError):
 
 
 class TripleStoreManager(Tool):
-    _PROVENANCE_METADATA_PREDICATES: ClassVar[set] = {
-        PROV.generatedAtTime,
-        SCHEMA.position,
-        SCHEMA.identifier,
-    }
-
     """Base class for managing RDF triple stores.
 
     This class defines the interface for triple store management operations,
@@ -128,7 +121,7 @@ class TripleStoreManager(Tool):
         """Return chunk/source nodes whose triples are provenance scaffolding."""
         derived_from = set(graph.objects(None, PROV.wasDerivedFrom))
         entity_nodes = set(graph.subjects(RDF.type, PROV.Entity))
-        text_chunk_nodes = set(graph.subjects(RDF.type, SCHEMA.text))
+        text_chunk_nodes = set(graph.subjects(RDF.type, SCHEMA.Text))
         chunk_metadata_nodes = entity_nodes & text_chunk_nodes
         return derived_from | chunk_metadata_nodes
 

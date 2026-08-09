@@ -154,10 +154,31 @@ def test_drift_prone_ontology_survives_store_round_trip() -> None:
     assert graph_count == 1, "hash drift created a duplicate named graph"
 
 
+def _shipped_ontologies() -> list[Path]:
+    """The TTLs shipped in `data/ontologies`, resolved from this file.
+
+    A cwd-relative glob here silently produced *zero* parameters whenever pytest
+    ran from anywhere but the repo root, so the round-trip guard vanished without
+    a single failure. Resolve from `__file__` and let the emptiness assertion
+    below catch a genuine disappearance.
+    """
+    return sorted(
+        (Path(__file__).resolve().parents[1] / "data" / "ontologies").glob("*.ttl")
+    )
+
+
+SHIPPED_ONTOLOGIES = _shipped_ontologies()
+
+
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    "ttl_path", sorted(Path("data/ontologies").glob("*.ttl")), ids=lambda p: p.stem
-)
+def test_shipped_ontologies_are_discoverable() -> None:
+    assert SHIPPED_ONTOLOGIES, (
+        "data/ontologies is empty -- the round trip below is vacuous"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("ttl_path", SHIPPED_ONTOLOGIES, ids=lambda p: p.stem)
 def test_shipped_ontologies_survive_store_round_trip(ttl_path: Path) -> None:
     ontology = Ontology.from_file(ttl_path)
     assert ontology.hash

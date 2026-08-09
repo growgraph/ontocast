@@ -16,14 +16,6 @@ system_preamble_ontology = """
 You are an expert in semantic technologies and ontology engineering.
 """
 
-ontology_template = """\n\n
-# ONTOLOGY
-
-```ttl
-{ontology_ttl}
-```
-"""
-
 text_template = """\n\n
 # TEXT
 
@@ -31,16 +23,6 @@ text_template = """\n\n
 {text}
 ```
 """
-
-facts_template = """\n\n
-# SEMANTIC GRAPH OF FACTS
-The following facts were extracted
-
-```ttl
-{facts_ttl}
-```
-"""
-
 
 user_template = """\n\n
 # USER INSTRUCTION

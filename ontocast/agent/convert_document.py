@@ -8,7 +8,7 @@ import json
 import logging
 import pathlib
 
-from ontocast.onto.docling_helpers import plain_text_to_docling_doc
+from ontocast.onto.docling_helpers import json_payload_text, plain_text_to_docling_doc
 from ontocast.onto.enum import OntologyContextMode, Status
 from ontocast.onto.state import AgentState
 from ontocast.toolbox import ToolBox
@@ -18,17 +18,7 @@ logger = logging.getLogger(__name__)
 
 def _get_json_text_field(result: dict[str, object]) -> str | None:
     """Extract text from JSON payload using a tiny top-level heuristic."""
-    text_value = result.get("text")
-    if isinstance(text_value, str):
-        return text_value
-
-    largest_text: str | None = None
-    for value in result.values():
-        if isinstance(value, str):
-            if largest_text is None or len(value) > len(largest_text):
-                largest_text = value
-
-    return largest_text
+    return json_payload_text(result)
 
 
 def _extract_json_payload_text(

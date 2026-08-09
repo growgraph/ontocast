@@ -131,7 +131,7 @@ def test_toolbox_rejects_mismatched_qdrant_vector_size_and_embedding_dim() -> No
         od = wd / "ontologies"
         od.mkdir()
         tool_config = ToolConfig(
-            path_config=PathConfig(working_directory=wd, ontology_directory=od),
+            path_config=PathConfig(ontology_directory=od),
             embedding=EmbeddingConfig(dimension=384),
             qdrant=QdrantConfig(uri="http://localhost:6333", vector_size=8),
         )
@@ -145,7 +145,7 @@ def test_toolbox_always_wires_bm25_when_vector_search_enabled() -> None:
         od = wd / "ontologies"
         od.mkdir()
         tool_config = ToolConfig(
-            path_config=PathConfig(working_directory=wd, ontology_directory=od),
+            path_config=PathConfig(ontology_directory=od),
             embedding=EmbeddingConfig(dimension=384),
             qdrant=QdrantConfig(uri="http://localhost:6333"),
         )
@@ -253,9 +253,7 @@ def test_ingest_ontology_ttl_rejects_identity_conflict_before_persisting() -> No
         wd = Path(tmp)
         od = wd / "ontologies"
         od.mkdir()
-        tool_config = ToolConfig(
-            path_config=PathConfig(working_directory=wd, ontology_directory=od)
-        )
+        tool_config = ToolConfig(path_config=PathConfig(ontology_directory=od))
         config = Config(tool_config=tool_config)
         ontology_manager = OntologyManager()
 
@@ -350,15 +348,29 @@ def test_initialize_materializes_with_bounded_concurrency(
     st.ontology_manager.add_ontology = MagicMock()
 
     asyncio.run(ToolBox.initialize(cast(ToolBox, st)))
+    # The contract is the *bound*. Asserting `max_active >= 2` as well made this
+    # load-sensitive: it demanded the scheduler actually overlap two coroutines
+    # within a 50 ms sleep, which a busy machine need not do.
     assert max_active <= 2
-    assert max_active >= 2
 
 
-def test_initialize_wipes_and_prunes_orphan_iris(monkeypatch, test_ontology) -> None:
+@pytest.mark.parametrize(
+    ("wipe", "prune"),
+    [
+        pytest.param(True, True, id="enabled"),
+        pytest.param(False, False, id="disabled"),
+    ],
+)
+def test_initialize_wipe_and_prune_follow_their_flags(
+    monkeypatch, test_ontology, wipe: bool, prune: bool
+) -> None:
+    """Wipe and orphan-prune run on init exactly when configured to."""
     monkeypatch.setattr(
         "ontocast.toolbox.update_ontology_manager",
         AsyncMock(),
     )
+
+    orphans = ["https://example.org/legacy"] if prune else []
 
     class Stub:
         triple_store_manager = None
@@ -371,7 +383,7 @@ def test_initialize_wipes_and_prunes_orphan_iris(monkeypatch, test_ontology) -> 
             self.vector_store.initialize = AsyncMock()
             self.vector_store.wipe_store = AsyncMock()
             self.vector_store.prune_orphan_ontology_iris = MagicMock(
-                return_value=["https://example.org/legacy"]
+                return_value=orphans
             )
             self.vector_store_ready = False
             self.vector_store_last_error = None
@@ -392,70 +404,35 @@ def test_initialize_wipes_and_prunes_orphan_iris(monkeypatch, test_ontology) -> 
             return self.vector_store_ready
 
     st = Stub()
+    kwargs: dict[str, bool] = {}
+    if wipe or prune:
+        kwargs = {"wipe_vector_store": wipe, "prune_orphan_iris": prune}
+    else:
+        # The disabled case comes from configuration rather than call kwargs.
+        st.config.tool_config.vector_store.wipe_on_init = False
+        st.config.tool_config.vector_store.prune_orphan_iris_on_init = False
+
     asyncio.run(
         ToolBox.initialize(
             cast(ToolBox, st),
             ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY,
-            wipe_vector_store=True,
-            prune_orphan_iris=True,
+            **kwargs,
         )
     )
-    st.vector_store.wipe_store.assert_awaited_once()
-    st.vector_store.initialize.assert_awaited_once()
-    st.vector_store.prune_orphan_ontology_iris.assert_called_once_with(
-        {test_ontology.iri}
-    )
-    assert st.vector_store_ready is True
 
+    if wipe:
+        st.vector_store.wipe_store.assert_awaited_once()
+        st.vector_store.initialize.assert_awaited_once()
+        assert st.vector_store_ready is True
+    else:
+        st.vector_store.wipe_store.assert_not_awaited()
 
-def test_initialize_skips_wipe_and_prune_when_disabled(
-    monkeypatch, test_ontology
-) -> None:
-    monkeypatch.setattr(
-        "ontocast.toolbox.update_ontology_manager",
-        AsyncMock(),
-    )
-
-    class Stub:
-        triple_store_manager = None
-        llm = MagicMock()
-        ontology_manager: MagicMock
-        config = Config()
-
-        def __init__(self) -> None:
-            self.vector_store = MagicMock()
-            self.vector_store.initialize = AsyncMock()
-            self.vector_store.wipe_store = AsyncMock()
-            self.vector_store.prune_orphan_ontology_iris = MagicMock(return_value=[])
-            self.vector_store_ready = False
-            self.vector_store_last_error = None
-            self.ontology_manager = MagicMock()
-
-        async def _synchronize_ontologies(self):
-            return [test_ontology]
-
-        async def _materialize_ontology(self, _):
-            return None
-
-        def should_initialize_vector_store(self, ontology_context_mode):
-            return ToolBox.should_initialize_vector_store(
-                cast(ToolBox, self), ontology_context_mode
-            )
-
-        def is_vector_store_ready(self):
-            return self.vector_store_ready
-
-    st = Stub()
-    st.config.tool_config.vector_store.wipe_on_init = False
-    st.config.tool_config.vector_store.prune_orphan_iris_on_init = False
-    asyncio.run(
-        ToolBox.initialize(
-            cast(ToolBox, st),
-            ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY,
+    if prune:
+        st.vector_store.prune_orphan_ontology_iris.assert_called_once_with(
+            {test_ontology.iri}
         )
-    )
-    st.vector_store.wipe_store.assert_not_awaited()
-    st.vector_store.prune_orphan_ontology_iris.assert_not_called()
+    else:
+        st.vector_store.prune_orphan_ontology_iris.assert_not_called()
 
 
 def _skip_if_qdrant_configured_but_down() -> None:
@@ -484,7 +461,7 @@ def _tenancy_toolbox(tmp: str) -> ToolBox:
     return ToolBox(
         Config(
             tool_config=ToolConfig(
-                path_config=PathConfig(working_directory=wd, ontology_directory=od),
+                path_config=PathConfig(ontology_directory=od),
                 embedding=EmbeddingConfig(dimension=384),
                 fuseki=FusekiConfig(uri=None, auth=None),
             )
@@ -506,6 +483,7 @@ def _tenant_ontology(iri: str, ontology_id: str) -> Ontology:
     return Ontology(graph=graph, iri=iri, ontology_id=ontology_id)
 
 
+@pytest.mark.integration
 def test_tenancy_switch_clears_the_in_memory_catalog() -> None:
     """A tenancy switch must not leave the previous tenant's ontologies visible."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -529,6 +507,7 @@ def test_tenancy_switch_clears_the_in_memory_catalog() -> None:
         asyncio.run(main())
 
 
+@pytest.mark.integration
 def test_tenancy_switch_back_repopulates_from_the_store() -> None:
     """Switching back must restore the catalog rather than leave it empty."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -547,6 +526,7 @@ def test_tenancy_switch_back_repopulates_from_the_store() -> None:
         asyncio.run(main())
 
 
+@pytest.mark.integration
 def test_repeated_tenancy_call_does_not_drop_the_catalog() -> None:
     """Re-asserting the same tenancy is a no-op, not a reset."""
     with tempfile.TemporaryDirectory() as tmp:

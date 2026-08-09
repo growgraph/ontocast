@@ -8,16 +8,7 @@ from ontocast.onto.retrieval_capabilities import (
     OntologyContextConfigError,
     VectorStoreUnavailableError,
 )
-
-
-def invalid_max_visits_response() -> JSONResponse:
-    return JSONResponse(
-        status_code=400,
-        content=StatusErrorBody(
-            error="max_visits must be an integer >= 1",
-            error_type="ValidationError",
-        ).model_dump(),
-    )
+from ontocast.tool.chunk.prepare import SectionSelectionEmptyError
 
 
 def request_param_error_response(error: RequestParamError) -> JSONResponse:
@@ -51,6 +42,25 @@ def document_conversion_error_response(
             error=str(error),
             error_type="DocumentConversionError",
             error_code=f"conversion_failed:{stage}" if stage else "conversion_failed",
+        ).model_dump(),
+    )
+
+
+def section_selection_empty_response(
+    error: SectionSelectionEmptyError,
+) -> JSONResponse:
+    """422 when a section selection matched nothing in this document.
+
+    Not 400: the parameters are individually well-formed and only fail against
+    this particular document once it has been classified — the same
+    unprocessable-entity reading a conversion failure gets.
+    """
+    return JSONResponse(
+        status_code=422,
+        content=StatusErrorBody(
+            error=str(error),
+            error_type="SectionSelectionEmpty",
+            error_code=f"empty_section_selection:{error.param}",
         ).model_dump(),
     )
 

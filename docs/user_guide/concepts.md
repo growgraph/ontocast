@@ -10,7 +10,7 @@ OntoCast manages ontologies with automatic versioning and timestamp tracking:
 - **Semantic Versioning**: MAJOR/MINOR/PATCH increments from change analysis
 - **Hash-Based Lineage**: Parent hashes track ontology evolution
 - **Multiple Versions**: Stored as separate named graphs (Fuseki or in-memory pyoxigraph)
-- **Timestamp Tracking**: `updated_at` synced as `dcterms:modified`
+- **Timestamp Tracking**: `created_at` synced as `dcterms:created` (there is no modification timestamp — a change produces a new version, not an edit in place)
 - **Versioned IRIs**: Unique IRIs with hash fragments for storage
 - **Working context**: multi-ontology prompt snapshots use `OntologySnapshot` (graph + `source_iris`, no catalog id) instead of inventing a single catalog identity from a union graph
 - **Writeback**: ontology complements are applied to catalog terminals by namespace ownership after subtracting triples already present in the prompt snapshot
@@ -33,6 +33,26 @@ OntoCast uses **pyoxigraph** for RDF 1.2 quoted-triple syntax and separates prov
 - During **normalization**, reification triples, `prov:wasDerivedFrom`, chunk metadata, and alignment artifacts (`owl:sameAs`) move to a **provenance artifact**
 - The clean ontology graph feeds consolidation and serialization
 - API clients can pass `strip_provenance=true` to omit reification scaffolding from returned Turtle
+- A deterministic SHACL repair does not orphan provenance: a rewritten statement carries its reifier onto the replacement, a pruned one has it removed (see [Validation](validation.md#llm-free-autofix))
+
+Each source unit is recorded as `prov:Entity, schema:Text` carrying:
+
+| Predicate | Value |
+|-----------|-------|
+| `schema:position` | Unit index within the document |
+| `schema:identifier` | Unit content hash |
+| `prov:generatedAtTime` | Extraction timestamp |
+| `schema:articleSection` | Section label, when the unit has one |
+| `ontocast:sectionLabelSource` | Which classifier tier decided the label |
+| `ontocast:sectionLabelConfidence` | Confidence in `[0,1]`, `xsd:decimal` |
+
+The last three appear only for a labeled unit, and make a finished run auditable
+for *which part of the document* a fact came from — previously the label reached
+the summarizer and `ontocast sections` and went no further.
+`ontocast:` is `https://growgraph.dev/ontocast#`, deliberately outside the facts
+namespace so pipeline metadata is never a SHACL repair target. It is the only
+vocabulary OntoCast mints: no standard term covers "which classifier tier
+decided this" without a heavyweight qualified structure.
 
 See [Workflow](workflow.md#4-ontology-reduce-document-level).
 
@@ -47,6 +67,12 @@ Chunk provenance links facts → chunk → parent `doc_iri` (content-hash IRI). 
 | Descriptive scalars | `title`, `published` / `issued`, `source_system` |
 | Typed entities | `author` / `creator` / `authors` → `schema:Person`; `project` and any other key → `prov:Entity` (SPARQL-discoverable) |
 | Stable URI | `stable_source_iri` (`owl:sameAs`), `source_uri` / `source_url` (`dcterms:source`) |
+
+Keys are matched **case-insensitively** with camelCase / snake_case / kebab-case tolerance. Bibliographic identifier and source keys also accept an optional leading or trailing `id` affix (so `DOI`, `doi_id`, `arxivId`, and bare `arxiv` all resolve to the bibliographic identifiers above).
+
+Unregistered keys whose last or first token is an **identifier-shaped affix** — `id`, `uid`, `uuid`, `guid`, `ref`, `reference`, `no`, `num`, `number`, `code`, `slug`, `handle`, `accession`, or `key` — become structured `dcterms:identifier` blank nodes with `dcterms:type` set to the stem (e.g. `department_id: "D-42"` → scheme `department`). When the stem matches a typed entity-link key present in the same payload (e.g. `project` + `project_id`), the value attaches as `dcterms:identifier` on that minted entity instead. Bare unknown keys without an affix still mint typed entities. Including `key` in the affix set is an accepted trade-off (`key_finding` is treated as a structured identifier with scheme `finding`).
+
+Canonical names in the table remain the documented contract.
 
 Scalar / identifier example:
 
@@ -101,37 +127,145 @@ Rules:
 
 **HTTP:** pass `document_metadata` as a JSON object field (JSON body) or stringified JSON (multipart / query).
 
-## Structured documents (optional)
+## Structured documents
 
-For papers and other heading-structured Markdown text, `/process` and `ontocast process --input-path` accept optional parameters. When both `target_sections` and `summarize_sections` are omitted, the pipeline stays `convert → chunk → extract` with no extra graph nodes.
+Section tagging is **on by default** for every document and, since 0.6, costs
+nothing: each chunk carries a `section_label` from the active schema, decided by
+a cascade of deterministic tiers (`CHUNK_SECTION_CLASSIFIER=heuristic`). Set
+`CHUNK_SECTION_CLASSIFIER=off` to restore untagged `convert → chunk → extract`
+(this also disables section filters and schema default exclusions), or `llm` to
+add a batched model pass over whatever the free tiers could not name.
+
+### The classification cascade
+
+Classification runs over the document's **outline**, not over chunks. Every
+detected heading closes the preceding section, whether or not the heading maps
+to a known label — an unrecognised heading opens an explicitly *unresolved*
+section rather than letting the previous label run on. Each tier only sees what
+the previous one left unlabeled:
+
+| Tier | Cost | What it decides |
+|---|---|---|
+| **Outline** | free | Where sections begin and end; which headings are generic section names versus descriptive subsection titles (the latter inherit their parent's label) |
+| **Heading** | free | Label from anchored patterns, then from keywords — so `Results and Discussion`, `Experimental Section` and `■ REFERENCES` resolve, not just the canonical spellings |
+| **Order** | free | Fills a gap only when the schema's canonical section order leaves one candidate, and never backwards |
+| **Density** | free | Labels heading-free regions from content features (`CHUNK_SECTION_DENSITY`) |
+| **LLM** | ~1 call | One batched call over the remainder (`CHUNK_SECTION_CLASSIFIER=llm`) |
+
+Ambiguity resolves to *no label*, deliberately: an unlabeled chunk is merely
+unselectable, whereas a wrongly labeled one is silently dropped by a filter or
+extracted as the wrong section. Each chunk records which tier decided its label
+(`section_label_source`) and how confident that tier was
+(`section_label_confidence`).
 
 ### Section tagging and section-aligned chunks
 
-When `target_sections` or `summarize_sections` is set, the **Chunk** node runs a single prepare pipeline:
+The **Chunk** node runs a single prepare pipeline:
 
-1. **Segment** — Docling `HybridChunker` segments for layout-aware PDFs/DOCX; if none, semantic chunking on exported markdown (plain or weak structure).
-2. **Coalesce** — undersized segments merge into the right neighbor (trailing tiny segments merge left); short abstract headings are preserved; section boundaries come from heading lines and Docling breadcrumbs.
-3. **Tag** — heading regex on exported markdown (`ontocast.config.section_labels` YAML), optional front-matter abstract span, overlap labeling, then parallel LLM backfill for unlabeled segments at or above `CHUNK_SECTION_TAG_MIN_CHARS` (`PARALLEL_WORKERS`).
-4. **Filter** — `target_sections` allowlist, or `summarize_sections` allowlist when `target_sections` is omitted (not `*`).
-5. **Size** — split oversized segments (semantic when available), merge undersized consecutive same-label chunks to `min_size` / `max_size`.
+1. **Segment** — sections-first by default (`CHUNK_SEGMENTER=semantic`): the outline partitions the exported markdown into section spans, the text is split at section boundaries, and the semantic chunker splits *within* each oversized section block — so no chunk straddles a section boundary and chunks from detected sections inherit their label deterministically. `CHUNK_SEGMENTER=docling` selects Docling `HybridChunker` structural segments instead (its tokenizer is budgeted from `CHUNK_MAX_SIZE`).
+2. **Coalesce** — undersized segments merge into the right neighbor (trailing tiny segments merge left); short abstract headings are preserved; merges never cross section structure.
+3. **Tag** — the cascade above, plus an optional front-matter abstract span. Segments at or above `CHUNK_SECTION_TAG_MIN_CHARS` reach the LLM tier when it is enabled; segments in an explicitly unresolved section are never filled from a neighbour.
+4. **Filter** — `target_sections` allowlist (or `summarize_sections` allowlist when `target_sections` is omitted and not `*`), then the `exclude_sections` denylist. When `exclude_sections` is unset, the active schema's `default_exclude` applies — the academic schema drops `acknowledgements` and `appendix`; pass an explicit empty `exclude_sections` to keep everything. If either list removes *every* segment, `CHUNK_SECTION_FILTER_ON_EMPTY` decides what happens: `warn` (default) logs and continues to an empty graph, `error` fails the run — see [Configuration](configuration.md#section-filtering).
+5. **Size** — split oversized segments (semantic when available), merge undersized consecutive same-label chunks to `min_size` / `max_size`. Unlabeled chunks are never merged together, since they are not known to share a section.
+
+### Inspecting what the classifier decided
+
+Section labels drive which text is extracted, so a wrong label changes the
+output without appearing anywhere in it. `ontocast sections` shows the
+decisions before any extraction cost:
+
+```bash
+ontocast sections --input-path ./paper.pdf
+ontocast sections --input-path ./paper.pdf --target-sections results --as-json
+```
+
+It prints the resolved schema (with the tier that detected it and its margin
+over the runner-up), the detected outline, and every chunk's label, deciding
+tier and confidence. Unless `--section-classifier llm` is passed it makes no LLM
+calls and needs no provider credentials.
+
+Reference lists are handled separately by `CHUNK_BIBLIOGRAPHY_MODE` (default `skip`: dropped before extraction; `citations_only` extracts bibliographic metadata instead).
 
 PDF extraction behavior before chunking is configurable through `CONVERTER_*` settings. For born-digital publisher PDFs, prefer `CONVERTER_PROFILE=born_digital` to favor embedded text and enable OntoCast's temporary ligature-gap workaround.
 
-**Schema selection:** `section_schema_id` (e.g. `academic`, `financial`, `legal`, `clinical`, `manual`, `fiction`, `general`) or `document_type_hint` (substring match in `manifest.yaml`, e.g. `10-Q` → financial). Default is `academic`.
-
 Recognized labels are canonical ids from the active schema (underscore form), e.g. `results`, `md_and_a`, `risk_factors`.
+
+### Which schema a document is scored against
+
+Every label above is meaningful only relative to a **schema**. A 10-Q scored
+against the academic schema recognises almost nothing and comes back entirely
+unlabeled, so choosing the schema matters as much as the cascade that uses it.
+
+The catalog is a **partition**: every document belongs to exactly one cell.
+Each cell is defined by a one-sentence `document_profile` stating what makes it
+exclusive — if two profiles could describe the same document, the partition is
+broken and the vocabulary is wrong.
+
+| Cell | What makes it exclusive |
+|---|---|
+| `academic` | Scholarly reporting of original experiments, or a review of them |
+| `financial` | Corporate disclosure of results to shareholders or regulators |
+| `clinical` | A protocol or report governing treatment of human participants |
+| `legal` | A binding agreement *between parties* |
+| `patent` | An invention disclosure with numbered claims — legal, but not an agreement |
+| `standard` | Normative requirements *for implementers* — prescriptive, not instructional |
+| `manual` | Instructions for a *user* operating a system — instructional, not normative |
+| `fiction` | Narrative prose with characters and an unfolding story |
+| `news` | An announcement of a recent event, with dateline and quotations |
+| `general` | **Residual cell** — everything else |
+
+`general` deliberately carries no `document_profile`, which is what keeps it out
+of detection entirely: most of its labels are subsets of other schemas, so it
+can be *asked for* but never *inferred*. There is no `thesis` cell — a thesis
+has the same IMRaD body as a paper and differs only in front and back matter, so
+it is a subtype of `academic` rather than a sibling, and belongs to the planned
+`academic → paper → experimental` funnel rather than to a flat partition.
+`thesis` and `dissertation` hints therefore resolve to `academic`.
+
+**Precedence** — caller intent is never overridden; detection only fills a gap:
+
+1. explicit `section_schema_id`
+2. a `document_type_hint` matching a manifest needle (`10-Q` → `financial`).
+   Needles match on **whole words**, so "quarterly widget report" is not a
+   patent because of `epo` inside "report"
+3. automatic detection from the document itself
+4. the manifest default (`academic`)
+
+Detection runs three tiers, cheapest first, each seeing only what the previous
+could not decide (`CHUNK_SECTION_SCHEMA_DETECT`):
+
+| Tier | Cost | Signal |
+|---|---|---|
+| **Lexical** | free | Headings **only one** candidate schema recognises |
+| **Semantic** | reuses the chunker's embedding model | Each heading votes for its nearest schema by label-name similarity |
+| **Content** | same model, off by default | Body paragraphs against `document_profile` sentences |
+
+The lexical tier scores on *exclusive* evidence: a heading several schemas
+recognise counts **zero**, not a fraction. `References` genuinely says nothing
+about which cell a document is in, so weighting it only adds noise — and
+dropping it is what produces the margins that make the tier safe to act on.
+Measured over `test/data/schema_corpus.json` (one real document per cell) it
+classifies all nine correctly on headings alone, with no model loaded.
+
+Every tier **abstains** rather than guessing, falling back to the manifest
+default. This is the same trade the label cascade makes and for the same reason:
+a wrong schema silently relabels an entire document, while an abstention merely
+leaves `document_type_hint` in charge.
 
 ### Optional summarization
 
-When `summarize_sections` is present (including empty or `*` for all units), the **Summarize Chunks** node runs an LLM pass per selected unit (bounded by `PARALLEL_WORKERS`). Summaries are stored on `ContentUnit.summary`; render and critic agents read `extraction_text`, which prefers the summary over the raw chunk.
+When `summarize_sections` is present (including empty or `*` for all units), an LLM compression pass runs for each selected unit. Summaries are stored on `ContentUnit.summary`; render and critic agents read `extraction_text`, which prefers the summary over the raw chunk.
+
+The pass runs **inside the extraction fan-out** (bounded by `PARALLEL_WORKERS`), immediately before the unit is rendered, rather than as a separate pipeline stage. A summary depends only on its own unit, so a stage would have been a barrier: every unit waiting on the slowest summary before any extraction could begin. It is computed once per unit even when both ontology and facts extraction run.
 
 | Parameter | Default | Effect |
 |-----------|---------|--------|
-| `target_sections` | omitted | Section prepare + keep only listed sections (e.g. `results,methods`) |
-| `summarize_sections` | omitted | Section prepare + summarization node; omit to skip summaries. `*` or empty = all chunks after prepare |
+| `target_sections` | omitted | Keep only listed sections (e.g. `results,methods`) |
+| `exclude_sections` | omitted (schema `default_exclude`) | Drop listed sections; explicit empty value disables all exclusion |
+| `summarize_sections` | omitted | Per-unit summarization; omit to skip summaries. `*` or empty = all chunks after prepare |
 | `summary_max_sentences` | `5` | Max sentences per summary when summarization runs |
-| `section_schema_id` | omitted (`academic`) | Section label YAML schema (`financial`, `legal`, `clinical`, `manual`, `fiction`, `general`) |
-| `document_type_hint` | omitted | Free-text hint to resolve schema when `section_schema_id` is not set |
+| `section_schema_id` | omitted (detected, else `academic`) | Section label YAML schema (`academic`, `financial`, `legal`, `clinical`, `manual`, `fiction`, `patent`, `standard`, `news`, `general`) |
+| `document_type_hint` | omitted | Free-text hint to resolve schema when `section_schema_id` is not set; overrides detection |
 
 Section lists accept comma-separated values or a JSON array in query, form, or JSON body fields.
 

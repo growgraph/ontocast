@@ -6,6 +6,7 @@ understandable.
 """
 
 import logging
+import time
 from collections.abc import Sequence
 
 from langchain_core.output_parsers import PydanticOutputParser
@@ -26,6 +27,7 @@ from ontocast.onto.ontology_access import (
     ontology_access_for_unit_facts,
 )
 from ontocast.onto.rdfgraph import RDFGraph, finalize_llm_graph
+from ontocast.onto.state import BudgetTracker
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.prompt.common import text_template, user_template
 from ontocast.prompt.graph_format import get_graph_format_profile
@@ -45,6 +47,7 @@ from ontocast.tool.facts_invariants import (
     normalize_literals_against_schema,
     repair_literal_type_objects,
     repair_property_aliases,
+    resolve_code_literals,
 )
 from ontocast.tool.validate import partition_object_property_literal_triples
 
@@ -56,32 +59,54 @@ def _normalize_and_repair_graph(
     ontology_context_graph: RDFGraph,
     *,
     min_ratio: float,
+    code_predicates: Sequence[str] = (),
+    budget_tracker: BudgetTracker | None = None,
 ) -> tuple[RDFGraph, list[GraphRepairRecord]]:
-    """Apply deterministic parse-time fixes to a rendered graph in place.
+    """Apply LLM-free parse-time fixes to a rendered graph in place.
 
     Retypes untyped numeric literals against declared numeric ranges, coerces
-    literal ``rdf:type`` objects into IRIs, and rewrites unambiguous near-miss
+    literal ``rdf:type`` objects into IRIs, rewrites unambiguous near-miss
     predicates in catalog namespaces (e.g. ``qudt:value`` ->
-    ``qudt:numericValue``). Ambiguous near-misses and unresolvable type
-    literals are left for findings collection.
+    ``qudt:numericValue``), and links nodes to the catalog individual whose
+    code they carry (``qudt:ucumCode "d"`` -> ``qudt:unit unit:DAY``).
+    Ambiguous near-misses and unresolvable type literals are left for findings
+    collection.
+
+    Args:
+        graph: Rendered facts graph, repaired in place.
+        ontology_context_graph: Read-only schema the repairs are checked against.
+        min_ratio: Similarity floor for accepting an alias rewrite.
+        code_predicates: Predicates carrying machine-resolvable codes.
+        budget_tracker: Charged ``"repair/deterministic"``. Both scans here walk
+            the whole ontology graph per call, so this is timed to show how much
+            of it is per-unit-invariant work.
 
     Returns:
         Tuple of (repaired graph, applied-repair records for provenance).
     """
+    started = time.perf_counter()
     retyped = normalize_literals_against_schema(graph, ontology_context_graph)
     type_repaired, _type_findings, type_records = repair_literal_type_objects(graph)
     rewritten, _alias_findings, alias_records = repair_property_aliases(
         graph, ontology_context_graph, min_ratio=min_ratio
     )
-    if retyped or rewritten or type_repaired:
+    resolved, code_records = resolve_code_literals(
+        graph, ontology_context_graph, code_predicates
+    )
+    if budget_tracker is not None:
+        budget_tracker.add_duration(
+            "repair/deterministic", time.perf_counter() - started
+        )
+    if retyped or rewritten or type_repaired or resolved:
         logger.info(
             "Deterministic graph repair: retyped %d literal(s), coerced %d "
-            "rdf:type literal(s), rewrote %d alias triple(s)",
+            "rdf:type literal(s), rewrote %d alias triple(s), resolved %d code(s)",
             retyped,
             type_repaired,
             rewritten,
+            resolved,
         )
-    return graph, [*type_records, *alias_records]
+    return graph, [*type_records, *alias_records, *code_records]
 
 
 def _findings_instruction(state: UnitFactsState) -> str:
@@ -143,16 +168,30 @@ def _prepare_prompt_data(
         Dictionary containing formatted prompt components
     """
     ctx = access.effective_ontology_for_prompt()
-    if not isinstance(ctx.graph, RDFGraph):
+    # Normalise into a local graph rather than writing back onto ``ctx``: the
+    # snapshot is shared by reference across every unit in the fan-out, so a
+    # mutation here would leak into siblings mid-flight.
+    ontology_graph = ctx.graph
+    if not isinstance(ontology_graph, RDFGraph):
         normalized_graph = RDFGraph()
-        for triple in ctx.graph:
+        for triple in ontology_graph:
             normalized_graph.add(triple)
-        for prefix, namespace_uri in ctx.graph.namespaces():
+        for prefix, namespace_uri in ontology_graph.namespaces():
             normalized_graph.bind(prefix, namespace_uri)
-        ctx.graph = normalized_graph
+        ontology_graph = normalized_graph
     domain_pairs = access.domain_prefix_pairs()
-    ontology_index = build_ontology_index(ctx.graph)
-    ontology_chapter = profile.format_ontology_chapter(ctx.graph, suffix=ontology_index)
+    chapter_start = time.perf_counter()
+    if ontology_graph is ctx.graph:
+        # Memoised on the snapshot, which the whole fan-out shares: serialising
+        # the same ontology once per unit dominated facts prompt construction.
+        ontology_chapter = ctx.prompt_chapter(profile)
+    else:
+        ontology_chapter = profile.format_ontology_chapter(
+            ontology_graph, suffix=build_ontology_index(ontology_graph)
+        )
+    state.budget_tracker.add_duration(
+        "prompt/ontology_chapter", time.perf_counter() - chapter_start
+    )
 
     facts_instruction_str = profile.facts_operational_guidelines(
         facts_namespace=DEFAULT_IRI,
@@ -304,6 +343,8 @@ async def render_facts_fresh(
             clean_graph,
             ontology_context_graph,
             min_ratio=tools.property_alias_min_ratio,
+            code_predicates=tools.code_predicates,
+            budget_tracker=state.budget_tracker,
         )
         state.applied_repairs.extend(repair_records)
         if tools.object_property_literal_check:
@@ -420,6 +461,8 @@ async def render_facts_update(
                     clean_graph,
                     ontology_context_graph,
                     min_ratio=tools.property_alias_min_ratio,
+                    code_predicates=tools.code_predicates,
+                    budget_tracker=state.budget_tracker,
                 )
                 state.applied_repairs.extend(repair_records)
             if tools.object_property_literal_check and op.type == "insert":

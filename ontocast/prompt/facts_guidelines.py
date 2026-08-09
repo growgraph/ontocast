@@ -38,9 +38,9 @@ facts_instruction_shared = """\n\n
     - Always use the most specific descendant class or property whose stated domain, range, and
       restrictions fit the concrete entities in the fact. Fall back to the ancestor only when no
       descendant fits or the source text is genuinely stated at the abstract level.
-    - WRONG: `cd:assembly_1 ex:hasPart cd:widget_1 .` when `ex:hasComponent` is a
-      `rdfs:subPropertyOf` of `ex:hasPart` and its domain/range fit the subject and object.
-    - CORRECT: `cd:assembly_1 ex:hasComponent cd:widget_1 .`
+    - WRONG: `cd:assembly_1 onto:hasPart cd:widget_1 .` when `onto:hasComponent` is a
+      `rdfs:subPropertyOf` of `onto:hasPart` and its domain/range fit the subject and object.
+    - CORRECT: `cd:assembly_1 onto:hasComponent cd:widget_1 .`
 
 2. Use the provided domain ontology namespace(s) above and standard ontologies (RDFS, OWL, schema.org, etc.) to identify/infer entities, classes, types, and relationships
 3. Thoroughly Extract and Link: extract all possible text mentions that correspond to entities, classes, types, or relationships defined in the domain ontology namespace(s) above
@@ -81,9 +81,14 @@ facts_instruction_shared = """\n\n
        * Search the provided ontology for a class representing approximate or
          bounded quantity values (e.g. a QuantityValue subclass, a
          MeasuredValue class, or equivalent).
-       * If found, instantiate it and use its typed decimal properties for
-         the numeric components (nominal value, lower/upper bound, uncertainty)
-         and its qualifier properties for the epistemic marker.
+       * If found, instantiate it and populate exactly the numeric properties
+         the ontology documents for the stated form — its property
+         definitions, comments, and scope notes say which property carries
+         which numeric role — plus its qualifier properties for the epistemic
+         marker. Record each number once, on the property whose documented
+         role matches the source statement; never write the same number into
+         two different numeric properties of one node, and never use
+         bound properties for a value the source states exactly.
 {quantity_fallback_clause}
    - Prose restatements of a measurement in dcterms:description are redundant
      once typed numeric properties exist — omit them.
@@ -205,12 +210,13 @@ def format_facts_operational_guidelines(
         search_guidelines=search_guidelines,
     )
     if jsonld:
+        # 10a., not 11. or 12.: rule 11 is the conditional search guideline
+        # injected above and is absent whenever web grounding is off, so a fixed
+        # number either collides with it or leaves a gap in the default prompt.
+        # The template already uses this suffix convention for 1a. and 6a.
         guidelines += (
-            "\n12. In structured output, express facts as a JSON-LD object "
+            "\n10a. In structured output, express facts as a JSON-LD object "
             "(`@context` + `@graph`), not as a Turtle string. "
             "Map the examples above to compact IRIs and JSON-LD literal objects.\n"
         )
     return guidelines
-
-
-facts_instruction_template = facts_instruction_shared

@@ -14,7 +14,7 @@ When `FUSEKI_URI` and `FUSEKI_AUTH` are set, Fuseki is used. Otherwise OntoCast 
 ### Environment Variables
 
 ```bash
-# Fuseki (optional — production)
+# Fuseki (optional — production; the bundled docker compose maps host port 3032)
 FUSEKI_URI=http://localhost:3030
 FUSEKI_AUTH=admin/admin
 #FUSEKI_DATASET=ontocast--test--facts
@@ -24,7 +24,7 @@ FUSEKI_AUTH=admin/admin
 ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/seed/ttl
 ```
 
-Persistence is handled by the triple store only. Local TTL export to `working_directory` is no longer used.
+Persistence is handled by the triple store only; batch TTL dumps go to the explicit `--output-dir` family of flags.
 
 Ontology **catalog reads** (headers, by-IRI graphs, merged working graphs) go through `OntologyManager`, not ad-hoc `fetch_ontologies()` from callers — see [Ontology Catalog](../architecture/ontology_catalog.md).
 
@@ -60,7 +60,7 @@ Sample Docker configs: [ontocast/docker](https://github.com/growgraph/ontocast/t
 ```bash
 cd docker/fuseki
 cp .env.example .env
-docker compose --env-file .env fuseki up -d
+docker compose --env-file .env up fuseki -d
 ```
 
 Configure OntoCast:

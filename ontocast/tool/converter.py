@@ -4,23 +4,32 @@ This module provides functionality for converting various document formats
 into structured data that can be processed by the OntoCast system.
 """
 
+from __future__ import annotations
+
 import importlib
 import logging
 import pathlib
 import threading
 from io import BytesIO
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from docling_core.types.doc import DoclingDocument
 from pydantic import Field
 
 from ontocast.config import ConverterConfig
 from ontocast.onto.docling_helpers import apply_text_sanitizers
+from ontocast.util.optional import require
 
-from .cache import Cacher, ToolCacher
+if TYPE_CHECKING:
+    from docling_core.types.doc import DoclingDocument
+
+from .cache import CONVERTER_CACHE_SUBDIR, Cacher, ToolCacher
 from .onto import Tool
 
 logger = logging.getLogger(__name__)
+
+# Bumped when the cached DoclingDocument shape changes, replacing the older
+# practice of renaming the cache subdirectory.
+CONVERTER_CACHE_FORMAT_VERSION = 1
 
 
 def _build_layout_options(config: ConverterConfig) -> Any:
@@ -163,11 +172,35 @@ class ConverterTool(Tool):
 
         # Initialize cache - use shared cacher or create new one
         if cache is not None:
-            self.cache = ToolCacher(cache, "converter_v3")
+            self.cache = ToolCacher(cache, CONVERTER_CACHE_SUBDIR)
         else:
-            # Fallback for backward compatibility
+            # Standalone use (CLI helpers, direct library use): fall back to a
+            # private Cacher on the configured/default directory.
             shared_cache = Cacher()
-            self.cache = ToolCacher(shared_cache, "converter_v3")
+            self.cache = ToolCacher(shared_cache, CONVERTER_CACHE_SUBDIR)
+
+    def ensure_converter(self) -> Any:
+        """Return the Docling converter, building it once on first use.
+
+        Exposed so a server can warm the models at startup instead of making the
+        first request pay for loading the layout, OCR and table-structure models.
+
+        Returns:
+            Any: The shared docling ``DocumentConverter``. Untyped because
+            docling is an optional dependency resolved lazily.
+        """
+        converter = self._converter
+        if converter is not None:
+            return converter
+        with self._converter_lock:
+            if self._converter is None:
+                logger.info("Building Docling DocumentConverter (first conversion)")
+                try:
+                    self._converter = build_document_converter(self.converter_config)
+                except ImportError as e:
+                    logger.error("Could not import DocumentConverter: %s", e)
+                    raise
+            return self._converter
 
     def __call__(self, file_input: bytes | str | pathlib.Path) -> DoclingDocument:
         """Convert a document to a DoclingDocument.
@@ -191,50 +224,45 @@ class ConverterTool(Tool):
         else:
             raise TypeError(f"Unsupported file input type: {type(file_input).__name__}")
 
-        # Check cache first
+        # Check cache first. The format version lives in the key, so bumping it
+        # orphans stale entries in place rather than stranding a whole directory.
         config_dict = self.converter_config.model_dump(mode="json")
+        config_dict["cache_format_version"] = CONVERTER_CACHE_FORMAT_VERSION
         cached_result = self.cache.get(content_for_cache, config=config_dict)
         if cached_result is not None:
             logger.debug("Cache hit for document conversion")
-            if isinstance(cached_result, DoclingDocument):
+            docling_document = require(
+                "docling_core.types.doc", feature="Document conversion"
+            ).DoclingDocument
+            if isinstance(cached_result, docling_document):
                 return cached_result
             if isinstance(cached_result, str):
-                return DoclingDocument.model_validate_json(cached_result)
+                return docling_document.model_validate_json(cached_result)
             if isinstance(cached_result, dict):
-                return DoclingDocument.model_validate(cached_result)
+                return docling_document.model_validate(cached_result)
 
-        # Convert document (with thread-safe access to converter)
-        with self._converter_lock:
-            converter = self._converter
-            if converter is None:
-                logger.info("Building Docling DocumentConverter (first conversion)")
-                try:
-                    converter = build_document_converter(self.converter_config)
-                except ImportError as e:
-                    logger.error("Could not import DocumentConverter: %s", e)
-                    raise
-                self._converter = converter
+        converter = self.ensure_converter()
 
-            if isinstance(file_input, bytes):
-                try:
-                    base_models_module = importlib.import_module(
-                        "docling.datamodel.base_models"
-                    )
-                    DocumentStream = getattr(base_models_module, "DocumentStream")
-                    ds = DocumentStream(name="doc", stream=BytesIO(file_input))
-                except ImportError:
-                    raise ImportError(
-                        f"Could not import DocumentConverter: {file_input}"
-                    )
-                result = converter.convert(ds)
-                converted_result = result.document
-            elif isinstance(file_input, pathlib.Path):
-                result = converter.convert(file_input)
-                converted_result = result.document
-            else:
-                raise TypeError(
-                    f"Unsupported file input type: {type(file_input).__name__}"
+        # Deliberately outside the lock: conversion is the multi-second part, and
+        # holding the build lock across it serialised every concurrent document
+        # in the process behind one another. Docling's convert() is a per-call
+        # pipeline over its own result objects.
+        if isinstance(file_input, bytes):
+            try:
+                base_models_module = importlib.import_module(
+                    "docling.datamodel.base_models"
                 )
+                DocumentStream = getattr(base_models_module, "DocumentStream")
+                ds = DocumentStream(name="doc", stream=BytesIO(file_input))
+            except ImportError:
+                raise ImportError(f"Could not import DocumentConverter: {file_input}")
+            result = converter.convert(ds)
+            converted_result = result.document
+        elif isinstance(file_input, pathlib.Path):
+            result = converter.convert(file_input)
+            converted_result = result.document
+        else:
+            raise TypeError(f"Unsupported file input type: {type(file_input).__name__}")
 
         converted_result = apply_text_sanitizers(
             converted_result,

@@ -11,7 +11,8 @@ classifiers = [
   "Framework :: FastAPI",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: Apache Software License",
+  # No license classifier: `license = "Apache-2.0"` below is the PEP 639 SPDX
+  # expression, and PyPI deprecates the classifier form once one is set.
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.12",
@@ -27,37 +28,26 @@ classifiers = [
 # could select a floor that cannot import the package. Floors now name the
 # major actually developed and tested against; ceilings stop the next major
 # from breaking every install silently.
+#
+# Tiering: the base install is the light embeddable core -- the extraction
+# pipeline, the in-memory triple and vector stores, and the ontology tooling.
+# Anything that pulls a service SDK, a document-processing stack, or an ML
+# runtime lives behind an extra, because `from ontocast import ontocast_tools`
+# must not install a gRPC stack and an ONNX runtime. `test/test_import_weight.py`
+# is the regression guard; see docs/user_guide/embedding.md for the tiers.
 dependencies = [
-  "click>=8.1.8,<9",
-  "docling-core[chunking]>=2.57.0,<3",
-  "fastapi>=0.115.0,<1",
-  "fastembed>=0.8.0,<1",
   "httpx>=0.27.0,<1",
-  "langchain-anthropic>=1.0,<2",
   "langchain-core>=1.0,<2",
-  "langchain-google-genai>=4.0,<5",
-  "langchain-ollama>=1.0,<2",
-  "langchain-openai>=1.0,<2",
-  "langchain>=1.0,<2",
   "langgraph>=1.0,<2",
-  "networkx>=3.0,<4",
   "numpy>=1.26,<3",
   "oxrdflib>=0.5.0,<0.6",
   "pydantic-settings>=2.5.0,<3",
   "pydantic>=2.11.9,<3",
   "pyld>=3.0,<4",
   "pyoxigraph>=0.5.8,<0.6",
-  "python-dotenv>=1.0.0,<2",
-  "python-multipart>=0.0.22,<1",
   "pyyaml>=6.0.2,<7",
-  "qdrant-client>=1.15.1,<2",
   "rdflib>=7.1.4,<8",
-  "requests>=2.32.3,<3",
-  "rich>=14.0.0,<16",
-  "scikit-learn>=1.4,<2",
-  "starlette>=1.0,<2",
-  "suthing>=0.4.1,<1",
-  "uvicorn[standard]>=0.32.0,<1"
+  "scikit-learn>=1.4,<2"
 ]
 description = "Agentic ontology and knowledge graph co-generation"
 keywords = [
@@ -75,14 +65,17 @@ license-files = ["LICENSE"]
 name = "ontocast"
 readme = "README.md"
 requires-python = ">=3.12,<4.0"
-version = "0.5.0"
+version = "0.6.0"
 
 [project.optional-dependencies]
 # `plot` is deliberately excluded: pygraphviz builds from source against system
 # graphviz headers, so including it here made `pip install ontocast[all]` fail
 # on a stock machine. Install it explicitly when you need `plot-graph`.
 all = [
-  "ontocast[doc-processing,lancedb,semantic-chunking,shacl,web-search]"
+  "ontocast[anthropic,doc-processing,documents,google,graph,lancedb,ollama,openai,qdrant,semantic-chunking,server,shacl,sparse,web-search]"
+]
+anthropic = [
+  "langchain-anthropic>=1.0,<2"
 ]
 dev = [
   "anyio>=4.4.0",
@@ -93,9 +86,14 @@ dev = [
   "ruff>=0.11.2",
   "ty>=0.0.14"
 ]
+# `documents` is the docling-core layer needed to *represent* and chunk a
+# converted document; `doc-processing` adds the converters that produce one
+# from a PDF. Chunking additionally downloads a HuggingFace tokenizer at
+# runtime, so a base install cannot chunk -- use run_unit_pipeline instead.
 doc-processing = [
   "docling>=2.57.0",
   "easyocr>=1.7.2",
+  "ontocast[documents]",
   "sentence-transformers>=5.1.1"
 ]
 docs = [
@@ -109,32 +107,70 @@ docs = [
   "mkdocstrings-python>=2.0.3",
   "mkdocstrings[python]>=0.29.1"
 ]
+documents = [
+  "docling-core[chunking]>=2.57.0,<3"
+]
+google = [
+  "langchain-google-genai>=4.0,<5"
+]
+graph = [
+  "networkx>=3.0,<4"
+]
 lancedb = [
-  "lancedb>=0.33.0"
+  "lancedb>=0.33.0",
+  "ontocast[sparse]"
+]
+ollama = [
+  "langchain-ollama>=1.0,<2"
+]
+openai = [
+  "langchain-openai>=1.0,<2"
 ]
 plot = [
   "pygraphviz>=1.14"
 ]
+qdrant = [
+  "ontocast[sparse]",
+  "qdrant-client>=1.15.1,<2"
+]
 semantic-chunking = [
   "hdbscan>=0.8.41",
-  "langchain-huggingface>=0.2.0",
+  "sentence-transformers>=5.1.1",
   "torch>=2.0",
   "umap-learn>=0.5.12"
 ]
+# FastAPI app, uvicorn, and everything the `ontocast` console script needs.
+server = [
+  "click>=8.1.8,<9",
+  "fastapi>=0.115.0,<1",
+  "ontocast[documents]",
+  "python-dotenv>=1.0.0,<2",
+  "python-multipart>=0.0.22,<1",
+  "rich>=14.0.0,<16",
+  "starlette>=1.0,<2",
+  "suthing>=0.4.1,<1",
+  "uvicorn[standard]>=0.32.0,<1"
+]
 shacl = [
   "pyshacl>=0.30.0"
+]
+# BM25 sparse embeddings. Pulled in by both vector backends; on its own it is
+# only useful if you wire FastembedBm25SparseTool yourself.
+sparse = [
+  "fastembed>=0.8.0,<1"
 ]
 web-search = [
   "duckduckgo-search>=8.1.1"
 ]
 
+# All scripts route through ontocast.cli._entry, which turns a missing
+# `ontocast[server]` install into a directive message instead of a bare
+# ModuleNotFoundError for click.
 [project.scripts]
-cmp-states = "ontocast.cli.cmp_states:main"
-match-graphs = "ontocast.cli.match_graphs:main"
-ontocast = "ontocast.cli.server:cli"
-pdfs-to-markdown = "ontocast.cli.pdfs_to_markdown:main"
-plot-graph = "ontocast.cli.plot_graph:main"
-test-api = "ontocast.cli.test_api:main"
+match-graphs = "ontocast.cli._entry:match_graphs"
+ontocast = "ontocast.cli._entry:ontocast"
+pdfs-to-markdown = "ontocast.cli._entry:pdfs_to_markdown"
+plot-graph = "ontocast.cli._entry:plot_graph"
 
 [project.urls]
 Changelog = "https://github.com/growgraph/ontocast/blob/main/CHANGELOG.md"
@@ -179,10 +215,21 @@ addopts = [
   "--tb=short",
   "-v"
 ]
-env_files = [".env"]
+# Marker semantics -- keep these honest, the CI job selects on them.
+#
+# The default run must stay offline and model-free: `HF_HUB_OFFLINE=1
+# TRANSFORMERS_OFFLINE=1 uv run pytest -m "not slow"` has to pass. A test that
+# cannot meet that bar belongs behind `slow` (it downloads or loads a model, or
+# takes more than a few seconds) or `integration` (it needs a live service:
+# Qdrant, Fuseki, or an on-disk LanceDB table). Service-gated tests still skip
+# themselves when the service is unreachable -- the marker is what makes that
+# surface *selectable* rather than merely silent.
+#
+# `test/manual/` is opt-in through ONTOCAST_RUN_MANUAL_TESTS=1 and is not
+# collected otherwise (see test/manual/conftest.py); it needs no marker.
 markers = [
-  "integration: marks tests as integration tests",
-  "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+  "integration: needs a live service (Qdrant/Fuseki/LanceDB on disk)",
+  "slow: loads an ML model or otherwise takes >5s (deselect with '-m \"not slow\"')",
   "unit: marks tests as unit tests"
 ]
 python_classes = ["Test*"]
@@ -207,17 +254,19 @@ select = ["E", "F", "I001", "W"]
 "ontocast/prompt/*.py" = ["E501"]
 
 [tool.ty.analysis]
-# Optional extras loaded lazily / only when selected; pre-commit CI syncs
-# `--extra dev` only, so ty must not require them. docling-core is a hard
-# dependency and is deliberately NOT listed here -- whitelisting it previously
-# hid the fact that `ontocast.onto.state` imported it unguarded while it was
-# only in an extra, which made a base `pip install ontocast` unimportable.
+# The heavy tail of the optional tier: loaded lazily / only when selected, and
+# too expensive to install just to type-check. The pre-commit workflow syncs
+# only `dev,server,documents,qdrant,graph`, so anything outside that set must be
+# listed here -- the two lists together have to cover every third-party import
+# under `ontocast/` and `test/`. docling-core is deliberately NOT listed here:
+# whitelisting it previously hid the fact that `ontocast.onto.state` imported it
+# unguarded while it was only in an extra, which made a base
+# `pip install ontocast` unimportable.
 allowed-unresolved-imports = [
   "docling.**",
   "duckduckgo_search.**",
   "hdbscan.**",
   "lancedb.**",
-  "langchain_huggingface.**",
   "pyshacl.**",
   "umap.**"
 ]

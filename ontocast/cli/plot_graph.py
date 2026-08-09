@@ -1,7 +1,5 @@
 import importlib
 import logging
-import re
-import tempfile
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
@@ -275,25 +273,6 @@ def ontology_loop_flow(*, include_evidence: bool = False) -> FlowGraph:
     )
 
 
-def update_mermaid_graph_in_markdown(file_path: str, new_graph: str) -> None:
-    md_path = Path(file_path)
-    content = md_path.read_text()
-
-    pattern = r"(### Agent graph\s+```mermaid\n)(.*?)(\n```)"
-    replacement = r"\1" + new_graph + r"\3"
-
-    if re.search(pattern, content, flags=re.DOTALL):
-        new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
-        print("✅ Replaced existing Mermaid block.")
-    else:
-        new_section = f"\n\n### Agent graph\n\n```mermaid\n{new_graph}\n```"
-        new_content = content + new_section
-        print("➕ Appended new Mermaid block at the end.")
-
-    md_path.write_text(new_content)
-    print(f"📄 Updated {file_path}")
-
-
 def _flow_label_for_graphviz(label: str, is_lr: bool) -> str:
     text = label.replace("<br/>", "\n")
     return _wrap_label(text) if is_lr else text
@@ -512,10 +491,6 @@ def main(output_dir: Path) -> None:
 
     config = Config()
     config.tool_config.path_config.ontology_directory = None
-    if config.tool_config.path_config.working_directory is None:
-        config.tool_config.path_config.working_directory = Path(
-            tempfile.mkdtemp(prefix="ontocast-plot-")
-        )
     toolbox = ToolBox(config)
 
     app = create_agent_graph(toolbox)

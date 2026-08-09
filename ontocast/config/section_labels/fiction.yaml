@@ -1,35 +1,64 @@
-schema_version: "1.0"
+schema_version: "1.1"
 id: fiction
 description: Novels, short fiction, and literary works
+document_profile: >-
+    A work of narrative fiction told in chapters, with characters, dialogue and
+    an unfolding plot, written to be read as a story rather than to convey
+    factual information.
 labels:
 -   id: front_matter
     heading_patterns:
     -   '^front\s+matter\s*$'
     -   '^half[\s-]?title\s*$'
     -   '^title\s+page\s*$'
+    keywords:
+    -   front matter
+    -   title page
+    -   half-title
+    -   contents
 -   id: dedication
     heading_patterns:
     -   '^dedication\s*$'
+    keywords:
+    -   dedication
 -   id: epigraph
     heading_patterns:
     -   '^epigraph\s*$'
+    keywords:
+    -   epigraph
 -   id: prologue
     heading_patterns:
     -   '^prologue\s*$'
+    keywords:
+    -   prologue
 -   id: part
     heading_patterns:
     -   '^part\s+(?:\d+|[IVXivx]+)\s*$'
     -   '^book\s+(?:\d+|[IVXivx]+)\s*$'
+    keywords:
+    -   part
+    -   book
+    -   volume
 -   id: chapter
     heading_patterns:
     -   '^chapter\s+(?:\d+|[IVXivx]+)\s*$'
     -   '^ch(?:apter)?\.?\s*(?:\d+|[IVXivx]+)\s*$'
+    keywords:
+    -   chapter
 -   id: epilogue
     heading_patterns:
     -   '^epilogue\s*$'
+    keywords:
+    -   epilogue
 -   id: afterword
     heading_patterns:
     -   '^afterword\s*$'
+    keywords:
+    -   afterword
+    -   postscript
 -   id: acknowledgements
     heading_patterns:
     -   '^acknowledg(?:e?ments?|ments?)\s*$'
+    keywords:
+    -   acknowledgements
+    -   acknowledgments

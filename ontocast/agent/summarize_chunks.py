@@ -27,6 +27,47 @@ def should_summarize_unit(
     return unit.section_label.lower() in allowed
 
 
+async def ensure_unit_summary(
+    state: Any,
+    unit_index: int,
+    tools: ToolBox,
+    budget_tracker: Any = None,
+) -> None:
+    """Summarise one content unit in place, if it is due one and lacks one.
+
+    Called from inside the extraction fan-outs rather than from a preceding
+    node. A unit's summary depends only on that unit, so a document-level
+    summarize stage made every unit wait for the *slowest* summary before any
+    extraction could start, for no dependency.
+
+    Idempotent, so the facts fan-out is a no-op when the ontology fan-out
+    already summarised the unit. Failures are logged and leave ``summary`` as
+    ``None``: extraction then falls back to the unit's full text.
+
+    Args:
+        state: Document state; ``content_units[unit_index]`` is mutated.
+        unit_index: Index of the unit to summarise.
+        tools: Tool container providing the LLM.
+        budget_tracker: Charged for the call.
+    """
+    unit = state.content_units[unit_index]
+    if unit.summary is not None:
+        return
+    if not state.use_summarization:
+        return
+    if not should_summarize_unit(unit, state.summarize_sections):
+        return
+    try:
+        unit.summary = await summarize_chunk(
+            unit,
+            tools,
+            max_sentences=state.summary_max_sentences,
+            budget_tracker=budget_tracker,
+        )
+    except Exception as exc:
+        logger.warning("Summarization failed for unit %s: %s", unit_index, exc)
+
+
 _SUMMARIZE_PROMPT = ChatPromptTemplate.from_messages(
     [
         (

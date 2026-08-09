@@ -62,11 +62,15 @@ nav:
     -   Workflow: user_guide/workflow.md
     -   Configuration System: user_guide/configuration.md
     -   API Endpoints: user_guide/api.md
+    -   Embedding OntoCast: user_guide/embedding.md
     -   Tenancy: user_guide/tenancy.md
     -   Ontology Context: user_guide/ontology_context.md
     -   Entity Disambiguation: user_guide/aggregation.md
+    -   Facts Validation and SHACL: user_guide/validation.md
     -   Triple Store Configuration: user_guide/triple_stores.md
     -   LLM Caching: user_guide/llm_caching.md
+    -   Performance: user_guide/performance.md
+    -   Observability: user_guide/observability.md
     -   User Instructions: user_guide/user_instructions.md
 -   Architecture:
     -   Ontology Catalog: architecture/ontology_catalog.md

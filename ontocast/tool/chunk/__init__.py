@@ -5,6 +5,7 @@ from ontocast.tool.chunk.prepare import (
     NormalizedChunk,
     PreparedChunk,
     PrepareOptions,
+    SectionSelectionEmptyError,
     prepare_content_units,
 )
 from ontocast.tool.chunk.sizing import size_bounded_text
@@ -14,6 +15,7 @@ __all__ = [
     "NormalizedChunk",
     "PreparedChunk",
     "PrepareOptions",
+    "SectionSelectionEmptyError",
     "prepare_content_units",
     "size_bounded_text",
 ]

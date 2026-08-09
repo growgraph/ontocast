@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from docling_core.types.doc import DoclingDocument
+from typing import TYPE_CHECKING
 
 from ontocast.config.section_labels import (
     SectionLabelSchema,
@@ -10,10 +10,14 @@ from ontocast.config.section_labels import (
     get_default_section_schema,
     match_heading_line,
 )
-from ontocast.onto.section_models import SectionSpan
+from ontocast.onto.enum import SectionLabelSource
+from ontocast.onto.section_models import DocumentOutline, HeadingNode, SectionSpan
+from ontocast.tool.chunk.outline import build_document_outline, outline_to_spans
+
+if TYPE_CHECKING:
+    from docling_core.types.doc import DoclingDocument
 
 ABSTRACT_FRONT_MATTER_MAX_CHARS = 6000
-_IMRAD_START_LABELS = frozenset({"introduction", "related_work", "background"})
 
 
 def document_text_for_section_tagging(doc: DoclingDocument) -> str:
@@ -21,38 +25,34 @@ def document_text_for_section_tagging(doc: DoclingDocument) -> str:
     return doc.export_to_markdown()
 
 
-def _build_spans_from_heading_starts(
-    text: str, heading_starts: list[tuple[int, str]]
-) -> list[SectionSpan]:
-    if not heading_starts:
-        return []
-    sorted_starts = sorted(heading_starts, key=lambda item: item[0])
-    spans: list[SectionSpan] = []
-    for index, (start, label) in enumerate(sorted_starts):
-        end = (
-            sorted_starts[index + 1][0] if index + 1 < len(sorted_starts) else len(text)
-        )
-        if end > start:
-            spans.append(SectionSpan(label=label, start=start, end=end))
-    return spans
-
-
 def detect_section_spans(
     text: str,
     schema: SectionLabelSchema | None = None,
+    *,
+    include_text_headings: bool = False,
 ) -> list[SectionSpan]:
-    """Detect section headings via regex and return character spans."""
+    """Detect document sections and return a partition of the text into spans.
+
+    Every heading closes the preceding span, so an unrecognised heading yields an
+    explicitly unresolved (``label=None``) span instead of letting the previous
+    label run on to the next recognised heading.
+
+    Args:
+        text: Document text (the markdown export).
+        schema: Section label schema; the manifest default when omitted.
+        include_text_headings: Enable the plain-text heading heuristic for
+            documents with no markdown heading structure.
+
+    Returns:
+        Section spans tiling ``text``, ordered by start offset.
+    """
     if not text:
         return []
     active = schema or get_default_section_schema()
-    heading_starts: list[tuple[int, str]] = []
-    offset = 0
-    for line in text.splitlines(keepends=True):
-        label = match_heading_line(line, active)
-        if label is not None:
-            heading_starts.append((offset, label))
-        offset += len(line)
-    spans = _build_spans_from_heading_starts(text, heading_starts)
+    outline = build_document_outline(
+        text, active, include_text_headings=include_text_headings
+    )
+    spans = outline_to_spans(outline)
     return inject_front_matter_spans(spans, text, active)
 
 
@@ -64,7 +64,13 @@ def inject_front_matter_spans(
     min_gap_chars: int = 80,
     max_gap_chars: int = ABSTRACT_FRONT_MATTER_MAX_CHARS,
 ) -> list[SectionSpan]:
-    """Insert an abstract span for unheaded front matter before the first IMRaD section."""
+    """Label unheaded front matter before the first labeled section as abstract.
+
+    Leading unresolved spans (a title block, an unrecognised banner heading) are
+    skipped when locating the first labeled section, so front matter is still
+    recovered on documents whose first recognised section is not an IMRaD
+    opener -- papers that jump straight to ``Results`` are common.
+    """
     if "abstract" not in canonical_labels(schema):
         return spans
     if any(span.label == "abstract" for span in spans):
@@ -72,24 +78,52 @@ def inject_front_matter_spans(
     if not spans:
         return spans
 
-    first = min(spans, key=lambda span: span.start)
-    if first.label not in _IMRAD_START_LABELS:
+    ordered = sorted(spans, key=lambda span: span.start)
+    first_labeled = next(
+        (span for span in ordered if span.label is not None),
+        None,
+    )
+    if first_labeled is None or first_labeled.start <= 0:
         return spans
 
-    gap = text[: first.start].strip()
+    gap = text[: first_labeled.start].strip()
     gap_len = len(gap)
     if gap_len < min_gap_chars or gap_len > max_gap_chars:
         return spans
 
-    abstract_span = SectionSpan(label="abstract", start=0, end=first.start)
-    return [abstract_span, *spans]
+    # The front matter may already be covered by unresolved spans; replace them
+    # rather than overlapping, so the result stays a partition.
+    tail = [span for span in ordered if span.start >= first_labeled.start]
+    abstract_span = SectionSpan(
+        label="abstract",
+        start=0,
+        end=first_labeled.start,
+        source=SectionLabelSource.FRONT_MATTER,
+        confidence=0.5,
+    )
+    return [abstract_span, *tail]
 
 
 def build_section_spans_from_labels(
     text: str, labeled_headings: list[tuple[int, str]]
 ) -> list[SectionSpan]:
-    """Build section spans from explicit (offset, label) pairs."""
-    return _build_spans_from_heading_starts(text, labeled_headings)
+    """Build section spans from explicit ``(offset, label)`` pairs."""
+    outline = DocumentOutline(
+        text_len=len(text),
+        nodes=[
+            HeadingNode(
+                text=label,
+                normalised=label,
+                start=start,
+                body_start=start,
+                label=label,
+                source=SectionLabelSource.HEADING_PATTERN,
+                confidence=0.95,
+            )
+            for start, label in sorted(labeled_headings, key=lambda item: item[0])
+        ],
+    )
+    return [span for span in outline_to_spans(outline) if span.label is not None]
 
 
 def _chunk_char_range(
@@ -165,6 +199,8 @@ def label_from_headings(
 
 __all__ = [
     "ABSTRACT_FRONT_MATTER_MAX_CHARS",
+    "DocumentOutline",
+    "HeadingNode",
     "SectionSpan",
     "build_section_spans_from_labels",
     "detect_section_spans",

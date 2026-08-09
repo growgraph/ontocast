@@ -68,6 +68,7 @@ def _build_tools() -> AtomicToolBox:
             # duplicated literal default, so a rename fails loudly here
             # instead of silently reverting the configured ratio.
             property_alias_min_ratio=0.85,
+            code_predicates=(),
             citation_vocabulary={},
             quantity_fallback_vocabulary=None,
         ),
@@ -309,3 +310,85 @@ async def test_criticise_facts_accepts_high_score_even_when_success_false(
 
     assert result.status == Status.SUCCESS
     assert result.failure_stage is None
+
+
+def _opaque_iri_ontology() -> Ontology:
+    """Wikidata-style catalog: the IRIs carry no meaning without labels."""
+    ontology_graph = RDFGraph()
+    ontology_graph.parse(
+        data="""
+        @prefix wd: <http://www.wikidata.org/entity/> .
+        @prefix wdt: <http://www.wikidata.org/prop/direct/> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        wd:Q2013 a owl:Ontology .
+        wd:Q4830453 a owl:Class ; rdfs:label "business" .
+        wd:Q43229 a owl:Class ; rdfs:label "organization" .
+        wdt:P169 a owl:ObjectProperty ; rdfs:label "chief executive officer" .
+        """,
+        format="turtle",
+    )
+    return Ontology(graph=ontology_graph, iri="http://www.wikidata.org/entity/Q2013")
+
+
+@pytest.mark.anyio
+async def test_criticise_facts_prompt_carries_the_term_index(monkeypatch) -> None:
+    """The critic must see the same TERM INDEX the renderer is told to use.
+
+    Building the chapter without the index appendix left the critic judging
+    opaque IRIs it could not resolve, while facts guideline 6a instructs the
+    renderer to resolve them through exactly that index.
+    """
+    captured: dict[str, object] = {}
+
+    async def fake_call_llm_with_retry(**kwargs):
+        captured.update(kwargs["prompt_kwargs"])
+        return FactsCritiqueReport(
+            success=True,
+            score=95,
+            actionable_triple_fixes=[],
+            systemic_critique_summary="",
+        )
+
+    monkeypatch.setattr(
+        criticise_facts_module, "call_llm_with_retry", fake_call_llm_with_retry
+    )
+
+    state = UnitFactsState(
+        content_unit=_build_content_unit(with_graph=True),
+        ontology_snapshot=snapshot_from_ontology(_opaque_iri_ontology()),
+    )
+    await criticise_facts_module.criticise_facts(state, tools=_build_tools())
+
+    chapter = str(captured.get("ontology_chapter", ""))
+    assert "TERM INDEX" in chapter
+    assert "chief executive officer" in chapter
+
+
+@pytest.mark.anyio
+async def test_criticise_facts_adds_no_index_for_a_readable_ontology(
+    monkeypatch,
+) -> None:
+    """The appendix is empty when IRIs are self-describing, so it costs nothing."""
+    captured: dict[str, object] = {}
+
+    async def fake_call_llm_with_retry(**kwargs):
+        captured.update(kwargs["prompt_kwargs"])
+        return FactsCritiqueReport(
+            success=True,
+            score=95,
+            actionable_triple_fixes=[],
+            systemic_critique_summary="",
+        )
+
+    monkeypatch.setattr(
+        criticise_facts_module, "call_llm_with_retry", fake_call_llm_with_retry
+    )
+
+    state = UnitFactsState(
+        content_unit=_build_content_unit(with_graph=True),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
+    )
+    await criticise_facts_module.criticise_facts(state, tools=_build_tools())
+
+    assert "TERM INDEX" not in str(captured.get("ontology_chapter", ""))

@@ -9,20 +9,23 @@ The merge stage (`tool/agg/aggregate.py`):
 1. Collects facts graphs from all processed content units
 2. Clusters entity mentions using embeddings and symbolic compatibility
 3. Rewrites URIs to canonical identities
-4. Annotates merged triples with provenance where applicable
+4. Annotates merged triples with provenance: an RDF 1.2 reifier per asserted
+   triple linked to its source unit, and one `prov:Entity, schema:Text` node per
+   unit carrying its index, content hash, timestamp and section label — see
+   [Concepts](concepts.md#rdf-12-provenance) for the predicate table
 
 Ontology aggregation uses a similar embedding-based pipeline for anchor selection and URI rewriting during document-level ontology reduce.
 
 ## Configuration
 
 ```bash
-AGG_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+AGG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 AGG_SIMILARITY_THRESHOLD=0.80
 ```
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `AGG_EMBEDDING_MODEL` | Sentence-transformers model for entity embeddings | `paraphrase-multilingual-MiniLM-L12-v2` |
+| `AGG_EMBEDDING_MODEL` | Sentence-transformers model for entity embeddings. Shares one process-wide model with `EMBEDDING_MODEL_NAME` and `CHUNK_EMBEDDING_MODEL` when the names match — see [Performance](performance.md#local-embedding-models) | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` |
 | `AGG_SIMILARITY_THRESHOLD` | Cosine similarity threshold for DBSCAN clustering | `0.80` |
 | `AGG_CANDIDATE_SIMILARITY_THRESHOLD` | Lower cosine threshold for permissive merge candidates before symbolic validation | `0.70` |
 | `AGG_LEXICAL_LABEL_JACCARD` | Minimum label token-set Jaccard for the fuzzy lexical-alias tier | `0.5` |
@@ -43,16 +46,14 @@ Lower thresholds merge more aggressively (fewer duplicate entities, higher false
 6. **URI rewrite** — merge graphs under canonical entity URIs
 7. **Provenance** — track which unit contributed each merged triple
 8. **Validation gate** (stategraph only) — after merging, the `VALIDATE_FACTS`
-   node checks post-merge invariants: functional violations
-   (`owl:FunctionalProperty` / max-cardinality-1 harvest), suspect
-   multi-values (≥ 2 distinct numeric values on one predicate, or ≥ 2 objects
-   on a dominantly single-valued predicate), degenerate coreference (one
-   object under ≥ 2 single-valued predicates of one subject — collapsed
-   range bounds), and optional SHACL (`FACTS_SHAPES_DIR`, extra `shacl`).
-   The guards are pairwise, so a chain A–B, B–C can still transitively unite
-   conflicting A and C; the gate catches exactly this: error findings on
-   merged subjects turn the offending cluster into pair vetoes and the facts
-   units are re-aggregated (`FACTS_MERGE_REPAIR_PASSES`, default 1).
+   node checks post-merge invariants and applies LLM-free repairs; see
+   [Facts Validation and SHACL](validation.md). The merge guards are pairwise,
+   so a chain A–B, B–C can still transitively unite conflicting A and C; the
+   gate catches exactly this: *merge-signature* error findings on merged
+   subjects turn the offending cluster into pair vetoes and the facts units are
+   re-aggregated (`FACTS_MERGE_REPAIR_PASSES`, default 1). SHACL findings are
+   deliberately not part of that loop — a constraint violation is not evidence
+   of a bad identity merge.
 
 The standalone **EntityAligner** (`tool/agg/entity_aligner.py`) powers global alignment for the `/match/entities` API (benchmark use), using the same embedding and symbolic regime concepts (`ontology_loose` / `ontology_strict`).
 

@@ -2,17 +2,20 @@ import asyncio
 import logging
 import pathlib
 from io import BytesIO
+from typing import TYPE_CHECKING
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
-from ontocast.config import Config, WebSearchProvider
+from ontocast.config import Config
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.ontology import Ontology, OntologyProperties
 from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
+from ontocast.onto.tenancy import TenancyScope
+from ontocast.runtime import ToolBoxRuntime
 from ontocast.tool import (
     AtomicToolBox,
     ChunkerTool,
@@ -23,20 +26,20 @@ from ontocast.tool import (
 )
 from ontocast.tool.agg.entity_aligner import EntityAligner
 from ontocast.tool.cache import Cacher
-from ontocast.tool.graph_diff import DiffTool
-from ontocast.tool.graph_version_manager import GraphVersionManager
-from ontocast.tool.llm import LLMTool, _active_budget_tracker
+from ontocast.tool.llm import LLMTool
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.sparql import SPARQLTool
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.tool.vector_store import (
     EmbeddingTool,
-    FastembedBm25SparseTool,
     OntologyPatchRetriever,
     VectorStoreManager,
     create_vector_store_manager,
 )
-from ontocast.tool.web_search import DuckDuckGoSearchProvider
+from ontocast.util.loop import require_no_running_loop
+
+if TYPE_CHECKING:
+    from ontocast.registry import ToolBoxRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -110,40 +113,58 @@ class ToolBox:
         config: Configuration object containing all necessary settings.
     """
 
-    def __init__(self, config: Config):
+    @classmethod
+    async def acreate(cls, config: Config) -> "ToolBox":
+        """Construct a ToolBox from inside a running event loop.
+
+        Equivalent to ``ToolBox(config)``, except that LLM provider setup is
+        awaited rather than driven through :func:`asyncio.run` -- which is
+        illegal in a loop and is what makes the plain constructor unusable from
+        async code. Embedders should prefer this, and pair it with
+        ``async with`` so backend connections are released:
+
+        ```python
+        async with await ToolBox.acreate(config) as tools:
+            await tools.initialize()
+        ```
+
+        Args:
+            config: Fully resolved configuration.
+
+        Returns:
+            A ready ToolBox. Call :meth:`initialize` to sync ontologies and
+            prepare backend schema.
+        """
+        runtime = await ToolBoxRuntime.acreate(config)
+        return cls(config, runtime=runtime)
+
+    def __init__(
+        self,
+        config: Config,
+        *,
+        llm: LLMTool | None = None,
+        runtime: "ToolBoxRuntime | None" = None,
+    ):
+        """Build a ToolBox bound to whatever partition ``config`` names.
+
+        Args:
+            config: Fully resolved configuration.
+            llm: Pre-built LLM tool, used when no ``runtime`` is supplied.
+                ``LLMTool.create`` otherwise runs, which cannot be called from
+                inside a running event loop -- prefer :meth:`acreate` there.
+            runtime: Shared tenancy-independent tools. Supplied by
+                :class:`~ontocast.registry.ToolBoxRegistry` so scoped ToolBoxes
+                do not each load an embedding model; built fresh when omitted.
+        """
         # Store the config for later use
         self.config = config
 
         # Get tool configuration
         tool_config = config.get_tool_config()
 
-        # Create shared cache instance with config
-        self.shared_cache = Cacher(config=config)
-
-        # LLM configuration - pass the entire LLM config to the tool
-        self.llm_provider = tool_config.llm_config.provider
-        self.llm: LLMTool = LLMTool.create(
-            config=tool_config.llm_config, cache=self.shared_cache
-        )
-        self.search_provider = None
-        if tool_config.web_search.enabled:
-            if tool_config.web_search.provider == WebSearchProvider.DUCKDUCKGO:
-                self.search_provider = DuckDuckGoSearchProvider(
-                    timeout_seconds=tool_config.web_search.timeout_seconds,
-                    region=tool_config.web_search.region,
-                    safesearch=tool_config.web_search.safesearch,
-                )
-            else:
-                raise ValueError(
-                    f"Unsupported web-search provider: {tool_config.web_search.provider}"
-                )
-        self.atomic_tools = AtomicToolBox(
-            llm_provider=self,
-            search_provider=self.search_provider,
-            web_search_config=tool_config.web_search,
-            facts_validation_config=tool_config.facts_validation,
-            citation_vocabulary=tool_config.chunk_config.citation_vocabulary,
-        )
+        # Tools that do not vary by tenant live on the runtime, so a registry of
+        # scoped ToolBoxes shares one LLM client, converter and embedding model.
+        self.runtime = runtime or ToolBoxRuntime(config, llm=llm)
 
         # Create triple store manager: Fuseki when configured, otherwise in-memory.
         use_fuseki = tool_config.fuseki.uri and tool_config.fuseki.auth
@@ -169,53 +190,34 @@ class ToolBox:
         # outside an event loop.
         self._tenancy_lock: asyncio.Lock | None = None
         self._tenancy_lock_loop: asyncio.AbstractEventLoop | None = None
-        self.converter: ConverterTool = ConverterTool(
-            cache=self.shared_cache,
-            converter_config=tool_config.converter_config,
-        )
-        self.chunker: ChunkerTool = ChunkerTool(
-            chunk_config=tool_config.chunk_config, cache=self.shared_cache
-        )
-        self.aggregator: EmbeddingBasedAggregator = EmbeddingBasedAggregator(
-            embedding_model=tool_config.aggregation.embedding_model,
-            similarity_threshold=tool_config.aggregation.similarity_threshold,
-            candidate_similarity_threshold=(
-                tool_config.aggregation.candidate_similarity_threshold
-            ),
-            lexical_label_jaccard=tool_config.aggregation.lexical_label_jaccard,
-            lexical_sequence_ratio=tool_config.aggregation.lexical_sequence_ratio,
-            lexical_token_jaccard=tool_config.aggregation.lexical_token_jaccard,
-            functional_min_empirical_support=(
-                tool_config.aggregation.functional_min_empirical_support
-            ),
-            sibling_guard_scope=str(tool_config.aggregation.sibling_guard_scope),
-        )
-        self._entity_aligners: dict[tuple[str, float], EntityAligner] = {}
+        # Set by attach_registry() when this ToolBox fronts a multi-tenant host.
+        self._registry: "ToolBoxRegistry | None" = None
 
-        # SPARQL, version management, and diff tools
+        # Graph algorithms over graphs it is handed; it does not fetch.
         self.sparql_tool: SPARQLTool = SPARQLTool(
             triple_store_manager=self.triple_store_manager
         )
-        self.version_manager: GraphVersionManager = GraphVersionManager()
-        self.diff_tool: DiffTool = DiffTool()
 
-        self.embedding_tool: EmbeddingTool = EmbeddingTool.create(tool_config.embedding)
         self.vector_store: VectorStoreManager | None = None
         self.patch_retriever: OntologyPatchRetriever | None = None
         self.vector_store_ready: bool = False
         self.vector_store_last_error: Exception | None = None
 
-        if tool_config.qdrant.uri or tool_config.lancedb.enabled:
-            sparse_embedding = FastembedBm25SparseTool(config=tool_config.embedding)
-            vector_store = create_vector_store_manager(
-                tool_config,
-                embedding=self.embedding_tool,
-                sparse_embedding=sparse_embedding,
-            )
-            if vector_store is None:
-                raise RuntimeError(
-                    "vector store backend is configured but manager was not created"
-                )
+        # The factory owns backend selection, including resolving AUTO and
+        # returning None when the backend is explicitly disabled. Both
+        # supported backends need the BM25 tool, so the only case that skips it
+        # is having no vector store at all.
+        needs_sparse = bool(tool_config.qdrant.uri or tool_config.lancedb.enabled)
+        vector_store = create_vector_store_manager(
+            tool_config,
+            embedding=self.embedding_tool,
+            sparse_embedding=(
+                self.runtime.sparse_embedding_tool(tool_config.embedding)
+                if needs_sparse
+                else None
+            ),
+        )
+        if vector_store is not None:
             self.vector_store = vector_store
             self.patch_retriever = OntologyPatchRetriever(
                 vector_store=vector_store,
@@ -225,6 +227,115 @@ class ToolBox:
             )
             self.ontology_manager.register_vector_store(self.patch_retriever)
 
+    # -- shared runtime delegates -----------------------------------------
+    #
+    # These tools do not vary by tenant and live on the runtime, but they were
+    # ToolBox attributes for the whole life of the project and are read -- and
+    # substituted -- that way across the pipeline, the CLI, the worker and the
+    # tests. Each delegates in both directions, so a caller replacing
+    # `tools.converter` replaces the shared one, which is what it always meant.
+
+    @property
+    def runtime(self) -> ToolBoxRuntime:
+        """Shared tenancy-independent tools.
+
+        Materialized empty on first access when it was never assigned. Several
+        unit tests build a ToolBox with ``ToolBox.__new__(ToolBox)`` to exercise
+        one tool without standing up the whole container, and used to set that
+        tool as a plain attribute; this keeps that working, and reading a tool
+        that was never set still raises ``AttributeError`` for its own name.
+        """
+        runtime = self.__dict__.get("_runtime")
+        if runtime is None:
+            runtime = ToolBoxRuntime.__new__(ToolBoxRuntime)
+            self.__dict__["_runtime"] = runtime
+        return runtime
+
+    @runtime.setter
+    def runtime(self, value: ToolBoxRuntime) -> None:
+        self.__dict__["_runtime"] = value
+
+    @property
+    def shared_cache(self) -> Cacher:
+        """Shared on-disk cache backing the LLM and converter tools."""
+        return self.runtime.shared_cache
+
+    @shared_cache.setter
+    def shared_cache(self, value: Cacher) -> None:
+        self.runtime.shared_cache = value
+
+    @property
+    def llm(self) -> LLMTool:
+        """Shared LLM tool."""
+        return self.runtime.llm
+
+    @llm.setter
+    def llm(self, value: LLMTool) -> None:
+        self.runtime.llm = value
+
+    @property
+    def llm_provider(self):
+        """Configured LLM provider."""
+        return self.runtime.llm_provider
+
+    @llm_provider.setter
+    def llm_provider(self, value) -> None:
+        self.runtime.llm_provider = value
+
+    @property
+    def search_provider(self):
+        """Configured web-search provider, or None when disabled."""
+        return self.runtime.search_provider
+
+    @search_provider.setter
+    def search_provider(self, value) -> None:
+        self.runtime.search_provider = value
+
+    @property
+    def atomic_tools(self) -> AtomicToolBox:
+        """Per-unit tool surface used by the render/critic loops."""
+        return self.runtime.atomic_tools
+
+    @atomic_tools.setter
+    def atomic_tools(self, value: AtomicToolBox) -> None:
+        self.runtime.atomic_tools = value
+
+    @property
+    def converter(self) -> ConverterTool:
+        """Document converter."""
+        return self.runtime.converter
+
+    @converter.setter
+    def converter(self, value: ConverterTool) -> None:
+        self.runtime.converter = value
+
+    @property
+    def chunker(self) -> ChunkerTool:
+        """Text chunker."""
+        return self.runtime.chunker
+
+    @chunker.setter
+    def chunker(self, value: ChunkerTool) -> None:
+        self.runtime.chunker = value
+
+    @property
+    def aggregator(self) -> EmbeddingBasedAggregator:
+        """Facts aggregator."""
+        return self.runtime.aggregator
+
+    @aggregator.setter
+    def aggregator(self, value: EmbeddingBasedAggregator) -> None:
+        self.runtime.aggregator = value
+
+    @property
+    def embedding_tool(self) -> EmbeddingTool:
+        """Dense embedding provider."""
+        return self.runtime.embedding_tool
+
+    @embedding_tool.setter
+    def embedding_tool(self, value: EmbeddingTool) -> None:
+        self.runtime.embedding_tool = value
+
     def get_entity_aligner(
         self,
         embedding_model: str | None = None,
@@ -232,30 +343,15 @@ class ToolBox:
     ) -> EntityAligner:
         """Return a cached entity aligner for the given embedding settings."""
         tool_config = self.config.get_tool_config()
-        model = embedding_model or tool_config.aggregation.embedding_model
-        threshold = (
+        return self.runtime.get_entity_aligner(
+            embedding_model or tool_config.aggregation.embedding_model,
             similarity_threshold
             if similarity_threshold is not None
-            else tool_config.aggregation.similarity_threshold
+            else tool_config.aggregation.similarity_threshold,
         )
-        cache_key = (model, threshold)
-        aligner = self._entity_aligners.get(cache_key)
-        if aligner is None:
-            aligner = EntityAligner(
-                embedding_model=model,
-                similarity_threshold=threshold,
-            )
-            self._entity_aligners[cache_key] = aligner
-        return aligner
 
     async def get_llm_tool(self, budget_tracker):
         """Return the shared LLM tool, charging usage to ``budget_tracker``.
-
-        The tracker is bound to the *calling task* rather than to the shared
-        tool instance. Assigning it to the instance -- as this did previously --
-        meant that with ``PARALLEL_WORKERS`` unit workers in flight, whichever
-        one bound last collected every concurrent call's usage; document totals
-        still summed correctly, but per-unit attribution was arbitrary.
 
         Args:
             budget_tracker: The budget tracker to charge for this task's calls.
@@ -263,8 +359,7 @@ class ToolBox:
         Returns:
             LLMTool: The shared LLM tool.
         """
-        _active_budget_tracker.set(budget_tracker)
-        return self.llm
+        return await self.runtime.get_llm_tool(budget_tracker)
 
     def require_triple_store_manager(self) -> TripleStoreManager:
         """Return the configured triple store manager or raise a clear error."""
@@ -272,6 +367,25 @@ class ToolBox:
         if manager is None:
             raise RuntimeError("Triple store backend is not configured")
         return manager
+
+    def require_vector_store(self) -> VectorStoreManager:
+        """Return the configured vector store or raise a directive error."""
+        if self.vector_store is None:
+            raise RuntimeError(
+                "No vector store is configured. Set QDRANT_URI (Qdrant server) "
+                "or LANCEDB_ENABLED=true (embedded LanceDB); each needs its "
+                "matching extra, ontocast[qdrant] or ontocast[lancedb]."
+            )
+        return self.vector_store
+
+    def require_patch_retriever(self) -> OntologyPatchRetriever:
+        """Return the ontology patch retriever or raise a directive error."""
+        if self.patch_retriever is None:
+            raise RuntimeError(
+                "Ontology patch retrieval needs a vector store. Set QDRANT_URI "
+                "or LANCEDB_ENABLED=true."
+            )
+        return self.patch_retriever
 
     async def aclose(self) -> None:
         """Release every backend connection this ToolBox opened.
@@ -281,9 +395,21 @@ class ToolBox:
         even defined ``close()`` that nothing called. Long-lived hosts that
         build a ToolBox per tenant, and tests that build many, leaked sockets.
 
+        Also closes any scoped ToolBoxes this one spawned through
+        :meth:`for_scope`, so shutting down the ToolBox an application holds
+        releases every tenant's connections too.
+
         Safe to call more than once, and never raises: teardown failures are
         logged, since a caller shutting down cannot act on them.
         """
+        registry = self._registry
+        if registry is not None:
+            self._registry = None
+            try:
+                await registry.aclose()
+            except Exception as exc:
+                logger.warning("Error closing tenancy registry: %s", exc)
+
         if self.triple_store_manager is not None:
             try:
                 await self.triple_store_manager.close()
@@ -301,6 +427,76 @@ class ToolBox:
 
     async def __aexit__(self, *exc_info: object) -> None:
         await self.aclose()
+
+    @property
+    def scope(self) -> TenancyScope | None:
+        """The partition this ToolBox is bound to, once tenancy is assigned."""
+        if self._active_tenancy is None:
+            return None
+        return TenancyScope.build(*self._active_tenancy)
+
+    def attach_registry(self, registry: "ToolBoxRegistry") -> None:
+        """Resolve other partitions through ``registry`` rather than a private one.
+
+        Only needed to share one registry across several ToolBoxes;
+        :meth:`for_scope` builds its own on first use otherwise.
+        """
+        self._registry = registry
+
+    def ensure_tenancy_registry(self) -> "ToolBoxRegistry":
+        """Return this ToolBox's registry, creating it on first use.
+
+        Built lazily so a single-tenant embedder never allocates one, and so
+        nothing has to be wired at construction time.
+        """
+        if self._registry is None:
+            from ontocast.registry import ToolBoxRegistry
+
+            self._registry = ToolBoxRegistry(
+                self.config,
+                self.runtime,
+                max_scopes=self.config.server.max_tenancy_scopes,
+            )
+        return self._registry
+
+    async def for_scope(
+        self,
+        tenant: str,
+        project: str,
+        *,
+        ontology_context_mode: OntologyContextMode | None = None,
+        fail_on_vector_store_error: bool = False,
+    ) -> "ToolBox":
+        """Return a ToolBox bound to ``tenant`` / ``project``.
+
+        Returns ``self`` when the scope already matches. Otherwise resolves
+        through the attached registry, which shares this ToolBox's runtime, so
+        the new scope costs a triple store and an ontology catalog rather than
+        another embedding model.
+
+        Isolation is by construction: each scope owns a deep copy of ``Config``.
+        That copy matters -- vector store managers hold their config sections by
+        reference and rewrite collection names when tenancy is applied, so
+        scopes sharing a ``Config`` would alias each other.
+
+        Args:
+            tenant: Tenant identifier.
+            project: Project identifier within the tenant.
+            ontology_context_mode: Mode to initialize a newly built scope for.
+            fail_on_vector_store_error: Raise rather than log when vector store
+                preparation fails for a newly built scope.
+
+        Returns:
+            A ToolBox bound to the requested partition.
+        """
+        requested = TenancyScope.build(tenant, project)
+        if self._active_tenancy == requested.key:
+            return self
+        return await self.ensure_tenancy_registry().get(
+            requested,
+            ontology_context_mode=ontology_context_mode,
+            fail_on_vector_store_error=fail_on_vector_store_error,
+        )
 
     async def update_tenancy(self, tenant: str, project: str) -> None:
         """Retarget Fuseki datasets and Qdrant collections for ``tenant`` / ``project``."""
@@ -388,10 +584,10 @@ class ToolBox:
                     self.ontology_manager.add_ontology(ontology, skip_vector_index=True)
 
         if self.vector_store is not None:
+            # No config copy-back: `create_vector_store_manager` passes
+            # `tool_config.vector_store` by reference, so `apply_tenancy` has
+            # already rewritten the very object Config holds.
             self.vector_store.apply_tenancy(t, p)
-            vsc = self.config.tool_config.vector_store
-            vsc.ontology_table = self.vector_store.store_config.ontology_table
-            vsc.facts_table = self.vector_store.store_config.facts_table
             if initialize_vector_store:
                 try:
                     await self.vector_store.initialize()
@@ -436,6 +632,22 @@ class ToolBox:
         return self.atomic_tools
 
     def serialize(self, state: AgentState) -> None:
+        """Persist the document's ontologies and facts.
+
+        Drives :meth:`aserialize` under a single :func:`asyncio.run`, so a
+        document with N ontologies costs one event loop and one backend
+        connection rather than N of each -- the per-call sync entry points open
+        (and tear down) a fresh HTTP client every time.
+
+        Raises:
+            RuntimeError: If called from inside a running event loop; await
+                :meth:`aserialize` there instead.
+        """
+        require_no_running_loop("ToolBox.serialize", "ToolBox.aserialize")
+        asyncio.run(self.aserialize(state))
+
+    async def aserialize(self, state: AgentState) -> None:
+        """Persist the document's ontologies and facts (async form)."""
         ontologies_to_serialize = document_ontology_access(
             state
         ).serialization_targets()
@@ -445,9 +657,9 @@ class ToolBox:
 
         if self.triple_store_manager is not None:
             for ontology in ontologies_to_serialize:
-                self.triple_store_manager.serialize(ontology)
+                await self.triple_store_manager.aserialize(ontology)
             if state.render_facts:
-                self.triple_store_manager.serialize(
+                await self.triple_store_manager.aserialize(
                     state.aggregated_facts,
                     graph_uri=state.graph_uri,
                 )
@@ -663,14 +875,14 @@ class ToolBox:
     async def ingest_ontology_ttl(
         self, ttl: bytes, *, filename: str | None = None
     ) -> Ontology:
-        """Persist Turtle to ``ontology_directory``, triple store, and vector index."""
-        import asyncio
+        """Register Turtle in the triple store and the vector index.
 
-        ontology_dir = self.config.tool_config.path_config.ontology_directory
-        if ontology_dir is None:
-            raise ValueError("ontology_directory is not configured")
-        ontology_dir = pathlib.Path(ontology_dir).expanduser()
-        ontology_dir.mkdir(parents=True, exist_ok=True)
+        ``ontology_directory`` is a read-only seed fixture consulted once at
+        init, so nothing is written there: an ingested ontology lives in the
+        triple store and vector index only and does not survive a rebuild from
+        seeds.
+        """
+        import asyncio
 
         graph = RDFGraph()
 
@@ -690,38 +902,23 @@ class ToolBox:
         return o
 
     async def delete_ontology_by_iri(self, ontology_iri: str) -> None:
-        """Remove ontology from manager, vector store, seed files, and triple store."""
+        """Remove ontology from manager, vector store, and triple store.
+
+        ``ontology_directory`` is deliberately untouched. Deletion used to
+        unlink any seed TTL declaring this IRI, which destroyed curated input
+        the next init reloads from — an irreversible edit to the user's files
+        in response to a store-level delete.
+        """
         import asyncio
 
         self.ontology_manager.remove_ontology_by_iri(ontology_iri)
         if self.vector_store is not None:
             await asyncio.to_thread(self.vector_store.delete_ontology, ontology_iri)
 
-        cfg_od = self.config.tool_config.path_config.ontology_directory
-        if cfg_od is not None:
-            self._unlink_ttl_files_if_ontology_iri(
-                ontology_iri, pathlib.Path(cfg_od).expanduser(), "*.ttl"
-            )
-
         if self.triple_store_manager is not None:
             await self.triple_store_manager.drop_all_ontology_graphs_for_iri(
                 ontology_iri
             )
-
-    @staticmethod
-    def _unlink_ttl_files_if_ontology_iri(
-        ontology_iri: str, directory: pathlib.Path, glob_pat: str
-    ) -> None:
-        if not directory.is_dir():
-            return
-        for path in sorted(directory.glob(glob_pat)):
-            try:
-                loaded = Ontology.from_file(path)
-            except Exception:
-                continue
-            if loaded.iri == ontology_iri:
-                path.unlink(missing_ok=True)
-                logger.info("Removed ontology TTL %s", path)
 
 
 async def render_ontology_summary(ontology: Ontology, llm_tool) -> OntologyProperties:

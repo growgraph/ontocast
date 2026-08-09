@@ -1,60 +1,184 @@
-schema_version: "1.0"
+schema_version: "1.1"
 id: academic
 description: IMRaD and common paper or report section headings
+document_profile: >-
+    A scholarly article, conference paper, thesis or literature review reporting
+    original research carried out by its authors -- experiments, measurements or
+    analysis -- and written for a research audience.
+ordered: true
+default_exclude:
+-   acknowledgements
+-   appendix
 labels:
 -   id: abstract
+    order: 10
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?abstract[.:;—\-]*\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?abstract\s*[:.—\-]\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?ABSTRACT\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:executive\s+summary|synopsis)\s*$'
+    keywords:
+    -   abstract
+    -   executive summary
+    -   synopsis
 -   id: introduction
+    order: 20
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?introduction\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:overview|preamble|foreword|preface|motivation)\s*$'
+    keywords:
+    -   introduction
+    -   motivation
+    -   preamble
+    -   foreword
+    -   preface
 -   id: related_work
+    order: 25
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?related\s+work\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:related\s+(?:literature|approaches?|research|studies)|prior\s+(?:work|art)|literature\s+(?:review|survey)|state\s+of\s+the\s+art|survey)\s*$'
+    keywords:
+    -   related work
+    -   related literature
+    -   prior work
+    -   prior art
+    -   literature review
+    -   state of the art
 -   id: background
+    order: 30
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?background\s*$'
+    keywords:
+    -   background
+    -   preliminaries
+    -   theory
 -   id: methods
+    order: 40
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?methods?\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?methodology\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:materials?\s+and\s+)?(?:methods?|methodology|approach|experimental\s+setup|proposed\s+(?:method|model|framework|system)|implementation|design|procedure|protocol|framework|architecture)\s*$'
+    keywords:
+    -   methods
+    -   method
+    -   methodology
+    -   experimental
+    -   experiment section
+    -   materials
+    -   procedure
+    -   protocol
+    -   implementation
+    -   fabrication
+    -   synthesis
+    -   preparation
+    -   characterization
+    -   characterisation
+    -   apparatus
+    -   instrumentation
+    -   simulation details
+    -   computational details
 -   id: results
+    order: 50
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?results?\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:experimental\s+)?(?:results?|findings?|evaluation|experiments?|ablation(?:\s+stud(?:y|ies))?|outcomes?|performance|benchmarks?)\s*$'
+    keywords:
+    -   results
+    -   result
+    -   findings
+    -   evaluation
+    -   ablation
+    -   outcomes
+    -   benchmarks
+    -   measurements
 -   id: discussion
+    order: 60
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?discussion\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:analysis|interpretation|observations?)\s*$'
+    keywords:
+    -   discussion
+    -   interpretation
+    -   implications
 -   id: conclusion
+    order: 70
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?conclusions?\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:conclusions?|concluding\s+remarks?|summary|final\s+remarks?|final\s+thoughts|takeaways?|wrap[\s-]?up)\s*$'
+    keywords:
+    -   conclusion
+    -   conclusions
+    -   concluding remarks
+    -   summary
+    -   takeaways
 -   id: future_work
+    order: 80
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?future\s+work\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:future\s+(?:work|directions?|research)|next\s+steps?|roadmap|outlook)\s*$'
+    keywords:
+    -   future work
+    -   future directions
+    -   future research
+    -   next steps
+    -   outlook
+    -   perspectives
 -   id: limitations
+    order: 85
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?limitations?\s*$'
+    keywords:
+    -   limitations
+    -   threats to validity
 -   id: acknowledgements
+    order: 90
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?acknowledg(?:e?ments?|ments?)\s*$'
+    keywords:
+    -   acknowledgment
+    -   acknowledgments
+    -   acknowledgement
+    -   acknowledgements
+    -   author contributions
+    -   author information
+    -   competing interests
+    -   conflicts of interest
+    -   conflict of interest
+    -   funding
+    -   disclosure
+    -   corresponding authors
 -   id: data
+    order: 95
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?data(?:set|sets)?\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:corpus|data\s+(?:collection|description))\s*$'
+    keywords:
+    -   data availability
+    -   data collection
+    -   data description
+    -   dataset
+    -   datasets
+    -   corpus
+    -   code availability
 -   id: appendix
+    order: 100
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?appendi(?:x|ces)\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:supplementary\s+material|supplement)\s*$'
+    keywords:
+    -   appendix
+    -   appendices
+    -   supplementary material
+    -   supplementary information
+    -   supporting information
+    -   associated content
 -   id: references
+    order: 110
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?references\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:bibliography|works\s+cited)\s*$'
+    keywords:
+    -   references
+    -   bibliography
+    -   works cited
+    -   literature cited

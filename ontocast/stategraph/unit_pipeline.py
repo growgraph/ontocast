@@ -37,6 +37,7 @@ from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.atomic import facts_loop, ontology_loop
 from ontocast.stategraph.context_resolver import UnitOntologyContext
+from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -141,15 +142,18 @@ async def run_unit_pipeline(
             ontology_user_instruction=agent_state.ontology_user_instruction,
             budget_tracker=deepcopy(agent_state.budget_tracker),
             max_visits_per_node=max_visits,
+            max_critic_visits_per_node=(tools.config.server.max_critic_visits_per_node),
             current_domain=agent_state.current_domain,
             ontology_max_triples=tools.config.server.ontology_max_triples,
             llm_graph_format=agent_state.llm_graph_format,
         )
         logger.info("run_unit_pipeline: starting ontology loop")
-        onto_result = await ontology_loop(ontology_state, tools, agent_state)
+        ontology_context = UnitLoopContext.from_agent_state(agent_state)
+        onto_result = await ontology_loop(ontology_state, tools, ontology_context)
         logger.info(
             "run_unit_pipeline: ontology loop finished (status=%s)", onto_result.status
         )
+        agent_state.retrieval_metrics.update(ontology_context.retrieval_metrics)
         agent_state.budget_tracker = onto_result.budget_tracker
         if (
             onto_result.fresh_ontology is not None
@@ -171,18 +175,21 @@ async def run_unit_pipeline(
             facts_user_instruction=agent_state.facts_user_instruction,
             budget_tracker=deepcopy(agent_state.budget_tracker),
             max_visits_per_node=max_visits,
+            max_critic_visits_per_node=(tools.config.server.max_critic_visits_per_node),
             llm_graph_format=agent_state.llm_graph_format,
         )
         logger.info("run_unit_pipeline: starting facts loop")
+        facts_context = UnitLoopContext.from_agent_state(agent_state)
         facts_result = await facts_loop(
             facts_state,
             tools,
-            agent_state,
+            facts_context,
             pre_resolved_context=facts_pre_resolved_context,
         )
         logger.info(
             "run_unit_pipeline: facts loop finished (status=%s)", facts_result.status
         )
+        agent_state.retrieval_metrics.update(facts_context.retrieval_metrics)
         agent_state.budget_tracker = facts_result.budget_tracker
 
     return onto_result, facts_result

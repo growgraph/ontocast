@@ -16,9 +16,9 @@ extracted as ordinary content, which is the pre-existing behaviour.
 
 Routing is decided by ``CHUNK_BIBLIOGRAPHY_MODE``:
 
-- ``citations_only`` (default): units are marked ``is_citation_metadata`` and
-  the facts renderer extracts bibliographic metadata only;
-- ``skip``: units are dropped before extraction;
+- ``citations_only``: units are marked ``is_citation_metadata`` and the facts
+  renderer extracts bibliographic metadata only;
+- ``skip`` (default): units are dropped before extraction;
 - ``domain_facts``: legacy behavior, no special handling.
 """
 

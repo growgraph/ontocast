@@ -50,6 +50,7 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+.test_cache/
 cover/
 
 # Translations
@@ -183,3 +184,6 @@ cython_debug/
 !.env.example
 
 .claude/worktrees
+
+# plot-graph scratch output; the canonical copy lives in docs/assets/
+/graph.mmd

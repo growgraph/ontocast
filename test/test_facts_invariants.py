@@ -8,6 +8,7 @@ against a closed individual range.
 """
 
 from rdflib import RDF, Literal, URIRef
+from rdflib.namespace import XSD
 
 from ontocast.onto.model import FactsUnitFindingKind
 from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
@@ -275,3 +276,302 @@ def test_format_findings_for_prompt_sections() -> None:
     assert "## MANDATORY fixes" in prompt
     assert "## Verify numeric coverage" in prompt
     assert "42.5" in prompt
+
+
+def _bounds_ontology() -> RDFGraph:
+    graph = _ontology()
+    graph.parse(
+        data=f"""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix qudt: <{QUDT}> .
+        @prefix qqval: <{QQVAL}> .
+        qudt:numericValue a owl:FunctionalProperty .
+        qqval:numericLowerBound a owl:DatatypeProperty, owl:FunctionalProperty .
+        qqval:numericUpperBound a owl:DatatypeProperty, owl:FunctionalProperty .
+        qqval:numericUncertainty a owl:DatatypeProperty .
+        """,
+        format="turtle",
+    )
+    return graph
+
+
+def _scalar_as_bounds(findings):
+    return [
+        finding
+        for finding in findings
+        if finding.kind is FactsUnitFindingKind.SCALAR_AS_BOUNDS
+    ]
+
+
+def test_scalar_as_bounds_flags_equal_functional_bounds() -> None:
+    graph = _facts(
+        """
+        cd:qv qqval:numericLowerBound "523"^^xsd:decimal ;
+            qqval:numericUpperBound "523"^^xsd:decimal .
+        """
+    )
+    findings = collect_unit_findings(
+        graph=graph,
+        ontology_graph=_bounds_ontology(),
+        quarantined=[],
+        extraction_text="",
+        fact_namespaces=[FACTS],
+    )
+    flagged = _scalar_as_bounds(findings)
+    assert len(flagged) == 1
+    assert flagged[0].mandatory
+    assert flagged[0].value == "523"
+    assert "numericLowerBound" in flagged[0].message
+    assert "numericUpperBound" in flagged[0].message
+
+
+def test_scalar_as_bounds_matches_across_datatype_spellings() -> None:
+    graph = _facts(
+        """
+        cd:qv qqval:numericLowerBound "5.0"^^xsd:double ;
+            qqval:numericUpperBound "5"^^xsd:decimal .
+        """
+    )
+    findings = collect_unit_findings(
+        graph=graph,
+        ontology_graph=_bounds_ontology(),
+        quarantined=[],
+        extraction_text="",
+        fact_namespaces=[FACTS],
+    )
+    assert len(_scalar_as_bounds(findings)) == 1
+
+
+def test_scalar_as_bounds_ignores_distinct_values() -> None:
+    graph = _facts(
+        """
+        cd:qv qqval:numericLowerBound "500"^^xsd:decimal ;
+            qqval:numericUpperBound "550"^^xsd:decimal .
+        """
+    )
+    findings = collect_unit_findings(
+        graph=graph,
+        ontology_graph=_bounds_ontology(),
+        quarantined=[],
+        extraction_text="",
+        fact_namespaces=[FACTS],
+    )
+    assert _scalar_as_bounds(findings) == []
+
+
+def test_scalar_as_bounds_ignores_non_functional_predicates() -> None:
+    # numericUncertainty is not functional in the fixture schema.
+    graph = _facts(
+        """
+        cd:qv qudt:numericValue "8.5"^^xsd:decimal ;
+            qqval:numericUncertainty "8.5"^^xsd:decimal .
+        """
+    )
+    findings = collect_unit_findings(
+        graph=graph,
+        ontology_graph=_bounds_ontology(),
+        quarantined=[],
+        extraction_text="",
+        fact_namespaces=[FACTS],
+    )
+    assert _scalar_as_bounds(findings) == []
+
+
+def test_scalar_as_bounds_ignores_non_fact_namespace_subjects() -> None:
+    graph = _facts(
+        """
+        qqval:someIndividual qqval:numericLowerBound "3"^^xsd:decimal ;
+            qqval:numericUpperBound "3"^^xsd:decimal .
+        """
+    )
+    findings = collect_unit_findings(
+        graph=graph,
+        ontology_graph=_bounds_ontology(),
+        quarantined=[],
+        extraction_text="",
+        fact_namespaces=[FACTS],
+    )
+    assert _scalar_as_bounds(findings) == []
+
+
+def test_scalar_as_bounds_no_ontology_graph_is_silent() -> None:
+    graph = _facts(
+        """
+        cd:qv qqval:numericLowerBound "3"^^xsd:decimal ;
+            qqval:numericUpperBound "3"^^xsd:decimal .
+        """
+    )
+    findings = collect_unit_findings(
+        graph=graph,
+        ontology_graph=None,
+        quarantined=[],
+        extraction_text="",
+        fact_namespaces=[FACTS],
+    )
+    assert _scalar_as_bounds(findings) == []
+
+
+def test_fact_namespace_class_in_type_position_is_flagged() -> None:
+    graph = _facts("cd:owlSameasLz a cd:Link .")
+    findings = collect_unit_findings(
+        graph=graph,
+        ontology_graph=_ontology(),
+        quarantined=[],
+        extraction_text="",
+        fact_namespaces=[FACTS],
+    )
+    flagged = [
+        finding
+        for finding in findings
+        if finding.kind is FactsUnitFindingKind.UNKNOWN_TERM
+        and finding.predicate == f"{FACTS}Link"
+    ]
+    assert len(flagged) == 1
+    assert flagged[0].mandatory
+    assert "class" in flagged[0].message
+
+
+def test_catalog_class_in_type_position_not_flagged_as_fact_class() -> None:
+    graph = _facts("cd:qv a qudt:Unit .")
+    findings = collect_unit_findings(
+        graph=graph,
+        ontology_graph=_ontology(),
+        quarantined=[],
+        extraction_text="",
+        fact_namespaces=[FACTS],
+    )
+    assert not any(
+        finding.predicate == "http://qudt.org/schema/qudt/Unit"
+        and "facts/document namespace" in finding.message
+        for finding in findings
+    )
+
+
+def _dated_ontology() -> RDFGraph:
+    """Ranges exercising the non-numeric and the unsafe-target paths."""
+    graph = RDFGraph()
+    graph.parse(
+        data="""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix ex: <http://example.org/> .
+        ex:publishedYear a owl:DatatypeProperty ; rdfs:range xsd:gYear .
+        ex:measuredOn a owl:DatatypeProperty ; rdfs:range xsd:date .
+        ex:note a owl:DatatypeProperty ; rdfs:range xsd:string .
+        ex:reference a owl:DatatypeProperty ; rdfs:range xsd:anyURI .
+        ex:amount a owl:DatatypeProperty ; rdfs:range xsd:decimal .
+        """,
+        format="turtle",
+    )
+    return graph
+
+
+def test_normalize_literals_retypes_a_declared_non_numeric_range() -> None:
+    """A gYear range receiving an xsd:string was left alone before."""
+    graph = _facts(
+        'cd:doc ex:publishedYear "2019"^^xsd:string ; ex:measuredOn "2021-04-05" .'
+    )
+    retyped = normalize_literals_against_schema(graph, _dated_ontology())
+
+    assert retyped == 2
+    assert (
+        URIRef(f"{FACTS}doc"),
+        URIRef("http://example.org/publishedYear"),
+        Literal("2019", datatype=XSD.gYear),
+    ) in graph
+    assert (
+        URIRef(f"{FACTS}doc"),
+        URIRef("http://example.org/measuredOn"),
+        Literal("2021-04-05", datatype=XSD.date),
+    ) in graph
+
+
+def test_normalize_literals_never_retypes_toward_string_or_anyuri() -> None:
+    """Every lexical form parses as those, so a range declaring one must not fire.
+
+    Admitting them would let a single sloppy ``rdfs:range`` rewrite correctly
+    typed values across the whole graph.
+    """
+    graph = _facts(
+        'cd:doc ex:note "42"^^xsd:decimal ; ex:reference "not-a-uri"^^xsd:decimal .'
+    )
+    retyped = normalize_literals_against_schema(graph, _dated_ontology())
+
+    assert retyped == 0
+    assert (
+        URIRef(f"{FACTS}doc"),
+        URIRef("http://example.org/note"),
+        Literal("42", datatype=XSD.decimal),
+    ) in graph
+
+
+def test_normalize_literals_leaves_language_tagged_literals_alone() -> None:
+    """Retyping an rdf:langString would silently discard the language tag."""
+    graph = _facts('cd:doc ex:publishedYear "2019"@en .')
+    retyped = normalize_literals_against_schema(graph, _dated_ontology())
+
+    assert retyped == 0
+    assert (
+        URIRef(f"{FACTS}doc"),
+        URIRef("http://example.org/publishedYear"),
+        Literal("2019", lang="en"),
+    ) in graph
+
+
+def test_normalize_literals_still_promotes_numeric_to_numeric() -> None:
+    """The pre-existing integer -> decimal promotion must survive the widening."""
+    graph = _facts('cd:doc ex:amount "7"^^xsd:integer .')
+    retyped = normalize_literals_against_schema(graph, _dated_ontology())
+
+    assert retyped == 1
+    assert (
+        URIRef(f"{FACTS}doc"),
+        URIRef("http://example.org/amount"),
+        Literal("7", datatype=XSD.decimal),
+    ) in graph
+
+
+def test_normalize_literals_does_not_retype_an_unparseable_lexical_form() -> None:
+    graph = _facts('cd:doc ex:publishedYear "sometime in 2019" .')
+    assert normalize_literals_against_schema(graph, _dated_ontology()) == 0
+
+
+def test_normalize_literals_never_retypes_toward_boolean_or_time() -> None:
+    """Both accept nonsense, so a range declaring one must not drive a retype.
+
+    ``Literal("2019", datatype=xsd:boolean).value`` is ``False`` rather than
+    ``None``, and ``"2019"`` parses as ``xsd:time`` 20:19 -- so a parse check
+    alone would happily rewrite a year into a boolean or a clock time.
+    """
+    ontology = RDFGraph()
+    ontology.parse(
+        data="""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix ex: <http://example.org/> .
+        ex:flag a owl:DatatypeProperty ; rdfs:range xsd:boolean .
+        ex:at a owl:DatatypeProperty ; rdfs:range xsd:time .
+        """,
+        format="turtle",
+    )
+    graph = _facts('cd:doc ex:flag "2019" ; ex:at "2019" .')
+
+    assert normalize_literals_against_schema(graph, ontology) == 0
+    for predicate in ("flag", "at"):
+        objects = list(
+            graph.objects(
+                URIRef(f"{FACTS}doc"), URIRef(f"http://example.org/{predicate}")
+            )
+        )
+        assert [str(obj) for obj in objects] == ["2019"]
+        literal = objects[0]
+        assert isinstance(literal, Literal)
+        assert literal.datatype in (None, XSD.string)
+
+
+def test_normalize_literals_rejects_a_malformed_gregorian_lexical_form() -> None:
+    """gYear has no rdflib value parser, so its lexical space is checked here."""
+    graph = _facts('cd:doc ex:publishedYear "19" .')
+    assert normalize_literals_against_schema(graph, _dated_ontology()) == 0

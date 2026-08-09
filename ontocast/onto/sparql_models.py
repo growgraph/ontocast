@@ -2,10 +2,11 @@
 
 ``GraphUpdate`` / ``TripleOp`` are the canonical LLM pipeline mutation abstraction
 (ordered insert/delete triple patches). ``SPARQLOperationModel`` is used by tooling
-(``tool/sparql.py``, ``graph_version_manager.py``) — a separate path.
+(``tool/sparql.py``) — a separate path.
 """
 
 import logging
+from collections.abc import Set
 from typing import Any
 from typing import Literal as TypingLiteral
 
@@ -15,13 +16,28 @@ from rdflib import BNode, Literal, Node, URIRef
 from ontocast.onto.constants import COMMON_PREFIXES
 from ontocast.onto.enum import SPARQLOperationType
 from ontocast.onto.llm_graph_payload import LLMGraphWire
-from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.rdfgraph import RDFGraph, copy_triples, is_rdflib_triple
 
 logger = logging.getLogger(__name__)
 
 # Convert COMMON_PREFIXES from Turtle format (with angle brackets) to SPARQL format (without)
 # Example: "<http://example.org/>" -> "http://example.org/"
 STANDARD_PREFIXES = {prefix: uri.strip("<>") for prefix, uri in COMMON_PREFIXES.items()}
+
+# SPARQL ECHAR escapes for the lexical form of a quoted literal. ``str.translate``
+# maps each character in a single pass, so the backslash entry does not re-escape
+# the replacements.
+_LITERAL_ESCAPES = str.maketrans(
+    {
+        "\\": "\\\\",
+        '"': '\\"',
+        "\n": "\\n",
+        "\r": "\\r",
+        "\t": "\\t",
+        "\b": "\\b",
+        "\f": "\\f",
+    }
+)
 
 
 class SPARQLOperationModel(BaseModel):
@@ -126,10 +142,15 @@ class GraphUpdate(BaseModel):
                 else:
                     prefix_block = ""
 
+                declared = frozenset(prefixes)
                 if op.type == "insert":
-                    triple_query = self._generate_insert_query(op.graph, prefix_block)
+                    triple_query = self._generate_insert_query(
+                        op.graph, prefix_block, declared
+                    )
                 else:
-                    triple_query = self._generate_delete_query(op.graph, prefix_block)
+                    triple_query = self._generate_delete_query(
+                        op.graph, prefix_block, declared
+                    )
                 queries.append(triple_query)
 
         return queries
@@ -154,8 +175,9 @@ class GraphUpdate(BaseModel):
         result = RDFGraph()
         for op in self.triple_operations:
             if op.type == "insert" and len(op.graph) > 0:
-                for triple in op.graph:
-                    result.add(triple)
+                copy_triples(
+                    op.graph, result, origin="GraphUpdate.extract_insert_graph"
+                )
                 for prefix, uri in op.graph.namespaces():
                     if prefix:
                         result.bind(prefix, uri)
@@ -191,10 +213,13 @@ class GraphUpdate(BaseModel):
                     )
                     diff_parts.append(f"   Prefixes: {prefix_list}")
 
-                for subject, predicate, obj in op.graph:
+                # Mirror the prefix set generate_sparql_queries declares, so the
+                # summary abbreviates exactly what the emitted query does.
+                declared = frozenset(STANDARD_PREFIXES) | frozenset(all_prefixes)
+                for subject, predicate, obj in self._serializable_triples(op.graph):
                     symbol = "+" if op.type == "insert" else "-"
                     diff_parts.append(
-                        f"   {symbol} {self._serialize_rdf_term(subject)} {self._serialize_rdf_term(predicate)} {self._serialize_rdf_term(obj)}"
+                        f"   {symbol} {self._serialize_rdf_term(subject, declared)} {self._serialize_rdf_term(predicate, declared)} {self._serialize_rdf_term(obj, declared)}"
                     )
                 operation_count += 1
 
@@ -206,16 +231,43 @@ class GraphUpdate(BaseModel):
 
         return summary
 
-    def _generate_insert_query(self, graph: RDFGraph, prefix_block: str) -> str:
+    @staticmethod
+    def _serializable_triples(graph: RDFGraph) -> list[tuple[Node, Node, Node]]:
+        """Return the triples of ``graph`` that SPARQL can express.
+
+        Oxigraph-backed graphs yield RDF 1.2 triple terms as plain tuples, which
+        have no SPARQL syntax. Dropping them keeps the rest of the update valid;
+        emitting them produced a Python repr inside the query and a
+        ``ParseException`` at apply time.
+        """
+        triples: list[tuple[Node, Node, Node]] = []
+        dropped = 0
+        for triple in graph:
+            if not is_rdflib_triple(triple):
+                dropped += 1
+                continue
+            triples.append(triple)
+        if dropped:
+            logger.warning(
+                "Skipped %d RDF 1.2 triple-term triple(s): not expressible in SPARQL",
+                dropped,
+            )
+        return triples
+
+    def _generate_insert_query(
+        self, graph: RDFGraph, prefix_block: str, prefixes: Set[str] = frozenset()
+    ) -> str:
         """Generate a SPARQL INSERT query for the given RDFGraph."""
         if len(graph) == 0:
             return ""
 
         triple_patterns = []
-        for subject, predicate, obj in graph:
+        for subject, predicate, obj in self._serializable_triples(graph):
             triple_patterns.append(
-                f"    {self._serialize_rdf_term(subject)} {self._serialize_rdf_term(predicate)} {self._serialize_rdf_term(obj)} ."
+                f"    {self._serialize_rdf_term(subject, prefixes)} {self._serialize_rdf_term(predicate, prefixes)} {self._serialize_rdf_term(obj, prefixes)} ."
             )
+        if not triple_patterns:
+            return ""
 
         triples_block = "\n".join(triple_patterns)
 
@@ -228,16 +280,20 @@ class GraphUpdate(BaseModel):
 
         return "\n".join(query_parts)
 
-    def _generate_delete_query(self, graph: RDFGraph, prefix_block: str) -> str:
+    def _generate_delete_query(
+        self, graph: RDFGraph, prefix_block: str, prefixes: Set[str] = frozenset()
+    ) -> str:
         """Generate a SPARQL DELETE query for the given RDFGraph."""
         if len(graph) == 0:
             return ""
 
         triple_patterns = []
-        for subject, predicate, obj in graph:
+        for subject, predicate, obj in self._serializable_triples(graph):
             triple_patterns.append(
-                f"    {self._serialize_rdf_term(subject)} {self._serialize_rdf_term(predicate)} {self._serialize_rdf_term(obj)} ."
+                f"    {self._serialize_rdf_term(subject, prefixes)} {self._serialize_rdf_term(predicate, prefixes)} {self._serialize_rdf_term(obj, prefixes)} ."
             )
+        if not triple_patterns:
+            return ""
 
         triples_block = "\n".join(triple_patterns)
 
@@ -250,21 +306,61 @@ class GraphUpdate(BaseModel):
 
         return "\n".join(query_parts)
 
-    def _serialize_rdf_term(self, term: Node) -> str:
-        """Serialize an RDF term to its SPARQL string representation."""
+    @staticmethod
+    def _is_declared_prefixed_name(value: str, prefixes: Set[str]) -> bool:
+        """True when ``value`` is a ``prefix:local`` name the query declares.
+
+        The LLM emits some terms already abbreviated, and those must pass through
+        unbracketed so the ``PREFIX`` block resolves them. Testing for a bare
+        colon instead — as this did — also matched absolute IRIs in every
+        non-``http`` scheme (``urn:``, ``doi:``, ``file:``, ``mailto:``), which
+        then reached the parser as undefined prefixed names. Matching against the
+        declared prefixes makes the distinction exact rather than heuristic.
+        """
+        prefix, separator, local = value.partition(":")
+        if not separator or prefix not in prefixes:
+            return False
+        # A local part carrying IRI structure means the match was a scheme
+        # collision, not an abbreviation.
+        return local != "" and not any(char in local for char in ":/#[]?@")
+
+    def _serialize_rdf_term(self, term: Node, prefixes: Set[str] = frozenset()) -> str:
+        """Serialize an RDF term to its SPARQL string representation.
+
+        Args:
+            term: The term to serialize.
+            prefixes: Prefix labels declared in the query's ``PREFIX`` block;
+                only these are honoured as abbreviations.
+
+        Raises:
+            TypeError: If ``term`` is not a term SPARQL can express. Callers
+                filter with :meth:`_serializable_triples` first; falling back to
+                ``str(term)`` here used to bury a Python repr inside the query,
+                which only surfaced as a ``ParseException`` at apply time.
+        """
         if isinstance(term, URIRef):
-            if ":" in str(term) and not str(term).startswith("http"):
+            if self._is_declared_prefixed_name(str(term), prefixes):
                 return str(term)
-            else:
-                return f"<{term}>"
+            return f"<{term}>"
         elif isinstance(term, BNode):
             return f"_:{term}"
         elif isinstance(term, Literal):
+            # Interpolating into bare quotes, as this did, let any literal
+            # containing a quote, backslash or newline -- routine in extracted
+            # text -- close the string early and fail the whole update with a
+            # ParseException at apply time.
+            #
+            # Escaped here rather than via ``Literal.n3()``: n3 emits a raw tab
+            # inside the quoted form, and rdflib's own SPARQL parser reads that
+            # back as spaces, so a tab-bearing literal round-tripped to a
+            # different value. Every escape below is a SPARQL ECHAR.
+            lexical = f'"{str(term).translate(_LITERAL_ESCAPES)}"'
             if term.language:
-                return f'"{term}"@{term.language}'
-            elif term.datatype:
-                return f'"{term}"^^<{term.datatype}>'
-            else:
-                return f'"{term}"'
+                return f"{lexical}@{term.language}"
+            if term.datatype:
+                return f"{lexical}^^<{term.datatype}>"
+            return lexical
         else:
-            return str(term)
+            raise TypeError(
+                f"Cannot serialize {type(term).__name__} as a SPARQL term: {term!r}"
+            )

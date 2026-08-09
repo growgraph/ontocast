@@ -43,15 +43,14 @@ We welcome contributions! This document provides guidelines for contributing to 
 - Keep `README.md` concise; put detailed explanations in `docs/`.
 - Update `CHANGELOG.md` for user-visible changes.
 
-### Retrieval recall harness
+### Retrieval quality
 
-Ontology retrieval quality is measured by `test/test_retrieval_recall.py` (real embeddings +
-Qdrant). Point `ONTOCAST_RECALL_CORPUS` at a prebuilt corpus, or use `ONTOCAST_RECALL_ROOT`
-for Text2KGBench-style layouts. See [Ontology Context — Diagnostics](user_guide/ontology_context.md#diagnostics).
-
-```bash
-bash -c 'set -a; source .env; set +a; uv run pytest test/test_retrieval_recall.py -v -s'
-```
+The in-repo recall harness was removed in the 2026-08 test trim; retrieval
+quality is evaluated out-of-repo (see the `ontocast-validation` benchmark
+scripts). What remains in-repo: `test/test_retrieval_predicate_recall.py` for
+predicate-surface coverage, and the per-run `retrieval_metrics` reported by the
+API and batch dumps. See
+[Ontology Context — Diagnostics](user_guide/ontology_context.md#diagnostics).
 
 ## Code Style
 

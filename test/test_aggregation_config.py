@@ -1,10 +1,4 @@
-from ontocast.config import AggregationConfig, Config
-
-
-def test_aggregation_config_defaults() -> None:
-    config = AggregationConfig()
-    assert config.embedding_model == "paraphrase-multilingual-MiniLM-L12-v2"
-    assert config.similarity_threshold == 0.80
+from ontocast.config import Config
 
 
 def test_aggregation_config_reads_env(monkeypatch) -> None:

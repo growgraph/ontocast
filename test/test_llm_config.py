@@ -1,5 +1,7 @@
 """Tests for LLM provider/model configuration validation."""
 
+import logging
+
 import pytest
 
 from ontocast.config import (
@@ -39,11 +41,48 @@ def test_llm_config_accepts_matching_provider_and_model(
         (LLMProvider.GOOGLE, ClaudeModel.CLAUDE_SONNET_4),
     ],
 )
-def test_llm_config_rejects_mismatched_provider_and_model(
-    provider: LLMProvider, model_name
+def test_llm_config_warns_but_accepts_mismatched_provider_and_model(
+    provider: LLMProvider, model_name, caplog
 ) -> None:
-    with pytest.raises(ValueError, match="not compatible"):
-        LLMConfig(provider=provider, model_name=model_name)
+    # Not an error: a cross-provider name is legitimate behind an
+    # OpenAI-compatible base_url, and indistinguishable from a typo here.
+    with caplog.at_level(logging.WARNING, logger="ontocast.config.settings"):
+        config = LLMConfig(provider=provider, model_name=model_name)
+    assert config.model_name == model_name
+    assert "is not a known" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    ["kimi-k3", "qwen3-max", "some-model-released-next-week"],
+)
+def test_llm_config_accepts_arbitrary_model_names(model_name: str, caplog) -> None:
+    # The presets are not a whitelist. Hosted Qwen/Kimi and anything newer than
+    # this package must reach the provider through base_url without a release.
+    with caplog.at_level(logging.WARNING, logger="ontocast.config.settings"):
+        config = LLMConfig(
+            provider=LLMProvider.OPENAI,
+            model_name=model_name,
+            base_url="https://api.moonshot.ai/v1",
+        )
+    assert config.model_name == model_name
+    assert "is not a known" in caplog.text
+
+
+def test_llm_config_does_not_warn_for_a_known_preset(caplog) -> None:
+    with caplog.at_level(logging.WARNING, logger="ontocast.config.settings"):
+        LLMConfig(provider=LLMProvider.OPENAI, model_name=OpenAIModel.GPT4_O_MINI)
+    assert caplog.text == ""
+
+
+def test_a_preset_named_as_a_plain_string_normalises_without_warning(caplog) -> None:
+    # LLM_MODEL_NAME always arrives as a string, and with `str` in the union
+    # pydantic has no reason to prefer the enum -- so without normalisation
+    # every env-configured run warned about a model that is a known preset.
+    with caplog.at_level(logging.WARNING, logger="ontocast.config.settings"):
+        config = LLMConfig(provider=LLMProvider.OLLAMA, model_name="kimi-k3")
+    assert config.model_name is OllamaModel.KIMI_K3
+    assert caplog.text == ""
 
 
 @pytest.mark.parametrize(

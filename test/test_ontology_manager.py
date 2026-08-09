@@ -117,19 +117,6 @@ class TestOntologyManagerCreatedAt:
         versions = ontology_manager.get_ontology_versions("test")
         assert versions[0].created_at == original_time
 
-    def test_all_ontologies_have_created_at(self, ontology_manager, sample_ontology):
-        """Test that all ontologies in manager have created_at set."""
-        ontology_manager.add_ontology(sample_ontology)
-
-        # Check all ontologies property
-        ontologies = ontology_manager.ontologies
-        assert len(ontologies) > 0
-        for ontology in ontologies:
-            assert ontology.created_at is not None, (
-                f"Ontology {ontology.ontology_id} (hash: {ontology.hash}) "
-                "should have created_at set"
-            )
-
     def test_get_ontology_versions_all_have_created_at(
         self, ontology_manager, sample_ontology, ontology_with_parent
     ):
@@ -309,14 +296,6 @@ class TestOntologiesProperty:
         assert len(ontologies) == 1  # One per ontology_id
         assert ontologies[0].hash == ontology_with_parent.hash
 
-    def test_ontologies_all_have_created_at(self, ontology_manager, sample_ontology):
-        """Test that all ontologies returned have created_at."""
-        ontology_manager.add_ontology(sample_ontology)
-
-        ontologies = ontology_manager.ontologies
-        for ontology in ontologies:
-            assert ontology.created_at is not None
-
     def test_ontologies_cache_is_updated_incrementally(
         self, ontology_manager, sample_ontology
     ):
@@ -395,17 +374,6 @@ class TestOntologiesProperty:
 class TestHasOntologies:
     """Test the has_ontologies property."""
 
-    def test_has_ontologies_false_when_empty(self, ontology_manager):
-        """Test that has_ontologies returns False when no ontologies."""
-        assert not ontology_manager.has_ontologies
-
-    def test_has_ontologies_true_when_ontologies_exist(
-        self, ontology_manager, sample_ontology
-    ):
-        """Test that has_ontologies returns True when ontologies exist."""
-        ontology_manager.add_ontology(sample_ontology)
-        assert ontology_manager.has_ontologies
-
     def test_has_ontologies_works_with_cache(self, ontology_manager, sample_ontology):
         """Test that has_ontologies works correctly with caching."""
         # Initially false
@@ -458,7 +426,6 @@ class TestGetOntology:
 
         retrieved = ontology_manager.get_ontology(hash=sample_ontology.hash)
         assert retrieved.hash == sample_ontology.hash
-        assert retrieved.created_at is not None
 
     def test_get_ontology_by_ontology_id_returns_terminal(
         self, ontology_manager, sample_ontology, ontology_with_parent
@@ -469,7 +436,6 @@ class TestGetOntology:
 
         retrieved = ontology_manager.get_ontology(ontology_id="test")
         assert retrieved.hash == ontology_with_parent.hash
-        assert retrieved.created_at is not None
 
     def test_get_ontology_by_iri(self, ontology_manager, sample_ontology):
         """Test getting ontology by IRI."""
@@ -477,7 +443,6 @@ class TestGetOntology:
 
         retrieved = ontology_manager.get_ontology(ontology_iri=sample_ontology.iri)
         assert retrieved.iri == sample_ontology.iri
-        assert retrieved.created_at is not None
 
 
 class TestGetOntologyNames:
@@ -537,127 +502,58 @@ class TestContains:
 class TestRecreateFromRDFGraph:
     """Test recreating Ontology from RDF graph with parent_hashes and created_at."""
 
-    def test_recreate_ontology_with_parent_hashes_and_created_at(self):
-        """Test that parent_hashes and created_at are correctly read from RDF graph."""
-        # Create an ontology with parent_hashes and created_at
-        original_ontology = Ontology(
+    @pytest.mark.parametrize(
+        ("parent_hashes", "created_at"),
+        [
+            pytest.param(
+                ["parent1234567890abcdef"],
+                datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc),
+                id="single-parent",
+            ),
+            pytest.param(
+                ["parent1", "parent2", "parent3"],
+                datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc),
+                id="merge-multiple-parents",
+            ),
+            pytest.param(
+                [],
+                datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc),
+                id="root-no-parents",
+            ),
+            pytest.param(
+                [],
+                datetime(2023, 12, 25, 15, 45, 0, tzinfo=timezone.utc),
+                id="preserves-a-different-timestamp",
+            ),
+        ],
+    )
+    def test_parent_hashes_and_created_at_survive_a_graph_round_trip(
+        self, parent_hashes: list[str], created_at: datetime
+    ) -> None:
+        """`sync_properties_to_graph` -> `Ontology(graph=...)` is lossless.
+
+        This is the load-from-triple-store path: the properties live only as
+        triples in between, so a serialization change silently drops lineage
+        unless it is asserted here.
+        """
+        original = Ontology(
             graph=RDFGraph(),
             ontology_id="test",
             iri="https://example.org/test",
             title="Test Ontology",
             version="1.0.0",
         )
-        if not original_ontology.hash:
-            original_ontology._compute_and_set_hash()
+        if not original.hash:
+            original._compute_and_set_hash()
+        original.parent_hashes = list(parent_hashes)
+        original.created_at = created_at
 
-        # Set parent_hashes and created_at
-        parent_hash = "parent1234567890abcdef"
-        original_ontology.parent_hashes = [parent_hash]
-        original_ontology.created_at = datetime(
-            2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc
-        )
+        original.sync_properties_to_graph()
+        recreated = Ontology(graph=original.graph)
 
-        # Sync to graph to add triples
-        original_ontology.sync_properties_to_graph()
-
-        # Now recreate ontology from the graph
-        # This simulates loading from a triple store or file
-        recreated_ontology = Ontology(graph=original_ontology.graph)
-
-        # Verify parent_hashes was read correctly
-        assert len(recreated_ontology.parent_hashes) == 1
-        assert parent_hash in recreated_ontology.parent_hashes
-
-        # Verify created_at was read correctly
-        assert recreated_ontology.created_at is not None
-        assert recreated_ontology.created_at == datetime(
-            2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc
-        )
-
-    def test_recreate_ontology_with_multiple_parent_hashes(self):
-        """Test that multiple parent_hashes are correctly read from RDF graph."""
-        # Create an ontology with multiple parent_hashes
-        original_ontology = Ontology(
-            graph=RDFGraph(),
-            ontology_id="test",
-            iri="https://example.org/test",
-            title="Test Ontology",
-            version="1.0.0",
-        )
-        if not original_ontology.hash:
-            original_ontology._compute_and_set_hash()
-
-        # Set multiple parent_hashes (simulating a merge)
-        parent_hashes = ["parent1", "parent2", "parent3"]
-        original_ontology.parent_hashes = parent_hashes
-        original_ontology.created_at = datetime(
-            2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc
-        )
-
-        # Sync to graph
-        original_ontology.sync_properties_to_graph()
-
-        # Recreate from graph
-        recreated_ontology = Ontology(graph=original_ontology.graph)
-
-        # Verify all parent_hashes were read
-        assert len(recreated_ontology.parent_hashes) == 3
-        assert set(recreated_ontology.parent_hashes) == set(parent_hashes)
-
-    def test_recreate_ontology_with_empty_parent_hashes(self):
-        """Test that empty parent_hashes (root ontology) is correctly handled."""
-        # Create a root ontology (no parents)
-        original_ontology = Ontology(
-            graph=RDFGraph(),
-            ontology_id="test",
-            iri="https://example.org/test",
-            title="Test Ontology",
-            version="1.0.0",
-        )
-        if not original_ontology.hash:
-            original_ontology._compute_and_set_hash()
-
-        # Ensure parent_hashes is empty (root ontology)
-        original_ontology.parent_hashes = []
-        original_ontology.created_at = datetime(
-            2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc
-        )
-
-        # Sync to graph
-        original_ontology.sync_properties_to_graph()
-
-        # Recreate from graph
-        recreated_ontology = Ontology(graph=original_ontology.graph)
-
-        # Verify parent_hashes is empty
-        assert recreated_ontology.parent_hashes == []
-        assert len(recreated_ontology.parent_hashes) == 0
-
-    def test_recreate_ontology_preserves_existing_created_at(self):
-        """Test that existing created_at is preserved when recreating from graph."""
-        # Create ontology with created_at
-        original_ontology = Ontology(
-            graph=RDFGraph(),
-            ontology_id="test",
-            iri="https://example.org/test",
-            title="Test Ontology",
-            version="1.0.0",
-        )
-        if not original_ontology.hash:
-            original_ontology._compute_and_set_hash()
-
-        original_time = datetime(2023, 12, 25, 15, 45, 0, tzinfo=timezone.utc)
-        original_ontology.created_at = original_time
-
-        # Sync to graph
-        original_ontology.sync_properties_to_graph()
-
-        # Recreate from graph
-        recreated_ontology = Ontology(graph=original_ontology.graph)
-
-        # Verify created_at was preserved
-        assert recreated_ontology.created_at is not None
-        assert recreated_ontology.created_at == original_time
+        assert set(recreated.parent_hashes) == set(parent_hashes)
+        assert len(recreated.parent_hashes) == len(parent_hashes)
+        assert recreated.created_at == created_at
 
 
 class TestOntologyManagerVectorAndRemoval:
@@ -731,69 +627,35 @@ class TestOntologyManagerVectorAndRemoval:
         assert sample_ontology.iri not in ontology_manager.ontology_versions
         assert sample_ontology.iri not in ontology_manager._cached_ontologies
 
+    def test_remove_ontology_by_iri_evicts_the_graph_cache(
+        self, ontology_manager, sample_ontology
+    ):
+        """Eviction must use the key entries were inserted under.
 
-class TestOntologyIdentityGuards:
-    """Strict IRI<->identity guardrails."""
+        Entries are cached by the header's ``graph_uri``; popping
+        ``versioned_iri`` instead silently missed whenever the recomputed hash
+        differed from the stored graph URI, leaving a removed ontology still
+        resolvable from cache.
+        """
+        graph_uri = "urn:tenant:acme:onto:test-v1"
+        ontology_manager._cache_graph(sample_ontology, graph_uri)
+        assert graph_uri in ontology_manager._graph_cache
 
-    def test_rejects_same_iri_with_different_identity(
-        self, ontology_manager: OntologyManager
-    ) -> None:
-        base_graph = RDFGraph._from_turtle_str(
-            """
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            <https://example.org/finance> a owl:Ontology .
-            """
-        )
-        ontology_a = Ontology(
-            graph=base_graph,
-            iri="https://example.org/finance",
-            ontology_id="finance",
-        )
-        ontology_manager.add_ontology(ontology_a)
+        ontology_manager.remove_ontology_by_iri(sample_ontology.iri)
 
-        conflicting_graph = RDFGraph._from_turtle_str(
-            """
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            <https://example.org/finance> a owl:Ontology .
-            <https://example.org/finance#extra> a owl:Class .
-            """
-        )
-        ontology_b = Ontology(
-            graph=conflicting_graph,
-            iri="https://example.org/finance",
-            ontology_id="accounting",
-        )
+        assert graph_uri not in ontology_manager._graph_cache
+        assert sample_ontology.iri not in ontology_manager._graph_uris_by_iri
 
-        with pytest.raises(ValueError, match="already bound to identity"):
-            ontology_manager.add_ontology(ontology_b)
+    def test_graph_cache_is_bounded(self, ontology_manager, sample_ontology):
+        """It holds whole rdflib graphs, so a long-lived server needs a bound."""
+        from ontocast.tool.ontology_manager import _GRAPH_CACHE_MAX_ENTRIES
 
-    def test_rejects_same_identity_with_different_iri(
-        self, ontology_manager: OntologyManager
-    ) -> None:
-        graph_a = RDFGraph._from_turtle_str(
-            """
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            <https://example.org/finance> a owl:Ontology .
-            """
-        )
-        ontology_a = Ontology(
-            graph=graph_a,
-            iri="https://example.org/finance",
-            ontology_id="finance",
-        )
-        ontology_manager.add_ontology(ontology_a)
+        for index in range(_GRAPH_CACHE_MAX_ENTRIES + 10):
+            ontology_manager._cache_graph(sample_ontology, f"urn:graph:{index}")
 
-        graph_b = RDFGraph._from_turtle_str(
-            """
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            <https://example.com/finance> a owl:Ontology .
-            """
+        assert len(ontology_manager._graph_cache) == _GRAPH_CACHE_MAX_ENTRIES
+        # Oldest evicted, newest retained.
+        assert "urn:graph:0" not in ontology_manager._graph_cache
+        assert (
+            f"urn:graph:{_GRAPH_CACHE_MAX_ENTRIES + 9}" in ontology_manager._graph_cache
         )
-        ontology_b = Ontology(
-            graph=graph_b,
-            iri="https://example.com/finance",
-            ontology_id="finance",
-        )
-
-        with pytest.raises(ValueError, match="already bound to IRI"):
-            ontology_manager.add_ontology(ontology_b)

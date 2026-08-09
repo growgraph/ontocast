@@ -2,24 +2,19 @@ from __future__ import annotations
 
 import os
 import re
-from collections import defaultdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from docling_core.types.doc import DoclingDocument
 from pydantic import ConfigDict, Field, field_validator
 from rdflib import URIRef
 
-from ontocast.onto.constants import DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI
+from ontocast.onto.constants import DEFAULT_DOMAIN
 from ontocast.onto.content_unit import ContentUnit
-from ontocast.onto.context import ContextManager
 from ontocast.onto.enum import (
     FailureStage,
     LLMGraphFormat,
-    OntologyAssemblyMode,
     OntologyContextMode,
     RenderMode,
     Status,
-    WorkflowNode,
 )
 from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.model import (
@@ -27,20 +22,65 @@ from ontocast.onto.model import (
     FactsLoopAttempt,
     FactsValidationFinding,
     GraphRepairRecord,
-    Suggestions,
     UnitFailure,
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
+from ontocast.onto.token_usage import TokenUsage
 from ontocast.util.hash import render_text_hash
+from ontocast.util.optional import require
+
+if TYPE_CHECKING:
+    from docling_core.types.doc import DoclingDocument
 
 # Top-level SPARQL update keywords at line start (used to split compound LLM output).
 _TOP_LEVEL_UPDATE_START_RE = re.compile(r"(?m)^(?=(?:INSERT|DELETE|WITH)\b)")
 
 
+def _docling_document_cls() -> Any:
+    """Resolve ``DoclingDocument`` on demand.
+
+    ``docling-core`` ships in the ``documents`` extra: it drags pandas, pyarrow
+    and transformers, none of which the light core needs. Resolving the class
+    lazily keeps ``AgentState`` importable without it, at the cost of typing
+    :attr:`AgentState.docling_doc` as ``Any`` -- pydantic resolves field
+    annotations when the class is created, so a ``TYPE_CHECKING``-only import
+    would make the model itself unbuildable.
+    """
+    return require(
+        "docling_core.types.doc", feature="Parsed Docling documents"
+    ).DoclingDocument
+
+
+#: Suffix marking a duration key as *summed across parallel unit workers* rather
+#: than wall clock. See :class:`BudgetTracker` for the full key convention.
+UNIT_SUM_SUFFIX = "/unit_sum"
+
+#: Suffix marking a duration key as a peak rather than an accumulation. Summing
+#: two peaks is meaningless, so :meth:`BudgetTracker.merge_from` takes the max
+#: for these keys instead.
+PEAK_SUFFIX = "_max"
+
+
 class BudgetTracker(BasePydanticModel):
-    """Lightweight tracker for LLM usage statistics and generated triples."""
+    """Lightweight tracker for LLM usage statistics and generated triples.
+
+    ``node_durations`` follows a key convention that distinguishes wall clock
+    from time summed across concurrent workers -- without it, a fan-out node's
+    entry is ambiguous and the two are silently added together:
+
+    ``"<node>"``
+        True wall clock for a pipeline node. Written only by the ``_timed``
+        wrapper in :mod:`ontocast.stategraph.create`.
+    ``"<node>/unit_sum"``
+        Per-unit loop time summed over every parallel worker. Divided by the
+        wall-clock entry this yields *effective workers* -- see
+        :meth:`parallel_efficiency`.
+    ``"<node>/<stage>"``
+        Any other sub-stage measurement (``worker_wait``, ``loop_lag_total``,
+        ``llm/provider``, ...).
+    """
 
     chars_sent: int = Field(default=0, description="Total characters sent to LLM")
     chars_received: int = Field(
@@ -52,10 +92,40 @@ class BudgetTracker(BasePydanticModel):
         description="LLM calls satisfied from disk cache (no provider tokens)",
     )
     input_tokens: int = Field(
-        default=0, description="Total input tokens (when reported by provider)"
+        default=0, description="Billed input tokens (when reported by provider)"
     )
     output_tokens: int = Field(
-        default=0, description="Total output tokens (when reported by provider)"
+        default=0, description="Billed output tokens (when reported by provider)"
+    )
+
+    # Kept apart from the billed totals rather than folded in: a cache-replayed
+    # run costs nothing, so adding these to input_tokens/output_tokens would
+    # report spend that never happened. Reported together they answer the other
+    # question -- what the workload costs cold -- which is what the replay
+    # protocol in docs/user_guide/performance.md is measuring.
+    cached_input_tokens: int = Field(
+        default=0, description="Input tokens replayed from the OntoCast disk cache"
+    )
+    cached_output_tokens: int = Field(
+        default=0, description="Output tokens replayed from the OntoCast disk cache"
+    )
+
+    # Detail keys from LangChain's UsageMetadata, summed over billed and
+    # replayed calls alike: they describe the shape of the workload, and a
+    # reasoning model's thinking tokens matter whether or not this particular
+    # run paid for them.
+    reasoning_tokens: int = Field(
+        default=0, description="Thinking tokens, counted inside the output totals"
+    )
+    cache_read_input_tokens: int = Field(
+        default=0,
+        description=(
+            "Input tokens served from the provider's own prompt cache, counted "
+            "inside the input totals and billed at a reduced rate"
+        ),
+    )
+    cache_creation_input_tokens: int = Field(
+        default=0, description="Input tokens written to the provider's prompt cache"
     )
 
     # Triple generation tracking
@@ -72,28 +142,120 @@ class BudgetTracker(BasePydanticModel):
         default=0, description="Total number of facts update operations"
     )
 
+    node_durations: dict[str, float] = Field(
+        default_factory=dict,
+        description="Accumulated seconds per pipeline node/stage (see class docstring)",
+    )
+    counters: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Named event counts (e.g. how often a per-document computation ran). "
+            "Summed on merge, like node_durations."
+        ),
+    )
+
+    def add_duration(self, name: str, seconds: float) -> None:
+        """Accumulate seconds for a named node or stage.
+
+        Keys ending in :data:`PEAK_SUFFIX` take the maximum instead, since
+        adding two peaks would report a stall that never happened.
+        """
+        if name.endswith(PEAK_SUFFIX):
+            self.node_durations[name] = max(self.node_durations.get(name, 0.0), seconds)
+            return
+        self.node_durations[name] = self.node_durations.get(name, 0.0) + seconds
+
+    def incr(self, name: str, n: int = 1) -> None:
+        """Increment a named counter.
+
+        Args:
+            name: Counter key, e.g. ``"ctx/merge_document_ontology.calls"``.
+            n: Amount to add.
+        """
+        self.counters[name] = self.counters.get(name, 0) + n
+
+    def parallel_efficiency(self, node: str) -> float | None:
+        """Effective worker count for a fan-out node, or ``None`` if unmeasured.
+
+        The ratio of time summed across unit workers to the node's wall clock.
+        A value near ``parallel_workers`` means the fan-out is running at full
+        width; a value near ``1.0`` means the units are effectively serialised
+        -- typically by synchronous CPU work blocking the event loop, which
+        ``"<node>/loop_lag_total"`` quantifies.
+
+        Args:
+            node: The node key, e.g. ``str(WorkflowNode.RENDER_FACTS)``.
+
+        Returns:
+            float | None: Effective workers, or ``None`` when either the wall
+            clock or the ``/unit_sum`` entry is missing or zero.
+        """
+        wall = self.node_durations.get(node)
+        unit_sum = self.node_durations.get(f"{node}{UNIT_SUM_SUFFIX}")
+        if not wall or unit_sum is None:
+            return None
+        return unit_sum / wall
+
+    def _add_usage_detail(self, usage: TokenUsage) -> None:
+        """Accumulate the provider-detail keys shared by billed and cached calls."""
+        if usage.reasoning_tokens is not None:
+            self.reasoning_tokens += usage.reasoning_tokens
+        if usage.cache_read_input_tokens is not None:
+            self.cache_read_input_tokens += usage.cache_read_input_tokens
+        if usage.cache_creation_input_tokens is not None:
+            self.cache_creation_input_tokens += usage.cache_creation_input_tokens
+
     def add_usage(
         self,
         chars_sent: int,
         chars_received: int,
         *,
-        input_tokens: int | None = None,
-        output_tokens: int | None = None,
+        usage: TokenUsage | None = None,
     ) -> None:
-        """Add usage statistics."""
+        """Record a billed provider call.
+
+        Args:
+            chars_sent: Prompt length in characters.
+            chars_received: Response length in characters.
+            usage: Token counts, when the provider reported any.
+        """
         self.chars_sent += chars_sent
         self.chars_received += chars_received
         self.calls_count += 1
-        if input_tokens is not None:
-            self.input_tokens += input_tokens
-        if output_tokens is not None:
-            self.output_tokens += output_tokens
+        if usage is None:
+            return
+        if usage.input_tokens is not None:
+            self.input_tokens += usage.input_tokens
+        if usage.output_tokens is not None:
+            self.output_tokens += usage.output_tokens
+        self._add_usage_detail(usage)
 
-    def add_cache_hit(self, chars_sent: int, chars_received: int) -> None:
-        """Record a disk-cache hit (does not increment calls_count)."""
+    def add_cache_hit(
+        self,
+        chars_sent: int,
+        chars_received: int,
+        *,
+        usage: TokenUsage | None = None,
+    ) -> None:
+        """Record a disk-cache hit (does not increment calls_count).
+
+        Args:
+            chars_sent: Prompt length in characters.
+            chars_received: Cached response length in characters.
+            usage: Token counts stored with the cache entry. ``None`` for
+                entries written before usage was persisted, which report as
+                unknown rather than as zero.
+        """
         self.cache_hits += 1
         self.chars_sent += chars_sent
         self.chars_received += chars_received
+        if usage is None:
+            return
+        if usage.input_tokens is not None:
+            self.cached_input_tokens += usage.input_tokens
+        if usage.output_tokens is not None:
+            self.cached_output_tokens += usage.output_tokens
+        self._add_usage_detail(usage)
 
     def add_ontology_update(self, num_operations: int, num_triples: int) -> None:
         """Add ontology update statistics.
@@ -123,10 +285,19 @@ class BudgetTracker(BasePydanticModel):
         self.cache_hits += other.cache_hits
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
+        self.cached_input_tokens += other.cached_input_tokens
+        self.cached_output_tokens += other.cached_output_tokens
+        self.reasoning_tokens += other.reasoning_tokens
+        self.cache_read_input_tokens += other.cache_read_input_tokens
+        self.cache_creation_input_tokens += other.cache_creation_input_tokens
         self.ontology_triples_generated += other.ontology_triples_generated
         self.facts_triples_generated += other.facts_triples_generated
         self.ontology_operations_count += other.ontology_operations_count
         self.facts_operations_count += other.facts_operations_count
+        for name, seconds in other.node_durations.items():
+            self.add_duration(name, seconds)
+        for name, count in other.counters.items():
+            self.incr(name, count)
 
     def get_summary(self) -> str:
         """Get a summary of LLM usage and generated triples."""
@@ -143,6 +314,26 @@ class BudgetTracker(BasePydanticModel):
                 f"{self.input_tokens:,} in / {self.output_tokens:,} out tokens"
             )
 
+        # Reported separately so a replayed run reads as "free this time, but
+        # this is what it costs", rather than as no token usage at all.
+        if self.cached_input_tokens > 0 or self.cached_output_tokens > 0:
+            parts.append(
+                f"{self.cached_input_tokens:,} in / "
+                f"{self.cached_output_tokens:,} out tokens replayed"
+            )
+
+        detail = [
+            f"{value:,} {label}"
+            for label, value in (
+                ("reasoning", self.reasoning_tokens),
+                ("provider-cache read", self.cache_read_input_tokens),
+                ("provider-cache write", self.cache_creation_input_tokens),
+            )
+            if value > 0
+        ]
+        if detail:
+            parts.append("of which " + ", ".join(detail))
+
         if self.ontology_triples_generated > 0 or self.facts_triples_generated > 0:
             parts.append(
                 f"Triples: {self.ontology_triples_generated} ontology, "
@@ -150,6 +341,43 @@ class BudgetTracker(BasePydanticModel):
             )
 
         return " | ".join(parts)
+
+    def get_duration_summary(self) -> str:
+        """Get per-node wall-clock durations, slowest first."""
+        if not self.node_durations:
+            return ""
+        ranked = sorted(
+            self.node_durations.items(), key=lambda item: item[1], reverse=True
+        )
+        return "Durations: " + ", ".join(
+            f"{name} {seconds:.1f}s" for name, seconds in ranked
+        )
+
+    def get_parallelism_summary(self) -> str:
+        """Effective worker count and event-loop stall per fan-out node.
+
+        Reports only nodes that recorded a ``/unit_sum`` entry, so it is empty
+        for pipelines without a fan-out. ``lag`` is the time the event loop was
+        blocked by synchronous work while units were meant to be running
+        concurrently -- it is the difference between the width configured and
+        the width achieved.
+        """
+        parts: list[str] = []
+        for key in sorted(self.node_durations):
+            if not key.endswith(UNIT_SUM_SUFFIX):
+                continue
+            node = key[: -len(UNIT_SUM_SUFFIX)]
+            effective = self.parallel_efficiency(node)
+            if effective is None:
+                continue
+            fragment = f"{node} {effective:.1f}x"
+            lag = self.node_durations.get(f"{node}/loop_lag_total")
+            if lag:
+                fragment += f" (loop lag {lag:.1f}s)"
+            parts.append(fragment)
+        if not parts:
+            return ""
+        return "Effective workers: " + ", ".join(parts)
 
 
 class AgentState(BasePydanticModel):
@@ -163,17 +391,17 @@ class AgentState(BasePydanticModel):
         current_domain: IRI used for forming document namespace.
         doc_hid: An almost unique hash/id for the parent document.
         raw_input: Single raw input payload as {filename: bytes}.
-        ontology_addendum: Additional ontology content.
         failure_stage: Stage where failure occurred.
         failure_reason: Reason for failure.
-        success_score: Score indicating success level.
         status: Current workflow status.
-        node_visits: Number of visits per node.
-        max_visits: Maximum number of visits allowed per node.
+        max_visits: Maximum render attempts per unit loop.
         max_chunks: Maximum number of source content units to split and process.
     """
 
-    docling_doc: DoclingDocument | None = Field(
+    # Typed `Any` rather than `DoclingDocument | None` so that importing
+    # AgentState does not require the `documents` extra; the validator below
+    # still enforces the real type whenever docling-core is installed.
+    docling_doc: Any = Field(
         default=None,
         description="Parsed document in native Docling format.",
     )
@@ -197,10 +425,6 @@ class AgentState(BasePydanticModel):
         default_factory=list,
         description="Pending content units to process.",
     )
-    ontology_patch_sources: list[str] = Field(
-        default_factory=list,
-        description="Ontology IRIs that contributed to a retrieved multi-source patch context.",
-    )
     ontology_artifacts: list[Ontology] = Field(
         default_factory=list,
         description="Final per-anchor ontology artifacts produced for this document.",
@@ -217,25 +441,9 @@ class AgentState(BasePydanticModel):
         default_factory=dict,
         description="Metrics emitted by ontology reduce stage.",
     )
-    ontology_reduce_provenance: RDFGraph = Field(
-        default_factory=RDFGraph,
-        description="Optional provenance graph emitted by ontology reduce stage.",
-    )
-    candidate_anchor_iris: list[str] = Field(
-        default_factory=list,
-        description="Candidate ontology IRIs discovered during multi-anchor preselection.",
-    )
-    unit_anchor_assignment: dict[int, str] = Field(
-        default_factory=dict,
-        description="Assigned anchor ontology IRI per content unit index.",
-    )
     unit_patch_sources: dict[int, list[str]] = Field(
         default_factory=dict,
         description="Retrieved ontology source IRIs per content unit index.",
-    )
-    unit_context_mode_used: dict[int, OntologyAssemblyMode] = Field(
-        default_factory=dict,
-        description="Per-unit ontology assembly mode (ensemble / vote majority / primary).",
     )
     retrieval_metrics: dict[str, int | float | str | dict[str, Any]] = Field(
         default_factory=dict,
@@ -245,6 +453,15 @@ class AgentState(BasePydanticModel):
         description="RDF triples representing aggregated facts "
         "from the current document",
         default_factory=RDFGraph,
+    )
+    facts_ontology_context: RDFGraph = Field(
+        default_factory=RDFGraph,
+        description=(
+            "Merged reduced-ontology graph used as read-only schema for facts. "
+            "Derived from reduced_ontology_artifacts, which are frozen once the "
+            "ontology stage completes, so the facts fan-out builds it once and "
+            "merge/validate reuse it rather than each repeating the merge."
+        ),
     )
     ontology_user_instruction: str = Field(
         description="Specific user instructions for ontology extraction, e.g. `Focus on extracting places`",
@@ -281,8 +498,6 @@ class AgentState(BasePydanticModel):
         description="Project id when request selected tenancy via query/CLI.",
     )
 
-    graph_uri_override: str | None = Field(default=None)
-
     source_url: str | None = Field(
         description="Source URL from JSON input file (for provenance tracking)",
         default=None,
@@ -296,24 +511,9 @@ class AgentState(BasePydanticModel):
         ),
     )
 
-    ontology_updates: list[GraphUpdate] = Field(
-        default_factory=list,
-        description="A list of graph update that improve the current ontology",
-    )
-
     ontology_updates_applied: list[GraphUpdate] = Field(
         default_factory=list,
         description="A list of graph update that improve the current ontology",
-    )
-
-    facts_updates: list[GraphUpdate] = Field(
-        default_factory=list,
-        description="A list of graph update that improve the current graph of facts (pending)",
-    )
-
-    facts_updates_applied: list[GraphUpdate] = Field(
-        default_factory=list,
-        description="A list of graph update that improve the current graph of facts (applied)",
     )
 
     facts_units: list[ContentUnit] = Field(
@@ -361,7 +561,28 @@ class AgentState(BasePydanticModel):
         description=(
             "Post-aggregation invariant findings (functional violations, "
             "suspect multi-values, degenerate coreference, SHACL) remaining "
-            "after any un-merge repair passes."
+            "after the un-merge and SHACL-autofix repair stages."
+        ),
+    )
+
+    facts_gate_repairs: list[GraphRepairRecord] = Field(
+        default_factory=list,
+        description=(
+            "LLM-free repairs the validation gate applied to the merged graph "
+            "(shape-driven retyping, code resolution, placeholder pruning). "
+            "Document-level counterpart of facts_repairs_applied, which is "
+            "per unit."
+        ),
+    )
+
+    facts_conformance: dict = Field(
+        default_factory=dict,
+        description=(
+            "Rolled-up validation result: whether SHACL ran and the graph "
+            "conforms, plus counts by finding kind, SHACL constraint component "
+            "and shape. Grouping is what makes the residue diagnosable — a "
+            "flat violation list does not distinguish one systematic modelling "
+            "gap from many independent defects."
         ),
     )
 
@@ -374,18 +595,6 @@ class AgentState(BasePydanticModel):
         description="Provenance/reification triples stripped from normalized ontology.",
     )
 
-    ontology_addendum: Ontology = Field(
-        default_factory=lambda: Ontology(
-            ontology_id=None,
-            title=None,
-            description=None,
-            graph=RDFGraph(),
-            iri=ONTOLOGY_NULL_IRI,
-        ),
-        description="Ontology object that contain the semantic graph "
-        "as well as the description, name, short name, version, "
-        "and IRI of the ontology",
-    )
     failure_stage: FailureStage | None = None
     failure_reason: str | None = None
 
@@ -394,22 +603,27 @@ class AgentState(BasePydanticModel):
         default_factory=list,
     )
 
-    success_score: float = 0.0
     status: Status = Status.SUCCESS
-    statuses: dict[WorkflowNode, Status] = Field(
-        default_factory=dict, description="Status of each node"
-    )
-    node_visits: defaultdict[WorkflowNode, int] = Field(
-        default_factory=lambda: defaultdict(int),
-        description="Number of visits per node",
-    )
     max_visits: int = Field(
-        default=3, description="Maximum number of visits allowed per node"
+        default=1,
+        description=(
+            "Maximum render attempts per unit loop. Mirrors "
+            "``ServerConfig.max_visits_per_node``, which every entry path "
+            "supplies; at 1 the critic never runs."
+        ),
     )
     max_chunks: int | None = None
     target_sections: list[str] | None = Field(
         default=None,
         description="Sections to include when chunking. None = no filter.",
+    )
+    exclude_sections: list[str] | None = Field(
+        default=None,
+        description=(
+            "Sections to drop when chunking. None = use the resolved section "
+            "schema's default_exclude; [] = no exclusion; list = explicit "
+            "denylist."
+        ),
     )
     summarize_sections: list[str] | None = Field(
         default=None,
@@ -454,39 +668,29 @@ class AgentState(BasePydanticModel):
             "fixed_single_ontology (catalog ontology_id via ontology_context_fixed_ontology_id)."
         ),
     )
-    ontology_max_triples: int | None = Field(
-        default=50000,
-        description="Maximum number of triples allowed in ontology graph. "
-        "Updates that would exceed this limit are skipped with a warning. "
-        "Set to None for unlimited.",
-    )
-    context_manager: ContextManager = Field(
-        default_factory=ContextManager,
-        description="Context manager for passing information between agents",
-    )
-    suggestions: Suggestions = Field(
-        default_factory=Suggestions,
-        description="Structured critique feedback for the next render/critic pass",
-    )
-
     # Budget Tracking
     budget_tracker: BudgetTracker = Field(
         default_factory=BudgetTracker,
         description="Budget statistics tracker (LLM usage and generated triples)",
     )
 
-    def get_node_status(self, node: WorkflowNode) -> Status:
-        """Get the status of a workflow node, returning NOT_VISITED if not set."""
-        return self.statuses.get(node, Status.NOT_VISITED)
-
     @property
     def needs_section_prepare(self) -> bool:
-        """Whether chunk prepare runs section tagging and optional filter."""
-        return self.target_sections is not None or self.summarize_sections is not None
+        """Whether the request carries explicit section-dependent options.
+
+        Section tagging itself is default-on in chunk prepare (driven by
+        ``CHUNK_SECTION_CLASSIFIER``); schema-default exclusions apply even
+        when this is False.
+        """
+        return (
+            self.target_sections is not None
+            or self.summarize_sections is not None
+            or self.exclude_sections is not None
+        )
 
     @property
     def use_summarization(self) -> bool:
-        """Whether the summarize_chunks node should run."""
+        """Whether per-unit summaries should be produced in the fan-out."""
         return self.summarize_sections is not None
 
     @property
@@ -505,10 +709,6 @@ class AgentState(BasePydanticModel):
             RenderMode.ONTOLOGY_AND_FACTS,
         )
 
-    def set_node_status(self, node: WorkflowNode, status: Status) -> None:
-        """Set the status of a workflow node."""
-        self.statuses[node] = status
-
     def get_content_unit_progress_info(self) -> tuple[int, int]:
         """Get current content unit number and total content units."""
         total_content_units = len(self.content_units)
@@ -521,22 +721,6 @@ class AgentState(BasePydanticModel):
         if total == 0:
             return "no content units"
         return f"content unit {current}/{total}"
-
-    def get_chunk_progress_info(self) -> tuple[int, int]:
-        """Backward-compatible wrapper for content unit progress.
-
-        Returns:
-            tuple[int, int]: (current_chunk_number, total_chunks)
-        """
-        return self.get_content_unit_progress_info()
-
-    def get_chunk_progress_string(self) -> str:
-        """Backward-compatible wrapper for content unit progress.
-
-        Returns:
-            str: Formatted string like "chunk 3/10"
-        """
-        return self.get_content_unit_progress_string()
 
     @classmethod
     def render_updated_graph(
@@ -640,33 +824,7 @@ class AgentState(BasePydanticModel):
                 parts.append(f"{prefix_block}\n{body}" if prefix_block else body)
         return parts or [stripped]
 
-    def generate_ontology_updates_markdown(self) -> str:
-        """Generate a markdown string representing the chain of ontology updates.
-
-        Returns:
-            Markdown-formatted string showing all pending ontology updates.
-            Returns empty string if no updates are pending.
-        """
-        if not self.ontology_updates:
-            return ""
-
-        markdown_parts = []
-        for i, graph_update in enumerate(self.ontology_updates, 1):
-            diff_summary = graph_update.generate_diff_summary()
-            if diff_summary:
-                markdown_parts.append(f"## Update {i}")
-                markdown_parts.append(diff_summary)
-
-            markdown_parts.append("")
-
-            # Add separator between updates (except for the last one)
-            if i < len(self.ontology_updates):
-                markdown_parts.append("---")
-                markdown_parts.append("")
-
-        return "\n".join(markdown_parts)
-
-    def set_docling_doc(self, doc: DoclingDocument) -> None:
+    def set_docling_doc(self, doc: "DoclingDocument") -> None:
         """Set the parsed document and generate document hash.
 
         Args:
@@ -677,31 +835,31 @@ class AgentState(BasePydanticModel):
 
     @field_validator("docling_doc", mode="before")
     @classmethod
-    def _coerce_docling_doc(cls, value: object) -> DoclingDocument | None:
-        if value is None or isinstance(value, DoclingDocument):
+    def _coerce_docling_doc(cls, value: object) -> Any:
+        if value is None:
+            return None
+        docling_document = _docling_document_cls()
+        if isinstance(value, docling_document):
             return value
         if isinstance(value, dict):
-            return DoclingDocument.model_validate(value)
+            return docling_document.model_validate(value)
         raise TypeError(f"Expected DoclingDocument or dict, got {type(value).__name__}")
 
-    def set_failure(self, stage: FailureStage, reason: str, success_score: float = 0.0):
+    def set_failure(self, stage: FailureStage, reason: str) -> None:
         """Set failure state with stage and reason.
 
         Args:
             stage: The stage where the failure occurred.
             reason: The reason for the failure.
-            success_score: The success score at failure (default: 0.0).
         """
         self.failure_stage = stage
         self.failure_reason = reason
-        self.success_score = success_score
         self.status = Status.FAILED
 
     def clear_failure(self):
         """Clear failure state and set status to success."""
         self.failure_stage = None
         self.failure_reason = None
-        self.success_score = 0.0
         self.status = Status.SUCCESS
 
     @property
@@ -724,8 +882,6 @@ class AgentState(BasePydanticModel):
 
     @property
     def graph_uri(self):
-        if self.graph_uri_override is not None:
-            return self.graph_uri_override
         return self.doc_namespace
 
     @property

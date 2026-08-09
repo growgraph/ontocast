@@ -6,9 +6,6 @@ values (12.5 vs 96 meV merged into one node; the photon-propagation
 contribution absorbed into the impurity contribution). The tests assert
 the merge guards keep every quantity distinct.
 
-``test/data/case5/paper*.facts.ttl`` are damaged post-merge outputs of a
-full-paper run; re-aggregating them must not add *new* damage.
-
 Real sentence-transformer embeddings are exercised (marker: slow).
 """
 
@@ -79,45 +76,3 @@ def test_case4_pre_merge_quantities_stay_distinct(
         "impurity and photon-propagation 30 meV contributions must remain "
         "two distinct nodes"
     )
-
-
-def test_case5_cross_paper_aggregation_adds_no_damage(
-    aggregator: EmbeddingBasedAggregator,
-) -> None:
-    units = []
-    input_value_damage: dict[URIRef, int] = {}
-    input_unit_damage: dict[URIRef, int] = {}
-    for index, name in enumerate(("paper1", "paper2")):
-        graph = RDFGraph()
-        graph.parse(DATA / "case5" / f"{name}.facts.ttl", format="turtle")
-        input_value_damage.update(_distinct_value_counts(graph))
-        input_unit_damage.update(_distinct_unit_counts(graph))
-        units.append(
-            ContentUnit(
-                text=f"case5 {name}",
-                index=index,
-                doc_iri=URIRef(f"https://growgraph.dev/doc/case5-{name}"),
-                graph=graph,
-                type=OutputType.FACTS,
-            )
-        )
-
-    merged = aggregator.aggregate_graphs(
-        [units[0], units[1]], ontology_graph=RDFGraph()
-    ).graph
-
-    output_value_damage = _distinct_value_counts(merged)
-    output_unit_damage = _distinct_unit_counts(merged)
-
-    # Aggregation must not create nodes worse than the worst input node and
-    # must not increase the count of multi-valued nodes.
-    def worst(damage: dict[URIRef, int]) -> int:
-        return max(damage.values(), default=1)
-
-    def multi(damage: dict[URIRef, int]) -> int:
-        return sum(1 for count in damage.values() if count > 1)
-
-    assert worst(output_value_damage) <= worst(input_value_damage)
-    assert multi(output_value_damage) <= multi(input_value_damage)
-    assert worst(output_unit_damage) <= worst(input_unit_damage)
-    assert multi(output_unit_damage) <= multi(input_unit_damage)

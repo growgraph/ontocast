@@ -151,16 +151,6 @@ def build_llm_prefix_map(
     return build_llm_prefix_map_from_graphs(primary_graph, supplemental)
 
 
-def known_prefixes_for_llm_parse(
-    source: OntologyPromptSource,
-    supplemental: Iterable[Ontology] = (),
-) -> dict[str, str]:
-    """Collect namespace prefixes for TTL/JSON-LD repair during LLM output parsing."""
-    return build_llm_prefix_map_from_graphs(
-        source.ontology_graph_for_prefixes(), supplemental
-    )
-
-
 class UnitOntologyAccess:
     """Accessor for :class:`UnitOntologyState` (ontology map loop)."""
 

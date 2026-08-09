@@ -37,6 +37,10 @@ _SEED_GLOSS_PREDICATES: tuple[URIRef, ...] = (
     URIRef("http://purl.org/dc/terms/alternative"),
     RDFS.comment,
     SKOS.definition,
+    # Usage/modeling contracts (e.g. which numeric property carries a scalar)
+    # conventionally live in scope notes; dropping them cost value-shape
+    # conformance in extraction.
+    SKOS.scopeNote,
     URIRef("http://purl.org/dc/terms/description"),
     URIRef("http://purl.org/dc/elements/1.1/description"),
 )
@@ -152,7 +156,9 @@ _BFS_PREDICATE_PRIORITY: tuple[frozenset[URIRef], ...] = (
     frozenset({RDF.type}),  # say what it is
     frozenset({RDFS.subClassOf, OWL.equivalentClass}),  # place it in the hierarchy
     frozenset({RDFS.domain, RDFS.range, RDFS.subPropertyOf}),  # connect properties
-    frozenset({RDFS.comment, SKOS.definition, SKOS.altLabel}),  # describe it
+    frozenset(
+        {RDFS.comment, SKOS.definition, SKOS.scopeNote, SKOS.altLabel}
+    ),  # describe it (scope notes carry usage contracts)
 )
 
 

@@ -1,5 +1,6 @@
 """Tests for ontology identity, aliases, working-context, and prefix merge."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -90,11 +91,19 @@ def test_ontology_snapshot_preserves_sources_on_matsci_merge() -> None:
     from ontocast.onto.enum import OntologyAssemblyMode
     from ontocast.onto.ontology_snapshot import OntologySnapshot
 
-    base = Path(
-        "/home/alexander/work/codes/gg-core/ontocast/matsci-perovskite-ontologies/ontologies"
+    # `matsci-perovskite-ontologies` is a sibling repo in the workspace, not a
+    # dependency: resolve it relative to this repo (or via an override) so the
+    # test skips cleanly anywhere it is absent instead of encoding one machine.
+    override = os.getenv("ONTOCAST_MATSCI_ONTOLOGIES")
+    base = (
+        Path(override)
+        if override
+        else Path(__file__).resolve().parents[2]
+        / "matsci-perovskite-ontologies"
+        / "ontologies"
     )
     if not base.is_dir():
-        pytest.skip("matsci ontology fixtures not available")
+        pytest.skip(f"matsci ontology fixtures not available at {base}")
 
     arts = [Ontology.from_file(p) for p in sorted(base.glob("*.ttl"))]
     assert len(arts) >= 2

@@ -2,18 +2,17 @@
 
 import logging
 from types import SimpleNamespace
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 from rdflib import URIRef
 
 from ontocast.agent.chunk_text import chunk_text
-from ontocast.agent.summarize_chunks import summarize_chunk
+from ontocast.agent.summarize_chunks import ensure_unit_summary, summarize_chunk
 from ontocast.config import ChunkConfig
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import Status
 from ontocast.onto.state import AgentState
-from ontocast.stategraph.node_factories import make_summarize_chunks_node
 from ontocast.tool.chunk.chunker import ChunkerTool
 from ontocast.tool.chunk.section_llm import ChunkSectionClassification
 from ontocast.toolbox import ToolBox
@@ -39,8 +38,13 @@ def _build_tools(
     parallel_workers: int = 2,
     min_size: int = 50,
     max_size: int = 2000,
+    section_classifier: Literal["llm", "heuristic", "heading", "off"] = "llm",
 ) -> ToolBox:
-    config = ChunkConfig(min_size=min_size, max_size=max_size)
+    config = ChunkConfig(
+        min_size=min_size,
+        max_size=max_size,
+        section_classifier=section_classifier,
+    )
 
     async def default_llm(_prompt):
         raise AssertionError("LLM should not be called")
@@ -78,12 +82,25 @@ def _content_unit(
 
 
 @pytest.mark.anyio
-async def test_chunk_prepare_no_section_options_uses_simple_path() -> None:
+async def test_chunk_prepare_no_section_options_still_classifies() -> None:
+    """Classification is default-on: headed chunks get labels with zero LLM calls."""
     state = AgentState(
         docling_doc=doc_from_markdown_lines(_SAMPLE_DOC),
     )
     assert state.needs_section_prepare is False
     result = await chunk_text(state, _build_tools())
+    assert result.status == Status.SUCCESS
+    assert result.content_units
+    labels = {unit.section_label for unit in result.content_units}
+    assert labels & {"introduction", "methods", "results", "future_work"}
+
+
+@pytest.mark.anyio
+async def test_chunk_prepare_classifier_off_uses_simple_path() -> None:
+    state = AgentState(
+        docling_doc=doc_from_markdown_lines(_SAMPLE_DOC),
+    )
+    result = await chunk_text(state, _build_tools(section_classifier="off"))
     assert result.status == Status.SUCCESS
     assert result.content_units
     assert all(unit.section_label is None for unit in result.content_units)
@@ -117,13 +134,14 @@ async def test_chunk_prepare_regex_labels_without_llm() -> None:
 
 
 @pytest.mark.anyio
-async def test_chunk_prepare_llm_classifies_non_regex_chunk() -> None:
+async def test_chunk_prepare_keyword_tier_labels_non_regex_chunk() -> None:
+    """A heading the anchored patterns miss is still resolved without an LLM."""
     llm_calls = 0
 
     async def llm(_prompt):
         nonlocal llm_calls
         llm_calls += 1
-        return SimpleNamespace(content=_chunk_label_json("results"))
+        raise AssertionError("LLM should not be called")
 
     state = AgentState(
         docling_doc=doc_from_markdown_lines(
@@ -135,7 +153,32 @@ async def test_chunk_prepare_llm_classifies_non_regex_chunk() -> None:
     assert result.status == Status.SUCCESS
     assert result.content_units
     assert result.content_units[0].section_label == "results"
-    assert llm_calls >= 1
+    assert llm_calls == 0
+
+
+@pytest.mark.anyio
+async def test_chunk_prepare_llm_classifies_unnamed_chunk() -> None:
+    """Only headings no deterministic tier can name reach the LLM."""
+    llm_calls = 0
+
+    async def llm(_prompt):
+        nonlocal llm_calls
+        llm_calls += 1
+        return SimpleNamespace(
+            content='{"assignments": [{"index": 0, "label": "results"}]}'
+        )
+
+    state = AgentState(
+        docling_doc=doc_from_markdown_lines(
+            "# Widget Telemetry Rollup\nAccuracy improved by 10%.\n"
+        ),
+        target_sections=["results"],
+    )
+    result = await chunk_text(state, _build_tools(llm=llm))
+    assert result.status == Status.SUCCESS
+    assert result.content_units
+    assert result.content_units[0].section_label == "results"
+    assert llm_calls == 1
 
 
 @pytest.mark.anyio
@@ -186,18 +229,17 @@ async def test_summarize_chunk_raises_on_empty_response() -> None:
 
 
 @pytest.mark.anyio
-async def test_summarize_chunks_node_skips_when_disabled() -> None:
+async def test_ensure_unit_summary_skips_when_disabled() -> None:
     state = AgentState(
         content_units=[_content_unit()],
         summarize_sections=None,
     )
-    node = make_summarize_chunks_node(_build_tools())
-    result = await node(state)
-    assert result.content_units[0].summary is None
+    await ensure_unit_summary(state, 0, _build_tools())
+    assert state.content_units[0].summary is None
 
 
 @pytest.mark.anyio
-async def test_summarize_chunks_node_filters_by_section() -> None:
+async def test_ensure_unit_summary_filters_by_section() -> None:
     summarized: list[str] = []
 
     async def llm(prompt):
@@ -211,15 +253,16 @@ async def test_summarize_chunks_node_filters_by_section() -> None:
         ],
         summarize_sections=["results"],
     )
-    node = make_summarize_chunks_node(_build_tools(llm=llm))
-    result = await node(state)
-    assert result.content_units[0].summary == "Summary text."
-    assert result.content_units[1].summary is None
+    tools = _build_tools(llm=llm)
+    await ensure_unit_summary(state, 0, tools)
+    await ensure_unit_summary(state, 1, tools)
+    assert state.content_units[0].summary == "Summary text."
+    assert state.content_units[1].summary is None
     assert len(summarized) == 1
 
 
 @pytest.mark.anyio
-async def test_summarize_chunks_node_tolerates_per_unit_failure() -> None:
+async def test_ensure_unit_summary_tolerates_per_unit_failure() -> None:
     calls = 0
 
     async def llm(_prompt):
@@ -236,7 +279,29 @@ async def test_summarize_chunks_node_tolerates_per_unit_failure() -> None:
         ],
         summarize_sections=["results"],
     )
-    node = make_summarize_chunks_node(_build_tools(llm=llm))
-    result = await node(state)
-    assert result.content_units[0].summary is None
-    assert result.content_units[1].summary == "ok"
+    tools = _build_tools(llm=llm)
+    await ensure_unit_summary(state, 0, tools)
+    await ensure_unit_summary(state, 1, tools)
+    assert state.content_units[0].summary is None
+    assert state.content_units[1].summary == "ok"
+
+
+@pytest.mark.anyio
+async def test_ensure_unit_summary_is_idempotent() -> None:
+    """Both fan-outs call it, so the second must not re-spend a provider call."""
+    calls = 0
+
+    async def llm(_prompt):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(content="Summary text.")
+
+    state = AgentState(
+        content_units=[_content_unit(text="body", index=0, section_label="results")],
+        summarize_sections=["results"],
+    )
+    tools = _build_tools(llm=llm)
+    await ensure_unit_summary(state, 0, tools)
+    await ensure_unit_summary(state, 0, tools)
+    assert state.content_units[0].summary == "Summary text."
+    assert calls == 1

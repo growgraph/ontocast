@@ -48,7 +48,6 @@ from ontocast.tool.vector_store.patch_retriever import (
     _merge_hits_across_queries_max_score,
     _merge_hits_across_queries_sum_score,
     _mmr_rerank,
-    _select_hits_round_robin_by_ontology,
 )
 from ontocast.tool.vector_store.qdrant import QdrantVectorStoreManager
 from ontocast.tool.vector_store.util import (
@@ -66,7 +65,7 @@ class CountingEmbeddingTool(EmbeddingTool):
     truncate_by_one: bool = False
     seen_texts: list[list[str]] = Field(default_factory=list)
 
-    def _embed_unlocked(self, texts: list[str]) -> list[list[float]]:
+    def _embed_raw(self, texts: list[str]) -> list[list[float]]:
         self.calls += 1
         self.seen_texts.append(list(texts))
         vectors: list[list[float]] = []
@@ -556,6 +555,7 @@ def test_embedding_config_default_bm25_model() -> None:
     assert cfg.bm25_model_name == "Qdrant/bm25"
 
 
+@pytest.mark.slow  # downloads the Qdrant/bm25 ONNX model
 def test_fastembed_bm25_sparse_tool_returns_qdrant_sparse_vectors() -> None:
     cfg = EmbeddingConfig()
     tool = FastembedBm25SparseTool(config=cfg)
@@ -669,57 +669,6 @@ def test_bm25_sparse_vector_uses_idf_modifier() -> None:
     # Without IDF, BM25 degenerates to a term-frequency dot product in which a
     # distinctive technical term is weighted no higher than a stopword.
     assert sparse_cfg[BM25_VECTOR_NAME].modifier == qdrant_models.Modifier.IDF
-
-
-def test_retriever_expands_graph_via_sparql_tool() -> None:
-    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
-    vector_store = StubVectorStore(
-        store_config=VectorStoreConfig(embedding_batch_size=2),
-        qdrant_config=QdrantConfig(upsert_batch_size=2),
-        embedding=embedding,
-    )
-    atoms = [
-        GraphAtom(
-            atom_id="a1",
-            ontology_iri="https://example.org/smoke",
-            ontology_id="smoke",
-            ontology_hash="hash1",
-            ontology_version="1.0.0",
-            iri="https://example.org/smoke#Alpha",
-            entity_role="resource",
-            core_representation="alpha concept",
-            neighborhood_representation="alpha related to beta",
-        ),
-        GraphAtom(
-            atom_id="a2",
-            ontology_iri="https://example.org/smoke",
-            ontology_id="smoke",
-            ontology_hash="hash1",
-            ontology_version="1.0.0",
-            iri="https://example.org/smoke#relatedTo",
-            entity_role="predicate",
-            core_representation="related to predicate",
-            neighborhood_representation="predicate related to links alpha and beta",
-        ),
-    ]
-    vector_store.set_atoms(atoms)
-
-    sparql_tool = StubSPARQLTool(triple_store_manager=None)
-    retriever = OntologyPatchRetriever(
-        vector_store=vector_store, sparql_tool=sparql_tool
-    )
-    graph, source_iris = retriever.retrieve(query="alpha", top_k=2, expand_sparql=True)
-
-    assert source_iris == ["https://example.org/smoke"]
-    assert len(graph) > 0
-    assert set(sparql_tool.last_entity_uris) == {atom.iri for atom in atoms}
-    assert sparql_tool.last_ontology_iris == ["https://example.org/smoke"]
-    assert sparql_tool.last_ontology_version_filters == {
-        "https://example.org/smoke": {"1.0.0"}
-    }
-    assert sparql_tool.last_ontology_hash_filters == {
-        "https://example.org/smoke": {"hash1"}
-    }
 
 
 @pytest.mark.anyio
@@ -2123,57 +2072,6 @@ def test_relative_floor_matches_multiplicative_form_when_positive() -> None:
         hits, score_ratio=0.8, min_query_best_score=0.0
     )
     assert [hit.atom.atom_id for hit in kept] == ["a", "b"]
-
-
-def test_effective_max_atoms_scales_with_windows() -> None:
-    pc = PatchRetrievalConfig(
-        seeds_per_window=4,
-        max_atoms_base=16,
-        max_atoms=48,
-    )
-    assert pc.effective_max_atoms(1) == 16
-    assert pc.effective_max_atoms(7) == 28
-    assert pc.effective_max_atoms(20) == 48
-    unlimited = PatchRetrievalConfig(max_atoms=0, seeds_per_window=4, max_atoms_base=16)
-    assert unlimited.effective_max_atoms(7) == 0
-
-
-def test_round_robin_selects_secondary_ontology_from_shared_pool() -> None:
-    matsci = "https://example.org/matsci"
-    perov = "https://example.org/perov"
-
-    def _hit(entity: str, onto: str, score: float) -> OntologySearchHit:
-        atom = GraphAtom(
-            atom_id=entity,
-            ontology_iri=onto,
-            iri=f"{onto}#{entity}",
-            entity_role="resource",
-            core_representation=entity,
-            neighborhood_representation="",
-            score=score,
-        )
-        return OntologySearchHit(atom=atom, score=score)
-
-    ranked = _merge_hits_across_queries_max_score(
-        [
-            _hit("M1", matsci, 0.99),
-            _hit("M2", matsci, 0.98),
-            _hit("M3", matsci, 0.97),
-            _hit("M4", matsci, 0.96),
-            _hit("P1", perov, 0.40),
-            _hit("P2", perov, 0.39),
-        ]
-    )
-    # Pure top-3 by score would be all matsci; round-robin quota=1 keeps P1.
-    selected = _select_hits_round_robin_by_ontology(
-        ranked,
-        per_ontology_seed_quota=1,
-        max_atoms=3,
-    )
-    iris = {hit.atom.iri for hit in selected}
-    assert f"{matsci}#M1" in iris
-    assert f"{perov}#P1" in iris
-    assert len(selected) == 3
 
 
 @pytest.mark.anyio

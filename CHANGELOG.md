@@ -5,37 +5,886 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Terms used in these entries
+## [Unreleased]
 
-Retrieval and aggregation changes are justified against measurements, and the
-entries name the evaluation sets and metrics involved. For readers outside the
-project:
+Nothing yet.
 
-- **Evaluation corpora.** *Text2KGBench* is a public benchmark used here as a
-  regression guard. The *materials-science corpus* is an internal evaluation
-  set: eight mutually referencing ontology modules (a domain vocabulary, a
-  units vocabulary, a qualified-value vocabulary, and others) with passages of
-  real scientific prose. Individual passages used for tuning are referred to by
-  a case number. Results measured only on the internal corpus are single-corpus
-  fits and are flagged as such.
-- **Seed recall vs. snapshot recall.** *Seed recall* is the share of expected
-  ontology terms that survive retrieval ranking and budget truncation.
-  *Snapshot recall* is the share that are actually defined in the ontology
-  graph handed to the model — a term can be absent from the seeds yet still
-  reach the model by being pulled in as a neighbour of one that was retrieved.
-- **On-topic precision.** The share of terms in the assembled ontology context
-  that belong to the ontology a given passage is about. It is reported for
-  context, not optimised: a missing term cannot be used at all, whereas a
-  surplus one only consumes prompt space. The measure also penalises correct
-  multi-ontology contexts, since a units or provenance term legitimately
-  drawn in from a sibling module counts against it.
-- **Surface-form contract (`sf3`, `sf4`, …).** A version stamp on how ontology
-  terms are converted into indexed text. Changing it changes the stored
-  vectors, so a bump requires re-indexing existing collections; entries that
-  bump it say so explicitly.
+## [0.6.0] - 2026-08-09
+
+*First release published to PyPI since 0.4.3: the 0.5.0 and 0.5.1
+sections below were in-tree version bumps that were never tagged or
+published.*
+
+### Breaking
+
+- Removed in-memory vector store (`VECTOR_STORE_BACKEND=memory`,
+  `VectorStoreBackend.MEMORY`, `tool/vector_store/in_memory.py`). Retrieval
+  requires Qdrant or LanceDB; default path unchanged (`AUTO` → `NONE` when
+  neither is set). `Config.in_memory()` is triple-store only (pyoxigraph).
+- Dropped unread `AgentState` fields (UnitState shadows, never-read writers,
+  unused `graph_uri_override`); `graph_uri` is always `doc_namespace`. Removed
+  unused status/progress helpers; `set_failure` no longer takes `success_score`.
+  UnitState external-evidence mirrors removed — use `ExternalEvidenceCacheEntry`.
+- Removed dead modules: `onto/context.py`, `tool/graph_version_manager.py`,
+  `tool/graph_diff.py` (~1,222 lines).
+- `AtomicToolBox` takes `WebSearchConfig`; `EmbeddingBasedAggregator` takes
+  `AggregationConfig` (flat kwargs removed).
+- Removed `test-api` console script / `cli/test_api.py`; dropped `requests`
+  from the `server` extra.
+- Removed unwired symbols: `route_after_convert`,
+  `route_after_ontology_consolidation`, `WorkflowNode.AGGREGATE_FACTS` /
+  `PARALLEL_MAP_UNITS`, mock triple-store managers, `aggregate_anchor_metrics`,
+  stale prompt templates; refreshed `agent/__init__.py` exports.
+- **A provenance unit node is typed `schema:Text`, not `schema:text`.**
+  `https://schema.org/text` is the *property* `text`; the class is
+  `schema:Text`. Every provenance node OntoCast has ever emitted was typed with
+  a property IRI. Consistently so, which is why nothing caught it: the two
+  matchers that key on it (`TripleStoreManager._provenance_source_nodes`,
+  `normalize_ontology`'s chunk-node detection) used the same wrong IRI, and no
+  test exercised `strip_provenance` against real rewriter output. Graphs already
+  in a triple store keep the old type until re-extracted; a query filtering on
+  `schema:text` must be updated.
+- **`TripleStoreManager._PROVENANCE_METADATA_PREDICATES` is gone**, replaced by
+  `ontocast.onto.constants.PROVENANCE_METADATA_TERMS` — a module-level
+  `frozenset` naming the classes *and* predicates the pipeline mints on
+  provenance nodes. The class attribute had zero references anywhere.
+- **Removed confirmed-dead code (import-visible).** Every symbol below had
+  exactly one reference repo-wide — its own definition — so nothing in-tree
+  changes, but anything importing them out-of-tree breaks. Modules
+  `ontocast/stategraph/util.py` (`count_visits_conditional_success`,
+  `wrap_with`) and `ontocast/tool/agg/promoter.py` (`URIPromoter`), neither ever
+  imported. The `prompt/graph_format.py` "backward-compatible" block —
+  `critique_graph_format_instruction` plus seven eagerly-evaluated
+  `output_instruction_*` aliases. The ten `*_description()` helpers in
+  `onto/llm_graph_payload.py`, superseded by `GraphFormatProfile`. The
+  `OntologyDecision` and `FactsDecision` enums. And the singletons
+  `invalid_max_visits_response`, `SemanticTriplesFactsReport`,
+  `EntityMetadata`, `PredicateMetadata`, `compare_versions`,
+  `validate_and_connect_chunk`, `plot_ontology_graph`,
+  `merge_terminal_ontologies`, `known_prefixes_for_llm_parse`,
+  `collect_catalog_namespaces`, `role_from_predicate_usage`,
+  `derive_pair_matches_with_embeddings`, `update_mermaid_graph_in_markdown`,
+  `CHUNK_NULL_IRI` and `render_ontology_rank_diagnostics`. The last of these
+  was the only presenter of the `ONTOLOGY_PATCH_DUMP_ONTOLOGY_RANKS` payload;
+  the payload itself is still stored under `'ontology_rank_diagnostics'`, which
+  is what the setting actually promises.
+- **`ontology_directory` is now strictly read-only.** It is a seed fixture read
+  once at startup, but two methods treated it as a writable store:
+  `ingest_ontology_ttl` required it and created it while never writing a file,
+  and `delete_ontology_by_iri` globbed it and **unlinked** any TTL declaring the
+  deleted IRI — so `DELETE /ontologies/{iri}` destroyed curated input that the
+  next startup reloads from. Ingestion no longer requires or touches the
+  directory, and deletion no longer removes files from it. An ingested ontology
+  lives in the triple store and vector index only and does not survive a rebuild
+  from seeds; that is now the stated contract rather than an accident.
+  `ToolBox._unlink_ttl_files_if_ontology_iri` is removed, as is the LangChain
+  `ontology_directory is not configured` gate on
+  `ontocast_ingest_ontology_ttl` — the tool is now always offered.
+- **Removed the `cmp-states` console script** and `ontocast/cli/cmp_states.py`.
+  It read `agent_state.onto.update*.json` dumps written by
+  `BasePydanticModel.save_json`, which had no callers anywhere: the dumps were
+  the same debug generation as the removed `working_directory`. Both
+  `save_json` and its unused `load` counterpart are gone.
+- **`CHUNK_BREAKPOINT_THRESHOLD_TYPE` and `CHUNK_BREAKPOINT_THRESHOLD_AMOUNT`
+  removed** — the chunker clusters with PCA → UMAP → HDBSCAN and never read
+  them. Invalidates the chunk cache; does **not** change chunk output.
+- **`langchain-huggingface` is no longer a dependency.** The chunker uses a
+  `langchain_core.embeddings.Embeddings` adapter over the shared encoder,
+  reproducing `HuggingFaceEmbeddings._embed` including its newline collapse,
+  which chunk boundaries depend on.
+- **Removed:** `ChunkerTool.model` (use `ChunkConfig.embedding_model`),
+  `WorkflowNode.SUMMARIZE_CHUNKS`, `route_after_chunk`,
+  `make_summarize_chunks_node`, `resolve_effective_facts_ontology_context`.
+  `EmbeddingTool._embed_unlocked` is renamed `_embed_raw`;
+  `EntityClusterer.embedder` returns a `SharedEncoder`. Regenerate diagrams with
+  `uv run plot-graph`.
+- **Transport failures are no longer retried by `call_llm_with_retry`.** Its
+  retry exists to show the model its own malformed output; retrying tripled the
+  request rate when a provider was rate-limiting. Parse retries back off with
+  jitter.
+- **`ToolBox.serialize` raises inside a running event loop** — await
+  `aserialize` there.
+- **On Apple Silicon the chunker moves from CPU to MPS,** now that it
+  auto-selects like every other consumer. Identical on CPU-only and CUDA hosts.
+- **LLM cache key gained fields, invalidating every existing entry.** The key
+  now carries a `cache_format_version` (now `2`) plus the Ollama generation
+  knobs `think` / `num_predict` / `num_ctx`. Caches written by earlier releases
+  will not be hit, so the first run after upgrading re-pays for every call.
+- **The on-disk cache now evicts on its own,** capped at 1 GB by default
+  (`ONTOCAST_CACHE_MAX_BYTES`). This is new deletion behaviour; set the variable
+  to `0` to restore unbounded growth.
+- **`CHUNK_SECTION_CLASSIFIER` now defaults to `heuristic`, not `llm`,** so
+  chunking makes no LLM calls. The deterministic tiers now resolve the headings
+  that previously required a model; set it back to `llm` to keep a model pass
+  over headings none of them can name.
+- **`SectionSpan.label` is now `str | None`.** A region whose section type is
+  unknown is represented explicitly rather than being absorbed into its
+  neighbour. Callers that assumed a non-null label must handle `None`.
+- **`working_directory` / `ONTOCAST_WORKING_DIRECTORY` removed.** Nothing had
+  read it since the filesystem triple-store backend was deleted in `9d3ab77`
+  (2026-06) — but `ontocast serve` and `ontocast process` still *raised* without
+  it and then created an empty directory, and `plot-graph` leaked a
+  `tempfile.mkdtemp()` per invocation to satisfy a field `ToolBox` ignores.
+  Both commands now start with no OntoCast env var set at all. Caches keep using
+  `ONTOCAST_CACHE_DIR`; batch artifacts keep using the explicit `--output-dir`
+  family. A stale `ONTOCAST_WORKING_DIRECTORY` in the environment is ignored.
+- **`BudgetTracker.add_usage` / `add_cache_hit` take `usage: TokenUsage | None`**
+  instead of `input_tokens` / `output_tokens` ints. `_usage_from_llm_result`
+  returns a `TokenUsage` rather than a tuple.
+
+### Added
+
+- `MAX_CRITIC_VISITS_PER_NODE` — optional cap for the inner critic loop;
+  unset keeps coupling to `MAX_VISITS_PER_NODE`.
+- `test_agent_graph_topology_is_pinned` — asserts full document-graph
+  node/edge topology (including conditional maps).
+- Shared `run_facts_gate` (`merge_repair` flag) and
+  `prepare_extraction_request` for `/process` and `/process_unit`.
+- **Section labels reach the RDF output.** A source unit's `section_label`,
+  `section_label_source` and `section_label_confidence` reached the summarizer
+  and `ontocast sections` and stopped there, so a finished run could not be
+  audited for *which part of the document* a fact came from. The provenance
+  artifact now carries `schema:articleSection`, `ontocast:sectionLabelSource`
+  and `ontocast:sectionLabelConfidence` (`xsd:decimal`) on each labeled unit
+  node — emitted as a block, so an unlabeled unit gets none of the three rather
+  than a bare confidence of `0.0`. `strip_provenance` removes them with the rest
+  of the chunk metadata, which is now pinned by a test.
+- **A minted `ontocast:` namespace** (`https://growgraph.dev/ontocast#`), the
+  project's first. Deliberately outside `DEFAULT_IRI` so pipeline metadata is
+  never a SHACL repair target. Used only where no standard vocabulary applies:
+  "which classifier tier decided this label" and a bare confidence have no
+  well-known predicate that is not a heavyweight `prov:qualifiedAttribution` or
+  `schema:Rating` structure, and a `Rating` blank node would trip the gate's own
+  placeholder-prune heuristic.
+- **`CHUNK_SECTION_FILTER_ON_EMPTY`** (`warn` default, `error`) decides what
+  happens when a section selection removes every segment. Under `warn` the run
+  extracts zero chunks and reports success, which is indistinguishable from a
+  document that genuinely had nothing to extract; `error` fails instead — HTTP
+  `422` with `error_code=empty_section_selection:<param>`, or a non-zero exit
+  for `ontocast process`, where the file joins `failed_files` so one unmatched
+  selection does not kill the batch. Covers the `target_sections` /
+  `summarize_sections` allowlist **and** the `exclude_sections` denylist, which
+  had no empty guard at all and could blank a document from a schema's
+  `default_exclude` with no caller involvement. `ontocast sections` always
+  behaves as `warn`: a diagnostic has to survive the condition it diagnoses.
+  New public `SectionSelectionEmptyError`.
+- **`retrieval_metrics` in the run manifest.** `<stem>.run.json` now carries the
+  same payload `/process` returns, so a batch run is no longer the blind path.
+  This is also what finally gives `ONTOLOGY_PATCH_DUMP_ONTOLOGY_RANKS` a reader
+  outside HTTP: its payload rides along under `patch_retrieval`.
+- **`RetrievalMetric`**, a `StrEnum` in `onto/enum.py` enumerating the 24
+  top-level `retrieval_metrics` keys. They are wire names — serialized verbatim
+  into `ProcessResultMetadata` — and were bare string literals across three
+  modules with no registry, so a typo was a silently missing metric and nothing
+  said what a run should emit. The nested patch-retriever keys are deliberately
+  left out: they belong to a different namespace with its own lifecycle.
+- **`facts_llm_repair_renders_failed`** alongside
+  `facts_llm_repair_renders_total`. A repair render that fails leaves the
+  pre-repair graph intact and the unit reports `SUCCESS` by design, so the
+  failure was recorded on the attempt log and aggregated nowhere.
+- **Console-script reference** in the installation guide covering `ontocast
+  serve` / `process` / `sections`, `pdfs-to-markdown`, `test-api`,
+  `match-graphs` and `plot-graph`; three of them appeared in no doc page.
+- Token accounting survives a cache replay. `CachedResponse` now stores the
+  provider's usage alongside the response, and `BudgetTracker` reports it as
+  `cached_input_tokens` / `cached_output_tokens`, kept apart from the billed
+  `input_tokens` / `output_tokens` so a replay is not mistaken for spend.
+  Previously `usage_metadata` — a separate `AIMessage` attribute, not part of
+  the `response_metadata` that was persisted — was dropped on write, so the
+  cache-replay protocol in `docs/user_guide/performance.md`, the mode the
+  benchmark and ablation work runs in, reported zero tokens.
+- `BudgetTracker.reasoning_tokens`, `cache_read_input_tokens` and
+  `cache_creation_input_tokens`, read from LangChain's `UsageMetadata` detail
+  keys (and the OpenAI `*_tokens_details` equivalents). Reasoning tokens
+  dominate output cost for the thinking models `LLM_THINK` drives, and
+  provider-cached input bills at a fraction of the fresh rate — folding either
+  into a single total misstates cost in opposite directions.
+- A cache hit now rebuilds its `AIMessage` with `usage_metadata`, so a replayed
+  call looks identical to a live one to anything reading usage off the message.
+  The Batch-API prefill (`ontocast.tool.llm_batch`) carries usage through too.
+- `OllamaModel` presets for current Qwen and Kimi tags: `qwen3.6`, `qwen3.5`,
+  `qwen3`, `qwen3-coder`, `qwen3-coder-next`, `qwen2.5`, `qwen2.5-coder`,
+  `kimi-k3`, `kimi-k2.7-code`, `kimi-k2.6`, `kimi-k2.5`.
+- **Run manifest.** `ontocast process --output-dir DIR` now writes
+  `<stem>.run.json` beside each `<stem>.facts.ttl`: OntoCast version, render
+  mode, tenancy, the LLM settings that shaped the output, the full
+  `BudgetTracker`, and triple counts. The tracker was returned over HTTP and
+  logged at INFO, then discarded, so a finished batch left its TTL with no
+  record of what produced it or what it cost, and two runs could only be
+  compared by rerunning them.
+- `docs/user_guide/observability.md` — the three layers (in-run `BudgetTracker`,
+  the run manifest, and external tracing via LangSmith/Langfuse/OTel, which work
+  today with no OntoCast code) and the caveat that a cache hit emits no provider
+  span, so a replayed run shows a thin trace while the budget shows the real
+  workload.
+
+Not bumped: `LLM_CACHE_FORMAT_VERSION` stays at 2. The `usage` field is additive
+and optional, so entries written before it still load and report usage as
+unknown rather than zero — bumping would have evicted every existing entry and
+forced a paid re-run before any replay worked again.
 
 
-## [0.5.0]
+- **`/process_unit` runs the post-aggregation validation gate.** The route
+  shipped unvalidated facts while its docstring claimed otherwise; it now runs
+  the same gate as the document pipeline and the CLI unit path — invariant
+  findings, SHACL, and the LLM-free autofix, minus only the un-merge repair
+  (meaningless for a single unit) — and returns `facts_conformance`,
+  `facts_validation_findings` and `facts_gate_repairs`, serving the repaired
+  graph.
+- **LLM-free repair of SHACL violations** (`FACTS_SHACL_AUTOFIX`, default
+  `prune`) in a bounded validate → repair → revalidate loop
+  (`FACTS_SHACL_AUTOFIX_PASSES`); a pass that does not strictly reduce
+  violations is reverted. `rewrite` retypes a literal to the `sh:datatype` it
+  parses as, and replaces a string literal on an IRI-only path with the single
+  catalog IRI declaring it as a surface form. `prune` additionally drops
+  `sh:minCount` violators that assert nothing beyond `rdf:type`/`rdfs:label`
+  and are referenced by at most one subject — a placeholder value node stands
+  for an extraction that did not happen. `sh:maxCount`, `sh:not`,
+  `sh:qualifiedValueShape` and SPARQL constraints are reported, never
+  repaired. Nothing is invented: a node carrying real data but missing a
+  required property stays a reported finding.
+- **Code resolution at parse time** (`FACTS_CODE_PREDICATES`): a node carrying
+  `qudt:ucumCode "d"` but no unit link gains `qudt:unit unit:DAY` when exactly
+  one catalog individual declares that code. Schema-driven — the connecting
+  property is whichever object property the context declares with a matching
+  range and domain, falling back to the graph's own observed usage when a
+  vendored projection declares no range (the shipped QUDT unit subset does
+  not). Resolved all five ucum-coded nodes in the matsci pilot.
+- **The validation result is reported, not just logged.** `ProcessResultMetadata`
+  gains `facts_conformance` (whether SHACL ran, whether the graph conforms, and
+  counts by finding kind, SHACL constraint component and shape),
+  `facts_validation_findings` and `facts_gate_repairs`. Batch runs write the
+  same payload beside the facts Turtle as `<name>.facts.validation.json`.
+  Grouping by constraint is what makes a residue diagnosable: 36 violations on
+  one shape are one modelling gap, not 36 defects.
+- **[Facts Validation and SHACL](docs/user_guide/validation.md)** documents the
+  three validation layers, which cost a provider call, where shapes come from,
+  what the autofix will and will not do, and how to read the conformance
+  report.
+
+
+- **Automatic cache eviction.** `Cacher.prune()` drops TTL-expired entries, then
+  evicts least-recently-*used* entries until the total fits under
+  `ONTOCAST_CACHE_MAX_BYTES`. Recency comes from access time, so an entry written
+  once and read constantly outlives one written recently and never touched.
+  Runs at process start and after every `ONTOCAST_CACHE_PRUNE_EVERY` (256)
+  writes, which keeps a long-lived `ontocast serve` bounded between restarts.
+- **`ontocast cache` command group**: `stats` (per-tool size, flags orphaned
+  subdirectories), `prune` (`--max-bytes`, `--ttl-days`, `--orphaned`), and
+  `clear [--subdir]`.
+- **`PathConfig` cache settings**: `ONTOCAST_CACHE_MAX_BYTES` (accepts `1GB` /
+  `500MB` as well as a byte count), `ONTOCAST_CACHE_TTL_DAYS`,
+  `ONTOCAST_CACHE_PRUNE_EVERY`.
+- Converter cache entries carry a format version in the key, replacing the old
+  practice of bumping the subdirectory name; the subdirectory is back to plain
+  `converter/`. Stray `converter_v2/` and `converter_v3/` directories in an
+  existing cache are cleared by `ontocast cache prune --orphaned`.
+- Typed `CacheStats` / `PruneReport` models and `Cacher.cache_stats()`;
+  `get_cache_stats()` still returns a plain dict for JSON responses.
+- **Timing telemetry separating provider latency from event-loop stalls**, in
+  `budget.node_durations` / `budget.counters`, documented in the new
+  [Performance](docs/user_guide/performance.md) guide. `BudgetTracker` gains
+  `counters`/`incr` and `parallel_efficiency`, plus a `<node>` (wall) vs
+  `<node>/unit_sum` (summed across workers) key convention; `_max` keys take the
+  maximum on merge. Adds `llm/provider`, `llm/inflight_wait`,
+  `llm/cache_lookup`, per-stage `worker_wait`, and a `loop_lag` sampler
+  (`ontocast/util/loop_lag.py`) — awaited I/O yields, so lag isolates
+  synchronous blocking that wall clock cannot distinguish from slow providers.
+- **`LLM_REQUEST_TIMEOUT_SECONDS`** (default 180). A hung call previously held a
+  unit-worker slot and an `LLM_MAX_INFLIGHT` slot indefinitely. Raises
+  `LLMRequestTimeoutError`, deliberately not an `asyncio.TimeoutError`, so it
+  fails one unit instead of aborting the fan-out.
+- **`CHUNK_EMBEDDING_MODEL`** (`ChunkConfig.embedding_model`), default unchanged.
+  The chunker's checkpoint was a `ChunkerTool` field nothing ever set.
+- **Section classification cascade** (`ontocast/tool/chunk/outline.py`,
+  `density.py`). Classification runs over the document outline rather than per
+  chunk, through tiers of increasing cost: outline → heading patterns → heading
+  keywords → canonical-order fill → content density → batched LLM. Only the last
+  costs anything, and it is off by default.
+- **Heading genericity discrimination.** Docling reports a flat heading level
+  for PDF conversions, so hierarchy cannot be read from the structure. Headings
+  are instead classified by content-word count: generic section names open a new
+  section, while descriptive subsection titles (and document titles) inherit
+  their parent's label. Without this, a subsection such as `Cooperative ensemble
+  breaks the population-inversion limitation` would split several thousand
+  characters of results text out of the results section.
+- **`keywords` and `order` in the section-label YAML schemas**, plus a schema
+  level `ordered` flag. Keywords are the recall tier for compound and decorated
+  headings; `order` is used only to refuse a fill that would run backwards.
+  Both are optional, so existing schemas load unchanged.
+- **Content-density classification** for regions with no usable heading
+  (`CHUNK_SECTION_DENSITY`). `conservative` (default) recognises only reference
+  lists and acknowledgements; `aggressive` additionally guesses
+  methods/results/introduction and is opt-in, because those features do not
+  separate those sections reliably and a wrong label is acted on silently.
+- **Batched LLM section classification** (`CHUNK_SECTION_LLM_BATCH_SIZE`,
+  default 40). When `CHUNK_SECTION_CLASSIFIER=llm`, one call now classifies a
+  whole document's residual instead of one call per chunk; a response that
+  cannot be used falls back to the per-chunk path.
+- **`ontocast sections`** — prints the detected outline and every chunk's label,
+  deciding tier and confidence, without running extraction. Makes no LLM calls
+  and needs no provider credentials unless `--section-classifier llm` is passed.
+- **`section_label_source` and `section_label_confidence`** on `ContentUnit`,
+  `PreparedChunk` and `PrepareSegment`, recording which tier decided a label.
+  The source is load-bearing, not diagnostic: it is what stops forward-fill from
+  overwriting an explicitly unresolved section.
+- **Plain-text heading detection** (`CHUNK_SECTION_TEXT_HEADINGS`) for documents
+  whose conversion produced no markdown heading structure.
+- **Automatic document-type schema detection**
+  (`ontocast/tool/chunk/schema_detect.py`, `CHUNK_SECTION_SCHEMA_DETECT`,
+  default `headings`). Section labels are only meaningful relative to a schema,
+  and a 10-Q submitted without `section_schema_id` or a matching
+  `document_type_hint` was scored against the academic default and came back
+  entirely unlabeled. Three tiers, cheapest first: headings that only one schema
+  recognises (free, no model), then embedding-based heading voting reusing the
+  chunker's model, then body prose against document-type profiles. Precedence is
+  explicit id → hint → detection → manifest default, so caller intent is never
+  overridden. Every tier abstains rather than guessing — a wrong schema
+  relabels an entire document silently.
+  - The lexical tier scores on **exclusive** evidence only: a heading several
+    schemas recognise counts zero, not a fraction. Weighting shared headings
+    fractionally measured strictly worse (clinical 1.4× → 2.0×, standard
+    4.2× → 14×, academic 6.1× → 600×) — `References` genuinely carries no
+    information about which cell a document is in.
+  - The content tier ships **off** (`auto`, not the default). It ranks 7/9 on
+    the corpus but its one confident error is severe: chemistry prose scores
+    `standard` over `academic` past the acceptance margin. It is gated to
+    documents with essentially no headings, excludes `news` (a measured
+    semantic attractor), and demands a 4.0 margin against the heading tiers'
+    1.8.
+- **Three new section-label schemas** — `patent`, `standard` and `news` —
+  completing the document-type partition. No `thesis` cell: a thesis shares the
+  IMRaD body of a paper and differs only in front and back matter, so it is a
+  subtype of `academic` rather than a sibling and belongs to the planned
+  `academic → paper → experimental` funnel. `thesis`/`dissertation` hints
+  resolve to `academic`.
+- **`document_profile` on `SectionLabelSchema`** — one sentence per cell stating
+  what makes it exclusive. It is the artifact that enforces the partition (two
+  profiles that could describe the same document mean the partition is broken)
+  and doubles as the content tier's prototype. `general` deliberately has none,
+  which is what keeps the residual cell out of detection entirely.
+- **Verified keyword tiers for every schema.** All eight non-academic schemas
+  gained corpus-grounded `keywords`, with `order`/`ordered` where a canonical
+  order exists. Every keyword was authored against a real document in
+  `test/data/schema_corpus.json` and cut if it matched nothing — the baseline
+  before this was 4/9 cells detected, now 9/9.
+- **Document-type detection corpus** (`test/data/schema_corpus.json`,
+  `run/fetch_schema_samples.py`). One real document per cell — RFC 7231, *Pride
+  and Prejudice*, a USPTO patent, the CC BY 4.0 legal code, the nginx guide, a
+  Europe PMC trial protocol, a Wikinews article, plus the in-repo 10-Q and
+  chemistry paper. Only heading sequences and sampled paragraphs are committed,
+  each with its source URL and licence, so the suite stays offline and a few
+  tens of kB. Tuning a nine-way classifier on the two document types previously
+  in `data/` was not sound.
+- **Schema reporting in `ontocast sections`** — the resolved schema, the tier
+  that chose it, its margin over the runner-up, and the ranked candidate
+  evidence. The only way to see a weak-but-accepted detection; free in
+  `lexical` mode.
+
+Measured on the Apple 10-Q, which is what the change is for: with detection off
+the document resolves to the academic default and 1 of 102 chunks receives a
+label — and that one is `methods`, i.e. wrong. With detection on it resolves to
+`financial` on the free lexical tier at an 8.7× margin and 17 of 75 chunks are
+labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
+`financial_statements`, `business_overview`, `highlights`, `cover`), so
+`--target-sections md_and_a` selects text for the first time.
+
+- **Batch cache prewarming was a no-op.** `ontocast.tool.llm_batch` built its own
+  cache-key config and dropped `base_url` when it was `None` — the default — so
+  every imported entry hashed differently from what `LLMTool` looked up.
+  Both sides now call one `llm_cache_config()`, covered by a regression test
+  that asserts through the real read path rather than against the importer itself.
+- **`complete()` and `extract()` mangled Anthropic and Google responses.** Those
+  providers return a list of typed content blocks; the two methods stringified
+  the list into a Python repr, returned it, and cached it. All four entry points
+  (`__call__`, `acall`, `complete`, `extract`) now genuinely share
+  `_invoke_cached`, so content normalisation cannot drift between them again.
+- **Ollama generation settings were absent from the cache key,** so changing
+  `num_ctx` returned the previous, truncated response from cache.
+- **`remove_ontology_by_iri` evicted the ontology graph cache under the wrong
+  key.** Entries are inserted under the header's `graph_uri` but were popped by
+  `versioned_iri`; the two coincide only while content hashing is round-trip
+  stable, so a removed ontology could stay resolvable. `_graph_cache` is now
+  also LRU-bounded rather than an unbounded dict of rdflib graphs.
+- **Cache writes are atomic** (temp file + `os.replace`). A truncating write with
+  `PARALLEL_WORKERS` units in flight, or a Ctrl-C mid-write, left readers seeing
+  half a JSON document.
+- **Cache I/O no longer blocks the event loop.** Disk reads and writes on the
+  async path run in a thread, and `GET /info` no longer `stat()`s every cache
+  file inline — tens of thousands of syscalls per request on a warm cache.
+- **Test cache isolation actually works.** Pytest was detected via the shell's
+  `$_` variable, which holds the path to `uv` under `uv run pytest`, so the
+  `.test_cache` branch never fired and tests read and wrote the developer's real
+  cache.
+- **Binary cache keys are no longer lossy.** PDF bytes were decoded with
+  `errors="ignore"` before hashing, leaving the key resting on whichever bytes
+  happened to form valid UTF-8.
+- **The in-flight semaphore is per event loop.** `asyncio.Semaphore` binds to a
+  loop on its first contended acquire, so a single process-wide instance raised
+  "bound to a different event loop" on the second `asyncio.run` in a process.
+- Cache-hit responses replay the provider's `response_metadata`, so a cached call
+  is behaviourally identical to a fresh one.
+- `ToolBoxRuntime.acreate` built a second `Cacher` instead of reusing the shared
+  one, defeating the documented single-instance design.
+
+### Changed
+
+- `LLM_MODEL_NAME` accepts any string. The model enums are presets, not a
+  whitelist: an unrecognised provider/model pairing now logs a warning and is
+  passed through instead of raising. The closed whitelist rejected models newer
+  than the installed package, and blocked the standard way to reach hosted
+  Qwen/Kimi/DeepSeek — `LLM_PROVIDER=openai` plus a vendor `LLM_BASE_URL`
+  (Moonshot, DashScope, OpenRouter, vLLM), which is what `base_url` exists for.
+- A model name that matches a preset exactly is normalised to the enum member
+  rather than warning about itself: `LLM_MODEL_NAME` always arrives as a string,
+  and with `str` in the union pydantic had no reason to prefer the enum.
+- Docs: `LLM_MODEL_NAME` guidance and OpenAI-compatible endpoint recipes in
+  `docs/user_guide/configuration.md`; token-field table and replay-cost note in
+  `docs/user_guide/performance.md`.
+- **`FACTS_REPAIR_VISITS` → `FACTS_LLM_REPAIR_VISITS`**, and
+  `_run_deterministic_repair` → `_run_finding_driven_repair`. The old name said
+  "deterministic" for a loop whose every visit is a paid `render_facts_update`
+  call — only its *trigger* is deterministic. This mattered: at the default
+  `MAX_VISITS=1` a facts unit costs up to **two** provider calls, not one, and
+  the documentation claimed otherwise. "Deterministic repair" now names only
+  the LLM-free graph rewrites. Telemetry follows: attempt kind `repair` →
+  `llm_repair`, metric `facts_repair_visits_total` →
+  `facts_llm_repair_renders_total`.
+
+### Fixed
+
+- Process params unified via `_PARAM_SPECS` across query / JSON / multipart
+  (`render_mode`, `ontology_context_mode`, `*_user_instruction`,
+  `strip_provenance`); previously some were query-only or body-ignored.
+- `render_mode` / `llm_graph_format` / `ontology_context_mode` parsers raise
+  `RequestParamError` → HTTP 400 instead of silent default fallback.
+- Finding-driven repair copies stage/reason onto `FactsLoopAttempt` before
+  `clear_failure()`.
+- `facts_loop` / `ontology_loop` report the failing stage, not always
+  `*_CRITIQUE`.
+- **Deterministic repairs no longer orphan provenance.** The 0.6.0 sweep covered
+  `SHACL_PRUNE` only. `SHACL_RETYPE` and `SHACL_CODE_RESOLVED` also remove a
+  triple — replacing it with a repaired one — so their
+  `_:r rdf:reifies <<( s p o )>>` reifier was left describing the pre-repair
+  statement, and no subject/object pattern matches a term sitting inside a
+  triple term. New `retarget_reifiers` repoints the triple term onto the
+  replacement instead of dropping it, so `prov:wasDerivedFrom` survives a repair
+  rather than being lost or left dangling. `_shacl_repairs_for` returns a
+  `_ShaclRepairPlan` pairing each removal with its replacement (first writer
+  wins, since two violations can fire on one triple but a reifier reifies one
+  statement). Retargeting runs after the accept test and before the prune sweep,
+  which keeps "retyped *and* pruned in the same pass" correct by construction:
+  the sweep matches the new term, so prune still wins.
+- **`schema:position` and `schema:identifier` were reported as improvised
+  vocabulary.** `_non_catalog_vocabulary_findings` skipped only `prov:`-prefixed
+  *predicates*, so the chunk metadata the pipeline mints itself produced a
+  `NON_CATALOG_VOCABULARY` warning per predicate on every run whose catalog does
+  not happen to include schema.org — and a type is recorded against its object
+  IRI, so the chunk node's own `prov:Entity` / `schema:Text` were flagged too,
+  which the namespace guard on `rdf:type` could never catch. All of them are now
+  skipped via `PROVENANCE_METADATA_TERMS`.
+- **`facts_rejected_merges` stopped changing meaning mid-run.** The validate
+  node overwrote the aggregator's guard count with `len(vetoes)` after any
+  un-merge pass — a different quantity, already published one line earlier as
+  `facts_merge_vetoes` — destroying the guard count for the graph actually
+  served. It now republishes the count from the last accepted re-aggregation.
+- **`/process_unit` could not report an empty ontology context.** The
+  `validated_without_ontology_context` metric was written only by the document
+  path, so the single-unit gate validated against an empty catalog silently.
+  Both paths now write the SHACL and validation metric set through one shared
+  `record_facts_gate_metrics`, so a counter added to one is present on both and
+  batch dumps stay comparable — the two hand-maintained copies were the reason
+  they had drifted. Pinned by a test asserting both paths emit the same key set.
+- **The three local-embedding defaults are spelled consistently.**
+  `AGG_EMBEDDING_MODEL` and `EMBEDDING_MODEL_NAME` now carry the
+  `sentence-transformers/` prefix like `CHUNK_EMBEDDING_MODEL`. Identical
+  checkpoint either way — `sentence-transformers` resolves a bare name to the
+  same files — but `SharedEncoder` keys its process-wide cache on the literal
+  string, so the same model written two ways loaded twice. Nine documentation
+  snippets told you to align the three settings *using the unprefixed spelling*,
+  which defeated the point; they are corrected. Does **not** invalidate the
+  chunk cache: that is keyed on `CHUNK_EMBEDDING_MODEL`, which is unchanged.
+- **`.env.example` documents every setting again.** Nine `CHUNK_*` variables
+  were declared in `settings.py` and advertised nowhere, including
+  `CHUNK_EMBEDDING_MODEL` — the one the performance guide tells you to align —
+  and the four schema-detection thresholds. A new test diffs the two in both
+  directions, so a knob added to settings or removed from it cannot drift from
+  the advertised surface again.
+- **`repair_ligature_gaps` is no longer labelled TEMP.** A knob that
+  `CONVERTER_PROFILE=born_digital` turns *on* by default, that three doc pages
+  describe, that four tests cover and that participates in the converter cache
+  key is not temporary. The description now states a concrete removal condition
+  instead.
+- **The facts critic could not read the ontology it was judging.**
+  `criticise_facts` built its ontology chapter with no index appendix, so on an
+  opaque-IRI catalog (Wikidata-style `Q`/`P` codes) the critic was shown bare
+  IRIs while facts guideline `6a` instructs the renderer to resolve them through
+  the `# TERM INDEX`. It now uses the same memoised chapter the renderer does,
+  which also stops re-serialising the ontology on every visit;
+  `criticise_ontology` gets the same appendix. Costs nothing on readable
+  ontologies — `build_ontology_index` returns `""` when no IRI is opaque.
+- **Parse-time literal retyping is no longer numeric-only.**
+  `normalize_literals_against_schema` retypes against any declared `rdfs:range`
+  in an allowlist that now includes `xsd:date`, `dateTime`, `duration`, `gYear`
+  and `gYearMonth`, so an `xsd:gYear` range receiving `"2019"^^xsd:string` is
+  repaired at parse time rather than only at the SHACL gate, and only where
+  shapes exist. Deliberately **not** "any XSD datatype", each case measured:
+  every lexical form parses as `xsd:string` and `xsd:anyURI`;
+  `Literal("2019", datatype=xsd:boolean).value` is `False`, not `None`; and
+  `"2019"` parses as `xsd:time` 20:19 — so any of those as a range would let one
+  sloppy declaration rewrite correctly typed values. The gregorian datatypes
+  have no rdflib value parser at all (`.value` is always `None`) and are
+  validated against their lexical space instead. Language-tagged literals are
+  skipped, since retyping an `rdf:langString` discards the tag.
+- **Guideline numbering no longer skips 11.** The JSON-LD clause in the facts
+  prompt was numbered `12.` while `11.` came from the *conditional* search
+  guidelines, absent whenever web grounding is off — the default. It is now
+  `10a.`, matching the template's existing `1a.`/`6a.` convention, so it cannot
+  collide with the injected rule or leave a gap.
+- **Two error paths no longer report a cause they never checked.** Qdrant's
+  `_ensure_payload_index` logged "already exists" for every failure including
+  auth rejections and timeouts, leaving the index absent while the log said
+  otherwise; the Ollama embedding fallback discarded the original exception with
+  no log at any level, so a bad `EMBEDDING_BASE_URL` and an absent langchain
+  integration were indistinguishable. Both now log the real exception. LanceDB's
+  three equivalents were reworded to match.
+- **Four documentation claims that were simply false.** `updated_at` /
+  `dcterms:modified` "timestamp tracking" was advertised in `README.md` and
+  `concepts.md` but exists nowhere — `Ontology` carries only `created_at`,
+  serialized as `dcterms:created`. `ontology_context.md` listed
+  `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` as `550` against an actual
+  `1200`. `create_vector_store_manager`'s docstring — which renders in the API
+  reference — said `AUTO` falls back to the in-memory store when it resolves to
+  `NONE`. And `performance.md` gave `CHUNK_EMBEDDING_MODEL` without its
+  `sentence-transformers/` prefix, on the one page whose point is that settings
+  naming the same model share one resident copy, keyed on the literal string.
+- **Default test runs are offline, model-free, and reproducible.** Removed
+  `env_files = [".env"]` from pytest configuration in `pyproject.toml` to
+  prevent local test runs from automatically loading developer-specific `.env`
+  files, avoiding accidental LLM-calling tests and environment leakage (local-green/CI-red).
+  Added a dynamic deselection hook (`pytest_collection_modifyitems`) in `conftest.py`
+  to automatically deselect tests marked as `slow` or `integration` when pytest
+  is invoked without any marker selectors (e.g. standard `uv run pytest`),
+  preserving the ability to run them via explicit commands like
+  `uv run pytest -m slow` or `uv run pytest -m integration`.
+- **SPARQL literals are escaped.** `GraphUpdate._serialize_rdf_term` wrapped a
+  literal in bare double quotes, so any `"`, `\`, newline or carriage return —
+  routine in extracted text — closed the string early and failed the whole
+  update with a `ParseException` in `_apply_update_query`, losing every triple
+  in the operation. Escapes are emitted explicitly rather than via
+  `Literal.n3()`: n3 writes a raw tab, which rdflib's own SPARQL parser reads
+  back as spaces.
+- **Absolute IRIs outside `http` are no longer emitted as prefixed names.** The
+  same method passed through any IRI containing `:` and not starting with
+  `http`, so `urn:`, `doi:`, `file:` and `mailto:` IRIs reached the parser
+  unbracketed as undefined prefixes. Abbreviations are now recognised against
+  the prefixes the query actually declares instead of by shape.
+- **SHACL retype fires for inline property shapes.** `sh:sourceShape` was kept
+  only when it was a `URIRef`, so a violation from the common
+  `sh:property [ sh:path … ; sh:datatype … ]` style arrived with no shape and
+  the `sh:datatype` retype branch never ran. pyshacl reports the same blank node
+  the shapes graph holds, so the datatype now resolves.
+- **Blank-node SHACL violations reach the report.** Scope was decided on the
+  projected finding, whose subject is a stringified blank node matching no
+  namespace prefix, so every blank-node violation was dropped — while the repair
+  pass acted on exactly those nodes. Report, repair, and the
+  `violations_before`/`violations_after` metrics now share one scope predicate:
+  IRIs by namespace, blank nodes by presence in the facts graph.
+- **`SHACL_PRUNE` sweeps orphaned provenance.** A pruned node is also named
+  inside `rdf:reifies <<( s p o )>>`, which no subject/object pattern matches,
+  so the reifier and its `prov:wasDerivedFrom` survived describing a deleted
+  statement. New `drop_reifiers_mentioning` clears them through pyoxigraph —
+  `rdflib.Graph.remove` raises on a triple-term triple — and runs only after a
+  pass is accepted, so a reverted pass leaves provenance intact.
+- **`TripleFix.text_fragment` and `TripleFix.explanation` coerce free text.**
+  Both are required with no default, so a provider answering either with a
+  bulleted list raised and discarded every fix in the report. Also applied to
+  `ExternalEvidencePlan.rationale`, which had diverged from the identically
+  named field on `ExternalEvidenceRequest`. Graph-syntax fields
+  (`incorrect_value` / `correct_value`) stay strict.
+- **`bibliography.py` names the shipped default.** Its docstring marked
+  `citations_only` as the default; `ChunkConfig.bibliography_mode` has defaulted
+  to `skip` since the flag was introduced.
+- `demo/README.md` and `docs/user_guide/llm_caching.md` documented CLI flags
+  that do not exist (`--working-directory`, `--ontology-directory`), so the
+  commands failed on invocation. Rewritten as env-var form.
+- **The SHACL gate no longer crashes on the aggregated graph's RDF 1.2 triple
+  terms.** The autofix copied the graph with bare `Graph.add`, and `run_shacl`
+  handed the oxigraph-backed graph straight to pyshacl — both assert on the
+  `rdf:reifies <<( s p o )>>` provenance the aggregator emits, so the default
+  configuration (`FACTS_SHACL_AUTOFIX=prune`) failed `VALIDATE_FACTS` on any
+  real document once shapes were configured. Validation now runs on a
+  sanitised copy (reification carries no shape targets, so it loses nothing),
+  and repairs are applied **in place with per-pass rollback** instead of on a
+  copy, so the served graph keeps its provenance triple terms.
+- **A focus node absent from the facts graph can no longer be "pruned".** With
+  the ontology mixed into validation, pyshacl also reports catalog nodes;
+  blank ones bypass the namespace scope check, and "no outgoing triples" read
+  as "asserts nothing". The result was an empty repair record whose no-op pass
+  tripped the strict-decrease revert and threw away genuine repairs in the
+  same round. Scope is now presence-based for blank nodes, and an absent node
+  is never an empty placeholder.
+- **`conforms` and the `facts_shacl_violations_*` metrics count the same
+  population.** The metrics counted raw pyshacl violations (facts + mixed-in
+  ontology) while `conforms` was judged on fact-scoped findings, so a run
+  could report `conforms: true` next to a nonzero `violations_after`. Both now
+  use the fact-scoped population; the autofix loop's accept test still uses
+  the raw count internally.
+- **`crawl_directories` matches suffixes case-insensitively** (`report.PDF` is
+  a PDF) and **raises when an explicitly named file is excluded by the prefix
+  filter** instead of silently returning nothing — the exact no-op failure
+  issue #53 removed. `pdfs-to-markdown` now exits non-zero on an empty crawl,
+  like `ontocast process`.
+- **The Docker image works again.** The build used `--no-group` flags against
+  a project whose tiers are extras (installing the bare core: no server, no
+  provider), the runtime stage lacked `uv` yet the entrypoint invoked it, and
+  bare `ontocast` no longer starts the API. The image now installs every
+  runtime extra and starts `ontocast serve` (override `CMD` for batch runs);
+  the stale `ontocast-mcp-server` / `0.1.1` OCI labels are gone.
+- **Documentation matched the code again** across README, docs and
+  `.env.example`: settings that no longer exist removed
+  (`CHUNK_BREAKPOINT_*`, `CHUNK_STRATEGY`, `PARALLEL_*_RETRIES`,
+  `ONTOCAST_RECALL_*` and the deleted recall-harness instructions); wrong
+  defaults corrected (`CHUNK_SECTION_CLASSIFIER`, fusion/dedup weights,
+  `PARALLEL_WORKERS`, `QDRANT_UPSERT_BATCH_SIZE`, derived table names);
+  examples that fail `Config()` validation fixed (`granite3.3`, the elliptical
+  `FACTS_CODE_PREDICATES` sample); pre-0.5.0 CLI forms in the caching guide;
+  the malformed `docker compose` command; `/health` documented as liveness,
+  not readiness; the vector-store `auto` fallback and
+  `FUSEKI_ONTOLOGIES_DATASET` descriptions un-contradicted.
+- **SHACL findings no longer drive the un-merge repair.** Every error finding
+  reached `_vetoes_from_findings`, and `sh:Violation` maps to error severity —
+  so a missing required property could dissolve a legitimate identity cluster
+  whenever the focus node happened to be merged, and the repair loop's
+  accept test (violations must strictly decrease) was scored on constraints
+  un-merging cannot fix. Vetoes and the loop's objective are now restricted to
+  the merge-signature kinds (`FUNCTIONAL_VIOLATION`, `SUSPECT_MULTI_VALUE`,
+  `DEGENERATE_COREFERENCE`).
+- **SHACL now validates against the ontology context, not the facts alone.**
+  A facts graph states that a value uses `unit:DAY`; that this individual *is*
+  a `qudt:Unit` is stated only in the catalog, so every `sh:class` constraint
+  pointing at a catalog term failed. On the three-document matsci pilot this
+  was **128 of 360** reported violations — phantom findings describing the
+  absent schema.
+- **SHACL runs with RDFS inference by default** (`FACTS_SHACL_INFERENCE`,
+  `FACTS_SHACL_ADVANCED`), matching how the shipped shapes are authored and
+  validated by their own repo harness. SHACL property paths carry no
+  `rdfs:subPropertyOf` entailment, so a shape naming a superproperty reported
+  the specialised predicate the renderer emitted as missing: 268 violations at
+  `none` against 232 at `rdfs` on the same pilot. A `FACTS_SHACL_MAX_TRIPLES`
+  guard skips oversized graphs with a warning rather than stalling, and a
+  skipped run is reported as "did not run", never as "conforms".
+- **Generated API reference navigation.** `docs/gen_pages.py` indexed the
+  literate-nav entries with a path already relative to `reference/`, doubling
+  the prefix, so all 168 generated sidebar links 404'd while the pages
+  themselves rendered — 336 build warnings, exit code 0.
+
+
+- **A shared embedding model with a lock in only one of its users.** Once
+  retrieval and clustering shared one `SentenceTransformer`, the lock in the
+  retrieval module protected nothing: `tool/agg/clustering.py`,
+  `tool/agg/entity_aligner.py` and semantic chunking called `.encode()` on the
+  same object unguarded. The lock now belongs to the `SharedEncoder` that owns
+  the model. Concurrent `encode()` is *correct* with default arguments, so this
+  was a broken invariant and a peak-memory risk, not corruption.
+- **One global embedding lock for all checkpoints** — locks are now per model,
+  so unrelated checkpoints no longer queue behind one another.
+- **The `semantic-chunking` extra required `langchain-huggingface` but not
+  `sentence-transformers`,** so installing it alone degraded silently to naive
+  chunking. It now requires `sentence-transformers`, and the probe checks
+  `hdbscan` and `umap` rather than relying on `langchain-huggingface` as a proxy.
+- **A failed chunker model load was retried on every call** — `None` meant both
+  "not loaded" and "load failed". Failure is recorded once.
+- **Section labels smeared across the document when a heading was
+  unrecognised.** `_build_spans_from_heading_starts` ended each section span at
+  the next *recognised* heading, so one unmatched heading let the previous label
+  run on. On a paper with headings `Introduction / Experimental Section /
+  Results and Discussion / Conclusions and Outlook / References`, only two spans
+  were produced — `introduction` covering everything up to `References`. Because
+  the label was stamped onto segments at split time and both the tagger and the
+  LLM backfill skip already-labeled segments, the wrong label could never be
+  corrected, and `target_sections=["results"]` returned introduction text or
+  nothing. Every heading now closes the preceding span, and unrecognised ones
+  open an explicitly unresolved span. Forward-fill and chunk merging respect
+  that unresolved state, so neither reintroduces the smear.
+- **Heading matching missed most real-world headings.** The anchored patterns
+  required the heading to be exactly a canonical section name, so `Results and
+  Discussion`, `RESULTS AND DISCUSSION`, `Experimental Section`, `Conclusions
+  and Outlook`, `Device fabrication`, `Data Availability` and `Author
+  Contributions` all failed. Publisher decoration defeated matching outright
+  (`■ REFERENCES`, `■ ACKNOWLEDGMENTS`, `*sı Supporting Information`), as did
+  section numbering (`2.1 Synthesis of thin films`). Measured on real docling
+  conversions of three journal PDFs, 26 of 31 detected headings were unmatched
+  and two of the three documents produced **no spans at all**.
+- **Unheaded front matter was not recovered unless the paper opened with an
+  IMRaD section.** `inject_front_matter_spans` bailed when the first labeled
+  span was not `introduction`/`related_work`/`background`, leaving the title,
+  abstract and introduction of papers that open with `Results` unlabeled.
+- **`document_type_hint` matched needles buried inside longer words.** Hint
+  matching was a bare substring test, so `epo` matched "r*epo*rt" (routing any
+  unrecognised "…report" hint to the patent schema), `paper` matched
+  "news*paper*", and `iso` matched "isotope". Needles now match on word
+  boundaries, longest first, so the most specific hint wins regardless of YAML
+  order. The `novel` → `fiction` needle was dropped rather than anchored: no
+  word boundary separates the noun from the far more common adjective ("a study
+  of novel materials" resolved to `fiction`), and detection scores real fiction
+  at full share anyway. This gates detection as well as labeling — a false
+  positive here suppressed detection entirely and imposed an unrelated schema.
+- **The label schema was resolved three times per document, from the raw
+  request each time** (`prepare.py` twice, `section_llm.py`, `inspect_sections.py`).
+  Harmless while resolution was a pure function of the request, but it becomes
+  silent label loss the moment it depends on document text: the deterministic
+  tiers tag against the detected schema while the LLM backfill validates against
+  the default, and `normalise_llm_label` *drops* labels absent from its schema
+  rather than erroring. Resolution now happens once in
+  `resolve_prepare_schema`, and the resolved schema is threaded to the backfill
+  and to the CLI — so the schema `ontocast sections` reports is necessarily the
+  one the chunks were labeled against.
+- **`manual.yaml`'s `^using\s+` and `^how\s+to\s+` patterns were unbounded at
+  the tail** — the catalog's only open-ended patterns, so `^using\s+` claimed
+  headings such as "Using Creative Commons Public Licenses" for the manual
+  schema. Harmless while schemas were only ever matched one at a time; a
+  cross-schema scorer reads it as evidence. Both now bound the trailing words,
+  matching short instructional headings ("Using the API") as intended.
+- **`ontocast sections` could not read JSON or plain-text documents.** It called
+  the Docling converter for every input, but the Convert node routes `.json` and
+  `.txt` *around* the converter (Docling rejects them), so inspecting the files
+  the pipeline is normally driven with — `data/json/*.json` — failed with
+  "Input document is not valid". The routing and the JSON text heuristic now
+  live in `onto/docling_helpers.py::json_payload_text` and are shared, so the
+  CLI and the pipeline cannot disagree about what a file's text is. A JSON
+  payload holding no document text (the shape of `clinical.trials.*.json`) now
+  fails with a clear message rather than inspecting as an empty document.
+
+### Performance
+
+- **SHACL runs once or twice per document, not two to four times.** The
+  autofix reuses the violations the reporting pass just computed
+  (`apply_shacl_repairs(initial_violations=…)`) instead of re-validating the
+  same graph — with RDFS inference and the ontology mixed in, each avoided run
+  was a full materialisation.
+- **`resolve_code_literals` no longer walks the whole catalog per rendered
+  unit for nothing.** A surface index was built and never read (and doubled as
+  a semantically wrong early exit); superclass closures are memoised per call;
+  the no-declared-range fallback collects its usage evidence in one graph scan
+  instead of rescanning per code literal.
+- **Merged facts ontology is built once per document, not once per unit.** It
+  reads only document-level state, but was rebuilt N+2 times — synchronously, on
+  the event loop, so it stalled every other unit's in-flight provider call. At
+  3.6k triples / 30 units the stage went from 6.07 s (5.97 s of it event-loop
+  stall) to 0.21 s.
+- **The ontology snapshot is shared by reference, not deep-copied per unit,** and
+  its prompt chapter is serialised once per document rather than per unit per
+  render attempt (`OntologySnapshot.prompt_chapter`).
+- **Summarization runs inside the extraction fan-outs** instead of as a stage.
+  A summary depends only on its own unit, so the node was a barrier that made
+  the whole document wait for the slowest one.
+- **Chunk preparation no longer blocks the event loop** — its synchronous
+  segmentation and local-embedding phases run via `asyncio.to_thread`.
+- **Aligning `CHUNK_EMBEDDING_MODEL` with `EMBEDDING_MODEL_NAME` and
+  `AGG_EMBEDDING_MODEL` now leaves one resident local model instead of two**
+  (measured: 1601 MB vs 2252 MB peak RSS). Defaults unchanged; opt-in recipe in
+  [Performance](docs/user_guide/performance.md).
+- **Fewer redundant loads and connections:** the docling `HybridChunker`
+  tokenizer is cached instead of rebuilt per document; the docling converter
+  lock guards only the lazy build, not the conversion (which serialised
+  concurrent documents); BM25 moved to `ToolBoxRuntime` instead of one per
+  tenancy scope; `ToolBox.serialize` uses one event loop and one backend
+  connection per document rather than one per ontology.
+- **The embedding lock no longer serialises remote providers**, which had
+  nothing to protect.
+- **`PARALLEL_WORKERS` defaults to 16** (was 8), matching `LLM_MAX_INFLIGHT`.
+
+### Removed
+
+- **`working_directory` / `ONTOCAST_WORKING_DIRECTORY`.** Nothing had read it since the
+  filesystem triple-store backend was deleted; both commands now start with no OntoCast
+  env var set at all. See Breaking.
+- Unreachable CLI modules `cli/split_chunks.py`, `cli/merge_ontologies.py`,
+  and `cli/batch_process.py`: click commands with no console-script entry,
+  never registered on the `ontocast` group, referenced by nothing.
+- Dead `track_llm_usage` decorator, which had no call sites and still used the
+  instance-attribute budget-tracker pattern the `ContextVar` replaced.
+
+## [0.5.1] - 2026-08-07
+
+### Breaking
+
+- **Base install is the light embeddable core.** `pip install ontocast` no longer ships the HTTP server, CLI, LLM provider SDKs, document stack, or vector-service clients. Install at least one LLM provider extra (`openai`, `anthropic`, `google`, `ollama`); also `server`, `documents`, `qdrant`, `sparse`, `graph`. Existing extras (`doc-processing`, `lancedb`, `semantic-chunking`, `shacl`, `web-search`, `all`) keep their intent.
+- **Console scripts require `ontocast[server]`** (`ontocast`, `plot-graph`, `cmp-states`, `match-graphs`, `pdfs-to-markdown`, `test-api`); base install prints the missing-extra hint via `ontocast.cli._entry`.
+- **Document convert/chunk needs `documents`.** `AgentState.docling_doc` is typed `Any` with lazy coercion. Prefer `run_unit_pipeline` for single-unit input without Docling.
+- **`QdrantConfig.distance` is `ontocast.onto.enum.VectorDistance`** (env values unchanged). Sparse embeddings return `ontocast.onto.sparse.SparseVector`. Vector-store managers export lazily.
+- **`LLMTool.create` and Fuseki sync wrappers raise inside a running event loop** with a named awaitable, instead of a bare `asyncio.run` failure.
+- **Tenancy is a ToolBox per scope**, not a retargeted shared one. `apply_request_tenancy` returns `(ToolBox, tenant, project)`. `InMemoryVectorStoreManager.apply_tenancy` drops the index (re-index after switch).
+
+### Added
+
+- **LangChain / LangGraph embedding.** `ontocast.integrations.langchain.ontocast_tools` (capability-gated tools; mutating tools opt-in; SPARQL read-only) and `make_ontocast_node` / `text_in_turtle_out` for third-party graphs. Docs: `docs/user_guide/embedding.md`; runnable `examples/`.
+- **Zero-external vector path.** `InMemoryVectorStoreManager`, `VECTOR_STORE_BACKEND` (`auto`|`memory`|`qdrant`|`lancedb`|`none`), `Config.in_memory(**overrides)`.
+- **Async / graph helpers.** `ToolBox.acreate` / `aserialize` / `require_*`; `build_agent_graph` (uncompiled) + `create_agent_graph(checkpointer=, store=, name=)`; top-level lazy exports (`AgentState`, `ontocast_tools`, …).
+- **Per-scope tenancy.** `ToolBoxRuntime`, `ToolBoxRegistry`, `ToolBox.for_scope`, `Config.for_tenancy`, `TenancyScope`, `MAX_TENANCY_SCOPES` — deep-copied config per scope, shared LLM/embedder/converter, concurrent tenants.
+- **`ontocast.util.optional.require`** — missing optional deps name the install extra.
+- **Facts findings.** `rdfs:domain` contradiction (`domain_violation`); `SCALAR_AS_BOUNDS` (duplicate functional numeric properties); `DANGLING_REFERENCE` post-aggregation; fact-namespace classes raise `UNKNOWN_TERM` like fact-namespace predicates.
+- **Sections-first chunking** (always-on classification). `CHUNK_SEGMENTER` (`semantic` default | `docling`), `CHUNK_SECTION_CLASSIFIER` (`llm`|`heading`|`off`). `exclude_sections` on `/process`, `/process_unit`, and `ontocast process` (academic default: `acknowledgements`, `appendix`).
+- **Telemetry / retrieval.** Per-node `BudgetTracker.node_durations`; `skos:scopeNote` in seed gloss, BFS, and atom text (reindex recommended).
+- **Import-weight CI** (`test/test_import_weight.py` + base/server install jobs).
+
+### Changed
+
+- **Document metadata key aliases and identifier affixes.** `document_metadata`
+  keys are resolved case-insensitively with camelCase / snake_case / kebab-case
+  tolerance; bibliographic identifier and source keys also accept an optional
+  leading or trailing `id` affix (e.g. `DOI`, `doi_id`, `arxivId`, bare
+  `arxiv`). Unregistered keys with an identifier-shaped affix (`id`, `uid`,
+  `uuid`, `guid`, `ref`, `reference`, `no`, `num`, `number`, `code`, `slug`,
+  `handle`, `accession`, `key`) emit a structured `dcterms:identifier` blank
+  node (scheme = stem) instead of minting a labeled `prov:Entity`. Companion
+  pairs such as `project` + `project_id` attach the id onto the minted entity;
+  registry `id`-affix aliasing is scoped to bibliographic identifier and source
+  keys only (so `project_id` is not folded into `project`).
+- **`CHUNK_SEGMENTER=semantic` default** (was Docling `HybridChunker`); **`CHUNK_BIBLIOGRAPHY_MODE=skip`** (was `citations_only`); academic `default_exclude` for acknowledgements/appendix.
+- **schema.org canonicalized to `https://schema.org/`** (bindings + post-merge sanitize).
+- **`PARALLEL_WORKERS` default 4 → 8.** Prompt examples drop `ex:`; quantity guidance defers to the ontology numeric-form contract.
+- **Test suite.** Meaningful `slow` / `integration` markers; `test/manual/` ignored unless `ONTOCAST_RUN_MANUAL_TESTS=1`; duplicates collapsed; default run no longer loads sentence-transformers (~71 s → ~24 s CI).
+- **CI unit matrix:** `UV_PYTHON` wired; 3.13 on `main` pushes only; uv cache on unit job. Pre-commit `ty check` syncs `dev,server,documents,qdrant,graph`.
+
+### Removed
+
+- Dead/duplicate tests and unused fixtures (~992 → 943). Recall harness (`test_retrieval_recall.py` + support) moved out of the unit suite — measurement belongs in `ontocast-validation`. Relative case5 aggregation “no damage” test dropped.
+- Hard `langchain` dependency (unused).
+
+### Fixed
+
+- **RDF 1.2 triple terms no longer break graph copies or SPARQL generation**
+  (#48, #49). Oxigraph-backed graphs yield triple terms as plain tuples, which
+  rdflib's `Graph.add` rejects and SPARQL cannot express. `is_rdflib_triple` /
+  `copy_triples` (`onto/rdfgraph.py`) filter them in `RDFGraph.copy`,
+  `__add__`, and `__iadd__` — so `__deepcopy__` degrades instead of raising —
+  and `GraphUpdate._serializable_triples` filters them out of INSERT/DELETE
+  queries and diff summaries. `GraphUpdate._serialize_rdf_term` now raises
+  `TypeError` on an unserialisable term rather than emitting a Python repr into
+  the query, which only surfaced as a `ParseException` at apply time.
+- **Critique reports accept free-text fields returned as lists** (#50). Several
+  providers answer `systemic_critique_summary` (and
+  `ExternalEvidenceRequest.rationale`) with an array of bullets; these are now
+  joined with newlines by a `mode="before"` validator instead of failing
+  validation and burning a critic retry.
+- **`--input-path` accepts a single file and rejects a bad path loudly** (#53).
+  `crawl_directories` returns the file itself when given one, and raises
+  `ValueError` for a path that does not exist or has an unsupported suffix; the
+  CLIs surface that as `BadParameter`. `ontocast process` also exits non-zero
+  when a directory matches no supported input, instead of printing a line to
+  stdout and exiting 0.
+- Cross-chunk person/entity identity merge (initials-aware aliases; label-confirmed pairs bypass cosine gate).
+- Per-unit `retrieval_metrics` fold back into document state; Docling chunker tokenizer budgeted from `CHUNK_MAX_SIZE`; semantic chunker guards for tiny sections.
+- Path-dependent ontology/matsci tests; concurrency bound flake; dead tenancy self-assignment; `test-api` entry shim.
+
+### Performance
+
+- Fan-outs use slim `UnitLoopContext` instead of `AgentState.model_copy(deep=True)`.
+- URDNA2015 hashing off the per-unit hot path (`working_graph_changed` via triple sets; lazy `OntologySnapshot.content_hash`).
+
+## [0.5.0] - 2026-08-05
 
 ### Breaking
 
@@ -70,11 +919,13 @@ project:
   Runtime dependency ranges gain floors matching what is actually tested and
   upper bounds.
 - **Embedding / surface-form contract through `sf6` — reindex required.**
-  Existing collections raise `EmbeddingContractMismatchError` and must be
-  dropped (`VECTOR_STORE_WIPE_ON_INIT` / `--wipe-vector-store`). Across this
-  release the stored atom text and payloads changed to: atomize only IRIs an
-  ontology *describes* (`sf3`→`sf4`); derive `entity_role` from property
-  *declaration*, not incidental predicate use (`sf4`→`sf5`); index
+  The surface-form contract versions the protocol defining how ontology terms are converted
+  into indexed text (with `sf6` as the latest revision). Changing it changes stored vectors,
+  so existing collections raise `EmbeddingContractMismatchError` and must be dropped
+  (`VECTOR_STORE_WIPE_ON_INIT` / `--wipe-vector-store`). Across this release, the stored
+  atom text and payloads changed to: atomize only IRIs an ontology *describes* (`sf3`→`sf4`);
+  derive `entity_role` from property *declaration*, not incidental predicate use (`sf4`→`sf5`);
+  index
   `dcterms:alternative`, case-preserved `symbol_surfaces`, and
   `qudt:symbol` / `qudt:ucumCode` as retrieval surfaces; BM25 with query
   encoder + IDF modifier and label-bearing minimal text; English-first
@@ -163,16 +1014,19 @@ project:
 - **Docling converter configuration** via `CONVERTER_*` (including
   `born_digital` preset).
 - **Retrieval recall harness** (`test/test_retrieval_recall.py`,
-  `test/retrieval_gt.py`): real embeddings + Qdrant; seed / snapshot /
-  term-level recall and per-stage funnel; Text2KGBench and prebuilt-corpus
-  tiers (`ONTOCAST_RECALL_*`); ablation controls that flip index/retrieval
-  axes without editing corpus files on disk.
+  `test/retrieval_gt.py`): real embeddings + Qdrant; measures term-level recall and
+  funnel metrics across both *seed recall* (the share of expected ontology terms that survive
+  retrieval ranking and budget truncation) and *snapshot recall* (the share of expected terms
+  actually defined in the ontology context handed to the model, including neighbor nodes);
+  evaluates against Text2KGBench and prebuilt-corpus tiers (`ONTOCAST_RECALL_*`); and provides
+  ablation controls that flip index/retrieval axes without editing corpus files on disk.
 
 ### Changed
 
-- **Retrieval defaults retuned against measured recall** (Text2KGBench +
-  materials-science corpus; single-corpus fits flagged in the configuration
-  guide). Notable defaults: `ONTOLOGY_PATCH_MAX_ATOMS` / `_BASE` → 96;
+- **Retrieval defaults retuned against measured recall** (evaluated against Text2KGBench and
+  the internal materials-science corpus; configurations optimized only for the internal
+  corpus are flagged as single-corpus fits in the configuration guide to caution against
+  overfitting). Notable defaults: `ONTOLOGY_PATCH_MAX_ATOMS` / `_BASE` → 96;
   `VECTOR_STORE_TOP_K` 10 → 20; per-ontology seed quota 3 → 0; sparse fusion
   weight 0.2 → 0.8 and neighborhood 0.3 → 0.15; induced-subgraph triple
   budget 550 → 1200; per-ontology atom floor 0 → 2; small-module closure
@@ -470,6 +1324,24 @@ project:
 
 ## Migration Guide
 
+### Upgrading to 0.6.0 (from 0.4.3, the last published release)
+
+Everything under 0.5.0, 0.5.1 and 0.6.0 above applies. The environment-level
+breaks, in one place:
+
+| Old | New |
+|-----|-----|
+| `FACTS_REPAIR_VISITS` | `FACTS_LLM_REPAIR_VISITS` (old name is a silent no-op) |
+| `CHUNK_BREAKPOINT_THRESHOLD_TYPE` / `_AMOUNT` | removed (silent no-ops) |
+| `ONTOCAST_WORKING_DIRECTORY` / `working_directory` | removed (ignored if set) |
+| `CHUNK_STRATEGY` | `CHUNK_SEGMENTER` |
+| `pip install ontocast` (full install) | base is the light core — add extras: `ontocast[server,openai]` |
+
+Also: bare `ontocast` no longer starts the API (use `ontocast serve` /
+`ontocast process`); `PARALLEL_WORKERS` default rose 8 → 16; the LLM cache key
+format changed (`cache_format_version` 2), so existing on-disk caches re-fetch;
+a 1 GB LRU cache ceiling applies by default (`ONTOCAST_CACHE_MAX_BYTES`); `ONTOCAST_WORKING_DIRECTORY` is gone (ignored if still set).
+
 ### Upgrading to 0.4.3
 
 **Vector store env vars** — retrieval/indexing settings are backend-agnostic; rename `QDRANT_` → `VECTOR_STORE_` for:
@@ -540,55 +1412,9 @@ BASE_RECURSION_LIMIT=1000
 
 See [docs/user_guide/](docs/user_guide/) for full guides.
 
-### Upgrading from 0.1.x / 0.3.x (general)
-```bash
-# Old
-OPENAI_API_KEY=your_key_here
-
-# New  
-LLM_API_KEY=your_key_here
-```
-
-### Configuration Usage
-
-```python
-# Old way (no longer supported)
-from ontocast.config import config
-
-llm_provider = config.llm_config.provider
-
-# New way
-from ontocast.config import Config
-
-config = Config()
-llm_provider = config.tool_config.llm_config.provider
-```
-
-### ToolBox Initialization
-```python
-# Old way (no longer supported)
-tools = ToolBox(
-    llm_provider="openai",
-    model_name="gpt-4",
-    # ... many individual parameters
-)
-
-# New way
-tools = ToolBox(config)
-```
-
-### CLI Parameters
-
-### LLM Caching
-```python
-# Caching is now automatic - no configuration needed
-```
-
-```bash
-# Skip ontology critique step
-ontocast --skip-ontology-critique
-
-# Or set environment variable
-export SKIP_ONTOLOGY_DEVELOPMENT=true
-ontocast --env-path .env
-```
+[0.6.0]: https://github.com/growgraph/ontocast/compare/v0.4.3...v0.6.0
+[0.4.3]: https://github.com/growgraph/ontocast/compare/v0.4.2...v0.4.3
+[0.4.2]: https://github.com/growgraph/ontocast/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/growgraph/ontocast/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/growgraph/ontocast/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/growgraph/ontocast/releases/tag/v0.3.0

@@ -29,7 +29,7 @@ from oxrdflib._converter import to_ox
 from rdflib import Literal, Node, URIRef
 from rdflib.namespace import OWL, RDF, XSD
 
-from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
+from ontocast.onto.constants import ONTOCAST, PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.iri_policy import is_in_namespace, normalize_namespace_iri
 from ontocast.onto.rdfgraph import RDFGraph
@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 # Local alias for readability
 _PROV = PROV
 _SCHEMA = SCHEMA
+_ONTOCAST = ONTOCAST
 
 
 class GraphRewriter:
@@ -296,13 +297,21 @@ class GraphRewriter:
         <unit_iri> a prov:Entity, schema:Text ;
             schema:position <index> ;
             schema:identifier <hid> ;
-            prov:generatedAtTime <datetime> .
+            prov:generatedAtTime <datetime> ;
+            schema:articleSection <section_label> ;
+            ontocast:sectionLabelSource <how the label was decided> ;
+            ontocast:sectionLabelConfidence <0..1> .
+
+        The last three appear only for a unit that carries a section label.
+        Without them a finished run cannot be audited for *which* part of the
+        document a fact came from: the label reached the summarizer and
+        ``ontocast inspect-sections`` and stopped there.
         """
 
         unit_uri = URIRef(unit.iri_absolute)
 
         graph.add((unit_uri, RDF.type, _PROV.Entity))
-        graph.add((unit_uri, RDF.type, _SCHEMA.text))
+        graph.add((unit_uri, RDF.type, _SCHEMA.Text))
         graph.add(
             (
                 unit_uri,
@@ -318,6 +327,28 @@ class GraphRewriter:
             )
         )
         graph.add((unit_uri, _SCHEMA.identifier, Literal(unit.hid)))
+        if unit.section_label is not None:
+            # Guarded as a block: source and confidence describe the label, and
+            # a bare confidence of 0.0 on an unlabeled chunk would read as "we
+            # are certain of nothing" rather than "there is no label".
+            graph.add((unit_uri, _SCHEMA.articleSection, Literal(unit.section_label)))
+            if unit.section_label_source is not None:
+                graph.add(
+                    (
+                        unit_uri,
+                        _ONTOCAST.sectionLabelSource,
+                        Literal(str(unit.section_label_source)),
+                    )
+                )
+            # xsd:decimal, not xsd:double: this is a bounded ratio read by
+            # humans, and rdflib renders a double through its "%e" shorthand.
+            graph.add(
+                (
+                    unit_uri,
+                    _ONTOCAST.sectionLabelConfidence,
+                    Literal(unit.section_label_confidence, datatype=XSD.decimal),
+                )
+            )
         return unit_uri
 
     def _add_reified_provenance(
@@ -435,6 +466,7 @@ class GraphRewriter:
         # Bind well-known namespaces
         merged.bind("prov", str(_PROV))
         merged.bind("schema", str(_SCHEMA))
+        merged.bind("ontocast", str(_ONTOCAST))
 
         # Collect all unique doc_iri namespaces and bind them
         doc_iris: set[str] = set()

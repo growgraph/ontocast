@@ -37,7 +37,7 @@ async def _make_tool(
     budget_tracker: BudgetTracker | None = None,
 ) -> LLMTool:
     shared = Cacher(cache_dir=cache_dir)
-    with patch("ontocast.tool.llm.ChatOpenAI") as mock_cls:
+    with patch("langchain_openai.ChatOpenAI") as mock_cls:
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content='{"answer": 42}'))
         mock_cls.return_value = mock_llm

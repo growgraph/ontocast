@@ -18,9 +18,9 @@ from ontocast.onto.state import AgentState
 from ontocast.stategraph import context_resolver as cr
 from ontocast.stategraph.context_resolver import (
     build_merged_document_ontology_context,
-    resolve_effective_facts_ontology_context,
     resolve_unit_ontology_context,
 )
+from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.toolbox import ToolBox
 
 
@@ -85,7 +85,11 @@ def test_resolver_vector_retrieval_prefers_ensemble() -> None:
         ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
     )
 
-    result = asyncio.run(resolve_unit_ontology_context(state, tools, _build_unit()))
+    result = asyncio.run(
+        resolve_unit_ontology_context(
+            UnitLoopContext.from_agent_state(state), tools, _build_unit()
+        )
+    )
 
     assert result.primary_writable_iri == ontology_iri
     assert len(result.snapshot.graph) > 0
@@ -102,7 +106,11 @@ def test_resolver_vector_retrieval_raises_when_vector_stack_missing() -> None:
         ontology_manager=_stub_ontology_manager(),
     )
     with pytest.raises(OntologyContextConfigError):
-        asyncio.run(resolve_unit_ontology_context(state, tools, _build_unit()))
+        asyncio.run(
+            resolve_unit_ontology_context(
+                UnitLoopContext.from_agent_state(state), tools, _build_unit()
+            )
+        )
 
 
 def test_resolver_selected_single_ontology_uses_mocked_llm_selection(
@@ -133,7 +141,11 @@ def test_resolver_selected_single_ontology_uses_mocked_llm_selection(
     state = AgentState(
         ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY
     )
-    result = asyncio.run(resolve_unit_ontology_context(state, tools, _build_unit()))
+    result = asyncio.run(
+        resolve_unit_ontology_context(
+            UnitLoopContext.from_agent_state(state), tools, _build_unit()
+        )
+    )
     assert result.assembly_mode == OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM
     assert result.primary_writable_iri == finance_iri
     assert result.snapshot.source_iris == [finance_iri]
@@ -161,7 +173,9 @@ def test_build_merged_document_ontology_context_merges_sorted_artifacts() -> Non
     )
     state.reduced_ontology_artifacts = [first, second]
 
-    context = build_merged_document_ontology_context(state)
+    context = build_merged_document_ontology_context(
+        UnitLoopContext.from_agent_state(state)
+    )
 
     assert context is not None
     assert context.patch_sources == [
@@ -173,10 +187,12 @@ def test_build_merged_document_ontology_context_merges_sorted_artifacts() -> Non
     assert context.assembly_mode == OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED
 
 
-@pytest.mark.anyio
-async def test_resolve_effective_facts_ontology_context_prefers_merged_artifacts(
-    monkeypatch,
-) -> None:
+def test_merged_document_context_is_independent_of_any_unit() -> None:
+    """The merged facts context is a pure function of document-level state.
+
+    This is what licenses building it once for the whole fan-out: it takes no
+    unit argument, so no unit can influence it.
+    """
     state = AgentState(
         ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY
     )
@@ -191,22 +207,19 @@ async def test_resolve_effective_facts_ontology_context_prefers_merged_artifacts
     )
     state.reduced_ontology_artifacts = [merged]
 
-    async def _should_not_run(*_args, **_kwargs):
-        raise AssertionError("fallback resolver should not run when artifacts exist")
-
-    monkeypatch.setattr(cr, "resolve_unit_ontology_context", _should_not_run)
-    tools = _build_tools(
-        patch_retriever=None,
-        vector_store=None,
-        ontology_manager=_stub_ontology_manager(),
+    first = cr.build_merged_document_ontology_context(
+        UnitLoopContext.from_agent_state(state)
+    )
+    second = cr.build_merged_document_ontology_context(
+        UnitLoopContext.from_agent_state(state)
     )
 
-    result = await resolve_effective_facts_ontology_context(state, tools, _build_unit())
-
-    assert result.primary_writable_iri == merged.iri
-    assert result.patch_sources == [merged.iri]
-    assert len(result.snapshot.graph) >= 1
-    assert result.assembly_mode == OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED
+    assert first is not None and second is not None
+    assert first.primary_writable_iri == merged.iri
+    assert first.patch_sources == [merged.iri]
+    assert first.assembly_mode == OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED
+    assert set(first.snapshot.graph) == set(second.snapshot.graph)
+    assert first.patch_sources == second.patch_sources
 
 
 def test_resolver_fixed_single_ontology_resolves_from_manager() -> None:
@@ -238,6 +251,10 @@ def test_resolver_fixed_single_ontology_resolves_from_manager() -> None:
         ontology_context_mode=OntologyContextMode.FIXED_SINGLE_ONTOLOGY,
         ontology_context_fixed_ontology_id="finance",
     )
-    result = asyncio.run(resolve_unit_ontology_context(state, tools, _build_unit()))
+    result = asyncio.run(
+        resolve_unit_ontology_context(
+            UnitLoopContext.from_agent_state(state), tools, _build_unit()
+        )
+    )
     assert result.assembly_mode == OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY
     assert result.primary_writable_iri == finance_iri

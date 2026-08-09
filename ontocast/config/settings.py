@@ -6,22 +6,35 @@ environment variables and usage patterns in the OntoCast system.
 
 from __future__ import annotations
 
+import logging
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from qdrant_client.http.models import Distance as QdrantDistance
 
-from ontocast.onto.constants import DEFAULT_DOMAIN
-from ontocast.onto.enum import LLMGraphFormat, OntologyContextMode, RenderMode
+from ontocast.onto.constants import (
+    DEFAULT_CACHE_MAX_BYTES,
+    DEFAULT_CACHE_PRUNE_EVERY,
+    DEFAULT_DOMAIN,
+)
+from ontocast.onto.enum import (
+    LLMGraphFormat,
+    OntologyContextMode,
+    RenderMode,
+    VectorDistance,
+    VectorStoreBackend,
+)
 from ontocast.onto.tenancy import (
     DEFAULT_PROJECT,
     DEFAULT_TENANT,
+    TenancyScope,
     tenant_project_facts_name,
     tenant_project_ontologies_name,
 )
+
+logger = logging.getLogger(__name__)
 
 # Explicit public surface. ``ontocast.config`` re-exports this module with a
 # star import, so without __all__ every imported third-party name (Field,
@@ -108,9 +121,16 @@ class OllamaModel(LLMModelNameAbstract):
     LLAMA3_1_70B = "llama3.1:70b"
 
     # Alibaba Qwen
+    QWEN3_6 = "qwen3.6"
     QWEN3_6_LATEST = "qwen3.6:latest"
     QWEN3_6_27B = "qwen3.6:27b"
     QWEN3_6_35B = "qwen3.6:35b"
+    QWEN3_5 = "qwen3.5"
+    QWEN3 = "qwen3"
+    QWEN3_CODER = "qwen3-coder"
+    QWEN3_CODER_NEXT = "qwen3-coder-next"
+    QWEN2_5 = "qwen2.5"
+    QWEN2_5_CODER = "qwen2.5-coder"
     QWEN2_5_72B = "qwen2.5:72b"
 
     # IBM Granite
@@ -121,7 +141,11 @@ class OllamaModel(LLMModelNameAbstract):
     # Moonshot / DeepSeek
     DEEPSEEK_R1 = "deepseek-r1"
     DEEPSEEK_V3 = "deepseek-v3"
+    KIMI_K3 = "kimi-k3"
+    KIMI_K2_7_CODE = "kimi-k2.7-code"
+    KIMI_K2_6 = "kimi-k2.6"
     KIMI_K2_6_CLOUD = "kimi-k2.6:cloud"
+    KIMI_K2_5 = "kimi-k2.5"
 
 
 class ClaudeModel(LLMModelNameAbstract):
@@ -163,7 +187,22 @@ class GeminiModel(LLMModelNameAbstract):
     GEMINI_2_5_FLASH_LITE = "gemini-2.5-flash-lite"
 
 
-LLMModelName = OpenAIModel | OllamaModel | ClaudeModel | GeminiModel
+#: The enums above are *presets*, not a whitelist: any string is accepted, and
+#: the provider is the authority on whether it exists. A hardcoded list in a
+#: library is stale the day a model ships, and it also blocked the standard way
+#: to reach hosted Qwen/Kimi/DeepSeek -- ``provider=openai`` plus a vendor
+#: ``base_url`` (Moonshot, DashScope, OpenRouter, vLLM, Together), which is
+#: exactly what LLMConfig.base_url exists for.
+LLMModelName = OpenAIModel | OllamaModel | ClaudeModel | GeminiModel | str
+
+#: Which preset enum belongs to which provider, used only to decide whether
+#: :meth:`LLMConfig.validate_model_name` should warn.
+_PRESET_MODELS_BY_PROVIDER: dict[str, type[LLMModelNameAbstract]] = {
+    LLMProvider.OPENAI: OpenAIModel,
+    LLMProvider.OLLAMA: OllamaModel,
+    LLMProvider.ANTHROPIC: ClaudeModel,
+    LLMProvider.GOOGLE: GeminiModel,
+}
 
 
 class WebSearchProvider(StrEnum):
@@ -244,11 +283,22 @@ class LLMConfig(BaseSettings):
         ge=1,
         # Documented as LLM_MAX_INFLIGHT, but the LLM_ env_prefix would otherwise
         # make the real variable LLM_LLM_MAX_INFLIGHT -- the documented name was a
-        # silent no-op. "max_inflight" resolves to LLM_MAX_INFLIGHT under the prefix.
+        # silent no-op. validation_alias bypasses env_prefix, so the aliases bind
+        # the literal variables LLM_MAX_INFLIGHT and (unprefixed) MAX_INFLIGHT.
         validation_alias=AliasChoices("llm_max_inflight", "max_inflight"),
         description=(
             "Maximum concurrent provider LLM requests shared across all documents. "
             "Set via LLM_MAX_INFLIGHT."
+        ),
+    )
+    request_timeout_seconds: float | None = Field(
+        default=180.0,
+        gt=0,
+        description=(
+            "Per-request timeout for a provider call, in seconds. A hung call "
+            "otherwise holds both a unit-worker slot and an LLM_MAX_INFLIGHT "
+            "slot indefinitely, so a couple of them permanently shrink the "
+            "pipeline's effective width. Set to None to wait forever."
         ),
     )
     think: bool | None = Field(
@@ -291,48 +341,78 @@ class LLMConfig(BaseSettings):
     @field_validator("model_name")
     @classmethod
     def validate_model_name(cls, v: LLMModelName, info) -> LLMModelName:
-        """Validate that model_name is compatible with the provider."""
-        if "provider" not in info.data:
+        """Warn when model_name is not a known preset for the provider.
+
+        Deliberately a warning and not an error. A model outside the provider's
+        enum is now a legitimate case in two ways: a release newer than this
+        package, and an OpenAI-compatible endpoint reached through
+        :attr:`LLMConfig.base_url`, where the useful model names are another
+        vendor's entirely. Neither is distinguishable from a typo at config
+        time, and the provider rejects a genuinely bad name on the first call
+        with a better message than this validator could produce.
+        """
+        provider = info.data.get("provider")
+        if provider is None:
             return v
 
-        provider = info.data["provider"]
+        expected = _PRESET_MODELS_BY_PROVIDER.get(provider)
+        if expected is None or isinstance(v, expected):
+            return v
 
-        if provider == LLMProvider.OPENAI and not isinstance(v, OpenAIModel):
-            raise ValueError(
-                f"Model {v} is not compatible with OpenAI provider. Use OpenAIModel values."
-            )
+        # A bare string that names a preset exactly is not a stranger -- with
+        # ``str`` in the union pydantic has no reason to prefer the enum, so
+        # without this every env-supplied model name warned about itself.
+        try:
+            return expected(str(v))
+        except ValueError:
+            pass
 
-        if provider == LLMProvider.OLLAMA and not isinstance(v, OllamaModel):
-            raise ValueError(
-                f"Model {v} is not compatible with Ollama provider. Use OllamaModel values."
-            )
-
-        if provider == LLMProvider.ANTHROPIC and not isinstance(v, ClaudeModel):
-            raise ValueError(
-                f"Model {v} is not compatible with Anthropic provider. Use ClaudeModel values."
-            )
-
-        if provider == LLMProvider.GOOGLE and not isinstance(v, GeminiModel):
-            raise ValueError(
-                f"Model {v} is not compatible with Google provider. Use GeminiModel values."
-            )
-
+        logger.warning(
+            "Model %r is not a known %s preset (%s). Passing it through -- the "
+            "provider decides whether it exists.",
+            str(v),
+            provider.value,
+            expected.__name__,
+        )
         return v
 
 
 class ChunkConfig(BaseSettings):
     """Chunking configuration settings."""
 
-    breakpoint_threshold_type: Literal[
-        "percentile", "standard_deviation", "interquartile", "gradient"
-    ] = Field(
-        default="percentile", description="Type of threshold calculation for chunking"
-    )
-    breakpoint_threshold_amount: float = Field(
-        default=95.0, description="Threshold amount for breakpoint detection"
-    )
     min_size: int = Field(default=3000, description="Minimum chunk size in characters")
     max_size: int = Field(default=12000, description="Maximum chunk size in characters")
+    embedding_model: str = Field(
+        default="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+        description=(
+            "Sentence-transformers checkpoint for semantic chunking and "
+            "embedding-based schema detection. Shared process-wide with "
+            "EMBEDDING_MODEL_NAME and AGG_EMBEDDING_MODEL when the names match, "
+            "so aligning all three halves resident local-model memory. Changing "
+            "it invalidates the on-disk chunk cache and shifts chunk boundaries."
+        ),
+    )
+    segmenter: Literal["semantic", "docling"] = Field(
+        default="semantic",
+        description=(
+            "Primary segmenter: 'semantic' splits the markdown export inside "
+            "detected section boundaries with the built-in semantic chunker "
+            "(naive fallback without torch extras); 'docling' uses docling's "
+            "HybridChunker structural segments."
+        ),
+    )
+    section_classifier: Literal["llm", "heuristic", "heading", "off"] = Field(
+        default="heuristic",
+        description=(
+            "Chunk section classification cascade, in increasing cost: "
+            "'off' = no section tagging (disables section filters and schema "
+            "default exclusions); 'heading' = document outline plus heading "
+            "pattern/keyword matching; 'heuristic' (default) = heading plus "
+            "content-density classification for regions with no usable "
+            "heading; 'llm' = heuristic plus a batched LLM pass over whatever "
+            "remains unlabeled. Only 'llm' makes LLM calls during chunking."
+        ),
+    )
     section_tag_min_chars: int = Field(
         default=80,
         description=(
@@ -340,13 +420,94 @@ class ChunkConfig(BaseSettings):
             "into neighbors before tagging"
         ),
     )
+    section_text_headings: bool = Field(
+        default=True,
+        description=(
+            "Detect headings from plain-text layout (short, blank-line "
+            "delimited, upper-case or numbered lines) in documents whose "
+            "conversion produced no markdown heading structure at all."
+        ),
+    )
+    section_density: Literal["off", "conservative", "aggressive"] = Field(
+        default="conservative",
+        description=(
+            "Content-density section classification for regions with no usable "
+            "heading. 'conservative' (default) recognises only reference lists "
+            "and acknowledgements, whose surface form is near-unique. "
+            "'aggressive' also guesses methods/results/introduction from "
+            "figure-reference, quantity and citation densities -- these do not "
+            "separate those sections cleanly, and a wrong label is silently "
+            "acted on by the section filters, so it is opt-in. Requires "
+            "CHUNK_SECTION_CLASSIFIER=heuristic or llm."
+        ),
+    )
+    section_schema_detect: Literal["off", "lexical", "headings", "auto"] = Field(
+        default="headings",
+        description=(
+            "Infer the document-type schema when the request supplies neither "
+            "section_schema_id nor a document_type_hint that matches one. "
+            "'off' always uses the manifest default; 'lexical' scores headings "
+            "against each schema's vocabulary (free, no model); 'headings' "
+            "(default) adds an embedding-based heading tier when the semantic "
+            "extras are installed; 'auto' additionally allows a much weaker "
+            "content-based tier for documents with almost no headings. "
+            "Detection never overrides an explicit schema or a matching hint, "
+            "and abstains to the default rather than guessing."
+        ),
+    )
+    section_schema_detect_min_score: float = Field(
+        default=2.0,
+        description=(
+            "Minimum distinctive evidence (headings recognised by exactly one "
+            "candidate schema) before a detection is accepted."
+        ),
+    )
+    section_schema_detect_min_margin: float = Field(
+        default=1.8,
+        description=(
+            "Factor by which the winning schema must beat the runner-up. The "
+            "tightest correct case in the reference corpus -- a published trial "
+            "protocol, which shares IMRaD headings with academic papers -- sits "
+            "at 2.0x."
+        ),
+    )
+    section_schema_detect_content_min_margin: float = Field(
+        default=4.0,
+        description=(
+            "Stricter margin for the content-based tier, which is measurably "
+            "less reliable than the heading tiers: body prose from one domain "
+            "readily resembles another (scientific prose reads like a technical "
+            "specification). Only used when CHUNK_SECTION_SCHEMA_DETECT=auto."
+        ),
+    )
+    section_llm_batch_size: int = Field(
+        default=40,
+        description=(
+            "Excerpts per LLM call when CHUNK_SECTION_CLASSIFIER=llm. One call "
+            "covers a whole document's residual instead of one call per chunk; "
+            "0 restores per-chunk calls."
+        ),
+    )
+    section_filter_on_empty: Literal["warn", "error"] = Field(
+        default="warn",
+        description=(
+            "What to do when a section selection removes every segment. 'warn' "
+            "(default) logs and continues, which yields an empty facts graph "
+            "indistinguishable from a document that genuinely had nothing to "
+            "extract; 'error' fails the request instead (HTTP 422, non-zero "
+            "exit for a batch run). Covers both the target_sections / "
+            "summarize_sections allowlist and the exclude_sections denylist, "
+            "including a schema's default_exclude."
+        ),
+    )
     bibliography_mode: Literal["domain_facts", "citations_only", "skip"] = Field(
-        default="citations_only",
+        default="skip",
         description=(
             "Routing for chunks detected as bibliography/reference lists "
-            "(section label or citation-density heuristics): 'citations_only' "
-            "extracts bibliographic metadata only, 'skip' drops the chunks "
-            "before extraction, 'domain_facts' disables special handling."
+            "(section label or citation-density heuristics): 'skip' (default) "
+            "drops the chunks before extraction, 'citations_only' extracts "
+            "bibliographic metadata only, 'domain_facts' disables special "
+            "handling."
         ),
     )
     citation_vocabulary: dict[str, str] = Field(
@@ -452,8 +613,12 @@ class ConverterConfig(BaseSettings):
     repair_ligature_gaps: bool = Field(
         default=False,
         description=(
-            "TEMP workaround: repair ASCII fi/fl/ff-style ligature gaps that some "
-            "publisher PDFs emit after Docling extraction."
+            "Repair ASCII fi/fl/ff-style ligature gaps that some publisher PDFs "
+            "emit after Docling extraction. Off by default, but "
+            "CONVERTER_PROFILE=born_digital turns it on. Participates in the "
+            "converter cache key. Removal condition: Docling normalises these "
+            "gap patterns itself, at which point this becomes a no-op that can "
+            "be dropped in a breaking release."
         ),
     )
 
@@ -502,6 +667,24 @@ class ServerConfig(BaseSettings):
         ),
         validation_alias=AliasChoices("max_visits_per_node", "max_visits"),
     )
+    max_critic_visits_per_node: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Maximum critic attempts per render attempt. The inner critic loop "
+            "is otherwise bounded by MAX_VISITS_PER_NODE -- the same constant "
+            "as the outer render loop -- so its worst case is that value "
+            "*squared* in billed critic calls. That worst case is only "
+            "reachable when the critic keeps requesting external evidence "
+            "(WEB_SEARCH_ENABLED=true): a critic that fails without a search "
+            "request breaks out of the loop, so with grounding off the critic "
+            "runs at most once per render regardless. None keeps that coupling; "
+            "set it to 1 to cap the evidence-driven retry path explicitly. "
+            "Left unset by default because lowering it changes call counts for "
+            "grounded runs, and that default belongs to a measurement rather "
+            "than to an argument."
+        ),
+    )
     render_mode: RenderMode = Field(
         default=RenderMode.ONTOLOGY_AND_FACTS,
         description="Rendering mode: ontology, facts, or ontology_and_facts.",
@@ -536,9 +719,18 @@ class ServerConfig(BaseSettings):
         "Set to None for unlimited.",
     )
     parallel_workers: int = Field(
-        default=4,
+        default=16,
         ge=1,
-        description="Maximum number of concurrent unit workers in parallel pipeline",
+        description=(
+            "Maximum concurrent content-unit workers within one document. A unit "
+            "never issues two LLM calls at once, so this is also the provider "
+            "concurrency a single document reaches. LLM_MAX_INFLIGHT is the "
+            "process-wide cap across all documents and is the one to lower if a "
+            "provider rate-limits; raising this one past it buys nothing. "
+            "Check budget.node_durations before raising it: if a stage's "
+            "loop_lag_total is a large share of its wall clock, the units are "
+            "blocked rather than queued and more workers will make it worse."
+        ),
     )
     enable_ontology_consolidation: bool = Field(
         default=False,
@@ -551,6 +743,17 @@ class ServerConfig(BaseSettings):
             "When set, limit concurrent /process and /process_unit handlers. "
             "Requests beyond the limit queue until a slot frees up; they are "
             "not rejected."
+        ),
+    )
+    max_tenancy_scopes: int = Field(
+        default=16,
+        ge=1,
+        description=(
+            "How many tenant/project ToolBoxes to keep resident. Each holds a "
+            "triple store connection and an ontology catalog; the expensive "
+            "tools (LLM client, converter, embedding model) are shared across "
+            "all of them. Least-recently-used scopes are evicted and closed. "
+            "Bounded because scopes come from request parameters."
         ),
     )
 
@@ -580,8 +783,8 @@ class FusekiConfig(BaseSettings):
     ontologies_dataset: str | None = Field(
         default=None,
         description=(
-            "Ontologies dataset; if unset, derived from the same default tenant/project "
-            "as dataset (not read from the environment)."
+            "Ontologies dataset (FUSEKI_ONTOLOGIES_DATASET); if unset, derived "
+            "from the same default tenant/project as dataset."
         ),
     )
 
@@ -628,16 +831,61 @@ class DomainConfig(BaseSettings):
 class PathConfig(BaseSettings):
     """Path and directory configuration."""
 
-    working_directory: Path | None = Field(
-        default=None,
-        description="Working directory for OntoCast caches and artifacts",
-    )
     ontology_directory: Path | None = Field(
-        default=None, description="Directory containing ontology files"
+        default=None,
+        description=(
+            "Directory of seed ontology *.ttl files, read once at startup. "
+            "Read-only: ingestion never writes here and deletion never removes "
+            "files from it"
+        ),
     )
     cache_dir: Path | None = Field(
         default=None, description="Cache directory for LLM responses and tool outputs"
     )
+    cache_max_bytes: int | None = Field(
+        default=DEFAULT_CACHE_MAX_BYTES,
+        description=(
+            "Size ceiling for the whole cache directory. Once exceeded, "
+            "least-recently-used entries are deleted until the total fits. "
+            "Accepts a byte count or a human size such as '1GB' or '500MB'. "
+            "Set to 0 to disable automatic pruning. Set via "
+            "ONTOCAST_CACHE_MAX_BYTES."
+        ),
+    )
+    cache_ttl_days: int | None = Field(
+        default=None,
+        description=(
+            "Delete cache entries not used for this many days, applied before "
+            "the size ceiling. None disables the age cut. Set via "
+            "ONTOCAST_CACHE_TTL_DAYS."
+        ),
+    )
+    cache_prune_every: int = Field(
+        default=DEFAULT_CACHE_PRUNE_EVERY,
+        ge=1,
+        description=(
+            "Re-check the cache size ceiling after this many writes. The check "
+            "walks the cache tree, so it is amortised rather than run per write."
+        ),
+    )
+
+    @field_validator("cache_max_bytes", mode="before")
+    @classmethod
+    def _parse_cache_max_bytes(cls, value: object) -> object:
+        """Accept human-readable sizes ('1GB', '500MB') alongside raw byte counts."""
+        if not isinstance(value, str):
+            return value
+        text = value.strip().upper().replace("IB", "B")
+        if not text:
+            return None
+        units = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
+        for suffix, factor in sorted(units.items(), key=lambda kv: -len(kv[0])):
+            if text.endswith(suffix):
+                number = text[: -len(suffix)].strip()
+                if not number:
+                    break
+                return int(float(number) * factor)
+        return int(float(text))
 
     model_config = SettingsConfigDict(
         env_prefix="ONTOCAST_",
@@ -764,8 +1012,14 @@ class AggregationConfig(BaseSettings):
     """Aggregation settings for entity clustering/disambiguation."""
 
     embedding_model: str = Field(
-        default="paraphrase-multilingual-MiniLM-L12-v2",
-        description="Sentence-transformers model name used for entity embeddings.",
+        default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        description=(
+            "Sentence-transformers model name used for entity embeddings. "
+            "Spelled with the org prefix to match CHUNK_EMBEDDING_MODEL and "
+            "EMBEDDING_MODEL_NAME: SharedEncoder keys its process-wide cache on "
+            "the literal string, so the same checkpoint written two ways loads "
+            "twice."
+        ),
     )
     similarity_threshold: float = Field(
         default=0.80,
@@ -839,8 +1093,12 @@ class EmbeddingConfig(BaseSettings):
         default=EmbeddingProvider.HUGGINGFACE, description="Embedding model provider"
     )
     model_name: str = Field(
-        default="paraphrase-multilingual-MiniLM-L12-v2",
-        description="Embedding model identifier used by the selected provider.",
+        default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        description=(
+            "Embedding model identifier used by the selected provider. Spelled "
+            "with the org prefix so it shares one SharedEncoder slot with "
+            "AGG_EMBEDDING_MODEL and CHUNK_EMBEDDING_MODEL when aligned."
+        ),
     )
     api_key: str | None = Field(
         default=None, description="Provider API key for hosted embedding services."
@@ -1121,6 +1379,15 @@ class PatchRetrievalConfig(BaseSettings):
 class VectorStoreConfig(BaseSettings):
     """Backend-agnostic vector store retrieval and indexing settings."""
 
+    backend: VectorStoreBackend = Field(
+        default=VectorStoreBackend.AUTO,
+        description=(
+            "Which vector store implementation to use: 'auto' (infer from "
+            "QDRANT_URI / LANCEDB_ENABLED, disabling vector retrieval when "
+            "neither is configured), 'qdrant', 'lancedb', or 'none' "
+            "to disable vector retrieval entirely."
+        ),
+    )
     top_k: int = Field(
         default=20,
         ge=1,
@@ -1581,8 +1848,8 @@ class QdrantConfig(BaseSettings):
             "when unset, the embedding dimension is used."
         ),
     )
-    distance: QdrantDistance = Field(
-        default=QdrantDistance.COSINE,
+    distance: VectorDistance = Field(
+        default=VectorDistance.COSINE,
         description=(
             "Qdrant vector distance when creating collections "
             "(Cosine, Dot, Euclid, Manhattan; same as qdrant_client Distance)."
@@ -1677,15 +1944,18 @@ class FactsValidationConfig(BaseSettings):
             "to an IRI from the ontology context."
         ),
     )
-    repair_visits: int = Field(
+    llm_repair_visits: int = Field(
         default=1,
         ge=0,
         description=(
-            "Deterministic repair budget per unit: extra render_facts_update "
-            "calls fed with machine-found MANDATORY fixes (quarantined "
-            "literals, unknown terms, alias leftovers) and numeric-coverage "
-            "candidates. Applies even at MAX_VISITS=1, where the LLM critic "
-            "never runs."
+            "Finding-driven repair budget per unit, in **LLM calls**: extra "
+            "render_facts_update requests fed with machine-found MANDATORY "
+            "fixes (quarantined literals, unknown terms, alias leftovers) and "
+            "numeric-coverage candidates. Only the trigger is deterministic — "
+            "each visit is billed. They fire even at MAX_VISITS=1, where the "
+            "LLM critic never runs, so the default costs up to two provider "
+            "calls per unit. Set 0 to keep extraction at exactly one call per "
+            "unit and leave findings to the LLM-free repairs and the gate."
         ),
     )
     property_alias_min_ratio: float = Field(
@@ -1766,6 +2036,78 @@ class FactsValidationConfig(BaseSettings):
             "warning rather than silently skipping validation."
         ),
     )
+    shacl_inference: Literal["none", "rdfs", "owlrl"] = Field(
+        default="rdfs",
+        description=(
+            "Inference pyshacl applies before evaluating shapes. RDFS is the "
+            "default because the renderer emits the most specific predicate it "
+            "can, and SHACL property paths carry no rdfs:subPropertyOf "
+            "entailment: a shape naming the superproperty reports the "
+            "specialised statement as missing. (Class targets need no help — "
+            "SHACL resolves those through rdfs:subClassOf itself.) Measured on "
+            "the matsci pilot: 268 violations at 'none' against 232 at 'rdfs'. "
+            "Set 'none' for shapes written against exactly the terms the graph "
+            "uses, or when validation time dominates."
+        ),
+    )
+    shacl_advanced: bool = Field(
+        default=True,
+        description=(
+            "Enable the SHACL Advanced Features extension (sh:sparql "
+            "constraints, node expressions). Shapes that do not use it are "
+            "unaffected."
+        ),
+    )
+    shacl_max_triples: int = Field(
+        default=200_000,
+        ge=0,
+        description=(
+            "Skip SHACL validation, with a warning, for graphs larger than "
+            "this. pyshacl cost grows with graph x shapes, and a skipped run "
+            "must be visible rather than read as 'conforms'. 0 disables the "
+            "guard."
+        ),
+    )
+    shacl_autofix: Literal["off", "rewrite", "prune"] = Field(
+        default="prune",
+        description=(
+            "LLM-free repair of SHACL violations at the gate. 'rewrite' applies "
+            "only additive/rewriting fixes the catalog can ground: retyping a "
+            "literal to a sh:datatype it parses as, and resolving a string "
+            "literal to the catalog IRI whose surface form it matches exactly "
+            "and uniquely. 'prune' (default) additionally drops nodes that "
+            "violate sh:minCount while asserting nothing themselves (no triple "
+            "beyond rdf:type/rdfs:label, unreferenced elsewhere) — a "
+            "placeholder value node stands for an extraction that did not "
+            "happen. Neither mode invents a value: a node carrying real data "
+            "but missing a required property stays a reported finding. 'off' "
+            "reports without repairing."
+        ),
+    )
+    shacl_autofix_passes: int = Field(
+        default=1,
+        ge=0,
+        description=(
+            "Bounded validate -> autofix -> revalidate loop at the gate. A pass "
+            "is kept only if it strictly reduces the violation count, so a "
+            "repair that trades conformance for nothing is reverted."
+        ),
+    )
+    code_predicates: list[str] = Field(
+        default_factory=lambda: [
+            "http://qudt.org/schema/qudt/ucumCode",
+            "http://qudt.org/schema/qudt/symbol",
+            "http://www.w3.org/2004/02/skos/core#notation",
+        ],
+        description=(
+            "Predicates whose literal objects are machine-resolvable codes "
+            "(UCUM codes, symbols, notations). Used to resolve a code the model "
+            "emitted — e.g. qudt:ucumCode 'd' on a value node with no "
+            "qudt:unit — to the catalog individual declaring it, when exactly "
+            "one does. Matching is exact and case-sensitive: these are codes, "
+            "not labels."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="FACTS_",
@@ -1834,6 +2176,76 @@ class Config(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    @classmethod
+    def in_memory(cls, **overrides: Any) -> "Config":
+        """Build a configuration that needs no external services.
+
+        Selects the in-memory **triple** store (a full pyoxigraph SPARQL
+        engine) and disables vector retrieval, so the whole pipeline runs
+        inside the calling process with no server and no embedding index. This
+        is the recommended starting point for embedding OntoCast in another
+        application:
+
+        ```python
+        tools = await ToolBox.acreate(Config.in_memory())
+        ```
+
+        Ontology context then comes from a single working ontology per unit --
+        the default :class:`~ontocast.onto.enum.OntologyContextMode`. Vector
+        retrieval needs one of the two supported backends, Qdrant
+        (``QDRANT_URI``) or LanceDB (``LANCEDB_ENABLED``), each of which is its
+        own optional extra.
+
+        Environment variables still populate any section not named in
+        ``overrides``; only the store selection is forced.
+
+        Args:
+            **overrides: Fields to set on the returned ``Config``.
+
+        Returns:
+            A configuration bound to the process-local backends.
+        """
+        config = cls(**overrides)
+        config.tool_config.fuseki.uri = None
+        config.tool_config.qdrant.uri = None
+        config.tool_config.lancedb.enabled = False
+        config.tool_config.vector_store.backend = VectorStoreBackend.NONE
+        return config
+
+    def for_tenancy(self, tenant: str, project: str) -> "Config":
+        """Return a deep copy of this config bound to ``tenant`` / ``project``.
+
+        The copy is what makes per-scope isolation real. Vector store managers
+        receive ``tool_config.vector_store`` and ``tool_config.qdrant`` **by
+        reference** (`tool/vector_store/factory.py`) and mutate them when
+        tenancy is applied, so two scopes sharing a ``Config`` would alias each
+        other's collection names.
+
+        Args:
+            tenant: Tenant identifier.
+            project: Project identifier within the tenant.
+
+        Returns:
+            An independent ``Config`` with dataset, collection and table names
+            resolved for the requested partition.
+
+        Raises:
+            ValueError: If either identifier is blank.
+        """
+        scope = TenancyScope.build(tenant, project)
+        copy = self.model_copy(deep=True)
+        tool_config = copy.tool_config
+
+        tool_config.fuseki.dataset = scope.facts_name
+        tool_config.fuseki.ontologies_dataset = scope.ontologies_name
+        tool_config.qdrant.facts_collection = scope.facts_name
+        tool_config.qdrant.ontology_collection = scope.ontologies_name
+        tool_config.lancedb.facts_table = scope.facts_name
+        tool_config.lancedb.ontology_table = scope.ontologies_name
+        tool_config.vector_store.facts_table = scope.facts_name
+        tool_config.vector_store.ontology_table = scope.ontologies_name
+        return copy
 
     def get_tool_config(self) -> ToolConfig:
         """Get tool configuration.

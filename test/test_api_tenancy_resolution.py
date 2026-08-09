@@ -100,14 +100,15 @@ def test_stores_use_tenancy_partitions_false_for_plain_object_triple_store() -> 
     assert stores_use_tenancy_partitions(tools) is False
 
 
-def test_apply_request_tenancy_no_query_uses_active() -> None:
+def test_apply_request_tenancy_no_query_uses_active_toolbox() -> None:
+    """Without tenancy query params nothing is resolved: same ToolBox, same scope."""
     tools = SimpleNamespace(
         vector_store=None,
         triple_store_manager=object(),
-        update_tenancy_with_vector_mode=AsyncMock(),
+        for_scope=AsyncMock(),
     )
     req = _http_request(b"")
-    t, p = asyncio.run(
+    returned, t, p = asyncio.run(
         apply_request_tenancy(
             req,
             cast(ToolBox, tools),
@@ -117,17 +118,20 @@ def test_apply_request_tenancy_no_query_uses_active() -> None:
         )
     )
     assert (t, p) == ("startup_t", "startup_p")
-    tools.update_tenancy_with_vector_mode.assert_not_called()
+    assert returned is tools
+    tools.for_scope.assert_not_called()
 
 
-def test_apply_request_tenancy_with_query_calls_update_when_partitioned() -> None:
+def test_apply_request_tenancy_returns_scoped_toolbox_when_partitioned() -> None:
+    """A tenancy query param must yield the ToolBox bound to that partition."""
+    scoped = object()
     tools = SimpleNamespace(
         vector_store=object(),
         triple_store_manager=None,
-        update_tenancy_with_vector_mode=AsyncMock(),
+        for_scope=AsyncMock(return_value=scoped),
     )
     req = _http_request(b"tenant=acme&project=p1")
-    t, p = asyncio.run(
+    returned, t, p = asyncio.run(
         apply_request_tenancy(
             req,
             cast(ToolBox, tools),
@@ -137,22 +141,24 @@ def test_apply_request_tenancy_with_query_calls_update_when_partitioned() -> Non
         )
     )
     assert (t, p) == ("acme", "p1")
-    tools.update_tenancy_with_vector_mode.assert_awaited_once_with(
+    assert returned is scoped
+    tools.for_scope.assert_awaited_once_with(
         "acme",
         "p1",
-        initialize_vector_store=True,
+        ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY,
         fail_on_vector_store_error=False,
     )
 
 
-def test_apply_request_tenancy_resolves_without_update_when_not_partitioned() -> None:
+def test_apply_request_tenancy_resolves_without_scoping_when_not_partitioned() -> None:
+    """Stores that do not partition still resolve names but keep one ToolBox."""
     tools = SimpleNamespace(
         vector_store=None,
         triple_store_manager=object(),
-        update_tenancy_with_vector_mode=AsyncMock(),
+        for_scope=AsyncMock(),
     )
     req = _http_request(b"tenant=acme")
-    t, p = asyncio.run(
+    returned, t, p = asyncio.run(
         apply_request_tenancy(
             req,
             cast(ToolBox, tools),
@@ -162,7 +168,28 @@ def test_apply_request_tenancy_resolves_without_update_when_not_partitioned() ->
         )
     )
     assert (t, p) == ("acme", DEFAULT_PROJECT)
-    tools.update_tenancy_with_vector_mode.assert_not_called()
+    assert returned is tools
+    tools.for_scope.assert_not_called()
+
+
+def test_apply_request_tenancy_omits_context_mode_when_not_initializing() -> None:
+    """Only a vector-search request should trigger vector store preparation."""
+    tools = SimpleNamespace(
+        vector_store=object(),
+        triple_store_manager=None,
+        for_scope=AsyncMock(return_value=object()),
+    )
+    req = _http_request(b"tenant=acme&project=p1")
+    asyncio.run(
+        apply_request_tenancy(
+            req,
+            cast(ToolBox, tools),
+            active_tenant="startup_t",
+            active_project="startup_p",
+            initialize_vector_store=False,
+        )
+    )
+    assert tools.for_scope.await_args.kwargs["ontology_context_mode"] is None
 
 
 @pytest.mark.parametrize(
@@ -173,17 +200,25 @@ def test_apply_request_tenancy_resolves_without_update_when_not_partitioned() ->
         (OntologyContextMode.FIXED_SINGLE_ONTOLOGY, False),
     ],
 )
-def test_ontology_delete_with_tenant_query_calls_update_tenancy(
+def test_ontology_delete_with_tenant_query_uses_scoped_toolbox(
     ontology_context_mode: OntologyContextMode,
     initialize_vector_store: bool,
 ) -> None:
-    update = AsyncMock()
+    """The delete must land on the requested tenant's ToolBox, not the startup one.
+
+    Before per-scope ToolBoxes this asserted that the shared one had been
+    retargeted in place; now it asserts the router resolves a scoped ToolBox and
+    routes the mutation to it.
+    """
     delete_by_iri = AsyncMock()
+    scoped = SimpleNamespace(delete_ontology_by_iri=delete_by_iri)
+    for_scope = AsyncMock(return_value=scoped)
+    startup_delete = AsyncMock()
     tools = SimpleNamespace(
         vector_store=object(),
         triple_store_manager=None,
-        update_tenancy_with_vector_mode=update,
-        delete_ontology_by_iri=delete_by_iri,
+        for_scope=for_scope,
+        delete_ontology_by_iri=startup_delete,
     )
     app = FastAPI()
     app.include_router(
@@ -200,10 +235,15 @@ def test_ontology_delete_with_tenant_query_calls_update_tenancy(
         params={"tenant": "acme", "project": "p1"},
     )
     assert r.status_code == 200
-    update.assert_awaited_once_with(
+    for_scope.assert_awaited_once_with(
         "acme",
         "p1",
-        initialize_vector_store=initialize_vector_store,
+        ontology_context_mode=(
+            OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+            if initialize_vector_store
+            else None
+        ),
         fail_on_vector_store_error=False,
     )
     delete_by_iri.assert_awaited_once_with("https://example.org/onto")
+    startup_delete.assert_not_called()

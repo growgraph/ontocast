@@ -473,3 +473,137 @@ def test_graph_update_operations_with_empty_triples():
 
     # Graph should remain unchanged
     assert len(graph) == initial_triple_count
+
+
+def _single_insert(payload: RDFGraph, prefixes: dict[str, str]) -> list[str]:
+    """Compile a one-operation insert update over ``payload``."""
+    return GraphUpdate(
+        triple_operations=[TripleOp(type="insert", graph=payload, prefixes=prefixes)]
+    ).generate_sparql_queries()
+
+
+def test_graph_update_escapes_literals_with_sparql_metacharacters() -> None:
+    """Literals carrying quotes, backslashes or newlines survive a round trip.
+
+    These are routine in extracted text. Serialising them into bare double
+    quotes closed the string early and failed the whole update with a
+    ParseException at apply time, losing every triple in the operation.
+    """
+    subject = URIRef("http://example.org/Quote")
+    predicate = URIRef("http://www.w3.org/2000/01/rdf-schema#comment")
+    hostile = [
+        Literal('He said "no" and left'),
+        Literal("back\\slash"),
+        Literal("line one\nline two"),
+        Literal("carriage\rreturn"),
+        Literal('mixed "quote" and \\ and \n newline'),
+        Literal("tab\tseparated"),
+        Literal('quoted "text"', lang="en"),
+        Literal(
+            '4.2 "nominal"', datatype=URIRef("http://www.w3.org/2001/XMLSchema#string")
+        ),
+    ]
+
+    payload = RDFGraph()
+    for index, literal in enumerate(hostile):
+        payload.add((URIRef(f"{subject}{index}"), predicate, literal))
+
+    queries = _single_insert(payload, {"ex": "http://example.org/"})
+    assert len(queries) == 1
+
+    graph = RDFGraph()
+    graph.update(queries[0])
+
+    assert len(graph) == len(hostile)
+    for index, literal in enumerate(hostile):
+        assert (URIRef(f"{subject}{index}"), predicate, literal) in graph
+
+
+def test_graph_update_brackets_non_http_absolute_iris() -> None:
+    """``urn:``/``doi:`` IRIs are absolute, not prefixed names.
+
+    A bare-colon test treated every non-``http`` scheme as an abbreviation and
+    emitted it unbracketed, so the parser read it as an undeclared prefix.
+    """
+    payload = RDFGraph()
+    triples = [
+        (
+            URIRef("urn:tenant:acme:doc:42"),
+            URIRef("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+            URIRef("http://example.org/Document"),
+        ),
+        (
+            URIRef("http://example.org/Paper"),
+            URIRef("http://example.org/identifier"),
+            URIRef("doi:10.1000/182"),
+        ),
+        (
+            URIRef("file:///data/corpus.ttl"),
+            URIRef("http://example.org/source"),
+            Literal("local"),
+        ),
+    ]
+    for triple in triples:
+        payload.add(triple)
+
+    queries = _single_insert(payload, {"ex": "http://example.org/"})
+    assert len(queries) == 1
+    assert "<urn:tenant:acme:doc:42>" in queries[0]
+    assert "<doi:10.1000/182>" in queries[0]
+
+    graph = RDFGraph()
+    graph.update(queries[0])
+
+    assert len(graph) == len(triples)
+    for triple in triples:
+        assert triple in graph
+
+
+def test_graph_update_passes_through_declared_prefixed_names() -> None:
+    """A ``prefix:local`` term whose prefix is declared stays abbreviated."""
+    payload = RDFGraph()
+    payload.add(
+        (
+            URIRef("ex:Subject"),
+            URIRef("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+            URIRef("ex:Thing"),
+        )
+    )
+
+    queries = _single_insert(payload, {"ex": "http://example.org/"})
+    assert len(queries) == 1
+    assert "ex:Subject" in queries[0]
+    assert "<ex:Subject>" not in queries[0]
+
+    graph = RDFGraph()
+    graph.update(queries[0])
+
+    assert (
+        URIRef("http://example.org/Subject"),
+        URIRef("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+        URIRef("http://example.org/Thing"),
+    ) in graph
+
+
+def test_graph_update_brackets_undeclared_prefixed_name() -> None:
+    """An abbreviation with no matching PREFIX is emitted as an IRI, not dropped."""
+    payload = RDFGraph()
+    payload.add(
+        (
+            URIRef("http://example.org/Subject"),
+            URIRef("http://example.org/note"),
+            URIRef("nowhere:Thing"),
+        )
+    )
+
+    queries = _single_insert(payload, {"ex": "http://example.org/"})
+    assert len(queries) == 1
+    assert "<nowhere:Thing>" in queries[0]
+
+    graph = RDFGraph()
+    graph.update(queries[0])
+    assert (
+        URIRef("http://example.org/Subject"),
+        URIRef("http://example.org/note"),
+        URIRef("nowhere:Thing"),
+    ) in graph

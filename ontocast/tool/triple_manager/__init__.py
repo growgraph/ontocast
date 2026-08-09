@@ -6,11 +6,7 @@ from .fuseki import (
     normalize_fuseki_server_uri,
 )
 from .in_memory import InMemoryTripleStoreManager
-from .mock import (
-    MockFusekiTripleStoreManager,
-    MockInMemoryTripleStoreManager,
-    MockTripleStoreManager,
-)
+from .mock import MockTripleStoreManager
 from .util import deterministic_turtle_serialization
 
 __all__ = [
@@ -19,8 +15,6 @@ __all__ = [
     "FusekiTripleStoreManager",
     "InMemoryTripleStoreManager",
     "MockTripleStoreManager",
-    "MockFusekiTripleStoreManager",
-    "MockInMemoryTripleStoreManager",
     "normalize_fuseki_server_uri",
     "deterministic_turtle_serialization",
 ]

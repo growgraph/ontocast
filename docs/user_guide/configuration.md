@@ -26,7 +26,8 @@ Config
 │   ├── patch_retrieval: PatchRetrievalConfig
 │   ├── vector_store: VectorStoreConfig
 │   ├── qdrant: QdrantConfig
-│   └── lancedb: LanceDBConfig
+│   ├── lancedb: LanceDBConfig
+│   └── facts_validation: FactsValidationConfig
 ├── server: ServerConfig
 ├── logging_level: str | None
 └── clean: bool
@@ -53,13 +54,47 @@ LLM_BASE_URL=http://localhost:11434     # optional (ollama; anthropic proxy URL)
 
 OntoCast uses `LLM_API_KEY` for all cloud providers (not `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY`).
 
+#### `LLM_MODEL_NAME` accepts any string
+
+The model enums in `ontocast.config` (`OpenAIModel`, `OllamaModel`, `ClaudeModel`,
+`GeminiModel`) are **presets, not a whitelist** — they exist so common choices are
+discoverable and type-checkable. Any other string is passed through to the provider,
+which is the authority on whether it exists; OntoCast logs a warning and continues.
+
+That matters for two cases a fixed list cannot serve: a model released after your
+OntoCast version, and an **OpenAI-compatible endpoint** hosting another vendor's
+models. For the second, combine `LLM_PROVIDER=openai` with the vendor's `LLM_BASE_URL`:
+
+```bash
+# Moonshot (Kimi)
+LLM_PROVIDER=openai
+LLM_BASE_URL=https://api.moonshot.ai/v1
+LLM_MODEL_NAME=kimi-k3
+LLM_API_KEY=your_moonshot_key
+
+# Alibaba Model Studio (Qwen)
+LLM_PROVIDER=openai
+LLM_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+LLM_MODEL_NAME=qwen3-max
+LLM_API_KEY=your_dashscope_key
+```
+
+The same shape works for OpenRouter, Together, and a self-hosted vLLM server. Open-weight
+Qwen, Kimi and DeepSeek builds run locally through `LLM_PROVIDER=ollama` instead — see
+the Ollama controls below, and set `LLM_THINK` for the reasoning variants.
+
 **Disk cache and provider concurrency** (see [LLM Caching](llm_caching.md)):
 
 ```bash
 LLM_CACHE_ENABLED=true          # read/write disk cache (default true)
 LLM_CACHE_READ_ONLY=false       # use cache without writing new entries
 LLM_MAX_INFLIGHT=16             # max concurrent provider requests (all documents)
+LLM_REQUEST_TIMEOUT_SECONDS=180 # abandon a call after this; empty to wait forever
 ```
+
+A hung provider call holds both a unit-worker slot and an `LLM_MAX_INFLIGHT`
+slot, so without `LLM_REQUEST_TIMEOUT_SECONDS` a couple of them permanently
+shrink the pipeline's effective width. A timed-out call fails only its own unit.
 
 **Ollama-specific generation controls** (ignored by other providers):
 
@@ -96,14 +131,16 @@ PORT=8999
 BASE_RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
 MAX_VISITS=1                             # alias for max_visits_per_node
+#MAX_CRITIC_VISITS_PER_NODE=             # unset: critic shares the MAX_VISITS bound
 RENDER_MODE=ontology_and_facts           # ontology | facts | ontology_and_facts
 LLM_GRAPH_FORMAT=turtle                  # turtle | jsonld
 ONTOLOGY_CONTEXT_MODE=selected_single_ontology
 #ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID=catalog_iri_or_id_or_prefix
 ONTOLOGY_MAX_TRIPLES=50000               # empty/unset for unlimited
-PARALLEL_WORKERS=4
+PARALLEL_WORKERS=16                      # see Performance before raising this
 ENABLE_ONTOLOGY_CONSOLIDATION=false
 # MAX_CONCURRENT_PROCESSES=4      # optional cap on simultaneous /process handlers
+# MAX_TENANCY_SCOPES=16           # resident per-tenant/project ToolBoxes (LRU)
 ```
 
 !!! warning "The server has no authentication"
@@ -113,12 +150,32 @@ ENABLE_ONTOLOGY_CONSOLIDATION=false
     can target any tenancy partition. Set `HOST=0.0.0.0` only behind a proxy
     that authenticates; the server logs a warning when you do.
 
-!!! note "`MAX_VISITS=1` means the LLM critic never runs"
+!!! note "`MAX_VISITS=1` means the LLM critic never runs — but not that there is only one LLM call"
 
     A visit budget of 1 makes the single render also the final one, and a
-    critique that cannot drive a retry is skipped. Only the deterministic
-    repair pass (`FACTS_REPAIR_VISITS`) runs at the default. Set `MAX_VISITS=2`
-    or more to enable `criticise_facts` / `criticise_ontology`.
+    critique that cannot drive a retry is skipped. The **finding-driven repair**
+    still runs: up to `FACTS_LLM_REPAIR_VISITS` (default `1`) additional
+    `render_facts_update` calls when mandatory findings remain, so a facts unit
+    costs up to two provider calls at the default. Only its *trigger* is
+    deterministic. Set `FACTS_LLM_REPAIR_VISITS=0` for exactly one call per
+    unit, or `MAX_VISITS=2`+ to enable `criticise_facts` /
+    `criticise_ontology`. The ontology loop has no repair stage, so there
+    `MAX_VISITS=1` really is one call per unit. See
+    [Validation](validation.md#how-many-llm-calls-a-facts-unit-really-costs).
+
+!!! note "What `MAX_VISITS=2`+ actually costs"
+
+    Less than the nested loops suggest. The critic loop is bounded by
+    `MAX_VISITS` as well, so its nominal worst case is that value *squared* —
+    but a critic that fails **without requesting external evidence** breaks out
+    of the loop immediately. With web grounding off (the default) the critic
+    therefore runs at most **once per render**, and only the last render is
+    skipped. The quadratic case needs `WEB_SEARCH_ENABLED=true` and a critic
+    that keeps asking for evidence.
+
+    `MAX_CRITIC_VISITS_PER_NODE` caps that path explicitly. Leave it unset to
+    keep the coupling to `MAX_VISITS`; set it to `1` for exactly one critique
+    per render.
 
 `MAX_CONCURRENT_PROCESSES` **queues** requests beyond the limit; they are not
 rejected.
@@ -126,21 +183,141 @@ rejected.
 ### Chunking
 
 ```bash
-CHUNK_BREAKPOINT_THRESHOLD_TYPE=percentile  # percentile | standard_deviation | interquartile | gradient
-CHUNK_BREAKPOINT_THRESHOLD_AMOUNT=95.0
 CHUNK_MIN_SIZE=3000
 CHUNK_MAX_SIZE=12000
-CHUNK_SECTION_TAG_MIN_CHARS=80   # min size for LLM section backfill; smaller hybrid segments coalesce first
-CHUNK_BIBLIOGRAPHY_MODE=citations_only  # citations_only | skip | domain_facts
+CHUNK_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-mpnet-base-v2
+CHUNK_SEGMENTER=semantic            # semantic (sections-first, default) | docling
+CHUNK_SECTION_CLASSIFIER=heuristic  # off | heading | heuristic (default) | llm
+CHUNK_SECTION_DENSITY=conservative  # off | conservative (default) | aggressive
+CHUNK_SECTION_TEXT_HEADINGS=true    # detect headings in documents with no markdown structure
+CHUNK_SECTION_LLM_BATCH_SIZE=40     # excerpts per LLM call when classifier=llm; 0 = one call each
+CHUNK_SECTION_TAG_MIN_CHARS=80      # min size for section tagging; smaller segments coalesce first
+CHUNK_SECTION_SCHEMA_DETECT=headings  # off | lexical | headings (default) | auto
+CHUNK_SECTION_SCHEMA_DETECT_MIN_SCORE=2.0           # evidence the winner must clear
+CHUNK_SECTION_SCHEMA_DETECT_MIN_MARGIN=1.8          # factor over the runner-up
+CHUNK_SECTION_SCHEMA_DETECT_CONTENT_MIN_MARGIN=4.0  # stricter margin for the content tier
+CHUNK_SECTION_FILTER_ON_EMPTY=warn  # warn (default) | error
+CHUNK_BIBLIOGRAPHY_MODE=skip        # skip | citations_only | domain_facts
 ```
 
-`CHUNK_BIBLIOGRAPHY_MODE` routes chunks detected as bibliography/reference
-lists (via section label or citation-density heuristics): `citations_only`
-(default) extracts bibliographic metadata only (`schema:ScholarlyArticle` +
-`schema:citation`, no domain facts from citation titles), `skip` drops the
-chunks before extraction, `domain_facts` restores the legacy behavior.
+`CHUNK_SEGMENTER=semantic` (default) detects section spans on the markdown
+export, splits at section boundaries, and semantic-chunks within each
+oversized section block, so chunks never straddle sections and inherit their
+section label deterministically. `docling` uses Docling `HybridChunker`
+structural segments instead.
 
-Semantic chunking is configured here. **Section-aligned labels** and filtering are not chunker settings: they run when `/process` or CLI file mode passes `target_sections` and/or `summarize_sections` (see [Structured documents](concepts.md#structured-documents-optional)).
+`CHUNK_EMBEDDING_MODEL` is the sentence-transformers checkpoint used for
+semantic chunking and embedding-based schema detection. It shares one
+process-wide model with `EMBEDDING_MODEL_NAME` (retrieval) and
+`AGG_EMBEDDING_MODEL` (entity disambiguation) whenever the names match, so
+aligning all three is the single-model, low-memory configuration:
+
+```bash
+# One resident local model instead of two (~650 MB of peak RSS, measured).
+CHUNK_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+EMBEDDING_MODEL_NAME=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+AGG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+```
+
+Changing `CHUNK_EMBEDDING_MODEL` invalidates the on-disk chunk cache and shifts
+chunk boundaries, which in turn shifts what each unit extracts. It also affects
+the `CHUNK_SECTION_SCHEMA_DETECT_*` thresholds below, which are calibrated
+against the default model's score distribution — re-derive them if you change
+it. Retrieval and chunking dimensions are independent: the vector store's
+dimension is fixed in its collection schema, the chunker's is not.
+
+#### Section classification
+
+`CHUNK_SECTION_CLASSIFIER` selects how far the classification cascade runs.
+Each tier only sees what the previous one left unlabeled, so cost rises only
+where cheaper evidence ran out:
+
+| Value | Tiers | LLM calls |
+|---|---|---|
+| `off` | none — no tagging, and section filters and schema default exclusions are disabled | 0 |
+| `heading` | document outline, heading patterns and keywords, order-guarded fill | 0 |
+| `heuristic` **(default)** | the above plus content-density classification | 0 |
+| `llm` | the above plus one batched call over whatever remains | ~1 per document |
+
+Only `llm` costs anything during chunking. The default changed from `llm` in
+0.5.x: the deterministic tiers now resolve the headings that previously needed
+a model, so `--target-sections results` is free.
+
+`CHUNK_SECTION_DENSITY` controls the content tier, which labels regions that
+carry no usable heading. `conservative` (default) recognises only reference
+lists and acknowledgements, whose surface form is near-unique. `aggressive`
+also guesses methods/results/introduction from figure-reference, quantity and
+citation densities — these signals do **not** separate those sections cleanly,
+and a wrong label is acted on silently by the section filters, so it is opt-in.
+
+`CHUNK_SECTION_TEXT_HEADINGS` enables heading detection from plain-text layout
+(short, blank-line-delimited, upper-case or numbered lines) for documents whose
+conversion produced no markdown heading structure at all.
+
+#### Schema detection
+
+The cascade above labels sections *within* a schema; `CHUNK_SECTION_SCHEMA_DETECT`
+decides **which** schema, when the request supplies neither `section_schema_id`
+nor a matching `document_type_hint`. Without it, a 10-Q submitted with no hint is
+scored against the academic default and comes back entirely unlabeled.
+
+| Value | Tiers | Cost |
+|---|---|---|
+| `off` | none — always the manifest default (`academic`) | 0 |
+| `lexical` | headings only one schema recognises | 0, no model |
+| `headings` **(default)** | the above plus embedding-based heading voting | reuses the chunker's model |
+| `auto` | the above plus content classification on heading-poor documents | same model, more text |
+
+`headings` is the default rather than `auto` because the content tier is
+measurably unsafe. On the nine-document corpus it ranks 7/9 correctly, but its
+one confident error is severe: chemistry body prose scores `standard` over
+`academic` by more than the acceptance margin, so a heading-free paper would be
+relabeled wholesale. It is therefore gated to documents with essentially no
+headings, excludes `news` (a measured semantic attractor), and demands
+`CONTENT_MIN_MARGIN` (4.0) rather than the heading tiers' 1.8. Enable `auto`
+only for corpora of heading-free documents you have checked.
+
+In practice the free tier does the work: all nine corpus cells and all five
+in-repo documents resolve on `lexical` alone, so `headings` loads no model for
+them. Lowering `MIN_SCORE` or `MIN_MARGIN` trades abstentions for confident
+errors — the tightest correct margin in the corpus is a trial protocol at 2.0×
+against `academic`, which is what the 1.8 default leaves room for.
+
+Use `ontocast sections --input-path <file>` to see the resolved schema, the tier
+that chose it, and the ranked candidate evidence, along with what the classifier
+decided — see [Structured documents](concepts.md#structured-documents).
+
+`CHUNK_BIBLIOGRAPHY_MODE` routes chunks detected as bibliography/reference
+lists (via section label or citation-density heuristics): `skip` (default)
+drops the chunks before extraction, `citations_only` extracts bibliographic
+metadata only (`schema:ScholarlyArticle` + `schema:citation`, no domain facts
+from citation titles), `domain_facts` restores the legacy behavior.
+
+Request-level section filtering (`target_sections` allowlist,
+`exclude_sections` denylist with per-schema defaults, `summarize_sections`)
+is documented in [Structured documents](concepts.md#structured-documents).
+
+#### Section filtering
+
+`CHUNK_SECTION_FILTER_ON_EMPTY` decides what happens when a section selection
+removes **every** segment:
+
+| Value | Behaviour |
+|-------|-----------|
+| `warn` (default) | Log a warning and continue. The run extracts zero chunks and reports success. |
+| `error` | Fail the run: HTTP `422` with `error_code=empty_section_selection:<param>`, or a non-zero exit for `ontocast process` (the file is counted as failed; other files still run). |
+
+The default is opt-in-safe but genuinely ambiguous: an empty result reads
+exactly like a document that had nothing to extract. Use `error` when a
+selection is expected to match — a typo in `target_sections`, or a document
+whose headings did not classify as expected, is then a loud failure rather than
+an empty graph.
+
+It covers **both** directions: the `target_sections` / `summarize_sections`
+allowlist and the `exclude_sections` denylist — including a schema's
+`default_exclude`, which can empty a document with no caller involvement at
+all. `ontocast sections` always behaves as `warn`, since a diagnostic has to
+survive the condition it is diagnosing.
 
 ### Docling converter
 
@@ -158,7 +335,7 @@ CONVERTER_PROFILE=default               # default | born_digital
 # CONVERTER_OCR_LANG=
 # CONVERTER_FORCE_FULL_PAGE_OCR=false
 # CONVERTER_OCR_BITMAP_AREA_THRESHOLD=0.05
-# CONVERTER_REPAIR_LIGATURE_GAPS=false  # TEMP workaround
+# CONVERTER_REPAIR_LIGATURE_GAPS=false  # on under profile=born_digital
 ```
 
 Recommended preset for publisher PDFs with selectable text:
@@ -178,7 +355,7 @@ That preset currently implies:
 
 Notes:
 
-- `CONVERTER_REPAIR_LIGATURE_GAPS` is a **temporary workaround** in OntoCast for ASCII `fi` / `fl` / `ff` gap patterns that Docling still passes through on some publisher PDFs.
+- `CONVERTER_REPAIR_LIGATURE_GAPS` repairs ASCII `fi` / `fl` / `ff` gap patterns that Docling passes through on some publisher PDFs. It is off by default but **on** under `CONVERTER_PROFILE=born_digital`, and it participates in the converter cache key, so flipping it re-converts. It becomes removable — as a breaking change — once Docling normalises these patterns upstream.
 - Prefer `CONVERTER_PROFILE=born_digital` for text-selectable PDFs before trying heavier OCR settings.
 - If OCR remains enabled and you pick `rapidocr`, set `CONVERTER_OCR_LANG=english` for English scans; RapidOCR's upstream default language is Chinese.
 
@@ -189,11 +366,13 @@ No environment variables. Pass on `POST /process`, multipart form, JSON body, or
 | Parameter | CLI flag | Description |
 |-----------|----------|-------------|
 | `target_sections` | `--target-sections` | Comma-separated or JSON list; enables tagging and keeps only these sections |
+| `exclude_sections` | `--exclude-sections` | Comma-separated or JSON list; enables tagging and drops these sections |
 | `summarize_sections` | `--summarize-sections` | Enables tagging + summarization; `*` or empty = all chunks |
 | `summary_max_sentences` | `--summary-max-sentences` | Max sentences per summary (default `5`) |
 | `max_visits` | `--max-visits` | Render/critic retry budget per loop (default from `MAX_VISITS`) |
 | `section_schema_id` | `--section-schema-id` | Section label schema (`academic`, `financial`, `legal`, …) |
 | `document_type_hint` | `--document-type-hint` | Free-text hint to resolve schema when `section_schema_id` is omitted |
+| `document_metadata` | `--document-metadata` | JSON object of caller-asserted document identity (DOI/ISBN, ids, title, typed entities) — see [Concepts](concepts.md#document-level-identity-metadata) |
 
 ```bash
 ontocast process --input-path ./papers/ \
@@ -221,7 +400,7 @@ See [Tenancy](tenancy.md) for how tenant/project names relate to dataset, collec
 
 ```bash
 EMBEDDING_PROVIDER=huggingface          # huggingface | openai | ollama
-EMBEDDING_MODEL_NAME=paraphrase-multilingual-MiniLM-L12-v2
+EMBEDDING_MODEL_NAME=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 # EMBEDDING_API_KEY=
 # EMBEDDING_BASE_URL=http://localhost:11434
 EMBEDDING_DIMENSION=384
@@ -261,6 +440,9 @@ QDRANT_TIMEOUT_SECONDS=30                # whole seconds; the client accepts not
 Applies to both Qdrant and LanceDB:
 
 ```bash
+# auto (default): Qdrant if QDRANT_URI is set, LanceDB if enabled, otherwise
+# vector retrieval is disabled. Explicit: qdrant | lancedb | none.
+# VECTOR_STORE_BACKEND=auto
 VECTOR_STORE_TOP_K=20
 VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH=2
 VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=1200
@@ -328,11 +510,17 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `VECTOR_STORE_SYMBOL_CASE_MISMATCH_POLICY` | `demote` | Merge-time treatment of atoms whose declared symbol surfaces (`skos:notation`, `qudt:symbol`, `qudt:ucumCode`) match a query token only case-insensitively with no exact-case match anywhere — the BM25/dense text is case-folded, so prose "meV" also retrieves `unit:MegaEV` (symbol "MeV"). `demote` multiplies the atom score, `drop` removes it, `off` keeps legacy behavior; exact-case and label-only matches are never touched |
 | `VECTOR_STORE_SYMBOL_CASE_MISMATCH_DEMOTE_FACTOR` | `0.5` | Score multiplier applied under the `demote` policy |
 | `FACTS_OBJECT_PROPERTY_LITERAL_CHECK` | `true` | Quarantine string literals on predicates whose schema range is a class (e.g. `qudt:unit`); surfaced to the facts critic and the deterministic repair loop |
-| `FACTS_REPAIR_VISITS` | `1` | Deterministic repair budget per unit: extra update renders fed with machine-found MANDATORY fixes (quarantined literals, unknown/near-miss terms) and numeric-coverage candidates. Applies even at `MAX_VISITS=1`, where the LLM critic never runs |
+| `FACTS_LLM_REPAIR_VISITS` | `1` | Finding-driven repair budget per unit, **in provider calls**: extra update renders fed with machine-found MANDATORY fixes (quarantined literals, unknown/near-miss terms, `rdfs:domain` contradictions) and numeric-coverage candidates. Fires even at `MAX_VISITS=1`, where the LLM critic never runs. `0` leaves the residue to the LLM-free repairs and the gate |
 | `FACTS_PROPERTY_ALIAS_MIN_RATIO` | `0.85` | SequenceMatcher cutoff for deterministic near-miss property rewrites in catalog namespaces (token containment always qualifies, e.g. `qudt:value` → `qudt:numericValue`) |
-| `FACTS_MERGE_REPAIR_PASSES` | `1` | Un-merge budget at the post-aggregation `VALIDATE_FACTS` gate: error findings on merged subjects become full-cluster pair vetoes and the facts units are re-aggregated. `0` records findings without repairing |
+| `FACTS_MERGE_REPAIR_PASSES` | `1` | Un-merge budget at the post-aggregation `VALIDATE_FACTS` gate: *merge-signature* error findings (functional violation, suspect multi-value, degenerate coreference) on merged subjects become full-cluster pair vetoes and the facts units are re-aggregated. `0` records findings without repairing. SHACL findings never drive it |
+| `FACTS_CODE_PREDICATES` | `qudt:ucumCode`, `qudt:symbol`, `skos:notation` | Predicates whose literal objects are machine-resolvable codes. A node carrying `qudt:ucumCode "d"` but no unit link gains the object property pointing at the catalog individual declaring that code, when exactly one does. Exact and case-sensitive — these are codes, not labels |
 | `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | `error` | Severity of SUSPECT_MULTI_VALUE gate findings (multiple distinct numeric values on one predicate, or multiple objects on a dominantly single-valued predicate); only `error` findings drive the un-merge repair |
 | `FACTS_SHAPES_DIR` | — | Directory of SHACL shape files for the gate; `sh:NodeShape` triples inlined in the ontology context are picked up automatically. SHACL runs only when `pyshacl` is installed (`uv sync --extra shacl`). Setting this without the extra, or pointing it at a missing/empty directory, logs a **warning** — it never passes silently |
+| `FACTS_SHACL_INFERENCE` | `rdfs` | Pre-inference for the SHACL run: `none`, `rdfs`, `owlrl`. RDFS by default because SHACL property paths carry no `rdfs:subPropertyOf` entailment, so a shape naming a superproperty reports the specialised predicate the renderer emitted as missing |
+| `FACTS_SHACL_ADVANCED` | `true` | Enable SHACL Advanced Features (`sh:sparql` constraints, node expressions) |
+| `FACTS_SHACL_MAX_TRIPLES` | `200000` | Skip SHACL with a warning above this graph size; `0` disables the guard |
+| `FACTS_SHACL_AUTOFIX` | `prune` | LLM-free repair of SHACL violations at the gate. `rewrite` retypes literals against `sh:datatype` and resolves a literal to the unique catalog IRI declaring it; `prune` additionally drops `sh:minCount` violators that assert nothing beyond `rdf:type`/`rdfs:label`; `off` reports only. Nothing is ever invented — see [Validation](validation.md#llm-free-autofix) |
+| `FACTS_SHACL_AUTOFIX_PASSES` | `1` | Bounded validate → repair → revalidate rounds; a pass that does not strictly reduce violations is reverted |
 | `FACTS_FUNCTIONAL_MIN_SINGLE_SUPPORT` | `3` | Distinct single-valued subjects a predicate needs before the gate treats it as empirically functional. Below this the evidence is too thin to call a second value a violation |
 | `FACTS_QUANTITY_FALLBACK_VOCABULARY` | QUDT | Role → term mapping the facts prompt names as the fallback for bounded/approximate quantities when retrieval supplied no suitable class. Roles: `value_class`, `numeric_value`, `unit`. Override for catalogs modelling quantities with another vocabulary; set to `{}` to forbid the fallback entirely and keep the renderer inside the provided context. Terms in a configured fallback namespace are reported by `NON_CATALOG_VOCABULARY` as a *deliberate* fallback |
 | `FACTS_ADDITIONAL_STANDARD_NAMESPACES` | schema.org | Namespaces exempt from `UNKNOWN_TERM` beyond the RDF/OWL substrate and annotation/provenance terms. Only meta-vocabularies are built in; a domain vocabulary shared across catalogs (SOSA/SSN, CSVW, FOAF, Dublin Core profiles) is exempted here. schema.org is the default because the shipped citation vocabulary uses it |
@@ -351,8 +539,9 @@ Enable when `QDRANT_URI` is unset. Requires the optional extra: `uv sync --extra
 ```bash
 LANCEDB_ENABLED=true
 # LANCEDB_DATA_DIR=~/.lancedb_data
-# LANCEDB_ONTOLOGY_TABLE=ontologies
-# LANCEDB_FACTS_TABLE=facts
+# Table names derive from tenant/project when unset (ontocast--test--ontologies / --facts)
+# LANCEDB_ONTOLOGY_TABLE=
+# LANCEDB_FACTS_TABLE=
 ```
 
 `QDRANT_URI` and `LANCEDB_ENABLED=true` cannot both be set.
@@ -365,18 +554,19 @@ Rarely changed; defaults suit both backends.
 # Qdrant collection geometry — must match the embedding model
 # QDRANT_VECTOR_SIZE=384
 # QDRANT_DISTANCE=Cosine
-# QDRANT_UPSERT_BATCH_SIZE=64
+# QDRANT_UPSERT_BATCH_SIZE=256
 
 # Partition (table/collection) names within the configured backend
-# VECTOR_STORE_ONTOLOGY_TABLE=ontologies
-# VECTOR_STORE_FACTS_TABLE=facts
+# (derived from tenant/project when unset: ontocast--test--ontologies / --facts)
+# VECTOR_STORE_ONTOLOGY_TABLE=
+# VECTOR_STORE_FACTS_TABLE=
 
 # Sparse (BM25) model for the lexical lane
 # EMBEDDING_BM25_MODEL_NAME=Qdrant/bm25
 
 # Atom de-duplication identity
-# VECTOR_STORE_DEDUP_INCLUDE_VERSION=false   # treat ontology versions as distinct
-# VECTOR_STORE_DEDUP_INCLUDE_HASH=false      # treat content hashes as distinct
+# VECTOR_STORE_DEDUP_INCLUDE_VERSION=true    # treat ontology versions as distinct
+# VECTOR_STORE_DEDUP_INCLUDE_HASH=true       # treat content hashes as distinct
 # VECTOR_STORE_DEDUP_QUERY_HITS_BY_IRI=true  # collapse repeat hits on one IRI
 
 # Prompt/diagnostic shaping
@@ -490,15 +680,24 @@ VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=600
 
 ```bash
 CURRENT_DOMAIN=https://example.com
-ONTOCAST_WORKING_DIRECTORY=/path/to/working/directory
 ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files
 ONTOCAST_CACHE_DIR=/path/to/cache/directory
+
+# Cache eviction. The cache bounds itself: once it exceeds the ceiling,
+# least-recently-used entries are deleted. Set to 0 to disable.
+# Accepts a byte count or a human size ("1GB", "500MB").
+ONTOCAST_CACHE_MAX_BYTES=1GB
+ONTOCAST_CACHE_TTL_DAYS=30
+ONTOCAST_CACHE_PRUNE_EVERY=256
 ```
+
+See [LLM Caching](llm_caching.md#cache-size-and-eviction) for how eviction is
+scheduled and the `ontocast cache` commands that drive it manually.
 
 ### Aggregation
 
 ```bash
-AGG_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+AGG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 AGG_SIMILARITY_THRESHOLD=0.80
 AGG_CANDIDATE_SIMILARITY_THRESHOLD=0.70
 AGG_LEXICAL_LABEL_JACCARD=0.5
@@ -581,7 +780,8 @@ Entity alignment and evaluation endpoints are documented in [API Endpoints](api.
 ## Validation Notes
 
 - `LLM_PROVIDER=openai`, `anthropic`, or `google` requires `LLM_API_KEY`.
-- `LLM_MODEL_NAME` must match the selected provider family.
+- `LLM_MODEL_NAME` outside the provider's preset enum logs a warning and is passed
+  through — the provider validates it, not OntoCast.
 - `MAX_VISITS` is supported as an alias for `max_visits_per_node`.
 - `RECURSION_LIMIT` was renamed to `BASE_RECURSION_LIMIT`.
 - `WEB_SEARCH_ALLOWED_DOMAINS` and `WEB_SEARCH_BLOCKED_DOMAINS` accept comma-separated values.

@@ -1,0 +1,119 @@
+schema_version: "1.1"
+id: patent
+description: Patent application and granted-patent section headings
+document_profile: >-
+    A patent application or granted patent disclosing an invention, setting out
+    its technical field, the prior art it improves on, described embodiments,
+    and numbered legal claims defining the scope of protection sought.
+ordered: true
+default_exclude:
+-   citations
+labels:
+-   id: abstract
+    order: 10
+    heading_patterns:
+    -   '^abstract\s*$'
+    -   '^abstract\s+of\s+the\s+disclosure\s*$'
+    keywords:
+    -   abstract
+-   id: field
+    order: 20
+    heading_patterns:
+    -   '^(?:technical\s+)?field\s*$'
+    -   '^field\s+of\s+the\s+invention\s*$'
+    -   '^field\s+of\s+(?:the\s+)?disclosure\s*$'
+    keywords:
+    -   technical field
+    -   field of the invention
+    -   field of the disclosure
+-   id: background
+    order: 30
+    heading_patterns:
+    -   '^background\s*$'
+    -   '^background\s+(?:of\s+the\s+)?(?:invention|art|disclosure)\s*$'
+    keywords:
+    -   background of the invention
+    -   background art
+-   id: prior_art
+    order: 35
+    heading_patterns:
+    -   '^prior\s+art\s*$'
+    -   '^related\s+art\s*$'
+    -   '^description\s+of\s+(?:the\s+)?(?:related|prior)\s+art\s*$'
+    keywords:
+    -   prior art
+    -   related art
+-   id: summary
+    order: 40
+    heading_patterns:
+    -   '^summary\s*$'
+    -   '^summary\s+of\s+the\s+(?:invention|disclosure)\s*$'
+    keywords:
+    -   summary of the invention
+    -   summary of the disclosure
+    -   disclosure of the invention
+-   id: brief_description_of_drawings
+    order: 50
+    heading_patterns:
+    -   '^brief\s+description\s+of\s+(?:the\s+)?(?:drawings?|figures?)\s*$'
+    -   '^description\s+of\s+(?:the\s+)?(?:drawings?|figures?)\s*$'
+    keywords:
+    -   brief description of the drawings
+    -   description of the drawings
+    -   description of the figures
+-   id: detailed_description
+    order: 60
+    heading_patterns:
+    -   '^detailed\s+description\s*$'
+    -   '^detailed\s+description\s+of\s+(?:the\s+)?(?:invention|embodiments?|preferred\s+embodiments?)\s*$'
+    -   '^description\s+of\s+(?:the\s+)?(?:preferred\s+)?embodiments?\s*$'
+    -   '^modes?\s+for\s+carrying\s+out\s+the\s+invention\s*$'
+    keywords:
+    -   detailed description
+    -   preferred embodiment
+    -   preferred embodiments
+    -   embodiments of the invention
+    -   modes for carrying out
+    -   industrial applicability
+    -   landscapes
+    -   classifications
+-   id: examples
+    order: 70
+    heading_patterns:
+    -   '^examples?\s*$'
+    -   '^working\s+examples?\s*$'
+    -   '^example\s+(?:\d+|[IVXivx]+)\s*$'
+    keywords:
+    -   working example
+    -   working examples
+-   id: claims
+    order: 80
+    heading_patterns:
+    -   '^claims?\s*$'
+    -   '^what\s+is\s+claimed\s+is\s*$'
+    -   '^we\s+claim\s*$'
+    -   '^i\s+claim\s*$'
+    keywords:
+    -   claims
+    -   what is claimed
+    -   we claim
+    -   the invention claimed is
+-   id: citations
+    order: 90
+    heading_patterns:
+    -   '^citation\s+list\s*$'
+    -   '^references?\s+cited\s*$'
+    -   '^patent\s+(?:literature|documents?)\s*$'
+    -   '^non[\s-]?patent\s+literature\s*$'
+    keywords:
+    -   citation list
+    -   references cited
+    -   patent literature
+    -   non-patent literature
+    -   cited by
+    -   family cites
+    -   also published as
+    -   similar documents
+    -   legal events
+    -   applications claiming priority
+    -   priority applications

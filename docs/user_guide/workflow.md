@@ -1,13 +1,13 @@
 # OntoCast Workflow
 
-This document describes the document processing pipeline implemented in `stategraph/create.py`. After changing optional nodes (e.g. Summarize Chunks), regenerate workflow diagrams with `uv run plot-graph`.
+This document describes the document processing pipeline implemented in `stategraph/create.py`. After changing the node topology, regenerate workflow diagrams with `uv run plot-graph`.
 
 ## Overview
 
 OntoCast transforms input documents into RDF ontology and facts graphs through a **parallel map/reduce** pipeline:
 
 1. **Document conversion** — PDF, DOCX, TXT, MD, or JSON → Markdown
-2. **Chunking** — prepare pipeline (segment, tag, filter, size) into content units (`--head-chunks` limits count for testing). When `target_sections` and/or `summarize_sections` are set, tagging and section filter run inside **Chunk**; optional **Summarize Chunks** follows (see [Structured documents](concepts.md#structured-documents-optional))
+2. **Chunking** — prepare pipeline (segment, tag, filter, size) into content units (`--head-chunks` limits count for testing). Section tagging runs by default (`CHUNK_SECTION_CLASSIFIER`); `target_sections`/`exclude_sections` filter inside **Chunk**; optional per-unit summarization runs inside the extraction fan-out (see [Structured documents](concepts.md#structured-documents))
 3. **Ontology map/reduce** (when `render_mode` includes ontology):
    - Per-unit context assembly (catalog selection or vector retrieval)
    - Render/critic loops with optional web evidence
@@ -104,7 +104,12 @@ When `target_sections` and/or `summarize_sections` are set on `/process` or CLI 
 | Node | When | What it does |
 |------|------|----------------|
 | **Chunk** | Always | Prepare pipeline: Docling segments (or semantic fallback), optional tag/filter/size; builds `content_units` |
-| **Summarize Chunks** | `summarize_sections` set | LLM compresses selected units (already tagged/filtered in Chunk); prompts use `extraction_text` |
+
+Summarization has **no node of its own**. When `summarize_sections` is set, each
+unit is summarized inside the extraction fan-out, immediately before that unit is
+rendered; prompts then use `extraction_text`, which prefers the summary. A unit's
+summary depends only on that unit, so a separate stage was a barrier that made
+every unit wait for the slowest summary before any extraction could start.
 
 - Section LLM tagging during Chunk uses **parallel** workers up to `PARALLEL_WORKERS`
 - Use `--head-chunks N` on the CLI to process only the first N units (testing)
@@ -141,9 +146,9 @@ Provenance triples (`prov:`, reification, chunk metadata) are kept in `ontology_
 
 ### 5. Per-Unit Facts Loop
 
-When facts rendering is enabled, each unit runs a **facts loop** (render → critic, with optional web evidence), then **merge facts** applies cross-chunk entity disambiguation and aggregation, and **validate facts** checks post-merge invariants (functional violations, suspect multi-values, degenerate coreference, optional SHACL). Error findings on merged subjects trigger a deterministic un-merge: the offending cluster's pairs are vetoed and the retained facts units are re-aggregated (`FACTS_MERGE_REPAIR_PASSES`). Residual findings land in `facts_validation_findings` and the retrieval metrics.
+When facts rendering is enabled, each unit runs a **facts loop** (render → critic, with optional web evidence), then **merge facts** applies cross-chunk entity disambiguation and aggregation, and **validate facts** checks post-merge invariants (functional violations, suspect multi-values, degenerate coreference, optional SHACL). Merge-signature error findings (functional violation, suspect multi-value, degenerate coreference — never SHACL) on merged subjects trigger a deterministic un-merge: the offending cluster's pairs are vetoed and the retained facts units are re-aggregated (`FACTS_MERGE_REPAIR_PASSES`). Residual findings land in `facts_validation_findings` and the retrieval metrics.
 
-Chunks detected as bibliography/reference lists are routed by `CHUNK_BIBLIOGRAPHY_MODE`: by default they yield citation metadata only (`schema:ScholarlyArticle` + `schema:citation`), never domain facts mined from citation titles.
+Chunks detected as bibliography/reference lists are routed by `CHUNK_BIBLIOGRAPHY_MODE`: by default they are dropped before extraction (`skip`); `citations_only` yields citation metadata only (`schema:ScholarlyArticle` + `schema:citation`), never domain facts mined from citation titles.
 
 ![Facts loop](../assets/facts_loop.png)
 
@@ -164,9 +169,20 @@ Facts output uses the **`cd:` namespace** for text-derived instances; domain ont
 | `LLM_MAX_INFLIGHT` | Max concurrent provider LLM requests (shared across units) |
 | `MAX_CONCURRENT_PROCESSES` | Optional cap on simultaneous `/process` pipelines |
 | `MAX_VISITS` / `max_visits` | Render/critic retry budget per loop (at `1`, the default, the LLM critic never runs — the critic is skipped after the final render) |
-| `FACTS_REPAIR_VISITS` | Deterministic repair budget per facts unit: bounded update renders driven by machine-found violations and numeric-coverage gaps; independent of `MAX_VISITS` |
-| `FACTS_MERGE_REPAIR_PASSES` | Un-merge budget at the post-aggregation validation gate (error findings → cluster pair vetoes → re-aggregation) |
-| `CHUNK_BIBLIOGRAPHY_MODE` | Routing for reference-list chunks: `citations_only` (default), `skip`, or `domain_facts` |
+| `MAX_CRITIC_VISITS_PER_NODE` | Critic attempts per render attempt. Unset couples it to `MAX_VISITS`; set to `1` for one critique per render. Only bites when the critic keeps requesting external evidence — see [Configuration](configuration.md) |
+| `FACTS_LLM_REPAIR_VISITS` | Finding-driven repair budget per facts unit, **in provider calls**: bounded update renders driven by machine-found violations; fires even at `MAX_VISITS=1`, so the default costs up to two calls per unit. See [Validation](validation.md#how-many-llm-calls-a-facts-unit-really-costs) |
+| `FACTS_MERGE_REPAIR_PASSES` | Un-merge budget at the post-aggregation validation gate (merge-signature error findings → cluster pair vetoes → re-aggregation) |
+| `FACTS_SHACL_AUTOFIX` | LLM-free repair of SHACL violations at the gate: `off`, `rewrite`, or `prune` (default). See [Validation](validation.md#llm-free-autofix) |
+| `CHUNK_SEGMENTER` | `semantic` (sections-first, default) or `docling` structural segments |
+| `CHUNK_SECTION_CLASSIFIER` | Section classification cascade: `heuristic` (default, no LLM calls), `heading`, `llm`, or `off` |
+| `CHUNK_SECTION_DENSITY` | Content-based tier for heading-free regions: `conservative` (default), `aggressive`, or `off` |
+| `CHUNK_SECTION_TEXT_HEADINGS` | Detect headings in documents with no markdown heading structure (default `true`) |
+| `CHUNK_SECTION_LLM_BATCH_SIZE` | Excerpts per LLM call when `CHUNK_SECTION_CLASSIFIER=llm` (default `40`; `0` = one call per chunk) |
+| `CHUNK_SECTION_SCHEMA_DETECT` | Infer the document-type schema when no `section_schema_id`/`document_type_hint` is given: `headings` (default), `lexical` (no model), `auto` (adds the weak content tier), or `off` |
+| `CHUNK_SECTION_SCHEMA_DETECT_MIN_SCORE` | Evidence the winning schema must clear before detection is accepted (default `2.0`) |
+| `CHUNK_SECTION_SCHEMA_DETECT_MIN_MARGIN` | Factor by which the winner must beat the runner-up (default `1.8`); below it, detection abstains to the default schema |
+| `CHUNK_SECTION_SCHEMA_DETECT_CONTENT_MIN_MARGIN` | Stricter margin for the content tier (default `4.0`) |
+| `CHUNK_BIBLIOGRAPHY_MODE` | Routing for reference-list chunks: `skip` (default), `citations_only`, or `domain_facts` |
 | `ENABLE_ONTOLOGY_CONSOLIDATION` | Optional post-normalization consolidation |
 | `ONTOLOGY_CONTEXT_MODE` | How per-unit ontology context is sourced |
 | `LLM_GRAPH_FORMAT` | `turtle` or `jsonld` LLM wire encoding |

@@ -1,11 +1,17 @@
+import pytest
 from rdflib import RDF, Literal, URIRef
 from rdflib.namespace import DCTERMS, FOAF, RDFS, XSD
 
-from ontocast.onto.constants import DEFAULT_IRI, PROV, RDF_REIFIES, SCHEMA
+from ontocast.onto.constants import DEFAULT_IRI, ONTOCAST, PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType
+from ontocast.onto.enum import SectionLabelSource
 from ontocast.onto.iri_policy import join_namespace_local, normalize_namespace_iri
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.tool.agg.aggregate import apply_document_metadata_provenance
+from ontocast.tool.agg.aggregate import (
+    _resolve_metadata_key,
+    _split_identifier_affix,
+    apply_document_metadata_provenance,
+)
 from ontocast.tool.agg.rewriter import GraphRewriter
 from ontocast.tool.triple_manager.core import TripleStoreManager
 
@@ -28,6 +34,9 @@ def test_merge_graphs_with_provenance_adds_chunk_metadata(
     unit_uri = URIRef(unit.iri_absolute)
 
     assert (unit_uri, RDF.type, PROV.Entity) in merged
+    # schema:Text, the class -- schema:text is the *property* of that name, and
+    # typing every provenance node with a property IRI was simply wrong.
+    assert (unit_uri, RDF.type, SCHEMA.Text) in merged
     assert (unit_uri, SCHEMA.position, Literal(5, datatype=XSD.integer)) in merged
     assert (unit_uri, SCHEMA.identifier, Literal(unit.hid)) in merged
 
@@ -35,7 +44,98 @@ def test_merge_graphs_with_provenance_adds_chunk_metadata(
 
     assert namespaces["prov"] == str(PROV)
     assert namespaces["schema"] == str(SCHEMA)
+    assert namespaces["ontocast"] == str(ONTOCAST)
     assert namespaces["doc"] == "https://example.org/doc/abc123/"
+
+
+def _labeled_unit(**overrides) -> ContentUnit:
+    graph = RDFGraph()
+    entity = URIRef(f"{DEFAULT_IRI}/Entity1")
+    graph.add((entity, RDF.type, URIRef(f"{DEFAULT_IRI}/Thing")))
+    fields: dict = {
+        "text": "test",
+        "index": 5,
+        "doc_iri": URIRef("https://example.org/doc/abc123"),
+        "graph": graph,
+        "type": OutputType.FACTS,
+        "section_label": "results",
+        "section_label_source": SectionLabelSource.HEADING_KEYWORD,
+        "section_label_confidence": 0.75,
+    }
+    fields.update(overrides)
+    return ContentUnit(**fields)
+
+
+def test_section_label_reaches_the_provenance_artifact(
+    graph_rewriter: GraphRewriter,
+) -> None:
+    """Which part of the document a fact came from must be auditable.
+
+    The label reached the summarizer and ``ontocast inspect-sections`` and
+    stopped there, so a finished run could not answer the question at all.
+    """
+    unit = _labeled_unit()
+    merged = graph_rewriter.merge_graphs_with_provenance([unit], mapping={})
+    unit_uri = URIRef(unit.iri_absolute)
+
+    assert (unit_uri, SCHEMA.articleSection, Literal("results")) in merged
+    assert (
+        unit_uri,
+        ONTOCAST.sectionLabelSource,
+        Literal("heading_keyword"),
+    ) in merged
+    assert (
+        unit_uri,
+        ONTOCAST.sectionLabelConfidence,
+        Literal("0.75", datatype=XSD.decimal),
+    ) in merged
+
+
+def test_unlabeled_unit_emits_no_section_triples(
+    graph_rewriter: GraphRewriter,
+) -> None:
+    """A bare confidence of 0.0 would read as certainty about nothing."""
+    unit = _labeled_unit(
+        section_label=None, section_label_source=None, section_label_confidence=0.0
+    )
+    merged = graph_rewriter.merge_graphs_with_provenance([unit], mapping={})
+    unit_uri = URIRef(unit.iri_absolute)
+
+    assert list(merged.objects(unit_uri, SCHEMA.articleSection)) == []
+    assert list(merged.objects(unit_uri, ONTOCAST.sectionLabelSource)) == []
+    assert list(merged.objects(unit_uri, ONTOCAST.sectionLabelConfidence)) == []
+
+
+def test_label_without_a_source_still_emits_label_and_confidence(
+    graph_rewriter: GraphRewriter,
+) -> None:
+    unit = _labeled_unit(section_label_source=None)
+    merged = graph_rewriter.merge_graphs_with_provenance([unit], mapping={})
+    unit_uri = URIRef(unit.iri_absolute)
+
+    assert (unit_uri, SCHEMA.articleSection, Literal("results")) in merged
+    assert list(merged.objects(unit_uri, ONTOCAST.sectionLabelSource)) == []
+    assert len(list(merged.objects(unit_uri, ONTOCAST.sectionLabelConfidence))) == 1
+
+
+def test_strip_provenance_removes_the_chunk_metadata_it_is_given(
+    graph_rewriter: GraphRewriter,
+) -> None:
+    """The stripper keys on the unit node, so new metadata is covered for free.
+
+    Pinned rather than assumed: ``strip_provenance`` matches chunk nodes by
+    their ``prov:Entity`` + ``schema:Text`` typing, so it silently stops working
+    the moment the rewriter and the matcher disagree on that class -- which
+    nothing checked until now.
+    """
+    unit = _labeled_unit()
+    merged = graph_rewriter.merge_graphs_with_provenance([unit], mapping={})
+    unit_uri = URIRef(unit.iri_absolute)
+
+    cleaned = TripleStoreManager.strip_provenance(merged)
+
+    assert list(cleaned.predicate_objects(unit_uri)) == []
+    assert (URIRef(f"{DEFAULT_IRI}/Entity1"), RDF.type, None) in cleaned
 
 
 def test_merge_graphs_with_provenance_reifies_mapped_triple(
@@ -213,7 +313,7 @@ def test_author_dict_type_override() -> None:
     )
     org = URIRef(join_namespace_local(ns, "acmeCorp", context="facts"))
     assert (doc_iri, DCTERMS.creator, org) in graph
-    assert (org, RDF.type, URIRef("http://schema.org/Organization")) in graph
+    assert (org, RDF.type, URIRef("https://schema.org/Organization")) in graph
     assert (org, RDFS.label, Literal("Acme Corp")) in graph
 
 
@@ -295,4 +395,208 @@ def test_custom_key_dict_type_override() -> None:
     )
     dept = URIRef(join_namespace_local(ns, "rd", context="facts"))
     assert (doc_iri, DCTERMS.relation, dept) in graph
-    assert (dept, RDF.type, URIRef("http://schema.org/Organization")) in graph
+    assert (dept, RDF.type, URIRef("https://schema.org/Organization")) in graph
+
+
+@pytest.mark.parametrize(
+    ("raw_key", "canonical"),
+    [
+        ("doi", "doi"),
+        ("DOI", "doi"),
+        ("doi_id", "doi"),
+        ("id_doi", "doi"),
+        ("doi-id", "doi"),
+        ("arxiv_id", "arxiv_id"),
+        ("arxivId", "arxiv_id"),
+        ("arxiv-id", "arxiv_id"),
+        ("arxiv", "arxiv_id"),
+        ("sourceUrl", "source_url"),
+        ("source-uri", "source_uri"),
+        ("Title", "title"),
+        ("Identifiers", "identifiers"),
+        ("department", "department"),
+        ("department_id", "department_id"),
+        ("project_id", "project_id"),
+        ("title_id", "title_id"),
+    ],
+)
+def test_resolve_metadata_key_aliases(raw_key: str, canonical: str) -> None:
+    assert _resolve_metadata_key(raw_key) == canonical
+
+
+@pytest.mark.parametrize(
+    ("raw_key", "stem", "affix"),
+    [
+        ("department_id", "department", "id"),
+        ("id_department", "department", "id"),
+        ("case_no", "case", "no"),
+        ("invoice_ref", "invoice", "ref"),
+        ("sku_code", "sku", "code"),
+        ("asset_uid", "asset", "uid"),
+        ("doc_slug", "doc", "slug"),
+        ("seq_accession", "seq", "accession"),
+        ("key_finding", "finding", "key"),
+        ("finding_key", "finding", "key"),
+        ("project_id", "project", "id"),
+        ("num_invoice", "invoice", "num"),
+        ("invoice_number", "invoice", "number"),
+        ("uuid_batch", "batch", "uuid"),
+        ("batch_guid", "batch", "guid"),
+        ("item_reference", "item", "reference"),
+    ],
+)
+def test_split_identifier_affix(raw_key: str, stem: str, affix: str) -> None:
+    assert _split_identifier_affix(raw_key) == (stem, affix)
+
+
+@pytest.mark.parametrize(
+    "raw_key",
+    ["department", "title", "doi", "id", "key"],
+)
+def test_split_identifier_affix_rejects_non_affixed(raw_key: str) -> None:
+    assert _split_identifier_affix(raw_key) is None
+
+
+@pytest.mark.parametrize(
+    ("raw_key", "value"),
+    [
+        ("DOI", "10.1234/example"),
+        ("doi_id", "10.1234/example"),
+        ("id_doi", "10.1234/example"),
+        ("doi-id", "10.1234/example"),
+        ("arxivId", "2401.00001"),
+        ("arxiv", "2401.00001"),
+    ],
+)
+def test_identifier_key_aliases_emit_dcterms_identifier(
+    raw_key: str, value: str
+) -> None:
+    graph = RDFGraph()
+    doc_iri = URIRef("https://example.org/doc/abc")
+    apply_document_metadata_provenance(doc_iri, {raw_key: value}, graph)
+    assert (doc_iri, DCTERMS.identifier, Literal(value)) in graph
+
+
+@pytest.mark.parametrize(
+    ("raw_key", "value"),
+    [
+        ("sourceUrl", "https://example.org/paper"),
+        ("source-uri", "https://example.org/paper"),
+    ],
+)
+def test_source_key_aliases_emit_dcterms_source(raw_key: str, value: str) -> None:
+    graph = RDFGraph()
+    doc_iri = URIRef("https://example.org/doc/abc")
+    apply_document_metadata_provenance(doc_iri, {raw_key: value}, graph)
+    assert (doc_iri, DCTERMS.source, URIRef(value)) in graph
+
+
+def test_title_alias_emits_dcterms_title() -> None:
+    graph = RDFGraph()
+    doc_iri = URIRef("https://example.org/doc/abc")
+    apply_document_metadata_provenance(doc_iri, {"Title": "Annual Report"}, graph)
+    assert (doc_iri, DCTERMS.title, Literal("Annual Report")) in graph
+
+
+def _structured_identifier_schemes(graph: RDFGraph, doc_iri: URIRef) -> dict[str, str]:
+    """Map dcterms:type scheme -> rdf:value for structured identifiers on doc."""
+    out: dict[str, str] = {}
+    for node in graph.objects(doc_iri, DCTERMS.identifier):
+        if isinstance(node, Literal):
+            continue
+        schemes = list(graph.objects(node, DCTERMS.type))
+        values = list(graph.objects(node, RDF.value))
+        if schemes and values:
+            out[str(schemes[0])] = str(values[0])
+    return out
+
+
+@pytest.mark.parametrize(
+    ("raw_key", "scheme", "value"),
+    [
+        ("department_id", "department", "D-42"),
+        ("case_no", "case", "C-9"),
+        ("invoice_ref", "invoice", "INV-1"),
+        ("sku_code", "sku", "SKU-7"),
+        ("asset_uid", "asset", "A-1"),
+        ("doc_slug", "doc", "annual-report"),
+        ("seq_accession", "seq", "ACC1"),
+        ("item_num", "item", "42"),
+        ("batch_number", "batch", "B-3"),
+    ],
+)
+def test_affix_keys_emit_structured_identifier(
+    raw_key: str, scheme: str, value: str
+) -> None:
+    graph = RDFGraph()
+    doc_iri = URIRef("https://example.org/doc/abc")
+    apply_document_metadata_provenance(doc_iri, {raw_key: value}, graph)
+    schemes = _structured_identifier_schemes(graph, doc_iri)
+    assert schemes.get(scheme) == value
+    # Value must not be minted as a labeled companion entity
+    labeled = [s for s in graph.subjects(RDFS.label, Literal(value)) if s != doc_iri]
+    assert labeled == []
+
+
+def test_department_id_emits_structured_identifier_not_entity() -> None:
+    graph = RDFGraph()
+    doc_iri = URIRef("https://example.org/doc/abc")
+    ns = normalize_namespace_iri(str(doc_iri), context="facts")
+    apply_document_metadata_provenance(
+        doc_iri,
+        {"department_id": "D-42"},
+        graph,
+        entity_namespace=ns,
+    )
+    schemes = _structured_identifier_schemes(graph, doc_iri)
+    assert schemes == {"department": "D-42"}
+    dept = URIRef(join_namespace_local(ns, "d42", context="facts"))
+    assert (doc_iri, DCTERMS.relation, dept) not in graph
+    assert (dept, RDFS.label, Literal("D-42")) not in graph
+
+
+def test_project_id_companion_attaches_to_project_entity() -> None:
+    graph = RDFGraph()
+    doc_iri = URIRef("https://example.org/doc/abc")
+    ns = normalize_namespace_iri(str(doc_iri), context="facts")
+    apply_document_metadata_provenance(
+        doc_iri,
+        {"project": "Perovskite Survey", "project_id": "PRJ-1"},
+        graph,
+        entity_namespace=ns,
+    )
+    project = URIRef(join_namespace_local(ns, "perovskiteSurvey", context="facts"))
+    assert (doc_iri, DCTERMS.relation, project) in graph
+    assert (project, RDF.type, PROV.Entity) in graph
+    assert (project, RDFS.label, Literal("Perovskite Survey")) in graph
+    assert (project, DCTERMS.identifier, Literal("PRJ-1")) in graph
+    assert _structured_identifier_schemes(graph, doc_iri) == {}
+
+
+def test_project_id_alone_emits_structured_identifier() -> None:
+    graph = RDFGraph()
+    doc_iri = URIRef("https://example.org/doc/abc")
+    ns = normalize_namespace_iri(str(doc_iri), context="facts")
+    apply_document_metadata_provenance(
+        doc_iri,
+        {"project_id": "PRJ-1"},
+        graph,
+        entity_namespace=ns,
+    )
+    assert _structured_identifier_schemes(graph, doc_iri) == {"project": "PRJ-1"}
+    project = URIRef(join_namespace_local(ns, "prj1", context="facts"))
+    assert (doc_iri, DCTERMS.relation, project) not in graph
+
+
+def test_key_finding_tradeoff_emits_structured_identifier() -> None:
+    """Accepted trade-off: ``key`` affix treats non-id fields as structured ids."""
+    graph = RDFGraph()
+    doc_iri = URIRef("https://example.org/doc/abc")
+    apply_document_metadata_provenance(
+        doc_iri,
+        {"key_finding": "Important result"},
+        graph,
+    )
+    assert _structured_identifier_schemes(graph, doc_iri) == {
+        "finding": "Important result"
+    }

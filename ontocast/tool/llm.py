@@ -42,31 +42,42 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+import weakref
 from contextlib import contextmanager
 from contextvars import ContextVar
-from functools import wraps
-from typing import Any, Callable, Type, TypeVar
+from typing import Any, Type, TypeVar
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages.ai import AIMessage
 from langchain_core.output_parsers import PydanticOutputParser
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_ollama import ChatOllama
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, PrivateAttr, SecretStr
 
 from ontocast.config import LLMConfig, LLMProvider
+from ontocast.onto.token_usage import TokenUsage
+from ontocast.util.loop import require_no_running_loop
+from ontocast.util.optional import require
 
-from .cache import Cacher, ToolCacher
+from .cache import LLM_CACHE_SUBDIR, Cacher, ToolCacher
 from .onto import Tool
 
 T = TypeVar("T", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
 
-# Shared across all LLMTool instances with the same max_inflight setting.
-_inflight_semaphores: dict[int, asyncio.Semaphore] = {}
+# Bumped whenever the cache entry shape or the set of key inputs changes, so
+# stale entries miss instead of being deserialised under the wrong assumptions.
+# Version 2 added the Ollama generation knobs to the key.
+LLM_CACHE_FORMAT_VERSION = 2
+
+# Shared across all LLMTool instances with the same max_inflight setting, but
+# partitioned per event loop: asyncio.Semaphore binds to the running loop the
+# first time it has to wait, so a single process-wide instance breaks the second
+# ``asyncio.run`` in a process as soon as it sees contention. Keyed weakly on the
+# loop itself rather than on id(), which is recycled once a loop is collected.
+_inflight_semaphores: "weakref.WeakKeyDictionary[Any, dict[int, asyncio.Semaphore]]" = (
+    weakref.WeakKeyDictionary()
+)
 
 # The budget tracker usage should be charged to, scoped to the running task.
 #
@@ -83,6 +94,15 @@ _active_budget_tracker: ContextVar[Any | None] = ContextVar(
 )
 
 
+class LLMRequestTimeoutError(RuntimeError):
+    """A provider call exceeded ``LLM_REQUEST_TIMEOUT_SECONDS``.
+
+    Deliberately not an :class:`asyncio.TimeoutError`: the unit loops catch
+    ``Exception`` to fail a single unit gracefully, and a cancellation-flavoured
+    error escaping ``asyncio.gather`` would take the whole fan-out down with it.
+    """
+
+
 @contextmanager
 def use_budget_tracker(budget_tracker: Any):
     """Charge LLM usage inside this block to ``budget_tracker``."""
@@ -93,31 +113,158 @@ def use_budget_tracker(budget_tracker: Any):
         _active_budget_tracker.reset(token)
 
 
+def record_active_span(name: str, seconds: float) -> None:
+    """Charge a latency span to the running task's budget tracker, if any.
+
+    A no-op when no tracker is bound. This reads the context variable directly
+    rather than going through an :class:`LLMTool`, so stages that fan out
+    *around* the LLM (e.g. chunk section classification) can report queue waits
+    without holding a real tool instance -- which also keeps test stubs that
+    substitute a plain callable for the LLM working.
+
+    Args:
+        name: Duration key, e.g. ``"chunk section classify/worker_wait"``.
+        seconds: Elapsed seconds to accumulate.
+    """
+    bt = _active_budget_tracker.get()
+    if bt is not None:
+        bt.add_duration(name, seconds)
+
+
+def llm_cache_config(
+    config: LLMConfig, **extra: Any
+) -> dict[str, str | int | float | bool | None]:
+    """Cache-key inputs for a given LLM configuration.
+
+    Every field here changes the provider's response, so it must take part in
+    the key. This is the single definition: :class:`LLMTool` and the batch
+    import in :mod:`ontocast.tool.llm_batch` both call it, and any divergence
+    between them silently produces entries that are written but never read.
+
+    Args:
+        config: The LLM configuration a response would be produced under.
+        **extra: Additional discriminators (e.g. an output schema name).
+
+    Returns:
+        dict: JSON-serialisable mapping used as the cache key's config part.
+    """
+    config_dict: dict[str, str | int | float | bool | None] = {
+        "cache_format_version": LLM_CACHE_FORMAT_VERSION,
+        "provider": config.provider,
+        "model_name": config.model_name,
+        "temperature": config.temperature,
+        "base_url": config.base_url,
+        # Ollama generation knobs: these bound reasoning and output length, so
+        # the same prompt under a different num_ctx is a different response.
+        "think": config.think,
+        "num_predict": config.num_predict,
+        "num_ctx": config.num_ctx,
+    }
+    config_dict.update(extra)
+    return config_dict
+
+
 def _inflight_semaphore(max_inflight: int) -> asyncio.Semaphore:
-    if max_inflight not in _inflight_semaphores:
-        _inflight_semaphores[max_inflight] = asyncio.Semaphore(max_inflight)
-    return _inflight_semaphores[max_inflight]
+    """Return the in-flight limiter for ``max_inflight`` on the running loop."""
+    loop = asyncio.get_running_loop()
+    per_loop = _inflight_semaphores.setdefault(loop, {})
+    if max_inflight not in per_loop:
+        per_loop[max_inflight] = asyncio.Semaphore(max_inflight)
+    return per_loop[max_inflight]
 
 
-def _usage_from_llm_result(result: Any) -> tuple[int | None, int | None]:
-    """Extract token usage from an LLM response when the provider reports it."""
-    if isinstance(result, AIMessage):
-        usage = result.usage_metadata
-        if usage is not None:
-            input_tokens = usage.get("input_tokens")
-            output_tokens = usage.get("output_tokens")
-            if input_tokens is not None and output_tokens is not None:
-                return int(input_tokens), int(output_tokens)
+def _opt_int(source: Any, key: str) -> int | None:
+    """Read ``key`` from a mapping as an int, or None when absent/unusable."""
+    if not isinstance(source, dict):
+        return None
+    value = source.get(key)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
-        response_metadata = result.response_metadata or {}
-        token_usage = response_metadata.get("token_usage")
-        if isinstance(token_usage, dict):
-            prompt_tokens = token_usage.get("prompt_tokens")
-            completion_tokens = token_usage.get("completion_tokens")
-            if prompt_tokens is not None and completion_tokens is not None:
-                return int(prompt_tokens), int(completion_tokens)
 
-    return None, None
+def _usage_from_llm_result(result: Any) -> TokenUsage:
+    """Extract token usage from an LLM response when the provider reports it.
+
+    Two tiers, because providers disagree: LangChain normalises everything it
+    can into ``usage_metadata``, but OpenAI-compatible endpoints that predate
+    (or ignore) that convention only populate ``response_metadata["token_usage"]``.
+    An all-``None`` :class:`TokenUsage` means the provider said nothing.
+    """
+    if not isinstance(result, AIMessage):
+        return TokenUsage()
+
+    usage = result.usage_metadata
+    if usage is not None:
+        input_tokens = _opt_int(usage, "input_tokens")
+        output_tokens = _opt_int(usage, "output_tokens")
+        if input_tokens is not None and output_tokens is not None:
+            input_details = usage.get("input_token_details")
+            output_details = usage.get("output_token_details")
+            return TokenUsage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                reasoning_tokens=_opt_int(output_details, "reasoning"),
+                cache_read_input_tokens=_opt_int(input_details, "cache_read"),
+                cache_creation_input_tokens=_opt_int(input_details, "cache_creation"),
+            )
+
+    return token_usage_from_openai_payload(
+        (result.response_metadata or {}).get("token_usage")
+    )
+
+
+def token_usage_from_openai_payload(payload: Any) -> TokenUsage:
+    """Parse an OpenAI-shaped ``usage`` object into a :class:`TokenUsage`.
+
+    Shared with the Batch-API prefill in :mod:`ontocast.tool.llm_batch`, whose
+    JSONL carries the same object under ``response.body.usage`` -- so a
+    prewarmed cache entry accounts for tokens exactly like a live one.
+    """
+    prompt_tokens = _opt_int(payload, "prompt_tokens")
+    completion_tokens = _opt_int(payload, "completion_tokens")
+    if prompt_tokens is None or completion_tokens is None:
+        return TokenUsage()
+    completion_details = payload.get("completion_tokens_details")
+    prompt_details = payload.get("prompt_tokens_details")
+    return TokenUsage(
+        input_tokens=prompt_tokens,
+        output_tokens=completion_tokens,
+        reasoning_tokens=_opt_int(completion_details, "reasoning_tokens"),
+        cache_read_input_tokens=_opt_int(prompt_details, "cached_tokens"),
+    )
+
+
+def _usage_metadata_from(usage: TokenUsage) -> dict[str, Any] | None:
+    """Render a :class:`TokenUsage` back into LangChain's ``usage_metadata`` shape.
+
+    Replayed onto a cached ``AIMessage`` so a hit stays behaviourally identical
+    to a fresh call for anything reading usage off the message -- notably
+    LangChain-native tracers.
+    """
+    if usage.input_tokens is None or usage.output_tokens is None:
+        return None
+    metadata: dict[str, Any] = {
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "total_tokens": usage.input_tokens + usage.output_tokens,
+    }
+    input_details = {
+        key: value
+        for key, value in (
+            ("cache_read", usage.cache_read_input_tokens),
+            ("cache_creation", usage.cache_creation_input_tokens),
+        )
+        if value is not None
+    }
+    if input_details:
+        metadata["input_token_details"] = input_details
+    if usage.reasoning_tokens is not None:
+        metadata["output_token_details"] = {"reasoning": usage.reasoning_tokens}
+    return metadata
 
 
 def _chars_received_from_result(result: Any) -> int:
@@ -150,30 +297,35 @@ def _content_to_str(content: Any) -> str:
     return str(content)
 
 
-def track_llm_usage(func: Callable) -> Callable:
-    """Decorator to track LLM usage for methods that always hit the provider."""
+class CachedResponse(BaseModel):
+    """A stored LLM response.
 
-    def _record_usage(tool: LLMTool, prompt_str: str, result: Any) -> None:
-        bt = tool.budget_tracker
-        if bt is None:
-            return
-        input_tokens, output_tokens = _usage_from_llm_result(result)
-        bt.add_usage(
-            len(prompt_str),
-            _chars_received_from_result(result),
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-        )
+    ``cache_format_version`` in the key guarantees entries were written by this
+    version of the code, so the shape is known rather than sniffed.
+    """
 
-    @wraps(func)
-    async def async_wrapper(self: LLMTool, *args, **kwargs):
-        prompt = args[0] if args else ""
-        prompt_str = self._prompt_to_string(prompt)
-        result = await func(self, *args, **kwargs)
-        _record_usage(self, prompt_str, result)
-        return result
-
-    return async_wrapper
+    content: str = Field(description="Response text, already normalised.")
+    prompt: str = Field(default="", description="Prompt that produced it.")
+    response_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        # Replaying this keeps a cache hit behaviourally identical to a fresh
+        # call; without it a caller inspecting finish_reason would silently
+        # branch differently on a cached run.
+        description="Provider metadata, replayed on a hit.",
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict, description="Invoke kwargs.")
+    usage: TokenUsage | None = Field(
+        default=None,
+        # Optional rather than a cache_format_version bump: it is purely
+        # additive, and bumping would evict every existing entry and force a
+        # paid re-run before any cache replay works again. Entries written
+        # before this field report usage as unknown, which is the truth.
+        #
+        # usage_metadata is a separate AIMessage attribute, not part of
+        # response_metadata, so persisting the latter never captured it -- which
+        # is why replayed runs used to report zero tokens.
+        description="Token counts, replayed on a hit. None for older entries.",
+    )
 
 
 class LLMTool(Tool):
@@ -214,11 +366,12 @@ class LLMTool(Tool):
 
         # Initialize cache - use shared cacher or create new one
         if cache is not None:
-            self.cache = ToolCacher(cache, "llm")
+            self.cache = ToolCacher(cache, LLM_CACHE_SUBDIR)
         else:
-            # Fallback for backward compatibility
+            # Standalone use (CLI helpers, direct library use): fall back to a
+            # private Cacher on the configured/default directory.
             shared_cache = Cacher()
-            self.cache = ToolCacher(shared_cache, "llm")
+            self.cache = ToolCacher(shared_cache, LLM_CACHE_SUBDIR)
 
     @classmethod
     def create(
@@ -238,7 +391,12 @@ class LLMTool(Tool):
 
         Returns:
             LLMTool: A new instance of the LLM tool.
+
+        Raises:
+            RuntimeError: If called from inside a running event loop; use
+                :meth:`acreate` there.
         """
+        require_no_running_loop("LLMTool.create", "LLMTool.acreate")
         return asyncio.run(
             cls.acreate(
                 config=config, cache=cache, budget_tracker=budget_tracker, **kwargs
@@ -282,6 +440,9 @@ class LLMTool(Tool):
                     f"Setting temperature to {self.config.temperature} for gpt-5 class "
                     f"model {self.config.model_name}"
                 )
+            ChatOpenAI = require(
+                "langchain_openai", feature="The OpenAI LLM provider"
+            ).ChatOpenAI
             self._llm = ChatOpenAI(
                 model=self.config.model_name,
                 temperature=self.config.temperature,
@@ -302,6 +463,9 @@ class LLMTool(Tool):
                 ollama_kwargs["num_predict"] = self.config.num_predict
             if self.config.num_ctx is not None:
                 ollama_kwargs["num_ctx"] = self.config.num_ctx
+            ChatOllama = require(
+                "langchain_ollama", feature="The Ollama LLM provider"
+            ).ChatOllama
             self._llm = ChatOllama(**ollama_kwargs)
         elif self.config.provider == LLMProvider.ANTHROPIC:
             anthropic_kwargs: dict[str, Any] = {
@@ -312,8 +476,14 @@ class LLMTool(Tool):
                 anthropic_kwargs["anthropic_api_key"] = SecretStr(self.config.api_key)
             if self.config.base_url:
                 anthropic_kwargs["anthropic_api_url"] = self.config.base_url
+            ChatAnthropic = require(
+                "langchain_anthropic", feature="The Anthropic LLM provider"
+            ).ChatAnthropic
             self._llm = ChatAnthropic(**anthropic_kwargs)
         elif self.config.provider == LLMProvider.GOOGLE:
+            ChatGoogleGenerativeAI = require(
+                "langchain_google_genai", feature="The Google LLM provider"
+            ).ChatGoogleGenerativeAI
             self._llm = ChatGoogleGenerativeAI(
                 model=self.config.model_name,
                 temperature=self.config.temperature,
@@ -323,14 +493,8 @@ class LLMTool(Tool):
             raise ValueError(f"Unsupported provider: {self.config.provider}")
 
     def _cache_config_dict(self, **extra: Any) -> dict[str, Any]:
-        config_dict: dict[str, Any] = {
-            "provider": self.config.provider,
-            "model_name": self.config.model_name,
-            "temperature": self.config.temperature,
-            "base_url": self.config.base_url,
-        }
-        config_dict.update(extra)
-        return config_dict
+        """Cache-key config for this tool's settings; see :func:`llm_cache_config`."""
+        return dict(llm_cache_config(self.config, **extra))
 
     def _cache_key_content(self, *args: Any) -> str:
         """Stable string for disk cache keys from invoke arguments."""
@@ -352,70 +516,174 @@ class LLMTool(Tool):
         scoped = _active_budget_tracker.get()
         return scoped if scoped is not None else self.budget_tracker
 
-    def _record_cache_hit(self, prompt_str: str, content_str: str) -> None:
+    def _record_cache_hit(
+        self, prompt_str: str, content_str: str, usage: TokenUsage | None
+    ) -> None:
         self._cache_hits += 1
         bt = self._current_budget_tracker()
         if bt is not None:
-            bt.add_cache_hit(len(prompt_str), len(content_str))
+            bt.add_cache_hit(len(prompt_str), len(content_str), usage=usage)
+
+    def record_span(self, name: str, seconds: float) -> None:
+        """Charge a latency span to this call's budget tracker.
+
+        Uses the same context-local tracker as usage accounting, so per-unit
+        attribution under ``asyncio.gather`` is correct for free, and falls back
+        to this tool's own tracker for direct library use. Callers without an
+        :class:`LLMTool` instance should use :func:`record_active_span`.
+
+        Args:
+            name: Duration key, e.g. ``"llm/provider"``.
+            seconds: Elapsed seconds to accumulate.
+        """
+        bt = self._current_budget_tracker()
+        if bt is not None:
+            bt.add_duration(name, seconds)
 
     def _record_api_usage(self, prompt_str: str, result: Any) -> None:
         self._cache_misses += 1
         bt = self._current_budget_tracker()
         if bt is None:
             return
-        input_tokens, output_tokens = _usage_from_llm_result(result)
         bt.add_usage(
             len(prompt_str),
             _chars_received_from_result(result),
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
+            usage=_usage_from_llm_result(result),
         )
 
     def get_cache_stats(
-        self,
+        self, include_disk: bool = True
     ) -> dict[str, int | dict[str, int | dict[str, int] | dict[str, dict[str, int]]]]:
-        """Return in-memory hit/miss counters and on-disk cache file stats."""
-        disk_stats = self.cache.get_cache_stats()
-        return {
+        """Return in-memory hit/miss counters and, optionally, on-disk file stats.
+
+        Args:
+            include_disk: Whether to walk the cache directory. The walk stats
+                every file, so callers on a hot path (or on an event loop)
+                should pass False or use :meth:`aget_cache_stats`.
+        """
+        stats: dict[
+            str, int | dict[str, int | dict[str, int] | dict[str, dict[str, int]]]
+        ] = {
             "cache_hits": self._cache_hits,
             "cache_misses": self._cache_misses,
-            "disk": disk_stats,
         }
+        if include_disk:
+            stats["disk"] = self.cache.get_cache_stats()
+        return stats
 
-    async def _invoke_cached(self, *args: Any, **kwds: Any) -> Any:
-        """Invoke the LLM with optional disk cache and global in-flight limiting."""
+    async def aget_cache_stats(
+        self,
+    ) -> dict[str, int | dict[str, int | dict[str, int] | dict[str, dict[str, int]]]]:
+        """Async :meth:`get_cache_stats`, with the directory walk off the loop."""
+        stats = self.get_cache_stats(include_disk=False)
+        stats["disk"] = await asyncio.to_thread(self.cache.get_cache_stats)
+        return stats
+
+    async def _invoke_cached(
+        self,
+        *args: Any,
+        cache_config_extra: dict[str, Any] | None = None,
+        **kwds: Any,
+    ) -> AIMessage:
+        """Invoke the LLM with optional disk cache and global in-flight limiting.
+
+        This is the single cache-aware entry point; :meth:`__call__`,
+        :meth:`acall`, :meth:`complete`, and :meth:`extract` all route through
+        it so that content normalisation, key construction, budget accounting,
+        and in-flight limiting cannot drift apart between them.
+
+        Args:
+            *args: Positional arguments forwarded to the provider's ``ainvoke``.
+                The first is treated as the prompt for keying and accounting.
+            cache_config_extra: Extra cache-key discriminators beyond the LLM
+                config (e.g. the structured-output schema name).
+            **kwds: Keyword arguments forwarded to ``ainvoke`` and folded into
+                the cache key.
+
+        Returns:
+            AIMessage: Response with content normalised to a plain string.
+        """
         prompt_key = self._cache_key_content(*args)
         prompt_str = self._prompt_to_string(args[0]) if args else ""
-        config_dict = self._cache_config_dict()
+        config_dict = self._cache_config_dict(**(cache_config_extra or {}))
 
         if self.config.cache_enabled:
-            cached_response = self.cache.get(prompt_key, config=config_dict, **kwds)
+            lookup_start = time.perf_counter()
+            cached_response = await self.cache.aget(
+                prompt_key, config=config_dict, **kwds
+            )
+            self.record_span("llm/cache_lookup", time.perf_counter() - lookup_start)
             if cached_response is not None:
                 logger.debug("Cache hit: %s...", prompt_str[:50])
-                content_str = _content_to_str(cached_response["content"])
-                self._record_cache_hit(prompt_str, content_str)
-                return AIMessage(content=content_str)
+                entry = CachedResponse.model_validate(cached_response)
+                self._record_cache_hit(prompt_str, entry.content, entry.usage)
+                return AIMessage(
+                    content=entry.content,
+                    response_metadata=entry.response_metadata,
+                    usage_metadata=(
+                        _usage_metadata_from(entry.usage)
+                        if entry.usage is not None
+                        else None
+                    ),
+                )
 
         logger.debug("Cache miss, calling LLM: %s...", prompt_str[:50])
 
+        # Three spans, because they have three different fixes: queueing behind
+        # llm_max_inflight wants a higher cap, provider time wants a faster
+        # model or fewer calls, and neither is visible in the node's wall clock.
         max_inflight = max(1, self.config.llm_max_inflight)
+        wait_start = time.perf_counter()
         async with _inflight_semaphore(max_inflight):
-            response = await self.llm.ainvoke(*args, **kwds)
+            provider_start = time.perf_counter()
+            self.record_span("llm/inflight_wait", provider_start - wait_start)
+            timeout = self.config.request_timeout_seconds
+            try:
+                if timeout is None:
+                    response = await self.llm.ainvoke(*args, **kwds)
+                else:
+                    response = await asyncio.wait_for(
+                        self.llm.ainvoke(*args, **kwds), timeout=timeout
+                    )
+            except asyncio.TimeoutError as exc:
+                bt = self._current_budget_tracker()
+                if bt is not None:
+                    bt.incr("llm/timeouts")
+                # Re-raised as a plain error so the unit loop's handler treats
+                # it as a failed render rather than a cancellation: letting a
+                # bare TimeoutError escape asyncio.gather would abort the whole
+                # fan-out and orphan its siblings.
+                raise LLMRequestTimeoutError(
+                    f"LLM request exceeded {timeout}s "
+                    f"({self.config.provider}/{self.config.model_name})"
+                ) from exc
+            finally:
+                self.record_span("llm/provider", time.perf_counter() - provider_start)
 
+        bt = self._current_budget_tracker()
+        if bt is not None:
+            bt.incr("llm/calls_timed")
         self._record_api_usage(prompt_str, response)
 
         content_str = _content_to_str(response.content)
+        response_metadata = getattr(response, "response_metadata", {}) or {}
+        usage = _usage_from_llm_result(response)
         if self.config.cache_enabled and not self.config.cache_read_only:
-            response_data = {
-                "content": content_str,
-                "prompt": prompt_str,
-                "kwargs": kwds,
-            }
-            self.cache.set(prompt_key, response_data, config=config_dict, **kwds)
+            entry = CachedResponse(
+                content=content_str,
+                prompt=prompt_str,
+                response_metadata=response_metadata,
+                kwargs=kwds,
+                usage=None if usage.is_empty() else usage,
+            )
+            await self.cache.aset(
+                prompt_key, entry.model_dump(), config=config_dict, **kwds
+            )
 
         return AIMessage(
             content=content_str,
-            response_metadata=getattr(response, "response_metadata", {}),
+            response_metadata=response_metadata,
+            usage_metadata=_usage_metadata_from(usage),
         )
 
     async def __call__(self, *args: Any, **kwds: Any) -> Any:
@@ -464,76 +732,40 @@ class LLMTool(Tool):
             return str(content_attr)
         return str(prompt)
 
-    async def complete(self, prompt: str, **kwargs) -> Any:
-        """Generate a completion for the given prompt."""
-        config_dict = self._cache_config_dict()
-        prompt_key = self._prompt_to_string(prompt)
+    async def complete(self, prompt: str, **kwargs) -> str:
+        """Generate a completion for the given prompt.
 
-        if self.config.cache_enabled:
-            cached_response = self.cache.get(prompt_key, config=config_dict, **kwargs)
-            if cached_response is not None:
-                logger.debug("Cache hit for prompt: %s...", prompt_key[:50])
-                content = cached_response["content"]
-                content_str = content if isinstance(content, str) else str(content)
-                self._record_cache_hit(prompt_key, content_str)
-                return content_str
+        Args:
+            prompt: The prompt to complete.
+            **kwargs: Forwarded to the provider and folded into the cache key.
 
-        logger.debug("Cache miss, calling LLM for prompt: %s...", prompt_key[:50])
-
-        max_inflight = max(1, self.config.llm_max_inflight)
-        async with _inflight_semaphore(max_inflight):
-            response = await self.llm.ainvoke(prompt, **kwargs)
-
-        self._record_api_usage(prompt_key, response)
-
-        if self.config.cache_enabled and not self.config.cache_read_only:
-            response_data = {
-                "content": response.content,
-                "prompt": prompt_key,
-                "kwargs": kwargs,
-            }
-            self.cache.set(prompt_key, response_data, config=config_dict, **kwargs)
-
-        content = response.content
-        return content if isinstance(content, str) else str(content)
+        Returns:
+            str: The response text, normalised from provider content blocks.
+        """
+        response = await self._invoke_cached(prompt, **kwargs)
+        return _content_to_str(response.content)
 
     async def extract(self, prompt: str, output_schema: Type[T], **kwargs) -> T:
-        """Extract structured data from the prompt according to a schema."""
+        """Extract structured data from the prompt according to a schema.
+
+        Args:
+            prompt: The prompt describing what to extract.
+            output_schema: Pydantic model the response is parsed into.
+            **kwargs: Forwarded to the provider and folded into the cache key.
+
+        Returns:
+            T: The parsed model instance.
+        """
         parser = PydanticOutputParser(pydantic_object=output_schema)
         format_instructions = parser.get_format_instructions()
 
+        # The format instructions embed the full JSON schema, so schema changes
+        # already alter the key; the name is carried as an explicit
+        # discriminator so entries stay attributable when inspected on disk.
         full_prompt = f"{prompt}\n\n{format_instructions}"
-        config_dict = self._cache_config_dict(
-            output_schema=output_schema.__name__,
+        response = await self._invoke_cached(
+            full_prompt,
+            cache_config_extra={"output_schema": output_schema.__name__},
+            **kwargs,
         )
-
-        if self.config.cache_enabled:
-            cached_response = self.cache.get(full_prompt, config=config_dict, **kwargs)
-            if cached_response is not None:
-                logger.debug("Cache hit for extraction: %s...", prompt[:50])
-                content = cached_response["content"]
-                content_str = content if isinstance(content, str) else str(content)
-                self._record_cache_hit(full_prompt, content_str)
-                if isinstance(content, str):
-                    return parser.parse(content)
-                return parser.parse(str(content))
-
-        logger.debug("Cache miss, calling LLM for extraction: %s...", prompt[:50])
-
-        max_inflight = max(1, self.config.llm_max_inflight)
-        async with _inflight_semaphore(max_inflight):
-            response = await self.llm.ainvoke(full_prompt, **kwargs)
-
-        self._record_api_usage(full_prompt, response)
-
-        if self.config.cache_enabled and not self.config.cache_read_only:
-            response_data = {
-                "content": response.content,
-                "prompt": full_prompt,
-                "output_schema": output_schema.__name__,
-                "kwargs": kwargs,
-            }
-            self.cache.set(full_prompt, response_data, config=config_dict, **kwargs)
-
-        content = response.content
-        return parser.parse(content if isinstance(content, str) else str(content))
+        return parser.parse(_content_to_str(response.content))

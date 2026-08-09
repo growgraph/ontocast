@@ -45,7 +45,7 @@ Default path: per-window channel fusion → max-score IRI dedupe → global scor
 | Variable | Default | Role |
 |----------|---------|------|
 | `VECTOR_STORE_TOP_K` | `20` | Hits per channel per proposition window |
-| `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | `550` | Global triple cap for context |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | `1200` | Global triple cap for context |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH` | `2` | BFS depth for hub seed expansion |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT` | `16` | Top seeds receiving full BFS budget |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH` | `3` | `rdfs:subClassOf` hops in schema shell |
@@ -84,45 +84,19 @@ in other catalog ontologies via `rdfs:subClassOf`, `rdfs:domain`, or `rdfs:range
 
 ### Diagnostics
 
-Retrieval quality is measured by `test/test_retrieval_recall.py`, which runs real
-embeddings against a real Qdrant collection and reports a per-stage funnel:
+There is no in-repo recall harness any more (it was removed in the 2026-08
+test trim; retrieval quality is evaluated with the out-of-repo
+`ontocast-validation` benchmark scripts, e.g.
+`ontocast-validation/run/build_recall_corpus.py` for corpus construction).
+When comparing configurations, note two things about recall measurement: the
+**case**-level figures saturate as soon as cases carry several expected terms,
+so per-**term** figures are the numbers to compare on; and approximate
+nearest-neighbour search is not bit-reproducible across index builds, so
+treat sub-percentage-point differences as run-to-run noise.
+`test/test_retrieval_predicate_recall.py` covers predicate-surface indexing
+in-repo.
 
-```bash
-cd ontocast
-bash -c 'set -a; source .env; set +a; uv run pytest test/test_retrieval_recall.py -v -s'
-```
-
-**Seed recall** covers vector search, cross-window merge, seed allocation (global score
-order by default; optional per-ontology round-robin), and the atom cap: the expected term
-reached `atoms_final`. **Snapshot recall** additionally covers induced-subgraph expansion:
-the term is *defined* in the returned graph. A gap between them localises the loss to the
-graph stage.
-
-Each is reported at two granularities. The **case** figures ask whether *any* expected
-term survived, and saturate as soon as cases carry several expected terms — a corpus can
-show 100% snapshot recall while under half its terms are actually present. The **TERM**
-figures count every expected term and are the numbers to compare configurations on.
-Treat differences under roughly one percentage point as run-to-run noise: approximate
-nearest-neighbour search is not bit-reproducible across index builds.
-
-Ground truth is supplied externally so the core stays domain-agnostic. Point
-`ONTOCAST_RECALL_CORPUS` at a prebuilt corpus directory:
-
-```text
-<corpus>/ontologies/*.ttl
-<corpus>/cases.jsonl     # {"id", "text", "expected_iris": [...], "ontology_iri"}
-```
-
-Case text is split into proposition windows exactly as production does, so multi-sentence
-passages issue several queries. `ontocast-validation/run/build_recall_corpus.py` builds a
-corpus in this layout from an ontology directory and document chunks.
-
-`ONTOCAST_RECALL_ROOT` additionally accepts a Text2KGBench-style corpus (`a_ontologies/` +
-`b_gt_text/`), scaled with `ONTOCAST_RECALL_ONTOLOGIES` and `ONTOCAST_RECALL_CASES`;
-catalog size matters most, because the atom cap does not grow with it. Without either, the
-in-repo anchor fixtures still run. The test skips when Qdrant is unreachable.
-
-Per-run metrics are also available in production on
+Per-run metrics are available in production on
 `state.retrieval_metrics["patch_retrieval"]`: `atoms_after_dedupe`, `atoms_final`,
 `seed_iris`, `seeds_by_ontology`, `snapshot_triple_count`, `snapshot_pruned_uri_count`,
 `snapshot_uri_components`.

@@ -43,6 +43,10 @@ ontocast serve --wipe-vector-store
 - Triple store: Fuseki when `FUSEKI_URI` is set; otherwise in-memory pyoxigraph
 - Vector store: Qdrant (`QDRANT_URI`) or LanceDB (`LANCEDB_ENABLED=true`), not both
 - Paths and directories are configured via `.env`
+- `--input-path` takes a single file or a directory (searched recursively). A
+  path that does not exist, a file whose extension is not supported, or a
+  directory holding no supported input is a hard error with a non-zero exit —
+  never a silent no-op
 
 ### Configuration
 
@@ -65,13 +69,10 @@ BASE_RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
 RENDER_MODE=ontology_and_facts
 ONTOLOGY_MAX_TRIPLES=50000
-PARALLEL_WORKERS=4
-PARALLEL_FACTS_RETRIES=3
-PARALLEL_ONTOLOGY_RETRIES=3
+PARALLEL_WORKERS=16
 ENABLE_ONTOLOGY_CONSOLIDATION=false
 
 # Paths
-ONTOCAST_WORKING_DIRECTORY=/path/to/working/directory
 ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files
 # ONTOCAST_CACHE_DIR=/path/to/cache/directory
 
@@ -80,7 +81,7 @@ ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files
 # FUSEKI_AUTH=admin/admin
 
 # Optional aggregation controls
-AGG_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+AGG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 AGG_SIMILARITY_THRESHOLD=0.80
 
 # Optional web-search grounding
@@ -95,7 +96,7 @@ WEB_SEARCH_TOP_K=3
 # For Ollama
 LLM_PROVIDER=ollama
 LLM_BASE_URL=http://localhost:11434
-LLM_MODEL_NAME=granite3.3
+LLM_MODEL_NAME=granite4.1:8b
 ```
 
 #### Alternative: Claude / Gemini
@@ -140,13 +141,16 @@ ontocast process --input-path ./docs \
 
 ### Receive Results
 
-After processing, the ontology and the facts graph are returned in turtle format
+After processing, the facts graph and the ontology-update artifacts are
+returned in Turtle format
 
 ```json
 {
     "data": {
         "facts": "# facts in turtle format",
-        "ontology": "# ontology in turtle format"
+        "ontology_artifacts": [
+            {"iri": "https://...", "title": "...", "ttl": "# ontology update in turtle"}
+        ]
     }
   ...
 }

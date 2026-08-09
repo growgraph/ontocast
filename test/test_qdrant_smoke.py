@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from ontocast.config import (
     Config,
     EmbeddingConfig,
@@ -55,10 +57,7 @@ def _build_toolbox(ctx: QdrantSessionTestContext) -> ToolBox:
     embedding_config = EmbeddingConfig(dimension=8, model_name="pytest-smoke")
     tool_config = ToolConfig(
         llm_config=LLMConfig(),
-        path_config=PathConfig(
-            working_directory=ctx.working_directory,
-            ontology_directory=ctx.ontology_directory,
-        ),
+        path_config=PathConfig(ontology_directory=ctx.ontology_directory),
         embedding=embedding_config,
         qdrant=ctx.qdrant_config,
         # Isolate from host Fuseki env so tests use the in-memory triple store.
@@ -67,6 +66,7 @@ def _build_toolbox(ctx: QdrantSessionTestContext) -> ToolBox:
     return ToolBox(Config(tool_config=tool_config))
 
 
+@pytest.mark.integration
 def test_qdrant_vector_store_smoke(
     qdrant_session_test_context: QdrantSessionTestContext,
 ) -> None:

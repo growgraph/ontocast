@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 #: document from pinning one merged graph per unit.
 _MERGED_CACHE_MAX_ENTRIES = 8
 
+# Materialized ontology graphs are far smaller than a merged union, but they are
+# still whole rdflib graphs; a long-lived server needs an upper bound.
+_GRAPH_CACHE_MAX_ENTRIES = 64
+
 if TYPE_CHECKING:
     from ontocast.tool.vector_store.patch_retriever import OntologyPatchRetriever
 
@@ -69,10 +73,17 @@ class OntologyManager(Tool):
         self._alias_to_iri: dict[str, str] = {}
         # Preferred author prefix per namespace URI (for sanitize preference).
         self._namespace_to_author_prefix: dict[str, str] = {}
-        # Content-addressed caches. Keyed by ``versioned_iri`` (``{iri}#{sha256}``),
-        # so an entry can never go stale: a concurrent writer produces a *new*
-        # versioned IRI, which is a miss, never an incorrect hit.
-        self._graph_cache: dict[str, Ontology] = {}
+        # Content-addressed caches. An entry can never go stale on read: a
+        # concurrent writer produces a *new* key, which is a miss, never an
+        # incorrect hit. Both are bounded -- they hold whole rdflib graphs, and
+        # a long-lived server would otherwise grow without limit.
+        #
+        # _graph_cache is keyed by the header's ``graph_uri`` (see
+        # :meth:`_cache_graph`), *not* by ``versioned_iri``: the two coincide
+        # only while content hashing is round-trip stable. Eviction must use the
+        # same key, so the graph URI each IRI was cached under is tracked here.
+        self._graph_cache: OrderedDict[str, Ontology] = OrderedDict()
+        self._graph_uris_by_iri: dict[str, set[str]] = {}
         self._merged_cache: OrderedDict[
             frozenset[str], tuple[RDFGraph, dict[str, str]]
         ] = OrderedDict()
@@ -322,12 +333,22 @@ class OntologyManager(Tool):
 
     def remove_ontology_by_iri(self, iri: str) -> None:
         """Drop all tracked versions for an ontology IRI and clear caches."""
+        # Evict under the key entries were *inserted* with. Popping
+        # ``versioned_iri`` here -- as this did once -- silently missed every
+        # entry whenever the recomputed hash differed from the stored graph URI,
+        # leaving a removed ontology still resolvable from cache.
+        for graph_uri in self._graph_uris_by_iri.pop(iri, set()):
+            self._graph_cache.pop(graph_uri, None)
         for ontology in self.ontology_versions.get(iri, []):
             self._graph_cache.pop(ontology.versioned_iri, None)
         stale_merges = [
             key
             for key in self._merged_cache
-            if any(versioned.startswith(f"{iri}#") for versioned in key)
+            # An ontology with no hash falls back to the bare IRI as its
+            # versioned IRI, so match that exactly as well as the `#hash` form.
+            if any(
+                versioned == iri or versioned.startswith(f"{iri}#") for versioned in key
+            )
         ]
         for key in stale_merges:
             del self._merged_cache[key]
@@ -370,6 +391,7 @@ class OntologyManager(Tool):
         self._alias_to_iri.clear()
         self._namespace_to_author_prefix.clear()
         self._graph_cache.clear()
+        self._graph_uris_by_iri.clear()
         self._merged_cache.clear()
 
     def _require_triple_store(self) -> TripleStoreManager:
@@ -421,6 +443,7 @@ class OntologyManager(Tool):
             cached = self._graph_cache.get(header.graph_uri)
             if cached is not None:
                 self._graph_cache_hits += 1
+                self._graph_cache.move_to_end(header.graph_uri)
                 resolved.append(cached)
             else:
                 self._graph_cache_misses += 1
@@ -498,8 +521,18 @@ class OntologyManager(Tool):
                 content-addressed ``versioned_iri`` when the caller has no header.
         """
         key = graph_uri or (ontology.versioned_iri if ontology.hash else None)
-        if key:
-            self._graph_cache.setdefault(key, ontology)
+        if not key:
+            return
+        self._graph_cache.setdefault(key, ontology)
+        self._graph_cache.move_to_end(key)
+        self._graph_uris_by_iri.setdefault(ontology.iri, set()).add(key)
+        while len(self._graph_cache) > _GRAPH_CACHE_MAX_ENTRIES:
+            evicted_key, evicted = self._graph_cache.popitem(last=False)
+            uris = self._graph_uris_by_iri.get(evicted.iri)
+            if uris is not None:
+                uris.discard(evicted_key)
+                if not uris:
+                    self._graph_uris_by_iri.pop(evicted.iri, None)
 
     def _effective_patch_top_k(self, top_k: int | None) -> int:
         if top_k is not None:

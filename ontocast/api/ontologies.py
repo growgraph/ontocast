@@ -28,14 +28,21 @@ def build_ontology_router(
         == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
     )
 
-    async def apply_ontology_tenancy(request: Request) -> None:
-        await apply_request_tenancy(
+    async def apply_ontology_tenancy(request: Request) -> ToolBox:
+        """Return the ToolBox serving this request's tenant/project partition.
+
+        Handlers must use the returned ToolBox rather than the enclosing
+        ``tools``: with per-scope ToolBoxes, the two differ whenever the client
+        passes ``?tenant=`` / ``?project=``.
+        """
+        scoped, _, _ = await apply_request_tenancy(
             request,
             tools,
             active_tenant=active_tenant,
             active_project=active_project,
             initialize_vector_store=init_vec,
         )
+        return scoped
 
     @router.post(
         "",
@@ -46,10 +53,10 @@ def build_ontology_router(
         request: Request,
         file: UploadFile = File(...),
     ) -> OntologyMutationResponse:
-        await apply_ontology_tenancy(request)
+        scoped = await apply_ontology_tenancy(request)
         ttl = await file.read()
         try:
-            o = await tools.ingest_ontology_ttl(ttl, filename=file.filename)
+            o = await scoped.ingest_ontology_ttl(ttl, filename=file.filename)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return OntologyMutationResponse(
@@ -69,7 +76,7 @@ def build_ontology_router(
         ontology_iri: str,
         file: UploadFile = File(...),
     ) -> OntologyMutationResponse:
-        await apply_ontology_tenancy(request)
+        scoped = await apply_ontology_tenancy(request)
         expected = unquote(ontology_iri)
         ttl = await file.read()
         try:
@@ -86,11 +93,11 @@ def build_ontology_router(
                 ),
             )
         try:
-            await tools.delete_ontology_by_iri(expected)
+            await scoped.delete_ontology_by_iri(expected)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         try:
-            o = await tools.ingest_ontology_ttl(ttl, filename=file.filename)
+            o = await scoped.ingest_ontology_ttl(ttl, filename=file.filename)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return OntologyMutationResponse(
@@ -109,10 +116,10 @@ def build_ontology_router(
         request: Request,
         ontology_iri: str,
     ) -> OntologyDeleteResponse:
-        await apply_ontology_tenancy(request)
+        scoped = await apply_ontology_tenancy(request)
         iri = unquote(ontology_iri)
         try:
-            await tools.delete_ontology_by_iri(iri)
+            await scoped.delete_ontology_by_iri(iri)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return OntologyDeleteResponse(iri=iri)

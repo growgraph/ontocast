@@ -51,35 +51,10 @@ Rules:
 """
 
 
-def _get_int(tools: AtomicToolBox, key: str, default: int) -> int:
-    value = getattr(tools, key, default)
-    return int(value) if isinstance(value, int | float) else default
-
-
-def _get_float(tools: AtomicToolBox, key: str, default: float) -> float:
-    value = getattr(tools, key, default)
-    return float(value) if isinstance(value, int | float) else default
-
-
-def _get_bool(tools: AtomicToolBox, key: str, default: bool) -> bool:
-    value = getattr(tools, key, default)
-    return bool(value) if isinstance(value, bool) else default
-
-
-def _get_set(tools: AtomicToolBox, key: str) -> set[str]:
-    value = getattr(tools, key, set())
-    if isinstance(value, set):
-        return {str(entry).strip().lower() for entry in value if str(entry).strip()}
-    return set()
-
-
 def _web_grounding_enabled_for_node(
     tools: AtomicToolBox, target_node: WorkflowNode
 ) -> bool:
-    checker = getattr(tools, "web_grounding_enabled_for_node", None)
-    if checker is None or not callable(checker):
-        return False
-    return bool(checker(target_node))
+    return tools.web_grounding_enabled_for_node(target_node)
 
 
 def build_evidence_query(
@@ -132,7 +107,7 @@ def sanitize_external_evidence_plan(
     """Apply deterministic guardrails to planner output."""
     deduped_queries: list[str] = []
     seen_queries: set[str] = set()
-    min_chars = max(3, _get_int(tools, "web_search_planner_min_query_chars", 12))
+    min_chars = max(3, tools.web_search_planner_min_query_chars)
     for raw_query in plan.queries:
         query = _normalize_query(raw_query)
         if len(query) < min_chars:
@@ -146,8 +121,8 @@ def sanitize_external_evidence_plan(
         deduped_queries.append(query)
         seen_queries.add(lowered)
 
-    max_queries = max(1, _get_int(tools, "web_search_planner_max_queries", 3))
-    min_confidence = _get_float(tools, "web_search_planner_min_confidence", 0.35)
+    max_queries = max(1, tools.web_search_planner_max_queries)
+    min_confidence = tools.web_search_planner_min_confidence
     deduped_queries = deduped_queries[:max_queries]
     should_search = (
         plan.should_search
@@ -170,9 +145,9 @@ def normalize_search_hits(
     """Filter and normalize search hits with deterministic quality checks."""
     normalized_hits: list[ExternalEvidenceHit] = []
     seen_urls: set[str] = set()
-    allowed_domains = _get_set(tools, "web_search_allowed_domains")
-    blocked_domains = _get_set(tools, "web_search_blocked_domains")
-    min_snippet_chars = max(0, _get_int(tools, "web_search_min_snippet_chars", 40))
+    allowed_domains = tools.web_search_allowed_domains
+    blocked_domains = tools.web_search_blocked_domains
+    min_snippet_chars = max(0, tools.web_search_min_snippet_chars)
 
     for hit in hits:
         url = hit.url.strip()
@@ -215,8 +190,6 @@ async def plan_external_evidence_for_node(
         )
         state.external_evidence_hits = []
         state.external_evidence_text = ""
-        state.external_evidence_source_count = 0
-        state.external_evidence_domains = []
         return state
 
     request = _resolve_search_request(state, target_node)
@@ -226,14 +199,11 @@ async def plan_external_evidence_for_node(
         )
         state.external_evidence_hits = []
         state.external_evidence_text = ""
-        state.external_evidence_source_count = 0
-        state.external_evidence_domains = []
-        state.external_evidence_planned_at_node = target_node
         return state
 
     cached_entry = state.get_external_evidence_cache_entry(target_node)
     if (
-        _get_bool(tools, "web_search_reuse_evidence_across_attempt", True)
+        tools.web_search_reuse_evidence_across_attempt
         and cached_entry.text
         and cached_entry.plan.should_search
     ):
@@ -243,7 +213,7 @@ async def plan_external_evidence_for_node(
     user_instruction = _resolve_user_instruction(state)
     content_text = _resolve_content_text(state)
 
-    if not _get_bool(tools, "web_search_planner_enabled", True):
+    if not tools.web_search_planner_enabled:
         fallback_query = build_evidence_query(
             content_text=content_text, user_instruction=user_instruction
         )
@@ -294,9 +264,7 @@ async def plan_external_evidence_for_node(
                 "target_node": target_node.value,
                 "content_text": content_text,
                 "user_instruction": user_instruction,
-                "max_queries": str(
-                    max(1, _get_int(tools, "web_search_planner_max_queries", 3))
-                ),
+                "max_queries": str(max(1, tools.web_search_planner_max_queries)),
                 "search_rationale": request.rationale or "none",
                 "query_hints": (
                     "\n".join(f"- {hint}" for hint in request.query_hints)
@@ -351,8 +319,6 @@ async def fetch_external_evidence_for_node(
     if not _web_grounding_enabled_for_node(tools, target_node):
         state.external_evidence_hits = []
         state.external_evidence_text = ""
-        state.external_evidence_source_count = 0
-        state.external_evidence_domains = []
         return state
 
     request = _resolve_search_request(state, target_node)
@@ -362,15 +328,12 @@ async def fetch_external_evidence_for_node(
         )
         state.external_evidence_hits = []
         state.external_evidence_text = ""
-        state.external_evidence_source_count = 0
-        state.external_evidence_domains = []
-        state.external_evidence_planned_at_node = target_node
         return state
 
     cache_entry = state.get_external_evidence_cache_entry(target_node)
     plan = cache_entry.plan
     if (
-        _get_bool(tools, "web_search_reuse_evidence_across_attempt", True)
+        tools.web_search_reuse_evidence_across_attempt
         and cache_entry.text
         and plan.should_search
     ):
@@ -392,8 +355,8 @@ async def fetch_external_evidence_for_node(
     normalized_hits = normalize_search_hits(combined_hits, tools)
     evidence_text = render_external_evidence(
         hits=normalized_hits,
-        max_snippet_chars=max(40, _get_int(tools, "web_search_max_snippet_chars", 400)),
-        max_total_chars=max(200, _get_int(tools, "web_search_max_total_chars", 1800)),
+        max_snippet_chars=max(40, tools.web_search_max_snippet_chars),
+        max_total_chars=max(200, tools.web_search_max_total_chars),
     )
     state.set_external_evidence_cache_entry(
         target_node,

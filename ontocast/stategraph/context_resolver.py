@@ -1,18 +1,22 @@
 import asyncio
 import logging
+import time
 from collections import Counter
 
 from pydantic import BaseModel, Field
 
 from ontocast.agent.select_ontology_catalog import select_catalog_ontology_for_excerpt
 from ontocast.onto.content_unit import SourceUnit
-from ontocast.onto.enum import OntologyAssemblyMode, OntologyContextMode
+from ontocast.onto.enum import (
+    OntologyAssemblyMode,
+    OntologyContextMode,
+    RetrievalMetric,
+)
 from ontocast.onto.null import NULL_ONTOLOGY
-from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import require_vector_retrieval
-from ontocast.onto.state import AgentState
+from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.chunk.proposition import split_proposition_windows
 from ontocast.tool.llm import use_budget_tracker
 from ontocast.toolbox import ToolBox
@@ -58,15 +62,25 @@ def _unit_queries(unit: SourceUnit, tools: ToolBox) -> list[str]:
 
 
 def build_merged_document_ontology_context(
-    state: AgentState,
+    context: UnitLoopContext,
 ) -> UnitOntologyContext | None:
-    """Build merged ontology context from reduced document artifacts."""
+    """Build merged ontology context from reduced document artifacts.
+
+    The result depends only on document-level state, so it should be computed
+    once per document. ``"ctx/merge_document_ontology.calls"`` on the budget
+    tracker exists to make a regression to per-unit calls visible.
+    """
+    started = time.perf_counter()
+    context.budget_tracker.incr("ctx/merge_document_ontology.calls")
     artifacts = [
         ontology
-        for ontology in document_ontology_access(state).reduced_artifacts()
+        for ontology in context.reduced_artifacts()
         if not ontology.is_null() and len(ontology.graph) > 0
     ]
     if not artifacts:
+        context.budget_tracker.add_duration(
+            "ctx/merge_document_ontology", time.perf_counter() - started
+        )
         return None
 
     sorted_artifacts = sorted(artifacts, key=lambda ontology: ontology.iri or "")
@@ -88,6 +102,9 @@ def build_merged_document_ontology_context(
         ),
         strip_headers=True,
     )
+    context.budget_tracker.add_duration(
+        "ctx/merge_document_ontology", time.perf_counter() - started
+    )
     return UnitOntologyContext(
         snapshot=snapshot,
         writable_iris=list(patch_sources),
@@ -96,19 +113,19 @@ def build_merged_document_ontology_context(
 
 
 async def _resolve_selected_single_ontology_context(
-    state: AgentState,
+    context: UnitLoopContext,
     tools: ToolBox,
     unit: SourceUnit,
 ) -> UnitOntologyContext:
     """One catalog ontology chosen by the LLM from the unit text."""
     # Scoped so the selection call is charged to the calling unit's budget
     # rather than to whichever tracker was bound last.
-    with use_budget_tracker(state.budget_tracker):
+    with use_budget_tracker(context.budget_tracker):
         selected = await select_catalog_ontology_for_excerpt(
             tools.ontology_manager,
             tools.llm,
             unit.text,
-            state.ontology_selection_user_instruction,
+            context.ontology_selection_user_instruction,
         )
     mode = OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM
     if selected.is_null():
@@ -129,13 +146,13 @@ async def _resolve_selected_single_ontology_context(
 
 
 async def _resolve_fixed_single_ontology_context(
-    state: AgentState,
+    context: UnitLoopContext,
     tools: ToolBox,
     unit: SourceUnit,
 ) -> UnitOntologyContext:
     """Catalog ontology fixed by ontology_id (fresh terminal revision)."""
     _ = unit
-    cleaned = state.ontology_context_fixed_ontology_id.strip()
+    cleaned = context.ontology_context_fixed_ontology_id.strip()
     mode = OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY
     if not cleaned:
         return UnitOntologyContext(
@@ -172,7 +189,7 @@ async def _resolve_fixed_single_ontology_context(
 
 
 async def _resolve_ensemble_context(
-    state: AgentState,
+    context: UnitLoopContext,
     tools: ToolBox,
     unit: SourceUnit,
 ) -> UnitOntologyContext:
@@ -204,7 +221,7 @@ async def _resolve_ensemble_context(
     metrics = retriever.last_retrieval_metrics
     writable = list(source_iris)
     if metrics:
-        state.retrieval_metrics["patch_retrieval"] = metrics
+        context.retrieval_metrics[RetrievalMetric.PATCH_RETRIEVAL] = metrics
         expanded = metrics.get("expanded_ontology_iris") or []
         if isinstance(expanded, list):
             for iri in expanded:
@@ -238,7 +255,7 @@ async def _resolve_ensemble_context(
             reason = "all candidate atoms scored below the retrieval thresholds"
         else:
             reason = "no candidate atoms matched the unit's queries"
-        state.retrieval_metrics["empty_snapshot_reason"] = reason
+        context.retrieval_metrics[RetrievalMetric.EMPTY_SNAPSHOT_REASON] = reason
         logger.warning(
             "Ontology context for this unit is empty (%s); extraction will "
             "proceed with no catalog vocabulary.",
@@ -265,32 +282,20 @@ async def _resolve_ensemble_context(
 
 
 async def resolve_unit_ontology_context(
-    state: AgentState,
+    context: UnitLoopContext,
     tools: ToolBox,
     unit: SourceUnit,
 ) -> UnitOntologyContext:
-    mode = state.ontology_context_mode
-    state.retrieval_metrics["ontology_context_mode"] = mode.value
+    mode = context.ontology_context_mode
+    context.retrieval_metrics[RetrievalMetric.ONTOLOGY_CONTEXT_MODE] = mode.value
     if mode == OntologyContextMode.SELECTED_SINGLE_ONTOLOGY:
-        return await _resolve_selected_single_ontology_context(state, tools, unit)
+        return await _resolve_selected_single_ontology_context(context, tools, unit)
     if mode == OntologyContextMode.FIXED_SINGLE_ONTOLOGY:
-        return await _resolve_fixed_single_ontology_context(state, tools, unit)
+        return await _resolve_fixed_single_ontology_context(context, tools, unit)
     if mode == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY:
         require_vector_retrieval(tools)
-        return await _resolve_ensemble_context(state, tools, unit)
+        return await _resolve_ensemble_context(context, tools, unit)
     raise ValueError(f"Unknown ontology_context_mode: {mode!r}")
-
-
-async def resolve_effective_facts_ontology_context(
-    state: AgentState,
-    tools: ToolBox,
-    unit: SourceUnit,
-) -> UnitOntologyContext:
-    """Resolve facts context preferring merged document artifacts when available."""
-    merged_context = build_merged_document_ontology_context(state)
-    if merged_context is not None:
-        return merged_context
-    return await resolve_unit_ontology_context(state, tools, unit)
 
 
 def aggregate_writable_metrics(
@@ -328,7 +333,3 @@ def aggregate_writable_metrics(
         unit_context_mode_used,
         dict(primary_counts),
     )
-
-
-# Back-compat alias used by older call sites / tests during migration.
-aggregate_anchor_metrics = aggregate_writable_metrics

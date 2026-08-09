@@ -1,6 +1,7 @@
 """Shared helpers for local batch processing and HTTP response assembly."""
 
 import asyncio
+import json
 import logging
 import pathlib
 import re
@@ -9,18 +10,17 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
+from ontocast._version import __version__
 from ontocast.agent.serialize import serialize as serialize_agent_state
 from ontocast.config import Config, ServerConfig
-from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.run_manifest import RunManifest, RunManifestLLM
 from ontocast.onto.state import AgentState
+from ontocast.stategraph.facts_gate import run_facts_gate
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
-from ontocast.tool.facts_invariants import (
-    collect_shacl_shapes,
-    validate_aggregated_facts,
-)
+from ontocast.tool.chunk.prepare import SectionSelectionEmptyError
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.toolbox import ToolBox
 
@@ -139,6 +139,102 @@ def dump_facts_ttl(
     return output_path
 
 
+def dump_validation_report(
+    state: AgentState,
+    file_path: pathlib.Path,
+    *,
+    line_number: int | None = None,
+    output_dir: pathlib.Path | None = None,
+) -> pathlib.Path | None:
+    """Write the conformance summary and residual findings beside the facts TTL.
+
+    A batch run otherwise leaves no record of *why* a graph is non-conformant:
+    the findings live on the state and are logged, and every downstream reader
+    ends up re-running a validator to rebuild what the gate already computed.
+    """
+    if not state.facts_conformance and not state.facts_validation_findings:
+        return None
+    payload = {
+        "source": file_path.name,
+        "conformance": state.facts_conformance,
+        "gate_repairs": [
+            record.model_dump(mode="json") for record in state.facts_gate_repairs
+        ],
+        "findings": [
+            finding.model_dump(mode="json")
+            for finding in state.facts_validation_findings
+        ],
+    }
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    facts_path = facts_ttl_output_path(
+        file_path, line_number=line_number, output_dir=output_dir
+    )
+    output_path = facts_path.with_name(
+        f"{facts_path.name.removesuffix('.ttl')}.validation.json"
+    )
+    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    logger.info("Dumped facts validation report to %s", output_path)
+    return output_path
+
+
+def dump_run_manifest(
+    state: AgentState,
+    file_path: pathlib.Path,
+    *,
+    config: Config,
+    line_number: int | None = None,
+    output_dir: pathlib.Path | None = None,
+) -> pathlib.Path | None:
+    """Write the run's cost and configuration beside the facts TTL.
+
+    ``BudgetTracker`` is returned over HTTP and logged at INFO, then discarded,
+    so a batch run left no record of the model, the settings, or the tokens
+    behind its own output -- and no way to compare two dumps except by rerunning
+    them. One small JSON per document closes that.
+    """
+    llm_config = config.tool_config.llm_config
+    manifest = RunManifest(
+        source=file_path.name,
+        line_number=line_number,
+        ontocast_version=__version__,
+        render_mode=str(state.render_mode),
+        current_domain=state.current_domain,
+        doc_iri=str(state.doc_iri) if state.doc_hid else None,
+        tenant=state.tenant,
+        project=state.project,
+        llm=RunManifestLLM(
+            provider=str(llm_config.provider),
+            model_name=str(llm_config.model_name),
+            temperature=llm_config.temperature,
+            think=llm_config.think,
+            num_ctx=llm_config.num_ctx,
+            num_predict=llm_config.num_predict,
+        ),
+        budget=state.budget_tracker,
+        ontology_triples=sum(
+            len(artifact.graph) for artifact in _ontology_artifacts_for_dump(state)
+        ),
+        facts_triples=(
+            len(state.aggregated_facts) if state.aggregated_facts is not None else 0
+        ),
+        retrieval_metrics=dict(state.retrieval_metrics),
+    )
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    facts_path = facts_ttl_output_path(
+        file_path, line_number=line_number, output_dir=output_dir
+    )
+    output_path = facts_path.with_name(
+        f"{facts_path.name.removesuffix('.facts.ttl')}.run.json"
+    )
+    output_path.write_text(
+        manifest.model_dump_json(indent=2, exclude_none=True), encoding="utf-8"
+    )
+    logger.info("Dumped run manifest to %s", output_path)
+    return output_path
+
+
 def _ontology_artifacts_for_dump(state: AgentState) -> list[Ontology]:
     artifacts = (
         state.reduced_ontology_artifacts
@@ -238,6 +334,7 @@ def expand_input_to_states(
     tenant: str | None,
     project: str | None,
     target_sections: list[str] | None = None,
+    exclude_sections: list[str] | None = None,
     summarize_sections: list[str] | None = None,
     summary_max_sentences: int = 5,
     document_type_hint: str | None = None,
@@ -265,6 +362,7 @@ def expand_input_to_states(
         "tenant": tenant,
         "project": project,
         "target_sections": target_sections,
+        "exclude_sections": exclude_sections,
         "summarize_sections": summarize_sections,
         "summary_max_sentences": summary_max_sentences,
         "document_type_hint": document_type_hint,
@@ -354,11 +452,11 @@ async def persist_unit_pipeline_outputs(
             document_metadata=_effective_document_metadata(state),
             doc_namespace=state.doc_namespace,
         ).graph
-        _validate_unit_pipeline_facts(state, ontology_graph, tools)
+        validate_unit_pipeline_facts(state, ontology_graph, tools)
     await asyncio.to_thread(serialize_agent_state, state, tools)
 
 
-def _validate_unit_pipeline_facts(
+def validate_unit_pipeline_facts(
     state: AgentState,
     ontology_graph: RDFGraph,
     tools: ToolBox,
@@ -366,31 +464,17 @@ def _validate_unit_pipeline_facts(
     """Run the post-aggregation invariant gate for the single-unit path.
 
     The document graph reaches this gate at VALIDATE_FACTS; the unit pipeline
-    does not run the graph, so without this call ``/process_unit`` would ship
-    facts with no functional-violation, coreference, or SHACL check at all.
-    Detection only: the un-merge repair re-aggregates *retained units against
-    each other*, which has no meaning for a single unit.
+    does not run the graph, so both single-unit callers -- the CLI
+    ``--use-unit-pipeline`` batch path and the ``/process_unit`` route -- invoke
+    it here after aggregation. Without it they would ship facts with no
+    functional-violation, coreference, or SHACL check at all.
+
+    ``merge_repair=False``: un-merging re-aggregates *retained units against
+    each other*, which has no meaning for a single unit. Everything else is the
+    document path verbatim, so batch dumps stay comparable across the two entry
+    paths.
     """
-    facts_validation = tools.config.get_tool_config().facts_validation
-    shapes_graph = collect_shacl_shapes(ontology_graph, facts_validation.shapes_dir)
-    report = validate_aggregated_facts(
-        state.aggregated_facts,
-        ontology_graph,
-        shapes_graph=shapes_graph,
-        fact_namespaces=[DEFAULT_IRI, str(state.doc_iri), state.doc_namespace or ""],
-        suspect_multi_value_severity=facts_validation.suspect_multi_value_severity,
-        functional_min_single_support=facts_validation.functional_min_single_support,
-        quantity_fallback_vocabulary=facts_validation.quantity_fallback_vocabulary,
-    )
-    state.facts_validation_findings = report.findings
-    state.retrieval_metrics["facts_validation_findings"] = len(report.findings)
-    state.retrieval_metrics["facts_validation_errors"] = len(report.error_findings)
-    if report.error_findings:
-        logger.warning(
-            "Unit-pipeline facts validation: %d error finding(s) "
-            "(no un-merge repair in single-unit mode)",
-            len(report.error_findings),
-        )
+    run_facts_gate(state, ontology_graph, tools, merge_repair=False)
 
 
 def _merge_workflow_state_into_agent_state(
@@ -425,6 +509,12 @@ def _merge_workflow_state_into_agent_state(
     findings = workflow_state.get("facts_validation_findings")
     if findings is not None:
         state.facts_validation_findings = list(findings)
+    gate_repairs = workflow_state.get("facts_gate_repairs")
+    if gate_repairs is not None:
+        state.facts_gate_repairs = list(gate_repairs)
+    conformance = workflow_state.get("facts_conformance")
+    if conformance:
+        state.facts_conformance = dict(conformance)
     metrics = workflow_state.get("retrieval_metrics")
     if metrics:
         state.retrieval_metrics = dict(metrics)
@@ -443,6 +533,7 @@ async def process_files_input(
     tenant: str | None,
     project: str | None,
     target_sections: list[str] | None = None,
+    exclude_sections: list[str] | None = None,
     summarize_sections: list[str] | None = None,
     summary_max_sentences: int = 5,
     document_type_hint: str | None = None,
@@ -483,6 +574,7 @@ async def process_files_input(
                 tenant=tenant,
                 project=project,
                 target_sections=target_sections,
+                exclude_sections=exclude_sections,
                 summarize_sections=summarize_sections,
                 summary_max_sentences=summary_max_sentences,
                 document_type_hint=document_type_hint,
@@ -506,12 +598,22 @@ async def process_files_input(
                     )
                 else:
                     workflow_state: AgentState | dict | None = None
-                    async for chunk in workflow.astream(
-                        state,
-                        stream_mode="values",
-                        config=RunnableConfig(recursion_limit=recursion_limit),
-                    ):
-                        workflow_state = chunk
+                    try:
+                        async for chunk in workflow.astream(
+                            state,
+                            stream_mode="values",
+                            config=RunnableConfig(recursion_limit=recursion_limit),
+                        ):
+                            workflow_state = chunk
+                    except SectionSelectionEmptyError as exc:
+                        # Batch semantics: one unmatched selection must not kill
+                        # the other files. cli/server.py turns a non-empty
+                        # failed_files into a non-zero exit, so the `error` mode
+                        # is scriptable without new CLI code.
+                        logger.error("Error processing %s: %s", file_path, exc)
+                        if file_path not in failed_files:
+                            failed_files.append(file_path)
+                        continue
                     if workflow_state is not None:
                         state = _merge_workflow_state_into_agent_state(
                             state, workflow_state
@@ -539,6 +641,19 @@ async def process_files_input(
                     file_path,
                     line_number=line_number,
                     output_dir=ontology_dir,
+                )
+                dump_validation_report(
+                    state,
+                    file_path,
+                    line_number=line_number,
+                    output_dir=facts_dir,
+                )
+                dump_run_manifest(
+                    state,
+                    file_path,
+                    config=config,
+                    line_number=line_number,
+                    output_dir=facts_dir,
                 )
         except Exception:
             logger.exception("Error processing %s", file_path)

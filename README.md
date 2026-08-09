@@ -2,7 +2,7 @@
 
 ### Agentic ontology-assisted framework for semantic triple extraction
 
-![Python](https://img.shields.io/badge/python-3.12-blue.svg) 
+![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg) 
 [![PyPI version](https://badge.fury.io/py/ontocast.svg)](https://badge.fury.io/py/ontocast)
 [![PyPI Downloads](https://static.pepy.tech/badge/ontocast)](https://pepy.tech/projects/ontocast)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -52,19 +52,26 @@ OntoCast can be used for:
 
 ## Installation
 
+The base package is a minimal embeddable core: pick at least one LLM provider
+extra (`openai`, `anthropic`, `google`, `ollama`), and add `server` for the
+`ontocast` command and the API server:
+
 ```sh
-uv add ontocast[doc-processing] 
+uv add "ontocast[server,openai]"
 # or
-pip install ontocast
+pip install "ontocast[server,openai]"
 ```
 
 ### Optional features: document processing (PDFs, PPT, OCR, semantic chunking), vector mode for ontology retrieval:
 
 ```sh
-uv add "ontocast[doc-processing,lancedb]"
+uv add "ontocast[server,openai,doc-processing,lancedb]"
 # or
-pip install "ontocast[doc-processing,lancedb]"
+pip install "ontocast[server,openai,doc-processing,lancedb]"
 ```
+
+See [Installation](docs/getting_started/installation.md) for the full extras
+table.
 
 ---
 
@@ -96,11 +103,11 @@ RENDER_MODE=ontology_and_facts
 ONTOLOGY_MAX_TRIPLES=50000
 
 # Path Configuration
-ONTOCAST_WORKING_DIRECTORY=/path/to/working
 ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontologies
 ONTOCAST_CACHE_DIR=/path/to/cache
 
 # Optional: Triple Store Configuration (Fuseki for production persistence)
+# (the bundled docker/fuseki compose maps the server to host port 3032)
 FUSEKI_URI=http://localhost:3030
 FUSEKI_AUTH=admin/admin
 # Datasets default to ontocast--test--facts / ontocast--test--ontologies when unset
@@ -212,7 +219,6 @@ OntoCast uses a hierarchical configuration system built on Pydantic BaseSettings
 | `LLM_PROVIDER` | LLM provider (openai, anthropic, google, ollama) | openai | No |
 | `LLM_MODEL_NAME` | Model name | gpt-4o-mini | No |
 | `LLM_TEMPERATURE` | Temperature setting | 0.0 | No |
-| `ONTOCAST_WORKING_DIRECTORY` | Working directory path | - | No |
 | `ONTOCAST_ONTOLOGY_DIRECTORY` | Ontology seed files | - | No |
 | `PORT` | Server port | 8999 | No |
 | `MAX_VISITS` | Maximum render/critic visits per unit loop | 1 | No |
@@ -227,7 +233,7 @@ See [Configuration Guide](docs/user_guide/configuration.md) for chunking, Qdrant
 ### Triple Store Configuration
 
 ```bash
-# Fuseki (production persistence)
+# Fuseki (production persistence; the bundled compose maps host port 3032)
 FUSEKI_URI=http://localhost:3030
 FUSEKI_AUTH=admin/admin
 ```
@@ -257,7 +263,7 @@ OntoCast uses a unified triple-store interface with two backends:
 ```bash
 cd docker/fuseki
 cp .env.example .env
-docker compose --env-file .env fuseki up -d
+docker compose --env-file .env up fuseki -d
 ```
 
 See [Triple Store Setup](docs/user_guide/triple_stores.md) for detailed instructions.
@@ -275,7 +281,7 @@ See [Triple Store Setup](docs/user_guide/triple_stores.md) for detailed instruct
 - [Triple Store Setup](docs/user_guide/triple_stores.md) — Fuseki and in-memory backends
 - [LLM Caching](docs/user_guide/llm_caching.md) — Automatic response caching
 - [User Guide](docs/user_guide/concepts.md) — Core concepts
-- [API Reference](docs/reference/onto/state.md) — Python API (MkDocs)
+- [API Reference](https://growgraph.github.io/ontocast/) — Python API, generated at docs build time on the docs site (not present in the repo tree)
 
 Build docs locally: `uv run mkdocs build`
 
@@ -288,7 +294,7 @@ Build docs locally: `uv run mkdocs build`
 - **Automatic Versioning**: Semantic version increment based on change analysis (MAJOR/MINOR/PATCH)
 - **Hash-Based Lineage**: Git-style versioning with parent hashes for tracking ontology evolution
 - **Multiple Version Storage**: Versions stored as separate named graphs in Fuseki triple stores
-- **Timestamp Tracking**: `updated_at` field tracks when ontology was last modified
+- **Timestamp Tracking**: `created_at` is recorded per version and serialized as `dcterms:created`
 
 ### GraphUpdate System
 
@@ -308,17 +314,53 @@ See [CHANGELOG.md](CHANGELOG.md) for release-by-release notes.
 
 ## Examples
 
-### Basic Usage
+### Give an agent ontology tools
+
+`pip install "ontocast[openai]"` — no external services required.
 
 ```python
-from ontocast.config import Config
-from ontocast.toolbox import ToolBox
+from langchain.agents import create_agent
+from ontocast import Config, ToolBox, ontocast_tools
 
-config = Config()
-tools = ToolBox(config)
+tools = await ToolBox.acreate(Config.in_memory())
+await tools.initialize()
 
-# Process documents via tools / workflow graph
+agent = create_agent(
+    model,
+    tools=[*ontocast_tools(tools)],
+    prompt="You are a helpful agent that edits the ontology based on input.",
+)
 ```
+
+Only tools whose backend is installed and configured are returned;
+`ontocast_tool_diagnostics(tools)` explains any omission.
+
+### Extract from text
+
+```python
+from ontocast import AgentState, run_unit_pipeline
+
+state = AgentState(raw_input={"note.txt": text.encode()})
+ontology_result, facts_result = await run_unit_pipeline(state, tools)
+```
+
+### Run the pipeline inside your own LangGraph
+
+```python
+from langgraph.graph import StateGraph
+from ontocast import make_ontocast_node, text_in_turtle_out
+
+to_state, from_state = text_in_turtle_out()
+
+builder = StateGraph(MyState)
+builder.add_node(
+    "extract",
+    make_ontocast_node(tools, to_agent_state=to_state, from_agent_state=from_state),
+)
+```
+
+See [Embedding OntoCast](https://growgraph.github.io/ontocast/user_guide/embedding/)
+for the tool table, install tiers, and what a base install cannot do.
 
 ### Server Usage
 

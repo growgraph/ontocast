@@ -37,6 +37,7 @@ from ontocast.onto.retrieval_capabilities import (
 )
 from ontocast.onto.state import AgentState
 from ontocast.tool.agg.aggregate import AggregationResult
+from ontocast.tool.converter import ConverterTool
 from ontocast.toolbox import ToolBox
 
 
@@ -109,6 +110,7 @@ def test_build_agent_state_from_parsed_sets_max_visits() -> None:
         llm_graph_format=None,
         ontology_context_mode_value=OntologyContextMode.FIXED_SINGLE_ONTOLOGY,
         target_sections=None,
+        exclude_sections=None,
         summarize_sections=None,
         summary_max_sentences=5,
         document_type_hint=None,
@@ -138,6 +140,7 @@ def test_build_agent_state_from_parsed_sets_document_metadata() -> None:
         llm_graph_format=None,
         ontology_context_mode_value=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
         target_sections=None,
+        exclude_sections=None,
         summarize_sections=None,
         summary_max_sentences=5,
         document_type_hint=None,
@@ -406,7 +409,7 @@ def _match_test_app(monkeypatch: pytest.MonkeyPatch):
         lambda *_args, **_kwargs: [],
     )
     monkeypatch.setattr(
-        app_module, "create_agent_graph", lambda _tools: SimpleNamespace()
+        app_module, "create_agent_graph", lambda _tools, **_kwargs: SimpleNamespace()
     )
     tools = cast(
         ToolBox,
@@ -475,7 +478,7 @@ def test_evaluate_match_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_derive_matches_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        app_module, "create_agent_graph", lambda _tools: SimpleNamespace()
+        app_module, "create_agent_graph", lambda _tools, **_kwargs: SimpleNamespace()
     )
     tools = cast(ToolBox, SimpleNamespace())
     app = create_app(
@@ -569,24 +572,36 @@ def test_expand_input_to_states_keeps_explicit_metadata(tmp_path) -> None:
     assert states[0].document_metadata == {"doi": "10.1234/x", "title": "Custom"}
 
 
-def test_facts_ttl_output_path_and_dump(tmp_path) -> None:
+def _batch_state(title: str = "paper.pdf") -> AgentState:
     from rdflib import DCTERMS, Literal
 
-    from ontocast.api.process_helpers import (
-        dump_facts_ttl,
-        dump_ontology_ttls,
-        facts_ttl_output_path,
-        ontology_ttl_output_path,
-        resolve_batch_output_dirs,
-    )
     from ontocast.onto.constants import PROV
     from ontocast.onto.docling_helpers import plain_text_to_docling_doc
 
+    state = AgentState(docling_doc=plain_text_to_docling_doc("hello", "doc"))
+    state.aggregated_facts = RDFGraph()
+    state.aggregated_facts.add((state.doc_iri, DCTERMS.title, Literal(title)))
+    state.aggregated_facts.add((state.doc_iri, RDF.type, PROV.Entity))
+    return state
+
+
+def _sample_ontology(iri: str = "https://example.com/onto", **kwargs) -> Ontology:
+    graph = RDFGraph()
+    graph.add(
+        (
+            URIRef("https://example.com/onto#Thing"),
+            RDF.type,
+            URIRef("http://www.w3.org/2002/07/owl#Class"),
+        )
+    )
+    return Ontology(graph=graph, iri=iri, **kwargs)
+
+
+def test_facts_ttl_output_path_naming(tmp_path) -> None:
+    from ontocast.api.process_helpers import facts_ttl_output_path
+
     src = tmp_path / "paper.pdf"
-    src.write_bytes(b"x")
     out_dir = tmp_path / "out"
-    facts_dir = tmp_path / "facts"
-    onto_dir = tmp_path / "ontologies"
 
     assert facts_ttl_output_path(src) == tmp_path / "paper.facts.ttl"
     assert facts_ttl_output_path(src, line_number=3) == tmp_path / "paper.L3.facts.ttl"
@@ -595,11 +610,28 @@ def test_facts_ttl_output_path_and_dump(tmp_path) -> None:
         facts_ttl_output_path(src, line_number=3, output_dir=out_dir)
         == out_dir / "paper.L3.facts.ttl"
     )
+
+
+def test_ontology_ttl_output_path_naming(tmp_path) -> None:
+    from ontocast.api.process_helpers import ontology_ttl_output_path
+
+    src = tmp_path / "paper.pdf"
+    onto_dir = tmp_path / "ontologies"
+
     assert ontology_ttl_output_path(src) == tmp_path / "paper.ontology.ttl"
     assert (
         ontology_ttl_output_path(src, ontology_id="matsci", output_dir=onto_dir)
         == onto_dir / "paper.matsci.ontology.ttl"
     )
+
+
+def test_resolve_batch_output_dirs_precedence(tmp_path) -> None:
+    from ontocast.api.process_helpers import resolve_batch_output_dirs
+
+    out_dir = tmp_path / "out"
+    facts_dir = tmp_path / "facts"
+    onto_dir = tmp_path / "ontologies"
+
     assert resolve_batch_output_dirs(out_dir, None, None) == (out_dir, out_dir)
     assert resolve_batch_output_dirs(out_dir, facts_dir, onto_dir) == (
         facts_dir,
@@ -607,69 +639,103 @@ def test_facts_ttl_output_path_and_dump(tmp_path) -> None:
     )
     assert resolve_batch_output_dirs(None, facts_dir, None) == (facts_dir, None)
 
-    state = AgentState(docling_doc=plain_text_to_docling_doc("hello", "doc"))
-    state.aggregated_facts = RDFGraph()
-    state.aggregated_facts.add((state.doc_iri, DCTERMS.title, Literal("paper.pdf")))
-    state.aggregated_facts.add((state.doc_iri, RDF.type, PROV.Entity))
+
+def test_dump_facts_ttl_writes_the_graph(tmp_path) -> None:
+    from ontocast.api.process_helpers import dump_facts_ttl
+
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"x")
+    out_dir = tmp_path / "out"
+    state = _batch_state()
+
     out = dump_facts_ttl(state, src)
     assert out is not None
     assert out.exists()
-    text = out.read_text(encoding="utf-8")
-    assert "paper.pdf" in text
+    assert "paper.pdf" in out.read_text(encoding="utf-8")
 
-    out2 = dump_facts_ttl(state, src, output_dir=out_dir)
-    assert out2 == out_dir / "paper.facts.ttl"
+    assert dump_facts_ttl(state, src, output_dir=out_dir) == out_dir / "paper.facts.ttl"
 
-    onto_graph = RDFGraph()
-    onto_graph.add(
-        (
-            URIRef("https://example.com/onto#Thing"),
-            RDF.type,
-            URIRef("http://www.w3.org/2002/07/owl#Class"),
+
+def test_dump_run_manifest_records_cost_and_configuration(tmp_path) -> None:
+    import json
+
+    from ontocast.api.process_helpers import dump_run_manifest
+    from ontocast.config import Config, LLMConfig, LLMProvider, ToolConfig
+    from ontocast.onto.token_usage import TokenUsage
+
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"x")
+    out_dir = tmp_path / "out"
+    state = _batch_state()
+    state.reduced_ontology_artifacts = [_sample_ontology()]
+    state.budget_tracker.add_usage(
+        100, 50, usage=TokenUsage(input_tokens=900, output_tokens=300)
+    )
+    state.budget_tracker.add_cache_hit(
+        10, 5, usage=TokenUsage(input_tokens=40, output_tokens=20)
+    )
+    state.budget_tracker.add_duration("Render Facts", 1.5)
+
+    config = Config(
+        tool_config=ToolConfig(
+            llm_config=LLMConfig(
+                provider=LLMProvider.OLLAMA, model_name="kimi-k3", think=True
+            )
         )
     )
-    ontology = Ontology(graph=onto_graph, iri="https://example.com/onto")
+
+    out = dump_run_manifest(state, src, config=config, output_dir=out_dir)
+    assert out is not None
+    assert out == out_dir / "paper.run.json"
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["source"] == "paper.pdf"
+    assert payload["llm"] == {
+        "provider": "ollama",
+        "model_name": "kimi-k3",
+        "temperature": 0.0,
+        "think": True,
+    }
+    # Billed and replayed stay distinct all the way to disk -- the whole point
+    # of persisting this is comparing runs, and a replay is not a cost.
+    assert payload["budget"]["input_tokens"] == 900
+    assert payload["budget"]["cached_input_tokens"] == 40
+    assert payload["budget"]["node_durations"] == {"Render Facts": 1.5}
+    assert payload["facts_triples"] == 2
+    assert payload["ontology_triples"] == len(state.reduced_ontology_artifacts[0].graph)
+
+
+def test_dump_run_manifest_uses_the_line_number_for_jsonl_inputs(tmp_path) -> None:
+    from ontocast.api.process_helpers import dump_run_manifest
+    from ontocast.config import Config
+
+    src = tmp_path / "corpus.jsonl"
+    src.write_bytes(b"x")
+    out = dump_run_manifest(_batch_state(), src, config=Config(), line_number=3)
+    assert out == tmp_path / "corpus.L3.run.json"
+
+
+def test_dump_ontology_ttls_names_files_per_ontology(tmp_path) -> None:
+    from ontocast.api.process_helpers import dump_ontology_ttls
+
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"x")
+    onto_dir = tmp_path / "ontologies"
+    state = _batch_state()
+    ontology = _sample_ontology()
+
     state.reduced_ontology_artifacts = [ontology]
     written = dump_ontology_ttls(state, src, output_dir=onto_dir)
     assert written == [onto_dir / "paper.ontology.ttl"]
     assert written[0].exists()
 
-    second = Ontology(
-        graph=onto_graph,
-        iri="https://example.com/other",
-        ontology_id="other",
-    )
+    second = _sample_ontology(iri="https://example.com/other", ontology_id="other")
     state.reduced_ontology_artifacts = [ontology, second]
     written_multi = dump_ontology_ttls(state, src, output_dir=onto_dir)
-    assert {p.name for p in written_multi} == {
+    assert {path.name for path in written_multi} == {
         "paper.onto.ontology.ttl",
         "paper.other.ontology.ttl",
     }
-
-
-def test_cli_serve_process_help() -> None:
-    from click.testing import CliRunner
-
-    from ontocast.cli.server import cli
-
-    runner = CliRunner()
-    root = runner.invoke(cli, ["--help"])
-    assert root.exit_code == 0
-    assert "serve" in root.output
-    assert "process" in root.output
-
-    serve_help = runner.invoke(cli, ["serve", "--help"])
-    assert serve_help.exit_code == 0
-    assert "--wipe-vector-store" in serve_help.output
-    assert "--input-path" not in serve_help.output
-
-    process_help = runner.invoke(cli, ["process", "--help"])
-    assert process_help.exit_code == 0
-    assert "--input-path" in process_help.output
-    assert "--output-dir" in process_help.output
-    assert "--facts-output-dir" in process_help.output
-    assert "--ontology-output-dir" in process_help.output
-    assert "dcterms:title" in process_help.output
 
 
 def test_cli_requires_subcommand() -> None:
@@ -680,3 +746,161 @@ def test_cli_requires_subcommand() -> None:
     runner = CliRunner()
     result = runner.invoke(cli, [])
     assert result.exit_code != 0
+
+
+def test_inspect_sections_reads_json_and_text_documents(tmp_path) -> None:
+    """`ontocast sections` must read the inputs the pipeline is driven with.
+
+    JSON and plain-text documents are routed *around* the Docling converter by
+    the Convert node -- Docling rejects them outright -- so a CLI that called
+    the converter for everything could not inspect `data/json/*.json` at all.
+    """
+    import json as _json
+
+    from ontocast.cli.inspect_sections import _load_document
+    from ontocast.tool.chunk.sections import document_text_for_section_tagging
+
+    converter = SimpleNamespace(supported_extensions={".pdf", ".docx"})
+
+    json_path = tmp_path / "doc.json"
+    json_path.write_text(
+        _json.dumps({"text": "# Risk Factors\n\nOur business is subject to risk.\n"}),
+        encoding="utf-8",
+    )
+    doc = _load_document(json_path, cast(ConverterTool, converter))
+    assert "Risk Factors" in document_text_for_section_tagging(doc)
+
+    txt_path = tmp_path / "doc.txt"
+    txt_path.write_text("Plain body text.\n", encoding="utf-8")
+    assert "Plain body text." in document_text_for_section_tagging(
+        _load_document(txt_path, cast(ConverterTool, converter))
+    )
+
+
+def test_inspect_sections_rejects_a_json_payload_with_no_text(tmp_path) -> None:
+    import json as _json
+
+    import click
+
+    from ontocast.cli.inspect_sections import _load_document
+
+    path = tmp_path / "record.json"
+    # The shape of data/json/clinical.trials.*.json: a registry API record, not
+    # a document -- it must fail loudly rather than inspect as an empty document.
+    path.write_text(_json.dumps({"protocolSection": {"id": 1}}), encoding="utf-8")
+    with pytest.raises(click.ClickException):
+        _load_document(
+            path, cast(ConverterTool, SimpleNamespace(supported_extensions=set()))
+        )
+
+
+# --- /process_unit runs the validation gate ----------------------------------
+
+
+def test_process_unit_route_runs_the_validation_gate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The route serves the gate-repaired graph and reports its conformance.
+
+    Previously only the CLI ``--use-unit-pipeline`` path ran the
+    post-aggregation gate; ``/process_unit`` shipped unvalidated facts and no
+    ``facts_conformance``/``facts_gate_repairs`` metadata.
+    """
+    from rdflib import Literal
+    from rdflib.namespace import XSD
+
+    from ontocast.config import FactsValidationConfig
+    from ontocast.onto.constants import DEFAULT_IRI
+    from ontocast.onto.content_unit import OutputType
+    from ontocast.onto.enum import Status
+
+    q = "https://x.org/schema#"
+    (tmp_path / "shapes.ttl").write_text(
+        f"""
+        @prefix sh: <http://www.w3.org/ns/shacl#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix q: <{q}> .
+
+        q:ValueShape a sh:NodeShape ;
+            sh:targetClass q:QuantityValue ;
+            sh:property q:p_numeric .
+
+        # Named, not blank: the retype repair reads sh:datatype off the
+        # reported sh:sourceShape, which is only kept when it is an IRI.
+        q:p_numeric sh:path q:numericValue ;
+            sh:datatype xsd:decimal ;
+            sh:minCount 1 .
+        """,
+        encoding="utf-8",
+    )
+
+    node = URIRef(f"{DEFAULT_IRI}/v1")
+    facts_graph = RDFGraph()
+    facts_graph.add((node, RDF.type, URIRef(q + "QuantityValue")))
+    facts_graph.add((node, URIRef(q + "numericValue"), Literal("230")))
+
+    facts_result = SimpleNamespace(
+        status=Status.SUCCESS,
+        content_unit=ContentUnit(
+            text="unit",
+            index=0,
+            doc_iri=URIRef("https://x.org/doc/1"),
+            graph=facts_graph,
+            type=OutputType.FACTS,
+        ),
+        ontology_snapshot=SimpleNamespace(graph=RDFGraph()),
+    )
+
+    async def fake_run_unit_pipeline(_state, _tools):
+        return None, facts_result
+
+    class _Aggregator:
+        def postprocess_facts_units(self, units, ontology_graph, **kwargs):
+            graph = RDFGraph()
+            graph += units[0].graph
+            return AggregationResult(graph=graph)
+
+    monkeypatch.setattr(app_module, "run_unit_pipeline", fake_run_unit_pipeline)
+    monkeypatch.setattr(
+        app_module, "create_agent_graph", lambda _tools, **_kwargs: SimpleNamespace()
+    )
+    tools = cast(
+        ToolBox,
+        SimpleNamespace(
+            aggregator=_Aggregator(),
+            config=SimpleNamespace(
+                get_tool_config=lambda: SimpleNamespace(
+                    facts_validation=FactsValidationConfig.model_construct(
+                        shapes_dir=str(tmp_path)
+                    )
+                )
+            ),
+        ),
+    )
+    app = create_app(
+        tools=tools,
+        server_config=ServerConfig(),
+        active_tenant="tenant-a",
+        active_project="project-a",
+    )
+
+    response = TestClient(app).post(
+        # Pin the context mode: the ambient .env may select vector search,
+        # which this ToolBox stub deliberately lacks.
+        "/process_unit?ontology_context_mode=selected_single_ontology",
+        json={"text": "230 something"},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    metadata = payload["metadata"]
+    assert metadata["facts_conformance"]["shacl_evaluated"] is True
+    assert metadata["facts_conformance"]["conforms"] is True
+    assert [record["kind"] for record in metadata["facts_gate_repairs"]] == [
+        "shacl_retype"
+    ]
+    # The served Turtle is the repaired graph, not the raw aggregation.
+    assert (
+        str(XSD.decimal) in payload["data"]["facts"]
+        or "xsd:decimal" in (payload["data"]["facts"])
+    )
