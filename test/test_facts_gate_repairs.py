@@ -861,6 +861,133 @@ def test_pruning_sweeps_the_provenance_reifier_of_the_removed_triple() -> None:
     )
 
 
+def _reified(graph: RDFGraph, triple: tuple, derived_from: str):
+    """Attach an RDF 1.2 reifier with one ``prov:wasDerivedFrom`` arc.
+
+    Returns ``(pyoxigraph module, inner store, graph context, reifier node)``.
+    """
+    ox = pytest.importorskip("pyoxigraph")
+    from oxrdflib._converter import to_ox
+
+    from ontocast.onto.constants import PROV, RDF_REIFIES
+    from ontocast.onto.rdfgraph import _oxigraph_inner_store
+
+    inner = cast(ox.Store, _oxigraph_inner_store(graph.store))
+    graph_ctx = to_ox(graph.identifier)
+    reifier = ox.BlankNode()
+    subject, predicate, obj = (to_ox(position) for position in triple)
+    inner.add(
+        ox.Quad(
+            reifier,
+            ox.NamedNode(str(RDF_REIFIES)),
+            ox.Triple(subject, predicate, obj),
+            graph_ctx,
+        )
+    )
+    inner.add(
+        ox.Quad(
+            reifier,
+            ox.NamedNode(str(PROV.wasDerivedFrom)),
+            ox.NamedNode(derived_from),
+            graph_ctx,
+        )
+    )
+    return ox, inner, graph_ctx, reifier
+
+
+def _reifies_quads(ox, inner, graph_ctx) -> list:
+    from ontocast.onto.constants import RDF_REIFIES
+
+    return list(
+        inner.quads_for_pattern(None, ox.NamedNode(str(RDF_REIFIES)), None, graph_ctx)
+    )
+
+
+def test_retype_moves_the_provenance_reifier_to_the_retyped_statement() -> None:
+    """A retype rewrites a statement; its provenance must follow, not dangle.
+
+    The prune sweep deletes a reifier because the statement is gone. Here the
+    statement survives with a different object, so dropping the reifier would
+    lose the derivation of a triple that is still served.
+    """
+    graph = RDFGraph(store="oxigraph")
+    node = URIRef(CD + "v1")
+    graph.add((node, RDF.type, VALUE_CLASS))
+    graph.add((node, NUMERIC, Literal("230")))
+    graph.add((node, UNIT, URIRef(Q + "DAY")))
+
+    ox, inner, graph_ctx, reifier = _reified(
+        graph, (node, NUMERIC, Literal("230")), "https://example.org/doc/chunk0"
+    )
+
+    result = _repair(graph)
+
+    assert [record.kind for record in result.records] == ["shacl_retype"]
+    quads = _reifies_quads(ox, inner, graph_ctx)
+    assert len(quads) == 1
+    term = quads[0].object
+    assert isinstance(term, ox.Triple)
+    assert term.object == ox.Literal("230", datatype=ox.NamedNode(str(XSD.decimal)))
+    # The reifier node is untouched, so its prov arcs travel with it.
+    assert quads[0].subject == reifier
+    from ontocast.onto.constants import PROV
+
+    assert (
+        len(
+            list(
+                inner.quads_for_pattern(
+                    reifier, ox.NamedNode(str(PROV.wasDerivedFrom)), None, graph_ctx
+                )
+            )
+        )
+        == 1
+    )
+
+
+def test_code_resolution_moves_the_provenance_reifier() -> None:
+    """Resolving ``unit "d"`` to a catalog IRI carries the reifier across too."""
+    graph = RDFGraph(store="oxigraph")
+    node = URIRef(CD + "v1")
+    graph.add((node, RDF.type, VALUE_CLASS))
+    graph.add((node, NUMERIC, Literal("230", datatype=XSD.decimal)))
+    graph.add((node, UNIT, Literal("d")))
+
+    ox, inner, graph_ctx, _ = _reified(
+        graph, (node, UNIT, Literal("d")), "https://example.org/doc/chunk0"
+    )
+
+    result = _repair(graph)
+
+    assert [record.kind for record in result.records] == ["shacl_code_resolved"]
+    quads = _reifies_quads(ox, inner, graph_ctx)
+    assert len(quads) == 1
+    term = quads[0].object
+    assert isinstance(term, ox.Triple)
+    assert term.object == ox.NamedNode(Q + "DAY")
+
+
+def test_reverted_pass_leaves_the_retyped_reifier_alone() -> None:
+    """Retargeting runs after the accept test, so a reverted pass is a no-op."""
+    graph = RDFGraph(store="oxigraph")
+    node = URIRef(CD + "v1")
+    graph.add((node, RDF.type, VALUE_CLASS))
+    graph.add((node, NUMERIC, Literal("not-a-number")))
+
+    ox, inner, graph_ctx, _ = _reified(
+        graph,
+        (node, NUMERIC, Literal("not-a-number")),
+        "https://example.org/doc/chunk0",
+    )
+
+    _repair(graph)
+
+    quads = _reifies_quads(ox, inner, graph_ctx)
+    assert len(quads) == 1
+    term = quads[0].object
+    assert isinstance(term, ox.Triple)
+    assert term.object == ox.Literal("not-a-number")
+
+
 def test_reverted_pass_leaves_the_provenance_reifier_alone() -> None:
     """The sweep runs only after a pass is accepted, so a revert keeps it."""
     ox = pytest.importorskip("pyoxigraph")

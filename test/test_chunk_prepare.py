@@ -2,14 +2,20 @@
 
 import asyncio
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
+
+import pytest
 
 from ontocast.agent.chunk_text import chunk_text
 from ontocast.config import ChunkConfig
 from ontocast.onto.enum import RenderMode
 from ontocast.onto.state import AgentState
 from ontocast.tool.chunk.chunker import ChunkerTool
-from ontocast.tool.chunk.prepare import PrepareOptions, prepare_content_units
+from ontocast.tool.chunk.prepare import (
+    PrepareOptions,
+    SectionSelectionEmptyError,
+    prepare_content_units,
+)
 from ontocast.toolbox import ToolBox
 from test.docling_test_helpers import doc_from_markdown_lines
 
@@ -34,8 +40,13 @@ def _tools(
     min_size: int = 80,
     max_size: int = 500,
     llm=None,
+    section_filter_on_empty: str = "warn",
 ) -> ToolBox:
-    config = ChunkConfig(min_size=min_size, max_size=max_size)
+    config = ChunkConfig(
+        min_size=min_size,
+        max_size=max_size,
+        section_filter_on_empty=cast(Any, section_filter_on_empty),
+    )
 
     async def default_llm(_prompt):
         raise AssertionError("LLM should not be called")
@@ -60,8 +71,14 @@ async def _prepare(
     max_size: int = 500,
     options: PrepareOptions | None = None,
     llm=None,
+    section_filter_on_empty: str = "warn",
 ):
-    tools = _tools(min_size=min_size, max_size=max_size, llm=llm)
+    tools = _tools(
+        min_size=min_size,
+        max_size=max_size,
+        llm=llm,
+        section_filter_on_empty=section_filter_on_empty,
+    )
     opts = options if options is not None else _SECTION_OPTS
     return await prepare_content_units(
         doc,
@@ -389,3 +406,99 @@ def test_unlabeled_chunks_from_distinct_sections_are_not_merged():
 
     unlabeled = [chunk for chunk in chunks if chunk.section_label is None]
     assert len(unlabeled) == 2
+
+
+# --- empty section selection -------------------------------------------------
+
+
+def test_allowlist_matching_nothing_warns_and_yields_no_chunks(caplog) -> None:
+    """Default mode is unchanged: a log line, an empty result, exit code 0."""
+    doc = doc_from_markdown_lines(_MULTI_SECTION_DOC)
+
+    with caplog.at_level("WARNING"):
+        chunks = asyncio.run(
+            _prepare(doc, options=PrepareOptions(target_sections=["nonexistent"]))
+        )
+
+    assert chunks == []
+    assert any("removed all" in record.message for record in caplog.records)
+
+
+def test_allowlist_matching_nothing_raises_under_error_mode() -> None:
+    """An empty facts graph must be distinguishable from an empty document."""
+    doc = doc_from_markdown_lines(_MULTI_SECTION_DOC)
+
+    with pytest.raises(SectionSelectionEmptyError) as excinfo:
+        asyncio.run(
+            _prepare(
+                doc,
+                options=PrepareOptions(target_sections=["nonexistent"]),
+                section_filter_on_empty="error",
+            )
+        )
+
+    assert excinfo.value.param == "target_sections"
+
+
+def test_summarize_sections_allowlist_names_its_own_param() -> None:
+    """The message must blame the option the caller actually passed."""
+    doc = doc_from_markdown_lines(_MULTI_SECTION_DOC)
+
+    with pytest.raises(SectionSelectionEmptyError) as excinfo:
+        asyncio.run(
+            _prepare(
+                doc,
+                options=PrepareOptions(summarize_sections=["nonexistent"]),
+                section_filter_on_empty="error",
+            )
+        )
+
+    assert excinfo.value.param == "summarize_sections"
+
+
+def test_denylist_emptying_the_document_raises_under_error_mode() -> None:
+    """The denylist path had no empty guard at all and could blank a document."""
+    doc = doc_from_markdown_lines(_MULTI_SECTION_DOC)
+    every_label = ["abstract", "introduction", "related_work", "methods"]
+
+    with pytest.raises(SectionSelectionEmptyError) as excinfo:
+        asyncio.run(
+            _prepare(
+                doc,
+                options=PrepareOptions(exclude_sections=every_label),
+                section_filter_on_empty="error",
+            )
+        )
+
+    assert excinfo.value.param == "exclude_sections"
+
+
+def test_denylist_emptying_the_document_warns_by_default(caplog) -> None:
+    doc = doc_from_markdown_lines(_MULTI_SECTION_DOC)
+    every_label = ["abstract", "introduction", "related_work", "methods"]
+
+    with caplog.at_level("WARNING"):
+        chunks = asyncio.run(
+            _prepare(doc, options=PrepareOptions(exclude_sections=every_label))
+        )
+
+    assert chunks == []
+    assert any("exclude_sections" in record.message for record in caplog.records)
+
+
+def test_a_selection_that_matches_is_unaffected_by_error_mode() -> None:
+    """The guard fires only on an empty result, never on a working selection."""
+    doc = doc_from_markdown_lines(_MULTI_SECTION_DOC)
+
+    chunks = asyncio.run(
+        _prepare(
+            doc,
+            min_size=1,
+            max_size=5000,
+            options=PrepareOptions(target_sections=["methods"]),
+            section_filter_on_empty="error",
+        )
+    )
+
+    assert chunks
+    assert {chunk.section_label for chunk in chunks} == {"methods"}

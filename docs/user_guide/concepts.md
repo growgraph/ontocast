@@ -33,6 +33,26 @@ OntoCast uses **pyoxigraph** for RDF 1.2 quoted-triple syntax and separates prov
 - During **normalization**, reification triples, `prov:wasDerivedFrom`, chunk metadata, and alignment artifacts (`owl:sameAs`) move to a **provenance artifact**
 - The clean ontology graph feeds consolidation and serialization
 - API clients can pass `strip_provenance=true` to omit reification scaffolding from returned Turtle
+- A deterministic SHACL repair does not orphan provenance: a rewritten statement carries its reifier onto the replacement, a pruned one has it removed (see [Validation](validation.md#llm-free-autofix))
+
+Each source unit is recorded as `prov:Entity, schema:Text` carrying:
+
+| Predicate | Value |
+|-----------|-------|
+| `schema:position` | Unit index within the document |
+| `schema:identifier` | Unit content hash |
+| `prov:generatedAtTime` | Extraction timestamp |
+| `schema:articleSection` | Section label, when the unit has one |
+| `ontocast:sectionLabelSource` | Which classifier tier decided the label |
+| `ontocast:sectionLabelConfidence` | Confidence in `[0,1]`, `xsd:decimal` |
+
+The last three appear only for a labeled unit, and make a finished run auditable
+for *which part of the document* a fact came from — previously the label reached
+the summarizer and `ontocast sections` and went no further.
+`ontocast:` is `https://growgraph.dev/ontocast#`, deliberately outside the facts
+namespace so pipeline metadata is never a SHACL repair target. It is the only
+vocabulary OntoCast mints: no standard term covers "which classifier tier
+decided this" without a heavyweight qualified structure.
 
 See [Workflow](workflow.md#4-ontology-reduce-document-level).
 
@@ -145,7 +165,7 @@ The **Chunk** node runs a single prepare pipeline:
 1. **Segment** — sections-first by default (`CHUNK_SEGMENTER=semantic`): the outline partitions the exported markdown into section spans, the text is split at section boundaries, and the semantic chunker splits *within* each oversized section block — so no chunk straddles a section boundary and chunks from detected sections inherit their label deterministically. `CHUNK_SEGMENTER=docling` selects Docling `HybridChunker` structural segments instead (its tokenizer is budgeted from `CHUNK_MAX_SIZE`).
 2. **Coalesce** — undersized segments merge into the right neighbor (trailing tiny segments merge left); short abstract headings are preserved; merges never cross section structure.
 3. **Tag** — the cascade above, plus an optional front-matter abstract span. Segments at or above `CHUNK_SECTION_TAG_MIN_CHARS` reach the LLM tier when it is enabled; segments in an explicitly unresolved section are never filled from a neighbour.
-4. **Filter** — `target_sections` allowlist (or `summarize_sections` allowlist when `target_sections` is omitted and not `*`), then the `exclude_sections` denylist. When `exclude_sections` is unset, the active schema's `default_exclude` applies — the academic schema drops `acknowledgements` and `appendix`; pass an explicit empty `exclude_sections` to keep everything.
+4. **Filter** — `target_sections` allowlist (or `summarize_sections` allowlist when `target_sections` is omitted and not `*`), then the `exclude_sections` denylist. When `exclude_sections` is unset, the active schema's `default_exclude` applies — the academic schema drops `acknowledgements` and `appendix`; pass an explicit empty `exclude_sections` to keep everything. If either list removes *every* segment, `CHUNK_SECTION_FILTER_ON_EMPTY` decides what happens: `warn` (default) logs and continues to an empty graph, `error` fails the run — see [Configuration](configuration.md#section-filtering).
 5. **Size** — split oversized segments (semantic when available), merge undersized consecutive same-label chunks to `min_size` / `max_size`. Unlabeled chunks are never merged together, since they are not known to share a section.
 
 ### Inspecting what the classifier decided

@@ -17,6 +17,13 @@ from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
 
+#: Types that mark a node as pipeline-minted chunk scaffolding rather than
+#: extracted content. Both are written by ``GraphRewriter._add_unit_metadata``,
+#: so only the canonical spelling can occur -- unlike the chunk-metadata
+#: *predicates* below, which tolerate an ``http://schema.org/`` variant because
+#: they can also arrive on an ingested graph.
+_CHUNK_NODE_TYPES = frozenset({str(PROV.Entity), str(SCHEMA.Text)})
+
 
 def _working_anchor_from_graph(graph: RDFGraph) -> str | None:
     """Pick a stable working-context IRI from the first non-standard namespace.
@@ -69,11 +76,7 @@ def split_ontology_and_provenance_graph(
     for subject, predicate, obj in graph:
         if is_schema_chunk_metadata(predicate) or predicate == PROV.generatedAtTime:
             chunk_nodes.add(subject)
-        if predicate == RDF.type and str(obj) in {
-            str(PROV.Entity),
-            str(SCHEMA.text),
-            "http://schema.org/text",
-        }:
+        if predicate == RDF.type and str(obj) in _CHUNK_NODE_TYPES:
             chunk_nodes.add(subject)
 
     def is_provenance_or_alignment_triple(
@@ -94,11 +97,7 @@ def split_ontology_and_provenance_graph(
             return True
         if subject in chunk_nodes or obj in chunk_nodes:
             return True
-        if predicate == RDF.type and str(obj) in {
-            str(PROV.Entity),
-            str(SCHEMA.text),
-            "http://schema.org/text",
-        }:
+        if predicate == RDF.type and str(obj) in _CHUNK_NODE_TYPES:
             return True
         return False
 

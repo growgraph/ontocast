@@ -130,20 +130,21 @@ Three subsystems use a local sentence-transformer, each with its own setting:
 | Setting | Used by | Default |
 |---|---|---|
 | `CHUNK_EMBEDDING_MODEL` | semantic chunking, schema detection | `sentence-transformers/paraphrase-multilingual-mpnet-base-v2` (~1.1 GB) |
-| `EMBEDDING_MODEL_NAME` | dense retrieval | `paraphrase-multilingual-MiniLM-L12-v2` (~458 MB) |
-| `AGG_EMBEDDING_MODEL` | entity disambiguation | `paraphrase-multilingual-MiniLM-L12-v2` (shared with the above) |
+| `EMBEDDING_MODEL_NAME` | dense retrieval | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (~458 MB) |
+| `AGG_EMBEDDING_MODEL` | entity disambiguation | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (shared with the above) |
 
 Checkpoints are cached process-wide by `(model name, device)`, so **settings that
 name the same model share one resident copy** — at defaults that is two models.
-The key is the literal string, and the defaults are not spelled consistently
-(`CHUNK_EMBEDDING_MODEL` carries the `sentence-transformers/` prefix, the other
-two do not), so aligning them means matching the spelling exactly — the same
-checkpoint written two ways loads twice. Aligning all three drops it to one:
+The key is the literal string, so aligning them means matching the spelling
+exactly: the same checkpoint written two ways loads twice, even though
+`sentence-transformers` resolves a bare name and a prefixed one to the same
+files. All three defaults now carry the `sentence-transformers/` prefix for
+exactly this reason. Aligning all three drops it to one resident model:
 
 ```bash
-CHUNK_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
-EMBEDDING_MODEL_NAME=paraphrase-multilingual-MiniLM-L12-v2
-AGG_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+CHUNK_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+EMBEDDING_MODEL_NAME=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+AGG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 ```
 
 Measured on this codebase, loading all three consumers and encoding once each:

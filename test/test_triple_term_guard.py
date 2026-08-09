@@ -11,7 +11,13 @@ from typing import cast
 import pytest
 from rdflib import Literal, Node, URIRef
 
-from ontocast.onto.rdfgraph import RDFGraph, copy_triples, is_rdflib_triple
+from ontocast.onto.rdfgraph import (
+    RDFGraph,
+    copy_triples,
+    drop_reifiers_mentioning,
+    is_rdflib_triple,
+    retarget_reifiers,
+)
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 
 EX = "http://example.org/"
@@ -76,6 +82,26 @@ def test_copy_triples_skips_triple_terms() -> None:
     assert dropped == 1
     assert len(target) == 1
     assert (S, P, O) in target
+
+
+def test_reifier_sweeps_are_no_ops_on_a_plain_rdflib_graph() -> None:
+    """A plain store cannot hold a triple term, so neither sweep has work.
+
+    Both go through pyoxigraph directly, so they must recognise a store they
+    cannot address rather than reaching into it.
+    """
+    graph = RDFGraph()
+    graph.add((S, P, O))
+
+    assert drop_reifiers_mentioning(graph, {O}) == 0
+    assert retarget_reifiers(graph, {(S, P, O): (S, P, Literal("replacement"))}) == 0
+    assert len(graph) == 1
+
+
+def test_retarget_reifiers_is_a_no_op_without_replacements() -> None:
+    graph = _oxigraph_graph_with_triple_term()
+
+    assert retarget_reifiers(graph, {}) == 0
 
 
 def test_deepcopy_of_oxigraph_graph_with_triple_term_degrades() -> None:

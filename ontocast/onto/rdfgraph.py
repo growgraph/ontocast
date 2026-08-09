@@ -166,6 +166,78 @@ def drop_reifiers_mentioning(graph: Graph, nodes: Collection[Node]) -> int:
     return removed
 
 
+def _ox_triple_term(triple: tuple) -> Any:
+    """Convert an rdflib triple to a pyoxigraph triple term, or ``None``.
+
+    Returns ``None`` rather than raising when a position cannot be a triple
+    term (a literal subject, say): a repair plan is best-effort provenance
+    bookkeeping and must never bring down the validation gate.
+    """
+    import pyoxigraph as ox
+    from oxrdflib._converter import to_ox
+
+    if not is_rdflib_triple(triple):
+        return None
+    subject, predicate, obj = (to_ox(position) for position in triple)
+    if not isinstance(subject, (ox.NamedNode, ox.BlankNode)):
+        return None
+    if not isinstance(predicate, ox.NamedNode):
+        return None
+    if not isinstance(obj, (ox.NamedNode, ox.BlankNode, ox.Literal, ox.Triple)):
+        return None
+    return ox.Triple(subject, predicate, obj)
+
+
+def retarget_reifiers(graph: Graph, replacements: Mapping[tuple, tuple]) -> int:
+    """Repoint reifier triple terms from a removed statement onto its replacement.
+
+    Companion to :func:`drop_reifiers_mentioning`, for the repairs that
+    *rewrite* a statement rather than delete it. A SHACL retype or a
+    code-to-IRI resolution removes ``s p o`` and adds ``s p o'``; without this
+    the ``_:r rdf:reifies <<( s p o )>>`` quad keeps describing a statement
+    that no longer exists. The provenance is not wrong, it is dangling — and
+    dropping it instead would lose the derivation of a triple that survived the
+    repair.
+
+    Goes through pyoxigraph for the same reason the sweep does: rdflib cannot
+    add or remove a triple whose object is a triple term. The reifier node
+    itself is untouched, so its ``prov:wasDerivedFrom`` arcs move with it.
+
+    Args:
+        graph: Graph to rewrite, mutated in place. A non-oxigraph store cannot
+            hold triple terms, so it is a no-op.
+        replacements: Removed triple -> the triple that replaced it.
+
+    Returns:
+        The number of ``rdf:reifies`` quads repointed.
+    """
+    if not replacements or type(graph.store).__name__ != "OxigraphStore":
+        return 0
+
+    import pyoxigraph as ox
+    from oxrdflib._converter import to_ox
+
+    store = cast("ox.Store", _oxigraph_inner_store(graph.store))
+    graph_ctx_raw = to_ox(graph.identifier)
+    assert isinstance(graph_ctx_raw, (ox.NamedNode, ox.BlankNode, ox.DefaultGraph))
+    graph_ctx: ox.NamedNode | ox.BlankNode | ox.DefaultGraph = graph_ctx_raw
+    reifies = ox.NamedNode(str(RDF_REIFIES))
+
+    moved = 0
+    for removed, replacement in replacements.items():
+        old_term = _ox_triple_term(removed)
+        new_term = _ox_triple_term(replacement)
+        if old_term is None or new_term is None or old_term == new_term:
+            continue
+        # A triple term is legal in object position, so this is a keyed lookup
+        # rather than a scan over every reifier in the graph.
+        for quad in list(store.quads_for_pattern(None, reifies, old_term, graph_ctx)):
+            store.remove(quad)
+            store.add(ox.Quad(quad.subject, reifies, new_term, graph_ctx))
+            moved += 1
+    return moved
+
+
 PREFIX_PATTERN = re.compile(r"@prefix\s+(\w+):\s+<[^>]+>\s+\.")
 PREFIX_DECLARATION_PATTERN = re.compile(r"@prefix\s+(\w+):\s+<([^>]+)>\s+\.")
 # Pattern to match prefix usage: prefix:something (not in @prefix declarations)

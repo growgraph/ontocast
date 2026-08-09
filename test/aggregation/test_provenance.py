@@ -2,8 +2,9 @@ import pytest
 from rdflib import RDF, Literal, URIRef
 from rdflib.namespace import DCTERMS, FOAF, RDFS, XSD
 
-from ontocast.onto.constants import DEFAULT_IRI, PROV, RDF_REIFIES, SCHEMA
+from ontocast.onto.constants import DEFAULT_IRI, ONTOCAST, PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType
+from ontocast.onto.enum import SectionLabelSource
 from ontocast.onto.iri_policy import join_namespace_local, normalize_namespace_iri
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.agg.aggregate import (
@@ -33,6 +34,9 @@ def test_merge_graphs_with_provenance_adds_chunk_metadata(
     unit_uri = URIRef(unit.iri_absolute)
 
     assert (unit_uri, RDF.type, PROV.Entity) in merged
+    # schema:Text, the class -- schema:text is the *property* of that name, and
+    # typing every provenance node with a property IRI was simply wrong.
+    assert (unit_uri, RDF.type, SCHEMA.Text) in merged
     assert (unit_uri, SCHEMA.position, Literal(5, datatype=XSD.integer)) in merged
     assert (unit_uri, SCHEMA.identifier, Literal(unit.hid)) in merged
 
@@ -40,7 +44,98 @@ def test_merge_graphs_with_provenance_adds_chunk_metadata(
 
     assert namespaces["prov"] == str(PROV)
     assert namespaces["schema"] == str(SCHEMA)
+    assert namespaces["ontocast"] == str(ONTOCAST)
     assert namespaces["doc"] == "https://example.org/doc/abc123/"
+
+
+def _labeled_unit(**overrides) -> ContentUnit:
+    graph = RDFGraph()
+    entity = URIRef(f"{DEFAULT_IRI}/Entity1")
+    graph.add((entity, RDF.type, URIRef(f"{DEFAULT_IRI}/Thing")))
+    fields: dict = {
+        "text": "test",
+        "index": 5,
+        "doc_iri": URIRef("https://example.org/doc/abc123"),
+        "graph": graph,
+        "type": OutputType.FACTS,
+        "section_label": "results",
+        "section_label_source": SectionLabelSource.HEADING_KEYWORD,
+        "section_label_confidence": 0.75,
+    }
+    fields.update(overrides)
+    return ContentUnit(**fields)
+
+
+def test_section_label_reaches_the_provenance_artifact(
+    graph_rewriter: GraphRewriter,
+) -> None:
+    """Which part of the document a fact came from must be auditable.
+
+    The label reached the summarizer and ``ontocast inspect-sections`` and
+    stopped there, so a finished run could not answer the question at all.
+    """
+    unit = _labeled_unit()
+    merged = graph_rewriter.merge_graphs_with_provenance([unit], mapping={})
+    unit_uri = URIRef(unit.iri_absolute)
+
+    assert (unit_uri, SCHEMA.articleSection, Literal("results")) in merged
+    assert (
+        unit_uri,
+        ONTOCAST.sectionLabelSource,
+        Literal("heading_keyword"),
+    ) in merged
+    assert (
+        unit_uri,
+        ONTOCAST.sectionLabelConfidence,
+        Literal("0.75", datatype=XSD.decimal),
+    ) in merged
+
+
+def test_unlabeled_unit_emits_no_section_triples(
+    graph_rewriter: GraphRewriter,
+) -> None:
+    """A bare confidence of 0.0 would read as certainty about nothing."""
+    unit = _labeled_unit(
+        section_label=None, section_label_source=None, section_label_confidence=0.0
+    )
+    merged = graph_rewriter.merge_graphs_with_provenance([unit], mapping={})
+    unit_uri = URIRef(unit.iri_absolute)
+
+    assert list(merged.objects(unit_uri, SCHEMA.articleSection)) == []
+    assert list(merged.objects(unit_uri, ONTOCAST.sectionLabelSource)) == []
+    assert list(merged.objects(unit_uri, ONTOCAST.sectionLabelConfidence)) == []
+
+
+def test_label_without_a_source_still_emits_label_and_confidence(
+    graph_rewriter: GraphRewriter,
+) -> None:
+    unit = _labeled_unit(section_label_source=None)
+    merged = graph_rewriter.merge_graphs_with_provenance([unit], mapping={})
+    unit_uri = URIRef(unit.iri_absolute)
+
+    assert (unit_uri, SCHEMA.articleSection, Literal("results")) in merged
+    assert list(merged.objects(unit_uri, ONTOCAST.sectionLabelSource)) == []
+    assert len(list(merged.objects(unit_uri, ONTOCAST.sectionLabelConfidence))) == 1
+
+
+def test_strip_provenance_removes_the_chunk_metadata_it_is_given(
+    graph_rewriter: GraphRewriter,
+) -> None:
+    """The stripper keys on the unit node, so new metadata is covered for free.
+
+    Pinned rather than assumed: ``strip_provenance`` matches chunk nodes by
+    their ``prov:Entity`` + ``schema:Text`` typing, so it silently stops working
+    the moment the rewriter and the matcher disagree on that class -- which
+    nothing checked until now.
+    """
+    unit = _labeled_unit()
+    merged = graph_rewriter.merge_graphs_with_provenance([unit], mapping={})
+    unit_uri = URIRef(unit.iri_absolute)
+
+    cleaned = TripleStoreManager.strip_provenance(merged)
+
+    assert list(cleaned.predicate_objects(unit_uri)) == []
+    assert (URIRef(f"{DEFAULT_IRI}/Entity1"), RDF.type, None) in cleaned
 
 
 def test_merge_graphs_with_provenance_reifies_mapped_triple(

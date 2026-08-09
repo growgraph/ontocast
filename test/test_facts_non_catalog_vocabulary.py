@@ -87,6 +87,41 @@ def test_scaffolding_is_not_flagged() -> None:
     assert not [term for term in flagged if "22-rdf-syntax-ns#" in term]
 
 
+def test_chunk_metadata_predicates_are_not_flagged() -> None:
+    """The pipeline's own provenance scaffolding is not renderer vocabulary.
+
+    ``_add_unit_metadata`` mints ``schema:position``, ``schema:identifier`` and
+    the section-label terms on every chunk node, and they are in the graph the
+    gate validates. Only the ``prov:`` prefix used to be skipped, so any catalog
+    without schema.org got a warning per predicate accusing the renderer of
+    improvising terms it never emitted.
+    """
+    facts = f"""
+    @prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:    <http://www.w3.org/2001/XMLSchema#> .
+    @prefix prov:   <http://www.w3.org/ns/prov#> .
+    @prefix schema: <https://schema.org/> .
+    @prefix oc:     <https://growgraph.dev/ontocast#> .
+    @prefix matsci: <{MATSCI}> .
+    @prefix cd:     <{FACTS}> .
+
+    cd:sl_sample_1 a matsci:SuperlatticeSample ;
+        rdfs:label "sample" ;
+        matsci:describesMaterial cd:cspbbr3 .
+
+    cd:chunk_0 a prov:Entity, schema:Text ;
+        prov:generatedAtTime "2026-08-09T00:00:00"^^xsd:dateTime ;
+        schema:position 0 ;
+        schema:identifier "abc123" ;
+        schema:articleSection "results" ;
+        oc:sectionLabelSource "heading_keyword" ;
+        oc:sectionLabelConfidence "0.9"^^xsd:decimal .
+    """
+    flagged = _non_catalog(_report(facts))
+
+    assert flagged == {}
+
+
 def test_findings_are_warnings_not_errors() -> None:
     """Telemetry about context assembly must not drive the un-merge repair."""
     for finding in _non_catalog(_report()).values():

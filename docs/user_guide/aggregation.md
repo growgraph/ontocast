@@ -9,20 +9,23 @@ The merge stage (`tool/agg/aggregate.py`):
 1. Collects facts graphs from all processed content units
 2. Clusters entity mentions using embeddings and symbolic compatibility
 3. Rewrites URIs to canonical identities
-4. Annotates merged triples with provenance where applicable
+4. Annotates merged triples with provenance: an RDF 1.2 reifier per asserted
+   triple linked to its source unit, and one `prov:Entity, schema:Text` node per
+   unit carrying its index, content hash, timestamp and section label — see
+   [Concepts](concepts.md#rdf-12-provenance) for the predicate table
 
 Ontology aggregation uses a similar embedding-based pipeline for anchor selection and URI rewriting during document-level ontology reduce.
 
 ## Configuration
 
 ```bash
-AGG_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+AGG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 AGG_SIMILARITY_THRESHOLD=0.80
 ```
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `AGG_EMBEDDING_MODEL` | Sentence-transformers model for entity embeddings. Shares one process-wide model with `EMBEDDING_MODEL_NAME` and `CHUNK_EMBEDDING_MODEL` when the names match — see [Performance](performance.md#local-embedding-models) | `paraphrase-multilingual-MiniLM-L12-v2` |
+| `AGG_EMBEDDING_MODEL` | Sentence-transformers model for entity embeddings. Shares one process-wide model with `EMBEDDING_MODEL_NAME` and `CHUNK_EMBEDDING_MODEL` when the names match — see [Performance](performance.md#local-embedding-models) | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` |
 | `AGG_SIMILARITY_THRESHOLD` | Cosine similarity threshold for DBSCAN clustering | `0.80` |
 | `AGG_CANDIDATE_SIMILARITY_THRESHOLD` | Lower cosine threshold for permissive merge candidates before symbolic validation | `0.70` |
 | `AGG_LEXICAL_LABEL_JACCARD` | Minimum label token-set Jaccard for the fuzzy lexical-alias tier | `0.5` |

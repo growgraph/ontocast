@@ -169,6 +169,10 @@ def main(
         chunk_config.section_classifier = cast(
             Literal["llm", "heuristic", "heading", "off"], section_classifier
         )
+    # A diagnostic must survive the condition it diagnoses: the empty-selection
+    # gate is a pipeline policy, and "0 chunks kept" is exactly the answer this
+    # command exists to show.
+    chunk_config.section_filter_on_empty = "warn"
 
     # Only the 'llm' tier needs an LLM, and building a full ToolBox requires
     # provider credentials. Inspecting a document must stay free, so the

@@ -62,6 +62,32 @@ def prefix_lookup_for_ingest() -> dict[str, str]:
 PROV = Namespace("http://www.w3.org/ns/prov#")
 SCHEMA = Namespace("https://schema.org/")
 
+#: Terms OntoCast mints for pipeline telemetry that no standard vocabulary
+#: covers. Deliberately outside ``DEFAULT_IRI``: fact namespaces drive the
+#: SHACL gate's repair scope, and pipeline metadata must never be a repair
+#: target.
+ONTOCAST = Namespace(f"{DEFAULT_DOMAIN}/ontocast#")
+
+#: Classes and predicates the pipeline itself mints on provenance/chunk nodes.
+#: Scaffolding, not domain vocabulary: the non-catalog-vocabulary check must not
+#: report them as terms the renderer improvised, because no catalog will ever
+#: supply them. Classes are here as well as predicates because a type is
+#: recorded against its object IRI, so a namespace guard on the predicate
+#: (``rdf:type``) never sees them.
+PROVENANCE_METADATA_TERMS: frozenset[URIRef] = frozenset(
+    {
+        PROV.Entity,
+        PROV.generatedAtTime,
+        PROV.wasDerivedFrom,
+        SCHEMA.Text,
+        SCHEMA.position,
+        SCHEMA.identifier,
+        SCHEMA.articleSection,
+        ONTOCAST.sectionLabelSource,
+        ONTOCAST.sectionLabelConfidence,
+    }
+)
+
 # RDF 1.2 term for linking a reification node to its quoted triple.
 # Not yet in rdflib's RDF namespace, so we define it manually.
 RDF_REIFIES = URIRef("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies")

@@ -56,7 +56,7 @@ def json_payload_text(payload: object) -> str | None:
 
 
 def repair_ligature_gaps(text: str) -> str:
-    """TEMP: repair common ASCII ligature gaps in extracted publisher-PDF text."""
+    """Repair common ASCII ligature gaps in extracted publisher-PDF text."""
     return _LIGATURE_GAP_RE.sub(r"\1", text)
 
 
@@ -69,8 +69,9 @@ def apply_text_sanitizers(
     if not repair_ligature_gaps_enabled:
         return doc
 
-    # TEMP: Work around publisher-PDF ligature splits that Docling still passes through.
-    # Remove once upstream Docling reliably normalizes ASCII fi/fl/ff gap patterns.
+    # Works around publisher-PDF ligature splits that Docling passes through.
+    # Removable once upstream Docling normalises ASCII fi/fl/ff gap patterns --
+    # a breaking change, since the flag is in the converter cache key.
     for item in doc.texts:
         item.text = repair_ligature_gaps(item.text)
 

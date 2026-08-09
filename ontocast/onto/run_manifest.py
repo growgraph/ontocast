@@ -9,6 +9,8 @@ produced it. Written beside the facts dump, one file per document.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from ontocast.onto.state import BudgetTracker
@@ -47,3 +49,14 @@ class RunManifest(BaseModel):
     budget: BudgetTracker
     ontology_triples: int = 0
     facts_triples: int = 0
+    retrieval_metrics: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "``AgentState.retrieval_metrics`` for this document -- the same "
+            "payload ``/process`` returns in ``ProcessResultMetadata``. Without "
+            "it a batch run carried no retrieval telemetry at all, which also "
+            "left ONTOLOGY_PATCH_DUMP_ONTOLOGY_RANKS with no reader outside the "
+            "HTTP path. Keys are enumerated by "
+            ":class:`~ontocast.onto.enum.RetrievalMetric`."
+        ),
+    )

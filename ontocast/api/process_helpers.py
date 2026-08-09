@@ -20,10 +20,13 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.run_manifest import RunManifest, RunManifestLLM
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
+from ontocast.tool.chunk.prepare import SectionSelectionEmptyError
 from ontocast.tool.facts_invariants import (
     FactsValidationReport,
+    ShaclRepairResult,
     apply_shacl_repairs,
     collect_shacl_shapes,
+    record_facts_gate_metrics,
     summarize_conformance,
     validate_aggregated_facts,
 )
@@ -224,6 +227,7 @@ def dump_run_manifest(
         facts_triples=(
             len(state.aggregated_facts) if state.aggregated_facts is not None else 0
         ),
+        retrieval_metrics=dict(state.retrieval_metrics),
     )
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -502,6 +506,7 @@ def validate_unit_pipeline_facts(
     report = run_validation()
     # The un-merge repair is meaningless for a single unit, but the LLM-free
     # shape repairs are not: they act on the graph, not on identity decisions.
+    repair_result = ShaclRepairResult(graph=state.aggregated_facts)
     if shapes_graph is not None:
         repair_result = apply_shacl_repairs(
             state.aggregated_facts,
@@ -522,22 +527,6 @@ def validate_unit_pipeline_facts(
             state.aggregated_facts = repair_result.graph
             state.facts_gate_repairs = repair_result.records
             report = run_validation()
-        if repair_result.ran:
-            # Same metric set as the graph-pipeline gate, so batch dumps are
-            # comparable across the two paths.
-            state.retrieval_metrics["facts_shacl_violations_before"] = (
-                repair_result.violations_before
-            )
-            state.retrieval_metrics["facts_shacl_violations_after"] = (
-                repair_result.violations_after
-            )
-            state.retrieval_metrics["facts_shacl_repairs"] = len(repair_result.records)
-            state.retrieval_metrics["facts_shacl_autofix_passes"] = (
-                repair_result.passes_applied
-            )
-            state.retrieval_metrics["facts_shacl_autofix_reverted"] = (
-                repair_result.reverted
-            )
 
     state.facts_validation_findings = report.findings
     state.facts_conformance = summarize_conformance(
@@ -545,8 +534,14 @@ def validate_unit_pipeline_facts(
         shacl_evaluated=report.shacl_evaluated,
         repairs=state.facts_gate_repairs,
     )
-    state.retrieval_metrics["facts_validation_findings"] = len(report.findings)
-    state.retrieval_metrics["facts_validation_errors"] = len(report.error_findings)
+    # Shared with the graph-pipeline gate, so batch dumps stay comparable
+    # across the two entry paths.
+    record_facts_gate_metrics(
+        state.retrieval_metrics,
+        report=report,
+        repair_result=repair_result,
+        ontology_context_empty=not len(ontology_graph),
+    )
     if report.error_findings:
         logger.warning(
             "Unit-pipeline facts validation: %d error finding(s) "
@@ -676,12 +671,22 @@ async def process_files_input(
                     )
                 else:
                     workflow_state: AgentState | dict | None = None
-                    async for chunk in workflow.astream(
-                        state,
-                        stream_mode="values",
-                        config=RunnableConfig(recursion_limit=recursion_limit),
-                    ):
-                        workflow_state = chunk
+                    try:
+                        async for chunk in workflow.astream(
+                            state,
+                            stream_mode="values",
+                            config=RunnableConfig(recursion_limit=recursion_limit),
+                        ):
+                            workflow_state = chunk
+                    except SectionSelectionEmptyError as exc:
+                        # Batch semantics: one unmatched selection must not kill
+                        # the other files. cli/server.py turns a non-empty
+                        # failed_files into a non-zero exit, so the `error` mode
+                        # is scriptable without new CLI code.
+                        logger.error("Error processing %s: %s", file_path, exc)
+                        if file_path not in failed_files:
+                            failed_files.append(file_path)
+                        continue
                     if workflow_state is not None:
                         state = _merge_workflow_state_into_agent_state(
                             state, workflow_state

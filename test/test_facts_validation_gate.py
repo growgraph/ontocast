@@ -12,9 +12,11 @@ from typing import cast
 from rdflib import OWL, RDF, RDFS, Literal, URIRef
 from rdflib.namespace import XSD
 
+from ontocast.api.process_helpers import validate_unit_pipeline_facts
 from ontocast.config import FactsValidationConfig
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.content_unit import ContentUnit, OutputType
+from ontocast.onto.enum import RetrievalMetric
 from ontocast.onto.model import FactsValidationFinding, FactsValidationFindingKind
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
@@ -342,6 +344,78 @@ def test_validate_facts_node_noop_on_empty_state() -> None:
     state = AgentState()
     make_validate_facts_node(tools)(state)
     assert state.retrieval_metrics.get("facts_validation_errors") is None
+
+
+def test_repair_pass_republishes_the_guard_count_not_the_veto_count(
+    monkeypatch,
+) -> None:
+    """``facts_rejected_merges`` must stay the aggregator's guard count.
+
+    The un-merge pass used to overwrite it with ``len(vetoes)`` -- a different
+    quantity, already published as ``facts_merge_vetoes``. The two coincide on
+    a simple fixture (a vetoed pair is also a guard rejection), so the count is
+    forced apart here: whenever the aggregator rejects pairs the vetoes did not
+    name, the veto count under-reports the graph that is served.
+    """
+    aggregator = _normal_form_aggregator(monkeypatch)
+    real_postprocess = aggregator.postprocess_facts_units
+    sentinel = 41
+
+    def counted(*args, **kwargs):
+        result = real_postprocess(*args, **kwargs)
+        if kwargs.get("merge_vetoes"):
+            result.rejected_merge_count = sentinel
+        return result
+
+    monkeypatch.setattr(aggregator, "postprocess_facts_units", counted)
+
+    tools = _fake_tools(aggregator)
+    state = AgentState()
+    state.current_domain = "https://x.org"
+    state.doc_hid = "1"
+    state.facts_units = _conflicting_alias_units()
+
+    make_merge_facts_node(tools)(state)
+    make_validate_facts_node(tools)(state)
+
+    metrics = state.retrieval_metrics
+    assert metrics[RetrievalMetric.FACTS_MERGE_REPAIR_PASSES] == 1
+    assert cast(int, metrics[RetrievalMetric.FACTS_MERGE_VETOES]) > 0
+    assert metrics[RetrievalMetric.FACTS_REJECTED_MERGES] == sentinel
+
+
+def test_both_entry_paths_write_the_same_gate_metric_keys(monkeypatch) -> None:
+    """The graph pipeline and the unit pipeline share one metric set.
+
+    They ran the same gate through two hand-maintained metric blocks, so a
+    counter added to one path was silently absent from the other and batch
+    dumps stopped being comparable across entry paths. Merge counters are
+    excluded: they have no meaning for a single unit.
+    """
+    merge_only = {
+        RetrievalMetric.FACTS_MERGE_REPAIR_PASSES,
+        RetrievalMetric.FACTS_MERGE_VETOES,
+        RetrievalMetric.FACTS_MERGE_REPAIRS_REJECTED,
+        RetrievalMetric.FACTS_REJECTED_MERGES,
+    }
+
+    def gate_keys(run) -> set[str]:
+        aggregator = _normal_form_aggregator(monkeypatch)
+        tools = _fake_tools(aggregator)
+        state = AgentState()
+        state.current_domain = "https://x.org"
+        state.doc_hid = "1"
+        state.facts_units = _conflicting_alias_units()
+        make_merge_facts_node(tools)(state)
+        state.retrieval_metrics.clear()
+        run(state, tools)
+        return set(state.retrieval_metrics) - merge_only
+
+    graph_keys = gate_keys(lambda state, tools: make_validate_facts_node(tools)(state))
+    unit_keys = gate_keys(
+        lambda state, tools: validate_unit_pipeline_facts(state, RDFGraph(), tools)
+    )
+    assert graph_keys == unit_keys
 
 
 def test_dangling_reference_reported_as_warning() -> None:

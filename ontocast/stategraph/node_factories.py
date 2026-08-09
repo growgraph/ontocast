@@ -15,6 +15,7 @@ from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
 from ontocast.onto.enum import (
     OntologyAssemblyMode,
     OntologyContextMode,
+    RetrievalMetric,
     Status,
     WorkflowNode,
 )
@@ -47,10 +48,13 @@ from ontocast.stategraph.helpers import (
     merge_unit_deltas,
 )
 from ontocast.stategraph.unit_context import UnitLoopContext
+from ontocast.tool.agg.aggregate import AggregationResult
 from ontocast.tool.facts_invariants import (
     FactsValidationReport,
+    ShaclRepairResult,
     apply_shacl_repairs,
     collect_shacl_shapes,
+    record_facts_gate_metrics,
     summarize_conformance,
     validate_aggregated_facts,
 )
@@ -298,8 +302,12 @@ def make_render_ontology_node(tools: ToolBox):
             primary_counts,
         ) = aggregate_writable_metrics(unit_contexts)
         state.candidate_anchor_iris = sorted(seen_writable | set(primary_counts))
-        state.retrieval_metrics["ontology_writable_count"] = len(seen_writable)
-        state.retrieval_metrics["ontology_primary_units"] = sum(primary_counts.values())
+        state.retrieval_metrics[RetrievalMetric.ONTOLOGY_WRITABLE_COUNT] = len(
+            seen_writable
+        )
+        state.retrieval_metrics[RetrievalMetric.ONTOLOGY_PRIMARY_UNITS] = sum(
+            primary_counts.values()
+        )
 
         # Document-level insert/delete consensus + namespace apply onto catalog bases.
         merged_delta = merge_unit_deltas(unit_deltas)
@@ -633,23 +641,25 @@ def make_render_facts_node(tools: ToolBox):
             anchor_counts,
         ) = aggregate_writable_metrics(unit_contexts)
         state.candidate_anchor_iris = sorted(anchor_counts.keys())
-        state.retrieval_metrics["facts_anchor_count"] = len(anchor_counts)
-        state.retrieval_metrics["facts_anchor_units"] = sum(anchor_counts.values())
+        state.retrieval_metrics[RetrievalMetric.FACTS_ANCHOR_COUNT] = len(anchor_counts)
+        state.retrieval_metrics[RetrievalMetric.FACTS_ANCHOR_UNITS] = sum(
+            anchor_counts.values()
+        )
         all_attempts = [
             attempt
             for attempts in state.facts_loop_telemetry.values()
             for attempt in attempts
         ]
-        state.retrieval_metrics["facts_llm_repair_renders_total"] = sum(
+        state.retrieval_metrics[RetrievalMetric.FACTS_LLM_REPAIR_RENDERS_TOTAL] = sum(
             1 for attempt in all_attempts if attempt.kind == "llm_repair"
         )
         # A repair render that itself fails leaves the pre-repair graph intact
         # and the unit reports SUCCESS, so without this the crash is recorded on
         # the attempt log and observed nowhere.
-        state.retrieval_metrics["facts_llm_repair_renders_failed"] = sum(
+        state.retrieval_metrics[RetrievalMetric.FACTS_LLM_REPAIR_RENDERS_FAILED] = sum(
             1 for attempt in all_attempts if attempt.repair_failed
         )
-        state.retrieval_metrics["facts_findings_residual"] = sum(
+        state.retrieval_metrics[RetrievalMetric.FACTS_FINDINGS_RESIDUAL] = sum(
             attempts[-1].n_deterministic_findings
             for attempts in state.facts_loop_telemetry.values()
             if attempts and attempts[-1].kind == "llm_repair"
@@ -708,7 +718,9 @@ def make_merge_facts_node(tools: ToolBox):
         )
         state.aggregated_facts = result.graph
         state.aggregation_clusters = result.merged_clusters
-        state.retrieval_metrics["facts_rejected_merges"] = result.rejected_merge_count
+        state.retrieval_metrics[RetrievalMetric.FACTS_REJECTED_MERGES] = (
+            result.rejected_merge_count
+        )
         if len(state.aggregated_facts) == 0:
             logger.warning(
                 "Facts aggregation produced an empty graph from "
@@ -786,21 +798,6 @@ def make_validate_facts_node(tools: ToolBox):
             return state
 
         ontology_graph, document_metadata = _facts_aggregation_inputs(state)
-        if not len(ontology_graph):
-            # Facts were extracted with no catalog vocabulary in front of the
-            # model. The per-term non-catalog check cannot see this -- with no
-            # context there is nothing to compare against -- so it is reported
-            # here, where an empty context is known to be unexpected.
-            reason = state.retrieval_metrics.get(
-                "empty_snapshot_reason", "no ontology context was assembled"
-            )
-            logger.warning(
-                "Validating facts against an empty ontology context (%s); every "
-                "extracted term is outside the catalog.",
-                reason,
-            )
-            state.retrieval_metrics["validated_without_ontology_context"] = True
-
         shapes_graph = collect_shacl_shapes(ontology_graph, facts_validation.shapes_dir)
         fact_namespaces = [DEFAULT_IRI, str(state.doc_iri), state.doc_namespace or ""]
 
@@ -840,6 +837,8 @@ def make_validate_facts_node(tools: ToolBox):
         vetoes: set[frozenset[URIRef]] = set()
         repair_passes = 0
         rejected_repairs = 0
+        # Last *accepted* re-aggregation, i.e. the one whose graph is served.
+        last_result: AggregationResult | None = None
         while repair_passes < facts_validation.merge_repair_passes:
             previous_errors = merge_signature_errors(report)
             if not previous_errors:
@@ -887,12 +886,14 @@ def make_validate_facts_node(tools: ToolBox):
                 rejected_repairs += 1
                 break
             repair_passes += 1
+            last_result = result
             report = candidate_report
 
         # Shape-driven repair, in code: retype literals against sh:datatype,
         # resolve codes to catalog IRIs, drop placeholder nodes. Runs after
         # un-merging so it sees the graph that will actually be served, and
         # reuses the violations the reporting pass just computed.
+        repair_result = ShaclRepairResult(graph=state.aggregated_facts)
         if shapes_graph is not None:
             repair_result = apply_shacl_repairs(
                 state.aggregated_facts,
@@ -913,22 +914,6 @@ def make_validate_facts_node(tools: ToolBox):
                 state.aggregated_facts = repair_result.graph
                 state.facts_gate_repairs = repair_result.records
                 report = run_validation()
-            if repair_result.ran:
-                state.retrieval_metrics["facts_shacl_violations_before"] = (
-                    repair_result.violations_before
-                )
-                state.retrieval_metrics["facts_shacl_violations_after"] = (
-                    repair_result.violations_after
-                )
-                state.retrieval_metrics["facts_shacl_repairs"] = len(
-                    repair_result.records
-                )
-                state.retrieval_metrics["facts_shacl_autofix_passes"] = (
-                    repair_result.passes_applied
-                )
-                state.retrieval_metrics["facts_shacl_autofix_reverted"] = (
-                    repair_result.reverted
-                )
 
         state.facts_validation_findings = report.findings
         state.facts_conformance = summarize_conformance(
@@ -936,14 +921,28 @@ def make_validate_facts_node(tools: ToolBox):
             shacl_evaluated=report.shacl_evaluated,
             repairs=state.facts_gate_repairs,
         )
-        state.retrieval_metrics["facts_validation_findings"] = len(report.findings)
-        state.retrieval_metrics["facts_validation_errors"] = len(report.error_findings)
-        state.retrieval_metrics["facts_merge_repair_passes"] = repair_passes
-        state.retrieval_metrics["facts_merge_vetoes"] = len(vetoes)
-        state.retrieval_metrics["facts_merge_repairs_rejected"] = rejected_repairs
-        if repair_passes:
-            # merge_facts recorded this against the pre-repair aggregation.
-            state.retrieval_metrics["facts_rejected_merges"] = len(vetoes)
+        record_facts_gate_metrics(
+            state.retrieval_metrics,
+            report=report,
+            repair_result=repair_result,
+            ontology_context_empty=not len(ontology_graph),
+        )
+        state.retrieval_metrics[RetrievalMetric.FACTS_MERGE_REPAIR_PASSES] = (
+            repair_passes
+        )
+        state.retrieval_metrics[RetrievalMetric.FACTS_MERGE_VETOES] = len(vetoes)
+        state.retrieval_metrics[RetrievalMetric.FACTS_MERGE_REPAIRS_REJECTED] = (
+            rejected_repairs
+        )
+        if repair_passes and last_result is not None:
+            # merge_facts recorded this against the pre-repair aggregation, so
+            # it is stale once a veto pass has re-aggregated. Republish the
+            # guard count for the graph that is actually served -- not the veto
+            # count, which is a different quantity and is already published as
+            # facts_merge_vetoes.
+            state.retrieval_metrics[RetrievalMetric.FACTS_REJECTED_MERGES] = (
+                last_result.rejected_merge_count
+            )
         if report.error_findings:
             logger.warning(
                 "Facts validation gate: %d error finding(s) remain after "
@@ -983,9 +982,9 @@ def make_structural_check_node(tools: ToolBox):
                         f"Structural check ({ontology.iri}): ontology predicates missing labels were detected."
                     )
             if component_counts:
-                state.retrieval_metrics["structural_ontology_components_max"] = max(
-                    component_counts
-                )
+                state.retrieval_metrics[
+                    RetrievalMetric.STRUCTURAL_ONTOLOGY_COMPONENTS_MAX
+                ] = max(component_counts)
         state.status = Status.SUCCESS
         return state
 
@@ -1065,7 +1064,7 @@ def make_consistency_critic_node(tools: ToolBox):
                 "Consistency critic detected %s potential cross-ontology conflicts",
                 len(conflicts),
             )
-        state.retrieval_metrics["consistency_conflicts"] = len(conflicts)
+        state.retrieval_metrics[RetrievalMetric.CONSISTENCY_CONFLICTS] = len(conflicts)
         state.status = Status.SUCCESS
         return state
 

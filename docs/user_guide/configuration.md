@@ -181,6 +181,7 @@ CHUNK_SECTION_SCHEMA_DETECT=headings  # off | lexical | headings (default) | aut
 CHUNK_SECTION_SCHEMA_DETECT_MIN_SCORE=2.0           # evidence the winner must clear
 CHUNK_SECTION_SCHEMA_DETECT_MIN_MARGIN=1.8          # factor over the runner-up
 CHUNK_SECTION_SCHEMA_DETECT_CONTENT_MIN_MARGIN=4.0  # stricter margin for the content tier
+CHUNK_SECTION_FILTER_ON_EMPTY=warn  # warn (default) | error
 CHUNK_BIBLIOGRAPHY_MODE=skip        # skip | citations_only | domain_facts
 ```
 
@@ -198,9 +199,9 @@ aligning all three is the single-model, low-memory configuration:
 
 ```bash
 # One resident local model instead of two (~650 MB of peak RSS, measured).
-CHUNK_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
-EMBEDDING_MODEL_NAME=paraphrase-multilingual-MiniLM-L12-v2
-AGG_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+CHUNK_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+EMBEDDING_MODEL_NAME=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+AGG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 ```
 
 Changing `CHUNK_EMBEDDING_MODEL` invalidates the on-disk chunk cache and shifts
@@ -281,6 +282,28 @@ Request-level section filtering (`target_sections` allowlist,
 `exclude_sections` denylist with per-schema defaults, `summarize_sections`)
 is documented in [Structured documents](concepts.md#structured-documents).
 
+#### Section filtering
+
+`CHUNK_SECTION_FILTER_ON_EMPTY` decides what happens when a section selection
+removes **every** segment:
+
+| Value | Behaviour |
+|-------|-----------|
+| `warn` (default) | Log a warning and continue. The run extracts zero chunks and reports success. |
+| `error` | Fail the run: HTTP `422` with `error_code=empty_section_selection:<param>`, or a non-zero exit for `ontocast process` (the file is counted as failed; other files still run). |
+
+The default is opt-in-safe but genuinely ambiguous: an empty result reads
+exactly like a document that had nothing to extract. Use `error` when a
+selection is expected to match — a typo in `target_sections`, or a document
+whose headings did not classify as expected, is then a loud failure rather than
+an empty graph.
+
+It covers **both** directions: the `target_sections` / `summarize_sections`
+allowlist and the `exclude_sections` denylist — including a schema's
+`default_exclude`, which can empty a document with no caller involvement at
+all. `ontocast sections` always behaves as `warn`, since a diagnostic has to
+survive the condition it is diagnosing.
+
 ### Docling converter
 
 Use these settings to tune Docling's standard document-conversion pipeline, especially for born-digital publisher PDFs where embedded ligatures can be split into patterns like `di ff usion`.
@@ -297,7 +320,7 @@ CONVERTER_PROFILE=default               # default | born_digital
 # CONVERTER_OCR_LANG=
 # CONVERTER_FORCE_FULL_PAGE_OCR=false
 # CONVERTER_OCR_BITMAP_AREA_THRESHOLD=0.05
-# CONVERTER_REPAIR_LIGATURE_GAPS=false  # TEMP workaround
+# CONVERTER_REPAIR_LIGATURE_GAPS=false  # on under profile=born_digital
 ```
 
 Recommended preset for publisher PDFs with selectable text:
@@ -317,7 +340,7 @@ That preset currently implies:
 
 Notes:
 
-- `CONVERTER_REPAIR_LIGATURE_GAPS` is a **temporary workaround** in OntoCast for ASCII `fi` / `fl` / `ff` gap patterns that Docling still passes through on some publisher PDFs.
+- `CONVERTER_REPAIR_LIGATURE_GAPS` repairs ASCII `fi` / `fl` / `ff` gap patterns that Docling passes through on some publisher PDFs. It is off by default but **on** under `CONVERTER_PROFILE=born_digital`, and it participates in the converter cache key, so flipping it re-converts. It becomes removable — as a breaking change — once Docling normalises these patterns upstream.
 - Prefer `CONVERTER_PROFILE=born_digital` for text-selectable PDFs before trying heavier OCR settings.
 - If OCR remains enabled and you pick `rapidocr`, set `CONVERTER_OCR_LANG=english` for English scans; RapidOCR's upstream default language is Chinese.
 
@@ -362,7 +385,7 @@ See [Tenancy](tenancy.md) for how tenant/project names relate to dataset, collec
 
 ```bash
 EMBEDDING_PROVIDER=huggingface          # huggingface | openai | ollama
-EMBEDDING_MODEL_NAME=paraphrase-multilingual-MiniLM-L12-v2
+EMBEDDING_MODEL_NAME=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 # EMBEDDING_API_KEY=
 # EMBEDDING_BASE_URL=http://localhost:11434
 EMBEDDING_DIMENSION=384
@@ -659,7 +682,7 @@ scheduled and the `ontocast cache` commands that drive it manually.
 ### Aggregation
 
 ```bash
-AGG_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+AGG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 AGG_SIMILARITY_THRESHOLD=0.80
 AGG_CANDIDATE_SIMILARITY_THRESHOLD=0.70
 AGG_LEXICAL_LABEL_JACCARD=0.5

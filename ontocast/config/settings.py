@@ -488,6 +488,18 @@ class ChunkConfig(BaseSettings):
             "0 restores per-chunk calls."
         ),
     )
+    section_filter_on_empty: Literal["warn", "error"] = Field(
+        default="warn",
+        description=(
+            "What to do when a section selection removes every segment. 'warn' "
+            "(default) logs and continues, which yields an empty facts graph "
+            "indistinguishable from a document that genuinely had nothing to "
+            "extract; 'error' fails the request instead (HTTP 422, non-zero "
+            "exit for a batch run). Covers both the target_sections / "
+            "summarize_sections allowlist and the exclude_sections denylist, "
+            "including a schema's default_exclude."
+        ),
+    )
     bibliography_mode: Literal["domain_facts", "citations_only", "skip"] = Field(
         default="skip",
         description=(
@@ -601,8 +613,12 @@ class ConverterConfig(BaseSettings):
     repair_ligature_gaps: bool = Field(
         default=False,
         description=(
-            "TEMP workaround: repair ASCII fi/fl/ff-style ligature gaps that some "
-            "publisher PDFs emit after Docling extraction."
+            "Repair ASCII fi/fl/ff-style ligature gaps that some publisher PDFs "
+            "emit after Docling extraction. Off by default, but "
+            "CONVERTER_PROFILE=born_digital turns it on. Participates in the "
+            "converter cache key. Removal condition: Docling normalises these "
+            "gap patterns itself, at which point this becomes a no-op that can "
+            "be dropped in a breaking release."
         ),
     )
 
@@ -978,8 +994,14 @@ class AggregationConfig(BaseSettings):
     """Aggregation settings for entity clustering/disambiguation."""
 
     embedding_model: str = Field(
-        default="paraphrase-multilingual-MiniLM-L12-v2",
-        description="Sentence-transformers model name used for entity embeddings.",
+        default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        description=(
+            "Sentence-transformers model name used for entity embeddings. "
+            "Spelled with the org prefix to match CHUNK_EMBEDDING_MODEL and "
+            "EMBEDDING_MODEL_NAME: SharedEncoder keys its process-wide cache on "
+            "the literal string, so the same checkpoint written two ways loads "
+            "twice."
+        ),
     )
     similarity_threshold: float = Field(
         default=0.80,
@@ -1053,8 +1075,12 @@ class EmbeddingConfig(BaseSettings):
         default=EmbeddingProvider.HUGGINGFACE, description="Embedding model provider"
     )
     model_name: str = Field(
-        default="paraphrase-multilingual-MiniLM-L12-v2",
-        description="Embedding model identifier used by the selected provider.",
+        default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        description=(
+            "Embedding model identifier used by the selected provider. Spelled "
+            "with the org prefix so it shares one SharedEncoder slot with "
+            "AGG_EMBEDDING_MODEL and CHUNK_EMBEDDING_MODEL when aligned."
+        ),
     )
     api_key: str | None = Field(
         default=None, description="Provider API key for hosted embedding services."

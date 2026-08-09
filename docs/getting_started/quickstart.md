@@ -81,7 +81,7 @@ ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files
 # FUSEKI_AUTH=admin/admin
 
 # Optional aggregation controls
-AGG_EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+AGG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 AGG_SIMILARITY_THRESHOLD=0.80
 
 # Optional web-search grounding

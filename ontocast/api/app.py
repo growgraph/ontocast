@@ -36,6 +36,7 @@ from ontocast.api.responses import (
     document_conversion_error_response,
     ontology_context_config_error_response,
     request_param_error_response,
+    section_selection_empty_response,
 )
 from ontocast.api.schemas import (
     FlushOkResponse,
@@ -62,6 +63,7 @@ from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_
 from ontocast.tool.agg.match_derivation import derive_pair_matches
 from ontocast.tool.agg.match_models import TaggedGraph
 from ontocast.tool.agg.triple_evaluator import TripleSetEvaluator
+from ontocast.tool.chunk.prepare import SectionSelectionEmptyError
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.toolbox import ToolBox
 
@@ -511,6 +513,10 @@ def create_app(
         except RequestParamError as e:
             # Malformed input is the client's error, not ours.
             return request_param_error_response(e)
+        except SectionSelectionEmptyError as e:
+            # Well-formed parameters that match nothing in *this* document.
+            # /process_unit never chunks, so only this route can raise it.
+            return section_selection_empty_response(e)
         except DocumentConversionError as e:
             return document_conversion_error_response(e, e.stage)
         except Exception as e:

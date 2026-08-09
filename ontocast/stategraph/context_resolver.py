@@ -7,7 +7,11 @@ from pydantic import BaseModel, Field
 
 from ontocast.agent.select_ontology_catalog import select_catalog_ontology_for_excerpt
 from ontocast.onto.content_unit import SourceUnit
-from ontocast.onto.enum import OntologyAssemblyMode, OntologyContextMode
+from ontocast.onto.enum import (
+    OntologyAssemblyMode,
+    OntologyContextMode,
+    RetrievalMetric,
+)
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
@@ -217,7 +221,7 @@ async def _resolve_ensemble_context(
     metrics = retriever.last_retrieval_metrics
     writable = list(source_iris)
     if metrics:
-        context.retrieval_metrics["patch_retrieval"] = metrics
+        context.retrieval_metrics[RetrievalMetric.PATCH_RETRIEVAL] = metrics
         expanded = metrics.get("expanded_ontology_iris") or []
         if isinstance(expanded, list):
             for iri in expanded:
@@ -251,7 +255,7 @@ async def _resolve_ensemble_context(
             reason = "all candidate atoms scored below the retrieval thresholds"
         else:
             reason = "no candidate atoms matched the unit's queries"
-        context.retrieval_metrics["empty_snapshot_reason"] = reason
+        context.retrieval_metrics[RetrievalMetric.EMPTY_SNAPSHOT_REASON] = reason
         logger.warning(
             "Ontology context for this unit is empty (%s); extraction will "
             "proceed with no catalog vocabulary.",
@@ -283,7 +287,7 @@ async def resolve_unit_ontology_context(
     unit: SourceUnit,
 ) -> UnitOntologyContext:
     mode = context.ontology_context_mode
-    context.retrieval_metrics["ontology_context_mode"] = mode.value
+    context.retrieval_metrics[RetrievalMetric.ONTOLOGY_CONTEXT_MODE] = mode.value
     if mode == OntologyContextMode.SELECTED_SINGLE_ONTOLOGY:
         return await _resolve_selected_single_ontology_context(context, tools, unit)
     if mode == OntologyContextMode.FIXED_SINGLE_ONTOLOGY:

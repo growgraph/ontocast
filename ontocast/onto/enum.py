@@ -30,6 +30,61 @@ class SectionLabelSource(StrEnum):
     OUTLINE_UNRESOLVED = "outline_unresolved"
 
 
+class RetrievalMetric(StrEnum):
+    """Top-level keys of ``AgentState.retrieval_metrics``.
+
+    These are wire names. The dict is serialized verbatim into
+    ``ProcessResultMetadata.retrieval_metrics`` on ``/process`` and
+    ``/process_unit`` and into the batch run manifest, so a member's *value*
+    may never change without a breaking release; the member name is free to.
+    Collecting them here replaces bare string literals scattered over three
+    modules, where a typo produced a silently missing metric and nothing
+    enumerated what a run should emit.
+
+    Only the flat top level is enumerated. The per-retrieval telemetry that
+    lands nested under :attr:`PATCH_RETRIEVAL` is the patch retriever's own
+    namespace with its own lifecycle, and flattening it here would assert a
+    structure that does not exist.
+    """
+
+    # Ontology context assembly (written per unit, merged onto the document).
+    ONTOLOGY_CONTEXT_MODE = "ontology_context_mode"
+    PATCH_RETRIEVAL = "patch_retrieval"
+    #: Why a unit's ontology snapshot came back empty. Written per unit and
+    #: merged last-writer-wins, so on a multi-unit document only the final
+    #: unit's reason survives.
+    EMPTY_SNAPSHOT_REASON = "empty_snapshot_reason"
+    ONTOLOGY_WRITABLE_COUNT = "ontology_writable_count"
+    ONTOLOGY_PRIMARY_UNITS = "ontology_primary_units"
+
+    # Facts fan-out.
+    FACTS_ANCHOR_COUNT = "facts_anchor_count"
+    FACTS_ANCHOR_UNITS = "facts_anchor_units"
+    FACTS_LLM_REPAIR_RENDERS_TOTAL = "facts_llm_repair_renders_total"
+    FACTS_LLM_REPAIR_RENDERS_FAILED = "facts_llm_repair_renders_failed"
+    FACTS_FINDINGS_RESIDUAL = "facts_findings_residual"
+
+    # Aggregation and the un-merge repair.
+    FACTS_REJECTED_MERGES = "facts_rejected_merges"
+    FACTS_MERGE_REPAIR_PASSES = "facts_merge_repair_passes"
+    FACTS_MERGE_VETOES = "facts_merge_vetoes"
+    FACTS_MERGE_REPAIRS_REJECTED = "facts_merge_repairs_rejected"
+
+    # Validation gate. Written identically by both entry paths.
+    VALIDATED_WITHOUT_ONTOLOGY_CONTEXT = "validated_without_ontology_context"
+    FACTS_VALIDATION_FINDINGS = "facts_validation_findings"
+    FACTS_VALIDATION_ERRORS = "facts_validation_errors"
+    FACTS_SHACL_VIOLATIONS_BEFORE = "facts_shacl_violations_before"
+    FACTS_SHACL_VIOLATIONS_AFTER = "facts_shacl_violations_after"
+    FACTS_SHACL_REPAIRS = "facts_shacl_repairs"
+    FACTS_SHACL_AUTOFIX_PASSES = "facts_shacl_autofix_passes"
+    FACTS_SHACL_AUTOFIX_REVERTED = "facts_shacl_autofix_reverted"
+
+    # Post-aggregation checks.
+    STRUCTURAL_ONTOLOGY_COMPONENTS_MAX = "structural_ontology_components_max"
+    CONSISTENCY_CONFLICTS = "consistency_conflicts"
+
+
 class RenderMode(StrEnum):
     """Enumeration of supported rendering modes."""
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING
@@ -116,6 +117,14 @@ class PrepareOptions:
             return self.summarize_sections
         return None
 
+    def filter_allowlist_param(self) -> str:
+        """Name of the request option that produced :meth:`filter_allowlist`."""
+        return (
+            "target_sections"
+            if self.target_sections is not None
+            else "summarize_sections"
+        )
+
     def filter_denylist(self, schema: SectionLabelSchema) -> list[str]:
         """Effective exclusion denylist.
 
@@ -125,6 +134,58 @@ class PrepareOptions:
         if self.exclude_sections is not None:
             return list(self.exclude_sections)
         return list(schema.default_exclude)
+
+
+class SectionSelectionEmptyError(ValueError):
+    """A section selection matched no segment in this document.
+
+    Distinct from a malformed parameter: ``target_sections=["reslts"]`` is
+    syntactically fine and only turns out to be wrong once *this* document has
+    been classified. Under the default ``CHUNK_SECTION_FILTER_ON_EMPTY=warn``
+    this is a log line and the run continues to an empty graph, which reads
+    exactly like a document that genuinely had nothing to extract -- telling
+    those two apart is the whole point of the ``error`` mode.
+
+    Subclasses :class:`ValueError` so existing parameter guards keep their
+    shape. Deliberately *not* an ``api``-layer error: nothing under ``tool/``
+    imports ``ontocast.api``, and the parameter here is well-formed.
+    """
+
+    def __init__(self, param: str, message: str) -> None:
+        super().__init__(message)
+        self.param = param
+
+
+def _guard_empty_selection(
+    *,
+    param: str,
+    selection: Sequence[str],
+    before: int,
+    after: int,
+    on_empty: str,
+) -> None:
+    """Warn or raise when a section selection left nothing behind.
+
+    Args:
+        param: Request option (or schema default) that produced ``selection``.
+        selection: The effective allowlist or denylist.
+        before: Segment count before filtering.
+        after: Segment count after filtering.
+        on_empty: ``CHUNK_SECTION_FILTER_ON_EMPTY``.
+
+    Raises:
+        SectionSelectionEmptyError: ``on_empty`` is ``"error"`` and every
+            segment was removed.
+    """
+    if before == 0 or after > 0:
+        return
+    message = (
+        f"{param}={sorted(selection)} removed all {before} segment(s); the "
+        "document's detected sections do not match the selection"
+    )
+    if on_empty == "error":
+        raise SectionSelectionEmptyError(param, message)
+    logger.warning("%s (CHUNK_SECTION_FILTER_ON_EMPTY=warn)", message)
 
 
 def _filter_segments(
@@ -762,6 +823,8 @@ async def prepare_content_units(
     Raises:
         ValueError: ``section_classifier`` is ``"llm"`` but no ToolBox was
             supplied.
+        SectionSelectionEmptyError: A section allowlist or denylist removed
+            every segment and ``CHUNK_SECTION_FILTER_ON_EMPTY=error``.
     """
     if config.section_classifier == "llm" and tools is None:
         raise ValueError(
@@ -832,6 +895,8 @@ async def prepare_content_units(
             unlabeled,
         )
 
+    on_empty = config.section_filter_on_empty
+
     allowlist = options.filter_allowlist()
     if allowlist is not None:
         before = len(segments)
@@ -842,14 +907,31 @@ async def prepare_content_units(
             len(segments),
             before,
         )
-        if before > 0 and not segments:
-            logger.warning(
-                "Section filter %s removed all segments; check headings or allowlist",
-                allowlist,
-            )
+        _guard_empty_selection(
+            param=options.filter_allowlist_param(),
+            selection=allowlist,
+            before=before,
+            after=len(segments),
+            on_empty=on_empty,
+        )
 
     denylist = options.filter_denylist(schema)
     if denylist:
+        before = len(segments)
         segments = _filter_segments_excluding(segments, denylist)
+        # The denylist can come entirely from the resolved schema's
+        # default_exclude with no caller involvement, so name the source: this
+        # path had no empty guard at all and could blank the document silently.
+        _guard_empty_selection(
+            param=(
+                "exclude_sections"
+                if options.exclude_sections is not None
+                else f"exclude_sections (schema '{schema.id}' default)"
+            ),
+            selection=denylist,
+            before=before,
+            after=len(segments),
+            on_empty=on_empty,
+        )
 
     return await asyncio.to_thread(_size_segments, segments, splitter, config)

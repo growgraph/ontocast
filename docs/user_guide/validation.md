@@ -144,6 +144,16 @@ node carrying a real number but missing a required qualifier is neither filled
 in nor deleted — it stays a reported finding, because filling it in would be
 fabrication and deleting it would be data loss.
 
+**Provenance survives a repair.** Every asserted triple is described by an
+RDF 1.2 reifier (`_:r rdf:reifies <<( s p o )>>`), and no subject/object pattern
+matches a term sitting *inside* a triple term — so a repair that rewrote a
+statement left its provenance describing the pre-repair version. The two
+rewriting repairs now **retarget** the reifier onto the replacement, keeping its
+`prov:wasDerivedFrom` arcs intact; the prune repair **deletes** it, because the
+statement it described is gone. A node both retyped and pruned in one pass is
+swept: the prune wins. Both happen only after a pass is accepted, so a reverted
+pass leaves provenance untouched.
+
 Pruning is scoped to fact namespaces: ontology entities are never rewritten by
 the gate.
 

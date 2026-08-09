@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, MutableMapping, Sequence
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Literal as TypingLiteral
@@ -22,6 +22,8 @@ from rdflib import OWL, RDF, RDFS, SKOS, Literal, URIRef
 from rdflib.namespace import DCTERMS, PROV, SH, XSD
 from rdflib.term import Node
 
+from ontocast.onto.constants import PROVENANCE_METADATA_TERMS
+from ontocast.onto.enum import RetrievalMetric
 from ontocast.onto.model import (
     FactsGateRepairKind,
     FactsUnitFinding,
@@ -35,6 +37,7 @@ from ontocast.onto.rdfgraph import (
     RejectedLiteralTriple,
     copy_triples,
     drop_reifiers_mentioning,
+    retarget_reifiers,
 )
 from ontocast.tool.agg.signatures import canonical_literal, harvest_max_one_predicates
 from ontocast.util.numeric_inventory import canonical_number, missing_numeric_mentions
@@ -1373,6 +1376,65 @@ class ShaclRepairResult(BaseModel):
     ran: bool = False
 
 
+def record_facts_gate_metrics(
+    metrics: MutableMapping[str, int | float | str | dict],
+    *,
+    report: FactsValidationReport,
+    repair_result: ShaclRepairResult,
+    ontology_context_empty: bool = False,
+) -> None:
+    """Write the validation-gate metrics both entry paths share.
+
+    The graph pipeline's ``VALIDATE_FACTS`` node and the single-unit gate behind
+    ``/process_unit`` run the same checks minus the un-merge repair, and had
+    drifted into two hand-maintained copies of these writes — so a metric added
+    to one path was silently absent from the other, and batch dumps stopped
+    being comparable across entry paths, which is the one thing they exist for.
+    Merge-specific counters stay with the graph pipeline: they have no meaning
+    for a single unit.
+
+    Takes a plain mapping rather than ``AgentState`` so the tool layer stays
+    ignorant of the state graph.
+
+    Args:
+        metrics: ``AgentState.retrieval_metrics``, mutated in place.
+        report: Validation report describing the graph that will be served.
+        repair_result: Outcome of :func:`apply_shacl_repairs`. Its counters are
+            written only when the pass actually ran, so "SHACL did not run"
+            stays distinguishable from "ran and found nothing".
+        ontology_context_empty: Whether the facts were validated with no
+            catalog vocabulary at all. The per-term non-catalog check cannot
+            see this — with no context there is nothing to compare against — so
+            it is reported here, where an empty context is known to be
+            unexpected. Only the document path used to report it, which left
+            ``/process_unit`` silently unable to say the same thing.
+    """
+    if ontology_context_empty:
+        reason = metrics.get(
+            RetrievalMetric.EMPTY_SNAPSHOT_REASON, "no ontology context was assembled"
+        )
+        logger.warning(
+            "Validating facts against an empty ontology context (%s); every "
+            "extracted term is outside the catalog.",
+            reason,
+        )
+        metrics[RetrievalMetric.VALIDATED_WITHOUT_ONTOLOGY_CONTEXT] = True
+    if repair_result.ran:
+        metrics[RetrievalMetric.FACTS_SHACL_VIOLATIONS_BEFORE] = (
+            repair_result.violations_before
+        )
+        metrics[RetrievalMetric.FACTS_SHACL_VIOLATIONS_AFTER] = (
+            repair_result.violations_after
+        )
+        metrics[RetrievalMetric.FACTS_SHACL_REPAIRS] = len(repair_result.records)
+        metrics[RetrievalMetric.FACTS_SHACL_AUTOFIX_PASSES] = (
+            repair_result.passes_applied
+        )
+        metrics[RetrievalMetric.FACTS_SHACL_AUTOFIX_REVERTED] = repair_result.reverted
+    metrics[RetrievalMetric.FACTS_VALIDATION_FINDINGS] = len(report.findings)
+    metrics[RetrievalMetric.FACTS_VALIDATION_ERRORS] = len(report.error_findings)
+
+
 def build_surface_index(
     ontology_graph: RDFGraph | None,
     code_predicates: Sequence[str] = (),
@@ -1459,6 +1521,43 @@ def _node_asserts_nothing(graph: RDFGraph, node: Node) -> bool:
     return all(predicate in _EMPTY_NODE_PREDICATES for predicate, _ in outgoing)
 
 
+def _plan_retarget(
+    retargets: dict[tuple, tuple], removed: tuple, replacement: tuple
+) -> None:
+    """Record that ``removed``'s reifier should follow it onto ``replacement``.
+
+    First writer wins. Two violations can fire on one triple — a ``sh:datatype``
+    and a ``sh:nodeKind`` report on the same literal — and the pass appends both
+    replacements, but a reifier reifies exactly one statement. Keeping the first
+    makes the retarget deterministic (violation order) without changing which
+    replacements are applied.
+    """
+    if removed in retargets and retargets[removed] != replacement:
+        logger.debug(
+            "SHACL autofix: %s is already retargeted to %s; keeping the first",
+            removed,
+            retargets[removed],
+        )
+        return
+    retargets[removed] = replacement
+
+
+class _ShaclRepairPlan(BaseModel):
+    """One round's derived edits, before the accept/revert test."""
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    removals: list[tuple] = Field(default_factory=list)
+    additions: list[tuple] = Field(default_factory=list)
+    records: list[GraphRepairRecord] = Field(default_factory=list)
+    #: Nodes deleted outright. Referenced from inside reification triple terms,
+    #: which the removal list cannot express, so their reifiers are swept.
+    pruned: set[Node] = Field(default_factory=set)
+    #: Removed triple -> its replacement, for repairs that rewrite a statement
+    #: rather than delete it. Their reifiers are moved, not dropped.
+    retargets: dict[tuple, tuple] = Field(default_factory=dict)
+
+
 def _shacl_repairs_for(
     graph: RDFGraph,
     shapes_graph: RDFGraph,
@@ -1467,16 +1566,13 @@ def _shacl_repairs_for(
     mode: str,
     surface_index: dict[str, set[str]],
     fact_namespaces: Sequence[str],
-) -> tuple[list[tuple], list[tuple], list[GraphRepairRecord], set[Node]]:
-    """Derive (removals, additions, records, pruned nodes) for one round.
-
-    The pruned set is returned because those nodes are also referenced from
-    inside reification triple terms, which the removal list cannot express.
-    """
+) -> _ShaclRepairPlan:
+    """Derive one round's edits from a set of violations."""
     removals: list[tuple] = []
     additions: list[tuple] = []
     records: list[GraphRepairRecord] = []
     pruned: set[Node] = set()
+    retargets: dict[tuple, tuple] = {}
 
     for violation in violations:
         if violation.severity != "error" or violation.focus is None:
@@ -1503,8 +1599,11 @@ def _shacl_repairs_for(
                 and _literal_parses_as(lexical, target)
             ):
                 retyped = Literal(lexical, datatype=target)
-                removals.append((violation.focus, violation.path, violation.value))
-                additions.append((violation.focus, violation.path, retyped))
+                removed = (violation.focus, violation.path, violation.value)
+                replacement = (violation.focus, violation.path, retyped)
+                removals.append(removed)
+                additions.append(replacement)
+                _plan_retarget(retargets, removed, replacement)
                 records.append(
                     GraphRepairRecord(
                         kind=FactsGateRepairKind.SHACL_RETYPE,
@@ -1521,8 +1620,11 @@ def _shacl_repairs_for(
         ):
             resolved = resolve_unique_surface(surface_index, str(violation.value))
             if resolved is not None:
-                removals.append((violation.focus, violation.path, violation.value))
-                additions.append((violation.focus, violation.path, resolved))
+                removed = (violation.focus, violation.path, violation.value)
+                replacement = (violation.focus, violation.path, resolved)
+                removals.append(removed)
+                additions.append(replacement)
+                _plan_retarget(retargets, removed, replacement)
                 records.append(
                     GraphRepairRecord(
                         kind=FactsGateRepairKind.SHACL_CODE_RESOLVED,
@@ -1562,7 +1664,13 @@ def _shacl_repairs_for(
                 )
             )
 
-    return removals, additions, records, pruned
+    return _ShaclRepairPlan(
+        removals=removals,
+        additions=additions,
+        records=records,
+        pruned=pruned,
+        retargets=retargets,
+    )
 
 
 def _fact_scope_violations(
@@ -1681,7 +1789,7 @@ def apply_shacl_repairs(
     for _ in range(passes):
         if not violations:
             break
-        removals, additions, records, pruned = _shacl_repairs_for(
+        plan = _shacl_repairs_for(
             graph,
             shapes_graph,
             violations,
@@ -1689,20 +1797,23 @@ def apply_shacl_repairs(
             surface_index=surface_index,
             fact_namespaces=fact_namespaces,
         )
+        records = plan.records
         if not records:
             break
 
         applied_removals: list[tuple] = []
+        applied_removal_set: set[tuple] = set()
         seen_removals: set[tuple] = set()
-        for triple in removals:
+        for triple in plan.removals:
             if triple in seen_removals:
                 continue
             seen_removals.add(triple)
             if triple in graph:
                 graph.remove(triple)
                 applied_removals.append(triple)
+                applied_removal_set.add(triple)
         applied_additions: list[tuple] = []
-        for triple in additions:
+        for triple in plan.additions:
             if triple not in graph:
                 graph.add(triple)
                 applied_additions.append(triple)
@@ -1725,16 +1836,37 @@ def apply_shacl_repairs(
         # Only once the pass is accepted, and deliberately after the accept test
         # rather than alongside the removals: reification quads cannot travel
         # through _rollback (rdflib cannot add or remove a triple-term triple),
-        # and validation runs on a copy with triple terms stripped, so sweeping
-        # here changes no count and needs no undo.
-        swept = drop_reifiers_mentioning(graph, pruned)
+        # and validation runs on a copy with triple terms stripped, so this
+        # changes no count and needs no undo.
+        #
+        # Retarget before sweeping. A statement that is retyped *and* then
+        # pruned in the same pass has to be swept at its new triple term, which
+        # the retarget has already installed -- so prune still wins, by the
+        # sweep matching rather than by the retarget happening to miss.
+        retargeted = retarget_reifiers(
+            graph,
+            {
+                removed: replacement
+                for removed, replacement in plan.retargets.items()
+                if removed in applied_removal_set and replacement in graph
+            },
+        )
+        swept = drop_reifiers_mentioning(graph, plan.pruned)
 
+        provenance_note = ", ".join(
+            note
+            for note in (
+                f"{retargeted} provenance quad(s) retargeted" if retargeted else "",
+                f"{swept} orphaned provenance quad(s) swept" if swept else "",
+            )
+            if note
+        )
         logger.info(
             "SHACL autofix: %d repair(s) applied, violations %d -> %d%s",
             len(records),
             len(violations),
             len(candidate_violations),
-            f", {swept} orphaned provenance quad(s) swept" if swept else "",
+            f", {provenance_note}" if provenance_note else "",
         )
         violations = candidate_violations
         result.records.extend(records)
@@ -1806,6 +1938,14 @@ def _non_catalog_vocabulary_findings(
         if term in supplied:
             continue
         if term.startswith(_SCAFFOLDING_NAMESPACES):
+            continue
+        # Chunk-metadata terms the pipeline mints itself. The prov: guard above
+        # only covers predicates, so schema:position, schema:identifier and the
+        # chunk node's own prov:Entity / schema:Text types were reported as
+        # vocabulary the renderer improvised, on every run whose catalog does
+        # not happen to include prov and schema.org. No catalog will ever
+        # supply them: they are scaffolding, like rdfs:label.
+        if URIRef(term) in PROVENANCE_METADATA_TERMS:
             continue
         if any(term.startswith(ns) for ns in namespaces):
             continue
