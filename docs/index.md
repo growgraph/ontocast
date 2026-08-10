@@ -82,6 +82,33 @@ OntoCast uses seed ontologies (in Turtle `.ttl` format) to guide extraction. Pro
 
 ---
 
+## Configuration
+
+Start from `.env.example.minimal` — 47 variables instead of 202, grouped by the
+decision they belong to. Then pick a [playbook](user_guide/playbooks.md) for what
+you are actually doing: evaluating, building an ontology, populating facts,
+scaling to a large catalog, or serving it.
+
+The knobs that change *what the pipeline does* — as opposed to where it stores
+things:
+
+| Variable | Default | What it controls |
+|---|---|---|
+| `RENDER_MODE` | `ontology_and_facts` | Which halves run. `ontology` writes no facts; `facts` skips the ontology block and extracts only against the catalog you already have — see [Render Mode](user_guide/configuration.md#render-mode-render_mode) |
+| `ONTOLOGY_CONTEXT_MODE` | `selected_single_ontology` | Where each unit's schema comes from: LLM catalog selection, vector retrieval, or one pinned ontology — see [Ontology Context](user_guide/ontology_context.md) |
+| `LLM_GRAPH_FORMAT` | `jsonld` | Wire encoding the LLM emits graphs in; `turtle` is the legacy alternative |
+| `MAX_VISITS_PER_NODE` | `1` | Render/critic retry budget. At `1` the LLM critic never runs |
+| `PARALLEL_WORKERS` | `16` | Concurrent content-unit workers |
+| `LLM_PROVIDER` / `LLM_MODEL_NAME` / `LLM_API_KEY` | `openai` | Provider selection and credentials |
+| `ONTOCAST_ONTOLOGY_DIRECTORY` | — | Seed ontologies synced on startup |
+| `FUSEKI_URI` | — | Triple store; unset means in-memory pyoxigraph |
+
+`RENDER_MODE`, `ONTOLOGY_CONTEXT_MODE` and `LLM_GRAPH_FORMAT` are also
+per-request parameters on `/process`. Full surface, including chunking,
+retrieval and validation: [Configuration System](user_guide/configuration.md).
+
+---
+
 ## Embed in your agent
 
 ```python

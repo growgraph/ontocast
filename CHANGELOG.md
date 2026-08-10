@@ -5,9 +5,128 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.1]
 
-Nothing yet.
+### Changed
+
+- **`LLM_GRAPH_FORMAT` now defaults to `jsonld`.** Turtle remains supported as
+  the legacy encoding, for providers whose structured output handles strings
+  more reliably than nested objects. This changes behaviour for anyone who
+  never set the variable. The default was declared in four independent places —
+  `ServerConfig`, `AgentState`, `UnitState`, and the `llm_graph_format_ctx`
+  ContextVar that `coerce_llm_graph_wire` falls back to when `model_validate`
+  is called without a validation context — and all four moved together;
+  `test_llm_graph_format_default.py` now pins them against drift.
+- **`ONTOLOGY_MAX_TRIPLES` now defaults to unlimited.** At `50000` it could not
+  bind: ~634k tokens as Turtle, ~1.28M as JSON-LD, against a largest real
+  ontology of 1409 triples — a graph that size became unusable as context ~40×
+  earlier. It is a runaway-growth backstop on the per-unit ontology working
+  graph, not a context cap, and its description said otherwise; use
+  `ONTOLOGY_CONTEXT_MAX_TRIPLES` for prompt size. Still available, off by
+  default, and now tested — it previously had no test at all.
+- `ontocast_extract` (LangChain/MCP tool) takes its `render_mode` default from
+  `RENDER_MODE` instead of hardcoding `ontology_and_facts`, and parses it
+  through `parse_render_mode_param` like every other entry point. Omitting the
+  argument now honours the server's configuration.
+
+### Fixed
+
+- **`.env.example` named two local encoder models without the
+  `sentence-transformers/` prefix.** `SharedEncoder` caches by the literal
+  `(model name, device)` string, so `AGG_EMBEDDING_MODEL` and
+  `EMBEDDING_MODEL_NAME` as shipped would not share a resident model with the
+  prefixed defaults — and a user who copied the file and then followed the
+  performance guide's advice to align all three got **two copies of the same
+  checkpoint**, the exact outcome the alignment exists to prevent. Both spellings
+  are valid and both work, so nothing surfaced it. Now prefixed, with a test
+  asserting all three encoder settings keep the prefix.
+- **`ONTOLOGY_MAX_TRIPLES` could lock the ontology loop out silently.** The
+  guard compared absolute post-apply size, so a working graph seeded above the
+  cap failed on every subsequent update — discarding the LLM's work for the rest
+  of the run with only a WARNING, and with no way back under, since deletions
+  were rejected too. It now rejects only updates that *grow* the graph past the
+  cap, and logs the already-over case distinctly.
+- **`pytest` no longer loads the developer's live `.env`.** Removing `env_files`
+  from `[tool.pytest.ini_options]` had not been enough: `pytest-dotenv` loads a
+  discovered dotenv file even with no `env_files` set, so every `BaseSettings`
+  built in a test silently took local configuration (a local `RENDER_MODE=facts`
+  left the ontology block untested) and a real `LLM_API_KEY` sat in the
+  environment. The plugin is uninstalled and blocked via `-pno:dotenv` —
+  deliberately **one token**, because `toml-sort` runs with `--all` and sorts
+  array values, which split a two-token `-p no:dotenv` apart and left pytest
+  unable to start. `test/conftest.py` now also asserts the pipeline mode
+  selectors read their declared defaults, so a future mangling fails loudly with
+  a pointer rather than silently readmitting the environment.
+- The LangChain `apply_graph_update` tool pins its own Turtle coercion. Its
+  interface is Turtle-in by parameter name (`insert_ttl` / `delete_ttl`) and was
+  incorrectly tracking the LLM wire format.
+
+### Added
+
+- **`ONTOLOGY_CONTEXT_MAX_TRIPLES` (default `4000`) bounds the ontology context
+  in every mode.** Only `selected_vector_search_ontology` had ever bounded it;
+  `selected_single_ontology` (the default) and `fixed_single_ontology`
+  serialized the whole selected ontology into every prompt, and the facts
+  fan-out serialized the union of every artifact, with no cap. Over budget,
+  `onto/ontology_condense.py` drops in increasing order of harm — header/list
+  noise, then redundant structure, then glosses — and **never** drops labels,
+  types, hierarchy or domain/range. It is best-effort by design: a graph that
+  cannot fit is passed through with a warning naming the way out, because
+  cutting load-bearing schema to hit a number produces an extraction failure
+  that reads as a bad model. Enforced at `format_ontology_chapter`, the one
+  point every chapter passes through, and part of the snapshot memo key so a
+  shared snapshot cannot serve one unit's budget to the next.
+- `ONTOLOGY_SNAPSHOT_TRIPLES` retrieval metric, written for every context mode.
+  Previously only the vector resolver recorded a size, nested under
+  `patch_retrieval` — so the two modes that bounded nothing also reported
+  nothing.
+- The seed-free graph pruners and predicate vocabularies move to
+  `onto/graph_prune.py`, shared by induced-subgraph retrieval and the condenser
+  rather than duplicated.
+- **`.env.example.minimal` and a Configuration Playbooks guide.** The full
+  configuration surface is ~200 variables, which is not a thing anyone can
+  optimise at once. The minimal file carries 29, grouped by the decision they
+  belong to rather than by config class, and the guide gives a playbook per task
+  — evaluate, build an ontology, populate facts, scale the catalog, serve it —
+  each listing only what it changes, plus a symptom-to-knob triage table. Three
+  tests keep the curated file honest: every name resolves to a real setting, it
+  stays a subset of `.env.example`, and it stays under a variable ceiling so it
+  cannot accrete back toward the full surface. A fourth checks that exact
+  variable counts quoted in prose still match reality (hedged phrasing like
+  "around 200" is exempt).
+- The minimal file covers conversion and chunking (`CHUNK_MIN_SIZE` /
+  `CHUNK_MAX_SIZE`, `CHUNK_SEGMENTER`, `CHUNK_SECTION_CLASSIFIER`,
+  `CHUNK_BIBLIOGRAPHY_MODE`, `CONVERTER_PROFILE`), the local-encoder alignment,
+  SHACL shapes, LLM caching and the web-search toggle — all decisions a
+  first-time user faces that the first cut omitted.
+
+### Documentation
+
+- **`RENDER_MODE` has prose for the first time.** A `## Render Mode` section in
+  the configuration guide covering what each value actually skips — `ontology`
+  writes no facts to the triple store at all, `facts` bypasses the ontology
+  block and depends wholly on the existing catalog — plus the per-request
+  precedence chain and the 400-on-typo contract.
+- Ontology context behaviour that was only visible in code: a non-empty
+  `ontology_context_fixed_ontology_id` silently forces fixed mode over an
+  explicit `ontology_context_mode`; a fixed id matching no catalog entry
+  degrades to an empty snapshot with a warning rather than an error;
+  `selected_single_ontology` costs one extra LLM call per content unit; the
+  consistency critic runs *only* under `selected_vector_search_ontology`; and
+  facts units reuse a merged document-level context instead of re-resolving.
+- **Docs search now finds environment variables.** The Material search separator
+  did not split on `_`, so `ONTOLOGY_CONTEXT_MODE` indexed as one opaque token
+  and "ontology context mode" matched nothing; titles are boosted 1000× but no
+  heading carried the literal variable name. Separator updated, both mode
+  selectors now name their variable in the heading, and the configuration and
+  ontology-context pages carry a search boost.
+- `README.md` and `docs/index.md` gained a Configuration section — between them
+  they previously named five environment variables and not one mode selector.
+- The 20-variable `WEB_SEARCH_*` block is now three annotated tables instead of
+  a bare code fence, and states that the whole lane is inert at its default.
+- `MAX_VISITS_PER_NODE` is documented under its canonical name, not only as the
+  `MAX_VISITS` alias; stale "Qdrant"-only wording for vector mode corrected to
+  cover LanceDB.
 
 ## [0.6.0] - 2026-08-10
 

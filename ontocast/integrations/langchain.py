@@ -57,7 +57,7 @@ from ontocast.integrations.serialize import (
     models_to_llm_text,
     truncate,
 )
-from ontocast.onto.enum import RenderMode
+from ontocast.onto.enum import LLMGraphFormat
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.state import AgentState
@@ -484,16 +484,19 @@ def _chunk_text(tools: "ToolBox", max_chars: int) -> BaseTool:
 def _extract(tools: "ToolBox", max_chars: int) -> BaseTool:
     async def run(
         text: str,
-        render_mode: str = "ontology_and_facts",
+        render_mode: str | None = None,
         instruction: str = "",
         domain: str | None = None,
     ) -> str:
+        from ontocast.api.parse import parse_render_mode_param
         from ontocast.api.process_helpers import select_unit_facts_ontology_graph
         from ontocast.stategraph.unit_pipeline import run_unit_pipeline
 
         state = AgentState(
             raw_input={"input.txt": text.encode("utf-8")},
-            render_mode=RenderMode(render_mode),
+            render_mode=parse_render_mode_param(
+                render_mode, tools.config.server.render_mode
+            ),
             ontology_user_instruction=instruction,
             facts_user_instruction=instruction,
             **({"current_domain": domain} if domain else {}),
@@ -565,11 +568,19 @@ def _apply_graph_update(tools: "ToolBox", max_chars: int) -> BaseTool:
         if base_ttl:
             base.parse(data=base_ttl, format="turtle")
 
+        # This tool's own interface is Turtle-in (`insert_ttl`/`delete_ttl`),
+        # independent of LLM_GRAPH_FORMAT: the caller is an agent writing
+        # Turtle by hand, not a provider emitting a structured payload. Pin the
+        # coercion format explicitly so it does not track the wire default.
         ops: list[TripleOp] = []
-        if delete_ttl.strip():
-            ops.append(TripleOp(type="delete", graph=delete_ttl))
-        if insert_ttl.strip():
-            ops.append(TripleOp(type="insert", graph=insert_ttl))
+        for op_type, ttl in (("delete", delete_ttl), ("insert", insert_ttl)):
+            if ttl.strip():
+                ops.append(
+                    TripleOp.model_validate(
+                        {"type": op_type, "graph": ttl},
+                        context={"llm_graph_format": LLMGraphFormat.TURTLE},
+                    )
+                )
 
         before = len(base)
         updated, applied = AgentState.render_updated_graph(

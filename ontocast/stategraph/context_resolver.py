@@ -105,6 +105,9 @@ def build_merged_document_ontology_context(
     context.budget_tracker.add_duration(
         "ctx/merge_document_ontology", time.perf_counter() - started
     )
+    context.retrieval_metrics[RetrievalMetric.ONTOLOGY_SNAPSHOT_TRIPLES] = len(
+        snapshot.graph
+    )
     return UnitOntologyContext(
         snapshot=snapshot,
         writable_iris=list(patch_sources),
@@ -289,13 +292,20 @@ async def resolve_unit_ontology_context(
     mode = context.ontology_context_mode
     context.retrieval_metrics[RetrievalMetric.ONTOLOGY_CONTEXT_MODE] = mode.value
     if mode == OntologyContextMode.SELECTED_SINGLE_ONTOLOGY:
-        return await _resolve_selected_single_ontology_context(context, tools, unit)
-    if mode == OntologyContextMode.FIXED_SINGLE_ONTOLOGY:
-        return await _resolve_fixed_single_ontology_context(context, tools, unit)
-    if mode == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY:
+        resolved = await _resolve_selected_single_ontology_context(context, tools, unit)
+    elif mode == OntologyContextMode.FIXED_SINGLE_ONTOLOGY:
+        resolved = await _resolve_fixed_single_ontology_context(context, tools, unit)
+    elif mode == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY:
         require_vector_retrieval(tools)
-        return await _resolve_ensemble_context(context, tools, unit)
-    raise ValueError(f"Unknown ontology_context_mode: {mode!r}")
+        resolved = await _resolve_ensemble_context(context, tools, unit)
+    else:
+        raise ValueError(f"Unknown ontology_context_mode: {mode!r}")
+    # Recorded here rather than in each resolver so no mode can be added without
+    # a size: the two that bound nothing were also the two that reported nothing.
+    context.retrieval_metrics[RetrievalMetric.ONTOLOGY_SNAPSHOT_TRIPLES] = len(
+        resolved.snapshot.graph
+    )
+    return resolved
 
 
 def aggregate_writable_metrics(

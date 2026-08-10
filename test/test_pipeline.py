@@ -1228,6 +1228,7 @@ async def test_consolidate_ontology_node_applies_delta_on_map_stage_artifact(
     class DummyServerConfig:
         enable_ontology_consolidation = True
         ontology_max_triples = None
+        ontology_context_max_triples = 4000
 
     class DummyConfig:
         server = DummyServerConfig()

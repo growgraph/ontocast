@@ -10,11 +10,44 @@ from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
 
 from rdflib import BNode, Literal, Namespace, URIRef
-from rdflib.namespace import DCTERMS, OWL, RDF, RDFS, SKOS
+from rdflib.namespace import OWL, RDF, RDFS, SKOS
 from rdflib.plugins.sparql import prepareQuery
 
 from ontocast.onto.constants import COMMON_PREFIXES, WELL_KNOWN_PREFIXES
 from ontocast.onto.enum import SPARQLOperationType
+from ontocast.onto.graph_prune import (
+    GENERIC_INDIVIDUAL_TYPES as _GENERIC_INDIVIDUAL_TYPES,
+)
+from ontocast.onto.graph_prune import (
+    MIN_MEANINGFUL_RESTRICTION_PREDICATES as _MIN_MEANINGFUL_RESTRICTION_PREDICATES,
+)
+from ontocast.onto.graph_prune import (
+    NOISY_EXPANSION_PREDICATES as _NOISY_EXPANSION_PREDICATES,
+)
+from ontocast.onto.graph_prune import (
+    OWL_RESTRICTION_MEANINGFUL_PREDICATES as _OWL_RESTRICTION_MEANINGFUL_PREDICATES,
+)
+from ontocast.onto.graph_prune import (
+    bfs_triple_rank as _bfs_triple_rank,
+)
+from ontocast.onto.graph_prune import (
+    count_meaningful_restriction_predicates as _count_meaningful_restriction_predicates,
+)
+from ontocast.onto.graph_prune import (
+    prune_degenerate_restriction_bnodes as _prune_degenerate_restriction_bnodes,
+)
+from ontocast.onto.graph_prune import (
+    prune_orphaned_bnode_subjects as _prune_orphaned_bnode_subjects,
+)
+from ontocast.onto.graph_prune import (
+    remove_bnode_subgraph as _remove_bnode_subgraph,
+)
+from ontocast.onto.graph_prune import (
+    remove_subclassof_to_bnode as _remove_subclassof_to_bnode,
+)
+from ontocast.onto.graph_prune import (
+    strip_redundant_generic_types as _strip_redundant_generic_types,
+)
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import SPARQLOperationModel
@@ -67,28 +100,6 @@ def _compose_description_predicates(
     return _SEED_NAME_PREDICATES + deduped + _SEED_GLOSS_PREDICATES
 
 
-# RDF list expansion and ontology header predicates tend to introduce low-value
-# triples that are disconnected from business entities.
-_NOISY_EXPANSION_PREDICATES: frozenset[URIRef] = frozenset(
-    {
-        RDF.first,
-        RDF.rest,
-        OWL.imports,
-        OWL.versionIRI,
-        OWL.versionInfo,
-        OWL.priorVersion,
-        OWL.backwardCompatibleWith,
-        OWL.incompatibleWith,
-        DCTERMS.creator,
-        DCTERMS.license,
-        DCTERMS.created,
-        DCTERMS.modified,
-        DCTERMS.identifier,
-        DCTERMS.publisher,
-        DCTERMS.contributor,
-    }
-)
-
 _PROPERTY_DEFINITION_PREDICATES: frozenset[URIRef] = frozenset(
     {
         RDF.type,
@@ -111,10 +122,6 @@ _CLASS_SCHEMA_PREDICATES: frozenset[URIRef] = frozenset(
     {RDFS.subClassOf, OWL.equivalentClass}
 )
 
-_GENERIC_INDIVIDUAL_TYPES: frozenset[URIRef] = frozenset(
-    {OWL.NamedIndividual, OWL.Class, RDFS.Class}
-)
-
 _SCHEMA_URI_CONNECTIVITY_PREDICATES: frozenset[URIRef] = frozenset(
     {
         RDFS.subClassOf,
@@ -126,54 +133,12 @@ _SCHEMA_URI_CONNECTIVITY_PREDICATES: frozenset[URIRef] = frozenset(
     }
 )
 
-_OWL_RESTRICTION_MEANINGFUL_PREDICATES: frozenset[URIRef] = frozenset(
-    {
-        OWL.onProperty,
-        OWL.someValuesFrom,
-        OWL.allValuesFrom,
-        OWL.hasValue,
-        OWL.cardinality,
-        OWL.minCardinality,
-        OWL.maxCardinality,
-        OWL.qualifiedCardinality,
-        OWL.minQualifiedCardinality,
-        OWL.maxQualifiedCardinality,
-        OWL.onDataRange,
-        OWL.onClass,
-        OWL.oneOf,
-    }
-)
-
 _OWL_RESTRICTION_SHELL_PREDICATES: frozenset[URIRef] = (
     _OWL_RESTRICTION_MEANINGFUL_PREDICATES | frozenset({RDF.type})
 )
 
-# Order in which triples are admitted when a seed's BFS quota cannot hold all of them.
-# Ordering by str(triple) instead made the surviving facts effectively alphabetical: a
-# term could arrive labelled but unplaced in the hierarchy, or placed but unnamed.
-_BFS_PREDICATE_PRIORITY: tuple[frozenset[URIRef], ...] = (
-    frozenset({RDFS.label, SKOS.prefLabel}),  # name it
-    frozenset({RDF.type}),  # say what it is
-    frozenset({RDFS.subClassOf, OWL.equivalentClass}),  # place it in the hierarchy
-    frozenset({RDFS.domain, RDFS.range, RDFS.subPropertyOf}),  # connect properties
-    frozenset(
-        {RDFS.comment, SKOS.definition, SKOS.scopeNote, SKOS.altLabel}
-    ),  # describe it (scope notes carry usage contracts)
-)
-
-
-def _bfs_triple_rank(triple: tuple) -> tuple[int, str]:
-    """Sort key admitting defining triples before incidental ones, ties lexicographic."""
-    predicate = triple[1]
-    for rank, predicates in enumerate(_BFS_PREDICATE_PRIORITY):
-        if predicate in predicates:
-            return (rank, str(triple))
-    return (len(_BFS_PREDICATE_PRIORITY), str(triple))
-
-
 _RESTRICTION_SHELL_MAX_TRIPLES = 16
 _SCHEMA_PATH_MAX_DEPTH = 4
-_MIN_MEANINGFUL_RESTRICTION_PREDICATES = 2
 
 _PROPERTY_TYPES: frozenset[URIRef] = frozenset(
     {OWL.ObjectProperty, OWL.DatatypeProperty, RDF.Property}
@@ -456,33 +421,6 @@ def _bind_used_prefixes(
         graph.bind(prefix, Namespace(uri))
 
 
-def _prune_orphaned_bnode_subjects(graph: RDFGraph) -> None:
-    """Remove blank-node subjects that no triple in the graph references as object."""
-    bnode_as_object: set[BNode] = {o for _, _, o in graph if isinstance(o, BNode)}
-    for triple in list(graph):
-        subj, _, _ = triple
-        if isinstance(subj, BNode) and subj not in bnode_as_object:
-            graph.remove(triple)
-
-
-def _strip_redundant_generic_types(graph: RDFGraph) -> None:
-    """Drop generic rdf:types when the subject has informative types or URI hierarchy."""
-    for subj, pred, obj in list(graph):
-        if pred != RDF.type or obj not in _GENERIC_INDIVIDUAL_TYPES:
-            continue
-        other_types = [
-            term
-            for _, _, term in graph.triples((subj, RDF.type, None))
-            if term not in _GENERIC_INDIVIDUAL_TYPES
-        ]
-        has_subclass_uri = any(
-            isinstance(parent, URIRef)
-            for _, _, parent in graph.triples((subj, RDFS.subClassOf, None))
-        )
-        if other_types or has_subclass_uri:
-            graph.remove((subj, pred, obj))
-
-
 def _strip_redundant_named_individual_types(graph: RDFGraph) -> None:
     """Drop rdf:type owl:NamedIndividual when the subject has other informative types."""
     _strip_redundant_generic_types(graph)
@@ -736,29 +674,6 @@ def _find_schema_uri_connected_components(
         if component:
             components.append(component)
     return components
-
-
-def _count_meaningful_restriction_predicates(
-    graph: RDFGraph,
-    bnode: BNode,
-) -> int:
-    return sum(
-        1
-        for _, pred, _ in graph.triples((bnode, None, None))
-        if pred in _OWL_RESTRICTION_MEANINGFUL_PREDICATES
-    )
-
-
-def _remove_bnode_subgraph(graph: RDFGraph, bnode: BNode) -> None:
-    for triple in list(graph.triples((bnode, None, None))):
-        graph.remove(triple)
-
-
-def _remove_subclassof_to_bnode(graph: RDFGraph, bnode: BNode) -> None:
-    for triple in list(graph.triples((None, RDFS.subClassOf, bnode))):
-        graph.remove(triple)
-    for triple in list(graph.triples((None, OWL.equivalentClass, bnode))):
-        graph.remove(triple)
 
 
 def _materialize_owl_restriction_shell(
@@ -1154,29 +1069,6 @@ def _bfs_expand_from_seed(
         selected += 1
         if selected >= quota:
             break
-
-
-def _prune_degenerate_restriction_bnodes(result: RDFGraph) -> int:
-    """Remove stub restriction blank nodes and subClassOf edges pointing to them."""
-    dropped = 0
-    bnode_objects = sorted(
-        {
-            obj
-            for _, _, obj in result.triples((None, RDFS.subClassOf, None))
-            if isinstance(obj, BNode)
-        },
-        key=str,
-    )
-    for bnode in bnode_objects:
-        if (
-            _count_meaningful_restriction_predicates(result, bnode)
-            >= _MIN_MEANINGFUL_RESTRICTION_PREDICATES
-        ):
-            continue
-        _remove_subclassof_to_bnode(result, bnode)
-        _remove_bnode_subgraph(result, bnode)
-        dropped += 1
-    return dropped
 
 
 def _class_has_property_incidence(graph: RDFGraph, class_ref: URIRef) -> bool:

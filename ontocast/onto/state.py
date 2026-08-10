@@ -653,19 +653,19 @@ class AgentState(BasePydanticModel):
         description=("Rendering mode: ontology, facts, or ontology_and_facts."),
     )
     llm_graph_format: LLMGraphFormat = Field(
-        default=LLMGraphFormat.TURTLE,
+        default=LLMGraphFormat.JSONLD,
         description=(
             "Format used by the LLM for emitting RDF graph payloads: "
-            "'turtle' (legacy) or 'jsonld' (compact JSON-LD objects embedded "
-            "directly in the structured response)."
+            "'jsonld' (default; compact JSON-LD objects embedded directly in the "
+            "structured response) or 'turtle' (legacy Turtle strings)."
         ),
     )
     ontology_context_mode: OntologyContextMode = Field(
         default=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
         description=(
             "Per-unit ontology context: selected_single_ontology (LLM-picked catalog), "
-            "selected_vector_search_ontology (Qdrant ensemble), or "
-            "fixed_single_ontology (catalog ontology_id via ontology_context_fixed_ontology_id)."
+            "selected_vector_search_ontology (vector-store ensemble; Qdrant or LanceDB), "
+            "or fixed_single_ontology (catalog ontology_id via ontology_context_fixed_ontology_id)."
         ),
     )
     # Budget Tracking
@@ -776,17 +776,30 @@ class AgentState(BasePydanticModel):
             for query in queries:
                 cls._apply_update_query(updated_graph, query)
 
-        # Check if updated graph exceeds max_triples limit
+        # Reject only updates that GROW the graph past the limit. Comparing the
+        # absolute post-apply size alone locked the loop out: a seed snapshot
+        # already over the cap made every update for the rest of the run fail
+        # this check, discarding the LLM's work with only a warning and no way
+        # to shrink back under. Deletions and net-shrinking updates now apply.
         if max_triples is not None and len(updated_graph) > max_triples:
             import logging
 
             logger = logging.getLogger(__name__)
-            logger.warning(
-                f"Ontology update skipped: would exceed limit "
-                f"({len(updated_graph)} > {max_triples} triples). "
-                f"Original size: {len(graph)} triples."
-            )
-            return graph, False  # Return original, unchanged
+            if len(graph) > max_triples:
+                logger.warning(
+                    f"Ontology graph is already above the configured limit "
+                    f"({len(graph)} > {max_triples} triples) before this update. "
+                    f"Applying it anyway because it does not grow the graph "
+                    f"({len(updated_graph)} triples); raise or unset "
+                    f"ONTOLOGY_MAX_TRIPLES if this is expected."
+                )
+            if len(updated_graph) > len(graph):
+                logger.warning(
+                    f"Ontology update skipped: would exceed limit "
+                    f"({len(updated_graph)} > {max_triples} triples). "
+                    f"Original size: {len(graph)} triples."
+                )
+                return graph, False  # Return original, unchanged
 
         return updated_graph, True
 

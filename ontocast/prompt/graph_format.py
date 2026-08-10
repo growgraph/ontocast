@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from ontocast.onto.enum import LLMGraphFormat
 from ontocast.onto.llm_graph_payload import llm_graph_format_ctx
+from ontocast.onto.ontology_condense import condense_graph_for_prompt
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.prompt.facts_guidelines import format_facts_operational_guidelines
 from ontocast.prompt.llm_json_schema import format_instructions_for_model
@@ -134,8 +135,25 @@ class GraphFormatProfile:
             return graph.serialize_canonical_turtle()
         return graph.serialize_compact_jsonld_for_prompt()
 
-    def format_ontology_chapter(self, graph: RDFGraph, *, suffix: str = "") -> str:
-        body = self.serialize_graph_for_prompt(graph)
+    def format_ontology_chapter(
+        self,
+        graph: RDFGraph,
+        *,
+        suffix: str = "",
+        max_triples: int | None = None,
+    ) -> str:
+        """Serialize the ontology chapter, condensing it toward ``max_triples``.
+
+        This is the one point every ontology chapter passes through -- both unit
+        loops, render and critique, the shared snapshot and the ontology loop's
+        mutable working graph -- so it is where the prompt budget is enforced.
+
+        ``suffix`` is built by the caller from the uncondensed graph, which stays
+        correct: the index only names terms by ``rdfs:label`` and their
+        domain/range, none of which condensing drops.
+        """
+        condensed, _ = condense_graph_for_prompt(graph, max_triples)
+        body = self.serialize_graph_for_prompt(condensed)
         chapter = f"\n\n# ONTOLOGY\n\n```{self.context_fence_lang()}\n{body}\n```\n"
         return chapter + suffix
 

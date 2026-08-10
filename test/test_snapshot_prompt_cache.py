@@ -101,6 +101,35 @@ def test_different_wire_formats_do_not_collide(monkeypatch) -> None:
     assert len(calls) == 2
 
 
+def test_budget_is_part_of_the_memo_key(monkeypatch) -> None:
+    """A shared snapshot must not serve one unit's budget to the next.
+
+    The snapshot is shared by reference across the whole fan-out. With the
+    budget outside the key, whichever caller arrived first would fix the chapter
+    for everyone, and changing ONTOLOGY_CONTEXT_MAX_TRIPLES would appear to do
+    nothing after the first call.
+    """
+    profile, calls = _counting_profile(monkeypatch)
+    # The shared `_graph` helper is all labels and types, which condensing must
+    # never drop -- so it would shrink by nothing. Add glosses to give the
+    # condenser something it is allowed to remove.
+    graph = _graph(40)
+    for index in range(40):
+        graph.add((EX[f"C{index}"], RDFS.comment, Literal(f"About class {index}.")))
+    snapshot = _snapshot(graph)
+
+    uncapped = snapshot.prompt_chapter(profile)
+    capped = snapshot.prompt_chapter(profile, max_triples=90)
+
+    assert len(calls) == 2, "a different budget must miss the memo"
+    assert capped != uncapped
+    assert len(capped) < len(uncapped)
+
+    # ...and the same budget still hits it.
+    assert snapshot.prompt_chapter(profile, max_triples=90) == capped
+    assert len(calls) == 2
+
+
 def test_memo_does_not_grow_without_bound() -> None:
     profile = get_graph_format_profile(LLMGraphFormat.TURTLE)
     snapshot = _snapshot(_graph())

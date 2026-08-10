@@ -56,6 +56,11 @@ class RetrievalMetric(StrEnum):
     EMPTY_SNAPSHOT_REASON = "empty_snapshot_reason"
     ONTOLOGY_WRITABLE_COUNT = "ontology_writable_count"
     ONTOLOGY_PRIMARY_UNITS = "ontology_primary_units"
+    #: Triples in the resolved ontology snapshot, written by every context mode.
+    #: Before this existed only the vector resolver recorded a size, nested under
+    #: :attr:`PATCH_RETRIEVAL`, so the two modes that bound nothing were also the
+    #: two that reported nothing.
+    ONTOLOGY_SNAPSHOT_TRIPLES = "ontology_snapshot_triples"
 
     # Facts fan-out.
     FACTS_ANCHOR_COUNT = "facts_anchor_count"
@@ -96,9 +101,11 @@ class RenderMode(StrEnum):
 class LLMGraphFormat(StrEnum):
     """Format used by the LLM when emitting RDF graph payloads.
 
-    - ``turtle``: graph fields are Turtle strings (legacy behavior).
-    - ``jsonld``: graph fields are compact JSON-LD objects embedded directly
-      in the structured LLM response. Internally parsed back into ``RDFGraph``.
+    - ``jsonld`` (default): graph fields are compact JSON-LD objects embedded
+      directly in the structured LLM response. Internally parsed back into
+      ``RDFGraph``.
+    - ``turtle``: graph fields are Turtle strings (legacy encoding, kept for
+      providers whose structured output handles strings better than objects).
     """
 
     TURTLE = "turtle"

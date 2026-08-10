@@ -103,11 +103,12 @@ class ExtractArgs(BaseModel):
     """Run the OntoCast extraction pipeline over a piece of text."""
 
     text: str = Field(description="The source text to extract from.")
-    render_mode: str = Field(
-        default="ontology_and_facts",
+    render_mode: str | None = Field(
+        default=None,
         description=(
             "What to produce: 'ontology' for schema only, 'facts' for instances "
-            "against the existing ontology, or 'ontology_and_facts' for both."
+            "against the existing ontology, or 'ontology_and_facts' for both. "
+            "Omit to use the server's configured RENDER_MODE."
         ),
     )
     instruction: str = Field(

@@ -1,10 +1,52 @@
+---
+search:
+  boost: 3
+---
+
 # Ontology Context
 
 Before the LLM renders ontology updates for each content unit, OntoCast assembles **ontology context** — the background TTL/JSON-LD the model sees when extracting concepts.
 
 Context is assembled **per unit** inside the ontology loop, not at document level.
 
-## Context Modes
+!!! note "Facts units do not re-resolve context"
+
+    When an ontology stage has run, the facts fan-out reuses one merged view of
+    the document's ontologies (assembly mode `document_merged_reduced`) rather
+    than resolving per unit again. The mode below therefore governs the
+    **ontology** loop, plus facts-only entry points (`RENDER_MODE=facts` and
+    `/process_unit`), where there is no prior ontology stage to merge.
+
+    "Reduced" there names the map/**reduce** stage, not size reduction: the
+    merge is a plain union of every ontology artifact with `owl:Ontology`
+    headers stripped. Its size is bounded by
+    [`ONTOLOGY_CONTEXT_MAX_TRIPLES`](#how-large-is-the-context), like every
+    other prompt.
+
+## How large is the context?
+
+Only vector mode bounds retrieval itself; every mode is bounded at
+serialization by `ONTOLOGY_CONTEXT_MAX_TRIPLES` (default `4000`).
+
+| Mode | What reaches the LLM |
+|---|---|
+| `selected_single_ontology` | The whole selected catalog ontology, condensed to the budget |
+| `fixed_single_ontology` | The whole pinned ontology, condensed to the budget |
+| `selected_vector_search_ontology` | A retrieved subgraph capped at `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` (`1200`), which binds first. That is a growth budget during expansion, not a final ceiling — the small-module closure runs after it and can add whole modules past it, which the budget above then catches |
+| Facts prompts | Union of all ontology artifacts, condensed to the budget |
+
+Cost per triple, measured through the prompt serializers: **50.7 chars in
+Turtle, 102.6 in JSON-LD** — so the default budget is ~51k tokens as Turtle and
+~103k as JSON-LD. See [Performance](performance.md#how-much-a-triple-costs).
+
+Condensing drops header/list noise first, then redundant structure (generic
+types, stub restrictions, orphan blank nodes), then glosses (`rdfs:comment`,
+`skos:definition`, `skos:scopeNote`, `skos:altLabel`). Labels, types, hierarchy
+and domain/range are never dropped, so a catalog that cannot fit is passed
+through oversized with a warning rather than silently gutted — see
+[Configuration](configuration.md#ontology-context-size-ontology_context_max_triples).
+
+## Context Modes (`ONTOLOGY_CONTEXT_MODE`)
 
 Set via `ONTOLOGY_CONTEXT_MODE` (server default) or per-request `ontology_context_mode`.
 
@@ -15,6 +57,9 @@ The LLM selects one catalog ontology per content unit from seed ontologies in th
 - Does **not** require a vector store
 - Vector store initialization is skipped unless vector mode is requested
 - Optional `ontology_selection_user_instruction` guides selection
+- **Costs one extra LLM call per content unit** — the selection is itself a
+  provider call, charged to the unit's budget tracker, on top of the render and
+  any repair calls. The other two modes make no selection call.
 
 ### `selected_vector_search_ontology`
 
@@ -28,6 +73,14 @@ Retrieves a stitched ontology ensemble from the configured vector store using hy
 | **LanceDB** (embedded) | `LANCEDB_ENABLED=true`, `LANCEDB_DATA_DIR=~/.lancedb_data` — install with `uv sync --extra lancedb` |
 
 Also required: compatible `EMBEDDING_*` settings and indexed ontology atoms in the active tenant/project partition (Qdrant collection or LanceDB table).
+
+!!! note "This is the only mode that runs the consistency critic"
+
+    The `CONSISTENCY_CRITIC` stage returns immediately unless the effective mode
+    is `selected_vector_search_ontology` (it also needs a live vector store and
+    at least one ontology artifact). Under the other two modes the stage is
+    present in the graph but does no work — so switching away from vector mode
+    silently drops that check.
 
 On `ToolBox.initialize` in this mode:
 
@@ -288,7 +341,15 @@ The value may be:
 - the short **`ontology_id`** (e.g. `observation`), or
 - the author **prefix** (e.g. `obs` when the Turtle binds `obs:` to that ontology namespace).
 
-Returns **400** if the mode is fixed but no ontology id is provided.
+Returns **400** if the mode is fixed but no ontology id is provided. `ontocast serve` and `ontocast process` are stricter still: a fixed mode with no configured id fails at **startup**, not per request.
+
+!!! warning "An id that matches nothing degrades silently"
+
+    A *missing* id is a 400. An id that is present but matches no catalog entry
+    is **not** an error: it logs a warning and the unit renders against an
+    **empty ontology snapshot**, which usually looks like a bad extraction
+    rather than a misconfiguration. Check the catalog
+    (`GET /ontologies`) if a fixed-mode run suddenly produces sparse output.
 
 ## Ontology identity
 
@@ -309,7 +370,26 @@ Ontology-update prompts use **complement** framing (single writable IRI or multi
 
 ## Per-Request Overrides
 
-All modes can be overridden on `/process` and `/process_unit`:
+All modes can be overridden on `/process` and `/process_unit`, from the query
+string, a JSON body, or a multipart form field alike. Precedence is
+`query parameter > JSON/form body > ONTOLOGY_CONTEXT_MODE > selected_single_ontology`,
+and an unrecognised value is rejected with **400**.
+
+!!! warning "`ontology_context_fixed_ontology_id` overrides the mode, silently"
+
+    A non-empty `ontology_context_fixed_ontology_id` **forces**
+    `fixed_single_ontology` — it beats an explicit `ontology_context_mode` on the
+    same request and the server default, with no error and no warning in the
+    response. This is deliberate (it lets a client pin an ontology without also
+    restating the mode), but it means
+
+    ```text
+    ?ontology_context_mode=selected_vector_search_ontology
+    &ontology_context_fixed_ontology_id=legal_core
+    ```
+
+    runs in **fixed** mode, not vector mode. Send an empty
+    `ontology_context_fixed_ontology_id` to use any other mode.
 
 ```bash
 curl -X POST "http://localhost:8999/process?ontology_context_mode=fixed_single_ontology&ontology_context_fixed_ontology_id=legal_core" \

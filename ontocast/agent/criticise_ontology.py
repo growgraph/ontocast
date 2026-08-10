@@ -69,7 +69,9 @@ async def criticise_ontology(
     # opaque IRIs cannot judge the term choices it is asked about. No memo here
     # -- effective_graph_for_prompt returns a bare graph, not a snapshot.
     ontology_chapter = profile.format_ontology_chapter(
-        current_graph, suffix=build_ontology_index(current_graph)
+        current_graph,
+        suffix=build_ontology_index(current_graph),
+        max_triples=state.ontology_context_max_triples,
     )
 
     text_chapter = text_template.format(text=state.content_unit.extraction_text)

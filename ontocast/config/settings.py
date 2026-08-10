@@ -690,18 +690,20 @@ class ServerConfig(BaseSettings):
         description="Rendering mode: ontology, facts, or ontology_and_facts.",
     )
     llm_graph_format: LLMGraphFormat = Field(
-        default=LLMGraphFormat.TURTLE,
+        default=LLMGraphFormat.JSONLD,
         description=(
             "Format used by the LLM when emitting RDF graph payloads: "
-            "'turtle' (legacy, Turtle strings) or 'jsonld' (compact JSON-LD objects)."
+            "'jsonld' (default, compact JSON-LD objects) or 'turtle' "
+            "(legacy, Turtle strings)."
         ),
     )
     ontology_context_mode: OntologyContextMode = Field(
         default=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
         description=(
-            "Per-unit ontology context: selected_single_ontology (LLM-picked catalog), "
-            "selected_vector_search_ontology (Qdrant stitched ensemble), or "
-            "fixed_single_ontology (catalog ontology_id; requires ontology_context_fixed_ontology_id)."
+            "Per-unit ontology context: selected_single_ontology (LLM-picked catalog; "
+            "costs one extra LLM call per content unit), selected_vector_search_ontology "
+            "(vector-store stitched ensemble; Qdrant or LanceDB), or fixed_single_ontology "
+            "(catalog ontology_id; requires ontology_context_fixed_ontology_id)."
         ),
     )
     ontology_context_fixed_ontology_id: str = Field(
@@ -712,11 +714,23 @@ class ServerConfig(BaseSettings):
         ),
     )
     ontology_max_triples: int | None = Field(
-        default=50000,
+        default=None,
         ge=1,
-        description="Maximum number of triples allowed in ontology graph. "
-        "Updates that would exceed this limit are skipped with a warning. "
-        "Set to None for unlimited.",
+        description="Runaway-growth backstop on the per-unit ontology working "
+        "graph: an update whose result would exceed this is skipped with a "
+        "warning, all-or-nothing. Not a prompt bound -- use "
+        "ontology_context_max_triples for context size. None (default) disables it.",
+    )
+    ontology_context_max_triples: int | None = Field(
+        default=4000,
+        ge=1,
+        description="Triple budget for the ontology context serialized into a "
+        "prompt, in every ontology_context_mode. Over budget, the least "
+        "load-bearing triples are dropped first (header/list noise, then "
+        "redundant structure, then comments and definitions); labels, types, "
+        "hierarchy and domain/range are never dropped, so this is best-effort "
+        "and a graph that cannot fit is passed through with a warning. "
+        "None disables condensing.",
     )
     parallel_workers: int = Field(
         default=16,

@@ -224,7 +224,8 @@ async def render_ontology_update(
     access = ontology_access_for_unit_ontology(state)
     intro_instruction = _build_update_intro(state, access)
     ontology_chapter = profile.format_ontology_chapter(
-        access.effective_graph_for_prompt()
+        access.effective_graph_for_prompt(),
+        max_triples=state.ontology_context_max_triples,
     )
     output_instruction = profile.render_update_output_instruction()
     improvement_instruction_str = render_suggestions_prompt(
