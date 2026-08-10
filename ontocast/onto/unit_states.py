@@ -75,10 +75,10 @@ class UnitState(BasePydanticModel):
     #: ``max_visits_per_node``, which makes the worst case quadratic.
     max_critic_visits_per_node: int | None = Field(default=None, ge=1)
     llm_graph_format: LLMGraphFormat = Field(
-        default=LLMGraphFormat.TURTLE,
+        default=LLMGraphFormat.JSONLD,
         description=(
             "Format used by the LLM for emitting RDF graph payloads: "
-            "'turtle' or 'jsonld'."
+            "'jsonld' (default) or 'turtle' (legacy)."
         ),
     )
 

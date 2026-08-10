@@ -31,6 +31,45 @@ logger = logging.getLogger(__name__)
 os.environ.setdefault("LLM_API_KEY", "sk-test-placeholder-not-a-real-key")
 
 
+#: Settings that change *what the pipeline does* rather than where it stores
+#: things. A leak in any of these invalidates the run with no other symptom --
+#: a stray RENDER_MODE=facts skips the entire ontology block while the suite
+#: still reports green -- so they are checked, and the ~200 storage/tuning
+#: settings are not.
+_PIPELINE_MODE_SELECTORS = ("render_mode", "ontology_context_mode", "llm_graph_format")
+
+
+def _assert_pipeline_config_not_leaked() -> None:
+    """Fail fast when the environment overrides a pipeline mode selector.
+
+    The suite is only meaningful against declared defaults. Two things have
+    broken that: `pytest-dotenv` loading a developer's live `.env` (it does so
+    even with no `env_files` set), and a variable exported in the shell. The
+    `-pno:dotenv` entry in `addopts` prevents the first, but a preventive
+    measure with no detector fails silently -- and that entry has already been
+    mangled once by `toml-sort` reordering the array. This is the detector.
+    """
+    from ontocast.config.settings import ServerConfig
+
+    effective = ServerConfig()
+    leaked = {
+        name: (getattr(effective, name), ServerConfig.model_fields[name].default)
+        for name in _PIPELINE_MODE_SELECTORS
+        if getattr(effective, name) is not ServerConfig.model_fields[name].default
+    }
+    if leaked:
+        detail = ", ".join(
+            f"{name.upper()}={found.value!r} (declared default {default.value!r})"
+            for name, (found, default) in sorted(leaked.items())
+        )
+        raise pytest.UsageError(
+            f"Pipeline configuration leaked into the test environment: {detail}. "
+            "The suite must run against declared defaults. Unset the variable in "
+            "your shell, or -- if a dotenv file is being loaded -- check that "
+            "'-pno:dotenv' survived in the addopts array of pyproject.toml."
+        )
+
+
 @pytest.fixture(scope="session")
 def qdrant_session_test_context(
     tmp_path_factory: pytest.TempPathFactory,
@@ -89,6 +128,7 @@ warnings.filterwarnings(
 
 def pytest_configure(config):
     """Configure pytest to suppress known deprecation warnings from third-party libraries."""
+    _assert_pipeline_config_not_leaked()
     # Suppress Pydantic deprecation warnings from docling_core (third-party library we cannot modify)
     config.addinivalue_line(
         "filterwarnings",

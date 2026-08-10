@@ -5,9 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.1]
 
-Nothing yet.
+### Changed
+
+- **`LLM_GRAPH_FORMAT` now defaults to `jsonld`.** Turtle remains supported as
+  the legacy encoding, for providers whose structured output handles strings
+  more reliably than nested objects. This changes behaviour for anyone who
+  never set the variable. The default was declared in four independent places —
+  `ServerConfig`, `AgentState`, `UnitState`, and the `llm_graph_format_ctx`
+  ContextVar that `coerce_llm_graph_wire` falls back to when `model_validate`
+  is called without a validation context — and all four moved together;
+  `test_llm_graph_format_default.py` now pins them against drift.
+- `ontocast_extract` (LangChain/MCP tool) takes its `render_mode` default from
+  `RENDER_MODE` instead of hardcoding `ontology_and_facts`, and parses it
+  through `parse_render_mode_param` like every other entry point. Omitting the
+  argument now honours the server's configuration.
+
+### Fixed
+
+- **`pytest` no longer loads the developer's live `.env`.** Removing `env_files`
+  from `[tool.pytest.ini_options]` had not been enough: `pytest-dotenv` loads a
+  discovered dotenv file even with no `env_files` set, so every `BaseSettings`
+  built in a test silently took local configuration (a local `RENDER_MODE=facts`
+  left the ontology block untested) and a real `LLM_API_KEY` sat in the
+  environment. The plugin is uninstalled and blocked via `-pno:dotenv` —
+  deliberately **one token**, because `toml-sort` runs with `--all` and sorts
+  array values, which split a two-token `-p no:dotenv` apart and left pytest
+  unable to start. `test/conftest.py` now also asserts the pipeline mode
+  selectors read their declared defaults, so a future mangling fails loudly with
+  a pointer rather than silently readmitting the environment.
+- The LangChain `apply_graph_update` tool pins its own Turtle coercion. Its
+  interface is Turtle-in by parameter name (`insert_ttl` / `delete_ttl`) and was
+  incorrectly tracking the LLM wire format.
+
+### Documentation
+
+- **`RENDER_MODE` has prose for the first time.** A `## Render Mode` section in
+  the configuration guide covering what each value actually skips — `ontology`
+  writes no facts to the triple store at all, `facts` bypasses the ontology
+  block and depends wholly on the existing catalog — plus the per-request
+  precedence chain and the 400-on-typo contract.
+- Ontology context behaviour that was only visible in code: a non-empty
+  `ontology_context_fixed_ontology_id` silently forces fixed mode over an
+  explicit `ontology_context_mode`; a fixed id matching no catalog entry
+  degrades to an empty snapshot with a warning rather than an error;
+  `selected_single_ontology` costs one extra LLM call per content unit; the
+  consistency critic runs *only* under `selected_vector_search_ontology`; and
+  facts units reuse a merged document-level context instead of re-resolving.
+- **Docs search now finds environment variables.** The Material search separator
+  did not split on `_`, so `ONTOLOGY_CONTEXT_MODE` indexed as one opaque token
+  and "ontology context mode" matched nothing; titles are boosted 1000× but no
+  heading carried the literal variable name. Separator updated, both mode
+  selectors now name their variable in the heading, and the configuration and
+  ontology-context pages carry a search boost.
+- `README.md` and `docs/index.md` gained a Configuration section — between them
+  they previously named five environment variables and not one mode selector.
+- The 20-variable `WEB_SEARCH_*` block is now three annotated tables instead of
+  a bare code fence, and states that the whole lane is inert at its default.
+- `MAX_VISITS_PER_NODE` is documented under its canonical name, not only as the
+  `MAX_VISITS` alias; stale "Qdrant"-only wording for vector mode corrected to
+  cover LanceDB.
 
 ## [0.6.0] - 2026-08-10
 

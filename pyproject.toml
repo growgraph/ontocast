@@ -65,7 +65,7 @@ license-files = ["LICENSE"]
 name = "ontocast"
 readme = "README.md"
 requires-python = ">=3.12,<4.0"
-version = "0.6.0"
+version = "0.6.1"
 
 [project.optional-dependencies]
 # `plot` is deliberately excluded: pygraphviz builds from source against system
@@ -80,7 +80,6 @@ anthropic = [
 dev = [
   "anyio>=4.4.0",
   "pre-commit>=4.2.0",
-  "pytest-dotenv>=0.5.2",
   "pytest-order>=1.3.0",
   "pytest>=8.3.5",
   "ruff>=0.11.2",
@@ -209,10 +208,26 @@ venv = ".venv"
 venvPath = "."
 
 [tool.pytest.ini_options]
+# `-pno:dotenv` is one token on purpose. toml-sort runs with `--all`, which sorts
+# array *values*, so a two-token `-p no:dotenv` gets pulled apart -- it was sorted
+# into `-p`, `-v`, `no:dotenv` once already, and `-p` then swallowed `-v`. Keep
+# every element self-contained and re-sorting stays harmless. Same reason the
+# explanation lives above the key rather than inside the array: an in-array
+# comment ends up attached to whichever element sorts next to it.
+#
+# What it guards: the suite must never inherit a developer's live .env.
+# pytest-dotenv loads a discovered dotenv file even with no `env_files` set,
+# which silently fed local configuration into every `BaseSettings` built in a
+# test (a real RENDER_MODE=facts left the ontology block untested) and put a real
+# LLM_API_KEY in the environment. Blocked here as well as uninstalled, so a
+# globally-installed copy cannot resurrect it. `test/conftest.py` asserts the
+# result, so a future mangling fails loudly instead of silently. Tests that need
+# a variable set it with `monkeypatch`.
 addopts = [
   "--disable-warnings",
   "--strict-markers",
   "--tb=short",
+  "-pno:dotenv",
   "-v"
 ]
 # Marker semantics -- keep these honest, the CI job selects on them.

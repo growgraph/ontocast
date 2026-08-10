@@ -96,9 +96,11 @@ class RenderMode(StrEnum):
 class LLMGraphFormat(StrEnum):
     """Format used by the LLM when emitting RDF graph payloads.
 
-    - ``turtle``: graph fields are Turtle strings (legacy behavior).
-    - ``jsonld``: graph fields are compact JSON-LD objects embedded directly
-      in the structured LLM response. Internally parsed back into ``RDFGraph``.
+    - ``jsonld`` (default): graph fields are compact JSON-LD objects embedded
+      directly in the structured LLM response. Internally parsed back into
+      ``RDFGraph``.
+    - ``turtle``: graph fields are Turtle strings (legacy encoding, kept for
+      providers whose structured output handles strings better than objects).
     """
 
     TURTLE = "turtle"

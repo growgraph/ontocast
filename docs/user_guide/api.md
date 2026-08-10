@@ -29,16 +29,21 @@ Runs the full document pipeline: convert → chunk → ontology map/reduce → f
 
 **Common query / form / JSON parameters:**
 
+Every parameter below is read identically from the query string, a JSON body,
+and a multipart form field. Precedence is **query parameter > JSON/form body >
+the server's environment default**. A value that is present but unrecognised is
+rejected with **400**; it is never silently replaced by the default.
+
 | Parameter | Description |
 |-----------|-------------|
 | `tenant` | Tenant name for store partitioning (default: `ontocast`) |
 | `project` | Project name (default: `test`) |
-| `render_mode` | `ontology`, `facts`, or `ontology_and_facts` |
+| `render_mode` | Which pipeline blocks run: `ontology`, `facts`, or `ontology_and_facts`. Defaults to `RENDER_MODE` — see [Render Mode](configuration.md#render-mode-render_mode) |
 | `max_visits` | Per-request render/critic retry budget (≥ 1) |
 | `strip_provenance` | When true, omit reification/provenance from returned Turtle |
-| `llm_graph_format` | `turtle` or `jsonld` for this request |
-| `ontology_context_mode` | Per-request ontology context mode |
-| `ontology_context_fixed_ontology_id` | Required when mode is `fixed_single_ontology` (IRI, `ontology_id`, or author prefix) |
+| `llm_graph_format` | `jsonld` (default) or `turtle` for this request |
+| `ontology_context_mode` | Per-request ontology context mode. **Ignored when `ontology_context_fixed_ontology_id` is non-empty** — see [Ontology Context Mode](configuration.md#ontology-context-mode-ontology_context_mode) |
+| `ontology_context_fixed_ontology_id` | Required when mode is `fixed_single_ontology` (IRI, `ontology_id`, or author prefix). Setting it **forces** fixed mode regardless of `ontology_context_mode` |
 | `ontology_user_instruction` | Guide ontology extraction |
 | `ontology_selection_user_instruction` | Guide catalog ontology selection |
 | `facts_user_instruction` | Guide facts extraction |

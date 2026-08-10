@@ -690,18 +690,20 @@ class ServerConfig(BaseSettings):
         description="Rendering mode: ontology, facts, or ontology_and_facts.",
     )
     llm_graph_format: LLMGraphFormat = Field(
-        default=LLMGraphFormat.TURTLE,
+        default=LLMGraphFormat.JSONLD,
         description=(
             "Format used by the LLM when emitting RDF graph payloads: "
-            "'turtle' (legacy, Turtle strings) or 'jsonld' (compact JSON-LD objects)."
+            "'jsonld' (default, compact JSON-LD objects) or 'turtle' "
+            "(legacy, Turtle strings)."
         ),
     )
     ontology_context_mode: OntologyContextMode = Field(
         default=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
         description=(
-            "Per-unit ontology context: selected_single_ontology (LLM-picked catalog), "
-            "selected_vector_search_ontology (Qdrant stitched ensemble), or "
-            "fixed_single_ontology (catalog ontology_id; requires ontology_context_fixed_ontology_id)."
+            "Per-unit ontology context: selected_single_ontology (LLM-picked catalog; "
+            "costs one extra LLM call per content unit), selected_vector_search_ontology "
+            "(vector-store stitched ensemble; Qdrant or LanceDB), or fixed_single_ontology "
+            "(catalog ontology_id; requires ontology_context_fixed_ontology_id)."
         ),
     )
     ontology_context_fixed_ontology_id: str = Field(

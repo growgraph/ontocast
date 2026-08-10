@@ -22,7 +22,7 @@ OntoCast manages ontologies with automatic versioning and timestamp tracking:
 Token-efficient incremental graph modifications:
 
 - **Structured Operations**: LLM outputs `GraphUpdate` with ordered `TripleOp` insert/delete patches
-- **Wire Formats**: Turtle strings or compact JSON-LD (`LLM_GRAPH_FORMAT`); canonical runtime models are the same
+- **Wire Formats**: compact JSON-LD by default, or Turtle strings (`LLM_GRAPH_FORMAT`); canonical runtime models are the same either way
 - **Internal compilation**: Triple patches compile to rdflib UPDATE queries at apply time
 - **Token Savings**: Typically 80–95% fewer output tokens vs full graph regeneration
 
@@ -317,11 +317,11 @@ The same aligner backs benchmark **graph matching** (`/match/entities`, `/match/
 
 Before rendering, each unit receives ontology context from one of three modes:
 
-| Mode | Source |
-|------|--------|
-| `selected_single_ontology` | LLM picks a catalog TTL per unit |
-| `selected_vector_search_ontology` | Qdrant or LanceDB hybrid retrieval + induced subgraph |
-| `fixed_single_ontology` | Pinned catalog ontology (IRI, `ontology_id`, or author prefix) |
+| Mode | Source | Notes |
+|------|--------|-------|
+| `selected_single_ontology` (default) | LLM picks a catalog TTL per unit | One extra LLM call per unit |
+| `selected_vector_search_ontology` | Qdrant or LanceDB hybrid retrieval + induced subgraph | Only mode that runs the consistency critic |
+| `fixed_single_ontology` | Pinned catalog ontology (IRI, `ontology_id`, or author prefix) | Forced whenever a fixed id is set |
 
 Details: [Ontology Context](ontology_context.md).
 

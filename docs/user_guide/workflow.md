@@ -125,7 +125,7 @@ Each content unit runs an independent **ontology loop** (`stategraph/atomic.py`)
    - LLM catalog selection (`selected_single_ontology`)
    - Vector-store ensemble (`selected_vector_search_ontology`; Qdrant or LanceDB)
    - Fixed catalog ontology (`fixed_single_ontology`)
-2. **Render** — LLM emits `GraphUpdate` operations (Turtle or JSON-LD wire format)
+2. **Render** — LLM emits `GraphUpdate` operations (JSON-LD by default, or Turtle; see `LLM_GRAPH_FORMAT`)
 3. **Critic** — validate structure; retry up to `max_visits` (config or per-request override)
 4. **External evidence** (optional) — web search on retry when the node requests it
 
@@ -140,7 +140,7 @@ After all units finish:
 | **Normalize** | Merge unit deltas; split RDF 1.2 provenance/reification into a side artifact |
 | **Consolidate** (optional) | Single-pass refinement when `ENABLE_ONTOLOGY_CONSOLIDATION=true` |
 | **Structural check** | Connectivity and schema validation |
-| **Consistency critic** | Cross-unit ontology consistency |
+| **Consistency critic** | Cross-unit ontology consistency. Runs **only** under `ONTOLOGY_CONTEXT_MODE=selected_vector_search_ontology` — a no-op in the other two modes |
 
 Provenance triples (`prov:`, reification, chunk metadata) are kept in `ontology_provenance_artifact`, not in the working ontology graph passed to consolidation.
 
@@ -164,7 +164,7 @@ Facts output uses the **`cd:` namespace** for text-derived instances; domain ont
 
 | Setting / parameter | Effect |
 |---------------------|--------|
-| `RENDER_MODE` | `ontology`, `facts`, or `ontology_and_facts` |
+| `RENDER_MODE` | Which pipeline blocks run: `ontology` (no facts written), `facts` (catalog-only, no ontology block), or `ontology_and_facts`. Overridable per request — see [Configuration](configuration.md#render-mode-render_mode) |
 | `PARALLEL_WORKERS` | Max concurrent unit workers |
 | `LLM_MAX_INFLIGHT` | Max concurrent provider LLM requests (shared across units) |
 | `MAX_CONCURRENT_PROCESSES` | Optional cap on simultaneous `/process` pipelines |
@@ -184,8 +184,8 @@ Facts output uses the **`cd:` namespace** for text-derived instances; domain ont
 | `CHUNK_SECTION_SCHEMA_DETECT_CONTENT_MIN_MARGIN` | Stricter margin for the content tier (default `4.0`) |
 | `CHUNK_BIBLIOGRAPHY_MODE` | Routing for reference-list chunks: `skip` (default), `citations_only`, or `domain_facts` |
 | `ENABLE_ONTOLOGY_CONSOLIDATION` | Optional post-normalization consolidation |
-| `ONTOLOGY_CONTEXT_MODE` | How per-unit ontology context is sourced |
-| `LLM_GRAPH_FORMAT` | `turtle` or `jsonld` LLM wire encoding |
+| `ONTOLOGY_CONTEXT_MODE` | How per-unit ontology context is sourced; also gates the consistency critic — see [Configuration](configuration.md#ontology-context-mode-ontology_context_mode) |
+| `LLM_GRAPH_FORMAT` | LLM wire encoding: `jsonld` (default) or `turtle` (legacy) |
 | `--max-visits` | CLI override for `MAX_VISITS` (batch mode and server default) |
 | `--wipe-vector-store` | Drop the current vector partition before recreate+reindex |
 | `--head-chunks` | CLI limit on units processed |

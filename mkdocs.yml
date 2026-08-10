@@ -27,7 +27,13 @@ theme:
     favicon: assets/favicon.ico
 
 plugins:
--   search
+    # Underscores must be separators, or an env var indexes as one opaque token:
+    # `ONTOLOGY_CONTEXT_MODE` was findable only by typing it in full, and
+    # "ontology context mode" matched nothing. Splitting on `_` indexes both the
+    # exact spelling and its words. The rest is the Material recommendation for
+    # code-heavy pages.
+-   search:
+        separator: '[\s\-,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|_'
 -   glightbox
 -   gen-files:
         scripts:

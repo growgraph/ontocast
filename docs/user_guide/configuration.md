@@ -1,3 +1,8 @@
+---
+search:
+  boost: 3
+---
+
 # Configuration System
 
 OntoCast configuration is powered by Pydantic `BaseSettings` and is loaded from environment variables (typically via `.env`).
@@ -128,17 +133,17 @@ LLM_API_KEY=your_google_api_key_here
 ```bash
 HOST=127.0.0.1                           # loopback by default; see note below
 PORT=8999
-BASE_RECURSION_LIMIT=1000
-ESTIMATED_CHUNKS=30
-MAX_VISITS=1                             # alias for max_visits_per_node
+BASE_RECURSION_LIMIT=1000                # LangGraph step ceiling, scaled by ESTIMATED_CHUNKS
+ESTIMATED_CHUNKS=30                      # expected units per document; only sizes the limit above
+MAX_VISITS_PER_NODE=1                    # canonical name; MAX_VISITS is an accepted alias
 #MAX_CRITIC_VISITS_PER_NODE=             # unset: critic shares the MAX_VISITS bound
-RENDER_MODE=ontology_and_facts           # ontology | facts | ontology_and_facts
-LLM_GRAPH_FORMAT=turtle                  # turtle | jsonld
-ONTOLOGY_CONTEXT_MODE=selected_single_ontology
+RENDER_MODE=ontology_and_facts           # which pipeline blocks run — see below
+LLM_GRAPH_FORMAT=jsonld                  # jsonld | turtle (legacy) — see below
+ONTOLOGY_CONTEXT_MODE=selected_single_ontology   # where per-unit schema comes from — see below
 #ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID=catalog_iri_or_id_or_prefix
-ONTOLOGY_MAX_TRIPLES=50000               # empty/unset for unlimited
-PARALLEL_WORKERS=16                      # see Performance before raising this
-ENABLE_ONTOLOGY_CONSOLIDATION=false
+ONTOLOGY_MAX_TRIPLES=50000               # per-ontology triple ceiling; empty/unset for unlimited
+PARALLEL_WORKERS=16                      # concurrent content-unit workers; see Performance before raising
+ENABLE_ONTOLOGY_CONSOLIDATION=false      # optional post-normalization merge pass; inert for multi-ontology documents
 # MAX_CONCURRENT_PROCESSES=4      # optional cap on simultaneous /process handlers
 # MAX_TENANCY_SCOPES=16           # resident per-tenant/project ToolBoxes (LRU)
 ```
@@ -462,7 +467,7 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 # VECTOR_STORE_INDEX_UNDESCRIBED_IRIS=false
 # VECTOR_STORE_EMBED_STANDARD_VOCAB_IRIS=false
 # VECTOR_STORE_EXTRA_EXCLUDED_NAMESPACE_PREFIXES=
-# VECTOR_STORE_DEDUP_MODE=iri
+# VECTOR_STORE_DEDUP_MODE=iri               # identity used when de-duplicating indexed atoms
 # VECTOR_STORE_EMBEDDING_BATCH_SIZE=64
 # VECTOR_STORE_REINDEX_CONCURRENCY=2
 # VECTOR_STORE_WIPE_ON_INIT=false
@@ -538,7 +543,7 @@ Enable when `QDRANT_URI` is unset. Requires the optional extra: `uv sync --extra
 
 ```bash
 LANCEDB_ENABLED=true
-# LANCEDB_DATA_DIR=~/.lancedb_data
+# LANCEDB_DATA_DIR=~/.lancedb_data          # on-disk location of the embedded tables
 # Table names derive from tenant/project when unset (ontocast--test--ontologies / --facts)
 # LANCEDB_ONTOLOGY_TABLE=
 # LANCEDB_FACTS_TABLE=
@@ -552,9 +557,9 @@ Rarely changed; defaults suit both backends.
 
 ```bash
 # Qdrant collection geometry — must match the embedding model
-# QDRANT_VECTOR_SIZE=384
-# QDRANT_DISTANCE=Cosine
-# QDRANT_UPSERT_BATCH_SIZE=256
+# QDRANT_VECTOR_SIZE=384                     # must equal EMBEDDING_DIMENSION
+# QDRANT_DISTANCE=Cosine                     # Cosine | Dot | Euclid
+# QDRANT_UPSERT_BATCH_SIZE=256               # points per upsert call during indexing
 
 # Partition (table/collection) names within the configured backend
 # (derived from tenant/project when unset: ontocast--test--ontologies / --facts)
@@ -679,9 +684,9 @@ VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=600
 ### Paths and Domain
 
 ```bash
-CURRENT_DOMAIN=https://example.com
-ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files
-ONTOCAST_CACHE_DIR=/path/to/cache/directory
+CURRENT_DOMAIN=https://example.com               # base for minted IRIs; also the default facts namespace
+ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files   # seed .ttl files, synced to the catalog on startup
+ONTOCAST_CACHE_DIR=/path/to/cache/directory      # LLM + converter disk cache root
 
 # Cache eviction. The cache bounds itself: once it exceeds the ceiling,
 # least-recently-used entries are deleted. Set to 0 to disable.
@@ -711,30 +716,50 @@ See [Aggregation](aggregation.md) for what each threshold does.
 
 ### Web Search
 
-```bash
-WEB_SEARCH_ENABLED=false
-WEB_SEARCH_PROVIDER=duckduckgo
-WEB_SEARCH_TOP_K=3
-WEB_SEARCH_TIMEOUT_SECONDS=8.0
-WEB_SEARCH_MAX_SNIPPET_CHARS=400
-WEB_SEARCH_MAX_TOTAL_CHARS=1800
-WEB_SEARCH_ONTOLOGY_RENDER_ENABLED=true
-WEB_SEARCH_ONTOLOGY_CRITIC_ENABLED=true
-WEB_SEARCH_FACTS_RENDER_ENABLED=false
-WEB_SEARCH_FACTS_CRITIC_ENABLED=false
-WEB_SEARCH_PLANNER_ENABLED=true
-WEB_SEARCH_PLANNER_MAX_QUERIES=3
-WEB_SEARCH_PLANNER_MIN_QUERY_CHARS=12
-WEB_SEARCH_PLANNER_MIN_CONFIDENCE=0.35
-WEB_SEARCH_REUSE_EVIDENCE_ACROSS_ATTEMPT=true
-WEB_SEARCH_MIN_SNIPPET_CHARS=40
-WEB_SEARCH_ALLOWED_DOMAINS=
-WEB_SEARCH_BLOCKED_DOMAINS=
-WEB_SEARCH_REGION=wt-wt
-WEB_SEARCH_SAFESEARCH=moderate
-```
+Search is "search-later": nodes run without search first, and only request
+external evidence when needed. **The whole block is inert while
+`WEB_SEARCH_ENABLED=false`** (the default) — the remaining twenty variables
+describe a lane that does not run until you turn it on.
 
-Search is "search-later": nodes run without search first, and only request external evidence when needed.
+| Variable | Default | Role |
+|----------|---------|------|
+| `WEB_SEARCH_ENABLED` | `false` | Master switch. Node execution still starts without search and only searches when node output requests it |
+| `WEB_SEARCH_PROVIDER` | `duckduckgo` | Search provider |
+| `WEB_SEARCH_TOP_K` | `3` | Results fetched per query (1–10) |
+| `WEB_SEARCH_TIMEOUT_SECONDS` | `8.0` | Per-request search timeout (1.0–60.0) |
+| `WEB_SEARCH_MAX_SNIPPET_CHARS` | `400` | Snippet truncation limit per hit (80–2000) |
+| `WEB_SEARCH_MIN_SNIPPET_CHARS` | `40` | Minimum snippet length to keep a hit at all |
+| `WEB_SEARCH_MAX_TOTAL_CHARS` | `1800` | Total evidence text budget across hits (200–10000) |
+
+**Which nodes may search.** Each gate allows *search-eligible retries* for that prompt; the first pass is always no-search. Ontology nodes are on, facts nodes are off — facts are meant to come from the document, not the web.
+
+| Variable | Default | Role |
+|----------|---------|------|
+| `WEB_SEARCH_ONTOLOGY_RENDER_ENABLED` | `true` | Ontology render retries may search |
+| `WEB_SEARCH_ONTOLOGY_CRITIC_ENABLED` | `true` | Ontology critic retries may search |
+| `WEB_SEARCH_FACTS_RENDER_ENABLED` | `false` | Facts render retries may search |
+| `WEB_SEARCH_FACTS_CRITIC_ENABLED` | `false` | Facts critic retries may search |
+
+**Query planner and guardrails.**
+
+| Variable | Default | Role |
+|----------|---------|------|
+| `WEB_SEARCH_PLANNER_ENABLED` | `true` | Use an LLM planner to decide what to search for |
+| `WEB_SEARCH_PLANNER_MAX_QUERIES` | `3` | Focused queries per node (1–8) |
+| `WEB_SEARCH_PLANNER_MIN_QUERY_CHARS` | `12` | Minimum query length accepted by guardrails |
+| `WEB_SEARCH_PLANNER_MIN_CONFIDENCE` | `0.35` | Planner confidence below which no search runs |
+| `WEB_SEARCH_REUSE_EVIDENCE_ACROSS_ATTEMPT` | `true` | Reuse node-scoped evidence between retries of the same unit |
+| `WEB_SEARCH_ALLOWED_DOMAINS` | *(empty)* | Comma-separated allowlist of source domains |
+| `WEB_SEARCH_BLOCKED_DOMAINS` | *(empty)* | Comma-separated blocklist of source domains |
+| `WEB_SEARCH_REGION` | `wt-wt` | DuckDuckGo region code |
+| `WEB_SEARCH_SAFESEARCH` | `moderate` | DuckDuckGo safesearch mode |
+
+!!! note "Enabling search is what makes the critic loop expensive"
+
+    The critic breaks out of its loop immediately when it fails *without*
+    requesting external evidence, so with search off it runs at most once per
+    render whatever `MAX_VISITS` says. Turning search on is what opens the
+    quadratic path — bound it with `MAX_CRITIC_VISITS_PER_NODE`.
 
 ### Other
 
@@ -745,17 +770,67 @@ LOGGING_LEVEL=info                       # debug | info | warning | error
 
 ## LLM Graph Format (`LLM_GRAPH_FORMAT`)
 
-- `turtle` (default): the LLM emits RDF graph fields as Turtle strings; prompt context chapters use `` ```ttl `` blocks.
-- `jsonld`: the LLM emits compact JSON-LD objects (`@context` + `@graph`); prompt context uses `` ```json `` blocks.
+- `jsonld` (default): the LLM emits compact JSON-LD objects (`@context` + `@graph`); prompt context uses `` ```json `` blocks.
+- `turtle` (legacy): the LLM emits RDF graph fields as Turtle strings; prompt context chapters use `` ```ttl `` blocks. Kept for providers whose structured output handles strings more reliably than nested objects.
 - Domain models (`GraphUpdate`, critique reports, etc.) are **single canonical classes** at runtime. The format affects only LLM wire encoding, not duplicate Pydantic types.
 
-## Ontology Context Mode
+Overridable per request as `llm_graph_format`, with the same precedence and the
+same 400-on-typo contract as [`RENDER_MODE`](#render-mode-render_mode).
 
-- `selected_single_ontology` (default): LLM picks one catalog ontology per content unit; no vector store required.
-- `selected_vector_search_ontology`: hybrid vector retrieval + induced subgraph; requires `QDRANT_URI` **or** `LANCEDB_ENABLED=true` plus embedding settings.
+## Render Mode (`RENDER_MODE`)
+
+Selects **which blocks of the pipeline run**. This is the coarsest control in the
+system: two of the three values skip an entire half of the graph.
+
+- `ontology_and_facts` (default): the full graph — ontology block, then facts block.
+- `ontology`: stop after the ontology block. `RENDER_FACTS`, `MERGE_FACTS` and the
+  `VALIDATE_FACTS` SHACL gate never run, and **no fact graph is written to the
+  triple store**. Use it to build or extend a schema from a corpus.
+- `facts`: skip the ontology block entirely and go straight from chunking to
+  `RENDER_FACTS`. Extraction relies **wholly on the existing catalog** — whatever
+  the per-unit context resolver supplies is treated as read-only schema, and no
+  new terms are added to it. Use it to populate instances against a schema you
+  have already settled.
+
+!!! warning "`RENDER_MODE=facts` against an empty catalog produces almost nothing"
+
+    Nothing in this mode creates ontology terms, so an empty or badly matched
+    catalog leaves the renderer with no schema to instantiate against. Seed the
+    catalog first (see [Ontology Context](ontology_context.md#seeding-the-catalog)),
+    or run `ontology_and_facts` once.
+
+Which stages that corresponds to is drawn out in [Workflow](workflow.md).
+
+**Per request.** `render_mode` is overridable on both `/process` and
+`/process_unit`, and is read identically from the query string, a JSON body, or
+a multipart form field. Precedence:
+
+```text
+query parameter  >  JSON / form body  >  RENDER_MODE  >  ontology_and_facts
+```
+
+An unrecognised value is rejected with **400** rather than silently falling back
+to the default — a typo used to run the wrong pipeline and return `200`. There is
+no CLI flag: `ontocast process` batch runs take the environment value.
+
+## Ontology Context Mode (`ONTOLOGY_CONTEXT_MODE`)
+
+Selects **where the schema shown to the LLM comes from**, per content unit.
+Orthogonal to `RENDER_MODE`: it applies to whichever blocks that runs.
+
+- `selected_single_ontology` (default): LLM picks one catalog ontology per content unit; no vector store required. Costs **one extra LLM call per content unit** for the selection itself.
+- `selected_vector_search_ontology`: hybrid vector retrieval + induced subgraph; requires `QDRANT_URI` **or** `LANCEDB_ENABLED=true` plus embedding settings. This is also the only mode in which the **consistency critic** stage runs.
 - `fixed_single_ontology`: pin one catalog ontology via `ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID` — ontology **IRI**, short `ontology_id`, or author **prefix**.
 
-If vector mode is requested while no vector backend is available, the API returns `409` with `error_code: VECTOR_STORE_UNAVAILABLE`.
+!!! warning "Setting a fixed ontology id silently overrides the mode"
+
+    A non-empty `ontology_context_fixed_ontology_id` **forces**
+    `fixed_single_ontology`, whatever `ontology_context_mode` says and whatever
+    the server default is. Passing both a fixed id and
+    `ontology_context_mode=selected_vector_search_ontology` gets you fixed mode,
+    with no error. Clear the id to use any other mode.
+
+If vector mode is requested while no vector backend is available, the API returns `409` with `error_code: VECTOR_STORE_UNAVAILABLE`. The CLI is stricter: `ontocast serve` and `ontocast process` fail at **startup** rather than per request, both for vector mode with no backend and for fixed mode with no configured id.
 
 Details: [Ontology Context](ontology_context.md). Catalog read path: [Ontology Catalog](../architecture/ontology_catalog.md).
 
@@ -782,7 +857,8 @@ Entity alignment and evaluation endpoints are documented in [API Endpoints](api.
 - `LLM_PROVIDER=openai`, `anthropic`, or `google` requires `LLM_API_KEY`.
 - `LLM_MODEL_NAME` outside the provider's preset enum logs a warning and is passed
   through — the provider validates it, not OntoCast.
-- `MAX_VISITS` is supported as an alias for `max_visits_per_node`.
+- `MAX_VISITS_PER_NODE` is the canonical name; `MAX_VISITS` is an accepted alias for it. Set one, not both.
+- `RENDER_MODE`, `ONTOLOGY_CONTEXT_MODE` and `LLM_GRAPH_FORMAT` reject an unrecognised per-request value with `400` rather than falling back to the environment default.
 - `RECURSION_LIMIT` was renamed to `BASE_RECURSION_LIMIT`.
 - `WEB_SEARCH_ALLOWED_DOMAINS` and `WEB_SEARCH_BLOCKED_DOMAINS` accept comma-separated values.
 - `LLM_CACHE_ENABLED` and `LLM_CACHE_READ_ONLY` control disk cache read/write behavior.

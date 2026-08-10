@@ -11,7 +11,7 @@ from ontocast.onto.enum import LLMGraphFormat
 from ontocast.onto.rdfgraph import RDFGraph
 
 llm_graph_format_ctx: ContextVar[LLMGraphFormat] = ContextVar(
-    "llm_graph_format", default=LLMGraphFormat.TURTLE
+    "llm_graph_format", default=LLMGraphFormat.JSONLD
 )
 
 

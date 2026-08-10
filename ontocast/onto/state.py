@@ -653,19 +653,19 @@ class AgentState(BasePydanticModel):
         description=("Rendering mode: ontology, facts, or ontology_and_facts."),
     )
     llm_graph_format: LLMGraphFormat = Field(
-        default=LLMGraphFormat.TURTLE,
+        default=LLMGraphFormat.JSONLD,
         description=(
             "Format used by the LLM for emitting RDF graph payloads: "
-            "'turtle' (legacy) or 'jsonld' (compact JSON-LD objects embedded "
-            "directly in the structured response)."
+            "'jsonld' (default; compact JSON-LD objects embedded directly in the "
+            "structured response) or 'turtle' (legacy Turtle strings)."
         ),
     )
     ontology_context_mode: OntologyContextMode = Field(
         default=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
         description=(
             "Per-unit ontology context: selected_single_ontology (LLM-picked catalog), "
-            "selected_vector_search_ontology (Qdrant ensemble), or "
-            "fixed_single_ontology (catalog ontology_id via ontology_context_fixed_ontology_id)."
+            "selected_vector_search_ontology (vector-store ensemble; Qdrant or LanceDB), "
+            "or fixed_single_ontology (catalog ontology_id via ontology_context_fixed_ontology_id)."
         ),
     )
     # Budget Tracking
