@@ -191,6 +191,7 @@ exclude = [
 ]
 include = [
   "/.env.example",
+  "/.env.example.minimal",
   "/CHANGELOG.md",
   "/CITATION.cff",
   "/LICENSE",

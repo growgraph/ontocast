@@ -184,10 +184,14 @@ def _prepare_prompt_data(
     if ontology_graph is ctx.graph:
         # Memoised on the snapshot, which the whole fan-out shares: serialising
         # the same ontology once per unit dominated facts prompt construction.
-        ontology_chapter = ctx.prompt_chapter(profile)
+        ontology_chapter = ctx.prompt_chapter(
+            profile, max_triples=state.ontology_context_max_triples
+        )
     else:
         ontology_chapter = profile.format_ontology_chapter(
-            ontology_graph, suffix=build_ontology_index(ontology_graph)
+            ontology_graph,
+            suffix=build_ontology_index(ontology_graph),
+            max_triples=state.ontology_context_max_triples,
         )
     state.budget_tracker.add_duration(
         "prompt/ontology_chapter", time.perf_counter() - chapter_start

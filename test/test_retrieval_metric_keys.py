@@ -22,6 +22,7 @@ EXPECTED_WIRE_NAMES = {
     "EMPTY_SNAPSHOT_REASON": "empty_snapshot_reason",
     "ONTOLOGY_WRITABLE_COUNT": "ontology_writable_count",
     "ONTOLOGY_PRIMARY_UNITS": "ontology_primary_units",
+    "ONTOLOGY_SNAPSHOT_TRIPLES": "ontology_snapshot_triples",
     "FACTS_ANCHOR_COUNT": "facts_anchor_count",
     "FACTS_ANCHOR_UNITS": "facts_anchor_units",
     "FACTS_LLM_REPAIR_RENDERS_TOTAL": "facts_llm_repair_renders_total",

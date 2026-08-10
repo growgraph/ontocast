@@ -52,7 +52,9 @@ class OntologySnapshot(BasePydanticModel):
 
     #: Derived prompt text, keyed by graph identity so a reassigned graph misses.
     #: Populated only through :meth:`prompt_chapter`.
-    _prompt_cache: dict[tuple[int, int, str], str] = PrivateAttr(default_factory=dict)
+    _prompt_cache: dict[tuple[int, int, str, int | None], str] = PrivateAttr(
+        default_factory=dict
+    )
 
     def is_empty(self) -> bool:
         """True when the snapshot graph has no triples."""
@@ -70,7 +72,7 @@ class OntologySnapshot(BasePydanticModel):
         """
         self._prompt_cache.clear()
 
-    def prompt_chapter(self, profile: Any) -> str:
+    def prompt_chapter(self, profile: Any, *, max_triples: int | None = None) -> str:
         """Serialised ontology chapter for prompts, memoised per graph.
 
         Serialising the ontology is the single most expensive step in building a
@@ -93,12 +95,17 @@ class OntologySnapshot(BasePydanticModel):
         """
         from ontocast.prompt.ontology_context import build_ontology_index
 
-        key = (id(self.graph), len(self.graph), str(profile.format))
+        # max_triples is part of the key: the snapshot is shared by reference
+        # across the whole fan-out, so without it the first budget seen would be
+        # served to every later caller.
+        key = (id(self.graph), len(self.graph), str(profile.format), max_triples)
         cached = self._prompt_cache.get(key)
         if cached is not None:
             return cached
         chapter = profile.format_ontology_chapter(
-            self.graph, suffix=build_ontology_index(self.graph)
+            self.graph,
+            suffix=build_ontology_index(self.graph),
+            max_triples=max_triples,
         )
         # Bound the memo: a snapshot only ever holds one live graph, so stale
         # entries are strictly dead weight after a reassignment.

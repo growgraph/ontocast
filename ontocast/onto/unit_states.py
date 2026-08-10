@@ -81,6 +81,15 @@ class UnitState(BasePydanticModel):
             "'jsonld' (default) or 'turtle' (legacy)."
         ),
     )
+    ontology_context_max_triples: int | None = Field(
+        default=None,
+        description=(
+            "Triple budget for the ontology chapter in this unit's prompts. "
+            "None disables condensing. Threaded from ServerConfig alongside "
+            "llm_graph_format, because the agents that build chapters do not "
+            "all hold a ToolBox."
+        ),
+    )
 
     status: Status = Field(default=Status.NOT_VISITED)
     failure_stage: FailureStage | None = Field(default=None)

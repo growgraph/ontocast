@@ -87,8 +87,14 @@ OntoCast uses seed ontologies (in Turtle `.ttl` format) to guide extraction. Pro
 
 ## Configuration
 
-Everything is environment variables, loaded through Pydantic settings. The knobs
-that change *what the pipeline does* — as opposed to where it stores things:
+Start from [`.env.example.minimal`](.env.example.minimal) — 47 variables instead
+of 202, grouped by the decision they belong to. Then pick a
+[playbook](https://growgraph.github.io/ontocast/user_guide/playbooks/) for what
+you are actually doing: evaluating, building an ontology, populating facts,
+scaling to a large catalog, or serving it.
+
+The knobs that change *what the pipeline does* — as opposed to where it stores
+things:
 
 | Variable | Default | What it controls |
 |---|---|---|

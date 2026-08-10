@@ -714,11 +714,23 @@ class ServerConfig(BaseSettings):
         ),
     )
     ontology_max_triples: int | None = Field(
-        default=50000,
+        default=None,
         ge=1,
-        description="Maximum number of triples allowed in ontology graph. "
-        "Updates that would exceed this limit are skipped with a warning. "
-        "Set to None for unlimited.",
+        description="Runaway-growth backstop on the per-unit ontology working "
+        "graph: an update whose result would exceed this is skipped with a "
+        "warning, all-or-nothing. Not a prompt bound -- use "
+        "ontology_context_max_triples for context size. None (default) disables it.",
+    )
+    ontology_context_max_triples: int | None = Field(
+        default=4000,
+        ge=1,
+        description="Triple budget for the ontology context serialized into a "
+        "prompt, in every ontology_context_mode. Over budget, the least "
+        "load-bearing triples are dropped first (header/list noise, then "
+        "redundant structure, then comments and definitions); labels, types, "
+        "hierarchy and domain/range are never dropped, so this is best-effort "
+        "and a graph that cannot fit is passed through with a warning. "
+        "None disables condensing.",
     )
     parallel_workers: int = Field(
         default=16,

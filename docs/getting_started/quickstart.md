@@ -52,6 +52,9 @@ ontocast serve --wipe-vector-store
 
 OntoCast uses a hierarchical configuration system with environment variables. Create a `.env` file in your project directory (or copy `.env.example`):
 
+This block is a subset of `.env.example`. For a curated starting point see
+`.env.example.minimal` and the [Configuration Playbooks](../user_guide/playbooks.md).
+
 ```bash
 # Domain configuration (used for URI generation)
 CURRENT_DOMAIN=https://example.com
@@ -68,7 +71,7 @@ MAX_VISITS=1
 BASE_RECURSION_LIMIT=1000
 ESTIMATED_CHUNKS=30
 RENDER_MODE=ontology_and_facts    # ontology | facts | ontology_and_facts
-ONTOLOGY_MAX_TRIPLES=50000
+ONTOLOGY_CONTEXT_MAX_TRIPLES=4000 # prompt budget for the ontology chapter
 PARALLEL_WORKERS=16
 ENABLE_ONTOLOGY_CONSOLIDATION=false
 
@@ -175,7 +178,8 @@ OntoCast uses a hierarchical configuration system:
 | `ONTOCAST_ONTOLOGY_DIRECTORY` | Seed ontology TTL files | Optional bootstrap |
 | `MAX_VISITS` | Maximum visits per node | 1 |
 | `BASE_RECURSION_LIMIT` | Base recursion limit for workflow | 1000 |
-| `ONTOLOGY_MAX_TRIPLES` | Maximum triples allowed in ontology graph | 50000 |
+| `ONTOLOGY_CONTEXT_MAX_TRIPLES` | Triple budget for the ontology sent to the LLM | 4000 |
+| `ONTOLOGY_MAX_TRIPLES` | Growth backstop on the ontology working graph (not a context cap) | unset |
 | `ENABLE_ONTOLOGY_CONSOLIDATION` | Run ontology consolidation pass | false |
 
 Full reference: [Configuration](../user_guide/configuration.md).

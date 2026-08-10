@@ -81,7 +81,9 @@ async def criticise_facts(
     # told the renderer to resolve them through the TERM INDEX -- so the critic
     # judged term choices it could not read. Also memoised on the shared
     # snapshot, so this stops re-serialising the ontology on every visit.
-    ontology_chapter = ctx.prompt_chapter(profile)
+    ontology_chapter = ctx.prompt_chapter(
+        profile, max_triples=state.ontology_context_max_triples
+    )
     facts_chapter = profile.format_facts_chapter(
         state.content_unit.graph
     ) + _build_quarantine_chapter(state)

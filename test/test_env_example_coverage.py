@@ -52,9 +52,9 @@ def _declared_env_vars() -> dict[str, str]:
     return declared
 
 
-def _documented_env_vars() -> set[str]:
-    """Variables assigned in .env.example, commented-out lines included."""
-    example = Path(__file__).resolve().parents[1] / ".env.example"
+def _documented_env_vars(filename: str = ".env.example") -> set[str]:
+    """Variables assigned in an example env file, commented-out lines included."""
+    example = Path(__file__).resolve().parents[1] / filename
     return set(
         re.findall(r"^#?\s*([A-Z][A-Z0-9_]*)=", example.read_text(), re.MULTILINE)
     )
@@ -89,3 +89,130 @@ def test_env_example_advertises_no_removed_settings() -> None:
     stale = sorted(name for name in documented if name not in declared)
 
     assert stale == [], f".env.example advertises variables no setting reads: {stale}"
+
+
+#: The three settings that each name a local sentence-transformer checkpoint.
+#: `SharedEncoder` caches by the literal `(model name, device)` string, so these
+#: only share one resident model when the spellings match character for
+#: character -- a bare name and a prefixed one resolve to the same files on the
+#: hub and still load twice.
+_LOCAL_ENCODER_VARS = (
+    "CHUNK_EMBEDDING_MODEL",
+    "EMBEDDING_MODEL_NAME",
+    "AGG_EMBEDDING_MODEL",
+)
+
+
+def test_env_example_spells_encoder_models_with_the_org_prefix() -> None:
+    """A dropped `sentence-transformers/` prefix costs ~650 MB, silently.
+
+    `.env.example` shipped `AGG_EMBEDDING_MODEL` and `EMBEDDING_MODEL_NAME`
+    unprefixed while the declared defaults carried the prefix, so copying the
+    file and then following the performance guide's advice to align all three
+    produced *two copies of the same checkpoint* -- the exact outcome the
+    alignment is meant to avoid. Nothing else detects this: both spellings are
+    valid and both work.
+    """
+    text = (Path(__file__).resolve().parents[1] / ".env.example").read_text()
+
+    unprefixed = []
+    for var in _LOCAL_ENCODER_VARS:
+        for value in re.findall(rf"^#?\s*{var}=(\S+)", text, re.MULTILINE):
+            if not value.startswith("sentence-transformers/"):
+                unprefixed.append(f"{var}={value}")
+
+    assert unprefixed == [], (
+        "These name a local encoder without the `sentence-transformers/` prefix, "
+        "so they will not share a resident model with the prefixed defaults: "
+        f"{unprefixed}"
+    )
+
+
+#: The point of `.env.example.minimal` is that it is short enough to read in one
+#: sitting. Without a ceiling it accretes back toward the full surface one
+#: "obviously this matters too" at a time, and the playbooks stop being usable.
+#:
+#: Raised from 35 once, deliberately, to cover chunking, conversion, the local
+#: encoder alignment, SHACL shapes and the web-search toggle -- all of which are
+#: decisions a first-time user has to make. Roughly a quarter of the full
+#: surface is the intended shape; past that, reconsider rather than raise again.
+MINIMAL_ENV_CEILING = 55
+
+
+def test_minimal_env_example_names_only_real_settings() -> None:
+    """A curated file rots more quietly than a generated one.
+
+    Nothing regenerates `.env.example.minimal`, so a renamed or removed setting
+    leaves a variable in it that silently does nothing -- worse than an
+    undocumented knob, because the user believes they configured something.
+    """
+    declared = _declared_env_vars()
+    minimal = _documented_env_vars(".env.example.minimal")
+
+    unknown = sorted(name for name in minimal if name not in declared)
+
+    assert unknown == [], (
+        f".env.example.minimal names variables no setting reads: {unknown}"
+    )
+
+
+def test_minimal_env_example_is_a_subset_of_the_full_one() -> None:
+    """The minimal file is a curated view, not a second source of truth."""
+    full = _documented_env_vars()
+    minimal = _documented_env_vars(".env.example.minimal")
+
+    only_in_minimal = sorted(minimal - full)
+
+    assert only_in_minimal == [], (
+        "These are in .env.example.minimal but not .env.example, so the full "
+        f"reference is missing them: {only_in_minimal}"
+    )
+
+
+#: Files that quote a variable count at the reader. Prose numbers rot the moment
+#: either env file changes -- five of these went stale in a single edit.
+_FILES_QUOTING_COUNTS = (
+    "README.md",
+    ".env.example",
+    "docs/index.md",
+    "docs/user_guide/configuration.md",
+)
+
+
+def test_quoted_variable_counts_are_accurate() -> None:
+    """ "46 variables instead of 201" has to stay true, or stop being written.
+
+    Only *exact* claims are checked. Hedged prose ("around 200 variables") is
+    deliberately approximate and should not have to churn every time a knob is
+    added -- that is the point of hedging it.
+    """
+    root = Path(__file__).resolve().parents[1]
+    real = {
+        len(_documented_env_vars()),
+        len(_documented_env_vars(".env.example.minimal")),
+    }
+    hedged = re.compile(r"(?:around|roughly|about|~|under|over)\s*$", re.IGNORECASE)
+
+    wrong: list[str] = []
+    for name in _FILES_QUOTING_COUNTS:
+        text = (root / name).read_text()
+        for match in re.finditer(r"(\d+)\s+variables", text):
+            if hedged.search(text[: match.start()]):
+                continue
+            if int(match.group(1)) not in real:
+                wrong.append(f"{name}: claims {match.group(1)}")
+
+    assert wrong == [], (
+        f"Stale variable counts (actual: {sorted(real)}): {wrong}. Update the "
+        "prose, or rephrase it so it does not quote a number."
+    )
+
+
+def test_minimal_env_example_stays_minimal() -> None:
+    minimal = _documented_env_vars(".env.example.minimal")
+
+    assert len(minimal) <= MINIMAL_ENV_CEILING, (
+        f".env.example.minimal lists {len(minimal)} variables, over the "
+        f"{MINIMAL_ENV_CEILING} ceiling. Move one out before adding another, or "
+        "raise the ceiling deliberately."
+    )

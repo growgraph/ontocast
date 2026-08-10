@@ -181,7 +181,11 @@ cython_debug/
 .idea/
 
 .env*
+# Negations name exact files, never a pattern: `.env*` is the rule that keeps
+# credentials out of the repo, and a wildcard exception to it would be one
+# rename away from committing a live .env.
 !.env.example
+!.env.example.minimal
 
 .claude/worktrees
 

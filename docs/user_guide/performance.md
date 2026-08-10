@@ -181,9 +181,26 @@ Other knobs that change cost rather than concurrency:
 - `MAX_VISITS` (default 1) — at 1 the LLM critic never runs. Raising it to 2
   roughly doubles the LLM calls per unit.
 - `CONVERTER_PROFILE=born_digital` — skips OCR on digital PDFs.
-- `ONTOLOGY_PATCH_MAX_ATOMS` and
-  `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` — bound prompt size, and so
-  both token cost and provider latency.
+- `ONTOLOGY_CONTEXT_MAX_TRIPLES` (default `4000`) — the budget for the ontology
+  chapter in **every** mode. `ONTOLOGY_PATCH_MAX_ATOMS` and
+  `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` bound it further in vector
+  mode, and bind first there.
+
+## How much a triple costs
+
+Measured through the repo's own prompt serializers on `matsci.ttl` (796 triples):
+
+| Wire format | chars/triple | ~tokens/triple | 1200 triples | 4000 triples |
+|---|---|---|---|---|
+| `turtle` | 50.7 | ~12.7 | ~15k tokens | ~51k tokens |
+| `jsonld` (default) | 102.6 | ~25.7 | ~31k tokens | ~103k tokens |
+
+**`LLM_GRAPH_FORMAT=jsonld` roughly doubles chars per triple against `turtle`.**
+That is the cost of the default: JSON-LD is more reliably parsed out of
+structured output, and it buys that with context. If you are context-bound
+rather than parse-bound, switching to `turtle` is the largest single lever
+available — larger than any retrieval knob — and it changes no extraction
+semantics, only the encoding. It does invalidate the LLM cache.
 
 See [Configuration](configuration.md) for the full list and
 [LLM Caching](llm_caching.md) for cache behavior.

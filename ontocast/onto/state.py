@@ -776,17 +776,30 @@ class AgentState(BasePydanticModel):
             for query in queries:
                 cls._apply_update_query(updated_graph, query)
 
-        # Check if updated graph exceeds max_triples limit
+        # Reject only updates that GROW the graph past the limit. Comparing the
+        # absolute post-apply size alone locked the loop out: a seed snapshot
+        # already over the cap made every update for the rest of the run fail
+        # this check, discarding the LLM's work with only a warning and no way
+        # to shrink back under. Deletions and net-shrinking updates now apply.
         if max_triples is not None and len(updated_graph) > max_triples:
             import logging
 
             logger = logging.getLogger(__name__)
-            logger.warning(
-                f"Ontology update skipped: would exceed limit "
-                f"({len(updated_graph)} > {max_triples} triples). "
-                f"Original size: {len(graph)} triples."
-            )
-            return graph, False  # Return original, unchanged
+            if len(graph) > max_triples:
+                logger.warning(
+                    f"Ontology graph is already above the configured limit "
+                    f"({len(graph)} > {max_triples} triples) before this update. "
+                    f"Applying it anyway because it does not grow the graph "
+                    f"({len(updated_graph)} triples); raise or unset "
+                    f"ONTOLOGY_MAX_TRIPLES if this is expected."
+                )
+            if len(updated_graph) > len(graph):
+                logger.warning(
+                    f"Ontology update skipped: would exceed limit "
+                    f"({len(updated_graph)} > {max_triples} triples). "
+                    f"Original size: {len(graph)} triples."
+                )
+                return graph, False  # Return original, unchanged
 
         return updated_graph, True
 

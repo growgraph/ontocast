@@ -66,6 +66,7 @@ nav:
 -   User Guide:
     -   Core Concepts: user_guide/concepts.md
     -   Workflow: user_guide/workflow.md
+    -   Configuration Playbooks: user_guide/playbooks.md
     -   Configuration System: user_guide/configuration.md
     -   API Endpoints: user_guide/api.md
     -   Embedding OntoCast: user_guide/embedding.md

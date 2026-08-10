@@ -7,6 +7,13 @@ search:
 
 OntoCast configuration is powered by Pydantic `BaseSettings` and is loaded from environment variables (typically via `.env`).
 
+!!! tip "This page is the complete reference — around 200 variables"
+
+    If you are configuring OntoCast for the first time, start from
+    [Configuration Playbooks](playbooks.md) and `.env.example.minimal` instead:
+    47 variables, grouped by decision, with a playbook per task. Come back here
+    for the full surface once you know which knob you need.
+
 ## Overview
 
 - Typed config sections with defaults
@@ -141,7 +148,8 @@ RENDER_MODE=ontology_and_facts           # which pipeline blocks run — see bel
 LLM_GRAPH_FORMAT=jsonld                  # jsonld | turtle (legacy) — see below
 ONTOLOGY_CONTEXT_MODE=selected_single_ontology   # where per-unit schema comes from — see below
 #ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID=catalog_iri_or_id_or_prefix
-ONTOLOGY_MAX_TRIPLES=50000               # per-ontology triple ceiling; empty/unset for unlimited
+ONTOLOGY_CONTEXT_MAX_TRIPLES=4000        # prompt budget for the ontology chapter — see below
+#ONTOLOGY_MAX_TRIPLES=                   # write-path growth backstop, NOT a context cap; unset = unlimited
 PARALLEL_WORKERS=16                      # concurrent content-unit workers; see Performance before raising
 ENABLE_ONTOLOGY_CONSOLIDATION=false      # optional post-normalization merge pass; inert for multi-ontology documents
 # MAX_CONCURRENT_PROCESSES=4      # optional cap on simultaneous /process handlers
@@ -188,9 +196,9 @@ rejected.
 ### Chunking
 
 ```bash
-CHUNK_MIN_SIZE=3000
-CHUNK_MAX_SIZE=12000
-CHUNK_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-mpnet-base-v2
+CHUNK_MIN_SIZE=3000                 # chars; floor before segments coalesce
+CHUNK_MAX_SIZE=12000                # chars; ceiling before a section block is split
+CHUNK_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-mpnet-base-v2  # a 2nd resident model at this default
 CHUNK_SEGMENTER=semantic            # semantic (sections-first, default) | docling
 CHUNK_SECTION_CLASSIFIER=heuristic  # off | heading | heuristic (default) | llm
 CHUNK_SECTION_DENSITY=conservative  # off | conservative (default) | aggressive
@@ -214,8 +222,10 @@ structural segments instead.
 `CHUNK_EMBEDDING_MODEL` is the sentence-transformers checkpoint used for
 semantic chunking and embedding-based schema detection. It shares one
 process-wide model with `EMBEDDING_MODEL_NAME` (retrieval) and
-`AGG_EMBEDDING_MODEL` (entity disambiguation) whenever the names match, so
-aligning all three is the single-model, low-memory configuration:
+`AGG_EMBEDDING_MODEL` (entity disambiguation) whenever the names match — but it
+defaults to a *different* checkpoint from the other two (mpnet-base, ~1.1 GB, vs
+MiniLM ~458 MB), so **a default run holds two resident models**. Aligning all
+three is the single-model, low-memory configuration:
 
 ```bash
 # One resident local model instead of two (~650 MB of peak RSS, measured).
@@ -777,6 +787,50 @@ LOGGING_LEVEL=info                       # debug | info | warning | error
 Overridable per request as `llm_graph_format`, with the same precedence and the
 same 400-on-typo contract as [`RENDER_MODE`](#render-mode-render_mode).
 
+## Ontology Context Size (`ONTOLOGY_CONTEXT_MAX_TRIPLES`)
+
+How much ontology is serialized into each prompt. This is the knob for context
+blow-up — **not** `ONTOLOGY_MAX_TRIPLES`, which despite the name bounds the
+per-unit *working graph* on the write path and is unset by default.
+
+Only vector mode ever bounded the context. In `selected_single_ontology` (the
+default) and `fixed_single_ontology` the whole selected ontology was serialized
+into every prompt, and the facts fan-out serialized the union of every ontology
+artifact — with no cap at all.
+
+| Mode | Bound on what reaches the LLM |
+|---|---|
+| `selected_single_ontology` | `ONTOLOGY_CONTEXT_MAX_TRIPLES` |
+| `fixed_single_ontology` | `ONTOLOGY_CONTEXT_MAX_TRIPLES` |
+| `selected_vector_search_ontology` | `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` (`1200`) binds first, then the budget above as a backstop |
+| Facts prompts (merged document context) | `ONTOLOGY_CONTEXT_MAX_TRIPLES` |
+
+**What it costs.** Measured through the repo's own serializers on an 796-triple
+module: **50.7 chars/triple in Turtle, 102.6 in JSON-LD**. So the `4000` default
+is roughly 51k tokens as Turtle and 103k as JSON-LD.
+
+**How the budget is met.** Over budget, triples are dropped in increasing order
+of harm, stopping as soon as the graph fits:
+
+1. Header and RDF-list noise — `owl:versionInfo`, `owl:imports`, `dcterms:creator`/`license`/`created`, `rdf:first`/`rest`.
+2. Redundant structure — generic `rdf:type owl:Class`/`owl:NamedIndividual` where an informative type exists, stub restriction blank nodes, orphaned blank nodes.
+3. Glosses — `rdfs:comment`, `skos:definition`, `skos:scopeNote`, `skos:altLabel`.
+
+`rdfs:label`/`skos:prefLabel`, `rdf:type`, `rdfs:subClassOf`/`owl:equivalentClass`
+and `rdfs:domain`/`range`/`subPropertyOf` are **never** dropped.
+
+!!! warning "This is best-effort, not a hard ceiling"
+
+    A graph that still exceeds the budget after step 3 is passed through
+    oversized with a `WARNING`, because dropping labels or domain/range to hit a
+    number produces an extraction failure that looks like a bad model. Treat
+    that warning as "split the catalog, or switch to
+    `selected_vector_search_ontology`", not as "raise the number". Set to empty
+    to disable condensing entirely.
+
+`ONTOLOGY_SNAPSHOT_TRIPLES` in the run manifest reports the resolved snapshot
+size for every mode.
+
 ## Render Mode (`RENDER_MODE`)
 
 Selects **which blocks of the pipeline run**. This is the coarsest control in the
@@ -866,6 +920,8 @@ Entity alignment and evaluation endpoints are documented in [API Endpoints](api.
 
 ## Recommended Workflow
 
+0. Or skip straight to [Configuration Playbooks](playbooks.md), which does the
+   first three steps for you per task.
 1. Copy `.env.example` to `.env`.
 2. Fill in LLM credentials and backend settings.
 3. Start with defaults for chunking, search, and aggregation.

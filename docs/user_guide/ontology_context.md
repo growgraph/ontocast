@@ -11,12 +11,40 @@ Context is assembled **per unit** inside the ontology loop, not at document leve
 
 !!! note "Facts units do not re-resolve context"
 
-    When an ontology stage has run, the facts fan-out reuses one merged,
-    reduced view of the document's ontologies (assembly mode
-    `document_merged_reduced`) rather than resolving per unit again. The mode
-    below therefore governs the **ontology** loop, plus facts-only entry points
-    (`RENDER_MODE=facts` and `/process_unit`), where there is no prior ontology
-    stage to merge.
+    When an ontology stage has run, the facts fan-out reuses one merged view of
+    the document's ontologies (assembly mode `document_merged_reduced`) rather
+    than resolving per unit again. The mode below therefore governs the
+    **ontology** loop, plus facts-only entry points (`RENDER_MODE=facts` and
+    `/process_unit`), where there is no prior ontology stage to merge.
+
+    "Reduced" there names the map/**reduce** stage, not size reduction: the
+    merge is a plain union of every ontology artifact with `owl:Ontology`
+    headers stripped. Its size is bounded by
+    [`ONTOLOGY_CONTEXT_MAX_TRIPLES`](#how-large-is-the-context), like every
+    other prompt.
+
+## How large is the context?
+
+Only vector mode bounds retrieval itself; every mode is bounded at
+serialization by `ONTOLOGY_CONTEXT_MAX_TRIPLES` (default `4000`).
+
+| Mode | What reaches the LLM |
+|---|---|
+| `selected_single_ontology` | The whole selected catalog ontology, condensed to the budget |
+| `fixed_single_ontology` | The whole pinned ontology, condensed to the budget |
+| `selected_vector_search_ontology` | A retrieved subgraph capped at `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` (`1200`), which binds first. That is a growth budget during expansion, not a final ceiling — the small-module closure runs after it and can add whole modules past it, which the budget above then catches |
+| Facts prompts | Union of all ontology artifacts, condensed to the budget |
+
+Cost per triple, measured through the prompt serializers: **50.7 chars in
+Turtle, 102.6 in JSON-LD** — so the default budget is ~51k tokens as Turtle and
+~103k as JSON-LD. See [Performance](performance.md#how-much-a-triple-costs).
+
+Condensing drops header/list noise first, then redundant structure (generic
+types, stub restrictions, orphan blank nodes), then glosses (`rdfs:comment`,
+`skos:definition`, `skos:scopeNote`, `skos:altLabel`). Labels, types, hierarchy
+and domain/range are never dropped, so a catalog that cannot fit is passed
+through oversized with a warning rather than silently gutted — see
+[Configuration](configuration.md#ontology-context-size-ontology_context_max_triples).
 
 ## Context Modes (`ONTOLOGY_CONTEXT_MODE`)
 
