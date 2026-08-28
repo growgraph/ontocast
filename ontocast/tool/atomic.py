@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from ontocast.config import FactsValidationConfig, WebSearchConfig
 from ontocast.onto.enum import WorkflowNode
+from ontocast.tool.facts_validation import ValidationPolicy
 from ontocast.tool.llm import LLMTool
 
 
@@ -98,6 +99,13 @@ class AtomicToolBox:
         # want reported as unknown terms.
         self.additional_standard_namespaces: tuple[str, ...] = tuple(
             facts_validation.additional_standard_namespaces
+        )
+        # Everything the deterministic term checks must treat as blessed, as
+        # one object -- see ValidationPolicy.
+        self.validation_policy = ValidationPolicy(
+            additional_standard_namespaces=self.additional_standard_namespaces,
+            quantity_fallback_vocabulary=self.quantity_fallback_vocabulary,
+            code_predicates=self.code_predicates,
         )
 
         self.web_search_enabled = web_search.enabled

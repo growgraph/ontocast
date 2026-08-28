@@ -47,6 +47,36 @@ can always tell machine-altered triples from what the model asserted.
 | `rdf:type` literal coercion | A type emitted as a string becomes an IRI when it resolves unambiguously |
 | Near-miss predicate rewrite | `qudt:value` → `qudt:numericValue` when exactly one catalog term is a near match (`FACTS_PROPERTY_ALIAS_MIN_RATIO`) |
 | **Code resolution** | A node carrying `qudt:ucumCode "d"` but no unit link gains `qudt:unit unit:DAY` when exactly one catalog individual declares that code (`FACTS_CODE_PREDICATES`) |
+| Degenerate-bound promotion | Equal lower/upper bounds collapse to a single scalar on the configured numeric-value property — active only when the quantity fallback vocabulary names `numeric_value`, `lower_bound` **and** `upper_bound` roles |
+
+### Which terms count as unknown
+
+`UNKNOWN_TERM` findings drive mandatory repair renders, so the closure rule
+behind them matters. A namespace is *closed* — members the catalog does not
+list get flagged — only when the catalog **declares** terms in it
+(subject-position statements). A namespace the catalog merely *references*
+(`qudt:QuantityValue` in a `rdfs:subClassOf`, `qudt:unit` in an
+`owl:onProperty`) is an external vocabulary the catalog borrows from and stays
+open: the catalog is not an authority on its membership.
+
+Three exemptions apply even inside closed namespaces:
+`FACTS_ADDITIONAL_STANDARD_NAMESPACES`, the quantity fallback vocabulary
+(`FACTS_QUANTITY_FALLBACK_VOCABULARY` — the validator must never order the
+renderer to remove the vocabulary the prompt itself recommends), and
+`FACTS_CODE_PREDICATES`.
+
+Two guardrails on the repair prompt: alias candidates are **role-filtered**
+(a predicate never gets a known class suggested, and vice versa), and every
+mandatory finding must be resolved by *rewriting in place* — a repair response
+that only deletes statements is flagged as data destruction, not a fix. The
+gate additionally cross-checks the SHACL shapes against these rules at load
+time and logs an error for any property the shapes require but the term
+validator would flag — data cannot satisfy both sides.
+
+A companion mandatory finding, `LABEL_ONLY_NUMBER`, fires when a node carries
+the fallback vocabulary's unit property but no numeric literal on any
+property while its label holds a number as prose — a measurement that is
+invisible to every query.
 
 Code resolution is schema-driven, not vocabulary-specific: the connecting
 property is whichever object property the ontology context declares with a range

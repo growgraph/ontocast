@@ -13,7 +13,6 @@ own ontology context according to mode/policy.
 
 import logging
 import time
-from collections.abc import Sequence
 from typing import Literal
 
 from ontocast.agent.criticise_facts import criticise_facts
@@ -39,7 +38,8 @@ from ontocast.stategraph.context_resolver import (
     resolve_unit_ontology_context,
 )
 from ontocast.stategraph.unit_context import UnitLoopContext
-from ontocast.tool.facts_invariants import collect_unit_findings
+from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.facts_validation import collect_unit_findings
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -121,9 +121,13 @@ def _resolve_critic_visits(unit_state: UnitFactsState | UnitOntologyState) -> in
 
 def _collect_facts_findings(
     unit_state: UnitFactsState,
-    additional_standard_namespaces: Sequence[str] = (),
+    atomic: AtomicToolBox | None = None,
 ) -> list[FactsUnitFinding]:
-    """Run the deterministic per-unit validator against the current graph."""
+    """Run the deterministic per-unit validator against the current graph.
+
+    The toolbox supplies the deployment's namespace exemptions and quantity
+    fallback vocabulary; ``None`` (tests) means no exemptions.
+    """
     return collect_unit_findings(
         graph=unit_state.content_unit.graph,
         ontology_graph=unit_state.ontology_snapshot.graph,
@@ -133,7 +137,7 @@ def _collect_facts_findings(
         # Citation numerics (pages, years, volume numbers) are not extractable
         # quantities — never push coverage repair on bibliography units.
         coverage_limit=0 if unit_state.content_unit.is_citation_metadata else 30,
-        additional_standard_namespaces=additional_standard_namespaces,
+        policy=atomic.validation_policy if atomic is not None else None,
     )
 
 
@@ -178,7 +182,7 @@ async def _run_finding_driven_repair(
     ``render_facts_update`` call fed with the findings. Machine-applied,
     LLM-free rewrites are a different thing entirely and run at parse time
     (``agent/render_facts.py::_normalize_and_repair_graph``) and at the
-    post-merge gate (``tool/facts_invariants.py::apply_shacl_repairs``).
+    post-merge gate (``tool/facts_validation::apply_shacl_repairs``).
 
     Runs after the final render (where the LLM critic is skipped): mandatory
     findings — quarantined literals, unknown/near-miss terms — drive the loop.
@@ -189,9 +193,7 @@ async def _run_finding_driven_repair(
     only parsed operations) and is recorded rather than erased.
     """
     repair_visits = atomic.facts_llm_repair_visits
-    findings = _collect_facts_findings(
-        unit_state, atomic.additional_standard_namespaces
-    )
+    findings = _collect_facts_findings(unit_state, atomic)
     for repair_attempt in range(1, repair_visits + 1):
         mandatory = [finding for finding in findings if finding.mandatory]
         if not mandatory:
@@ -204,14 +206,32 @@ async def _run_finding_driven_repair(
             len(mandatory),
         )
         unit_state.deterministic_findings = findings
+        triples_before = len(unit_state.content_unit.graph)
+        mandatory_before = len(mandatory)
         unit_state = await render_facts(
             unit_state, atomic, supplemental_ontologies=supplemental
         )
         repair_failed = unit_state.status != Status.SUCCESS
         if not repair_failed:
-            findings = _collect_facts_findings(
-                unit_state, atomic.additional_standard_namespaces
-            )
+            findings = _collect_facts_findings(unit_state, atomic)
+            mandatory_after = sum(1 for finding in findings if finding.mandatory)
+            triples_after = len(unit_state.content_unit.graph)
+            if triples_after < triples_before and mandatory_after >= mandatory_before:
+                # The observed pathology behind the 2026-08 matsci runs: a
+                # repair render that only deletes triples while resolving no
+                # mandatory finding is destroying extracted data, not fixing
+                # it. The graph is kept (patches applied), but the shrinkage
+                # must be visible, not read as a successful repair.
+                logger.warning(
+                    "Finding-driven repair shrank the unit graph "
+                    "(%d -> %d triples) without resolving any mandatory "
+                    "finding (%d -> %d) — likely a delete-only response to "
+                    "the findings prompt",
+                    triples_before,
+                    triples_after,
+                    mandatory_before,
+                    mandatory_after,
+                )
         # Recorded counts are the residual AFTER this repair render (on failure
         # the graph is unchanged, so the pre-render findings still describe it).
         # This is what `facts_findings_residual` sums document-level; recording
@@ -417,7 +437,7 @@ async def facts_loop(
                 unit_state.node_visits[WorkflowNode.CRITICISE_FACTS] += 1
                 _reset_node_evidence_context(unit_state, WorkflowNode.CRITICISE_FACTS)
                 unit_state.deterministic_findings = _collect_facts_findings(
-                    unit_state, atomic.additional_standard_namespaces
+                    unit_state, atomic
                 )
                 unit_state = await criticise_facts(unit_state, atomic)
                 if unit_state.status == Status.SUCCESS:

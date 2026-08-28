@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from ontocast.onto.model import FactsValidationFinding, FactsValidationFindingKind
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.tool.facts_invariants import validate_aggregated_facts
+from ontocast.tool.facts_validation import validate_aggregated_facts
 
 FACTS = "https://growgraph.dev/facts/"
 MATSCI = "https://growgraph.dev/ontologies/matsci#"

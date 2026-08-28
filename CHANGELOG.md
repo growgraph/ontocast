@@ -5,7 +5,84 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.1]
+## [Unreleased]
+
+### Fixed
+
+- **A false mandatory `UNKNOWN_TERM` finding ordered repair renders to destroy
+  correct numeric values.** Root-caused from the cached LLM wire traffic of the
+  2026-08-11 matsci runs: the catalog *references* `qudt:QuantityValue` and
+  `qudt:unit` (in `rdfs:subClassOf`/`owl:onProperty`), which made
+  `http://qudt.org/schema/qudt/` a catalog namespace, while `qudt:numericValue`
+  appears only in qqval's prose — so every unit carrying the canonical scalar
+  property got "`qudt:numericValue` does not exist in its ontology … Candidates:
+  `qudt:QuantityValue`" as a MANDATORY item, with a **class** suggested for a
+  predicate slot. Of 58 cached repair responses carrying the finding, 25
+  deleted the valid values outright, 28 re-encoded scalars as equal-bound fake
+  ranges, and 1 wrote the class as a predicate; the two benchmark arms measured
+  the fallout as 38–64% of value nodes with no number in any numeric slot and
+  0–5 SPARQL-answerable measurement records per corpus. Three rules changed:
+  - A namespace is **closed** (members eligible for `UNKNOWN_TERM` /
+    near-miss alias repair) only when the catalog *declares* terms in it —
+    subject-position statements — not when it merely references them
+    (`collect_declared_namespaces`).
+  - The configured quantity fallback vocabulary and `FACTS_CODE_PREDICATES`
+    are exempt: the validator must never order the renderer to remove the
+    vocabulary the facts prompt itself recommends. All deployment-blessed
+    exemptions travel as one `ValidationPolicy` object on the toolbox instead
+    of loose parameters.
+  - Alias candidates are **role-filtered** against the catalog's declarations:
+    a predicate never gets a known class suggested, and vice versa.
+- The findings prompt now states the repair contract explicitly — every
+  MANDATORY item must be fixed by rewriting in place, never by deleting the
+  statement — and a repair render that shrinks the unit graph without
+  resolving any mandatory finding is logged as data destruction rather than
+  passing as a successful repair.
+- `RunManifest.facts_triples` was not comparable to the manifest's own
+  `.facts.ttl` (raw aggregated count vs provenance-stripped dump; 1711 vs 557
+  on the matsci runs). `facts_triples_serialized` now records what the file
+  actually holds.
+
+### Added
+
+- **SHACL-vs-catalog contradiction lint** (`shacl_catalog_contradictions`),
+  run when the validation gate loads shapes: any property the shapes require
+  (`sh:minCount >= 1`) that the term validator would flag as unknown is logged
+  as a configuration error — data cannot satisfy both sides. This exact
+  contradiction (shapes requiring `qudt:numericValue` while the validator
+  mandated its removal) is what silently destroyed the matsci numerics.
+- **`LABEL_ONLY_NUMBER` mandatory finding**: a node carrying the fallback
+  vocabulary's unit property but no numeric literal on any property, with a
+  number in its label, is a measurement invisible to every query — previously
+  numbers inside labels counted as "covered" and nothing ever flagged it.
+- **Degenerate-bound promotion** at parse time: equal lower/upper bounds
+  collapse to a single scalar on the configured numeric-value property.
+  Config-driven and off by default — activates when the quantity fallback
+  vocabulary names `numeric_value`, `lower_bound` and `upper_bound` roles
+  (58% of all bound pairs in the matsci runs were degenerate).
+- **The run manifest records the effective configuration and output shape**:
+  `loops` (`max_visits`, `max_critic_visits`, `llm_repair_visits`), `selection`
+  (`target_sections`, `exclude_sections`, `summarize_sections`,
+  `summary_max_sentences`, `bibliography_mode`), and `graph_metrics`
+  (connectivity of the serialized facts graph, via the new
+  `util/graph_metrics.py`). The 2026-08 `--max-visits 1` vs `2` ablation turned
+  out to be an A/A comparison — call accounting shows the critic never ran in
+  the second arm — and nothing in either dump could confirm or refute what the
+  run received; now the arm is auditable from its own manifest.
+  `test_max_visits_critic_propagation.py` additionally pins both ends of the
+  chain: the batch entry path writes the flag onto `AgentState`, and a unit
+  loop at `max_visits=2` observably spends a critic call.
+
+### Changed
+
+- **`tool/facts_invariants.py` (2,760 lines) is split into the
+  `tool/facts_validation/` package** — `terms` (catalog inventory, namespace
+  closure, `ValidationPolicy`, alias candidates), `literal_repair` (parse-time
+  LLM-free rewrites), `unit_findings` (per-unit findings), `shacl` (execution,
+  autofix, catalog lint), `gate` (document-level validation). The package
+  `__init__` is the public surface; the old module name is gone.
+- `_normalize_and_repair_graph` and `_collect_facts_findings` take the atomic
+  toolbox instead of a growing list of unpacked scalars.
 
 ### Changed
 

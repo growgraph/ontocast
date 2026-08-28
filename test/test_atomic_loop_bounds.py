@@ -54,6 +54,7 @@ def _tools() -> ToolBox:
                 SimpleNamespace(
                     facts_llm_repair_visits=1,
                     additional_standard_namespaces=(),
+                    validation_policy=None,
                 ),
             ),
         ),

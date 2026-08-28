@@ -64,6 +64,8 @@ pass actually ran — absent means "did not run", which is not the same as zero.
   "source": "paper.pdf",
   "ontocast_version": "0.6.0",
   "render_mode": "ontology_and_facts",
+  "loops": {"max_visits": 1, "max_critic_visits": null, "llm_repair_visits": 1},
+  "graph_metrics": {"nodes": 130, "edges": 112, "components": 24, "largest_component": 61, "isolated_nodes": 18},
   "llm": {"provider": "ollama", "model_name": "qwen3.6", "temperature": 0.0, "think": true},
   "budget": {
     "calls_count": 42, "cache_hits": 0,
@@ -83,7 +85,11 @@ pass actually ran — absent means "did not run", which is not the same as zero.
 This is the offline option: no service, no account, and it survives the process.
 Two runs are comparable by diffing their manifests — which model, which
 generation settings, how many tokens, how long per node, and now what retrieval
-and the validation gate did. It is also what makes a benchmark sweep auditable
+and the validation gate did. `loops` records the **effective** per-unit budgets
+(a `--max-visits` ablation whose flag silently failed to apply is detectable
+from the dump, not only from call arithmetic), and `graph_metrics` summarizes
+the connectivity of the serialized facts graph so fragmentation regressions
+surface per document. It is also what makes a benchmark sweep auditable
 after the fact, rather than something to be re-run.
 
 `retrieval_metrics` carries the same payload the HTTP response returns, so a

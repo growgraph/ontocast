@@ -530,6 +530,7 @@ class FactsUnitFindingKind(StrEnum):
     CLOSED_RANGE_LITERAL = "closed_range_literal"
     LITERAL_TYPE_OBJECT = "literal_type_object"
     NUMERIC_COVERAGE = "numeric_coverage"
+    LABEL_ONLY_NUMBER = "label_only_number"
     SCALAR_AS_BOUNDS = "scalar_as_bounds"
     DOMAIN_VIOLATION = "domain_violation"
 

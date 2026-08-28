@@ -23,7 +23,7 @@ from ontocast.prompt.criticise_facts import (
 from ontocast.prompt.graph_format import get_graph_format_profile
 from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
 from ontocast.tool.atomic import AtomicToolBox
-from ontocast.tool.facts_invariants import format_findings_for_prompt
+from ontocast.tool.facts_validation import format_findings_for_prompt
 
 logger = logging.getLogger(__name__)
 

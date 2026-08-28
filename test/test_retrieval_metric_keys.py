@@ -51,7 +51,7 @@ _WRITER_MODULES = (
     "ontocast/stategraph/node_factories.py",
     "ontocast/stategraph/context_resolver.py",
     "ontocast/api/process_helpers.py",
-    "ontocast/tool/facts_invariants.py",
+    "ontocast/tool/facts_validation",
 )
 
 
@@ -79,9 +79,10 @@ def test_no_bare_string_metric_keys_remain() -> None:
     """
     repo_root = Path(__file__).resolve().parents[1]
     pattern = re.compile(r"""retrieval_metrics\[\s*["']""")
-    offenders = [
-        module
-        for module in _WRITER_MODULES
-        if pattern.search((repo_root / module).read_text())
-    ]
+    offenders = []
+    for module in _WRITER_MODULES:
+        path = repo_root / module
+        files = sorted(path.glob("*.py")) if path.is_dir() else [path]
+        if any(pattern.search(file.read_text()) for file in files):
+            offenders.append(module)
     assert offenders == []

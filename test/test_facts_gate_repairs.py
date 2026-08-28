@@ -17,7 +17,7 @@ from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.model import FactsValidationFinding, FactsValidationFindingKind
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.stategraph.facts_gate import vetoes_from_findings
-from ontocast.tool.facts_invariants import (
+from ontocast.tool.facts_validation import (
     apply_shacl_repairs,
     collect_shacl_shapes,
     repair_property_aliases,

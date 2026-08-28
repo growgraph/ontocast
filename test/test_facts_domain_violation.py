@@ -10,7 +10,7 @@ import pytest
 
 from ontocast.onto.model import FactsUnitFindingKind
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.tool.facts_invariants import (
+from ontocast.tool.facts_validation import (
     collect_unit_findings,
     domain_violation_findings,
 )

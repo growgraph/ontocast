@@ -13,16 +13,23 @@ from langgraph.graph.state import CompiledStateGraph
 from ontocast._version import __version__
 from ontocast.agent.serialize import serialize as serialize_agent_state
 from ontocast.config import Config, ServerConfig
+from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.run_manifest import RunManifest, RunManifestLLM
+from ontocast.onto.run_manifest import (
+    RunManifest,
+    RunManifestLLM,
+    RunManifestLoops,
+    RunManifestSelection,
+)
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.facts_gate import run_facts_gate
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
 from ontocast.tool.chunk.prepare import SectionSelectionEmptyError
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.toolbox import ToolBox
+from ontocast.util.graph_metrics import facts_graph_shape_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -194,11 +201,42 @@ def dump_run_manifest(
     them. One small JSON per document closes that.
     """
     llm_config = config.tool_config.llm_config
+    facts_validation = config.get_tool_config().facts_validation
+    # The .facts.ttl dump strips provenance; count what the file will actually
+    # hold, or the manifest is not comparable to its own TTL (1711 vs 557 on
+    # the 2026-08 matsci runs).
+    serialized_facts = (
+        TripleStoreManager.strip_provenance(state.aggregated_facts)
+        if state.aggregated_facts is not None
+        else None
+    )
     manifest = RunManifest(
         source=file_path.name,
         line_number=line_number,
         ontocast_version=__version__,
         render_mode=str(state.render_mode),
+        loops=RunManifestLoops(
+            max_visits=state.max_visits,
+            max_critic_visits=config.server.max_critic_visits_per_node,
+            llm_repair_visits=facts_validation.llm_repair_visits,
+        ),
+        selection=RunManifestSelection(
+            target_sections=state.target_sections,
+            exclude_sections=state.exclude_sections,
+            summarize_sections=state.summarize_sections,
+            summary_max_sentences=state.summary_max_sentences,
+            bibliography_mode=str(
+                config.get_tool_config().chunk_config.bibliography_mode
+            ),
+        ),
+        graph_metrics=(
+            facts_graph_shape_metrics(
+                serialized_facts,
+                [DEFAULT_IRI, str(state.doc_iri), state.doc_namespace or ""],
+            )
+            if serialized_facts is not None
+            else None
+        ),
         current_domain=state.current_domain,
         doc_iri=str(state.doc_iri) if state.doc_hid else None,
         tenant=state.tenant,
@@ -217,6 +255,9 @@ def dump_run_manifest(
         ),
         facts_triples=(
             len(state.aggregated_facts) if state.aggregated_facts is not None else 0
+        ),
+        facts_triples_serialized=(
+            len(serialized_facts) if serialized_facts is not None else 0
         ),
         retrieval_metrics=dict(state.retrieval_metrics),
     )

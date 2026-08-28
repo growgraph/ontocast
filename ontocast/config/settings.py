@@ -2027,7 +2027,17 @@ class FactsValidationConfig(BaseSettings):
             "empty mapping forbids the fallback and keeps the renderer inside "
             "the provided context. Terms named here are treated as a deliberate "
             "fallback by the NON_CATALOG_VOCABULARY finding rather than as an "
-            "unexplained outside term."
+            "unexplained outside term, and are likewise exempt from the "
+            "per-unit UNKNOWN_TERM finding — the validator must never order "
+            "the renderer to remove the vocabulary the prompt recommends. "
+            "Optional roles lower_bound and upper_bound (plus roles containing "
+            "'inclusive' for the bound flags) name the catalog's range "
+            "properties; when all of numeric_value/lower_bound/upper_bound "
+            "are set, equal-bound pairs are promoted to a single scalar on "
+            "the numeric_value property at parse time. The unit role also "
+            "drives the LABEL_ONLY_NUMBER finding: a node carrying the unit "
+            "property but no numeric literal, with a number in its label, is "
+            "a mandatory fix."
         ),
     )
     functional_min_single_support: int = Field(

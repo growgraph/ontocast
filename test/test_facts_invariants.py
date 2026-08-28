@@ -12,7 +12,7 @@ from rdflib.namespace import XSD
 
 from ontocast.onto.model import FactsUnitFindingKind
 from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
-from ontocast.tool.facts_invariants import (
+from ontocast.tool.facts_validation import (
     collect_unit_findings,
     format_findings_for_prompt,
     normalize_literals_against_schema,

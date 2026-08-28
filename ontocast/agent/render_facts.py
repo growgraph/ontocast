@@ -42,9 +42,11 @@ from ontocast.prompt.render_facts import (
 )
 from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
 from ontocast.tool.atomic import AtomicToolBox
-from ontocast.tool.facts_invariants import (
+from ontocast.tool.facts_validation import (
+    expand_vocabulary_terms,
     format_findings_for_prompt,
     normalize_literals_against_schema,
+    promote_degenerate_bounds_from_vocabulary,
     repair_literal_type_objects,
     repair_property_aliases,
     resolve_code_literals,
@@ -57,9 +59,8 @@ logger = logging.getLogger(__name__)
 def _normalize_and_repair_graph(
     graph: RDFGraph,
     ontology_context_graph: RDFGraph,
+    tools: AtomicToolBox,
     *,
-    min_ratio: float,
-    code_predicates: Sequence[str] = (),
     budget_tracker: BudgetTracker | None = None,
 ) -> tuple[RDFGraph, list[GraphRepairRecord]]:
     """Apply LLM-free parse-time fixes to a rendered graph in place.
@@ -75,8 +76,9 @@ def _normalize_and_repair_graph(
     Args:
         graph: Rendered facts graph, repaired in place.
         ontology_context_graph: Read-only schema the repairs are checked against.
-        min_ratio: Similarity floor for accepting an alias rewrite.
-        code_predicates: Predicates carrying machine-resolvable codes.
+        tools: Supplies the alias-rewrite similarity floor, code predicates,
+            and the quantity fallback vocabulary (alias exemptions and the
+            degenerate-bound promotion roles).
         budget_tracker: Charged ``"repair/deterministic"``. Both scans here walk
             the whole ontology graph per call, so this is timed to show how much
             of it is per-unit-invariant work.
@@ -88,10 +90,18 @@ def _normalize_and_repair_graph(
     retyped = normalize_literals_against_schema(graph, ontology_context_graph)
     type_repaired, _type_findings, type_records = repair_literal_type_objects(graph)
     rewritten, _alias_findings, alias_records = repair_property_aliases(
-        graph, ontology_context_graph, min_ratio=min_ratio
+        graph,
+        ontology_context_graph,
+        min_ratio=tools.property_alias_min_ratio,
+        exempt_terms=expand_vocabulary_terms(
+            tools.quantity_fallback_vocabulary, graph, ontology_context_graph
+        ),
     )
     resolved, code_records = resolve_code_literals(
-        graph, ontology_context_graph, code_predicates
+        graph, ontology_context_graph, tools.code_predicates
+    )
+    promote_degenerate_bounds_from_vocabulary(
+        graph, ontology_context_graph, tools.quantity_fallback_vocabulary
     )
     if budget_tracker is not None:
         budget_tracker.add_duration(
@@ -346,8 +356,7 @@ async def render_facts_fresh(
         clean_graph, repair_records = _normalize_and_repair_graph(
             clean_graph,
             ontology_context_graph,
-            min_ratio=tools.property_alias_min_ratio,
-            code_predicates=tools.code_predicates,
+            tools,
             budget_tracker=state.budget_tracker,
         )
         state.applied_repairs.extend(repair_records)
@@ -464,8 +473,7 @@ async def render_facts_update(
                 clean_graph, repair_records = _normalize_and_repair_graph(
                     clean_graph,
                     ontology_context_graph,
-                    min_ratio=tools.property_alias_min_ratio,
-                    code_predicates=tools.code_predicates,
+                    tools,
                     budget_tracker=state.budget_tracker,
                 )
                 state.applied_repairs.extend(repair_records)

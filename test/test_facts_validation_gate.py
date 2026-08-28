@@ -27,7 +27,7 @@ from ontocast.stategraph.node_factories import (
 )
 from ontocast.tool import EmbeddingBasedAggregator
 from ontocast.tool.agg.aggregate import build_merged_clusters
-from ontocast.tool.facts_invariants import validate_aggregated_facts
+from ontocast.tool.facts_validation import validate_aggregated_facts
 from ontocast.toolbox import ToolBox
 
 CD = f"{DEFAULT_IRI}/"

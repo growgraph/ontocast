@@ -54,6 +54,7 @@ def _atomic_tools(repair_visits: int = 1) -> AtomicToolBox:
         SimpleNamespace(
             facts_llm_repair_visits=repair_visits,
             additional_standard_namespaces=(),
+            validation_policy=None,
         ),
     )
 
