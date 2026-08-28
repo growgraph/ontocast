@@ -600,3 +600,88 @@ def promote_degenerate_bounds(
 def _literal_parses_as(lexical: str, datatype: URIRef) -> bool:
     """True when ``lexical`` is a well-formed literal of ``datatype``."""
     return Literal(lexical, datatype=datatype).value is not None
+
+
+def dedupe_literal_variants(
+    graph: RDFGraph,
+    fact_namespaces: Sequence[str] | None = None,
+) -> list[GraphRepairRecord]:
+    """Collapse duplicate literals differing only in language tag or datatype.
+
+    The renderer emits the same value inconsistently across chunks —
+    ``"X"@en`` in one unit, ``"X"^^xsd:string`` in another, a plain ``"X"``
+    in a third — and after aggregation one ``(subject, predicate)`` carries
+    all three as distinct RDF terms. One survives per lexical form: the
+    language-tagged form (each distinct language kept — those are distinct
+    assertions), else the plain form, else the ``xsd:string`` form. Reified
+    provenance follows the survivor.
+
+    Args:
+        graph: Aggregated facts graph, mutated in place.
+        fact_namespaces: When set, only subjects under these namespaces are
+            touched.
+
+    Returns:
+        One :class:`GraphRepairRecord` per removed literal variant.
+    """
+    from ontocast.onto.rdfgraph import retarget_reifiers
+    from ontocast.tool.facts_validation.terms import _in_fact_scope
+
+    namespaces = [ns for ns in (fact_namespaces or []) if ns]
+    groups: dict[tuple[URIRef, URIRef, str], list[Literal]] = {}
+    for subject, predicate, obj in graph:
+        if not isinstance(subject, URIRef) or not isinstance(predicate, URIRef):
+            continue
+        if not isinstance(obj, Literal):
+            continue
+        if namespaces and not _in_fact_scope(subject, namespaces):
+            continue
+        groups.setdefault((subject, predicate, str(obj)), []).append(obj)
+
+    records: list[GraphRepairRecord] = []
+    replacements: dict[tuple[Node, Node, Node], tuple[Node, Node, Node]] = {}
+    for (subject, predicate, _lexical), literals in sorted(
+        groups.items(), key=lambda item: (str(item[0][0]), str(item[0][1]), item[0][2])
+    ):
+        if len(literals) < 2:
+            continue
+        tagged = sorted(
+            (lit for lit in literals if lit.language is not None),
+            key=lambda lit: str(lit.language),
+        )
+        plain = [
+            lit for lit in literals if lit.language is None and lit.datatype is None
+        ]
+        typed = [
+            lit
+            for lit in literals
+            if lit.language is None and lit.datatype == XSD.string
+        ]
+        if tagged:
+            keep = tagged[0]
+            drop = plain + typed
+        elif plain:
+            keep = plain[0]
+            drop = typed
+        else:
+            # Distinct datatypes beyond xsd:string are not variants of one
+            # value; leave them to the datatype-aware repairs.
+            continue
+        for variant in drop:
+            graph.remove((subject, predicate, variant))
+            replacements[(subject, predicate, variant)] = (subject, predicate, keep)
+            records.append(
+                GraphRepairRecord(
+                    kind=FactsGateRepairKind.LITERAL_VARIANT_PRUNED,
+                    source=f"{subject} {predicate} {variant.n3()}",
+                    target=keep.n3(),
+                )
+            )
+    if replacements:
+        retarget_reifiers(graph, replacements)
+        logger.info(
+            "Collapsed %d literal variant(s) differing only in language tag "
+            "or datatype",
+            len(records),
+        )
+    return records

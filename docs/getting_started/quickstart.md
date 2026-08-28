@@ -85,7 +85,7 @@ ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files
 
 # Optional aggregation controls
 AGG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
-AGG_SIMILARITY_THRESHOLD=0.80
+AGG_CANDIDATE_SIMILARITY_THRESHOLD=0.70
 
 # Optional web-search grounding
 WEB_SEARCH_ENABLED=false

@@ -22,6 +22,7 @@ from ontocast.onto.run_manifest import (
     RunManifestLLM,
     RunManifestLoops,
     RunManifestSelection,
+    summarize_facts_loop,
 )
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.facts_gate import run_facts_gate
@@ -220,6 +221,7 @@ def dump_run_manifest(
             max_critic_visits=config.server.max_critic_visits_per_node,
             llm_repair_visits=facts_validation.llm_repair_visits,
         ),
+        critic=summarize_facts_loop(state.facts_loop_telemetry),
         selection=RunManifestSelection(
             target_sections=state.target_sections,
             exclude_sections=state.exclude_sections,

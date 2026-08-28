@@ -1039,15 +1039,59 @@ class AggregationConfig(BaseSettings):
         default=0.80,
         ge=0.0,
         le=1.0,
-        description="Cosine similarity threshold used by DBSCAN clustering.",
+        description=(
+            "Cosine threshold for the cross-graph EntityAligner "
+            "(/align_entities, match-graphs). The in-pipeline aggregator "
+            "clusters and gates at AGG_CANDIDATE_SIMILARITY_THRESHOLD; this "
+            "knob does not affect it."
+        ),
     )
     candidate_similarity_threshold: float = Field(
         default=0.70,
         ge=0.0,
         le=1.0,
         description=(
-            "Lower cosine threshold used to generate permissive merge "
-            "candidates before symbolic validation."
+            "Cosine threshold of the in-pipeline aggregator: DBSCAN candidate "
+            "clustering and the pairwise gate both use it. Deliberately "
+            "permissive — candidates are validated symbolically afterwards."
+        ),
+    )
+    literal_conflict_guard: bool = Field(
+        default=True,
+        description=(
+            "Veto identity merges between entities asserting disjoint literal "
+            "values on a shared predicate (numeric/temporal disjointness, or "
+            "string sets with no compatible cross-pair). Ablation flag: off "
+            "measures the guard's contribution to rejected merges."
+        ),
+    )
+    initials_distinct_guard: bool = Field(
+        default=True,
+        description=(
+            "Veto identity merges between entities whose labels are identical "
+            "except for conflicting initials or single-letter identifiers "
+            "('company S.' vs 'company T.') — the shape authors write to "
+            "distinguish entities."
+        ),
+    )
+    natural_key_merge: bool = Field(
+        default=True,
+        description=(
+            "Positive identity evidence from natural keys: instances sharing "
+            "an identical short string value on a single-valued "
+            "identifier-like predicate (schema max-1, or observed "
+            "single-valued on every subject) become merge candidates even "
+            "when their labels and embeddings disagree. All distinctness "
+            "guards still apply."
+        ),
+    )
+    type_guard_untyped: Literal["permissive", "strict"] = Field(
+        default="permissive",
+        description=(
+            "Type-compatibility guard behaviour for untyped entities. "
+            "'permissive' (default) lets a typed entity merge with an untyped "
+            "one; 'strict' fails typed-vs-untyped pairs closed (two untyped "
+            "entities stay comparable in both modes)."
         ),
     )
     lexical_label_jaccard: float = Field(
@@ -1992,6 +2036,20 @@ class FactsValidationConfig(BaseSettings):
             "many passes. 0 records findings without repairing."
         ),
     )
+    accept_blocking_severity: Literal["critical", "important", "never"] = Field(
+        default="critical",
+        description=(
+            "Which critic-proposed fix severities block a unit from leaving "
+            "the render/critic loop. Deterministic mandatory findings always "
+            "block; this is the cut applied to the LLM critic's own severity "
+            "label, which is model output from a field description with no "
+            "rubric and so has to be watched rather than trusted. On the "
+            "2026-08 matsci corpus the critic emitted 27 'critical' fixes "
+            "against 99 'important', so 'important' accepts 3 of 26 renders — "
+            "worse than the score threshold it replaces. Set 'never' to let "
+            "deterministic findings gate alone."
+        ),
+    )
     suspect_multi_value_severity: Literal["error", "warning"] = Field(
         default="error",
         description=(
@@ -2047,6 +2105,16 @@ class FactsValidationConfig(BaseSettings):
             "Minimum number of single-valued subjects a predicate needs before "
             "the gate treats it as empirically functional. Below this the "
             "evidence is too thin to call a second value a violation."
+        ),
+    )
+    literal_variant_dedupe: bool = Field(
+        default=True,
+        description=(
+            "LLM-free gate repair: collapse duplicate literals that differ "
+            "only in language tag or datatype on one (subject, predicate) — "
+            "'X'@en alongside 'X'^^xsd:string alongside 'X'. The language-"
+            "tagged form wins, then the plain form; reified provenance moves "
+            "to the surviving triple."
         ),
     )
     shapes_dir: str | None = Field(

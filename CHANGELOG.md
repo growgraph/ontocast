@@ -9,6 +9,191 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Merge-guard vetoes now hold cluster-wide — a vetoed pair can no longer
+  merge through a chain of accepted edges.** `_build_identity_clusters`
+  applied every distinctness guard pairwise, then union-found the accepted
+  edges into transitive closures: with A–C vetoed but A–B and B–C accepted,
+  all three united anyway, defeating every guard including the validation
+  gate's own un-merge vetoes (which explains `facts_merge_repairs_rejected`
+  on runs where the gate demonstrably fired). Diagnosed on the art6 (ECHR)
+  benchmark, where four judges, three companies, and ESA-plus-its-own-Appeals-
+  Board each collapsed into single nodes. Distinctness vetoes (direct
+  relation, sibling, literal conflict, functional-object conflict, type/role
+  incompatibility) are now precomputed per candidate cluster and checked
+  across all members of both components before a union; blocked unions are
+  counted in `facts_rejected_merges` with reason `cluster_veto`. The gate's
+  veto pass therefore actually dissolves a flagged cluster now.
+- **A string literal on an arbitrary domain predicate no longer acts as label
+  agreement.** Every untyped/language-tagged string ≥ 3 characters was
+  harvested as an `alt_label` and fed into the label-intersection merge tier —
+  so `echr:hasHonorific "Mrs"` made any two "Mrs …" persons lexical aliases
+  ("Mr", at 2 characters, slipped under the floor, which is why only the
+  female judges collapsed in the art6 run). `alt_labels` now stand in only
+  for entities carrying no `rdfs:label`.
+- **Labels differing only by conflicting initials are distinctness evidence.**
+  "French company S." and "French company T." merged because `_tokenize`
+  dropped tokens ≤ 2 characters, making the label token sets identical. Short
+  tokens are kept, token comparisons strip edge punctuation (also letting
+  "Baranov, D." / "Dmitry Baranov" alias through the initials tier itself
+  rather than through the alt-label side channel), and a new guard vetoes
+  pairs whose labels are identical except for non-alias-compatible short
+  tokens (`AGG_LITERAL_CONFLICT_GUARD`-style flag:
+  `AGG_INITIALS_DISTINCT_GUARD`, default on).
+- **Merge-created self-loops are dropped instead of asserted.** A triple whose
+  subject and object were distinct until the identity mapping unified them
+  (`esa schema:isPartOf esaAppealsBoard` after a bad merge) was silently
+  rewritten to `X isPartOf X`. The rewriter now drops such triples with a
+  warning; author-asserted reflexive triples are untouched.
+- **`AGG_SIMILARITY_THRESHOLD` no longer masquerades as the pipeline's
+  clustering knob.** The in-pipeline aggregator overrode it with
+  `AGG_CANDIDATE_SIMILARITY_THRESHOLD` for its only clustering call, so tuning
+  it changed nothing. The pipeline clusterer is now constructed at the
+  candidate threshold directly and the field is re-documented as what it is:
+  the cross-graph `EntityAligner` threshold (`/align_entities`,
+  `match-graphs`). Docs and `.env.example` updated to match.
+
+### Added
+
+- **Natural-key identity evidence** (`AGG_NATURAL_KEY_MERGE`, default on): two
+  instances asserting the identical short string value (≤ 64 normalized chars,
+  shared by ≤ 8 entities) on a single-valued identifier-like predicate —
+  schema-declared max-1, or observed single-valued on every subject — become
+  merge candidates and pass the lexical bar, even when their labels and
+  embeddings disagree. Every distinctness guard still applies. Closes the
+  art6 under-merge where two nodes carrying the identical
+  `echr:hasApplicationNumber "36760/06"` were left split: all literal
+  machinery was veto-only, so identical identifiers exerted zero pull.
+  Key-supported clusters are reported on `AggregationResult` /
+  `AgentState.aggregation_key_clusters`, and the gate downgrades string
+  multi-value findings on those subjects to warnings — "Application no.
+  36760/06" and "Case of Stanev v. Bulgaria" are two names for one
+  key-confirmed case, and an error there would drive the un-merge repair to
+  split a correct merge.
+- **String branch for `SUSPECT_MULTI_VALUE`.** The gate's multi-value detector
+  was numeric/IRI-only, so a node carrying four irreconcilable person names —
+  the loudest over-merge symptom — produced no finding and could never trigger
+  the un-merge repair. Short name-like string values (≤ 64 normalized chars)
+  on a predicate that is string-single-valued for a dominant majority now
+  yield an error-severity finding when any pair is not alias-compatible;
+  legitimate name variants ("Mr Beer" / "Mr Karlheinz Beer") pass.
+- **`MIXED_OBJECT_KINDS` warning finding**: a predicate used with both IRI and
+  literal objects across the facts graph (`schema:worksFor <org>` on one
+  subject, `schema:worksFor "Ministry of Justice"` on another) is reported as
+  telemetry — no single query shape matches both usages.
+- **Literal-variant dedupe at the gate** (`FACTS_LITERAL_VARIANT_DEDUPE`,
+  default on): duplicate literals differing only in language tag or datatype
+  on one (subject, predicate) — `"X"@en` / `"X"^^xsd:string` / `"X"` — are
+  collapsed before validation; the language-tagged form wins, then the plain
+  form, reified provenance is retargeted onto the survivor, and each removal
+  is recorded as a `literal_variant_pruned` repair.
+- **Ablation flags for the merge guards**: `AGG_LITERAL_CONFLICT_GUARD`
+  (default on) toggles the literal-conflict veto so its contribution to
+  `facts_rejected_merges` is measurable without editing code, and
+  `AGG_TYPE_GUARD_UNTYPED=strict` fails typed-vs-untyped pairs closed instead
+  of the default fail-open.
+- Regression suite `test/aggregation/test_art6_merge_regressions.py` pinning
+  each of the art6 failure shapes (judge collapse, company initials, part-of
+  self-loop, natural-key under-merge, prose-is-not-a-key, gate visibility of
+  label explosions, literal-variant dedupe).
+
+### Changed
+
+- **A rejecting critic now buys a repair, not a re-extraction — and a unit's
+  worst-case call count no longer grows with `MAX_VISITS`.** A rejection used to
+  fall through to the next `render_attempt`, which rendered the whole unit again
+  from scratch. So the answer to "this one term is wrong" was "write the unit
+  again", and raising the bound bought more full renders: the ledger was
+  `2 * max_visits - 1`. The critic's blocking fixes now go through the same
+  bounded rewrite-in-place pass the deterministic findings already used
+  (`FactsUnitFindingKind.CRITIC_FIX`, `tool/facts_validation/critic_findings.py`),
+  and the outer loop retries only on *render failure* — which is what that
+  branch was always for. With web grounding off (the default), a unit costs one
+  render plus one critique plus the repair budget, at any bound.
+
+  Critic fixes join the findings for the first repair pass only, exactly like
+  `state.suggestions`: re-adding them after each pass would turn a fix the
+  renderer declined into an unresolvable finding and burn the whole budget.
+
+- **The facts loop now accepts a render on the absence of verifiable defects,
+  not on the critic's score.** `criticise_facts` gated on `critique.success or
+  critique.score > 90` — an LLM-assigned 0-100 number compared against a
+  threshold the model is never shown, from a prompt (`prompt/criticise_facts.py`)
+  that never mentions scoring at all. Measured over the 34 cached critic calls
+  of the 2026-08 matsci runs: scores min 55 / **median 79** / max 98, **28 of 34
+  rejected**, 62% landing in a 70-85 "good, with suggestions" band. An LLM asked
+  to propose improvements proposes some every time — it did in 26 of 26
+  parseable calls — so the gate was very nearly unconditional, and ~80% of units
+  bought a second full render regardless of their quality.
+
+  It was also inverted. `deterministic_findings` — machine-derived, carrying an
+  explicit `mandatory` flag — was computed before every critic call and injected
+  into the critic's own prompt, then played no part in the decision: a unit with
+  twelve mandatory `UNKNOWN_TERM` findings was accepted if the model said so,
+  and a clean unit was rejected if the model said 85. On the same corpus **only
+  7 of 34 units had any mandatory finding when the critic ran**, so 79% were
+  re-rendered on the strength of a number alone. The expensive action hung on
+  the unreliable signal and the cheap one on the reliable signal.
+
+  New `tool/facts_validation/acceptance.py` decides it instead:
+  `material_defects()` over the deterministic findings plus the critic's own
+  `TripleFix` severities, carried by a `FactsAcceptancePolicy` built beside
+  `ValidationPolicy` on the toolbox. `score` and `success` are still recorded,
+  and are no longer consulted. Replaying the cached responses through the new
+  rule accepts 18 of 26, flipping 12 rejections that scored 65-85.
+  - `FACTS_ACCEPT_BLOCKING_SEVERITY` (default `critical`) is the cut on critic
+    fixes. `critical` is the only severity with measured discrimination: the
+    critic emitted 27 `critical` against 99 `important`, so `important` accepts
+    3 of 26 renders — worse than the threshold it replaces. `never` lets
+    deterministic findings gate alone.
+  - **A `REMOVE` fix never blocks**, whatever its severity: the repair prompt it
+    would be rendered into states that a finding is never resolved by deleting
+    the statement, so a mandatory REMOVE would contradict the block it sits in.
+  - `FactsAcceptancePolicy.blocking_finding_kinds` can silence one finding lane
+    without silencing its telemetry. This is not optional ergonomics: binding
+    acceptance to findings makes a systematically unfixable finding a permanent
+    per-unit tax, and this codebase has already shipped one.
+
+- **The improvement prompt gave the repair render two contradictory contracts.**
+  `improvement_instruction_template` told it "Critic's suggestions are advisory,
+  not mandatory. Think independently", to "Think beyond the critique …
+  **Proactively identify and fix additional problems not mentioned in the
+  critique**", and that its goal was "not to satisfy Critic" — while
+  `format_findings_for_prompt` in the same prompt ordered it to apply every
+  mandatory item by rewriting in place and never deleting. The permissive half
+  licensed exactly the broad rewriting the two-visit arm exhibited: +6-25%
+  triples, more isolated nodes and more validation errors on two of three
+  documents, with queryable measurement records flat. It is replaced by one
+  correction-pass contract, keeping a single bounded escape clause — an item
+  contradicted by the source text may be skipped, with a reason, and never by
+  altering other statements.
+
+### Added
+
+- **`RunManifestCritic`** on the run manifest (`critic:`), summarizing the
+  critic's own decisions per document: call count, accepted count, score
+  min/median/max, a decile score histogram, and the proposed-fix severity
+  histogram. Establishing that the score gate was miscalibrated required mining
+  the LLM disk cache, which only worked because caching happened to be on — a
+  run must carry the evidence for the decisions it made.
+- `facts_critic_calls` / `facts_critic_accepted` metrics. `node_visits` counting
+  `CRITICISE_FACTS` lived on the per-unit state copy and died with it, so the
+  number of critic calls a run bought was not recoverable from its artifacts.
+- `facts_mandatory_residual`, alongside a corrected `facts_findings_residual` —
+  see below.
+
+### Fixed
+
+- **`facts_findings_residual` was measured over the wrong population.** It
+  summed `attempts[-1].n_deterministic_findings` only for units whose *last*
+  attempt was an `llm_repair`, so every clean unit and every unit whose loop
+  exhausted its retries contributed a silent 0: the denominator was "units that
+  needed repair", not "units". A change that made *fewer* units enter repair
+  therefore read as a drop in residual findings. It also summed *total*
+  findings, so advisory `NUMERIC_COVERAGE` — which fires on nearly every unit of
+  numeric prose — dominated a number meant to track mandatory defects. It is now
+  read off each unit's final findings, and `facts_mandatory_residual` reports
+  the mandatory half separately. **Old runs are not comparable on this key.**
+
 - **Critic suggestions leaked across renders, putting two contradictory repair
   contracts in one prompt.** `state.suggestions` was written by
   `criticise_facts` and read by `render_facts_update`, but nothing ever cleared

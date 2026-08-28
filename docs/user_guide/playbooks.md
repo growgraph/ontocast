@@ -102,7 +102,7 @@ RENDER_MODE=facts
 ONTOLOGY_CONTEXT_MODE=fixed_single_ontology
 ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID=my_schema   # IRI, ontology_id, or author prefix
 FACTS_SHACL_AUTOFIX=prune
-AGG_SIMILARITY_THRESHOLD=0.80
+AGG_CANDIDATE_SIMILARITY_THRESHOLD=0.70
 ```
 
 Why these:
@@ -124,8 +124,9 @@ Why these:
     renders against an empty snapshot. Check `GET /ontologies` if output goes
     sparse after a rename.
 
-Tune `AGG_SIMILARITY_THRESHOLD` on what you actually see: raise it when distinct
-entities are being merged, lower it when duplicates survive. Details in
+Tune `AGG_CANDIDATE_SIMILARITY_THRESHOLD` on what you actually see: raise it
+when distinct entities are being merged, lower it when duplicates survive
+(`AGG_SIMILARITY_THRESHOLD` only affects the cross-graph aligner). Details in
 [Entity Disambiguation](aggregation.md), and the validation gate is described in
 [Facts Validation](validation.md).
 
@@ -260,8 +261,8 @@ separates "the model did badly" from "that stage never ran".
 | Schema invented instead of reused | Catalog not seeded, or the wrong ontology selected per unit | `ONTOCAST_ONTOLOGY_DIRECTORY`, [Ontology Context](ontology_context.md) |
 | Right ontology, wrong terms within it | Not enough schema in context | `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES`, or `ONTOLOGY_PATCH_MAX_ATOMS` if the catalog is noisy |
 | Structurally malformed output | Critic disabled | `MAX_VISITS_PER_NODE=2` |
-| Duplicate entities across chunks | Disambiguation too strict | `AGG_SIMILARITY_THRESHOLD` lower — [Aggregation](aggregation.md) |
-| Distinct entities merged | Disambiguation too loose | `AGG_SIMILARITY_THRESHOLD` higher |
+| Duplicate entities across chunks | Disambiguation too strict | `AGG_CANDIDATE_SIMILARITY_THRESHOLD` lower — [Aggregation](aggregation.md) |
+| Distinct entities merged | Disambiguation too loose | `AGG_CANDIDATE_SIMILARITY_THRESHOLD` higher, and check the guard flags (`AGG_LITERAL_CONFLICT_GUARD`, `AGG_INITIALS_DISTINCT_GUARD`) are on |
 | Vector mode returns nothing | Index empty, or scores under the floor | `EMBEDDING_*` contract, `--wipe-vector-store`, [Observability](observability.md) |
 | Consistency critic never reports | It only runs in vector mode | [Ontology Context](ontology_context.md#selected_vector_search_ontology) |
 | Slower than expected | Provider concurrency, not worker count | `LLM_MAX_INFLIGHT` — [Performance](performance.md) |

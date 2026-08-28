@@ -620,6 +620,17 @@ class AgentState(BasePydanticModel):
         ),
     )
 
+    aggregation_key_clusters: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Final URIs of merge clusters supported by natural-key evidence "
+            "(a shared identifier value). The gate downgrades string "
+            "multi-value findings on these subjects to warnings: two label "
+            "variants on a key-evidenced merge are two names for one thing, "
+            "not two things."
+        ),
+    )
+
     facts_validation_findings: list[FactsValidationFinding] = Field(
         default_factory=list,
         description=(

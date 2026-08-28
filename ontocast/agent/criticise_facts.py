@@ -4,6 +4,7 @@ This module provides functionality for analyzing and validating extracted facts.
 """
 
 import logging
+from collections import Counter
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
@@ -23,7 +24,11 @@ from ontocast.prompt.criticise_facts import (
 from ontocast.prompt.graph_format import get_graph_format_profile
 from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
 from ontocast.tool.atomic import AtomicToolBox
-from ontocast.tool.facts_validation import format_findings_for_prompt
+from ontocast.tool.facts_validation import (
+    accept_reason,
+    format_findings_for_prompt,
+    material_defects,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -155,20 +160,39 @@ async def criticise_facts(
             f"score: {critique.score}"
         )
 
+        # Acceptance is decided from defects that can be pointed at: the
+        # deterministic findings already collected against this graph, plus the
+        # critic's own fixes at the configured severity. `score` and `success`
+        # are recorded and no longer consulted -- see acceptance.py for what the
+        # score gate measured and why it could not be calibrated.
+        defects = material_defects(
+            state.deterministic_findings,
+            critique.actionable_triple_fixes,
+            tools.acceptance_policy,
+        )
+        reason = accept_reason(defects)
+
         state.attempt_log.append(
             FactsLoopAttempt(
                 render_attempt=state.node_visits[WorkflowNode.TEXT_TO_FACTS],
                 critic_attempt=state.node_visits[WorkflowNode.CRITICISE_FACTS],
                 kind="critic",
                 score=critique.score,
-                success=bool(critique.success or critique.score > 90),
+                success=not defects,
+                accept_reason=reason,
                 n_actionable_fixes=len(critique.actionable_triple_fixes),
+                severity_counts=Counter(
+                    fix.severity for fix in critique.actionable_triple_fixes
+                ),
                 n_deterministic_findings=len(state.deterministic_findings),
+                n_mandatory_findings=sum(
+                    1 for finding in state.deterministic_findings if finding.mandatory
+                ),
                 triple_count=len(state.content_unit.graph),
             )
         )
 
-        if critique.success or critique.score > 90:
+        if not defects:
             state.status = Status.SUCCESS
             state.set_node_status(WorkflowNode.CRITICISE_FACTS, Status.SUCCESS)
             # An accepting critic has no outstanding requests. Clearing here is
@@ -178,13 +202,22 @@ async def criticise_facts(
             # the suggestions the earlier, rejecting attempt left behind. The
             # finding-driven repair then runs next, and must see only findings.
             state.suggestions = Suggestions()
-            logger.info("Facts critique passed")
+            logger.info(
+                "Facts critique passed (score %s, no material defect)",
+                critique.score,
+            )
         else:
             state.status = Status.FAILED
             state.set_node_status(WorkflowNode.CRITICISE_FACTS, Status.FAILED)
             state.failure_stage = FailureStage.FACTS_CRITIQUE
             state.suggestions = Suggestions.from_critique_report(critique)
-            state.failure_reason = "Facts Critic suggests improvements"
+            state.failure_reason = f"Facts unit has {len(defects)} material defect(s)"
+            logger.info(
+                "Facts critique rejected on %s: %s (score %s)",
+                reason,
+                "; ".join(defect.message for defect in defects[:3]),
+                critique.score,
+            )
 
         return state
 

@@ -75,6 +75,7 @@ def _tools() -> ToolBox:
                     facts_llm_repair_visits=0,
                     additional_standard_namespaces=(),
                     validation_policy=None,
+                    acceptance_policy=None,
                 ),
             ),
         ),
@@ -170,24 +171,27 @@ async def test_a_converging_critic_costs_two_calls_at_any_bound(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("max_visits", "expected_calls"),
-    [(1, 1), (2, 3), (3, 5)],
-)
-async def test_a_rejecting_critic_costs_two_visits_minus_one(
-    monkeypatch, max_visits: int, expected_calls: int
+@pytest.mark.parametrize("max_visits", [1, 2, 3, 5])
+async def test_a_rejecting_critic_costs_the_same_at_any_bound(
+    monkeypatch, max_visits: int
 ) -> None:
-    """Worst-case per-unit calls are ``2 * max_visits - 1``, not ``2 * max_visits``.
+    """Worst-case per-unit calls no longer grow with MAX_VISITS.
 
-    The last allowed render is not criticised — a critique that cannot drive
-    another render is pure spend — so the ledger is
-    ``(max_visits - 1)`` render+critique pairs plus one final bare render.
-    Pinned because it is the ceiling on what raising the bound can cost, and
-    the off-by-one in the obvious estimate is a whole provider call per unit.
+    The ledger used to be ``2 * max_visits - 1``: a rejecting critic fell
+    through to the next ``render_attempt``, which re-extracted the whole unit.
+    So the answer to "this one term is wrong" was another full render, and
+    raising the bound bought more of them. Rejection now routes the critic's
+    fixes into the same bounded rewrite-in-place repair the deterministic
+    findings use, and the outer loop retries only on *render failure*.
+
+    At ``max_visits=1`` the critic is skipped entirely (there is no second
+    render for it to inform), so that arm costs one render. Above 1 the cost is
+    one render plus one critique, flat.
 
     Web grounding is off here (the default): a critic that rejects *without*
     requesting evidence breaks the inner loop immediately, so the nominal
-    ``max_visits ** 2`` worst case is unreachable on this path.
+    ``max_visits ** 2`` worst case is unreachable on this path. The repair pass
+    is free in this fixture (``facts_llm_repair_visits=0``).
     """
     calls: list[str] = []
 
@@ -214,6 +218,7 @@ async def test_a_rejecting_critic_costs_two_visits_minus_one(
         ),
     )
 
-    assert len(calls) == expected_calls
-    assert calls.count("render") == max_visits
-    assert calls.count("critic") == max_visits - 1
+    expected_critics = 0 if max_visits == 1 else 1
+    assert calls.count("render") == 1
+    assert calls.count("critic") == expected_critics
+    assert len(calls) == 1 + expected_critics

@@ -69,6 +69,9 @@ class RetrievalMetric(StrEnum):
     FACTS_LLM_REPAIR_RENDERS_FAILED = "facts_llm_repair_renders_failed"
     FACTS_REPAIR_DELETE_ONLY = "facts_repair_delete_only"
     FACTS_FINDINGS_RESIDUAL = "facts_findings_residual"
+    FACTS_MANDATORY_RESIDUAL = "facts_mandatory_residual"
+    FACTS_CRITIC_CALLS = "facts_critic_calls"
+    FACTS_CRITIC_ACCEPTED = "facts_critic_accepted"
 
     # Aggregation and the un-merge repair.
     FACTS_REJECTED_MERGES = "facts_rejected_merges"

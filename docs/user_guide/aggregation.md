@@ -26,13 +26,17 @@ AGG_SIMILARITY_THRESHOLD=0.80
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `AGG_EMBEDDING_MODEL` | Sentence-transformers model for entity embeddings. Shares one process-wide model with `EMBEDDING_MODEL_NAME` and `CHUNK_EMBEDDING_MODEL` when the names match — see [Performance](performance.md#local-embedding-models) | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` |
-| `AGG_SIMILARITY_THRESHOLD` | Cosine similarity threshold for DBSCAN clustering | `0.80` |
-| `AGG_CANDIDATE_SIMILARITY_THRESHOLD` | Lower cosine threshold for permissive merge candidates before symbolic validation | `0.70` |
+| `AGG_SIMILARITY_THRESHOLD` | Cosine threshold of the cross-graph `EntityAligner` (`/align_entities`, `match-graphs`); the in-pipeline aggregator does **not** read it | `0.80` |
+| `AGG_CANDIDATE_SIMILARITY_THRESHOLD` | Cosine threshold of the in-pipeline aggregator (DBSCAN candidate clustering and the pairwise gate); deliberately permissive because candidates are validated symbolically | `0.70` |
 | `AGG_LEXICAL_LABEL_JACCARD` | Minimum label token-set Jaccard for the fuzzy lexical-alias tier | `0.5` |
 | `AGG_LEXICAL_SEQUENCE_RATIO` | Minimum SequenceMatcher ratio on URI normal forms | `0.90` |
 | `AGG_LEXICAL_TOKEN_JACCARD` | Minimum normal-form token Jaccard (both sides ≥ 2 tokens) | `0.75` |
 | `AGG_FUNCTIONAL_MIN_EMPIRICAL_SUPPORT` | Min distinct subjects before a predicate counts as empirically single-valued | `2` |
 | `AGG_SIBLING_GUARD_SCOPE` | Co-object sibling guard scope: `subject` or `predicate` | `subject` |
+| `AGG_LITERAL_CONFLICT_GUARD` | Veto merges between entities asserting disjoint literal values on a shared predicate (ablation flag) | `true` |
+| `AGG_INITIALS_DISTINCT_GUARD` | Veto merges between entities whose labels are identical except for conflicting initials ("company S." vs "company T.") | `true` |
+| `AGG_NATURAL_KEY_MERGE` | Positive identity evidence: instances sharing an identical short string value on a single-valued identifier-like predicate become merge candidates | `true` |
+| `AGG_TYPE_GUARD_UNTYPED` | `permissive` lets a typed entity merge with an untyped one; `strict` fails typed-vs-untyped pairs closed | `permissive` |
 
 Lower thresholds merge more aggressively (fewer duplicate entities, higher false-merge risk). Raise the threshold when precision matters more than recall.
 
@@ -41,17 +45,18 @@ Lower thresholds merge more aggressively (fewer duplicate entities, higher false
 1. **Candidate extraction** — entities from each unit's facts graph
 2. **Embedding** — dense vectors from `AGG_EMBEDDING_MODEL`
 3. **Symbolic checks** — labels, `skos:altName`, IRI compatibility; **identical `URIRef` always compatible** (e.g. the same ontology class appearing in predicted and ground-truth graphs clusters with score 1.0 even when labels are missing or embeddings disagree)
-4. **Merge guards** — unconditional safety checks that block identity merges between entities that provably describe distinct things: *literal-conflict* (disjoint numeric/temporal values on one predicate, e.g. 30 vs 230 μJ/cm²), *functional-object conflict* (disjoint IRI objects on a schema-declared or empirically single-valued predicate, e.g. two different `qudt:unit`s), *sibling* (two objects of one subject never merge — range bounds, sample series, grant lists), and a *strict lexical bar* for literal-bearing entities (only exact label/normal-form matches; fuzzy tiers are reserved for entities without data payloads)
-5. **Clustering** — connected components over similarity + compatibility edges
-6. **URI rewrite** — merge graphs under canonical entity URIs
-7. **Provenance** — track which unit contributed each merged triple
-8. **Validation gate** (stategraph only) — after merging, the `VALIDATE_FACTS`
+4. **Merge guards** — safety checks that block identity merges between entities that provably describe distinct things: *literal-conflict* (disjoint numeric/temporal values on one predicate, e.g. 30 vs 230 μJ/cm², or string identifier sets with no compatible cross-pair; `AGG_LITERAL_CONFLICT_GUARD`), *functional-object conflict* (disjoint IRI objects on a schema-declared or empirically single-valued predicate, e.g. two different `qudt:unit`s), *sibling* (two objects of one subject never merge — range bounds, sample series, grant lists), *initials-distinct* (labels identical except for conflicting initials mark distinct entities; `AGG_INITIALS_DISTINCT_GUARD`), and a *strict lexical bar* for literal-bearing entities (only exact label/normal-form matches; fuzzy tiers are reserved for entities without data payloads). Guard vetoes hold **cluster-wide**: a vetoed pair cannot be united through a chain of accepted edges either.
+5. **Natural-key evidence** (`AGG_NATURAL_KEY_MERGE`) — the one *positive* symbolic signal: two instances asserting the identical short string value on a single-valued identifier-like predicate (schema max-1, or observed single-valued on every subject) become merge candidates even when labels and embeddings disagree — "Application no. 36760/06" is the same case wherever its number appears. All guards still apply.
+6. **Clustering** — connected components over similarity + compatibility edges, subject to the cluster-wide vetoes
+7. **URI rewrite** — merge graphs under canonical entity URIs; a triple whose subject and object became identical only through the merge (a self-loop no source asserted) is dropped with a warning
+8. **Provenance** — track which unit contributed each merged triple
+9. **Validation gate** (stategraph only) — after merging, the `VALIDATE_FACTS`
    node checks post-merge invariants and applies LLM-free repairs; see
-   [Facts Validation and SHACL](validation.md). The merge guards are pairwise,
-   so a chain A–B, B–C can still transitively unite conflicting A and C; the
-   gate catches exactly this: *merge-signature* error findings on merged
-   subjects turn the offending cluster into pair vetoes and the facts units are
-   re-aggregated (`FACTS_MERGE_REPAIR_PASSES`, default 1). SHACL findings are
+   [Facts Validation and SHACL](validation.md). *Merge-signature* error
+   findings on merged subjects turn the offending cluster into pair vetoes and
+   the facts units are re-aggregated (`FACTS_MERGE_REPAIR_PASSES`, default 1);
+   because vetoes hold cluster-wide, a veto pass dissolves the flagged cluster
+   instead of being re-defeated by transitive closure. SHACL findings are
    deliberately not part of that loop — a constraint violation is not evidence
    of a bad identity merge.
 

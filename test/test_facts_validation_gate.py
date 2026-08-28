@@ -13,7 +13,7 @@ from rdflib import OWL, RDF, RDFS, Literal, URIRef
 from rdflib.namespace import XSD
 
 from ontocast.api.process_helpers import validate_unit_pipeline_facts
-from ontocast.config import FactsValidationConfig
+from ontocast.config import AggregationConfig, FactsValidationConfig
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.enum import RetrievalMetric
@@ -46,8 +46,10 @@ def _fact_unit(index: int, ttl: str, text: str = "text") -> ContentUnit:
     )
 
 
-def _normal_form_aggregator(monkeypatch) -> EmbeddingBasedAggregator:
-    aggregator = EmbeddingBasedAggregator()
+def _normal_form_aggregator(
+    monkeypatch, **config_overrides
+) -> EmbeddingBasedAggregator:
+    aggregator = EmbeddingBasedAggregator(AggregationConfig(**config_overrides))
 
     def cluster_by_normal_form(representations):
         clusters: dict[str, list[URIRef]] = {}
@@ -203,8 +205,39 @@ def _conflicting_alias_units() -> list[ContentUnit]:
     return [_fact_unit(0, ttl_a), _fact_unit(1, ttl_b), _fact_unit(2, ttl_c)]
 
 
-def test_transitive_merge_slips_guards_and_vetoes_split_it(monkeypatch) -> None:
+def test_transitive_merge_blocked_cluster_wide_at_aggregation(monkeypatch) -> None:
+    """A vetoed pair must not merge through a chain of accepted edges.
+
+    Pairwise guards reject A-C (conflicting numeric literals); A-B and B-C
+    are each mergeable. The union used to chain all three together anyway;
+    the distinctness veto now holds cluster-wide, so no cluster unites the
+    two conflicting value carriers and the served graph is clean.
+    """
     aggregator = _normal_form_aggregator(monkeypatch)
+    result = aggregator.aggregate_graphs(
+        _conflicting_alias_units(), ontology_graph=RDFGraph()
+    )
+
+    for members in result.merged_clusters.values():
+        assert not {str(URIRef(CD + "sample_x")), str(URIRef(CD + "Sample_X"))} <= set(
+            members
+        )
+    assert result.rejected_merge_count >= 1
+    scope = [CD, "https://x.org/doc/1"]
+    report = validate_aggregated_facts(result.graph, None, fact_namespaces=scope)
+    assert not report.error_findings
+
+
+def test_transitive_merge_slips_disabled_guard_and_vetoes_split_it(
+    monkeypatch,
+) -> None:
+    """With the literal-conflict guard ablated, the gate's vetoes still repair.
+
+    The un-merge lever is the backstop for whatever the aggregation-time
+    guards cannot see; ablating the guard reproduces the historical
+    transitive over-merge so the lever stays covered.
+    """
+    aggregator = _normal_form_aggregator(monkeypatch, literal_conflict_guard=False)
     result = aggregator.aggregate_graphs(
         _conflicting_alias_units(), ontology_graph=RDFGraph()
     )
@@ -296,7 +329,9 @@ def _fake_tools(aggregator: EmbeddingBasedAggregator, **overrides) -> ToolBox:
 
 
 def test_validate_facts_node_repairs_transitive_bad_merge(monkeypatch) -> None:
-    aggregator = _normal_form_aggregator(monkeypatch)
+    # Guard ablated so the historical over-merge reaches the gate at all —
+    # with default guards the aggregator blocks it upstream.
+    aggregator = _normal_form_aggregator(monkeypatch, literal_conflict_guard=False)
     tools = _fake_tools(aggregator)
     state = AgentState()
     state.current_domain = "https://x.org"
@@ -323,7 +358,7 @@ def test_validate_facts_node_repairs_transitive_bad_merge(monkeypatch) -> None:
 
 
 def test_validate_facts_node_zero_passes_records_findings_only(monkeypatch) -> None:
-    aggregator = _normal_form_aggregator(monkeypatch)
+    aggregator = _normal_form_aggregator(monkeypatch, literal_conflict_guard=False)
     tools = _fake_tools(aggregator, merge_repair_passes=0)
     state = AgentState()
     state.current_domain = "https://x.org"
@@ -357,7 +392,7 @@ def test_repair_pass_republishes_the_guard_count_not_the_veto_count(
     forced apart here: whenever the aggregator rejects pairs the vetoes did not
     name, the veto count under-reports the graph that is served.
     """
-    aggregator = _normal_form_aggregator(monkeypatch)
+    aggregator = _normal_form_aggregator(monkeypatch, literal_conflict_guard=False)
     real_postprocess = aggregator.postprocess_facts_units
     sentinel = 41
 

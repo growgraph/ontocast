@@ -7,6 +7,12 @@ Split by concern: ``terms`` (catalog inventory, namespace closure,
 This package is the public surface; import from here.
 """
 
+from ontocast.tool.facts_validation.acceptance import (
+    FactsAcceptancePolicy,
+    MaterialDefect,
+    accept_reason,
+    material_defects,
+)
 from ontocast.tool.facts_validation.gate import (
     FactsValidationReport,
     record_facts_gate_metrics,
@@ -14,6 +20,7 @@ from ontocast.tool.facts_validation.gate import (
     validate_aggregated_facts,
 )
 from ontocast.tool.facts_validation.literal_repair import (
+    dedupe_literal_variants,
     normalize_literals_against_schema,
     promote_degenerate_bounds,
     promote_degenerate_bounds_from_vocabulary,
@@ -44,19 +51,24 @@ from ontocast.tool.facts_validation.unit_findings import (
 )
 
 __all__ = [
+    "FactsAcceptancePolicy",
     "FactsValidationReport",
+    "MaterialDefect",
     "ShaclRepairResult",
     "ShaclViolation",
     "ValidationPolicy",
+    "accept_reason",
     "apply_shacl_repairs",
     "build_surface_index",
     "collect_catalog_terms",
     "collect_declared_namespaces",
     "collect_shacl_shapes",
     "collect_unit_findings",
+    "dedupe_literal_variants",
     "domain_violation_findings",
     "expand_vocabulary_terms",
     "format_findings_for_prompt",
+    "material_defects",
     "normalize_literals_against_schema",
     "promote_degenerate_bounds",
     "promote_degenerate_bounds_from_vocabulary",

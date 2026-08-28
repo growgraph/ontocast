@@ -95,7 +95,7 @@ curl -X POST "http://localhost:8999/process?tenant=acme&project=reports" \
 | `improvement_suggestions` | Advisory notes from the structural check and consistency critic. Nothing in the pipeline acts on them |
 | `facts_conformance` | Validation summary for the served graph: whether SHACL ran and it conforms, counts by finding kind / constraint component / shape, repairs applied — see [Validation](validation.md) |
 | `facts_validation_findings` | Residual findings behind the summary, after every repair stage |
-| `facts_gate_repairs` | LLM-free repairs the gate applied to the merged graph (retype, code resolution, prune) |
+| `facts_gate_repairs` | LLM-free repairs the gate applied to the merged graph (retype, code resolution, prune, literal-variant dedupe) |
 
 A run in which *no* unit produced output returns **422**, not a 200 with empty
 facts.

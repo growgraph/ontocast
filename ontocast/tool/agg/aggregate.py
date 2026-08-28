@@ -53,11 +53,22 @@ from .signatures import (
     build_sibling_pairs,
     empirically_functional_predicates,
     harvest_max_one_predicates,
+    label_tokens,
+    labels_alias_with_initials,
+    labels_differ_only_by_initials,
+    string_values_compatible,
+    tokens_alias_compatible,
 )
 from .uri_builder import EntityRole, URIBuilder, to_lower_camel_case
 
 logger = logging.getLogger(__name__)
 _INSTANCE_LOCAL_NAME_RE = re.compile(r"^(?P<stem>.+?)(?P<index>\d+)$")
+
+# Natural-key evidence bounds: values longer than this are prose payloads
+# (notes, descriptions), not identifiers; values shared by more entities than
+# this are generic attributes ("bulgaria"), not identifying marks.
+_NATURAL_KEY_MAX_VALUE_LENGTH = 64
+_NATURAL_KEY_MAX_VALUE_ENTITIES = 8
 
 _DOC_METADATA_FIRST_CLASS: dict[str, URIRef] = {
     "title": DCTERMS.title,
@@ -478,6 +489,10 @@ class AggregationResult(BaseModel):
             :class:`~ontocast.onto.state.AgentState` between graph nodes.
         rejected_merge_count: Candidate merges rejected by symbolic
             validation (guards, roles, types, lexical bar).
+        key_supported_clusters: Final URIs of merged clusters containing at
+            least one natural-key pair (a shared identifier value). The
+            validation gate treats label disagreement inside these clusters
+            as name variance rather than a merge signature.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -486,6 +501,7 @@ class AggregationResult(BaseModel):
     decisions: dict[URIRef, EntityDecision] = Field(default_factory=dict)
     merged_clusters: dict[str, list[str]] = Field(default_factory=dict)
     rejected_merge_count: int = 0
+    key_supported_clusters: list[str] = Field(default_factory=list)
 
 
 class _EntityCollectionState(BaseModel):
@@ -573,14 +589,21 @@ class EmbeddingBasedAggregator:
         self.lexical_token_jaccard = cfg.lexical_token_jaccard
         self.functional_min_empirical_support = cfg.functional_min_empirical_support
         self.sibling_guard_scope = str(cfg.sibling_guard_scope)
+        self.literal_conflict_guard = cfg.literal_conflict_guard
+        self.initials_distinct_guard = cfg.initials_distinct_guard
+        self.natural_key_merge = cfg.natural_key_merge
+        self.type_guard_untyped = str(cfg.type_guard_untyped)
 
-        # Pipeline components (EntityClusterer imports sklearn/ST lazily)
+        # Pipeline components (EntityClusterer imports sklearn/ST lazily).
+        # The clusterer runs at the permissive candidate threshold: candidates
+        # are validated symbolically afterwards, so there is exactly one
+        # clustering threshold on this path.
         from .clustering import EntityClusterer
 
         self.normalizer = EntityNormalizer(facts_iri=self.base_iri)
         self.clusterer = EntityClusterer(
             embedding_model=cfg.embedding_model,
-            similarity_threshold=cfg.similarity_threshold,
+            similarity_threshold=self.candidate_similarity_threshold,
         )
         self.selector = ClusterRepresentativeSelector()
         self.uri_builder = URIBuilder(base_iri=self.base_iri)
@@ -632,7 +655,10 @@ class EmbeddingBasedAggregator:
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:
-        return {token for token in text.split() if len(token) > 2}
+        # Short tokens stay: initials and single-letter identifiers
+        # ("company S." vs "company T.") are often the only distinguishing
+        # mark, and dropping them made such labels compare identical.
+        return set(label_tokens(text))
 
     @staticmethod
     def _role_key(representation: EntityRepresentation) -> str:
@@ -688,8 +714,26 @@ class EmbeddingBasedAggregator:
         left_types = set(left_rep.types)
         right_types = set(right_rep.types)
         if not left_types or not right_types:
+            if self.type_guard_untyped == "strict":
+                # Strict mode fails a typed-vs-untyped pair closed; two
+                # untyped entities stay comparable — there is no type
+                # evidence in either direction.
+                return not left_types and not right_types
             return True
         return bool(left_types & right_types)
+
+    def _entity_label_values(self, rep: EntityRepresentation) -> set[str]:
+        """Normalized name strings an entity is identified by.
+
+        ``alt_labels`` (string literals from arbitrary domain predicates)
+        stand in only when the entity carries no ``rdfs:label``: for a
+        labeled entity they are payload, not names — an honorific or role
+        literal shared by several people must not read as label agreement.
+        """
+        source = rep.labels if rep.labels else rep.alt_labels
+        return {
+            self.normalizer.normalize_string(label) for label in source if label.strip()
+        }
 
     def _are_lexical_aliases(
         self,
@@ -713,16 +757,8 @@ class EmbeddingBasedAggregator:
         ):
             return True
 
-        left_label_tokens = {
-            self.normalizer.normalize_string(label)
-            for label in left_rep.labels + left_rep.alt_labels
-            if label.strip()
-        }
-        right_label_tokens = {
-            self.normalizer.normalize_string(label)
-            for label in right_rep.labels + right_rep.alt_labels
-            if label.strip()
-        }
+        left_label_tokens = self._entity_label_values(left_rep)
+        right_label_tokens = self._entity_label_values(right_rep)
         if left_label_tokens & right_label_tokens:
             return True
 
@@ -775,68 +811,12 @@ class EmbeddingBasedAggregator:
 
         return False
 
-    @staticmethod
-    def _tokens_alias_compatible(left: str, right: str) -> bool:
-        """Exact token match, or a (possibly dotted) single-char initial of it."""
-        if left == right:
-            return True
-        shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
-        return len(shorter) == 1 and longer.startswith(shorter)
-
-    @classmethod
-    def _labels_alias_with_initials(
-        cls,
-        left_labels: set[str],
-        right_labels: set[str],
-    ) -> bool:
-        """True when a label pair matches token-injectively allowing initials.
-
-        Every token of the shorter label must match a distinct token of the
-        longer one (exactly, or as a single-character initial), and at least
-        one matched token must be a full word (len > 2). Generic abbreviation
-        structure — nothing person-specific.
-        """
-        for left_label in left_labels:
-            left_tokens = left_label.split()
-            for right_label in right_labels:
-                right_tokens = right_label.split()
-                if not left_tokens or not right_tokens:
-                    continue
-                shorter, longer = (
-                    (left_tokens, right_tokens)
-                    if len(left_tokens) <= len(right_tokens)
-                    else (right_tokens, left_tokens)
-                )
-                available = list(longer)
-                shared_full_token = False
-                matched_all = True
-                for token in shorter:
-                    match_index = next(
-                        (
-                            index
-                            for index, candidate in enumerate(available)
-                            if cls._tokens_alias_compatible(token, candidate)
-                        ),
-                        None,
-                    )
-                    if match_index is None:
-                        matched_all = False
-                        break
-                    if token == available[match_index] and len(token) > 2:
-                        shared_full_token = True
-                    del available[match_index]
-                if matched_all and shared_full_token:
-                    return True
-        return False
-
-    @classmethod
-    def _string_values_compatible(cls, left: str, right: str) -> bool:
-        """Compatible when equal, prefix-related, or initial-abbreviations."""
-        if left == right:
-            return True
-        if left.startswith(right) or right.startswith(left):
-            return True
-        return cls._labels_alias_with_initials({left}, {right})
+    # Thin delegates: the shared implementations live in ``signatures`` so the
+    # validation gate can consult the same string-compatibility notion without
+    # importing the aggregator.
+    _tokens_alias_compatible = staticmethod(tokens_alias_compatible)
+    _labels_alias_with_initials = staticmethod(labels_alias_with_initials)
+    _string_values_compatible = staticmethod(string_values_compatible)
 
     @classmethod
     def _have_conflicting_literals(
@@ -905,21 +885,67 @@ class EmbeddingBasedAggregator:
         right_rep = representations.get(right)
         if left_rep is None or right_rep is None:
             return False
-        left_labels = {
-            self.normalizer.normalize_string(label)
-            for label in left_rep.labels + left_rep.alt_labels
-            if label.strip()
-        }
-        right_labels = {
-            self.normalizer.normalize_string(label)
-            for label in right_rep.labels + right_rep.alt_labels
-            if label.strip()
-        }
+        left_labels = self._entity_label_values(left_rep)
+        right_labels = self._entity_label_values(right_rep)
         if not left_labels or not right_labels:
             return False
         if left_labels & right_labels:
             return True
         return self._labels_alias_with_initials(left_labels, right_labels)
+
+    def _labels_mark_distinct_entities(
+        self,
+        left_rep: EntityRepresentation,
+        right_rep: EntityRepresentation,
+    ) -> bool:
+        """Label pairs identical except for conflicting initials mark distinctness."""
+        if not self.initials_distinct_guard:
+            return False
+        return labels_differ_only_by_initials(
+            self._entity_label_values(left_rep),
+            self._entity_label_values(right_rep),
+        )
+
+    def _pair_distinctness_veto(
+        self,
+        left: URIRef,
+        right: URIRef,
+        representations: dict[URIRef, EntityRepresentation],
+        direct_relation_pairs: set[frozenset[URIRef]] | None = None,
+        guard_context: MergeGuardContext | None = None,
+    ) -> bool:
+        """Positive evidence that *left* and *right* denote distinct entities.
+
+        Unlike the absence of a lexical alias — which merely fails to support
+        a merge — a veto is grounds to keep the pair apart in *any* identity
+        cluster, including transitively: two entities that a guard separates
+        must not end up merged through a chain of intermediate aliases.
+        """
+        pair = frozenset((left, right))
+        if direct_relation_pairs is not None and pair in direct_relation_pairs:
+            return True
+        left_rep = representations.get(left)
+        right_rep = representations.get(right)
+        if guard_context is not None:
+            if pair in guard_context.sibling_pairs:
+                return True
+            if left_rep is not None and right_rep is not None:
+                if self.literal_conflict_guard and self._have_conflicting_literals(
+                    left_rep, right_rep
+                ):
+                    return True
+                if self._have_conflicting_functional_objects(
+                    left_rep, right_rep, guard_context.functional_predicates
+                ):
+                    return True
+        if left_rep is not None and right_rep is not None:
+            if self._labels_mark_distinct_entities(left_rep, right_rep):
+                return True
+        if not self._are_roles_compatible(left, right, representations):
+            return True
+        if not self._are_types_compatible(left, right, representations):
+            return True
+        return False
 
     def _can_merge_as_identity(
         self,
@@ -928,27 +954,115 @@ class EmbeddingBasedAggregator:
         representations: dict[URIRef, EntityRepresentation],
         direct_relation_pairs: set[frozenset[URIRef]] | None = None,
         guard_context: MergeGuardContext | None = None,
+        key_pairs: set[frozenset[URIRef]] | None = None,
     ) -> bool:
-        pair = frozenset((left, right))
-        if direct_relation_pairs is not None and pair in direct_relation_pairs:
+        if self._pair_distinctness_veto(
+            left,
+            right,
+            representations,
+            direct_relation_pairs=direct_relation_pairs,
+            guard_context=guard_context,
+        ):
             return False
-        if guard_context is not None:
-            if pair in guard_context.sibling_pairs:
-                return False
-            left_rep = representations.get(left)
-            right_rep = representations.get(right)
-            if left_rep is not None and right_rep is not None:
-                if self._have_conflicting_literals(left_rep, right_rep):
-                    return False
-                if self._have_conflicting_functional_objects(
-                    left_rep, right_rep, guard_context.functional_predicates
-                ):
-                    return False
-        return (
-            self._are_roles_compatible(left, right, representations)
-            and self._are_types_compatible(left, right, representations)
-            and self._are_lexical_aliases(left, right, representations)
-        )
+        if key_pairs is not None and frozenset((left, right)) in key_pairs:
+            # A shared value on a single-valued identifier-like predicate is
+            # positive identity evidence in its own right; the guards above
+            # still had their say.
+            return True
+        return self._are_lexical_aliases(left, right, representations)
+
+    def _collect_natural_key_pairs(
+        self,
+        representations: dict[URIRef, EntityRepresentation],
+        schema_functional_predicates: set[URIRef],
+    ) -> set[frozenset[URIRef]]:
+        """Instance pairs sharing a value on a single-valued identifier predicate.
+
+        Every guard in this module is a veto; this is the one source of
+        *positive* symbolic identity evidence: two instances asserting the
+        same value for a predicate that behaves like an identifier (declared
+        max-1 by the schema, or observed single-valued on every subject) are
+        candidate re-mentions of one entity — "Application no. 36760/06" is
+        the same case wherever its number appears. Pairs found here are still
+        subject to all distinctness vetoes; string values only (dates and
+        numbers are coordinates, not identifiers), short values only (prose
+        payloads such as notes and descriptions are not keys), and values
+        shared too widely are treated as generic rather than identifying.
+        """
+        instance_role = str(EntityRole.INSTANCE)
+        by_predicate: dict[URIRef, dict[URIRef, set[str]]] = {}
+        for entity, rep in representations.items():
+            if self._role_key(rep) != instance_role:
+                continue
+            for predicate, values in rep.predicate_string_literals.items():
+                filtered = {
+                    value
+                    for value in values
+                    if 0 < len(value) <= _NATURAL_KEY_MAX_VALUE_LENGTH
+                }
+                if filtered:
+                    by_predicate.setdefault(predicate, {})[entity] = filtered
+
+        pairs: set[frozenset[URIRef]] = set()
+        for predicate, entity_values in by_predicate.items():
+            if predicate not in schema_functional_predicates:
+                if len(entity_values) < self.functional_min_empirical_support:
+                    continue
+                if any(len(values) != 1 for values in entity_values.values()):
+                    continue
+            value_index: dict[str, list[URIRef]] = {}
+            for entity, values in entity_values.items():
+                for value in values:
+                    value_index.setdefault(value, []).append(entity)
+            for value, entities in value_index.items():
+                if not 2 <= len(entities) <= _NATURAL_KEY_MAX_VALUE_ENTITIES:
+                    continue
+                for left, right in combinations(sorted(entities, key=str), 2):
+                    pairs.add(frozenset((left, right)))
+        return pairs
+
+    @staticmethod
+    def _merge_candidate_clusters_by_key_pairs(
+        candidate_clusters: list[list[URIRef]],
+        key_pairs: set[frozenset[URIRef]],
+    ) -> list[list[URIRef]]:
+        """Join candidate clusters bridged by a natural-key pair.
+
+        Embedding clustering only proposes pairs that read alike; two mentions
+        of one entity under different surface forms ("Application no. X" vs
+        "Case A v. B") never co-cluster, so a key pair spanning two candidate
+        clusters must pull them into one before symbolic validation — which
+        still adjudicates every pair inside the joined cluster.
+        """
+        if not key_pairs:
+            return candidate_clusters
+        cluster_of: dict[URIRef, int] = {}
+        for index, cluster in enumerate(candidate_clusters):
+            for entity in cluster:
+                cluster_of[entity] = index
+
+        parent = list(range(len(candidate_clusters)))
+
+        def find(index: int) -> int:
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
+
+        for pair in key_pairs:
+            left, right = tuple(pair)
+            left_index = cluster_of.get(left)
+            right_index = cluster_of.get(right)
+            if left_index is None or right_index is None:
+                continue
+            left_root, right_root = find(left_index), find(right_index)
+            if left_root != right_root:
+                parent[max(left_root, right_root)] = min(left_root, right_root)
+
+        grouped: dict[int, list[URIRef]] = {}
+        for index, cluster in enumerate(candidate_clusters):
+            grouped.setdefault(find(index), []).extend(cluster)
+        return list(grouped.values())
 
     def _cluster_entities_by_role(
         self, representations: dict[URIRef, EntityRepresentation]
@@ -961,17 +1075,12 @@ class EmbeddingBasedAggregator:
 
         all_clusters: list[list[URIRef]] = []
         all_embeddings: dict[URIRef, np.ndarray] = {}
-        original_threshold = self.clusterer.similarity_threshold
-        self.clusterer.similarity_threshold = self.candidate_similarity_threshold
-        try:
-            for role_representations in grouped_entities.values():
-                role_clusters, role_embeddings = self.clusterer.cluster_entities(
-                    role_representations
-                )
-                all_clusters.extend(role_clusters)
-                all_embeddings.update(role_embeddings)
-        finally:
-            self.clusterer.similarity_threshold = original_threshold
+        for role_representations in grouped_entities.values():
+            role_clusters, role_embeddings = self.clusterer.cluster_entities(
+                role_representations
+            )
+            all_clusters.extend(role_clusters)
+            all_embeddings.update(role_embeddings)
         return all_clusters, all_embeddings
 
     @staticmethod
@@ -1006,12 +1115,16 @@ class EmbeddingBasedAggregator:
             left_rep = representations.get(left)
             right_rep = representations.get(right)
             if left_rep is not None and right_rep is not None:
-                if self._have_conflicting_literals(left_rep, right_rep):
+                if self.literal_conflict_guard and self._have_conflicting_literals(
+                    left_rep, right_rep
+                ):
                     failures.append("literal_conflict")
                 if self._have_conflicting_functional_objects(
                     left_rep, right_rep, guard_context.functional_predicates
                 ):
                     failures.append("functional_iri_conflict")
+                if self._labels_mark_distinct_entities(left_rep, right_rep):
+                    failures.append("initials_conflict")
         if not self._are_roles_compatible(left, right, representations):
             failures.append("role")
         if not self._are_types_compatible(left, right, representations):
@@ -1027,6 +1140,7 @@ class EmbeddingBasedAggregator:
         embeddings: dict[URIRef, np.ndarray],
         direct_relation_pairs: set[frozenset[URIRef]] | None = None,
         guard_context: MergeGuardContext | None = None,
+        key_pairs: set[frozenset[URIRef]] | None = None,
     ) -> tuple[
         list[list[URIRef]], list[tuple[URIRef, URIRef, float | None, tuple[str, ...]]]
     ]:
@@ -1038,8 +1152,29 @@ class EmbeddingBasedAggregator:
                 validated_clusters.append(candidate_cluster)
                 continue
 
+            ordered_cluster = sorted(candidate_cluster, key=str)
             parents: dict[URIRef, URIRef] = {
-                entity: entity for entity in candidate_cluster
+                entity: entity for entity in ordered_cluster
+            }
+            members: dict[URIRef, set[URIRef]] = {
+                entity: {entity} for entity in ordered_cluster
+            }
+
+            # Distinctness vetoes hold cluster-wide: an accepted A–B edge and
+            # an accepted B–C edge must not merge a vetoed A–C pair through
+            # transitive closure. Computed for every pair up front (the guards
+            # are cheap symbolic checks) so unions can be checked against all
+            # current members of both sides.
+            vetoed_pairs: set[frozenset[URIRef]] = {
+                frozenset((left, right))
+                for left, right in combinations(ordered_cluster, 2)
+                if self._pair_distinctness_veto(
+                    left,
+                    right,
+                    representations,
+                    direct_relation_pairs=direct_relation_pairs,
+                    guard_context=guard_context,
+                )
             }
 
             def find(entity: URIRef) -> URIRef:
@@ -1048,6 +1183,15 @@ class EmbeddingBasedAggregator:
                     parents[entity] = find(root)
                 return parents[entity]
 
+            def union_blocked(left_root: URIRef, right_root: URIRef) -> bool:
+                left_members = members[left_root]
+                right_members = members[right_root]
+                return any(
+                    frozenset((left_member, right_member)) in vetoed_pairs
+                    for left_member in left_members
+                    for right_member in right_members
+                )
+
             def union(left: URIRef, right: URIRef) -> None:
                 left_root = find(left)
                 right_root = find(right)
@@ -1055,17 +1199,25 @@ class EmbeddingBasedAggregator:
                     return
                 if str(left_root) <= str(right_root):
                     parents[right_root] = left_root
+                    members[left_root] |= members.pop(right_root)
                 else:
                     parents[left_root] = right_root
+                    members[right_root] |= members.pop(left_root)
 
-            for left, right in combinations(candidate_cluster, 2):
+            for left, right in combinations(ordered_cluster, 2):
+                pair = frozenset((left, right))
                 score = self._candidate_similarity(left, right, embeddings)
                 if score is not None and score < self.candidate_similarity_threshold:
-                    # Label-confirmed pairs bypass the cosine gate (mirrors
-                    # EntityAligner): short-string embeddings of aliases like
-                    # "Baranov, D." vs "Dmitry Baranov" hover around the
-                    # threshold, which made identity linking nondeterministic.
-                    if not self._labels_confirm_identity(left, right, representations):
+                    # Label-confirmed and key-confirmed pairs bypass the cosine
+                    # gate (mirrors EntityAligner): short-string embeddings of
+                    # aliases like "Baranov, D." vs "Dmitry Baranov" hover
+                    # around the threshold, which made identity linking
+                    # nondeterministic — and a shared identifier value needs no
+                    # embedding agreement at all.
+                    if not (
+                        (key_pairs is not None and pair in key_pairs)
+                        or self._labels_confirm_identity(left, right, representations)
+                    ):
                         continue
                 if self._can_merge_as_identity(
                     left,
@@ -1073,7 +1225,18 @@ class EmbeddingBasedAggregator:
                     representations,
                     direct_relation_pairs=direct_relation_pairs,
                     guard_context=guard_context,
+                    key_pairs=key_pairs,
                 ):
+                    left_root = find(left)
+                    right_root = find(right)
+                    if left_root == right_root:
+                        continue
+                    if union_blocked(left_root, right_root):
+                        # The pair itself is mergeable, but somewhere in the
+                        # two groups sits a vetoed pair — accepting the edge
+                        # would chain around that guard.
+                        rejected_merges.append((left, right, score, ("cluster_veto",)))
+                        continue
                     union(left, right)
                     continue
                 rejected_merges.append(
@@ -1093,7 +1256,7 @@ class EmbeddingBasedAggregator:
                 )
 
             grouped: dict[URIRef, list[URIRef]] = {}
-            for entity in candidate_cluster:
+            for entity in ordered_cluster:
                 grouped.setdefault(find(entity), []).append(entity)
 
             for group in grouped.values():
@@ -1342,11 +1505,12 @@ class EmbeddingBasedAggregator:
         ) = self._collect_all_entities(units, known_ontology_entities)
         if merge_vetoes:
             direct_relation_pairs = direct_relation_pairs | merge_vetoes
+        schema_functional_predicates = harvest_max_one_predicates(ontology_graph)
         guard_context = MergeGuardContext(
             sibling_pairs=build_sibling_pairs(
                 object_groups, scope=self.sibling_guard_scope
             ),
-            functional_predicates=harvest_max_one_predicates(ontology_graph)
+            functional_predicates=schema_functional_predicates
             | empirically_functional_predicates(
                 object_groups,
                 min_support=self.functional_min_empirical_support,
@@ -1415,12 +1579,26 @@ class EmbeddingBasedAggregator:
             )
 
         candidate_clusters, embeddings = self._cluster_entities_by_role(representations)
+        key_pairs: set[frozenset[URIRef]] = set()
+        if self.natural_key_merge:
+            key_pairs = self._collect_natural_key_pairs(
+                representations, schema_functional_predicates
+            )
+            if key_pairs:
+                logger.info(
+                    "Natural-key evidence proposed %d candidate pair(s)",
+                    len(key_pairs),
+                )
+                candidate_clusters = self._merge_candidate_clusters_by_key_pairs(
+                    candidate_clusters, key_pairs
+                )
         clusters, rejected_merges = self._build_identity_clusters(
             candidate_clusters=candidate_clusters,
             representations=representations,
             embeddings=embeddings,
             direct_relation_pairs=direct_relation_pairs,
             guard_context=guard_context,
+            key_pairs=key_pairs or None,
         )
         if rejected_merges:
             logger.info(
@@ -1596,6 +1774,15 @@ class EmbeddingBasedAggregator:
         )
 
         merged_clusters = build_merged_clusters(final_mapping, identity_mapping)
+        key_supported_clusters = sorted(
+            {
+                str(final_mapping[left])
+                for pair in key_pairs
+                for left, right in [tuple(pair)]
+                if left in final_mapping
+                and final_mapping.get(right) == final_mapping[left]
+            }
+        )
 
         logger.info("Aggregation with metadata complete")
         return AggregationResult(
@@ -1603,6 +1790,7 @@ class EmbeddingBasedAggregator:
             decisions=decisions,
             merged_clusters=merged_clusters,
             rejected_merge_count=len(rejected_merges),
+            key_supported_clusters=key_supported_clusters,
         )
 
     def postprocess_facts_units(

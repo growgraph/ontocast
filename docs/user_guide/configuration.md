@@ -529,7 +529,8 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `FACTS_PROPERTY_ALIAS_MIN_RATIO` | `0.85` | SequenceMatcher cutoff for deterministic near-miss property rewrites in catalog namespaces (token containment always qualifies, e.g. `qudt:value` → `qudt:numericValue`) |
 | `FACTS_MERGE_REPAIR_PASSES` | `1` | Un-merge budget at the post-aggregation `VALIDATE_FACTS` gate: *merge-signature* error findings (functional violation, suspect multi-value, degenerate coreference) on merged subjects become full-cluster pair vetoes and the facts units are re-aggregated. `0` records findings without repairing. SHACL findings never drive it |
 | `FACTS_CODE_PREDICATES` | `qudt:ucumCode`, `qudt:symbol`, `skos:notation` | Predicates whose literal objects are machine-resolvable codes. A node carrying `qudt:ucumCode "d"` but no unit link gains the object property pointing at the catalog individual declaring that code, when exactly one does. Exact and case-sensitive — these are codes, not labels |
-| `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | `error` | Severity of SUSPECT_MULTI_VALUE gate findings (multiple distinct numeric values on one predicate, or multiple objects on a dominantly single-valued predicate); only `error` findings drive the un-merge repair |
+| `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | `error` | Severity of SUSPECT_MULTI_VALUE gate findings (multiple distinct numeric values on one predicate; mutually irreconcilable short string values on a dominantly string-single-valued predicate; or multiple objects on a dominantly single-valued predicate); only `error` findings drive the un-merge repair |
+| `FACTS_LITERAL_VARIANT_DEDUPE` | `true` | Collapse duplicate literals differing only in language tag or datatype on one (subject, predicate) before validation — `"X"@en` alongside `"X"^^xsd:string` alongside `"X"`. The language-tagged form wins, then the plain form; reified provenance follows the survivor. Each removal is a `literal_variant_pruned` repair record |
 | `FACTS_SHAPES_DIR` | — | Directory of SHACL shape files for the gate; `sh:NodeShape` triples inlined in the ontology context are picked up automatically. SHACL runs only when `pyshacl` is installed (`uv sync --extra shacl`). Setting this without the extra, or pointing it at a missing/empty directory, logs a **warning** — it never passes silently |
 | `FACTS_SHACL_INFERENCE` | `rdfs` | Pre-inference for the SHACL run: `none`, `rdfs`, `owlrl`. RDFS by default because SHACL property paths carry no `rdfs:subPropertyOf` entailment, so a shape naming a superproperty reports the specialised predicate the renderer emitted as missing |
 | `FACTS_SHACL_ADVANCED` | `true` | Enable SHACL Advanced Features (`sh:sparql` constraints, node expressions) |
@@ -713,16 +714,20 @@ scheduled and the `ontocast cache` commands that drive it manually.
 
 ```bash
 AGG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
-AGG_SIMILARITY_THRESHOLD=0.80
-AGG_CANDIDATE_SIMILARITY_THRESHOLD=0.70
+AGG_SIMILARITY_THRESHOLD=0.80          # EntityAligner only (align_entities, match-graphs)
+AGG_CANDIDATE_SIMILARITY_THRESHOLD=0.70  # the in-pipeline aggregator's threshold
 AGG_LEXICAL_LABEL_JACCARD=0.5
 AGG_LEXICAL_SEQUENCE_RATIO=0.90
 AGG_LEXICAL_TOKEN_JACCARD=0.75
 AGG_FUNCTIONAL_MIN_EMPIRICAL_SUPPORT=2
 AGG_SIBLING_GUARD_SCOPE=subject
+AGG_LITERAL_CONFLICT_GUARD=true
+AGG_INITIALS_DISTINCT_GUARD=true
+AGG_NATURAL_KEY_MERGE=true
+AGG_TYPE_GUARD_UNTYPED=permissive
 ```
 
-See [Aggregation](aggregation.md) for what each threshold does.
+See [Aggregation](aggregation.md) for what each threshold and guard does.
 
 ### Web Search
 

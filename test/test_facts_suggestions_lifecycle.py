@@ -81,18 +81,26 @@ def _tools() -> AtomicToolBox:
             quantity_fallback_vocabulary=None,
             additional_standard_namespaces=(),
             validation_policy=None,
+            acceptance_policy=None,
         ),
     )
 
 
-def _critique(*, success: bool, score: float) -> FactsCritiqueReport:
+def _critique(
+    *, success: bool, score: float, severity: str = "critical"
+) -> FactsCritiqueReport:
+    """Build a critique whose *fixes* decide the verdict.
+
+    Acceptance now reads the fix severities, not the score, so a test that
+    wants a rejection has to supply a blocking fix rather than a low number.
+    """
     return FactsCritiqueReport(
         success=success,
         score=score,
         actionable_triple_fixes=[
             TripleFix(
                 action="REPLACE",
-                severity="important",
+                severity=severity,
                 explanation="use the canonical scalar property",
                 text_fragment="a shift of 96 meV",
             )
@@ -140,7 +148,7 @@ async def test_an_accepting_critic_leaves_no_suggestions_for_the_repair(
     state = await criticise_facts_module.criticise_facts(state, _tools())
     assert state.suggestions.actionable_fixes
 
-    _stub_critique(monkeypatch, _critique(success=True, score=98))
+    _stub_critique(monkeypatch, _critique(success=True, score=98, severity="minor"))
     state = await criticise_facts_module.criticise_facts(state, _tools())
 
     assert state.status == Status.SUCCESS

@@ -71,6 +71,7 @@ def _build_tools() -> AtomicToolBox:
             code_predicates=(),
             citation_vocabulary={},
             quantity_fallback_vocabulary=None,
+            acceptance_policy=None,
         ),
     )
 
@@ -145,7 +146,7 @@ async def test_criticise_facts_marks_failed_and_sets_suggestions(monkeypatch) ->
                 TripleFix(
                     text_fragment="Alice works for ACME.",
                     action="ADD",
-                    severity="important",
+                    severity="critical",
                     explanation="Missing employment relation triple.",
                     correct_value="ex:alice ex:worksFor ex:acme .",
                 )
@@ -166,7 +167,8 @@ async def test_criticise_facts_marks_failed_and_sets_suggestions(monkeypatch) ->
     assert result.status == Status.FAILED
     assert result.failure_stage == FailureStage.FACTS_CRITIQUE
     assert len(result.suggestions.actionable_fixes) == 1
-    assert result.failure_reason == "Facts Critic suggests improvements"
+    assert result.failure_reason == "Facts unit has 1 material defect(s)"
+    assert result.attempt_log[-1].accept_reason == "critic_critical"
 
 
 @pytest.mark.anyio
@@ -287,15 +289,25 @@ async def test_criticise_facts_prompt_includes_graph_format_instruction(
 
 
 @pytest.mark.anyio
-async def test_criticise_facts_accepts_high_score_even_when_success_false(
+async def test_criticise_facts_records_the_score_but_does_not_gate_on_it(
     monkeypatch,
 ) -> None:
+    """The score is telemetry now, not a verdict.
+
+    This test used to pin the opposite rule -- that ``score > 90`` accepted a
+    render regardless of ``success``. Measured over the 2026-08 matsci critic
+    calls that threshold rejected 28 of 34 renders, with a median score of 79
+    and no rubric anywhere in the prompt to anchor the number against. A low
+    score with no material defect must now accept, and the score must still be
+    recorded so the calibration stays auditable from the run's own artifacts.
+    """
+
     async def fake_call_llm_with_retry(**kwargs):
         return FactsCritiqueReport(
             success=False,
-            score=95,
+            score=55,
             actionable_triple_fixes=[],
-            systemic_critique_summary="",
+            systemic_critique_summary="could be tighter",
         )
 
     monkeypatch.setattr(
@@ -310,6 +322,8 @@ async def test_criticise_facts_accepts_high_score_even_when_success_false(
 
     assert result.status == Status.SUCCESS
     assert result.failure_stage is None
+    assert result.attempt_log[-1].score == 55
+    assert result.attempt_log[-1].accept_reason == "clean"
 
 
 def _opaque_iri_ontology() -> Ontology:

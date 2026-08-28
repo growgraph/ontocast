@@ -307,7 +307,7 @@ Cross-chunk identity resolution during facts aggregation:
 
 - Embedding similarity + symbolic compatibility (`EntityAligner`)
 - Identical `URIRef` across unit graphs always merge (independent of embedding score)
-- Connected-component clustering with configurable `AGG_SIMILARITY_THRESHOLD`
+- Connected-component clustering with configurable `AGG_CANDIDATE_SIMILARITY_THRESHOLD`, symbolic merge guards holding cluster-wide, and natural-key identity evidence from shared identifier values
 - `skos:altName` and label-aware matching
 - Provenance annotations on merged triples
 

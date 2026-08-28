@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import MutableMapping, Sequence
+from itertools import combinations
 
 from pydantic import BaseModel, Field
 from rdflib import OWL, RDF, RDFS, Literal, URIRef
@@ -23,7 +24,12 @@ from ontocast.onto.model import (
 from ontocast.onto.rdfgraph import (
     RDFGraph,
 )
-from ontocast.tool.agg.signatures import canonical_literal, harvest_max_one_predicates
+from ontocast.tool.agg.signatures import (
+    canonical_literal,
+    harvest_max_one_predicates,
+    normalize_string_value,
+    string_values_compatible,
+)
 from ontocast.tool.facts_validation.shacl import (
     ShaclRepairResult,
     ShaclViolation,
@@ -146,7 +152,7 @@ def _distinct_object_keys(objects: set) -> set[str]:
 
 
 def _dominant_single_valued_predicates(
-    iri_groups: dict[tuple[URIRef, URIRef], set[URIRef]],
+    iri_groups: dict[tuple[URIRef, URIRef], set],
     *,
     min_single_support: int,
 ) -> set[URIRef]:
@@ -230,6 +236,11 @@ def record_facts_gate_metrics(
 
 
 _SCAFFOLDING_NAMESPACES = (str(RDF), str(RDFS), str(OWL), str(XSD))
+
+# String values longer than this are prose payloads (descriptions, notes),
+# not names or identifiers, and stay out of the string multi-value check —
+# two chunks legitimately describe one entity in different words.
+_NAME_LIKE_MAX_VALUE_LENGTH = 64
 
 
 def _non_catalog_vocabulary_findings(
@@ -378,6 +389,7 @@ def validate_aggregated_facts(
     shacl_inference: str = "rdfs",
     shacl_advanced: bool = True,
     shacl_max_triples: int = 0,
+    key_supported_subjects: Sequence[str] | None = None,
 ) -> FactsValidationReport:
     """Check post-merge invariants over the aggregated facts graph.
 
@@ -393,16 +405,20 @@ def validate_aggregated_facts(
           schema constrains to at most one value (``owl:FunctionalProperty``
           or an OWL max-cardinality-1 restriction).
         - ``SUSPECT_MULTI_VALUE``: >= 2 distinct canonical numeric values on
-          one (subject, predicate); or >= 2 IRI objects on a predicate that is
-          single-valued for a dominant majority of other subjects. Severity is
-          configurable — legitimate multi-value modeling exists, bad merges
-          are far more common.
+          one (subject, predicate); >= 2 mutually irreconcilable short string
+          values on a predicate that is string-single-valued for a dominant
+          majority (distinct names collapsed into one node); or >= 2 IRI
+          objects on a predicate that is single-valued for a dominant
+          majority of other subjects. Severity is configurable — legitimate
+          multi-value modeling exists, bad merges are far more common.
         - ``DEGENERATE_COREFERENCE``: one IRI object shared by >= 2 distinct
           functional-ish predicates of one subject (collapsed range bounds).
         - ``SHACL``: optional, when ``pyshacl`` is installed and shapes exist.
         - ``NON_CATALOG_VOCABULARY``: warning-only telemetry for terms the
           ontology context never supplied, which mark a retrieval miss the
           renderer papered over with a documented fallback.
+        - ``MIXED_OBJECT_KINDS``: warning-only telemetry for predicates used
+          with both IRI and literal objects across the graph.
 
     Args:
         graph: Aggregated facts graph.
@@ -417,11 +433,18 @@ def validate_aggregated_facts(
         shacl_inference: pyshacl pre-inference mode (see :func:`run_shacl`).
         shacl_advanced: Enable SHACL Advanced Features.
         shacl_max_triples: Skip SHACL above this graph size; 0 disables.
+        key_supported_subjects: Final URIs of merge clusters backed by
+            natural-key evidence. Irreconcilable *string* values on these
+            subjects are reported as warnings, not errors: "Application no.
+            36760/06" and "Case of Stanev v. Bulgaria" are two names for one
+            key-confirmed case, and an error here would drive the un-merge
+            repair to split a correct merge.
 
     Returns:
         Report with all findings, ordered by subject.
     """
     namespaces = [ns for ns in (fact_namespaces or []) if ns]
+    key_supported = set(key_supported_subjects or ())
     functional = harvest_max_one_predicates(ontology_graph)
 
     # Provenance machinery (chunk nodes, derivation annotations) is
@@ -434,6 +457,8 @@ def validate_aggregated_facts(
 
     object_groups: dict[tuple[URIRef, URIRef], set] = {}
     iri_groups: dict[tuple[URIRef, URIRef], set[URIRef]] = {}
+    string_groups: dict[tuple[URIRef, URIRef], set[str]] = {}
+    predicate_object_kinds: dict[URIRef, dict[str, int]] = {}
     for subject, predicate, obj in graph:
         if (
             not isinstance(subject, URIRef)
@@ -452,9 +477,24 @@ def validate_aggregated_facts(
         object_groups.setdefault((subject, predicate), set()).add(obj)
         if isinstance(obj, URIRef):
             iri_groups.setdefault((subject, predicate), set()).add(obj)
+        elif isinstance(obj, Literal) and canonical_literal(obj) is None:
+            normalized = normalize_string_value(str(obj))
+            if 0 < len(normalized) <= _NAME_LIKE_MAX_VALUE_LENGTH:
+                string_groups.setdefault((subject, predicate), set()).add(normalized)
+        if _in_fact_scope(subject, namespaces) and predicate != RDFS.label:
+            kinds = predicate_object_kinds.setdefault(predicate, {})
+            kind = "iri" if isinstance(obj, URIRef) else "literal"
+            kinds[kind] = kinds.get(kind, 0) + 1
 
     dominant_single = _dominant_single_valued_predicates(
         iri_groups, min_single_support=functional_min_single_support
+    )
+    # String-valued analogue, over short name-like values: the signature of
+    # distinct entities collapsed into one node is a naming predicate that is
+    # single-valued everywhere else suddenly carrying several irreconcilable
+    # names.
+    dominant_single_strings = _dominant_single_valued_predicates(
+        string_groups, min_single_support=functional_min_single_support
     )
     functional_ish = functional | dominant_single
 
@@ -512,6 +552,45 @@ def validate_aggregated_facts(
                 )
             )
             continue
+
+        string_forms = sorted(string_groups.get((subject, predicate), set()))
+        if len(string_forms) >= 2 and predicate in dominant_single_strings:
+            # Name variants of one entity are alias-compatible ("mr beer" /
+            # "mr karlheinz beer"); irreconcilable values ("mrs e palm" /
+            # "mrs w thomassen") mark distinct entities collapsed into one
+            # node — the failure the numeric branch cannot see. On a merge
+            # backed by a shared identifier value, disagreement is name
+            # variance of one confirmed entity: warning, never a veto.
+            if any(
+                not string_values_compatible(left, right)
+                for left, right in combinations(string_forms, 2)
+            ):
+                subject_key_supported = str(subject) in key_supported
+                if not subject_key_supported:
+                    flagged_pairs.add((subject, predicate))
+                findings.append(
+                    FactsValidationFinding(
+                        kind=FactsValidationFindingKind.SUSPECT_MULTI_VALUE,
+                        severity=(
+                            "error"
+                            if suspect_multi_value_severity == "error"
+                            and not subject_key_supported
+                            else "warning"
+                        ),
+                        message=(
+                            f"<{subject}> carries {len(string_forms)} "
+                            f"mutually irreconcilable string values on "
+                            f"<{predicate}>, which is single-valued for a "
+                            "dominant majority of other subjects — the "
+                            "signature of distinct entities collapsed into "
+                            "one node."
+                        ),
+                        subject=str(subject),
+                        predicate=str(predicate),
+                        values=string_forms,
+                    )
+                )
+                continue
 
         iri_objects = iri_groups.get((subject, predicate), set())
         if (
@@ -596,6 +675,30 @@ def validate_aggregated_facts(
     )
 
     findings.extend(_dangling_reference_findings(graph, namespaces))
+
+    # Object-kind self-consistency: a predicate carrying IRI objects on some
+    # subjects and literal objects on others ("worksFor <org>" here, "worksFor
+    # 'Ministry of Justice'" there) is un-queryable by shape. Warning-only
+    # telemetry — never a merge signature.
+    for predicate in sorted(predicate_object_kinds, key=str):
+        kinds = predicate_object_kinds[predicate]
+        iri_count = kinds.get("iri", 0)
+        literal_count = kinds.get("literal", 0)
+        if iri_count and literal_count:
+            findings.append(
+                FactsValidationFinding(
+                    kind=FactsValidationFindingKind.MIXED_OBJECT_KINDS,
+                    severity="warning",
+                    message=(
+                        f"<{predicate}> is used with {iri_count} IRI object(s) "
+                        f"and {literal_count} literal object(s) — the same "
+                        "relation is asserted as a link on some subjects and "
+                        "as a string on others, so no single query shape "
+                        "matches both."
+                    ),
+                    predicate=str(predicate),
+                )
+            )
 
     return FactsValidationReport(
         findings=findings,

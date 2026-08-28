@@ -83,6 +83,7 @@ Notes:
 - Core diagrams show the default path: render/critic retries without web search. When a node sets `initiate_search`, plan/fetch/retry branches apply — see `*_evidence.mmd` (and matching PNG/SVG).
 - First render/critic pass always runs **without** web search; search runs only when the node sets `initiate_search`.
 - On the **last allowed render attempt**, the critic is skipped (no further extract to critique). The facts loop also surfaces unresolved quarantined literals on that path.
+- In the **facts** loop a rejecting critic does not escalate to another render. Its blocking fixes are converted to findings and applied by the bounded rewrite-in-place repair pass, so the outer loop retries only on render *failure* and a unit's worst-case call count is flat in `MAX_VISITS`. Acceptance is decided by `material_defects()` — mandatory deterministic findings plus critic fixes at `FACTS_ACCEPT_BLOCKING_SEVERITY` — not by the critic's score. The ontology loop still uses the score threshold, having no deterministic finding lane.
 - `/process_unit` runs this loop on a single unit via `unit_pipeline.py` (no chunking or document-level reduce).
 
 Implementation: [`stategraph/atomic.py`](../reference/stategraph/atomic.md).
@@ -168,7 +169,8 @@ Facts output uses the **`cd:` namespace** for text-derived instances; domain ont
 | `PARALLEL_WORKERS` | Max concurrent unit workers |
 | `LLM_MAX_INFLIGHT` | Max concurrent provider LLM requests (shared across units) |
 | `MAX_CONCURRENT_PROCESSES` | Optional cap on simultaneous `/process` pipelines |
-| `MAX_VISITS` / `max_visits` | Render/critic retry budget per loop (at `1`, the default, the LLM critic never runs — the critic is skipped after the final render) |
+| `MAX_VISITS` / `max_visits` | Render/critic retry budget per loop (at `1`, the default, the LLM critic never runs — the critic is skipped after the final render). In the facts loop it bounds render-*failure* retries: a rejecting critic no longer consumes an attempt |
+| `FACTS_ACCEPT_BLOCKING_SEVERITY` | Which critic fix severities block a facts unit from leaving the loop (`critical` default, or `important` / `never`). Mandatory deterministic findings always block — see [Validation](validation.md) |
 | `MAX_CRITIC_VISITS_PER_NODE` | Critic attempts per render attempt. Unset couples it to `MAX_VISITS`; set to `1` for one critique per render. Only bites when the critic keeps requesting external evidence — see [Configuration](configuration.md) |
 | `FACTS_LLM_REPAIR_VISITS` | Finding-driven repair budget per facts unit, **in provider calls**: bounded update renders driven by machine-found violations; fires even at `MAX_VISITS=1`, so the default costs up to two calls per unit. See [Validation](validation.md#how-many-llm-calls-a-facts-unit-really-costs) |
 | `FACTS_MERGE_REPAIR_PASSES` | Un-merge budget at the post-aggregation validation gate (merge-signature error findings → cluster pair vetoes → re-aggregation) |

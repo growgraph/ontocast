@@ -12,7 +12,7 @@ call, how SHACL fits in, and how to read the result.
 | # | Layer | Where | LLM calls |
 |---|-------|-------|-----------|
 | 1 | **Machine repair, at parse time** | `agent/render_facts.py::_normalize_and_repair_graph`, per unit, on every rendered graph | **none** |
-| 2 | **Finding-driven repair render** | `stategraph/atomic.py::_run_finding_driven_repair`, per unit | **up to `FACTS_LLM_REPAIR_VISITS`** |
+| 2 | **Finding-driven repair render** | `stategraph/atomic.py::_run_finding_driven_repair`, per unit — fed by deterministic findings *and* the critic's blocking fixes | **up to `FACTS_LLM_REPAIR_VISITS`** |
 | 3 | **Post-merge gate** | `VALIDATE_FACTS` node, once per document | **none** |
 
 ### How many LLM calls a facts unit really costs
@@ -34,6 +34,40 @@ leave the residue to layers 1 and 3.
 
 The ontology loop has no repair stage, so at `MAX_VISITS=1` it is genuinely one
 call per unit.
+
+Above `MAX_VISITS=1` the facts critic runs, and a **rejection costs one repair
+render, not another full render**. So the ceiling is:
+
+```
+render_facts                      1 provider call
+  ↓
+criticise_facts                   1 more (MAX_VISITS > 1 only)
+  ↓  rejected -> its blocking fixes become findings
+finding-driven repair render      1 more, up to FACTS_LLM_REPAIR_VISITS
+```
+
+That total does not grow with `MAX_VISITS`; the bound now governs render
+*failure* retries only.
+
+### What makes a render acceptable
+
+Acceptance is `material_defects()` over evidence that can be pointed at:
+
+| Signal | Blocks? |
+|---|---|
+| Deterministic finding with `mandatory=True` | always |
+| Critic `TripleFix` at or above `FACTS_ACCEPT_BLOCKING_SEVERITY` (default `critical`) | yes |
+| Critic `TripleFix` with `action=REMOVE` | **never**, whatever its severity — the repair contract forbids resolving a finding by deleting the statement |
+| Advisory findings (`numeric_coverage`) | no |
+| The critic's `score` / `success` | **no** — recorded as telemetry only |
+
+The critic's score gated this until it was measured: over the 2026-08 matsci
+runs it rejected 28 of 34 renders with a median of 79, against a `> 90`
+threshold the model is never shown, while the deterministic findings the loop
+had already computed played no part at all. Set
+`FACTS_ACCEPT_BLOCKING_SEVERITY=never` to let deterministic findings gate alone.
+Per-document critic telemetry — call count, accept count, score histogram, fix
+severity histogram — is written to the run manifest under `critic`.
 
 ## Layer 1 — machine repair at parse time
 
@@ -91,6 +125,12 @@ means no repair and a reported finding.
 ## Layer 3 — the post-merge gate
 
 After aggregation, `VALIDATE_FACTS` checks invariants over the merged graph.
+Before validating, duplicate literals that differ only in language tag or
+datatype on one (subject, predicate) — `"X"@en` alongside `"X"^^xsd:string`
+alongside `"X"` — are collapsed to one surviving form
+(`FACTS_LITERAL_VARIANT_DEDUPE`, default on; the language-tagged form wins,
+then the plain form). Each removal is a `literal_variant_pruned` repair
+record, and reified provenance moves to the surviving triple.
 
 | Finding kind | Severity | What acts on it |
 |--------------|----------|-----------------|
@@ -100,11 +140,20 @@ After aggregation, `VALIDATE_FACTS` checks invariants over the merged graph.
 | `SHACL` | error / warning | **SHACL autofix**; reported, never un-merged |
 | `NON_CATALOG_VOCABULARY` | warning | reported (marks a retrieval miss) |
 | `DANGLING_REFERENCE` | warning | reported |
+| `MIXED_OBJECT_KINDS` | warning | reported (predicate used with both IRI and literal objects) |
 
-The first three are *merge signatures*: their shape is "two things that are not
-the same got one IRI", which un-merging can repair (`FACTS_MERGE_REPAIR_PASSES`
-passes of cluster vetoes plus re-aggregation, kept only if the merge-signature
-error count strictly drops).
+`SUSPECT_MULTI_VALUE` has three branches: ≥ 2 distinct canonical **numeric**
+values on one (subject, predicate); ≥ 2 mutually irreconcilable short
+**string** values (name variants like "Mr Beer" / "Mr Karlheinz Beer" are
+alias-compatible and pass; "Mrs E. Palm" / "Mrs W. Thomassen" on one node is
+the signature of distinct people collapsed together) on a predicate that is
+string-single-valued for a dominant majority of subjects; and ≥ 2 **IRI**
+objects on a dominantly single-valued predicate.
+
+The first three kinds are *merge signatures*: their shape is "two things that
+are not the same got one IRI", which un-merging can repair
+(`FACTS_MERGE_REPAIR_PASSES` passes of cluster vetoes plus re-aggregation,
+kept only if the merge-signature error count strictly drops).
 
 SHACL findings are excluded from that loop by design. A missing required
 property or a datatype mismatch says a node is under-specified, not that two

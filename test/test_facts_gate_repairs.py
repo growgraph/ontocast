@@ -238,7 +238,11 @@ def test_repair_that_does_not_reduce_errors_is_reverted(monkeypatch, caplog) -> 
         def postprocess_facts_units(self, **kwargs):
             self.calls += 1
             # Same violation survives the re-aggregation.
-            return SimpleNamespace(graph=conflicting_graph(), merged_clusters={})
+            return SimpleNamespace(
+                graph=conflicting_graph(),
+                merged_clusters={},
+                key_supported_clusters=[],
+            )
 
     aggregator = _StubAggregator()
     tools = _fake_tools(aggregator)

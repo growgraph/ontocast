@@ -177,6 +177,24 @@ class GraphRewriter:
         return rewritten
 
     @staticmethod
+    def _warn_self_loops(count: int) -> None:
+        """Log dropped merge-created self-loops.
+
+        A triple whose subject and object were distinct until the entity
+        mapping identified them (``esa isPartOf esaAppealsBoard`` after both
+        map to one canonical) asserts a relation of a thing to itself that no
+        source ever stated. Emitting it would silently corrupt the graph;
+        dropping it is lossy too, so it is never silent — a non-zero count
+        marks an identity merge that deserves a look.
+        """
+        if count:
+            logger.warning(
+                "Dropped %d self-loop triple(s) created by entity merging — "
+                "subject and object were distinct before the identity mapping",
+                count,
+            )
+
+    @staticmethod
     def _merge_sameas_links(
         merged_entities: dict[URIRef, set[URIRef]],
         extra_sameas_links: dict[URIRef, set[URIRef]] | None,
@@ -242,16 +260,22 @@ class GraphRewriter:
                 merged_entities[mapped].add(original)
 
         # Merge all graphs
+        skipped_self_loops = 0
         for graph in graphs:
             for s, p, o in graph:
                 # Apply mapping
                 new_s, new_p, new_o = self.apply_mapping_to_triple(s, p, o, mapping)
+
+                if new_s == new_o and s != o:
+                    skipped_self_loops += 1
+                    continue
 
                 triple_sig = (new_s, new_p, new_o)
 
                 if triple_sig not in processed_triples:
                     merged.add(triple_sig)
                     processed_triples.add(triple_sig)
+        self._warn_self_loops(skipped_self_loops)
 
         merged_entities = self._merge_sameas_links(merged_entities, extra_sameas_links)
 
@@ -507,6 +531,7 @@ class GraphRewriter:
                     continue
                 merged_entities[mapped].add(original)
 
+        skipped_self_loops = 0
         for unit in units:
             if unit.graph is None or len(unit.graph) == 0:
                 continue
@@ -524,6 +549,9 @@ class GraphRewriter:
                     o,
                     mapping,
                 )
+                if new_s == new_o and s != o:
+                    skipped_self_loops += 1
+                    continue
                 triple_sig = (new_s, new_p, new_o)
 
                 # Assert fact (deduplicated)
@@ -551,6 +579,7 @@ class GraphRewriter:
 
         # owl:sameAs links
         self._emit_sameas_links(merged, merged_entities)
+        self._warn_self_loops(skipped_self_loops)
 
         total_original = sum(len(u.graph) for u in units if u.graph is not None)
         logger.info(

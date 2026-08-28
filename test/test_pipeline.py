@@ -132,6 +132,7 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
                     facts_llm_repair_visits=1,
                     additional_standard_namespaces=(),
                     validation_policy=None,
+                    acceptance_policy=None,
                 ),
             ),
             ontology_manager=OntologyManager(),

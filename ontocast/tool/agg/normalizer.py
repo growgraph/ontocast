@@ -8,7 +8,6 @@ It creates normalized string representations r(e) that include:
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -20,7 +19,6 @@ from ontocast.onto.iri_policy import is_in_namespace, normalize_namespace_iri
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.representation_contract import combine_embedding_text
 from ontocast.tool.representation_text import (
-    normalize_text,
     normalize_uri_local_name,
     render_term_for_text,
     stable_sorted_triples,
@@ -138,9 +136,9 @@ class EntityNormalizer:
             'PL_red_shift_value' -> 'pl red shift value'
             'Café' -> 'cafe'
         """
-        # Keep legacy behavior for this method while sharing the same core utility.
-        text = re.sub(r"(?=[A-Z][a-z])", " ", text)
-        return normalize_text(text)
+        from ontocast.tool.agg.signatures import normalize_string_value
+
+        return normalize_string_value(text)
 
     def normalize_uri(self, uri: URIRef) -> str:
         """Extract and normalize the local part of a URI.

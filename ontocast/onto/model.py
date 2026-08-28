@@ -533,6 +533,10 @@ class FactsUnitFindingKind(StrEnum):
     LABEL_ONLY_NUMBER = "label_only_number"
     SCALAR_AS_BOUNDS = "scalar_as_bounds"
     DOMAIN_VIOLATION = "domain_violation"
+    #: Not machine-found: a fix the LLM critic proposed, carried through the
+    #: same repair pipeline so a rejection costs one rewrite-in-place render
+    #: instead of a full re-extraction.
+    CRITIC_FIX = "critic_fix"
 
 
 class FactsUnitFinding(BaseModel):
@@ -563,6 +567,7 @@ class FactsGateRepairKind(StrEnum):
     SHACL_CODE_RESOLVED = "shacl_code_resolved"
     SHACL_PRUNE = "shacl_prune"
     CODE_RESOLVED = "code_resolved"
+    LITERAL_VARIANT_PRUNED = "literal_variant_pruned"
 
 
 class GraphRepairRecord(BaseModel):
@@ -614,6 +619,15 @@ class FactsLoopAttempt(BaseModel):
     score: float | None = None
     success: bool | None = None
     n_actionable_fixes: int = 0
+    #: Why this attempt was accepted or rejected: ``clean``,
+    #: ``mandatory_findings``, or ``critic_critical``. The score gate this
+    #: replaced produced no recordable reason at all.
+    accept_reason: str = ""
+    #: Proposed ``TripleFix`` severities for a critic attempt. Recorded because
+    #: the materiality gate reads ``critical``, and a severity label produced
+    #: from a field description with no rubric is exactly the kind of signal
+    #: that has to be watched rather than assumed.
+    severity_counts: dict[str, int] = Field(default_factory=dict)
     n_deterministic_findings: int = 0
     n_mandatory_findings: int = 0
     repair_failed: bool = False
@@ -640,6 +654,7 @@ class FactsValidationFindingKind(StrEnum):
     SHACL = "shacl"
     NON_CATALOG_VOCABULARY = "non_catalog_vocabulary"
     DANGLING_REFERENCE = "dangling_reference"
+    MIXED_OBJECT_KINDS = "mixed_object_kinds"
 
 
 class FactsValidationFinding(BaseModel):

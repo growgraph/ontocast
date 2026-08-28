@@ -13,6 +13,7 @@ own ontology context according to mode/policy.
 
 import logging
 import time
+from collections.abc import Sequence
 from typing import Literal
 
 from ontocast.agent.criticise_facts import criticise_facts
@@ -30,6 +31,7 @@ from ontocast.onto.model import (
     ExternalEvidenceRequest,
     FactsLoopAttempt,
     FactsUnitFinding,
+    TripleFix,
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
@@ -40,6 +42,7 @@ from ontocast.stategraph.context_resolver import (
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import collect_unit_findings
+from ontocast.tool.facts_validation.critic_findings import critic_fixes_to_findings
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -177,6 +180,7 @@ async def _run_finding_driven_repair(
     supplemental: list[Ontology],
     *,
     render_attempt: int,
+    critic_fixes: Sequence[TripleFix] = (),
 ) -> UnitFactsState:
     """Repair machine-found violations with bounded render-update visits.
 
@@ -195,7 +199,14 @@ async def _run_finding_driven_repair(
     only parsed operations) and is recorded rather than erased.
     """
     repair_visits = atomic.facts_llm_repair_visits
-    findings = _collect_facts_findings(unit_state, atomic)
+    # Critic fixes join the deterministic findings for the first pass only.
+    # They are consumed by the render that reads them, exactly like
+    # `state.suggestions`; re-adding them after each pass would make a fix the
+    # renderer declined an unresolvable finding and burn the whole budget.
+    findings = [
+        *_collect_facts_findings(unit_state, atomic),
+        *critic_fixes_to_findings(critic_fixes, atomic.acceptance_policy),
+    ]
     for repair_attempt in range(1, repair_visits + 1):
         mandatory = [finding for finding in findings if finding.mandatory]
         if not mandatory:
@@ -485,8 +496,8 @@ async def facts_loop(
                 )
                 if not critic_request.initiate_search:
                     logger.info(
-                        "Unit facts critic failed at render %s/%s critic %s/%s "
-                        "without search request",
+                        "Unit facts critic rejected at render %s/%s critic %s/%s "
+                        "without search request; repairing in place",
                         render_attempt,
                         max_visits,
                         critic_attempt,
@@ -516,6 +527,23 @@ async def facts_loop(
                         supplemental,
                         render_attempt=render_attempt,
                     )
+
+            # A rejecting critic no longer escalates to another full render.
+            # It used to fall through to the next `render_attempt`, which
+            # re-extracted the unit from scratch under a prompt that invited
+            # unrequested rewriting -- the expensive, open-ended answer to a
+            # signal that is now a list of specific defects. Its blocking fixes
+            # go through the same bounded rewrite-in-place pass the
+            # deterministic findings use. The outer loop therefore retries only
+            # on *render failure*, and a unit's worst-case call count no longer
+            # grows with MAX_VISITS.
+            return await _run_finding_driven_repair(
+                unit_state,
+                atomic,
+                supplemental,
+                render_attempt=render_attempt,
+                critic_fixes=unit_state.suggestions.actionable_fixes,
+            )
 
         logger.info("Unit facts loop exhausted retries")
         return unit_state

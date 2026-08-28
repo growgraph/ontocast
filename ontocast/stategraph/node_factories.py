@@ -580,6 +580,10 @@ def make_render_facts_node(tools: ToolBox):
         facts_units: list[ContentUnit] = []
         failed_without_output_count = unit_errors
         salvaged_failed_count = 0
+        # Accumulated over *every* unit, whether or not it ran a repair render,
+        # so the residual has "units" as its denominator.
+        findings_residual = 0
+        mandatory_residual = 0
         unit_contexts: dict[int, tuple[str, list[str], OntologyAssemblyMode]] = {}
         for (
             unit_index,
@@ -589,6 +593,10 @@ def make_render_facts_node(tools: ToolBox):
             assembly_mode,
         ) in ordered_results:
             state.budget_tracker.merge_from(result.budget_tracker)
+            findings_residual += len(result.deterministic_findings)
+            mandatory_residual += sum(
+                1 for finding in result.deterministic_findings if finding.mandatory
+            )
             if result.attempt_log:
                 state.facts_loop_telemetry[unit_index] = list(result.attempt_log)
             if result.applied_repairs:
@@ -655,10 +663,30 @@ def make_render_facts_node(tools: ToolBox):
         state.retrieval_metrics[RetrievalMetric.FACTS_REPAIR_DELETE_ONLY] = sum(
             1 for attempt in all_attempts if attempt.repair_delete_only
         )
-        state.retrieval_metrics[RetrievalMetric.FACTS_FINDINGS_RESIDUAL] = sum(
-            attempts[-1].n_deterministic_findings
-            for attempts in state.facts_loop_telemetry.values()
-            if attempts and attempts[-1].kind == "llm_repair"
+        # Residual is read off each unit's final findings, not off the attempt
+        # log. Summing `attempts[-1]` where `kind == "llm_repair"` silently
+        # contributed 0 for every unit that never ran a repair render -- the
+        # clean ones and the ones whose loop exhausted its retries -- so the
+        # metric's denominator was "units that needed repair", not "units", and
+        # a change that made *fewer* units enter repair read as a drop in
+        # residual findings. It also summed total findings, so advisory
+        # NUMERIC_COVERAGE (which fires on nearly every unit of numeric prose)
+        # dominated the number that was supposed to track mandatory defects.
+        state.retrieval_metrics[RetrievalMetric.FACTS_FINDINGS_RESIDUAL] = (
+            findings_residual
+        )
+        state.retrieval_metrics[RetrievalMetric.FACTS_MANDATORY_RESIDUAL] = (
+            mandatory_residual
+        )
+        # The critic's own ledger. `node_visits` counting CRITICISE_FACTS lived
+        # on the per-unit state copy and died with it, so the number of critic
+        # calls a run bought was not recoverable from its own artifacts.
+        critic_attempts = [a for a in all_attempts if a.kind == "critic"]
+        state.retrieval_metrics[RetrievalMetric.FACTS_CRITIC_CALLS] = len(
+            critic_attempts
+        )
+        state.retrieval_metrics[RetrievalMetric.FACTS_CRITIC_ACCEPTED] = sum(
+            1 for attempt in critic_attempts if attempt.success
         )
         state.facts_units = facts_units
         state.status = _map_stage_status(
@@ -714,6 +742,7 @@ def make_merge_facts_node(tools: ToolBox):
         )
         state.aggregated_facts = result.graph
         state.aggregation_clusters = result.merged_clusters
+        state.aggregation_key_clusters = result.key_supported_clusters
         state.retrieval_metrics[RetrievalMetric.FACTS_REJECTED_MERGES] = (
             result.rejected_merge_count
         )

@@ -33,6 +33,7 @@ from ontocast.tool.facts_validation import (
     ValidationPolicy,
     apply_shacl_repairs,
     collect_shacl_shapes,
+    dedupe_literal_variants,
     record_facts_gate_metrics,
     shacl_catalog_contradictions,
     summarize_conformance,
@@ -98,7 +99,11 @@ def run_facts_gate(
     merge_repair: bool,
     document_metadata: dict | None = None,
 ) -> None:
-    """Validate the aggregated facts and apply the two LLM-free repair stages.
+    """Validate the aggregated facts and apply the LLM-free repair stages.
+
+    Literal variants differing only in language tag or datatype are collapsed
+    first (``FACTS_LITERAL_VARIANT_DEDUPE``), so validation counts values
+    rather than spellings.
 
     When ``merge_repair`` is set, merge-signature error findings whose subject
     resulted from an identity merge turn the offending cluster into pair vetoes
@@ -169,6 +174,7 @@ def run_facts_gate(
             shacl_inference=facts_validation.shacl_inference,
             shacl_advanced=facts_validation.shacl_advanced,
             shacl_max_triples=facts_validation.shacl_max_triples,
+            key_supported_subjects=state.aggregation_key_clusters,
         )
 
     def merge_signature_errors(report: FactsValidationReport) -> int:
@@ -177,6 +183,14 @@ def run_facts_gate(
             for finding in report.error_findings
             if finding.kind in MERGE_SIGNATURE_KINDS
         )
+
+    # Collapse literal variants ("X"@en / "X"^^xsd:string / "X") before
+    # validating, so multi-value checks count values rather than spellings.
+    dedupe_records = (
+        dedupe_literal_variants(state.aggregated_facts, fact_namespaces)
+        if facts_validation.literal_variant_dedupe
+        else []
+    )
 
     report = run_validation()
     vetoes: set[frozenset[URIRef]] = set()
@@ -214,8 +228,10 @@ def run_facts_gate(
         # coreference for nothing and must not be kept.
         previous_graph = state.aggregated_facts
         previous_clusters = state.aggregation_clusters
+        previous_key_clusters = state.aggregation_key_clusters
         state.aggregated_facts = result.graph
         state.aggregation_clusters = result.merged_clusters
+        state.aggregation_key_clusters = result.key_supported_clusters
         candidate_report = run_validation()
         candidate_errors = merge_signature_errors(candidate_report)
         if candidate_errors >= previous_errors:
@@ -229,11 +245,19 @@ def run_facts_gate(
             )
             state.aggregated_facts = previous_graph
             state.aggregation_clusters = previous_clusters
+            state.aggregation_key_clusters = previous_key_clusters
             rejected_repairs += 1
             break
         repair_passes += 1
         last_result = result
         report = candidate_report
+
+    if repair_passes and facts_validation.literal_variant_dedupe:
+        # An accepted un-merge pass re-aggregated from the raw units, which
+        # reintroduces the literal variants the pre-validation pass removed.
+        dedupe_records.extend(
+            dedupe_literal_variants(state.aggregated_facts, fact_namespaces)
+        )
 
     # Shape-driven repair, in code: retype literals against sh:datatype,
     # resolve codes to catalog IRIs, drop placeholder nodes. Runs after
@@ -258,8 +282,10 @@ def run_facts_gate(
         )
         if repair_result.records:
             state.aggregated_facts = repair_result.graph
-            state.facts_gate_repairs = repair_result.records
             report = run_validation()
+
+    if dedupe_records or repair_result.records:
+        state.facts_gate_repairs = dedupe_records + repair_result.records
 
     state.facts_validation_findings = report.findings
     state.facts_conformance = summarize_conformance(
