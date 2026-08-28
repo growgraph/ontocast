@@ -67,6 +67,7 @@ class RetrievalMetric(StrEnum):
     FACTS_ANCHOR_UNITS = "facts_anchor_units"
     FACTS_LLM_REPAIR_RENDERS_TOTAL = "facts_llm_repair_renders_total"
     FACTS_LLM_REPAIR_RENDERS_FAILED = "facts_llm_repair_renders_failed"
+    FACTS_REPAIR_DELETE_ONLY = "facts_repair_delete_only"
     FACTS_FINDINGS_RESIDUAL = "facts_findings_residual"
 
     # Aggregation and the un-merge repair.

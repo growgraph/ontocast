@@ -19,6 +19,7 @@ from ontocast.onto.model import (
     FactsRenderReport,
     GraphRepairRecord,
     GraphUpdateRenderReport,
+    Suggestions,
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import (
@@ -494,6 +495,15 @@ async def render_facts_update(
         state.update_facts()
         # Findings were consumed by this render; the loop re-collects fresh.
         state.deterministic_findings = []
+        # Critic suggestions are consumed by exactly the render they were
+        # raised against. Leaving them set carried them into every later render
+        # of the unit -- including the finding-driven repair, which then ran
+        # under two contradictory contracts at once: the improvement template's
+        # "think independently, proactively fix additional problems" and the
+        # findings block's "apply every item, rewrite in place, never delete".
+        # Reachable only at MAX_VISITS >= 2, which is where the 2026-08 matsci
+        # arm lost graph connectivity and gained validation errors.
+        state.suggestions = Suggestions()
 
         num_operations, num_triples = graph_update.count_total_triples()
         logger.info(

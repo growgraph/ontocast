@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Critic suggestions leaked across renders, putting two contradictory repair
+  contracts in one prompt.** `state.suggestions` was written by
+  `criticise_facts` and read by `render_facts_update`, but nothing ever cleared
+  it — while the sibling `state.deterministic_findings` *was* cleared after
+  every render. So once the critic rejected a unit, its suggestions rode along
+  into every later render of that unit, including the finding-driven repair,
+  which then received the improvement template's "Critic's suggestions are
+  advisory … proactively identify and fix additional problems not mentioned in
+  the critique" *together with* the findings block's "apply every item, rewrite
+  in place, never delete". The leak is unreachable at `MAX_VISITS=1`, where the
+  critic never runs — which is exactly the arm split of the 2026-08 matsci
+  benchmark, where the two-visit arm lost graph connectivity (isolated nodes
+  6→15 and 10→19 on two of three documents) and gained validation errors (0→2,
+  2→8) while the one-visit arm did not. Cleared in two places, because the loop
+  reaches the repair with stale suggestions by two routes: a render consuming
+  them, and the critic *accepting* on a later attempt of the same render (after
+  an external-evidence search) with no render in between.
+
+- **A repair render that answered the findings prompt by deleting triples was
+  detected and then kept anyway.** The delete-only guard logged a warning and
+  left the shrunken graph in place, making the detector a bystander to the data
+  loss the CHANGELOG below documents (25 of 58 cached repair responses deleted
+  valid values outright). Two changes:
+  - The guard now **rolls back** to the pre-repair graph, which by construction
+    holds strictly more data, and re-collects findings against it so the
+    recorded residual describes what actually survived.
+  - Its predicate was strengthened, because the old one could not see the
+    dominant failure mode. Keying on `mandatory_after >= mandatory_before` means
+    deleting the statement the finding *points at* scores as a successful
+    repair — the finding is gone precisely because the data is. The guard now
+    also fires when a render removed triples and **wrote none back**, which the
+    "rewrite the offending term in place" contract makes illegitimate by
+    definition, and which stays quiet for a rewrite that shrinks the graph by
+    collapsing a duplicate.
+  - New `facts_repair_delete_only` metric counts the rolled-back renders, so a
+    prompt or validator change that starts provoking deletions is a number
+    rather than a log line.
+
 - **LLM JSON parse failures now repair deterministically or fail with
   actionable feedback, instead of the informationless `input_value=None`
   retry loop.** Root-caused from the cached wire traffic of the 2026-08-28

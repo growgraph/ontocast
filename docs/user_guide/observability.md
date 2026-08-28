@@ -42,6 +42,7 @@ three modules, where a typo used to mean a silently missing metric.
 | `ontology_writable_count` / `ontology_primary_units` | Writable anchors, and units assigned a primary anchor |
 | `facts_anchor_count` / `facts_anchor_units` | Same for the facts fan-out |
 | `facts_llm_repair_renders_total` / `_failed` | Finding-driven repair renders attempted, and those that crashed (a failed repair leaves the pre-repair graph and the unit still reports success) |
+| `facts_repair_delete_only` | Repair renders rolled back for answering the findings prompt with deletions instead of an in-place rewrite. Non-zero means the findings prompt or the validator is provoking data-destroying responses — treat it as a release blocker, not a curiosity |
 | `facts_findings_residual` | Deterministic findings still open after the last repair render |
 | `facts_rejected_merges` | Candidate merges the aggregator's guards refused, for the graph actually served |
 | `facts_merge_repair_passes` / `facts_merge_vetoes` / `facts_merge_repairs_rejected` | Un-merge repair loop: accepted passes, veto pairs accumulated, passes reverted |

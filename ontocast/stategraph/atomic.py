@@ -150,6 +150,7 @@ def _record_facts_attempt(
     n_findings: int = 0,
     n_mandatory: int = 0,
     repair_failed: bool = False,
+    repair_delete_only: bool = False,
 ) -> None:
     """Append one telemetry record for the current loop attempt."""
     graph = unit_state.content_unit.graph
@@ -162,6 +163,7 @@ def _record_facts_attempt(
             n_deterministic_findings=n_findings,
             n_mandatory_findings=n_mandatory,
             repair_failed=repair_failed,
+            repair_delete_only=repair_delete_only,
             failure_stage=(str(unit_state.failure_stage) if repair_failed else None),
             failure_reason=unit_state.failure_reason if repair_failed else None,
             triple_count=len(graph),
@@ -206,32 +208,54 @@ async def _run_finding_driven_repair(
             len(mandatory),
         )
         unit_state.deterministic_findings = findings
+        graph_before = unit_state.content_unit.graph.copy()
         triples_before = len(unit_state.content_unit.graph)
         mandatory_before = len(mandatory)
         unit_state = await render_facts(
             unit_state, atomic, supplemental_ontologies=supplemental
         )
         repair_failed = unit_state.status != Status.SUCCESS
+        repair_delete_only = False
         if not repair_failed:
             findings = _collect_facts_findings(unit_state, atomic)
             mandatory_after = sum(1 for finding in findings if finding.mandatory)
             triples_after = len(unit_state.content_unit.graph)
-            if triples_after < triples_before and mandatory_after >= mandatory_before:
-                # The observed pathology behind the 2026-08 matsci runs: a
-                # repair render that only deletes triples while resolving no
-                # mandatory finding is destroying extracted data, not fixing
-                # it. The graph is kept (patches applied), but the shrinkage
-                # must be visible, not read as a successful repair.
+            # The findings prompt orders every mandatory item to be fixed by
+            # rewriting the offending term *in place*, so a genuine repair
+            # always writes something back. A render that only removed triples
+            # answered a repair order with a deletion, and the fact that the
+            # finding is gone afterwards is the deletion working, not a fix.
+            #
+            # Keying on the finding count alone cannot see this: deleting the
+            # flagged statement drops `mandatory_after` below
+            # `mandatory_before`, so the dominant failure mode of the 2026-08
+            # matsci runs -- 25 of 58 cached repair responses deleting valid
+            # values outright -- scored as a successful repair. Comparing the
+            # written triples catches it, and stays quiet for a rewrite that
+            # happens to shrink the graph by collapsing a duplicate.
+            wrote_nothing = not (unit_state.content_unit.graph - graph_before)
+            deleted_something = bool(graph_before - unit_state.content_unit.graph)
+            no_progress = (
+                triples_after < triples_before and mandatory_after >= mandatory_before
+            )
+            if (deleted_something and wrote_nothing) or no_progress:
+                # Roll back rather than keep the shrunken graph: the pre-repair
+                # graph holds strictly more data, and its mandatory findings are
+                # the ones the next attempt (or the residual metric) should see.
                 logger.warning(
-                    "Finding-driven repair shrank the unit graph "
-                    "(%d -> %d triples) without resolving any mandatory "
-                    "finding (%d -> %d) — likely a delete-only response to "
-                    "the findings prompt",
+                    "Finding-driven repair deleted %d triple(s) and wrote %d "
+                    "(%d -> %d triples, mandatory %d -> %d) — rolling back the "
+                    "delete-only repair",
+                    len(graph_before - unit_state.content_unit.graph),
+                    len(unit_state.content_unit.graph - graph_before),
                     triples_before,
                     triples_after,
                     mandatory_before,
                     mandatory_after,
                 )
+                unit_state.content_unit.graph = graph_before
+                findings = _collect_facts_findings(unit_state, atomic)
+                repair_delete_only = True
         # Recorded counts are the residual AFTER this repair render (on failure
         # the graph is unchanged, so the pre-render findings still describe it).
         # This is what `facts_findings_residual` sums document-level; recording
@@ -245,6 +269,7 @@ async def _run_finding_driven_repair(
             n_findings=len(findings),
             n_mandatory=sum(1 for finding in findings if finding.mandatory),
             repair_failed=repair_failed,
+            repair_delete_only=repair_delete_only,
         )
         if repair_failed:
             # The pre-repair graph is intact, so the unit is still usable and

@@ -623,6 +623,11 @@ class FactsLoopAttempt(BaseModel):
     #: provider timeout from an unparseable response.
     failure_stage: str | None = None
     failure_reason: str | None = None
+    #: The repair render answered the findings prompt by deleting triples
+    #: without resolving a mandatory finding, and was rolled back. Counted
+    #: document-level so a prompt or validator change that starts provoking
+    #: delete-only responses is visible as a number rather than a log line.
+    repair_delete_only: bool = False
     triple_count: int = 0
 
 

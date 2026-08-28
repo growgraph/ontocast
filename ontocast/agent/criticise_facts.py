@@ -171,6 +171,13 @@ async def criticise_facts(
         if critique.success or critique.score > 90:
             state.status = Status.SUCCESS
             state.set_node_status(WorkflowNode.CRITICISE_FACTS, Status.SUCCESS)
+            # An accepting critic has no outstanding requests. Clearing here is
+            # not redundant with the reset in render_facts_update: the loop can
+            # accept on a *later* critic attempt of the same render (after an
+            # external-evidence search), with no render in between to consume
+            # the suggestions the earlier, rejecting attempt left behind. The
+            # finding-driven repair then runs next, and must see only findings.
+            state.suggestions = Suggestions()
             logger.info("Facts critique passed")
         else:
             state.status = Status.FAILED
