@@ -8,6 +8,7 @@ them permanently narrow the pipeline.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import cast
 
 import pytest
@@ -142,6 +143,102 @@ async def test_timeout_frees_the_inflight_slot() -> None:
     # behind the abandoned one.
     with pytest.raises(LLMRequestTimeoutError):
         await asyncio.wait_for(tool("hello again"), timeout=2.0)
+
+
+def test_unescape_json_delimiters_repairs_escaped_string_delimiters() -> None:
+    """The model escapes the quotes that should *delimit* a JSON string.
+
+    Observed in gpt-5-mini critique output:
+    ``"text_fragment": \\"quoted text\\",`` — invalid JSON that langchain's
+    partial parser silently degraded to ``None``.
+    """
+    broken = '{"a": \\"quoted \\"inner\\" text\\", "b": 1}'
+    repaired = common.unescape_json_delimiters(broken)
+    assert json.loads(repaired) == {"a": 'quoted "inner" text', "b": 1}
+
+
+def test_unescape_json_delimiters_repairs_escaped_token_whitespace() -> None:
+    # Same responses escape the newline after the comma: ``\\",\\n  "action"``.
+    broken = '{"a": \\"x\\",\\n  "action": "ADD"}'
+    assert json.loads(common.unescape_json_delimiters(broken)) == {
+        "a": "x",
+        "action": "ADD",
+    }
+
+
+def test_unescape_json_delimiters_leaves_valid_json_untouched() -> None:
+    valid = '{"note": "he said: \\"hi\\", then left", "n": [1, 2], "u": "a\\\\b"}'
+    assert common.unescape_json_delimiters(valid) == valid
+
+
+def test_parse_json_object_reports_position_on_structural_error() -> None:
+    """A missing ``}`` must raise with line/column and a context window.
+
+    Langchain's partial parser returned ``None`` for this shape, so the retry
+    feedback was ``input_value=None`` — and the model repeated the identical
+    malformation on retry. The feedback must name the broken spot instead.
+    """
+    broken = '{"graph_update": {"ops": [{"type": "insert", "x": 1]}}'
+    with pytest.raises(ValueError) as exc_info:
+        common.parse_json_object(broken)
+    message = str(exc_info.value)
+    assert "line 1" in message
+    assert "insert" in message, "context window around the error is missing"
+
+
+def test_parse_json_object_rejects_partial_recovery() -> None:
+    # An unterminated string must not silently validate as a truncated object.
+    broken = '{"success": true, "score": 90, "fixes": ["one", "two'
+    with pytest.raises(ValueError):
+        common.parse_json_object(broken)
+
+
+def test_parse_json_object_rejects_non_object_json() -> None:
+    with pytest.raises(ValueError, match="not an object"):
+        common.parse_json_object("null")
+
+
+def test_parse_json_object_accepts_fenced_and_control_characters() -> None:
+    fenced = '```json\n{"value": "line one\nline two"}\n```'
+    assert common.parse_json_object(fenced) == {"value": "line one\nline two"}
+
+
+async def test_timeout_is_retried_exactly_once(monkeypatch) -> None:
+    """One identical re-issue for a timeout, then it propagates.
+
+    A timeout is not a provider "send less" signal, and at low MAX_VISITS a
+    lost call silently costs a unit its whole critique.
+    """
+    from ontocast.tool.llm import LLMRequestTimeoutError
+
+    monkeypatch.setattr(common, "_retry_backoff_seconds", lambda attempt: 0.0)
+    calls = 0
+
+    async def timeout_once_llm(prompt):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise LLMRequestTimeoutError("LLM request exceeded 180.0s")
+        return _Response('{"value": "ok"}')
+
+    result = await call_llm_with_retry(
+        cast(LLMTool, timeout_once_llm), _prompt(), _parser(), _kwargs()
+    )
+    assert result.value == "ok"
+    assert calls == 2
+
+    calls = 0
+
+    async def always_timeout_llm(prompt):
+        nonlocal calls
+        calls += 1
+        raise LLMRequestTimeoutError("LLM request exceeded 180.0s")
+
+    with pytest.raises(LLMRequestTimeoutError):
+        await call_llm_with_retry(
+            cast(LLMTool, always_timeout_llm), _prompt(), _parser(), _kwargs()
+        )
+    assert calls == 2
 
 
 async def test_timeout_is_not_a_cancellation() -> None:

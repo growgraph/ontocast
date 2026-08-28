@@ -18,7 +18,10 @@ completion.
 
 Reading it is covered in [Performance](performance.md) — the duration-key
 convention, effective workers versus event-loop lag, and the token fields
-(billed versus replayed, reasoning, provider-cache reads).
+(billed versus replayed, reasoning, provider-cache reads). Two of them are
+derived rather than accumulated, and are the ones to read first:
+`prefix_cache_hit_rate` and `reasoning_share_of_output` say whether a cost
+problem lives in the prompt or in the model's thinking budget.
 
 ### Retrieval metrics
 
@@ -70,6 +73,7 @@ pass actually ran — absent means "did not run", which is not the same as zero.
   "budget": {
     "calls_count": 42, "cache_hits": 0,
     "input_tokens": 380174, "output_tokens": 51203, "reasoning_tokens": 39880,
+    "prefix_cache_hit_rate": 0.41, "reasoning_share_of_output": 0.78,
     "node_durations": {"Render Facts": 61.4, "Render Facts/unit_sum": 240.1}
   },
   "facts_triples": 1204, "ontology_triples": 318,
@@ -149,3 +153,8 @@ OntoCast does not. What it does do is stay out of the way:
 
 Cost in currency. OntoCast reports tokens; converting them to money needs a
 price table that goes stale, and the deployment already knows its own rates.
+`prefix_cache_hit_rate` and `reasoning_share_of_output` are deliberately the
+only derived figures here: both are dimensionless ratios of counts this run
+actually observed, so neither can go stale or leak a cost basis. Anything that
+needs a number with a currency on it — margin, plans, billing — belongs to the
+deployment, which knows what it pays per model.

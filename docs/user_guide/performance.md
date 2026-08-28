@@ -92,6 +92,36 @@ at zero, which is not the same as a run that used no tokens.
 `calls_count` counts billed calls and `cache_hits` counts replays, so a fully
 replayed run reports `calls_count: 0` with non-zero `cached_*`.
 
+### The two ratios that say where to aim a cost change
+
+Two derived fields ride the same budget summary. Read them first: they decide
+whether a cost problem is in the prompt or in the model's thinking budget, and
+they cost nothing to look at.
+
+| Field | Meaning |
+|---|---|
+| `prefix_cache_hit_rate` | `cache_read_input_tokens` over **all** input tokens, billed and replayed. |
+| `reasoning_share_of_output` | `reasoning_tokens` over **all** output tokens. A decomposition of what was already paid for, never an addition to it. |
+
+Both are `null` when the provider reported no tokens at all — unmeasured, which
+is not the same as zero. Compute them from the fields yourself only if you must,
+and mind the denominator: `reasoning_tokens` and `cache_read_input_tokens`
+accumulate on billed *and* replayed calls, while `input_tokens` counts billed
+only, so dividing by `input_tokens` alone can exceed 100% on a partly replayed
+run.
+
+**A low `prefix_cache_hit_rate` on a wide fan-out is expected, not a bug — and
+it is money.** A provider cache entry only becomes readable once the first
+response has begun, so `PARALLEL_WORKERS` units that issue together all miss the
+prefix they share. Measured across this repo's own benchmark manifests: 35–44%
+on the wide document fan-outs against 91% on a longer, more sequential run, on
+identical code.
+
+**`reasoning_share_of_output` of `0.0` means the model is not a reasoning
+model**, and no thinking-budget setting will change its bill; the lever is prompt
+size or call count instead. On reasoning models this repo's manifests sit at
+62–73%, i.e. most of the output cost is thinking, not triples.
+
 ### Counters
 
 `budget.counters` records event counts. The one to watch is

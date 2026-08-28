@@ -123,3 +123,97 @@ async def test_critic_spends_a_call_exactly_when_max_visits_allows(
 
     assert result.status == Status.SUCCESS
     assert critic_calls == expected_critic_calls
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("max_visits", [1, 2, 3])
+async def test_a_converging_critic_costs_two_calls_at_any_bound(
+    monkeypatch, max_visits: int
+) -> None:
+    """Raising ``MAX_VISITS`` buys nothing when the critic accepts the render.
+
+    The loop returns as soon as a critique succeeds, so the *happy path* costs
+    one render plus one critique however high the bound is set — and exactly
+    one call at a bound of 1, where the critic is skipped outright. So the
+    production cost of ``MAX_VISITS=3`` is not a fixed multiple: it is driven
+    entirely by how often the critic rejects, which makes it a property of the
+    corpus rather than of the setting.
+    """
+    calls: list[str] = []
+
+    async def ok_render(state, tools, **kwargs):
+        calls.append("render")
+        state.status = Status.SUCCESS
+        return state
+
+    async def converging_critic(state, tools):
+        calls.append("critic")
+        state.status = Status.SUCCESS
+        return state
+
+    monkeypatch.setattr(atomic_module, "render_facts", ok_render)
+    monkeypatch.setattr(atomic_module, "criticise_facts", converging_critic)
+
+    context = UnitLoopContext.from_agent_state(AgentState(render_mode=RenderMode.FACTS))
+    result = await facts_loop(
+        _unit_state(max_visits_per_node=max_visits),
+        _tools(),
+        context,
+        pre_resolved_context=UnitOntologyContext(
+            snapshot=empty_snapshot(), writable_iris=[], confidence=1.0
+        ),
+    )
+
+    assert result.status == Status.SUCCESS
+    expected = ["render"] if max_visits == 1 else ["render", "critic"]
+    assert calls == expected
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("max_visits", "expected_calls"),
+    [(1, 1), (2, 3), (3, 5)],
+)
+async def test_a_rejecting_critic_costs_two_visits_minus_one(
+    monkeypatch, max_visits: int, expected_calls: int
+) -> None:
+    """Worst-case per-unit calls are ``2 * max_visits - 1``, not ``2 * max_visits``.
+
+    The last allowed render is not criticised — a critique that cannot drive
+    another render is pure spend — so the ledger is
+    ``(max_visits - 1)`` render+critique pairs plus one final bare render.
+    Pinned because it is the ceiling on what raising the bound can cost, and
+    the off-by-one in the obvious estimate is a whole provider call per unit.
+
+    Web grounding is off here (the default): a critic that rejects *without*
+    requesting evidence breaks the inner loop immediately, so the nominal
+    ``max_visits ** 2`` worst case is unreachable on this path.
+    """
+    calls: list[str] = []
+
+    async def ok_render(state, tools, **kwargs):
+        calls.append("render")
+        state.status = Status.SUCCESS
+        return state
+
+    async def rejecting_critic(state, tools):
+        calls.append("critic")
+        state.status = Status.FAILED
+        return state
+
+    monkeypatch.setattr(atomic_module, "render_facts", ok_render)
+    monkeypatch.setattr(atomic_module, "criticise_facts", rejecting_critic)
+
+    context = UnitLoopContext.from_agent_state(AgentState(render_mode=RenderMode.FACTS))
+    await facts_loop(
+        _unit_state(max_visits_per_node=max_visits),
+        _tools(),
+        context,
+        pre_resolved_context=UnitOntologyContext(
+            snapshot=empty_snapshot(), writable_iris=[], confidence=1.0
+        ),
+    )
+
+    assert len(calls) == expected_calls
+    assert calls.count("render") == max_visits
+    assert calls.count("critic") == max_visits - 1

@@ -4,7 +4,7 @@ import os
 import re
 from typing import TYPE_CHECKING, Any
 
-from pydantic import ConfigDict, Field, field_validator
+from pydantic import ConfigDict, Field, computed_field, field_validator
 from rdflib import URIRef
 
 from ontocast.onto.constants import DEFAULT_DOMAIN
@@ -196,6 +196,55 @@ class BudgetTracker(BasePydanticModel):
             return None
         return unit_sum / wall
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def prefix_cache_hit_rate(self) -> float | None:
+        """Share of input tokens served from the *provider's* prompt cache.
+
+        This is the provider-side prefix cache, not the OntoCast disk cache --
+        the two are independent, and a deployment whose disk cache is cold (a
+        fresh container, say) can still hit this one on every unit after the
+        first, because the fan-out sends the same document-invariant prefix N
+        times.
+
+        Near ``0.0`` with a fan-out wider than one unit means the workers all
+        issued before any prefix had been cached: a cache entry only becomes
+        readable once the first response has begun. Compare a long, more
+        sequential run against a wide one to see the difference.
+
+        Returns:
+            float | None: Ratio in ``[0.0, 1.0]``, or ``None`` when no input
+            tokens were reported at all.
+        """
+        # Denominator spans billed *and* replayed input: cache_read_input_tokens
+        # is accumulated for both (see _add_usage_detail), so dividing by
+        # input_tokens alone would exceed 1.0 on a partially replayed run.
+        total_input = self.input_tokens + self.cached_input_tokens
+        if total_input <= 0:
+            return None
+        return self.cache_read_input_tokens / total_input
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def reasoning_share_of_output(self) -> float | None:
+        """Share of output tokens the model spent on thinking.
+
+        ``reasoning_tokens`` are counted *inside* the output totals, so this is
+        a decomposition of what was already paid for, never an addition to it.
+        A high share says the cost lever is the model's reasoning budget rather
+        than anything about the prompt; a share of ``0.0`` says the model is
+        not a reasoning model, and no reasoning-effort setting will change its
+        bill.
+
+        Returns:
+            float | None: Ratio in ``[0.0, 1.0]``, or ``None`` when no output
+            tokens were reported at all.
+        """
+        total_output = self.output_tokens + self.cached_output_tokens
+        if total_output <= 0:
+            return None
+        return self.reasoning_tokens / total_output
+
     def _add_usage_detail(self, usage: TokenUsage) -> None:
         """Accumulate the provider-detail keys shared by billed and cached calls."""
         if usage.reasoning_tokens is not None:
@@ -333,6 +382,21 @@ class BudgetTracker(BasePydanticModel):
         ]
         if detail:
             parts.append("of which " + ", ".join(detail))
+
+        # The two ratios that decide where a cost change should be aimed: at the
+        # prompt (low cache rate) or at the model's thinking budget (high
+        # reasoning share). Both are derived, so they are formatted here rather
+        # than stored -- and neither is money: pricing lives outside this repo.
+        ratios = [
+            f"{value:.0%} {label}"
+            for label, value in (
+                ("prefix-cache hits", self.prefix_cache_hit_rate),
+                ("output is reasoning", self.reasoning_share_of_output),
+            )
+            if value
+        ]
+        if ratios:
+            parts.append(", ".join(ratios))
 
         if self.ontology_triples_generated > 0 or self.facts_triples_generated > 0:
             parts.append(

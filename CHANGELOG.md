@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **LLM JSON parse failures now repair deterministically or fail with
+  actionable feedback, instead of the informationless `input_value=None`
+  retry loop.** Root-caused from the cached wire traffic of the 2026-08-28
+  `--max-visits 2` matsci run, where 4 of 7 units wasted a ~50k-token call
+  each on attempt 1: gpt-5-mini escapes the quotes that *delimit* JSON
+  strings (`"text_fragment": \"…\",`) and the whitespace between tokens
+  (`\",\n  "action"`), and occasionally under-closes one `{`. Langchain's
+  `parse_json_markdown` degraded all of these to a silent `None` — or a
+  silently *truncated* prefix of the object — so the retry prompt carried a
+  pydantic `input_value=None` error naming nothing, and retries repeated the
+  identical malformation. Three changes in `agent/common.py`:
+  - `unescape_json_delimiters` joins the sanitizer chain and repairs the
+    escaped-delimiter and escaped-whitespace classes without a retry
+    (string-aware scan; legitimate in-string `\"` escapes untouched).
+  - `parse_json_object` replaces the silently-lenient parse for every
+    `PydanticOutputParser` call: strict parse first (keeping only the
+    `strict=False` control-character leniency), fenced-block extraction as
+    the sole fallback, and any remaining failure raises with line/column and
+    a ±150-char context window — the same feedback shape that made the
+    Turtle-level retries recover on the first try. Partial recoveries and
+    non-object JSON (`null`) are rejected instead of validating silently.
+  - An LLM request *timeout* is re-issued identically exactly once per call
+    before propagating — a timeout is not a rate-limit "send less" signal,
+    and at `--max-visits 2` a lost render silently cost a unit its entire
+    critique. Rate limits and connection errors still propagate immediately.
+
 - **A false mandatory `UNKNOWN_TERM` finding ordered repair renders to destroy
   correct numeric values.** Root-caused from the cached LLM wire traffic of the
   2026-08-11 matsci runs: the catalog *references* `qudt:QuantityValue` and
@@ -45,6 +71,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`BudgetTracker` reports the two ratios that locate a cost problem**:
+  `prefix_cache_hit_rate` (input tokens served from the *provider's* prompt
+  cache) and `reasoning_share_of_output` (thinking tokens as a share of output).
+  Both are `computed_field`s, so they ride the `/process` response and the run
+  manifest without a new wire shape, and both are `null` — unmeasured, not zero
+  — when the provider reports no tokens. The denominators span billed *and*
+  replayed tokens, because `cache_read_input_tokens` and `reasoning_tokens`
+  accumulate on both while `input_tokens` counts billed only; dividing by
+  `input_tokens` alone reports over 100% cache hits on a partly replayed run,
+  which is the reason these are computed here rather than by each consumer.
+  They make existing manifests retrospectively comparable: across the manifests
+  in `benchmarking/`, reasoning is **62–73% of all output tokens**, and the
+  provider prefix cache serves **35–44%** of input on the wide document
+  fan-outs against **91%** on a longer, more sequential run — same code, so the
+  gap is call sequencing, not configuration. No currency is reported; per
+  `docs/user_guide/observability.md` that stays with the deployment.
 - **SHACL-vs-catalog contradiction lint** (`shacl_catalog_contradictions`),
   run when the validation gate loads shapes: any property the shapes require
   (`sh:minCount >= 1`) that the term validator would flag as unknown is logged
