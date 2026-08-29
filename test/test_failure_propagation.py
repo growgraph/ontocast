@@ -27,6 +27,8 @@ from ontocast.stategraph.node_factories import (
 )
 from ontocast.toolbox import ToolBox
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.mark.parametrize(
     ("failed", "total", "expected"),

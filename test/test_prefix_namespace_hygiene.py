@@ -9,6 +9,8 @@ from ontocast.onto.util import RDFLIB_DEFAULT_NAMESPACE_URIS
 from ontocast.prompt.facts_guidelines import format_facts_operational_guidelines
 from ontocast.prompt.ontology_context import extract_domain_prefix_pairs
 
+pytestmark = pytest.mark.unit
+
 
 def _matsci_turtle(*, prefix: str = "matsci") -> str:
     return f"""

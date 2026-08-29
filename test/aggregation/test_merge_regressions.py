@@ -17,6 +17,7 @@ Each test pins the corresponding fix. Clustering is stubbed (single cluster or
 singletons) so no embedding model loads.
 """
 
+import pytest
 from rdflib import RDF, Literal, URIRef
 from rdflib.namespace import XSD
 
@@ -26,6 +27,8 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.agg.aggregate import EmbeddingBasedAggregator
 from ontocast.tool.agg.rewriter import GraphRewriter
 from ontocast.tool.agg.signatures import labels_differ_only_by_initials
+
+pytestmark = pytest.mark.unit
 
 CD = f"{DEFAULT_IRI}/"
 DOC = "https://x.org/doc/1"

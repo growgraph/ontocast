@@ -373,8 +373,7 @@ catalog terminals. The prompts say so explicitly (a PARTIAL CONTEXT notice in
 the render intro and critic criteria), and three reduce-time policies close
 the gap that partiality opens: minted-duplicate reconciliation against the
 full terminals, a redeclare-only delete policy, and fresh-path union merging.
-See [Validation → Reduce-time policies](validation.md#reduce-time-policies-the-terminal-is-the-authority)
-and the workspace design note `planning/ontology-update-semantics.md`.
+See [Validation → Reduce-time policies](validation.md#reduce-time-policies-the-terminal-is-the-authority).
 
 ## Per-Request Overrides
 

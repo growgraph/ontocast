@@ -57,6 +57,8 @@ from ontocast.tool.vector_store.util import (
 )
 from ontocast.util.hash import render_text_hash
 
+pytestmark = pytest.mark.unit
+
 
 class CountingEmbeddingTool(EmbeddingTool):
     """Embedding test double with deterministic vectors and call tracking."""

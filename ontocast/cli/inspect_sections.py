@@ -190,22 +190,27 @@ def main(
     hint = parse_document_type_hint_param(document_type_hint)
     schema_id = parse_section_schema_id_param(section_schema_id)
 
-    options = PrepareOptions(
-        section_schema_id=schema_id,
-        document_type_hint=hint,
-        # None and [] mean different things downstream (schema defaults versus
-        # exclusion disabled), so an omitted flag must stay None.
-        target_sections=(
-            parse_sections_list_param(target_sections, param="target-sections")
-            if target_sections is not None
-            else None
-        ),
-        exclude_sections=(
-            parse_sections_list_param(exclude_sections, param="exclude-sections")
-            if exclude_sections is not None
-            else None
-        ),
-    )
+    # The parsers are shared with the HTTP layer and signal bad input by
+    # raising; surface that as a click usage error rather than a traceback.
+    try:
+        options = PrepareOptions(
+            section_schema_id=schema_id,
+            document_type_hint=hint,
+            # None and [] mean different things downstream (schema defaults
+            # versus exclusion disabled), so an omitted flag must stay None.
+            target_sections=(
+                parse_sections_list_param(target_sections, param="target-sections")
+                if target_sections is not None
+                else None
+            ),
+            exclude_sections=(
+                parse_sections_list_param(exclude_sections, param="exclude-sections")
+                if exclude_sections is not None
+                else None
+            ),
+        )
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
     # Resolved through the same helper the pipeline uses, so the schema reported
     # here is necessarily the schema the chunks were actually labeled against.
     decision = resolve_prepare_schema(document_text, chunk_config, options, chunker)

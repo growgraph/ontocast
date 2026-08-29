@@ -1,5 +1,6 @@
 """Tests for deterministic literal-object checks on rendered facts graphs."""
 
+import pytest
 from rdflib import Literal, Namespace
 from rdflib.namespace import OWL, RDF, RDFS, XSD
 
@@ -9,6 +10,8 @@ from ontocast.tool.validate import (
     RDFGraphConnectivityValidator,
     partition_object_property_literal_triples,
 )
+
+pytestmark = pytest.mark.unit
 
 QUDT = Namespace("http://qudt.org/schema/qudt/")
 UNIT = Namespace("http://qudt.org/vocab/unit/")

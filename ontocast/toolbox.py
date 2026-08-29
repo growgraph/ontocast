@@ -13,7 +13,7 @@ from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.ontology import Ontology, OntologyProperties
 from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.state import AgentState
+from ontocast.onto.state import AgentState, BudgetTracker
 from ontocast.onto.tenancy import TenancyScope
 from ontocast.runtime import ToolBoxRuntime
 from ontocast.tool import (
@@ -361,7 +361,7 @@ class ToolBox:
             else tool_config.aggregation.similarity_threshold,
         )
 
-    async def get_llm_tool(self, budget_tracker):
+    async def get_llm_tool(self, budget_tracker: BudgetTracker) -> LLMTool:
         """Return the shared LLM tool, charging usage to ``budget_tracker``.
 
         Args:
@@ -1024,7 +1024,9 @@ class ToolBox:
         await self.shapes_catalog.delete(graph_uri)
 
 
-async def render_ontology_summary(ontology: Ontology, llm_tool) -> OntologyProperties:
+async def render_ontology_summary(
+    ontology: Ontology, llm_tool: LLMTool
+) -> OntologyProperties:
     """Generate a summary of ontology properties using LLM analysis.
 
     This function uses the LLM tool to analyze an RDF graph and generate

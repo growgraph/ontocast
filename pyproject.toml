@@ -65,7 +65,7 @@ license-files = ["LICENSE"]
 name = "ontocast"
 readme = "README.md"
 requires-python = ">=3.12,<4.0"
-version = "0.6.2"
+version = "0.6.3"
 
 [project.optional-dependencies]
 # `plot` is deliberately excluded: pygraphviz builds from source against system

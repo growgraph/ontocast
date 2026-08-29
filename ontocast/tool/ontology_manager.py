@@ -10,7 +10,7 @@ import logging
 from collections import OrderedDict
 from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import Field
 from rdflib import URIRef
@@ -37,6 +37,8 @@ _MERGED_CACHE_MAX_ENTRIES = 8
 _GRAPH_CACHE_MAX_ENTRIES = 64
 
 if TYPE_CHECKING:
+    import networkx as nx
+
     from ontocast.tool.vector_store.patch_retriever import OntologyPatchRetriever
 
 
@@ -55,7 +57,7 @@ class OntologyManager(Tool):
 
     ontology_versions: dict[str, list[Ontology]] = Field(default_factory=dict)
 
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: Any):
         """Initialize the ontology manager.
 
         Args:
@@ -220,7 +222,7 @@ class OntologyManager(Tool):
         """Namespace URI → author prefix for sanitize preference."""
         return dict(self._namespace_to_author_prefix)
 
-    def __contains__(self, item):
+    def __contains__(self, item: object) -> bool:
         """Check if an item (IRI or alias) is in the ontology manager.
 
         Args:
@@ -832,7 +834,7 @@ class OntologyManager(Tool):
             return []
         return self.get_ontology_versions_by_iri(iri)
 
-    def get_lineage_graph_by_iri(self, iri: str):
+    def get_lineage_graph_by_iri(self, iri: str) -> "nx.DiGraph | None":
         """Get the lineage graph for a specific IRI.
 
         Args:
@@ -846,7 +848,7 @@ class OntologyManager(Tool):
 
         return Ontology.build_lineage_graph(self.ontology_versions[iri])
 
-    def get_lineage_graph(self, ontology_id: str):
+    def get_lineage_graph(self, ontology_id: str) -> "nx.DiGraph | None":
         """Get the lineage graph for a specific ontology_id, alias, or IRI.
 
         Args:

@@ -729,6 +729,20 @@ def make_render_facts_node(tools: ToolBox):
                 f"{salvaged_failed_count}/{len(state.content_units)} unit(s)"
             )
 
+        if merged_context is None and (
+            tools.config.get_tool_config().facts_validation.context_from_units
+        ):
+            # No ontology stage ran, so build_merged_document_ontology_context
+            # had nothing to merge. Without this both MERGE_FACTS and
+            # VALIDATE_FACTS run against an empty ontology graph although every
+            # unit rendered against a real one.
+            unit_ontology_context = _union_unit_ontology_context(ordered_results)
+            if len(unit_ontology_context) > 0:
+                state.facts_ontology_context = unit_ontology_context
+                state.retrieval_metrics[RetrievalMetric.ONTOLOGY_SNAPSHOT_TRIPLES] = (
+                    len(unit_ontology_context)
+                )
+
         _, state.unit_patch_sources, _, anchor_counts = aggregate_writable_metrics(
             unit_contexts
         )
@@ -792,6 +806,47 @@ def make_render_facts_node(tools: ToolBox):
     return render_facts
 
 
+def _union_unit_ontology_context(
+    results: Sequence[tuple[int, UnitFactsState, str, list[str], OntologyAssemblyMode]],
+) -> RDFGraph:
+    """Union the ontology snapshots the facts units actually resolved.
+
+    Only used when no ontology stage ran: there are then no reduced artifacts
+    to merge, so the document-level context would be empty even though every
+    unit rendered against a real one.
+
+    Snapshots are deduplicated by their contributing catalog IRIs. In
+    single-select mode every unit resolves the same catalog ontology into its
+    own snapshot object, so unioning them unfiltered would pay a full rdflib
+    merge per unit for a graph already present.
+
+    Args:
+        results: The fan-out's per-unit results, in unit order.
+
+    Returns:
+        The union of the distinct unit snapshots; empty when none carried one.
+    """
+    union = RDFGraph()
+    seen_sources: set[tuple[str, ...]] = set()
+    seen_objects: set[int] = set()
+    for _, result, _, _, _ in results:
+        snapshot = result.ontology_snapshot
+        if snapshot is None or len(snapshot.graph) == 0:
+            continue
+        key = tuple(sorted(snapshot.source_iris))
+        if key:
+            if key in seen_sources:
+                continue
+            seen_sources.add(key)
+        elif id(snapshot) in seen_objects:
+            continue
+        seen_objects.add(id(snapshot))
+        union += snapshot.graph
+    if len(union) > 0:
+        union.sanitize_prefixes_namespaces()
+    return union
+
+
 def _facts_aggregation_inputs(state: AgentState) -> tuple[RDFGraph, dict]:
     """Ontology context and document metadata shared by merge and validate.
 
@@ -838,6 +893,7 @@ def make_merge_facts_node(tools: ToolBox):
         state.aggregated_facts = result.graph
         state.aggregation_clusters = result.merged_clusters
         state.aggregation_key_clusters = result.key_supported_clusters
+        state.aggregation_cross_unit_pairs = result.cross_unit_object_pairs
         state.retrieval_metrics[RetrievalMetric.FACTS_REJECTED_MERGES] = (
             result.rejected_merge_count
         )

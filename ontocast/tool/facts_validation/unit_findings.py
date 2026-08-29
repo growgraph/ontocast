@@ -487,7 +487,12 @@ def collect_unit_findings(
         )
     )
 
-    missing = missing_numeric_mentions(extraction_text, graph, limit=coverage_limit)
+    missing = missing_numeric_mentions(
+        extraction_text,
+        graph,
+        ignore_identifier_fragments=policy.numeric_identifier_guard,
+        limit=coverage_limit,
+    )
     if missing:
         findings.append(
             FactsUnitFinding(

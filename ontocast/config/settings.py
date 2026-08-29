@@ -333,6 +333,21 @@ class LLMConfig(BaseSettings):
             "Directly affects VRAM usage on the inference server."
         ),
     )
+    json_mode: bool = Field(
+        default=False,
+        description=(
+            "Constrain OpenAI decoding to syntactically valid JSON "
+            "(response_format json_object). Every response is parsed as a JSON "
+            "envelope regardless of LLM_GRAPH_FORMAT -- Turtle only makes the "
+            "graph fields flat strings inside that envelope -- so this makes a "
+            "whole class of syntax error unreachable instead of repaired after "
+            "the fact. Strict json_schema mode is deliberately not offered: it "
+            "requires closed schemas and the graph fields are open. Default off "
+            "because OpenAI rejects the request unless the word JSON appears in "
+            "the prompt, which is a property of the prompt set in use. OpenAI "
+            "only; other providers ignore it."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="LLM_",
@@ -509,6 +524,20 @@ class ChunkConfig(BaseSettings):
             "drops the chunks before extraction, 'citations_only' extracts "
             "bibliographic metadata only, 'domain_facts' disables special "
             "handling."
+        ),
+    )
+    min_unit_chars: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Drop content units shorter than this many characters before the "
+            "extraction fan-out; 0 (default) disables the floor. Distinct from "
+            "min_size, which is a target the chunker aims at while merging "
+            "segments -- a heading stub or a caption fragment can still leave "
+            "chunking well under it. Every unit below the floor otherwise costs "
+            "a patch retrieval, a full render and a critic call to extract from "
+            "a fragment. Watch the per-unit node durations and the budget "
+            "summary to size it for a corpus."
         ),
     )
     citation_vocabulary: dict[str, str] = Field(
@@ -2062,6 +2091,36 @@ class FactsValidationConfig(BaseSettings):
             "findings gate alone."
         ),
     )
+    numeric_identifier_guard: bool = Field(
+        default=False,
+        description=(
+            "Exclude digit groups that are parts of an identifier from the "
+            "numeric-coverage inventory. Without it a file number or a "
+            "citation ('600/92', '2024-01-15') is tokenized into digit groups "
+            "and offered to the repair render as numbers missing from the "
+            "graph, and the repair structures them into numeric properties -- "
+            "which the post-merge multi-value check then flags. Only groups "
+            "joined to an identifier inside one token are dropped; a unit "
+            "attached to a value ('5mg') still counts. Default off because it "
+            "narrows an advisory finding that repair renders act on."
+        ),
+    )
+    context_from_units: bool = Field(
+        default=False,
+        description=(
+            "In facts-only runs, seed the merge/validate ontology context from "
+            "the ontology snapshots the units actually resolved. With no "
+            "ontology stage there are no reduced artifacts to merge, so the "
+            "document-level context is empty and BOTH consumers see it: the "
+            "aggregator loses the type and functionality declarations its "
+            "merge guards read, and the validation gate skips every check that "
+            "needs a vocabulary (reported as validated_without_ontology_context "
+            "in the retrieval metrics). Default off because it changes what "
+            "merges and what the gate reports; watch "
+            "validated_without_ontology_context and ontology_snapshot_triples "
+            "when turning it on."
+        ),
+    )
     suspect_multi_value_severity: Literal["error", "warning"] = Field(
         default="error",
         description=(
@@ -2069,6 +2128,20 @@ class FactsValidationConfig(BaseSettings):
             "numeric values on one predicate, or multiple objects on a "
             "dominantly single-valued predicate). Only error findings drive "
             "the un-merge repair."
+        ),
+    )
+    suspect_multi_value_require_cross_unit: bool = Field(
+        default=False,
+        description=(
+            "Require evidence that a multi-valued IRI predicate was created by "
+            "merging before reporting it as an error. The IRI branch of "
+            "SUSPECT_MULTI_VALUE flags any subject with two objects on a "
+            "predicate that is single-valued elsewhere in the graph, and error "
+            "findings drive the un-merge repair -- so a statement one unit "
+            "asserted with two genuine objects is repaired away. When set, "
+            "such a pair is reported as a warning instead. Numeric and string "
+            "branches are unaffected: two distinct quantities on one node are "
+            "a defect whatever their provenance."
         ),
     )
     additional_standard_namespaces: list[str] = Field(

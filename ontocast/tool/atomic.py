@@ -106,6 +106,7 @@ class AtomicToolBox:
             additional_standard_namespaces=self.additional_standard_namespaces,
             quantity_fallback_vocabulary=self.quantity_fallback_vocabulary,
             code_predicates=self.code_predicates,
+            numeric_identifier_guard=facts_validation.numeric_identifier_guard,
         )
         # A sibling of ValidationPolicy, deliberately not a field on it.
         # ValidationPolicy answers "what must never be flagged"; this answers

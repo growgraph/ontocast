@@ -4,6 +4,8 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from ontocast.config import LLMConfig, LLMProvider, OpenAIModel
 from ontocast.onto.state import BudgetTracker
 from ontocast.tool.cache import Cacher
@@ -12,6 +14,8 @@ from ontocast.tool.llm_batch import (
     import_openai_batch_output_jsonl,
     write_openai_chat_batch_jsonl,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def test_batch_import_is_readable_by_the_llm_tool(tmp_path) -> None:

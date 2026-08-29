@@ -22,6 +22,8 @@ from ontocast.stategraph import atomic as atomic_module
 from ontocast.stategraph.atomic import _run_finding_driven_repair
 from ontocast.tool.atomic import AtomicToolBox
 
+pytestmark = pytest.mark.unit
+
 _EX_PREDICATE = URIRef("http://example.org/redShiftContribution")
 _GOOD_PREDICATE = URIRef("https://schema.org/measurement")
 

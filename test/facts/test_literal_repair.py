@@ -7,6 +7,7 @@ predicates, doc-namespace predicates, and string epistemic qualifiers
 against a closed individual range.
 """
 
+import pytest
 from rdflib import RDF, Literal, URIRef
 from rdflib.namespace import XSD
 
@@ -18,6 +19,8 @@ from ontocast.tool.facts_validation import (
     repair_literal_type_objects,
     repair_property_aliases,
 )
+
+pytestmark = pytest.mark.unit
 
 QUDT = "http://qudt.org/schema/qudt/"
 QQVAL = "https://growgraph.dev/ontologies/qqval#"

@@ -23,6 +23,8 @@ from ontocast.stategraph.context_resolver import (
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.toolbox import ToolBox
 
+pytestmark = pytest.mark.unit
+
 
 class _StubPatchRetriever:
     def __init__(self, graph: RDFGraph, sources: list[str]) -> None:

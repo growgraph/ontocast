@@ -1,5 +1,6 @@
 """Tests for LLM token usage extraction from provider responses."""
 
+import pytest
 from langchain_core.messages.ai import AIMessage
 
 from ontocast.onto.token_usage import TokenUsage
@@ -8,6 +9,8 @@ from ontocast.tool.llm import (
     _usage_metadata_from,
     token_usage_from_openai_payload,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def test_usage_from_usage_metadata() -> None:

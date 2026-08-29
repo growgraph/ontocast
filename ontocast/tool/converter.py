@@ -157,7 +157,7 @@ class ConverterTool(Tool):
         self,
         cache: Cacher | None = None,
         converter_config: ConverterConfig | None = None,
-        **kwargs,
+        **kwargs: Any,
     ):
         """Initialize the converter tool.
 

@@ -146,6 +146,10 @@ class ValidationPolicy(BaseModel):
     additional_standard_namespaces: tuple[str, ...] = ()
     quantity_fallback_vocabulary: dict[str, str] | None = None
     code_predicates: tuple[str, ...] = ()
+    #: Keep identifier digit groups out of the numeric-coverage inventory.
+    #: Same class as the exemptions above -- something configuration says the
+    #: deterministic checks must not put in front of the renderer.
+    numeric_identifier_guard: bool = False
 
     def standard_namespaces(self) -> tuple[str, ...]:
         """Built-in meta-vocabulary namespaces plus the configured ones."""

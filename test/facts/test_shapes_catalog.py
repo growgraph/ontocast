@@ -20,6 +20,8 @@ from ontocast.tool.shapes_catalog import ShapesCatalog
 from ontocast.tool.triple_manager.in_memory import InMemoryTripleStoreManager
 from ontocast.toolbox import ToolBox
 
+pytestmark = pytest.mark.unit
+
 SHAPES_TTL = """
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix sh:  <http://www.w3.org/ns/shacl#> .

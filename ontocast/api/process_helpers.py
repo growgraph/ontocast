@@ -129,11 +129,29 @@ def dump_facts_ttl(
     *,
     line_number: int | None = None,
     output_dir: pathlib.Path | None = None,
+    strip_provenance: bool = True,
 ) -> pathlib.Path | None:
-    """Write chunk-stripped facts Turtle when facts exist."""
+    """Write the facts Turtle when facts exist.
+
+    Args:
+        state: Document state carrying ``aggregated_facts``.
+        file_path: Source file the facts were extracted from.
+        line_number: Record number for JSONL inputs.
+        output_dir: Destination directory; defaults to the source's directory.
+        strip_provenance: Drop chunk-level provenance from the dump. Keeping it
+            is what lets a statement be traced back to its source span and
+            re-verified against the document; stripping it stays the default so
+            existing outputs are unchanged. Same meaning as the HTTP
+            ``strip_provenance`` parameter.
+
+    Returns:
+        The path written, or None when there are no facts.
+    """
     if state.aggregated_facts is None or len(state.aggregated_facts) == 0:
         return None
-    ttl_content = turtle_from_graph(state.aggregated_facts, strip_provenance=True)
+    ttl_content = turtle_from_graph(
+        state.aggregated_facts, strip_provenance=strip_provenance
+    )
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
     output_path = facts_ttl_output_path(
@@ -141,7 +159,8 @@ def dump_facts_ttl(
     )
     output_path.write_text(ttl_content, encoding="utf-8")
     logger.info(
-        "Dumped facts graph with chunk-level provenance stripped to %s",
+        "Dumped facts graph with chunk-level provenance %s to %s",
+        "stripped" if strip_provenance else "retained",
         output_path,
     )
     return output_path
@@ -600,6 +619,7 @@ async def process_files_input(
     output_dir: pathlib.Path | None = None,
     facts_output_dir: pathlib.Path | None = None,
     ontology_output_dir: pathlib.Path | None = None,
+    strip_provenance: bool = True,
 ) -> list[pathlib.Path]:
     """Process each input file, isolating per-file failures.
 
@@ -692,6 +712,7 @@ async def process_files_input(
                     file_path,
                     line_number=line_number,
                     output_dir=facts_dir,
+                    strip_provenance=strip_provenance,
                 )
                 dump_ontology_ttls(
                     state,

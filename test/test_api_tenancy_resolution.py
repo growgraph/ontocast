@@ -24,6 +24,8 @@ from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
 from ontocast.tool.triple_manager.in_memory import InMemoryTripleStoreManager
 from ontocast.toolbox import ToolBox
 
+pytestmark = pytest.mark.unit
+
 
 def _http_request(query_string: bytes) -> Request:
     scope: dict = {

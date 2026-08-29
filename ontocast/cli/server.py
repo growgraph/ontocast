@@ -359,6 +359,17 @@ def serve(
     ),
 )
 @click.option(
+    "--keep-provenance/--strip-provenance",
+    "keep_provenance",
+    default=False,
+    show_default=True,
+    help=(
+        "Keep chunk-level provenance in the dumped facts Turtle. Provenance is "
+        "what lets a statement be traced back to its source span and "
+        "re-verified against the document."
+    ),
+)
+@click.option(
     "--document-metadata",
     type=str,
     default=None,
@@ -386,6 +397,7 @@ def process(
     summary_max_sentences: int,
     document_type_hint: str | None,
     section_schema_id: str | None,
+    keep_provenance: bool,
     document_metadata: str | None,
 ) -> None:
     """Process local files through the extraction pipeline (no HTTP server)."""
@@ -468,6 +480,7 @@ def process(
             output_dir=out_dir,
             facts_output_dir=facts_dir,
             ontology_output_dir=ontology_dir,
+            strip_provenance=not keep_provenance,
         )
     )
     if failed_files:

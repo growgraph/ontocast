@@ -41,10 +41,39 @@ def canonical_number(text: str) -> str | None:
     return format(value.normalize(), "f")
 
 
+#: Characters that join a digit group to the rest of an identifier rather than
+#: to a magnitude. Deliberately narrow. A decimal point is excluded because the
+#: number pattern already consumes "3.14" as one match, and a hyphen is
+#: excluded because "10-15 meV" is a range whose sides are both real values --
+#: the module reads each side separately by design.
+_IDENTIFIER_ADJACENT = frozenset("/:")
+
+
+def _is_identifier_fragment(text: str, start: int, end: int) -> bool:
+    """Whether the digit group at ``text[start:end]`` belongs to an identifier.
+
+    The signal is adjacency to an identifier separator: "600/92" is one file
+    number, "10.1234/example" one DOI. A magnitude with its unit ("8.5 nm") is
+    untouched, and so is a range.
+
+    Args:
+        text: The text the match came from.
+        start: Match start offset.
+        end: Match end offset.
+
+    Returns:
+        True when the digit group sits against an identifier separator.
+    """
+    before = text[start - 1] if start > 0 else ""
+    after = text[end] if end < len(text) else ""
+    return before in _IDENTIFIER_ADJACENT or after in _IDENTIFIER_ADJACENT
+
+
 def extract_numeric_tokens(
     text: str,
     *,
     ignore_year_like: bool = True,
+    ignore_identifier_fragments: bool = False,
 ) -> set[str]:
     """Extract canonical numeric tokens from free text.
 
@@ -53,6 +82,11 @@ def extract_numeric_tokens(
         ignore_year_like: Drop bare integers in the 1900-2100 range (years,
             citation artifacts). Values that also occur with a decimal point
             are kept.
+        ignore_identifier_fragments: Drop digit groups sitting against an
+            identifier separator -- see :func:`_is_identifier_fragment`. A
+            digit group standing alone as its own token is *not* covered:
+            nothing around it distinguishes a file-number component from a
+            small quantity, and guessing there would cost real values.
 
     Returns:
         Set of canonical decimal strings.
@@ -60,6 +94,10 @@ def extract_numeric_tokens(
     tokens: set[str] = set()
     for match in _NUMBER_PATTERN.finditer(text):
         raw = match.group(1)
+        if ignore_identifier_fragments and _is_identifier_fragment(
+            text, match.start(1), match.end(1)
+        ):
+            continue
         canonical = canonical_number(raw)
         if canonical is None:
             continue
@@ -103,6 +141,7 @@ def missing_numeric_mentions(
     graph: RDFGraph,
     *,
     ignore_year_like: bool = True,
+    ignore_identifier_fragments: bool = False,
     limit: int = 30,
 ) -> list[str]:
     """Return canonical numbers stated in text but absent from the graph.
@@ -112,9 +151,24 @@ def missing_numeric_mentions(
     presentation order, not a relevance ranking -- the caller is advisory
     telemetry, so the cap bounds prompt size rather than selecting the most
     important gaps.
+
+    Args:
+        text: Source text for the unit.
+        graph: Graph extracted from that text.
+        ignore_year_like: Drop bare integers in the publication-year span.
+        ignore_identifier_fragments: Drop digit groups that are parts of an
+            identifier. Offering them invites the repair render to structure a
+            file number or a citation into numeric properties, which the
+            downstream multi-value check then flags.
+        limit: Maximum mentions returned.
+
+    Returns:
+        Canonical decimal strings, shortest-first, capped at ``limit``.
     """
     missing = extract_numeric_tokens(
-        text, ignore_year_like=ignore_year_like
+        text,
+        ignore_year_like=ignore_year_like,
+        ignore_identifier_fragments=ignore_identifier_fragments,
     ) - numeric_literals_in_graph(graph)
     ordered = sorted(missing, key=lambda value: (len(value), value))
     if len(ordered) > limit:

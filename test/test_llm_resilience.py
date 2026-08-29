@@ -21,7 +21,7 @@ from ontocast.agent.common import _retry_backoff_seconds, call_llm_with_retry
 from ontocast.onto.model import BasePydanticModel
 from ontocast.tool.llm import LLMTool
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.unit]
 
 
 @pytest.fixture

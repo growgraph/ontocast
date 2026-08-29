@@ -646,6 +646,17 @@ class AgentState(BasePydanticModel):
         ),
     )
 
+    aggregation_cross_unit_pairs: list[tuple[str, str]] = Field(
+        default_factory=list,
+        description=(
+            "Canonical (subject, predicate) pairs whose IRI objects were "
+            "contributed by more than one unit. A multi-valued predicate "
+            "asserted by a single unit cannot be the product of an identity "
+            "merge, so the gate needs this to tell a merge signature from "
+            "legitimate multi-value modelling."
+        ),
+    )
+
     facts_validation_findings: list[FactsValidationFinding] = Field(
         default_factory=list,
         description=(
@@ -975,7 +986,7 @@ class AgentState(BasePydanticModel):
         return URIRef(f"{self.current_domain}/doc/{self.doc_hid}")
 
     @property
-    def doc_namespace(self):
+    def doc_namespace(self) -> str:
         """Get the document namespace.
 
         Returns:

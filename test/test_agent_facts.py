@@ -19,6 +19,8 @@ from ontocast.onto.unit_states import UnitFactsState
 from ontocast.tool.atomic import AtomicToolBox
 from test.snapshot_helpers import snapshot_from_ontology
 
+pytestmark = pytest.mark.unit
+
 criticise_facts_module = importlib.import_module("ontocast.agent.criticise_facts")
 render_facts_module = importlib.import_module("ontocast.agent.render_facts")
 

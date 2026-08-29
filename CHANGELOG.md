@@ -5,7 +5,172 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.2] - unreleased
+## [0.6.3] - unreleased
+
+### Added
+
+- `FACTS_CONTEXT_FROM_UNITS` (default off) seeds the merge/validate ontology
+  context from the snapshots the facts units actually resolved. With
+  `RENDER_MODE=facts` no ontology stage runs, so there are no reduced artifacts
+  for `build_merged_document_ontology_context` to merge and
+  `_facts_aggregation_inputs` handed an empty graph to **both** consumers: the
+  aggregator lost the type and functionality declarations its guards read, and
+  the gate skipped every check needing a vocabulary. Snapshots are deduplicated
+  by contributing catalog IRI, so a single-select run merges one graph rather
+  than one per unit. `validated_without_ontology_context` and
+  `ontology_snapshot_triples` report which side a run is on.
+
+  Touches: `stategraph/node_factories.py::_union_unit_ontology_context`,
+  `make_render_facts_node`; `config/settings.py::FactsValidationConfig`.
+  Test: `test/facts/test_context_computed_once.py`.
+
+- `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT` (default off) requires
+  merge-created evidence before the IRI branch of `SUSPECT_MULTI_VALUE` reports
+  an error. That branch flags any subject with two objects on a predicate that
+  is single-valued elsewhere in the graph, and error findings drive the un-merge
+  repair -- so a statement one unit asserted with two genuine objects was
+  repaired away. Frequency cannot separate the cases, because a legitimately
+  multi-valued statement is rare by construction; provenance can, since only
+  objects arriving from different units could have been brought together by an
+  identity decision. `AggregationResult` gains `cross_unit_object_pairs`,
+  canonicalized through the same mapping that produces `merged_clusters`, and
+  the un-merge loop recomputes it per pass. Numeric and string branches are
+  unchanged.
+
+  Touches: `tool/agg/aggregate.py::build_cross_unit_object_pairs`;
+  `onto/state.py`; `stategraph/node_factories.py`; `stategraph/facts_gate.py`;
+  `tool/facts_validation/gate.py::validate_aggregated_facts`.
+  Test: `test/facts/test_gate.py`.
+
+- `FACTS_NUMERIC_IDENTIFIER_GUARD` (default off) keeps identifier digit groups
+  out of the numeric-coverage inventory. A group sitting against `/` or `:`
+  belongs to one identifier, not to a magnitude; offering it as a "number
+  missing from the graph" invited the repair render to structure a file number
+  or a citation into numeric properties, which the post-merge multi-value check
+  then flagged. A digit group standing alone as its own token is deliberately
+  not covered -- nothing around it distinguishes a file-number component from a
+  small quantity -- and neither a value with its unit nor a hyphenated range is
+  affected.
+
+  Touches: `util/numeric_inventory.py::_is_identifier_fragment`,
+  `extract_numeric_tokens`, `missing_numeric_mentions`;
+  `tool/facts_validation/terms.py::ValidationPolicy`; `tool/atomic.py`.
+  Test: `test/test_numeric_inventory.py`.
+
+- `CHUNK_MIN_UNIT_CHARS` (default `0`, disabled) drops content units below a
+  character floor before the extraction fan-out. Distinct from
+  `CHUNK_MIN_SIZE`, which is a target the chunker aims at while merging
+  segments: a heading stub or a caption fragment can still leave chunking well
+  under it, and each such unit costs a patch retrieval, a full render and a
+  critic call. Every drop is logged individually, as with bibliography routing.
+
+  Touches: `agent/chunk_text.py`; `config/settings.py::ChunkConfig`.
+  Test: `test/chunking/test_section_pipeline.py`.
+
+- `LLM_JSON_MODE` (default off) constrains OpenAI decoding to syntactically
+  valid JSON via `response_format: json_object`. Every response is parsed as a
+  JSON envelope whatever `LLM_GRAPH_FORMAT` is -- Turtle only makes the graph
+  fields flat strings inside it -- so this makes a class of syntax error
+  unreachable rather than repaired afterwards. Off by default because OpenAI
+  rejects the request unless the prompt mentions JSON, which is a property of
+  the prompt set; a test holds every format instruction to that precondition.
+  Strict `json_schema` mode is not offered: it requires closed schemas and the
+  graph fields are open.
+
+  Touches: `tool/llm.py::LLMTool.setup`; `config/settings.py::LLMConfig`.
+  Test: `test/test_llm_json_mode.py`.
+
+- `ontocast process --keep-provenance` retains chunk-level provenance in the
+  facts dump. `dump_facts_ttl` hardcoded the strip, so a batch output carried no
+  chunk references at all and nothing in it could be traced back to a source
+  span or re-verified against the document. Stripping remains the default, and
+  the flag mirrors the HTTP `strip_provenance` parameter rather than adding a
+  second spelling.
+
+  Touches: `api/process_helpers.py::dump_facts_ttl`, `process_files_input`;
+  `cli/server.py`.
+  Test: `test/test_cli_server.py`.
+
+### Changed
+
+- Test markers now mean what `pyproject.toml` documents. `unit` covered a
+  handful of modules, so `-m "not slow"` and `-m integration` selected almost
+  nothing and "the offline subset passes" was the same statement as "the suite
+  passes". Every collected test outside `test/manual/` now carries a kind
+  marker, applied at module level, with `slow` assigned from measured isolated
+  runtime rather than from file names. The markers are not mutually exclusive: a
+  service test is both `integration` and `slow`, and `-m "not slow"` -- what CI
+  selects on -- deselects it correctly.
+
+- `ontocast/prompt/` has smoke coverage. Seven of its twelve modules had no test
+  contact, so a broken `.format()` slot surfaced only on a live run, after
+  paying for the call. Templates are discovered from how the package renders
+  them -- `str.format` call sites and `PromptTemplate` construction -- so
+  literal blocks like `facts_literal_rules_jsonld`, which are substituted *into*
+  a slot and legitimately carry raw JSON braces, are not mistaken for templates.
+
+  Test: `test/test_prompt_templates.py`.
+
+### Fixed
+
+- A section list whose labels are *all* unrecognised is now rejected instead of
+  silently disabling section handling. Unknown tokens were dropped with a
+  warning and the empty result reads downstream as an explicit "no sections",
+  which *replaces* the resolved schema's `default_exclude` rather than adding to
+  it -- so one typo in `--exclude-sections` switched off exclusions the caller
+  never touched. A partly recognised list still warns and continues, because it
+  expresses a real intent. The CLI reports it as a usage error rather than a
+  traceback.
+
+  Touches: `api/parse.py::_resolve_section_tokens`,
+  `_normalise_section_tokens`; `cli/inspect_sections.py`.
+  Test: `test/chunking/test_section_pipeline.py`.
+
+- Serializing a graph carrying an unusable term raises a diagnostic naming the
+  term, its rdflib type, its triple position and its graph, instead of a bare
+  `AssertionError`. The three asserts in `_rdflib_graph_to_quads` carried no
+  message, so the failure named nothing and could not be attributed to the code
+  that built the graph -- and they vanish entirely under `python -O`. The
+  reachable case is a term that converts to something which is not a term at
+  all: `to_ox` maps `urn:x-rdflib:default` to a `DefaultGraph`. The asserts also
+  admitted `ox.Triple`, which `to_ox` cannot return.
+
+  Touches: `tool/triple_manager/in_memory.py::_to_ox_term`,
+  `_rdflib_graph_to_quads`.
+  Test: `test/test_in_memory_manager.py`.
+
+- `FusekiTripleStoreManager._initialize_datasets` falls back to the default
+  facts dataset rather than passing `None` to Fuseki as a dataset name, which
+  would have created one literally named `None`. Surfaced by annotating
+  `init_dataset`.
+
+  Touches: `tool/triple_manager/fuseki.py`.
+
+### Documentation
+
+- `demo/README.md` named sample files that do not exist (`sample.pdf`,
+  `sample.txt`, `sample.ttl`), so the first command a new user is told to run
+  failed. It now names the two PDFs the directory actually holds, states that
+  commands run from the repository root, and lists the recorded response and
+  figure.
+
+- Every public callable reported by griffe now carries parameter and return
+  annotations, and `uv run mkdocs build` is warning-free. Fifty warnings across
+  fourteen modules rendered as untyped rows in the generated reference, against
+  a convention of type hints everywhere.
+
+  Touches: `runtime.py`, `toolbox.py`, `tool/llm.py`, `tool/converter.py`,
+  `tool/validate.py`, `tool/onto.py`, `tool/ontology_manager.py`,
+  `tool/chunk/chunker.py`, `tool/triple_manager/{core,fuseki}.py`,
+  `onto/{content_unit,ontology,rdfgraph,state}.py`.
+
+- `docs/user_guide/configuration.md` documents `LLM_JSON_MODE`,
+  `CHUNK_MIN_UNIT_CHARS` and the fail-closed section-label rule;
+  `docs/user_guide/validation.md` documents the three facts-validation arms and
+  why each defaults to off; `docs/user_guide/concepts.md` documents
+  `--keep-provenance`.
+
+## [0.6.2] - 2026-08-29
 
 ### Breaking
 

@@ -8,12 +8,15 @@ event loop, so it stalls the other units rather than just costing CPU.
 
 from __future__ import annotations
 
+import pytest
 from rdflib import OWL, RDF, RDFS, Literal, Namespace
 
 from ontocast.onto.enum import LLMGraphFormat, OntologyAssemblyMode
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.prompt.graph_format import get_graph_format_profile
+
+pytestmark = pytest.mark.unit
 
 EX = Namespace("https://example.org/onto#")
 

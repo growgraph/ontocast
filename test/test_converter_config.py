@@ -5,6 +5,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from ontocast.config import Config, ConverterConfig, PathConfig, ToolConfig
 from ontocast.onto.docling_helpers import (
     apply_text_sanitizers,
@@ -14,6 +16,8 @@ from ontocast.onto.docling_helpers import (
 from ontocast.tool.cache import Cacher
 from ontocast.tool.converter import ConverterTool, build_document_converter
 from ontocast.toolbox import ToolBox
+
+pytestmark = pytest.mark.unit
 
 
 def test_converter_config_born_digital_profile_applies_expected_defaults() -> None:

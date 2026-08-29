@@ -15,6 +15,7 @@ Pipeline:
 
 import logging
 import re
+from collections.abc import Sequence
 from difflib import SequenceMatcher
 from enum import StrEnum
 from itertools import combinations
@@ -472,6 +473,55 @@ def build_merged_clusters(
     return merged_clusters
 
 
+def build_cross_unit_object_pairs(
+    units: Sequence[ContentUnit],
+    final_mapping: dict[URIRef, URIRef],
+) -> list[tuple[str, str]]:
+    """(subject, predicate) pairs whose IRI objects came from more than one unit.
+
+    A statement asserted with several objects *by a single unit* cannot be the
+    product of an identity merge -- two applicants who jointly lodged one
+    application are one unit's reading of one sentence. Only a pair whose
+    objects arrive from different units could have been created by merging, so
+    this is the evidence the validation gate needs before treating a
+    multi-valued IRI predicate as a merge signature.
+
+    Keys are canonicalized through ``final_mapping``, because the gate sees the
+    post-merge graph and a pre-merge subject IRI would never match.
+
+    Args:
+        units: The content units that contributed to the merged graph.
+        final_mapping: Source entity -> final URI, as used for the rewrite.
+
+    Returns:
+        Sorted (subject, predicate) IRI-string pairs, each with at least two
+        distinct objects spanning at least two units.
+    """
+    contributions: dict[tuple[str, str], dict[str, set[int]]] = {}
+    for index, unit in enumerate(units):
+        if unit.graph is None:
+            continue
+        for subject, predicate, obj in unit.graph:
+            if not isinstance(subject, URIRef) or not isinstance(obj, URIRef):
+                continue
+            if not isinstance(predicate, URIRef):
+                continue
+            key = (str(final_mapping.get(subject, subject)), str(predicate))
+            objects = contributions.setdefault(key, {})
+            objects.setdefault(str(final_mapping.get(obj, obj)), set()).add(index)
+
+    pairs: list[tuple[str, str]] = []
+    for key, objects in contributions.items():
+        if len(objects) < 2:
+            continue
+        contributing_units: set[int] = set()
+        for unit_indices in objects.values():
+            contributing_units |= unit_indices
+        if len(contributing_units) > 1:
+            pairs.append(key)
+    return sorted(pairs)
+
+
 class AggregationResult(BaseModel):
     """Outcome of one aggregation pass, including merge bookkeeping.
 
@@ -493,6 +543,10 @@ class AggregationResult(BaseModel):
             least one natural-key pair (a shared identifier value). The
             validation gate treats label disagreement inside these clusters
             as name variance rather than a merge signature.
+        cross_unit_object_pairs: Canonical (subject, predicate) pairs whose IRI
+            objects were contributed by more than one unit -- the only ones a
+            merge could have created. See
+            :func:`build_cross_unit_object_pairs`.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -502,6 +556,7 @@ class AggregationResult(BaseModel):
     merged_clusters: dict[str, list[str]] = Field(default_factory=dict)
     rejected_merge_count: int = 0
     key_supported_clusters: list[str] = Field(default_factory=list)
+    cross_unit_object_pairs: list[tuple[str, str]] = Field(default_factory=list)
 
 
 class _EntityCollectionState(BaseModel):
@@ -1791,6 +1846,9 @@ class EmbeddingBasedAggregator:
             merged_clusters=merged_clusters,
             rejected_merge_count=len(rejected_merges),
             key_supported_clusters=key_supported_clusters,
+            cross_unit_object_pairs=build_cross_unit_object_pairs(
+                active_units, final_mapping
+            ),
         )
 
     def postprocess_facts_units(

@@ -390,6 +390,7 @@ def validate_aggregated_facts(
     shacl_advanced: bool = True,
     shacl_max_triples: int = 0,
     key_supported_subjects: Sequence[str] | None = None,
+    cross_unit_pairs: Sequence[tuple[str, str]] | None = None,
 ) -> FactsValidationReport:
     """Check post-merge invariants over the aggregated facts graph.
 
@@ -410,7 +411,9 @@ def validate_aggregated_facts(
           majority (distinct names collapsed into one node); or >= 2 IRI
           objects on a predicate that is single-valued for a dominant
           majority of other subjects. Severity is configurable — legitimate
-          multi-value modeling exists, bad merges are far more common.
+          multi-value modeling exists, bad merges are far more common. The
+          IRI branch additionally accepts ``cross_unit_pairs``, which
+          separates the two by provenance rather than by frequency.
         - ``DEGENERATE_COREFERENCE``: one IRI object shared by >= 2 distinct
           functional-ish predicates of one subject (collapsed range bounds).
         - ``SHACL``: optional, when ``pyshacl`` is installed and shapes exist.
@@ -433,6 +436,13 @@ def validate_aggregated_facts(
         shacl_inference: pyshacl pre-inference mode (see :func:`run_shacl`).
         shacl_advanced: Enable SHACL Advanced Features.
         shacl_max_triples: Skip SHACL above this graph size; 0 disables.
+        cross_unit_pairs: Canonical (subject, predicate) pairs whose IRI
+            objects came from more than one unit. When supplied, an
+            IRI-branch SUSPECT_MULTI_VALUE finding on a pair *not* listed
+            here is reported as a warning and never vetoes a cluster: a
+            single unit asserting two objects on one predicate is reading
+            one sentence, not the residue of a bad identity decision.
+            None disables the distinction.
         key_supported_subjects: Final URIs of merge clusters backed by
             natural-key evidence. Irreconcilable *string* values on these
             subjects are reported as warnings, not errors: "Application no.
@@ -500,6 +510,9 @@ def validate_aggregated_facts(
 
     findings: list[FactsValidationFinding] = []
     flagged_pairs: set[tuple[URIRef, URIRef]] = set()
+    cross_unit_object_keys = (
+        set(cross_unit_pairs) if cross_unit_pairs is not None else None
+    )
 
     for (subject, predicate), objects in sorted(
         object_groups.items(), key=lambda item: (str(item[0][0]), str(item[0][1]))
@@ -598,13 +611,23 @@ def validate_aggregated_facts(
             and predicate not in functional
             and predicate in dominant_single
         ):
-            flagged_pairs.add((subject, predicate))
+            # Frequency says this predicate is usually single-valued, which on
+            # its own is evidence of nothing: a genuinely multi-valued
+            # statement is rare by construction. Provenance is what separates
+            # the two cases -- only objects arriving from different units could
+            # have been brought together by an identity decision.
+            merge_created = (
+                cross_unit_object_keys is None
+                or (str(subject), str(predicate)) in cross_unit_object_keys
+            )
+            if merge_created:
+                flagged_pairs.add((subject, predicate))
             findings.append(
                 FactsValidationFinding(
                     kind=FactsValidationFindingKind.SUSPECT_MULTI_VALUE,
                     severity=(
                         "error"
-                        if suspect_multi_value_severity == "error"
+                        if suspect_multi_value_severity == "error" and merge_created
                         else "warning"
                     ),
                     message=(

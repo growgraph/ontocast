@@ -22,6 +22,8 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.toolbox import ToolBox
 
+pytestmark = pytest.mark.unit
+
 
 def test_materialize_ontology_calls_vector_reindex(test_ontology):
     tb = MagicMock()

@@ -14,6 +14,8 @@ from ontocast.config import (
     OpenAIModel,
 )
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.mark.parametrize(
     ("provider", "model_name"),

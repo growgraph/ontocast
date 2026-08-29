@@ -66,6 +66,16 @@ LLM_BASE_URL=http://localhost:11434     # optional (ollama; anthropic proxy URL)
 
 OntoCast uses `LLM_API_KEY` for all cloud providers (not `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY`).
 
+`LLM_JSON_MODE=true` constrains OpenAI decoding to syntactically valid JSON
+(`response_format: json_object`). Every response is parsed as a JSON envelope
+whatever `LLM_GRAPH_FORMAT` is set to -- Turtle only makes the graph fields flat
+strings *inside* that envelope -- so this makes a class of syntax error
+unreachable rather than repaired after the fact. It is off by default because
+OpenAI rejects a request in this mode unless the word "JSON" appears in the
+prompt, which is a property of the prompt set in use. Strict `json_schema` mode
+is deliberately not offered: it requires closed schemas and the graph fields are
+open. OpenAI only; other providers ignore it.
+
 #### `LLM_MODEL_NAME` accepts any string
 
 The model enums in `ontocast.config` (`OpenAIModel`, `OllamaModel`, `ClaudeModel`,
@@ -289,6 +299,15 @@ against the default model's score distribution — re-derive them if you change
 it. Retrieval and chunking dimensions are independent: the vector store's
 dimension is fixed in its collection schema, the chunker's is not.
 
+`CHUNK_MIN_UNIT_CHARS` drops content units shorter than the given number of
+characters before the extraction fan-out; `0` (the default) disables the floor.
+It is distinct from `CHUNK_MIN_SIZE`, which is a target the chunker aims at
+while merging segments -- a heading stub or a caption fragment can still leave
+chunking well under it. Every such unit costs a patch retrieval, a full render
+and a critic call to extract from a fragment; the per-node durations and the
+budget summary are what to size it against. Each drop is logged individually,
+as with bibliography routing.
+
 #### Section classification
 
 `CHUNK_SECTION_CLASSIFIER` selects how far the classification cascade runs.
@@ -361,6 +380,14 @@ Request-level section filtering (`target_sections` allowlist,
 is documented in [Structured documents](concepts.md#structured-documents).
 
 #### Section filtering
+
+An unrecognised section label is dropped with a warning, but a list where
+**every** label is unrecognised is rejected outright (HTTP `422`, or a usage
+error from the CLI). The two differ because their consequences do: a partly
+recognised list still expresses an intent, while an empty result reads
+downstream as an explicit "no sections" and therefore *replaces* the resolved
+schema's `default_exclude` instead of adding to it. Failing there keeps a typo
+from silently switching off section handling the caller never touched.
 
 `CHUNK_SECTION_FILTER_ON_EMPTY` decides what happens when a section selection
 removes **every** segment:

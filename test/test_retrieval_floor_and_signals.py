@@ -14,6 +14,8 @@ from ontocast.tool.vector_store.query_signals import (
     number_adjacent_tokens,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def _hit(iri: str, ontology_iri: str, score: float) -> OntologySearchHit:
     atom = GraphAtom(

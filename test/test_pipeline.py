@@ -56,6 +56,8 @@ from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.toolbox import ToolBox
 from test.snapshot_helpers import empty_snapshot, snapshot_from_ontology
 
+pytestmark = pytest.mark.unit
+
 render_ontology_module = importlib.import_module("ontocast.agent.render_ontology")
 criticise_ontology_module = importlib.import_module("ontocast.agent.criticise_ontology")
 unit_loops = importlib.import_module("ontocast.stategraph.atomic")

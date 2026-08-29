@@ -366,8 +366,7 @@ Under `ONTOLOGY_CONTEXT_MODE=selected_vector_search_ontology` the per-unit
 snapshot is a **retrieved subset** of the catalog, so judgments that require
 knowing what the catalog contains cannot be made inside the unit. Three
 policies therefore run at the reduce step, where the full catalog terminals
-are already in hand (design note:
-`planning/ontology-update-semantics.md` at the workspace root):
+are already in hand:
 
 | Policy | Behavior | Metric |
 |---|---|---|
@@ -410,10 +409,45 @@ simply be unretrieved rather than missing.
 | `FACTS_LLM_REPAIR_VISITS` | `1` | Finding-driven repair renders per unit — **each one is a provider call** |
 | `FACTS_MERGE_REPAIR_PASSES` | `1` | Un-merge passes at the gate |
 | `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | `error` | Severity of `SUSPECT_MULTI_VALUE` findings |
+| `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT` | `false` | Report an IRI-branch `SUSPECT_MULTI_VALUE` as an error only when its objects came from different units |
+| `FACTS_NUMERIC_IDENTIFIER_GUARD` | `false` | Keep identifier digit groups out of the numeric-coverage inventory |
+| `FACTS_CONTEXT_FROM_UNITS` | `false` | In facts-only runs, seed the merge/validate ontology context from the snapshots the units resolved |
 | `FACTS_FUNCTIONAL_MIN_SINGLE_SUPPORT` | `3` | Subjects needed before a predicate counts as empirically functional |
 | `FACTS_ACCEPT_BLOCKING_SEVERITY` | `critical` | Which critic-proposed fix severities block a unit from leaving the loop; `never` lets deterministic findings gate alone. A `REMOVE` fix never blocks at any setting |
 | `FACTS_LITERAL_VARIANT_DEDUPE` | `true` | Collapse duplicate literals differing only in language tag or datatype before the gate validates |
 | `ONTOLOGY_RECONCILE_MINTED_TERMS` | `detect` | Reduce-time minted-duplicate scan: `off`, `detect` (count only), `rewrite` (substitute the catalog IRI) |
+
+The last three default to off because each changes what the pipeline extracts or
+reports, and the right setting depends on the corpus:
+
+- **`FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT`.** The IRI branch of
+  `SUSPECT_MULTI_VALUE` flags any subject carrying two objects on a predicate
+  that is single-valued elsewhere in the graph, and error findings drive the
+  un-merge repair. Frequency alone is weak evidence: a genuinely multi-valued
+  statement is rare by construction, so a correct one — two agents named in one
+  sentence — looks exactly like a bad merge and gets repaired away. Provenance
+  separates them, because only objects arriving from *different* units could
+  have been brought together by an identity decision. With this set, a pair
+  asserted within a single unit is reported as a warning and never vetoes a
+  cluster. The numeric and string branches are unaffected: two distinct
+  quantities on one node are a defect whatever their provenance.
+- **`FACTS_NUMERIC_IDENTIFIER_GUARD`.** The numeric-coverage finding lists
+  numbers present in the source text but absent from the graph, and the repair
+  render acts on it. Digit groups sitting against an identifier separator
+  (`600/92`, `10.1234/example`) are parts of one identifier, not quantities;
+  offering them invites the repair to structure a file number into numeric
+  properties, which the post-merge multi-value check then flags. A digit group
+  standing alone as its own token is deliberately *not* covered — nothing around
+  it distinguishes a file-number component from a small quantity — and a value
+  with its unit (`8.5 nm`) or a range (`10-15 meV`) is untouched.
+- **`FACTS_CONTEXT_FROM_UNITS`.** With `RENDER_MODE=facts` no ontology stage
+  runs, so there are no reduced artifacts to merge and the document-level
+  ontology context is empty — even though every unit resolved and rendered
+  against a real one. Both consumers see that: the aggregator loses the type and
+  functionality declarations its guards read, and the gate skips every check
+  that needs a vocabulary. Watch `validated_without_ontology_context` and
+  `ontology_snapshot_triples` in the retrieval metrics to see which side you are
+  on.
 
 See [Configuration System](configuration.md) for the full surface and
 [Entity Disambiguation](aggregation.md) for the merge stage this gate sits behind.

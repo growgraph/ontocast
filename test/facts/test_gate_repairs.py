@@ -28,6 +28,8 @@ from ontocast.tool.facts_validation import (
 )
 from ontocast.toolbox import ToolBox
 
+pytestmark = pytest.mark.unit
+
 CD = f"{DEFAULT_IRI}/"
 Q = "https://x.org/schema#"
 
@@ -244,6 +246,7 @@ def test_repair_that_does_not_reduce_errors_is_reverted(monkeypatch, caplog) -> 
                 graph=conflicting_graph(),
                 merged_clusters={},
                 key_supported_clusters=[],
+                cross_unit_object_pairs=[],
             )
 
     aggregator = _StubAggregator()

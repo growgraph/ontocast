@@ -7,10 +7,14 @@ import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+import pytest
+
 from ontocast.config import Config, PathConfig, ToolConfig
 from ontocast.onto.ontology import Ontology
 from ontocast.tool.triple_manager.in_memory import InMemoryTripleStoreManager
 from ontocast.toolbox import ToolBox
+
+pytestmark = pytest.mark.unit
 
 
 def _write_seed_ttl(directory: Path) -> Ontology:

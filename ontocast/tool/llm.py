@@ -368,7 +368,7 @@ class LLMTool(Tool):
         self,
         cache: Cacher | None = None,
         budget_tracker: Any = None,
-        **kwargs,
+        **kwargs: Any,
     ):
         """Initialize the LLM tool.
 
@@ -396,8 +396,8 @@ class LLMTool(Tool):
         config: LLMConfig,
         cache: Cacher | None = None,
         budget_tracker: Any = None,
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> "LLMTool":
         """Create a new LLM tool instance synchronously.
 
         Args:
@@ -426,8 +426,8 @@ class LLMTool(Tool):
         config: LLMConfig,
         cache: Cacher | None = None,
         budget_tracker: Any = None,
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> "LLMTool":
         """Create a new LLM tool instance asynchronously.
 
         Args:
@@ -460,6 +460,14 @@ class LLMTool(Tool):
             ChatOpenAI = require(
                 "langchain_openai", feature="The OpenAI LLM provider"
             ).ChatOpenAI
+            openai_kwargs: dict[str, Any] = {}
+            if self.config.json_mode:
+                # Constrains decoding to valid JSON at the provider, so a
+                # truncated or bracket-swapped envelope cannot be produced in
+                # the first place. Requires the word "JSON" in the prompt --
+                # test_prompt_json_mode_precondition holds the prompt set to
+                # that.
+                openai_kwargs["response_format"] = {"type": "json_object"}
             self._llm = ChatOpenAI(
                 model=self.config.model_name,
                 temperature=self.config.temperature,
@@ -467,6 +475,7 @@ class LLMTool(Tool):
                 api_key=(
                     SecretStr(self.config.api_key) if self.config.api_key else None
                 ),
+                model_kwargs=openai_kwargs,
             )
         elif self.config.provider == LLMProvider.OLLAMA:
             ollama_kwargs: dict[str, Any] = {
@@ -749,7 +758,7 @@ class LLMTool(Tool):
             return str(content_attr)
         return str(prompt)
 
-    async def complete(self, prompt: str, **kwargs) -> str:
+    async def complete(self, prompt: str, **kwargs: Any) -> str:
         """Generate a completion for the given prompt.
 
         Args:
@@ -762,7 +771,7 @@ class LLMTool(Tool):
         response = await self._invoke_cached(prompt, **kwargs)
         return _content_to_str(response.content)
 
-    async def extract(self, prompt: str, output_schema: Type[T], **kwargs) -> T:
+    async def extract(self, prompt: str, output_schema: Type[T], **kwargs: Any) -> T:
         """Extract structured data from the prompt according to a schema.
 
         Args:

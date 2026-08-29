@@ -12,7 +12,11 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from ontocast.onto.enum import RetrievalMetric
+
+pytestmark = pytest.mark.unit
 
 # Every wire name, pinned. Add a line when a metric is added; change one only
 # in a release that documents the break.

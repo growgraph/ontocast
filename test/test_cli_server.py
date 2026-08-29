@@ -40,6 +40,8 @@ from ontocast.tool.agg.aggregate import AggregationResult
 from ontocast.tool.converter import ConverterTool
 from ontocast.toolbox import ToolBox
 
+pytestmark = pytest.mark.unit
+
 
 def test_parse_ontology_context_mode_param_accepts_request_override() -> None:
     result = parse_ontology_context_mode_param(
@@ -658,6 +660,34 @@ def test_dump_facts_ttl_writes_the_graph(tmp_path) -> None:
     assert "paper.pdf" in out.read_text(encoding="utf-8")
 
     assert dump_facts_ttl(state, src, output_dir=out_dir) == out_dir / "paper.facts.ttl"
+
+
+def test_dump_facts_ttl_can_keep_provenance(tmp_path) -> None:
+    """The batch dump must be able to emit a traceable graph.
+
+    Stripping stays the default; without the option a batch output carries no
+    chunk references at all, so nothing in it can be traced back to a source
+    span or re-verified against the document.
+    """
+    from rdflib import Literal
+
+    from ontocast.api.process_helpers import dump_facts_ttl
+    from ontocast.onto.constants import PROV
+
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"x")
+    state = _batch_state()
+    state.aggregated_facts.add((state.doc_iri, PROV.wasDerivedFrom, Literal("chunk-3")))
+
+    stripped = dump_facts_ttl(state, src, output_dir=tmp_path / "stripped")
+    assert stripped is not None
+    assert "wasDerivedFrom" not in stripped.read_text(encoding="utf-8")
+
+    kept = dump_facts_ttl(
+        state, src, output_dir=tmp_path / "kept", strip_provenance=False
+    )
+    assert kept is not None
+    assert "wasDerivedFrom" in kept.read_text(encoding="utf-8")
 
 
 def test_dump_run_manifest_records_cost_and_configuration(tmp_path) -> None:

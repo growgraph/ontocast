@@ -9,6 +9,8 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.util import derive_ontology_id, normalize_ontology_iri
 from ontocast.tool.ontology_manager import OntologyManager
 
+pytestmark = pytest.mark.unit
+
 
 def test_derive_ontology_id_skos_conventional() -> None:
     assert derive_ontology_id("http://www.w3.org/2004/02/skos/core#") == "skos"

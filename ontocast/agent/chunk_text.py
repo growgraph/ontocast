@@ -49,9 +49,24 @@ async def chunk_text(state: AgentState, tools: ToolBox) -> AgentState:
     )
 
     bibliography_mode = tools.chunker.config.bibliography_mode
+    min_unit_chars = tools.chunker.config.min_unit_chars
     skipped_bibliography = 0
+    skipped_undersized = 0
     index = 0
     for chunk in prepared:
+        if min_unit_chars and len(chunk.text) < min_unit_chars:
+            # Same discipline as the bibliography route above: dropping a unit
+            # changes what can be extracted, so each decision is logged rather
+            # than only counted.
+            logger.info(
+                "Chunk (%d chars, section_label=%r) dropped as undersized "
+                "(CHUNK_MIN_UNIT_CHARS=%d)",
+                len(chunk.text),
+                chunk.section_label,
+                min_unit_chars,
+            )
+            skipped_undersized += 1
+            continue
         is_bibliography = bibliography_mode != "domain_facts" and is_bibliography_unit(
             chunk.text, chunk.section_label
         )
@@ -90,6 +105,12 @@ async def chunk_text(state: AgentState, tools: ToolBox) -> AgentState:
         logger.info(
             "Dropped %d bibliography chunk(s) (CHUNK_BIBLIOGRAPHY_MODE=skip)",
             skipped_bibliography,
+        )
+    if skipped_undersized:
+        logger.info(
+            "Dropped %d undersized chunk(s) (CHUNK_MIN_UNIT_CHARS=%d)",
+            skipped_undersized,
+            min_unit_chars,
         )
 
     logger.info(

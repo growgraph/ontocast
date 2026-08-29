@@ -16,14 +16,15 @@ import pytest
 from rdflib import URIRef
 
 from ontocast.onto.content_unit import ContentUnit
-from ontocast.onto.enum import OntologyContextMode, Status
+from ontocast.onto.enum import OntologyContextMode, RetrievalMetric, Status
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import node_factories
 from ontocast.toolbox import ToolBox
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.unit]
 
 MERGE_CALLS = "ctx/merge_document_ontology.calls"
 
@@ -65,7 +66,10 @@ def _state(n_units: int) -> AgentState:
     return state
 
 
-def _tools() -> ToolBox:
+def _tools(*, context_from_units: bool = False) -> ToolBox:
+    tool_config = SimpleNamespace(
+        facts_validation=SimpleNamespace(context_from_units=context_from_units)
+    )
     return cast(
         ToolBox,
         SimpleNamespace(
@@ -74,7 +78,8 @@ def _tools() -> ToolBox:
                     parallel_workers=4,
                     max_critic_visits_per_node=None,
                     ontology_context_max_triples=4000,
-                )
+                ),
+                get_tool_config=lambda: tool_config,
             ),
         ),
     )
@@ -179,3 +184,137 @@ async def test_facts_only_run_still_resolves_per_unit(monkeypatch) -> None:
 
     assert all(entry["pre_resolved"] is None for entry in seen)
     assert len(state.facts_units) == 3
+
+
+def _install_per_unit_resolving_facts_loop(monkeypatch, snapshot) -> list[int]:
+    """Facts loop stub standing in for a facts-only run's per-unit resolution.
+
+    Mirrors ``_apply_facts_ontology_context``: with no merged context handed
+    down, each unit resolves its own and the result lands on the unit state as
+    a distinct object with the same contributing catalog IRIs.
+    """
+    snapshot_ids: list[int] = []
+
+    async def fake_facts_loop(state, tools, document_context, **kwargs):
+        assert kwargs.get("pre_resolved_context") is None
+        state.ontology_snapshot = snapshot.model_copy(deep=True)
+        snapshot_ids.append(id(state.ontology_snapshot))
+        state.content_unit.graph = RDFGraph._from_turtle_str(
+            f"""
+            @prefix cd: <https://growgraph.dev/> .
+            cd:unit{state.content_unit.index} a cd:Thing .
+            """
+        )
+        state.status = Status.SUCCESS
+        return state
+
+    monkeypatch.setattr(node_factories, "facts_loop", fake_facts_loop)
+    return snapshot_ids
+
+
+def _catalog_snapshot() -> OntologySnapshot:
+    return OntologySnapshot(
+        graph=RDFGraph._from_turtle_str(
+            """
+            @prefix ex: <https://example.org/onto/catalog#> .
+            ex:Sample a ex:Class .
+            ex:hasValue a ex:Property .
+            """
+        ),
+        source_iris=["https://example.org/onto/catalog"],
+    )
+
+
+async def test_facts_only_context_stays_empty_by_default(monkeypatch) -> None:
+    """The flag is off by default, so today's empty-graph behaviour is kept."""
+    _install_per_unit_resolving_facts_loop(monkeypatch, _catalog_snapshot())
+    state = _state(3)
+    state.reduced_ontology_artifacts = []
+
+    await node_factories.make_render_facts_node(_tools())(state)
+
+    assert len(state.facts_ontology_context) == 0
+    ontology_graph, _metadata = node_factories._facts_aggregation_inputs(state)
+    assert len(ontology_graph) == 0
+
+
+async def test_facts_only_context_from_units_reaches_merge_and_validate(
+    monkeypatch,
+) -> None:
+    """With the flag on, the context the units rendered against is handed down.
+
+    Both consumers of ``_facts_aggregation_inputs`` are affected: the
+    aggregator's guards read the type declarations, and the gate stops
+    reporting every extracted term as outside the catalog.
+    """
+    snapshot_ids = _install_per_unit_resolving_facts_loop(
+        monkeypatch, _catalog_snapshot()
+    )
+    state = _state(3)
+    state.reduced_ontology_artifacts = []
+
+    await node_factories.make_render_facts_node(_tools(context_from_units=True))(state)
+
+    # Distinct snapshot objects per unit, one union downstream.
+    assert len(set(snapshot_ids)) == 3
+    assert len(state.facts_ontology_context) == 2
+    ontology_graph, _metadata = node_factories._facts_aggregation_inputs(state)
+    assert ontology_graph is state.facts_ontology_context
+    assert state.retrieval_metrics[RetrievalMetric.ONTOLOGY_SNAPSHOT_TRIPLES] == 2
+
+
+def test_union_deduplicates_snapshots_sharing_source_iris() -> None:
+    """One catalog ontology resolved by N units must be merged once.
+
+    Unioning unfiltered would pay a full rdflib merge per unit for a graph that
+    is already present.
+    """
+    snapshot = _catalog_snapshot()
+    results = [
+        (
+            index,
+            SimpleNamespace(ontology_snapshot=snapshot.model_copy(deep=True)),
+            "",
+            [],
+            None,
+        )
+        for index in range(4)
+    ]
+    union = node_factories._union_unit_ontology_context(cast(list, results))
+    assert len(union) == len(snapshot.graph)
+
+
+def test_union_keeps_distinct_sources() -> None:
+    first = _catalog_snapshot()
+    second = OntologySnapshot(
+        graph=RDFGraph._from_turtle_str(
+            """
+            @prefix other: <https://example.org/onto/other#> .
+            other:Thing a other:Class .
+            """
+        ),
+        source_iris=["https://example.org/onto/other"],
+    )
+    results = [
+        (0, SimpleNamespace(ontology_snapshot=first), "", [], None),
+        (1, SimpleNamespace(ontology_snapshot=second), "", [], None),
+    ]
+    union = node_factories._union_unit_ontology_context(cast(list, results))
+    assert len(union) == len(first.graph) + len(second.graph)
+
+
+def test_union_keeps_namespace_bindings() -> None:
+    """The gate reads declared namespaces off this graph, not just its triples.
+
+    ``NON_CATALOG_VOCABULARY`` decides what counts as catalog vocabulary from
+    the bindings, so a union that carried triples but dropped prefixes would
+    silently change which terms are reported as outside the catalog.
+    """
+    snapshot = _catalog_snapshot()
+    results = [(0, SimpleNamespace(ontology_snapshot=snapshot), "", [], None)]
+    union = node_factories._union_unit_ontology_context(cast(list, results))
+    assert dict(union.namespaces()).keys() >= {"ex"}
+
+
+def test_union_of_nothing_is_empty() -> None:
+    assert len(node_factories._union_unit_ontology_context([])) == 0

@@ -14,6 +14,8 @@ from ontocast.onto.state import BudgetTracker
 from ontocast.tool.cache import Cacher
 from ontocast.tool.llm import LLMTool
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def cache_dir(tmp_path):

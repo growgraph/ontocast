@@ -3,6 +3,8 @@
 import asyncio
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from ontocast.config import (
     ClaudeModel,
     GeminiModel,
@@ -12,6 +14,8 @@ from ontocast.config import (
     OpenAIModel,
 )
 from ontocast.tool.llm import LLMTool
+
+pytestmark = pytest.mark.unit
 
 
 def test_setup_openai() -> None:

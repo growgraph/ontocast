@@ -27,6 +27,8 @@ from ontocast.prompt.graph_format import get_graph_format_profile
 from ontocast.prompt.llm_json_schema import schema_for_model
 from ontocast.prompt.web_grounding import WEB_SEARCH_REQUEST_FIELD
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.mark.parametrize("fmt", list(LLMGraphFormat))
 def test_fresh_output_instruction_single_format(fmt: LLMGraphFormat) -> None:

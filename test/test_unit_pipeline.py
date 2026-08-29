@@ -15,6 +15,8 @@ from ontocast.stategraph.context_resolver import UnitOntologyContext
 from ontocast.toolbox import ToolBox
 from test.snapshot_helpers import snapshot_from_ontology
 
+pytestmark = pytest.mark.unit
+
 
 def _build_ontology(iri: str = "https://example.com/onto") -> Ontology:
     graph = RDFGraph()

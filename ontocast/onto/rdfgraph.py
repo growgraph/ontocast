@@ -665,7 +665,9 @@ class RDFGraph(Graph):
     """
 
     @classmethod
-    def __get_pydantic_core_schema__(cls, _source_type, handler: GetCoreSchemaHandler):
+    def __get_pydantic_core_schema__(
+        cls, _source_type: Any, handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
         """Get the Pydantic core schema for this class.
 
         Args:
@@ -1642,7 +1644,7 @@ class RDFGraph(Graph):
                 return fallback.decode("utf-8")
             return str(fallback)
 
-    def __new__(cls, *args, **kwargs):
+    def __new__(cls, *args, **kwargs: Any):
         """Create a new RDFGraph instance."""
         instance = super().__new__(cls)
         return instance
@@ -1718,7 +1720,7 @@ class RDFGraph(Graph):
     def sanitize_prefixes_namespaces(
         self,
         preferred_namespace_prefixes: dict[str, str] | None = None,
-    ):
+    ) -> "RDFGraph":
         """
         Rematches prefixes in an RDFLib graph to correct namespaces when a namespace
         with the same URI exists. Handles cases where prefixes might not be bound
