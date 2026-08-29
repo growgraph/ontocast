@@ -41,7 +41,7 @@ from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph import create_agent_graph
 from ontocast.stategraph.context_resolver import UnitOntologyContext
-from ontocast.stategraph.helpers import build_ontology_delta_graph, merge_unit_deltas
+from ontocast.stategraph.helpers import merge_unit_deltas
 from ontocast.stategraph.node_factories import (
     make_consolidate_ontology_node,
     make_normalize_ontology_node,
@@ -131,6 +131,8 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
                 SimpleNamespace(
                     facts_llm_repair_visits=1,
                     additional_standard_namespaces=(),
+                    validation_policy=None,
+                    acceptance_policy=None,
                 ),
             ),
             ontology_manager=OntologyManager(),
@@ -181,7 +183,9 @@ async def test_run_unit_ontology_loop_emits_updates(monkeypatch) -> None:
     toolbox = cast(
         ToolBox,
         SimpleNamespace(
-            get_atomic_tools=lambda: cast(AtomicToolBox, object()),
+            get_atomic_tools=lambda: cast(
+                AtomicToolBox, SimpleNamespace(validation_policy=None)
+            ),
             ontology_manager=OntologyManager(),
         ),
     )
@@ -415,7 +419,7 @@ async def test_render_ontology_update_adds_external_evidence_when_enabled(
 
     async def fake_call_llm_with_retry(**kwargs):
         captured_prompt_kwargs.update(kwargs["prompt_kwargs"])
-        return GraphUpdateRenderReport(graph_update=GraphUpdate())
+        return GraphUpdateRenderReport()
 
     async def fake_get_llm_tool(_budget_tracker):
         return object()
@@ -687,7 +691,9 @@ async def test_ontology_loop_runs_external_evidence_nodes(monkeypatch) -> None:
     toolbox = cast(
         ToolBox,
         SimpleNamespace(
-            get_atomic_tools=lambda: cast(AtomicToolBox, object()),
+            get_atomic_tools=lambda: cast(
+                AtomicToolBox, SimpleNamespace(validation_policy=None)
+            ),
             ontology_manager=OntologyManager(),
         ),
     )
@@ -766,7 +772,9 @@ async def test_ontology_loop_plans_search_when_critic_requests_it(monkeypatch) -
     toolbox = cast(
         ToolBox,
         SimpleNamespace(
-            get_atomic_tools=lambda: cast(AtomicToolBox, object()),
+            get_atomic_tools=lambda: cast(
+                AtomicToolBox, SimpleNamespace(validation_policy=None)
+            ),
             ontology_manager=OntologyManager(),
         ),
     )
@@ -916,7 +924,7 @@ def test_toolbox_serialize_skips_facts_in_ontology_only_mode() -> None:
         def __init__(self) -> None:
             self.added = 0
 
-        def add_ontology(self, ontology: Ontology) -> None:
+        async def aadd_ontology(self, ontology: Ontology) -> None:
             self.added += 1
 
     class RecordingStore:
@@ -946,7 +954,7 @@ def test_toolbox_serialize_skips_facts_in_ontology_only_mode() -> None:
 
 def test_toolbox_serialize_includes_facts_when_render_facts_enabled() -> None:
     class RecordingOntologyManager:
-        def add_ontology(self, ontology: Ontology) -> None:
+        async def aadd_ontology(self, ontology: Ontology) -> None:
             return None
 
     class RecordingStore:
@@ -980,7 +988,7 @@ def test_toolbox_serialize_persists_all_ontology_artifacts() -> None:
         def __init__(self) -> None:
             self.added = 0
 
-        def add_ontology(self, ontology: Ontology) -> None:
+        async def aadd_ontology(self, ontology: Ontology) -> None:
             _ = ontology
             self.added += 1
 
@@ -1116,7 +1124,7 @@ def test_build_ontology_delta_graph_propagates_delete_operations() -> None:
         ontology_updates=[insert_op],
     )
 
-    delta = build_ontology_delta_graph(state)
+    delta = state.build_delta()
 
     assert (ex_new, RDF.type, owl_class) in delta.inserts
     assert (ex_obsolete, RDF.type, owl_class) in delta.deletes
@@ -1167,7 +1175,7 @@ def test_build_ontology_delta_graph_delete_then_reinsert_nets_out() -> None:
         ontology_updates_applied=[churn_update],
     )
 
-    delta = build_ontology_delta_graph(state)
+    delta = state.build_delta()
 
     assert (ex_thing, RDF.type, owl_class) not in delta.inserts
     assert (ex_thing, RDF.type, owl_class) not in delta.deletes

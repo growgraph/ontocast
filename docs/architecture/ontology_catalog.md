@@ -12,6 +12,7 @@ This page is the standing answer to "which layer owns what", and in particular t
 | `OntologyManager` (`tool/ontology_manager.py`) | **The catalog**: identity and aliases, hash lineage and terminal selection, the author-prefix table, and the content-addressed graph cache. The single answer to "give me ontology X's graph" | Execute queries itself; survive a tenancy switch |
 | `SPARQLTool` (`tool/sparql.py`) | Graph algorithms over graphs it is **handed** | Fetch |
 | `OntologyPatchRetriever` (`tool/vector_store/patch_retriever.py`) | Vector retrieval, seed selection, reference expansion | Materialize catalog graphs directly |
+| `ShapesCatalog` (`tool/shapes_catalog.py`) | **The shapes partition**: seeding it from `FACTS_SHAPES_DIR`, and the merged shapes graph the synchronous facts gate reads | Reach the ontologies dataset, or be indexed as ontology atoms |
 
 ## Why the cache is sound
 
@@ -38,6 +39,27 @@ The merged working graph is cached the same way, keyed by the `frozenset` of con
 merged input as a read-only oracle and writes exclusively to its own result graph — an
 invariant pinned by `test_merged_graph_is_not_mutated_by_the_builder`.
 
+## Why shapes are a separate partition
+
+Terminal selection starts from "every named graph carrying an `owl:Ontology`
+subject" (`ONTOLOGY_HEADER_QUERY`). A SHACL shapes document declares exactly
+that — `<…/qqval-shapes> a owl:Ontology`, with its own `owl:versionIRI`. Kept
+in the ontologies dataset, a catalog shipping six shapes modules would gain six
+phantom catalog entries: vector-indexed, terminal-selected, and served to the
+renderer as schema it may extend.
+
+`{tenant}--{project}--shapes` removes the ambiguity at the storage layer rather
+than filtering it out at every read. The store surface therefore selects a
+partition by `StoreKind` (`"facts" | "ontologies" | "shapes"`) instead of the
+boolean it used while there were only two.
+
+Shapes carry no lineage machinery: no hash-versioned graph URIs, no terminal
+selection, no alias ledger. A document is addressed by the ontology IRI it
+declares (or a stable path/filename-derived `urn:shapes:` name when it declares
+none), and re-uploading replaces it. The merged graph the gate reads is the
+union of the partition, because SHACL evaluates one shapes graph and shapes
+documents are independent.
+
 ## Why it resets on a tenancy switch
 
 Everything `OntologyManager` holds is partition-scoped: the ontologies, the graph caches,
@@ -46,8 +68,9 @@ across a `?tenant=` switch leaks one tenant's ontologies into another's requests
 alias ledger additionally starts rejecting a legitimately distinct ontology that happens
 to reuse an `ontology_id`.
 
-`ToolBox.update_tenancy_with_vector_mode` therefore calls `reset_catalog()` and reloads
-from the retargeted store whenever the tenancy actually changes. The first assignment is
+`ToolBox.update_tenancy_with_vector_mode` therefore calls `reset_catalog()` (and
+`ShapesCatalog.reset()`) and reloads from the retargeted store whenever the tenancy
+actually changes. The first assignment is
 the exception: it happens at startup, before `initialize()`, which populates the catalog
 itself — resyncing there would just fetch everything twice.
 
@@ -85,3 +108,4 @@ are never registered as catalog entries. See [Ontology Context](../user_guide/on
 - [Triple Stores](../user_guide/triple_stores.md) — backend surface and custom backends
 - [Ontology Context](../user_guide/ontology_context.md) — how snapshots are assembled
 - [Tenancy](../user_guide/tenancy.md) — partition naming
+- [Validation](../user_guide/validation.md#where-shapes-come-from) — how the shapes partition feeds the gate

@@ -18,6 +18,7 @@ from ontocast.onto.tenancy import (
     DEFAULT_PROJECT,
     DEFAULT_TENANT,
     TENANCY_SEP,
+    StoreKind,
 )
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.tool.triple_manager.util import (
@@ -34,6 +35,16 @@ logger = logging.getLogger(__name__)
 class _TenantPartition:
     facts: ox.Store = field(default_factory=ox.Store)
     ontologies: ox.Store = field(default_factory=ox.Store)
+    shapes: ox.Store = field(default_factory=ox.Store)
+
+
+def _partition_store(partition: _TenantPartition, store: StoreKind) -> ox.Store:
+    """Resolve a :data:`StoreKind` to the partition's backing oxigraph store."""
+    if store == "ontologies":
+        return partition.ontologies
+    if store == "shapes":
+        return partition.shapes
+    return partition.facts
 
 
 def _to_ox_graph(graph_uri: str) -> ox.NamedNode:
@@ -163,11 +174,13 @@ class InMemoryTripleStoreManager(TripleStoreManager):
             self._ensure_partition(t, p)
         logger.info("In-memory tenancy set to tenant=%r project=%r", tenant, project)
 
-    async def clean(self) -> None:
+    async def clean(self, *, include_shapes: bool = False) -> None:
         async with self._lock:
             partition = self._active_partition()
             partition.facts = ox.Store()
             partition.ontologies = ox.Store()
+            if include_shapes:
+                partition.shapes = ox.Store()
 
     async def clean_tenancy(
         self,
@@ -175,56 +188,64 @@ class InMemoryTripleStoreManager(TripleStoreManager):
         project: str,
         *,
         sep: str = TENANCY_SEP,
+        include_shapes: bool = False,
     ) -> None:
         _ = sep
         key = (tenant.strip(), project.strip())
         async with self._lock:
-            self._partitions.pop(key, None)
-            if self._active == key:
-                self._ensure_partition(key[0], key[1])
+            existing = self._partitions.pop(key, None)
+            preserved = (
+                existing.shapes if existing is not None and not include_shapes else None
+            )
+            if preserved is not None or self._active == key:
+                fresh = self._ensure_partition(key[0], key[1])
+                if preserved is not None:
+                    fresh.shapes = preserved
         logger.info("In-memory tenancy flush tenant=%r project=%r", tenant, project)
 
     async def drop_named_graph(
-        self, graph_uri: str, *, use_ontologies_dataset: bool = True
+        self, graph_uri: str, *, store: StoreKind = "ontologies"
     ) -> None:
         async with self._lock:
             partition = self._active_partition()
-            store = partition.ontologies if use_ontologies_dataset else partition.facts
-            _clear_named_graph(store, _to_ox_graph(graph_uri))
+            ox_store = _partition_store(partition, store)
+            _clear_named_graph(ox_store, _to_ox_graph(graph_uri))
 
-    async def drop_all_ontology_graphs_for_iri(self, ontology_iri: str) -> None:
+    async def drop_all_ontology_graphs_for_iri(
+        self, ontology_iri: str, *, store: StoreKind = "ontologies"
+    ) -> None:
         prefix = f"{ontology_iri}#"
         async with self._lock:
-            partition = self._active_partition()
-            for graph_uri in _list_named_graph_uris(partition.ontologies):
+            ox_store = _partition_store(self._active_partition(), store)
+            for graph_uri in _list_named_graph_uris(ox_store):
                 if graph_uri == ontology_iri or graph_uri.startswith(prefix):
-                    _clear_named_graph(partition.ontologies, _to_ox_graph(graph_uri))
+                    _clear_named_graph(ox_store, _to_ox_graph(graph_uri))
 
     def supports_sparql_select(self) -> bool:
         return True
 
     async def aselect(
-        self, query: str, *, use_ontologies_dataset: bool = True
+        self, query: str, *, store: StoreKind = "ontologies"
     ) -> list[dict[str, str]]:
         """Evaluate a SPARQL SELECT against the active partition."""
         async with self._lock:
             partition = self._active_partition()
-            store = partition.ontologies if use_ontologies_dataset else partition.facts
+            ox_store = _partition_store(partition, store)
         self._select_queries += 1
-        return await asyncio.to_thread(_run_select, store, query)
+        return await asyncio.to_thread(_run_select, ox_store, query)
 
     def supports_sparql_construct(self) -> bool:
         return True
 
     async def aconstruct(
-        self, query: str, *, use_ontologies_dataset: bool = True
+        self, query: str, *, store: StoreKind = "ontologies"
     ) -> RDFGraph:
         """Evaluate a SPARQL CONSTRUCT against the active partition."""
         async with self._lock:
             partition = self._active_partition()
-            store = partition.ontologies if use_ontologies_dataset else partition.facts
+            ox_store = _partition_store(partition, store)
         self._construct_queries += 1
-        return await asyncio.to_thread(_run_construct, store, query)
+        return await asyncio.to_thread(_run_construct, ox_store, query)
 
     async def afetch_ontology_catalog(self) -> list[OntologyHeader]:
         """Read one header per stored ontology version via a single SELECT."""
@@ -274,17 +295,17 @@ class InMemoryTripleStoreManager(TripleStoreManager):
 
     def serialize_graph(self, graph: Graph, **kwargs) -> bool:
         graph_uri = kwargs.get("graph_uri")
-        use_ontologies = kwargs.pop("use_ontologies_dataset", False)
+        store: StoreKind = kwargs.pop("store", "facts")
         if graph_uri is None:
             graph_uri = kwargs.get("default_graph_uri", "urn:data:default")
 
         partition = self._active_partition()
-        store = partition.ontologies if use_ontologies else partition.facts
+        ox_store = _partition_store(partition, store)
         graph_ctx = _to_ox_graph(str(graph_uri))
-        _clear_named_graph(store, graph_ctx)
+        _clear_named_graph(ox_store, graph_ctx)
         quads = _rdflib_graph_to_quads(graph, graph_ctx)
         if quads:
-            store.extend(quads)
+            ox_store.extend(quads)
         return True
 
     def serialize(self, o: Ontology | RDFGraph, **kwargs) -> bool:
@@ -296,13 +317,13 @@ class InMemoryTripleStoreManager(TripleStoreManager):
             return self.serialize_graph(
                 o.graph,
                 graph_uri=o.versioned_iri,
-                use_ontologies_dataset=True,
+                store=kwargs.get("store", "ontologies"),
             )
         if isinstance(o, RDFGraph):
             graph_uri = kwargs.get("graph_uri", "urn:data:default")
             return self.serialize_graph(
                 o,
                 graph_uri=graph_uri,
-                use_ontologies_dataset=False,
+                store=kwargs.get("store", "facts"),
             )
         raise TypeError(f"unsupported obj of type {type(o)} received")

@@ -319,7 +319,11 @@ def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
     # which reads the facts-validation config the same way the graph node does.
     tools = cast(
         ToolBox,
-        SimpleNamespace(aggregator=_Aggregator(), config=Config()),
+        SimpleNamespace(
+            aggregator=_Aggregator(),
+            shapes_catalog=SimpleNamespace(graph=lambda: None),
+            config=Config(),
+        ),
     )
     monkeypatch.setattr(
         "ontocast.api.process_helpers.serialize_agent_state", lambda *_: None
@@ -753,7 +757,7 @@ def test_inspect_sections_reads_json_and_text_documents(tmp_path) -> None:
 
     JSON and plain-text documents are routed *around* the Docling converter by
     the Convert node -- Docling rejects them outright -- so a CLI that called
-    the converter for everything could not inspect `data/json/*.json` at all.
+    the converter for everything could not inspect a converted `*.json` at all.
     """
     import json as _json
 
@@ -785,7 +789,7 @@ def test_inspect_sections_rejects_a_json_payload_with_no_text(tmp_path) -> None:
     from ontocast.cli.inspect_sections import _load_document
 
     path = tmp_path / "record.json"
-    # The shape of data/json/clinical.trials.*.json: a registry API record, not
+    # The shape of a clinical-registry API record, not
     # a document -- it must fail loudly rather than inspect as an empty document.
     path.write_text(_json.dumps({"protocolSection": {"id": 1}}), encoding="utf-8")
     with pytest.raises(click.ClickException):
@@ -798,7 +802,7 @@ def test_inspect_sections_rejects_a_json_payload_with_no_text(tmp_path) -> None:
 
 
 def test_process_unit_route_runs_the_validation_gate(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The route serves the gate-repaired graph and reports its conformance.
 
@@ -815,7 +819,7 @@ def test_process_unit_route_runs_the_validation_gate(
     from ontocast.onto.enum import Status
 
     q = "https://x.org/schema#"
-    (tmp_path / "shapes.ttl").write_text(
+    stored_shapes = RDFGraph._from_turtle_str(
         f"""
         @prefix sh: <http://www.w3.org/ns/shacl#> .
         @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
@@ -830,8 +834,7 @@ def test_process_unit_route_runs_the_validation_gate(
         q:p_numeric sh:path q:numericValue ;
             sh:datatype xsd:decimal ;
             sh:minCount 1 .
-        """,
-        encoding="utf-8",
+        """
     )
 
     node = URIRef(f"{DEFAULT_IRI}/v1")
@@ -868,11 +871,10 @@ def test_process_unit_route_runs_the_validation_gate(
         ToolBox,
         SimpleNamespace(
             aggregator=_Aggregator(),
+            shapes_catalog=SimpleNamespace(graph=lambda: stored_shapes),
             config=SimpleNamespace(
                 get_tool_config=lambda: SimpleNamespace(
-                    facts_validation=FactsValidationConfig.model_construct(
-                        shapes_dir=str(tmp_path)
-                    )
+                    facts_validation=FactsValidationConfig.model_construct()
                 )
             ),
         ),

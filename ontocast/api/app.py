@@ -50,6 +50,7 @@ from ontocast.api.schemas import (
     ProcessResultMetadata,
     StatusErrorBody,
 )
+from ontocast.api.shapes import build_shapes_router
 from ontocast.api.tenancy_resolution import apply_request_tenancy
 from ontocast.config import ServerConfig
 from ontocast.onto.enum import OntologyContextMode, RenderMode, Status
@@ -60,7 +61,6 @@ from ontocast.onto.retrieval_capabilities import (
 from ontocast.onto.state import AgentState
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.stategraph import create_agent_graph
-from ontocast.stategraph.helpers import build_ontology_delta_graph
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
 from ontocast.tool.agg.match_derivation import derive_pair_matches
 from ontocast.tool.agg.match_models import TaggedGraph
@@ -120,6 +120,15 @@ def create_app(
 
     app.include_router(
         build_ontology_router(
+            tools,
+            active_tenant=active_tenant,
+            active_project=active_project,
+            server_config=server_config,
+        )
+    )
+
+    app.include_router(
+        build_shapes_router(
             tools,
             active_tenant=active_tenant,
             active_project=active_project,
@@ -346,8 +355,20 @@ def create_app(
             default=None,
             description="Project partition to flush. Defaults to the server's active project.",
         ),
+        include_shapes: bool = Query(
+            default=False,
+            description=(
+                "Also drop the SHACL shapes partition. Off by default: shapes "
+                "are the deployment's validation contract, and dropping them "
+                "disarms the gate silently -- later runs report "
+                "shacl_evaluated: null rather than failing."
+            ),
+        ),
     ):
-        """Destructive: drops the target partition's facts, ontologies, and vectors."""
+        """Destructive: drops the target partition's facts, ontologies, and vectors.
+
+        Shapes are retained unless ``include_shapes`` is set.
+        """
         try:
             if tools.triple_store_manager is None and tools.vector_store is None:
                 return JSONResponse(
@@ -361,7 +382,7 @@ def create_app(
                 t = (tenant or DEFAULT_TENANT).strip()
                 p = (project or DEFAULT_PROJECT).strip()
                 try:
-                    await tools.clean_tenancy_data(t, p)
+                    await tools.clean_tenancy_data(t, p, include_shapes=include_shapes)
                 except NotImplementedError as err:
                     return JSONResponse(
                         status_code=400,
@@ -372,11 +393,16 @@ def create_app(
                     )
                 message = (
                     f"Tenancy data flushed for tenant={t!r} project={p!r} "
-                    "(triple and/or vector partitions)"
+                    "(triple and/or vector partitions"
+                    + (", shapes included)" if include_shapes else ", shapes retained)")
                 )
             else:
                 if tools.triple_store_manager is not None:
-                    await tools.triple_store_manager.clean()
+                    await tools.triple_store_manager.clean(
+                        include_shapes=include_shapes
+                    )
+                    if include_shapes:
+                        tools.shapes_catalog.reset()
                 message = "Triple store flushed successfully (configured scope)"
             return FlushOkResponse(message=message)
         except Exception as e:
@@ -644,7 +670,7 @@ def create_app(
                 # Single-unit responses expose the insert complement; deletes
                 # are catalog-apply concerns and this path never writes the
                 # catalog.
-                delta_graph = build_ontology_delta_graph(onto_result).inserts
+                delta_graph = onto_result.build_delta().inserts
                 if len(delta_graph) > 0:
                     out_graph = (
                         TripleStoreManager.strip_provenance(delta_graph)

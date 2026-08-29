@@ -54,6 +54,8 @@ def _tools() -> ToolBox:
                 SimpleNamespace(
                     facts_llm_repair_visits=1,
                     additional_standard_namespaces=(),
+                    validation_policy=None,
+                    acceptance_policy=None,
                 ),
             ),
         ),
@@ -135,10 +137,17 @@ def test_critic_visits_can_be_decoupled_from_render_visits() -> None:
 
 
 @pytest.mark.anyio
-async def test_critic_calls_are_bounded_by_the_critic_setting(monkeypatch) -> None:
-    """With 3 renders and a critic bound of 1, the critic runs once per render.
+async def test_a_rejecting_critic_does_not_escalate_to_another_render(
+    monkeypatch,
+) -> None:
+    """The Step-4 ledger: rejection buys a repair, not a re-extraction.
 
-    Under the old coupling this was 3 critic calls for the first render alone.
+    A rejecting critic used to fall through to the next ``render_attempt``,
+    re-extracting the unit from scratch -- so a unit's worst-case cost grew
+    with MAX_VISITS and the answer to "this term is wrong" was "write the whole
+    unit again". Its fixes now go through the same bounded rewrite-in-place
+    pass the deterministic findings use, so the render count is flat in
+    MAX_VISITS.
     """
     calls = {"render": 0, "critic": 0}
 
@@ -148,8 +157,8 @@ async def test_critic_calls_are_bounded_by_the_critic_setting(monkeypatch) -> No
         return state
 
     async def failing_critic(state, tools):
-        # Never converges and never requests a search, so the critic loop runs
-        # to its bound and then falls back to the next render attempt.
+        # Never converges and never requests a search, so the critic loop
+        # breaks out and the unit goes to the repair pass.
         calls["critic"] += 1
         state.status = Status.FAILED
         return state
@@ -164,9 +173,9 @@ async def test_critic_calls_are_bounded_by_the_critic_setting(monkeypatch) -> No
         pre_resolved_context=_resolved_context(),
     )
 
-    # Renders 1 and 2 each get one critique; render 3 is final so it is skipped.
-    assert calls["render"] == 3
-    assert calls["critic"] <= 2
+    # One render, one critique, then the repair pass -- whatever the bound.
+    assert calls["render"] == 1
+    assert calls["critic"] == 1
 
 
 @pytest.mark.anyio
@@ -174,10 +183,11 @@ async def test_critic_without_a_search_request_does_not_iterate(monkeypatch) -> 
     """Measures how reachable the inner critic loop actually is.
 
     A critic that fails *without* requesting external evidence breaks out of
-    the inner loop immediately, so with web grounding off -- the default -- the
-    critic runs at most once per render whatever the bound is. The quadratic
-    worst case the bound exists to cap is reachable only through the
-    evidence-request path, i.e. with ``WEB_SEARCH_ENABLED=true``.
+    the inner loop immediately and the unit goes to the repair pass, so with web
+    grounding off -- the default -- the critic runs exactly once per unit
+    whatever the bound is. The quadratic worst case the bound exists to cap is
+    reachable only through the evidence-request path, i.e. with
+    ``WEB_SEARCH_ENABLED=true``.
     """
     calls = {"critic": 0}
 
@@ -200,5 +210,5 @@ async def test_critic_without_a_search_request_does_not_iterate(monkeypatch) -> 
         pre_resolved_context=_resolved_context(),
     )
 
-    # Renders 1 and 2 are critiqued once each and break; render 3 is final.
-    assert calls["critic"] == 2
+    # One critique, then the repair pass -- the bound of 3 buys nothing.
+    assert calls["critic"] == 1

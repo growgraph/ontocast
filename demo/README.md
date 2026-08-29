@@ -17,7 +17,7 @@ This demo shows how OntoCast can extract a knowledge graph from a document and v
 Make sure you have OntoCast installed and a triple store (optional) running. Then start the server:
 
 ```bash
-ONTOCAST_ONTOLOGY_DIRECTORY=../data/ontologies uv run ontocast serve
+ONTOCAST_ONTOLOGY_DIRECTORY=../test/data/ontologies uv run ontocast serve
 ```
 
 ### 2. Process a Sample Document

@@ -166,7 +166,7 @@ def _schema_closure_entities(
             property's declared domain/range against an admitted class.
         seed_relevance: Retrieval score per seed IRI, used to rank additions.
             Without it the cap truncates alphabetically, which is close to
-            random: ``matsci#A…`` displaces ``observation#hasQuantityResult``
+            random: ``domain#A…`` displaces ``observation#hasQuantityResult``
             for no reason but the letter it starts with.
 
     Returns:
@@ -381,7 +381,7 @@ def _select_hits_round_robin_by_ontology(
     - ``per_ontology_atom_floor`` is a *reserve*: before any global fill,
       each contributing ontology is guaranteed min(floor, its candidates)
       slots, allocated round-robin so small modules cannot be starved by
-      one dominant ontology's seed volume (the case4 qqval failure).
+      one dominant ontology's seed volume.
     - ``per_ontology_seed_quota`` is a *ceiling*: round-robin taking at most
       that many seeds per ontology before the leftover fill.
 
@@ -716,8 +716,8 @@ def _expand_ontology_iris_by_reference(
 def _namespace_candidates(headers: Iterable[OntologyHeader]) -> list[tuple[str, str]]:
     """Return ``(namespace, ontology_iri)`` pairs, longest namespace first.
 
-    Sorting by descending length makes nested namespaces (``…/matsci`` versus
-    ``…/matsci/sub``) resolve to the most specific owner deterministically.
+    Sorting by descending length makes nested namespaces (``…/domain`` versus
+    ``…/domain/sub``) resolve to the most specific owner deterministically.
     """
     candidates = [
         (namespace.rstrip("#/"), header.iri)

@@ -14,14 +14,24 @@ Usage:
     uv run python run/fetch_schema_samples.py            # rebuild every entry
     uv run python run/fetch_schema_samples.py --only standard fiction
 
-Entries for ``academic`` and ``financial`` are extracted from documents already
-in ``data/json/`` and need no network access.
+Entries for ``academic`` and ``financial`` come from converted documents that
+are **not** in this repository -- the ``data/`` corpus they used to live in was
+removed, because the test suite must be self-contained under ``test/``. Their
+extracts stay committed in the corpus file and are usable as-is; regenerating
+them needs the source JSON, pointed at with::
+
+    ONTOCAST_SCHEMA_SAMPLE_DIR=/path/to/converted/json \
+        uv run python run/fetch_schema_samples.py --only academic financial
+
+Without that variable those two entries are skipped with a notice rather than
+failing, and every other entry is fetched over the network as before.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import re
 import sys
@@ -31,6 +41,9 @@ from datetime import date
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 CORPUS_PATH = REPO_ROOT / "test" / "data" / "schema_corpus.json"
+#: Where ``Source.local`` filenames resolve. Unset means the two local-only
+#: entries are skipped -- their committed extracts remain valid either way.
+SAMPLE_DIR_ENV = "ONTOCAST_SCHEMA_SAMPLE_DIR"
 
 USER_AGENT = "ontocast-schema-corpus/1.0 (+https://github.com/growgraph/ontocast)"
 MAX_HEADINGS = 60
@@ -47,6 +60,7 @@ class Source:
     name: str
     license: str
     url: str | None = None
+    #: Filename resolved under $ONTOCAST_SCHEMA_SAMPLE_DIR, not a repo path.
     local: str | None = None
     style: str = "markdown"
     notes: str = ""
@@ -59,14 +73,14 @@ SOURCES: list[Source] = [
     Source(
         schema_id="academic",
         name="chem.204703 (J. Chem. Phys. research article)",
-        license="publisher copyright; extract only, already vendored in data/",
-        local="data/json/chem.204703_1_5.0167542.json",
+        license="publisher copyright; extract only",
+        local="chem.204703_1_5.0167542.json",
     ),
     Source(
         schema_id="financial",
         name="Apple Inc. Form 10-Q",
         license="US SEC filing, public record",
-        local="data/json/fin.10Q.apple.json",
+        local="fin.10Q.apple.json",
     ),
     Source(
         schema_id="standard",
@@ -114,9 +128,9 @@ SOURCES: list[Source] = [
             "partition edge by construction and is therefore the sharpest test "
             "of that boundary. Europe PMC full-text XML is used rather than a "
             "publisher page because <sec><title> gives real document headings "
-            "without site furniture. Note data/json/clinical.trials.*.json are "
-            "raw registry API records ({'protocolSection': ...}), not document "
-            "text -- they extract to ~0 characters and cannot be used here."
+            "without site furniture. Note that clinical-registry API records "
+            "({'protocolSection': ...}) are not document text -- they extract "
+            "to ~0 characters and cannot be used here."
         ),
     ),
     Source(
@@ -224,7 +238,19 @@ def extract_paragraphs(
 def build_entry(source: Source) -> dict[str, object] | None:
     """Fetch or read one source and reduce it to a corpus entry."""
     if source.local is not None:
-        payload = json.loads((REPO_ROOT / source.local).read_text(encoding="utf-8"))
+        sample_dir = os.environ.get(SAMPLE_DIR_ENV)
+        if not sample_dir:
+            print(
+                f"  -- {source.schema_id}: skipped, set {SAMPLE_DIR_ENV} to the "
+                f"directory holding {source.local} to regenerate it "
+                "(its committed extract stays valid)"
+            )
+            return None
+        path = pathlib.Path(sample_dir).expanduser() / source.local
+        if not path.is_file():
+            print(f"  !! {source.schema_id}: {path} not found")
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
         raw = payload.get("text", "") if isinstance(payload, dict) else ""
         origin = source.local
     elif source.url is not None:

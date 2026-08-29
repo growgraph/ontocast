@@ -16,6 +16,7 @@ per vocabulary.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
@@ -23,8 +24,141 @@ from rdflib import OWL, RDF, Literal, URIRef
 from rdflib.namespace import XSD
 
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.tool.representation_text import normalize_text
 
 logger = logging.getLogger(__name__)
+
+_CAMEL_SPLIT_RE = re.compile(r"(?=[A-Z][a-z])")
+
+
+def normalize_string_value(text: str) -> str:
+    """Normalize a string for identity comparison.
+
+    Lowercase, diacritics removed, special characters cleaned, CamelCase
+    split so it yields the same tokens as snake_case. Single source for the
+    normalizer and the validation gate, which must agree on what counts as
+    "the same string".
+    """
+    return normalize_text(_CAMEL_SPLIT_RE.sub(" ", text))
+
+
+_TOKEN_EDGE_PUNCTUATION_RE = re.compile(r"^\W+|\W+$")
+
+
+def clean_label_token(token: str) -> str:
+    """Strip punctuation from token edges: "baranov," / "d." -> "baranov" / "d".
+
+    ``normalize_text`` deliberately keeps punctuation, so token-level
+    comparisons must shed it themselves — an initial written "D." is two
+    characters lexically and one character semantically.
+    """
+    return _TOKEN_EDGE_PUNCTUATION_RE.sub("", token)
+
+
+def label_tokens(label: str) -> list[str]:
+    """Split a normalized label into punctuation-cleaned tokens."""
+    return [cleaned for token in label.split() if (cleaned := clean_label_token(token))]
+
+
+def tokens_alias_compatible(left: str, right: str) -> bool:
+    """Exact token match, or a (possibly dotted) single-char initial of it."""
+    if left == right:
+        return True
+    shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+    return len(shorter) == 1 and longer.startswith(shorter)
+
+
+def labels_alias_with_initials(
+    left_labels: set[str],
+    right_labels: set[str],
+) -> bool:
+    """True when a label pair matches token-injectively allowing initials.
+
+    Every token of the shorter label must match a distinct token of the
+    longer one (exactly, or as a single-character initial), and at least
+    one matched token must be a full word (len > 2). Generic abbreviation
+    structure — nothing person-specific.
+    """
+    for left_label in left_labels:
+        left_tokens = label_tokens(left_label)
+        for right_label in right_labels:
+            right_tokens = label_tokens(right_label)
+            if not left_tokens or not right_tokens:
+                continue
+            shorter, longer = (
+                (left_tokens, right_tokens)
+                if len(left_tokens) <= len(right_tokens)
+                else (right_tokens, left_tokens)
+            )
+            available = list(longer)
+            shared_full_token = False
+            matched_all = True
+            for token in shorter:
+                match_index = next(
+                    (
+                        index
+                        for index, candidate in enumerate(available)
+                        if tokens_alias_compatible(token, candidate)
+                    ),
+                    None,
+                )
+                if match_index is None:
+                    matched_all = False
+                    break
+                if token == available[match_index] and len(token) > 2:
+                    shared_full_token = True
+                del available[match_index]
+            if matched_all and shared_full_token:
+                return True
+    return False
+
+
+def string_values_compatible(left: str, right: str) -> bool:
+    """Compatible when equal, prefix-related, or initial-abbreviations."""
+    if left == right:
+        return True
+    if left.startswith(right) or right.startswith(left):
+        return True
+    return labels_alias_with_initials({left}, {right})
+
+
+def labels_differ_only_by_initials(
+    left_labels: set[str],
+    right_labels: set[str],
+) -> bool:
+    """True when some label pair is identical except for conflicting initials.
+
+    "french company s" vs "french company t" — the full-word token sets are
+    identical and each side carries its own short token (an initial or
+    single-letter identifier) absent from the other. Authors write exactly
+    this shape to *distinguish* entities, so it is evidence of distinctness,
+    not of identity — the inverse of :func:`labels_alias_with_initials`,
+    where the initial expands a full word on the other side.
+    """
+    for left_label in left_labels:
+        left_tokens = label_tokens(left_label)
+        left_long = {token for token in left_tokens if len(token) > 2}
+        left_short = {token for token in left_tokens if len(token) <= 2}
+        if not left_long or not left_short:
+            continue
+        for right_label in right_labels:
+            right_tokens = label_tokens(right_label)
+            right_long = {token for token in right_tokens if len(token) > 2}
+            right_short = {token for token in right_tokens if len(token) <= 2}
+            if not right_long or not right_short:
+                continue
+            if left_long != right_long:
+                continue
+            # Alias-compatible short tokens ("u" vs "us", shared "j") are
+            # spelling variance, not a distinguishing mark.
+            if not any(
+                tokens_alias_compatible(left_token, right_token)
+                for left_token in left_short
+                for right_token in right_short
+            ):
+                return True
+    return False
+
 
 # Bounds the quadratic sibling-pair term per object group.
 SIBLING_GROUP_CAP = 32

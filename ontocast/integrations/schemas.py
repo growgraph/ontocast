@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from ontocast.onto.tenancy import StoreKind
+
 
 class NoArgs(BaseModel):
     """Schema for tools that take no arguments."""
@@ -83,12 +85,12 @@ class SparqlQueryArgs(BaseModel):
             "Update forms (INSERT/DELETE/DROP/CLEAR) are rejected."
         )
     )
-    use_ontologies_dataset: bool = Field(
-        default=True,
+    store: StoreKind = Field(
+        default="ontologies",
         description=(
-            "Query the ontology dataset (schema and reference individuals) when "
-            "true, or the facts dataset (instances extracted from documents) "
-            "when false."
+            "Which partition to query: 'ontologies' for schema and reference "
+            "individuals, 'facts' for instances extracted from documents, or "
+            "'shapes' for the deployment's SHACL shapes."
         ),
     )
 

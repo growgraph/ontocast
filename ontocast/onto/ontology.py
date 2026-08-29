@@ -585,6 +585,43 @@ class Ontology(OntologyPropertiesWithLineage):
         updated_ontology.sync_properties_to_graph()
         return updated_ontology
 
+    def union_fresh(self, others: list["Ontology"]) -> "Ontology":
+        """Union-merge same-IRI fresh artifacts into one root version.
+
+        The fresh-create path lets N parallel units each return a whole
+        ``Ontology``; when the LLM picks the same IRI in several units, the
+        reduce used to keep whichever indexed last and silently drop the
+        others' content. This merges their graphs instead.
+
+        The result is a **root** (no ``parent_hashes``): the per-unit fresh
+        objects are transient artifacts that never enter the catalog, so
+        pointing lineage at their hashes would leave dangling parents.
+
+        Args:
+            others: Same-IRI fresh artifacts to fold in.
+
+        Returns:
+            A new hashed ontology carrying the union of all graphs.
+        """
+        from copy import deepcopy
+        from datetime import datetime, timezone
+
+        merged = deepcopy(self)
+        merged.graph = self.graph.copy()
+        for other in others:
+            for triple in other.graph:
+                merged.graph.add(triple)
+            for prefix, namespace_uri in other.graph.namespaces():
+                if prefix:
+                    merged.graph.bind(prefix, namespace_uri)
+        merged.parent_hashes = []
+        merged.created_at = datetime.now(timezone.utc)
+        merged.hash = None
+        merged._clear_lineage_metadata_triples()
+        merged._compute_and_set_hash()
+        merged.sync_properties_to_graph()
+        return merged
+
     def _compute_and_set_hash(self) -> None:
         """Compute the hash of the ontology graph and set it.
 
@@ -868,7 +905,7 @@ class Ontology(OntologyPropertiesWithLineage):
     ) -> None:
         """Rebind only when the author prefix is missing or a degenerate placeholder.
 
-        Author-declared short prefixes (e.g. ``matsci``) are kept canonical;
+        Author-declared short prefixes (e.g. ``ex``) are kept canonical;
         IRI-tail-derived ``ontology_id`` is an identity key, not a forced
         prefix name.
         """

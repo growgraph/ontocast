@@ -81,42 +81,28 @@ def build_citation_metadata_instruction(vocabulary: dict[str, str]) -> str:
 improvement_instruction_template = """\n\n
 # IMPROVEMENT INSTRUCTION
 
-The current iteration of the graph of factual triples has been reviewed by Critic, who provided suggestions for improvement.
+The current graph of factual triples has been reviewed. The items below are the corrections to apply.
 
-CRITICAL: You are the final decision-maker. Critic's suggestions are advisory, not mandatory. Think independently.
+This is a CORRECTION PASS, not a re-extraction. Apply the items and nothing else.
 
-Your task is to critically evaluate and improve the triples:
+1. Fix each item by rewriting the offending term or value IN PLACE.
+   - Do not delete the statement and do not drop extracted data. A response
+     that only removes triples has resolved nothing: the item is gone because
+     the data is gone, which is the failure this pass exists to avoid.
+   - Every corrected statement must survive with its subject and its value intact.
 
-1. Independently verify each suggestion - Before implementing ANY suggestion, verify it against:
-   - The original source text (does it accurately reflect what's written?)
-   - The OPERATIONAL GUIDELINES (does it follow the rules?)
-   - The domain ontology (does it use entities correctly?)
-   - Logical consistency (does it make semantic sense?)
+2. Do NOT add statements that no item asks for. Leaving correct triples exactly
+   as they are is the expected outcome for every part of the graph no item
+   mentions.
 
-2. Implement only valid improvements - Apply suggestions that are demonstrably correct and enhance accuracy or completeness. If uncertain, prioritize faithfulness to the source text.
+3. If an item is contradicted by the source text, do not apply it, and say why
+   in `explanation`. Never delete or alter other statements as a consequence -
+   a wrong item licenses skipping that item, nothing more.
 
-3. Actively reject flawed suggestions - If a suggestion is:
-   - Factually incorrect (contradicts the source text)
-   - Violates OPERATIONAL GUIDELINES
-   - Would introduce errors or degrade quality
-   - Based on misunderstanding of the ontology
-   
-   Then REJECT it and briefly explain why in your response.
-
-4. Think beyond the critique - Critic may have:
-   - Missed issues entirely
-   - Identified patterns but not all instances
-   - Focused on some aspects while overlooking others
-   
-   Proactively identify and fix additional problems not mentioned in the critique.
-
-5. Verify every change - Before finalizing, double-check that:
-   - Each triple accurately represents information from the source text
-   - Existing ontology entities are used instead of creating new cd: entities
+4. Before finalizing, check that:
+   - Each triple still accurately represents information from the source text
+   - Existing ontology entities are used instead of new cd: entities
    - No ontology-prefixed entity was invented or renamed
-   - All OPERATIONAL GUIDELINES are satisfied
-   - The overall graph is more complete and accurate than before
-
-Your goal: Produce the most accurate representation of the source text, not to satisfy Critic.
+   - The graph holds at least as much correct data as it did before
 {suggestions_instruction}
 """

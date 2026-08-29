@@ -131,6 +131,23 @@ def record_active_span(name: str, seconds: float) -> None:
         bt.add_duration(name, seconds)
 
 
+def record_active_count(name: str, n: int = 1) -> None:
+    """Charge a named event count to the running task's budget tracker, if any.
+
+    The counting sibling of :func:`record_active_span`, and a no-op when no
+    tracker is bound -- so the parse layer can report how often it repaired or
+    abandoned a response without holding an :class:`LLMTool`, and test stubs
+    that substitute a plain callable keep working.
+
+    Args:
+        name: Counter key, e.g. ``"llm/json_bracket_repair"``.
+        n: Amount to add.
+    """
+    bt = _active_budget_tracker.get()
+    if bt is not None:
+        bt.incr(name, n)
+
+
 def llm_cache_config(
     config: LLMConfig, **extra: Any
 ) -> dict[str, str | int | float | bool | None]:

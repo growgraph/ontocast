@@ -5,6 +5,7 @@ from ontocast.onto.tenancy import (
     DEFAULT_TENANT,
     tenant_project_facts_name,
     tenant_project_ontologies_name,
+    tenant_project_shapes_name,
 )
 
 DEFAULT_DOMAIN = "https://growgraph.dev"
@@ -22,6 +23,7 @@ DEFAULT_DATASET = tenant_project_facts_name(DEFAULT_TENANT, DEFAULT_PROJECT)
 DEFAULT_ONTOLOGIES_DATASET = tenant_project_ontologies_name(
     DEFAULT_TENANT, DEFAULT_PROJECT
 )
+DEFAULT_SHAPES_DATASET = tenant_project_shapes_name(DEFAULT_TENANT, DEFAULT_PROJECT)
 COMMON_PREFIXES = {
     "xsd": "<http://www.w3.org/2001/XMLSchema#>",
     "rdf": "<http://www.w3.org/1999/02/22-rdf-syntax-ns#>",

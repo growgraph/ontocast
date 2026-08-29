@@ -627,9 +627,9 @@ def test_property_only_path_runs_finalization() -> None:
 def test_referenced_domain_class_gets_symbol_predicates_and_types() -> None:
     """A property seed's domain class must carry its notation/symbol triples.
 
-    Case5 shape: matsci:hasPhotonPropagationEffect was admitted but its domain
-    NanocrystalSuperlatticeSample entered the snapshot without notation or
-    types, so the renderer fell back to the parent class.
+    Observed shape: a property was admitted but its domain class entered the
+    snapshot without notation or types, so the renderer fell back to the
+    parent class.
     """
     from rdflib.namespace import SKOS
 

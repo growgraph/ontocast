@@ -1852,8 +1852,8 @@ class RDFGraph(Graph):
             ):
                 continue
             slug = stem.rstrip("#/").rsplit("/", 1)[-1].replace("-", "_")
-            # An ontology's own namespace keeps the plain stem — "matsci", not
-            # "matsci_matsci"; the base only disambiguates foreign stems.
+            # An ontology's own namespace keeps the plain stem — "core", not
+            # "core_core"; the base only disambiguates foreign stems.
             if prefix_base and prefix_base.replace("-", "_") != slug:
                 prefix = f"{prefix_base}_{slug}"
             else:

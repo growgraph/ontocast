@@ -92,13 +92,51 @@ at zero, which is not the same as a run that used no tokens.
 `calls_count` counts billed calls and `cache_hits` counts replays, so a fully
 replayed run reports `calls_count: 0` with non-zero `cached_*`.
 
+### The two ratios that say where to aim a cost change
+
+Two derived fields ride the same budget summary. Read them first: they decide
+whether a cost problem is in the prompt or in the model's thinking budget, and
+they cost nothing to look at.
+
+| Field | Meaning |
+|---|---|
+| `prefix_cache_hit_rate` | `cache_read_input_tokens` over **all** input tokens, billed and replayed. |
+| `reasoning_share_of_output` | `reasoning_tokens` over **all** output tokens. A decomposition of what was already paid for, never an addition to it. |
+
+Both are `null` when the provider reported no tokens at all — unmeasured, which
+is not the same as zero. Compute them from the fields yourself only if you must,
+and mind the denominator: `reasoning_tokens` and `cache_read_input_tokens`
+accumulate on billed *and* replayed calls, while `input_tokens` counts billed
+only, so dividing by `input_tokens` alone can exceed 100% on a partly replayed
+run.
+
+**A low `prefix_cache_hit_rate` on a wide fan-out is expected, not a bug — and
+it is money.** A provider cache entry only becomes readable once the first
+response has begun, so `PARALLEL_WORKERS` units that issue together all miss the
+prefix they share. The same code will show a far lower hit rate on a wide
+document fan-out than on a longer, more sequential run — the difference is call
+sequencing, not configuration, so compare this number only between runs of
+similar shape.
+
+**`reasoning_share_of_output` of `0.0` means the model is not a reasoning
+model**, and no thinking-budget setting will change its bill; the lever is prompt
+size or call count instead. On a reasoning model the share is typically large
+enough that most of the output cost is thinking rather than triples, which makes
+the thinking budget the first thing to tune.
+
 ### Counters
 
-`budget.counters` records event counts. The one to watch is
-`ctx/merge_document_ontology.calls`: the merged document ontology depends only
-on document-level state, so this must be **1** per document. A value that grows
-with the unit count means a per-unit regression has reintroduced O(N) full
-rdflib merges into the fan-out.
+`budget.counters` records event counts. The one to watch for *concurrency*
+regressions is `ctx/merge_document_ontology.calls`: the merged document ontology
+depends only on document-level state, so this must be **1** per document. A
+value that grows with the unit count means a per-unit regression has
+reintroduced O(N) full rdflib merges into the fan-out.
+
+The `llm/*` counters in the same map are about *spend* rather than concurrency —
+`llm/parse_retry` is a re-issued render, `llm/parse_abandoned` is a unit that
+contributed nothing. They are tabulated in
+[Observability](observability.md#2-the-run-manifest), and the mechanism behind
+them in [Configuration](configuration.md#what-happens-to-a-response-that-will-not-parse).
 
 ## Measuring a change without provider tokens
 
@@ -147,11 +185,10 @@ EMBEDDING_MODEL_NAME=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 AGG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 ```
 
-Measured on this codebase, loading all three consumers and encoding once each:
-2 resident models / 2252 MB peak RSS at defaults, versus 1 model / 1601 MB
-aligned — **~650 MB**. That is less than the models' 1.1 GB difference on disk,
-because both share the same 250k-token vocabulary and torch's allocator holds
-its own overhead either way.
+Aligning them holds **one** resident model instead of two. The saving is less
+than the models' difference on disk, because both share the same vocabulary and
+torch's allocator carries its own overhead either way — but it is the difference
+between one checkpoint in memory and two.
 
 Read [Configuration](configuration.md) first: changing `CHUNK_EMBEDDING_MODEL`
 invalidates the chunk cache, shifts chunk boundaries, and affects the calibrated
@@ -179,7 +216,13 @@ better — the extra units queue behind the same synchronous section.
 Other knobs that change cost rather than concurrency:
 
 - `MAX_VISITS` (default 1) — at 1 the LLM critic never runs. Raising it to 2
-  roughly doubles the LLM calls per unit.
+  adds **one** call per unit, not a second render: a rejecting facts critic now
+  buys a bounded repair pass rather than a full re-extraction, so the per-unit
+  ledger is flat in `MAX_VISITS`. A facts unit costs one render plus
+  `FACTS_LLM_REPAIR_VISITS` (default 1) at either setting, plus the critique at
+  2 — so 2 calls becomes 3, not 4. The ontology loop has no repair lane, so
+  there it genuinely doubles, 1 to 2. See
+  [Validation](validation.md#how-many-llm-calls-a-facts-unit-really-costs).
 - `CONVERTER_PROFILE=born_digital` — skips OCR on digital PDFs.
 - `ONTOLOGY_CONTEXT_MAX_TRIPLES` (default `4000`) — the budget for the ontology
   chapter in **every** mode. `ONTOLOGY_PATCH_MAX_ATOMS` and
@@ -188,12 +231,8 @@ Other knobs that change cost rather than concurrency:
 
 ## How much a triple costs
 
-Measured through the repo's own prompt serializers on `matsci.ttl` (796 triples):
-
-| Wire format | chars/triple | ~tokens/triple | 1200 triples | 4000 triples |
-|---|---|---|---|---|
-| `turtle` | 50.7 | ~12.7 | ~15k tokens | ~51k tokens |
-| `jsonld` (default) | 102.6 | ~25.7 | ~31k tokens | ~103k tokens |
+A triple's cost in the prompt is set by the wire format, and the two differ by
+about a factor of two:
 
 **`LLM_GRAPH_FORMAT=jsonld` roughly doubles chars per triple against `turtle`.**
 That is the cost of the default: JSON-LD is more reliably parsed out of

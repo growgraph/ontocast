@@ -19,9 +19,11 @@ FUSEKI_URI=http://localhost:3030
 FUSEKI_AUTH=admin/admin
 #FUSEKI_DATASET=ontocast--test--facts
 #FUSEKI_ONTOLOGIES_DATASET=ontocast--test--ontologies
+#FUSEKI_SHAPES_DATASET=ontocast--test--shapes
 
-# Seed ontologies (optional — bootstrap only, not persistence)
+# Seed ontologies and SHACL shapes (optional — bootstrap only, not persistence)
 ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/seed/ttl
+FACTS_SHAPES_DIR=/path/to/seed/shapes
 ```
 
 Persistence is handled by the triple store only; batch TTL dumps go to the explicit `--output-dir` family of flags.
@@ -34,6 +36,7 @@ Both Fuseki and the in-memory backend isolate data by tenant/project:
 
 - `{tenant}--{project}--facts` — extracted facts graphs
 - `{tenant}--{project}--ontologies` — catalog / versioned ontologies
+- `{tenant}--{project}--shapes` — SHACL shapes documents
 
 When dataset env vars are unset, OntoCast derives names from the default tenant `ontocast` and project `test`. Per-request `?tenant=` / `?project=` retarget the active partition at runtime. See [Tenancy](tenancy.md).
 
@@ -99,9 +102,15 @@ the store.
 
 ---
 
-## Seed Ontologies
+## Seed Ontologies and Shapes
 
 Place `.ttl` files in `ONTOCAST_ONTOLOGY_DIRECTORY`. On startup, `ToolBox` scans that directory and materializes any ontologies not already present in the triple store. This is a one-way bootstrap path — ongoing persistence is through the triple store.
+
+`FACTS_SHAPES_DIR` works the same way for SHACL shapes, into the shapes partition, except that the scan is **recursive** and each document is written on every startup rather than only when absent — so editing a seed shapes file takes effect on restart. Neither directory is ever written to: `POST /ontologies` and `POST /shapes` mutate the store alone, and the matching `DELETE` routes leave your files untouched. See [Validation](validation.md#where-shapes-come-from) for why shapes get a partition of their own.
+
+## Why Shapes Are Not in the Ontologies Dataset
+
+`afetch_ontology_catalog()` claims every named graph carrying an `owl:Ontology` subject. A SHACL shapes document declares one, so stored beside the ontologies it would register as a catalog ontology, be vector-indexed, and be offered to the renderer as schema. The third dataset removes that failure mode structurally rather than by a filter every read path must honour.
 
 ---
 
@@ -111,8 +120,8 @@ Place `.ttl` files in `ONTOCAST_ONTOLOGY_DIRECTORY`. On startup, `ToolBox` scans
 
 | Method | Returns | Cost |
 |---|---|---|
-| `aselect(query, *, use_ontologies_dataset=True)` | `list[dict[str, str]]` — one dict per SPARQL SELECT solution | One query |
-| `aconstruct(query, *, use_ontologies_dataset=True)` | `RDFGraph` — real RDF terms, no prefix bindings | One query |
+| `aselect(query, *, store="ontologies")` | `list[dict[str, str]]` — one dict per SPARQL SELECT solution | One query |
+| `aconstruct(query, *, store="ontologies")` | `RDFGraph` — real RDF terms, no prefix bindings | One query |
 | `afetch_ontology_catalog()` | `list[OntologyHeader]` — `iri`, `version`, `hash`, `parent_hashes`, `created_at`, `graph_uri` per stored version | One query, no graphs |
 | `afetch_ontologies_by_iri(iris)` | `list[Ontology]` with graphs, restricted to `iris` (empty means no restriction) | Only the named graphs requested |
 

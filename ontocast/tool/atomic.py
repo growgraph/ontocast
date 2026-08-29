@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from ontocast.config import FactsValidationConfig, WebSearchConfig
 from ontocast.onto.enum import WorkflowNode
+from ontocast.tool.facts_validation import FactsAcceptancePolicy, ValidationPolicy
 from ontocast.tool.llm import LLMTool
 
 
@@ -98,6 +99,21 @@ class AtomicToolBox:
         # want reported as unknown terms.
         self.additional_standard_namespaces: tuple[str, ...] = tuple(
             facts_validation.additional_standard_namespaces
+        )
+        # Everything the deterministic term checks must treat as blessed, as
+        # one object -- see ValidationPolicy.
+        self.validation_policy = ValidationPolicy(
+            additional_standard_namespaces=self.additional_standard_namespaces,
+            quantity_fallback_vocabulary=self.quantity_fallback_vocabulary,
+            code_predicates=self.code_predicates,
+        )
+        # A sibling of ValidationPolicy, deliberately not a field on it.
+        # ValidationPolicy answers "what must never be flagged"; this answers
+        # "what blocks a unit from leaving the loop". Both travel to the unit
+        # loop, but the term checks and the catalog lint have no business
+        # knowing about acceptance.
+        self.acceptance_policy = FactsAcceptancePolicy(
+            blocking_fix_severity=facts_validation.accept_blocking_severity,
         )
 
         self.web_search_enabled = web_search.enabled

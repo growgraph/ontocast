@@ -95,7 +95,7 @@ curl -X POST "http://localhost:8999/process?tenant=acme&project=reports" \
 | `improvement_suggestions` | Advisory notes from the structural check and consistency critic. Nothing in the pipeline acts on them |
 | `facts_conformance` | Validation summary for the served graph: whether SHACL ran and it conforms, counts by finding kind / constraint component / shape, repairs applied — see [Validation](validation.md) |
 | `facts_validation_findings` | Residual findings behind the summary, after every repair stage |
-| `facts_gate_repairs` | LLM-free repairs the gate applied to the merged graph (retype, code resolution, prune) |
+| `facts_gate_repairs` | LLM-free repairs the gate applied to the merged graph (retype, code resolution, prune, literal-variant dedupe) |
 
 A run in which *no* unit produced output returns **422**, not a 200 with empty
 facts.
@@ -141,6 +141,37 @@ See [Tenancy](tenancy.md) for dataset naming.
 
 ---
 
+## Shapes
+
+Routes under `/shapes` manage the tenant's SHACL shapes partition — what the
+facts validation gate validates against. Same optional `tenant` / `project`
+query parameters as `/ontologies`. Shapes live in their own partition rather
+than the ontologies dataset; see
+[Validation](validation.md#why-shapes-are-not-stored-with-the-ontologies).
+
+### `GET /shapes`
+
+List the named graphs in the shapes partition, and the merged triple count.
+
+### `POST /shapes`
+
+Upload a SHACL shapes document (Turtle file). A document declaring
+`<iri> a owl:Ontology` is stored under that IRI, so uploading it again replaces
+it; one with no header is named after the uploaded filename.
+
+```bash
+curl -X POST "http://localhost:8999/shapes?tenant=ontocast&project=test" \
+  -F "file=@my_shapes.ttl"
+```
+
+### `DELETE /shapes/{graph_uri}`
+
+Remove a shapes document by graph URI (URL-encoded path segment). The seed
+directory (`FACTS_SHAPES_DIR`) is untouched, so a seeded document returns on the
+next restart.
+
+---
+
 ## Triple Store Maintenance
 
 ### `POST /flush`
@@ -151,6 +182,7 @@ Clear triple-store data (and vector-store partitions when a vector backend is co
 |--------------|----------|
 | *(none)* | `clean()` on the triple store's **active scope** — Fuseki facts + ontologies datasets for the configured tenant/project, or the in-memory partition currently selected |
 | `tenant`, `project` | `clean_tenancy()` on triple store **and** vector store for that partition (both must support tenancy; returns `400` otherwise) |
+| `include_shapes` | Also drop the shapes partition. **Off by default:** facts and ontologies come back from a rerun, but dropping shapes disarms the SHACL gate silently — later runs report `shacl_evaluated: null` instead of failing |
 
 ```bash
 # Flush active triple-store scope (server startup tenant/project)
@@ -162,7 +194,7 @@ curl -X POST "http://localhost:8999/flush?tenant=acme&project=reports"
 
 **Backends:**
 
-- **Fuseki** — persistent datasets; scope follows configured or retargeted tenant/project names (`{tenant}--{project}--facts` / `--ontologies`).
+- **Fuseki** — persistent datasets; scope follows configured or retargeted tenant/project names (`{tenant}--{project}--facts` / `--ontologies` / `--shapes`).
 - **In-memory** (default when `FUSEKI_URI` / `FUSEKI_AUTH` are unset) — clears the active pyoxigraph partition; data is not persisted across process restarts.
 
 The `dataset` query parameter is **not** supported. Use `tenant` and `project` instead.
@@ -174,7 +206,7 @@ The `dataset` query parameter is **not** supported. Use `tenant` and `project` i
 
 ## Graph Matching
 
-Benchmark-oriented endpoints for entity alignment and evaluation. Used by the standalone `match-graphs` CLI.
+Endpoints for entity alignment and for scoring an extracted graph against a reference one. Used by the standalone `match-graphs` CLI.
 
 ### `POST /match/entities`
 
@@ -203,7 +235,7 @@ Compute triple and entity precision/recall/F1 given graphs and entity matches. L
 
 ```bash
 match-graphs \
-  --gt ./benchmark \
+  --gt ./reference \
   --predicted ./extracted \
   --url http://localhost:8999 \
   --regime ontology_strict \

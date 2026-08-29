@@ -13,16 +13,24 @@ from langgraph.graph.state import CompiledStateGraph
 from ontocast._version import __version__
 from ontocast.agent.serialize import serialize as serialize_agent_state
 from ontocast.config import Config, ServerConfig
+from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.run_manifest import RunManifest, RunManifestLLM
+from ontocast.onto.run_manifest import (
+    RunManifest,
+    RunManifestLLM,
+    RunManifestLoops,
+    RunManifestSelection,
+    summarize_loop,
+)
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.facts_gate import run_facts_gate
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
 from ontocast.tool.chunk.prepare import SectionSelectionEmptyError
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.toolbox import ToolBox
+from ontocast.util.graph_metrics import facts_graph_shape_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -194,11 +202,45 @@ def dump_run_manifest(
     them. One small JSON per document closes that.
     """
     llm_config = config.tool_config.llm_config
+    facts_validation = config.get_tool_config().facts_validation
+    # The .facts.ttl dump strips provenance; count what the file will actually
+    # hold, or the manifest is not comparable to its own TTL (1711 vs 557 on
+    # observed runs).
+    serialized_facts = (
+        TripleStoreManager.strip_provenance(state.aggregated_facts)
+        if state.aggregated_facts is not None
+        else None
+    )
     manifest = RunManifest(
         source=file_path.name,
         line_number=line_number,
         ontocast_version=__version__,
         render_mode=str(state.render_mode),
+        loops=RunManifestLoops(
+            max_visits=state.max_visits,
+            max_critic_visits=config.server.max_critic_visits_per_node,
+            llm_repair_visits=facts_validation.llm_repair_visits,
+        ),
+        critic=summarize_loop(state.facts_loop_telemetry),
+        ontology_critic=summarize_loop(state.ontology_loop_telemetry),
+        ontology_reduce_metrics=dict(state.ontology_reduce_metrics),
+        selection=RunManifestSelection(
+            target_sections=state.target_sections,
+            exclude_sections=state.exclude_sections,
+            summarize_sections=state.summarize_sections,
+            summary_max_sentences=state.summary_max_sentences,
+            bibliography_mode=str(
+                config.get_tool_config().chunk_config.bibliography_mode
+            ),
+        ),
+        graph_metrics=(
+            facts_graph_shape_metrics(
+                serialized_facts,
+                [DEFAULT_IRI, str(state.doc_iri), state.doc_namespace or ""],
+            )
+            if serialized_facts is not None
+            else None
+        ),
         current_domain=state.current_domain,
         doc_iri=str(state.doc_iri) if state.doc_hid else None,
         tenant=state.tenant,
@@ -217,6 +259,9 @@ def dump_run_manifest(
         ),
         facts_triples=(
             len(state.aggregated_facts) if state.aggregated_facts is not None else 0
+        ),
+        facts_triples_serialized=(
+            len(serialized_facts) if serialized_facts is not None else 0
         ),
         retrieval_metrics=dict(state.retrieval_metrics),
     )
@@ -518,6 +563,18 @@ def _merge_workflow_state_into_agent_state(
     metrics = workflow_state.get("retrieval_metrics")
     if metrics:
         state.retrieval_metrics = dict(metrics)
+    # The manifest's critic blocks read these; leaving them off this copy list
+    # is why case10's manifests reported `critic: {calls: 0}` while their own
+    # retrieval_metrics recorded 20 facts-critic and 26 ontology-critic calls.
+    facts_telemetry = workflow_state.get("facts_loop_telemetry")
+    if facts_telemetry:
+        state.facts_loop_telemetry = dict(facts_telemetry)
+    ontology_telemetry = workflow_state.get("ontology_loop_telemetry")
+    if ontology_telemetry:
+        state.ontology_loop_telemetry = dict(ontology_telemetry)
+    reduce_metrics = workflow_state.get("ontology_reduce_metrics")
+    if reduce_metrics:
+        state.ontology_reduce_metrics = dict(reduce_metrics)
     return state
 
 

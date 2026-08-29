@@ -8,6 +8,7 @@ them permanently narrow the pipeline.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import cast
 
 import pytest
@@ -98,7 +99,14 @@ async def test_transport_failure_is_not_retried(monkeypatch) -> None:
     assert calls == 1
 
 
-async def test_parse_retries_are_exhausted_then_raised(monkeypatch) -> None:
+async def test_repeated_syntax_error_is_abandoned_before_exhaustion(
+    monkeypatch,
+) -> None:
+    """Two identical syntax errors are a fixed point; the third call is spend.
+
+    Each of these is a full re-extraction (~4k output plus reasoning tokens on
+    the render path), so the saved attempt is not a rounding error.
+    """
     monkeypatch.setattr(common, "_retry_backoff_seconds", lambda attempt: 0.0)
     calls = 0
 
@@ -107,12 +115,78 @@ async def test_parse_retries_are_exhausted_then_raised(monkeypatch) -> None:
         calls += 1
         return _Response("still not json")
 
+    with pytest.raises(common.LLMJsonParseError):
+        await call_llm_with_retry(
+            cast(LLMTool, fake_llm), _prompt(), _parser(), _kwargs(), max_retries=3
+        )
+
+    assert calls == 2
+
+
+async def test_schema_errors_keep_their_full_retry_budget(monkeypatch) -> None:
+    """A ValidationError is not a fixed point -- those retries do converge."""
+    monkeypatch.setattr(common, "_retry_backoff_seconds", lambda attempt: 0.0)
+    calls = 0
+
+    async def fake_llm(prompt):
+        nonlocal calls
+        calls += 1
+        # Parses fine; fails the schema (value must be a string).
+        return _Response(json.dumps({"value": {"not": "a string"}}))
+
     with pytest.raises(Exception):
         await call_llm_with_retry(
             cast(LLMTool, fake_llm), _prompt(), _parser(), _kwargs(), max_retries=3
         )
 
     assert calls == 3
+
+
+async def test_differing_syntax_errors_keep_retrying(monkeypatch) -> None:
+    monkeypatch.setattr(common, "_retry_backoff_seconds", lambda attempt: 0.0)
+    bodies = ['{"value": ', '{"value": "a" "b"}', "not json at all"]
+    calls = 0
+
+    async def fake_llm(prompt):
+        nonlocal calls
+        body = bodies[calls]
+        calls += 1
+        return _Response(body)
+
+    with pytest.raises(Exception):
+        await call_llm_with_retry(
+            cast(LLMTool, fake_llm), _prompt(), _parser(), _kwargs(), max_retries=3
+        )
+
+    assert calls == 3
+
+
+async def test_retry_feedback_is_bounded_and_points_at_the_error(monkeypatch) -> None:
+    monkeypatch.setattr(common, "_retry_backoff_seconds", lambda attempt: 0.0)
+    seen: list[str] = []
+    # Long, valid up to the tail -- the shape the models actually emit.
+    bodies = [
+        '{"pad": "' + "x" * 9000 + '", "value": "a" "b"}',
+        json.dumps({"value": "ok"}),
+    ]
+    calls = 0
+
+    async def fake_llm(prompt):
+        nonlocal calls
+        seen.append(prompt.to_string())
+        body = bodies[calls]
+        calls += 1
+        return _Response(body)
+
+    result = await call_llm_with_retry(
+        cast(LLMTool, fake_llm), _prompt(), _parser(), _kwargs(), max_retries=3
+    )
+
+    assert result.value == "ok"
+    retry_prompt = seen[1]
+    # The whole 9k body used to be pasted back into every retry.
+    assert len(retry_prompt) < 4000
+    assert '"a" "b"' in retry_prompt
 
 
 async def test_timeout_frees_the_inflight_slot() -> None:
@@ -144,6 +218,102 @@ async def test_timeout_frees_the_inflight_slot() -> None:
         await asyncio.wait_for(tool("hello again"), timeout=2.0)
 
 
+def test_unescape_json_delimiters_repairs_escaped_string_delimiters() -> None:
+    """The model escapes the quotes that should *delimit* a JSON string.
+
+    Observed in gpt-5-mini critique output:
+    ``"text_fragment": \\"quoted text\\",`` — invalid JSON that langchain's
+    partial parser silently degraded to ``None``.
+    """
+    broken = '{"a": \\"quoted \\"inner\\" text\\", "b": 1}'
+    repaired = common.unescape_json_delimiters(broken)
+    assert json.loads(repaired) == {"a": 'quoted "inner" text', "b": 1}
+
+
+def test_unescape_json_delimiters_repairs_escaped_token_whitespace() -> None:
+    # Same responses escape the newline after the comma: ``\\",\\n  "action"``.
+    broken = '{"a": \\"x\\",\\n  "action": "ADD"}'
+    assert json.loads(common.unescape_json_delimiters(broken)) == {
+        "a": "x",
+        "action": "ADD",
+    }
+
+
+def test_unescape_json_delimiters_leaves_valid_json_untouched() -> None:
+    valid = '{"note": "he said: \\"hi\\", then left", "n": [1, 2], "u": "a\\\\b"}'
+    assert common.unescape_json_delimiters(valid) == valid
+
+
+def test_parse_json_object_reports_position_on_structural_error() -> None:
+    """A missing ``}`` must raise with line/column and a context window.
+
+    Langchain's partial parser returned ``None`` for this shape, so the retry
+    feedback was ``input_value=None`` — and the model repeated the identical
+    malformation on retry. The feedback must name the broken spot instead.
+    """
+    broken = '{"graph_update": {"ops": [{"type": "insert", "x": 1]}}'
+    with pytest.raises(ValueError) as exc_info:
+        common.parse_json_object(broken)
+    message = str(exc_info.value)
+    assert "line 1" in message
+    assert "insert" in message, "context window around the error is missing"
+
+
+def test_parse_json_object_rejects_partial_recovery() -> None:
+    # An unterminated string must not silently validate as a truncated object.
+    broken = '{"success": true, "score": 90, "fixes": ["one", "two'
+    with pytest.raises(ValueError):
+        common.parse_json_object(broken)
+
+
+def test_parse_json_object_rejects_non_object_json() -> None:
+    with pytest.raises(ValueError, match="not an object"):
+        common.parse_json_object("null")
+
+
+def test_parse_json_object_accepts_fenced_and_control_characters() -> None:
+    fenced = '```json\n{"value": "line one\nline two"}\n```'
+    assert common.parse_json_object(fenced) == {"value": "line one\nline two"}
+
+
+async def test_timeout_is_retried_exactly_once(monkeypatch) -> None:
+    """One identical re-issue for a timeout, then it propagates.
+
+    A timeout is not a provider "send less" signal, and at low MAX_VISITS a
+    lost call silently costs a unit its whole critique.
+    """
+    from ontocast.tool.llm import LLMRequestTimeoutError
+
+    monkeypatch.setattr(common, "_retry_backoff_seconds", lambda attempt: 0.0)
+    calls = 0
+
+    async def timeout_once_llm(prompt):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise LLMRequestTimeoutError("LLM request exceeded 180.0s")
+        return _Response('{"value": "ok"}')
+
+    result = await call_llm_with_retry(
+        cast(LLMTool, timeout_once_llm), _prompt(), _parser(), _kwargs()
+    )
+    assert result.value == "ok"
+    assert calls == 2
+
+    calls = 0
+
+    async def always_timeout_llm(prompt):
+        nonlocal calls
+        calls += 1
+        raise LLMRequestTimeoutError("LLM request exceeded 180.0s")
+
+    with pytest.raises(LLMRequestTimeoutError):
+        await call_llm_with_retry(
+            cast(LLMTool, always_timeout_llm), _prompt(), _parser(), _kwargs()
+        )
+    assert calls == 2
+
+
 async def test_timeout_is_not_a_cancellation() -> None:
     """The error must be catchable as Exception, not propagate as a cancel.
 
@@ -154,3 +324,66 @@ async def test_timeout_is_not_a_cancellation() -> None:
 
     assert issubclass(LLMRequestTimeoutError, Exception)
     assert not issubclass(LLMRequestTimeoutError, asyncio.CancelledError)
+
+
+def test_repair_bracket_kinds_fixes_the_observed_swapped_tail() -> None:
+    """The measured failure: `] }` emitted where `} ]` was due, at the tail.
+
+    Bracket *counts* balance, so only the decoder notices.
+    """
+    broken = (
+        '{"graph_update": {"triple_operations": [{"type": "insert", "graph": '
+        '{"@context": {"ex": "http://example.org/"}, '
+        '"@graph": [{"@id": "ex:a"}]}}]}}'
+    ).replace('"@id": "ex:a"}]}}]}}', '"@id": "ex:a"}]}]}}}')
+
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(broken)
+
+    repaired, fixes = common.repair_bracket_kinds(broken)
+    assert fixes == 2
+    parsed = json.loads(repaired)
+    ops = parsed["graph_update"]["triple_operations"]
+    assert len(ops) == 1
+    assert ops[0]["type"] == "insert"
+
+
+def test_repair_bracket_kinds_leaves_valid_json_untouched() -> None:
+    text = json.dumps({"a": [1, 2, {"b": ["c"]}], "d": {"e": []}}, indent=2)
+    repaired, fixes = common.repair_bracket_kinds(text)
+    assert fixes == 0
+    assert repaired == text
+
+
+def test_repair_bracket_kinds_ignores_brackets_inside_strings() -> None:
+    text = '{"a": "] } [ {", "b": ["x"]}'
+    repaired, fixes = common.repair_bracket_kinds(text)
+    assert fixes == 0
+    assert repaired == text
+
+
+def test_repair_bracket_kinds_abandons_truncated_json() -> None:
+    """Frames still open at EOF are truncation; closing them fabricates output."""
+    truncated = '{"a": {"b": [1, 2'
+    repaired, fixes = common.repair_bracket_kinds(truncated)
+    assert fixes == 0
+    assert repaired == truncated
+
+
+def test_repair_bracket_kinds_abandons_unopened_closer() -> None:
+    text = '{"a": 1}}'
+    repaired, fixes = common.repair_bracket_kinds(text)
+    assert fixes == 0
+    assert repaired == text
+
+
+def test_parse_json_object_recovers_a_swapped_tail() -> None:
+    broken = '{"outer": {"items": [{"k": {"v": [1]}}]}}'.replace("]}}]}}", "]}]}}}")
+    assert common.parse_json_object(broken) == {"outer": {"items": [{"k": {"v": [1]}}]}}
+
+
+def test_parse_json_object_raises_typed_error_with_position() -> None:
+    with pytest.raises(common.LLMJsonParseError) as excinfo:
+        common.parse_json_object('{"a": 1 "b": 2}')
+    assert excinfo.value.pos > 0
+    assert excinfo.value.msg

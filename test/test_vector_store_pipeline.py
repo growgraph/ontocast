@@ -1703,7 +1703,7 @@ async def test_expansion_falls_back_when_select_raises() -> None:
     """A failing query degrades to slow retrieval rather than failing the unit."""
 
     class BrokenSelectManager(InMemoryTripleStoreManager):
-        async def aselect(self, query, *, use_ontologies_dataset=True):
+        async def aselect(self, query, *, store="ontologies"):
             raise RuntimeError("backend unavailable")
 
     manager = BrokenSelectManager()

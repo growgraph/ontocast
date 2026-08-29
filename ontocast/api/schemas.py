@@ -144,3 +144,24 @@ class OntologyMutationResponse(BaseModel):
 class OntologyDeleteResponse(BaseModel):
     status: str = "success"
     iri: str
+
+
+class ShapesMutationResponse(BaseModel):
+    """One SHACL shapes document stored in the tenant's shapes partition."""
+
+    status: str = "success"
+    graph_uri: str
+    triples: int
+
+
+class ShapesDeleteResponse(BaseModel):
+    status: str = "success"
+    graph_uri: str
+
+
+class ShapesListResponse(BaseModel):
+    """Named graphs held in the shapes partition, and their merged size."""
+
+    status: str = "success"
+    graph_uris: list[str]
+    triples: int

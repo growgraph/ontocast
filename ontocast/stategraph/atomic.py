@@ -29,8 +29,10 @@ from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import (
     ExternalEvidenceCacheEntry,
     ExternalEvidenceRequest,
-    FactsLoopAttempt,
     FactsUnitFinding,
+    LoopAttempt,
+    OntologyUnitFinding,
+    TripleFix,
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
@@ -39,7 +41,10 @@ from ontocast.stategraph.context_resolver import (
     resolve_unit_ontology_context,
 )
 from ontocast.stategraph.unit_context import UnitLoopContext
-from ontocast.tool.facts_invariants import collect_unit_findings
+from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.facts_validation import collect_unit_findings
+from ontocast.tool.facts_validation.critic_findings import critic_fixes_to_findings
+from ontocast.tool.ontology_validation import collect_ontology_unit_findings
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -121,9 +126,13 @@ def _resolve_critic_visits(unit_state: UnitFactsState | UnitOntologyState) -> in
 
 def _collect_facts_findings(
     unit_state: UnitFactsState,
-    additional_standard_namespaces: Sequence[str] = (),
+    atomic: AtomicToolBox | None = None,
 ) -> list[FactsUnitFinding]:
-    """Run the deterministic per-unit validator against the current graph."""
+    """Run the deterministic per-unit validator against the current graph.
+
+    The toolbox supplies the deployment's namespace exemptions and quantity
+    fallback vocabulary; ``None`` (tests) means no exemptions.
+    """
     return collect_unit_findings(
         graph=unit_state.content_unit.graph,
         ontology_graph=unit_state.ontology_snapshot.graph,
@@ -133,8 +142,40 @@ def _collect_facts_findings(
         # Citation numerics (pages, years, volume numbers) are not extractable
         # quantities — never push coverage repair on bibliography units.
         coverage_limit=0 if unit_state.content_unit.is_citation_metadata else 30,
-        additional_standard_namespaces=additional_standard_namespaces,
+        policy=atomic.validation_policy if atomic is not None else None,
     )
+
+
+def _collect_ontology_findings(
+    unit_state: UnitOntologyState,
+    atomic: AtomicToolBox | None = None,
+) -> list[OntologyUnitFinding]:
+    """Run the deterministic delta validator against the unit's current state.
+
+    Validates the net insert/delete delta (never the shared snapshot), passing
+    the already-materialised ``working_graph`` as the merged view so the only
+    graph copy is the one inside ``build_delta``. Budget-timed because that
+    copy is exactly the cost the shared-by-reference snapshot exists to avoid.
+    """
+    started = time.perf_counter()
+    delta = unit_state.build_delta()
+    snapshot_graph = (
+        None
+        if unit_state.ontology_snapshot.is_empty()
+        else unit_state.ontology_snapshot.graph
+    )
+    findings = collect_ontology_unit_findings(
+        inserts=delta.inserts,
+        deletes=delta.deletes,
+        snapshot_graph=snapshot_graph,
+        merged_graph=unit_state.working_graph,
+        fact_namespaces=[DEFAULT_IRI, str(unit_state.content_unit.doc_iri)],
+        policy=atomic.validation_policy if atomic is not None else None,
+    )
+    unit_state.budget_tracker.add_duration(
+        "ontology_validation/unit_findings", time.perf_counter() - started
+    )
+    return findings
 
 
 def _record_facts_attempt(
@@ -146,11 +187,12 @@ def _record_facts_attempt(
     n_findings: int = 0,
     n_mandatory: int = 0,
     repair_failed: bool = False,
+    repair_delete_only: bool = False,
 ) -> None:
     """Append one telemetry record for the current loop attempt."""
     graph = unit_state.content_unit.graph
     unit_state.attempt_log.append(
-        FactsLoopAttempt(
+        LoopAttempt(
             render_attempt=render_attempt,
             critic_attempt=critic_attempt,
             kind=kind,
@@ -158,6 +200,7 @@ def _record_facts_attempt(
             n_deterministic_findings=n_findings,
             n_mandatory_findings=n_mandatory,
             repair_failed=repair_failed,
+            repair_delete_only=repair_delete_only,
             failure_stage=(str(unit_state.failure_stage) if repair_failed else None),
             failure_reason=unit_state.failure_reason if repair_failed else None,
             triple_count=len(graph),
@@ -171,6 +214,7 @@ async def _run_finding_driven_repair(
     supplemental: list[Ontology],
     *,
     render_attempt: int,
+    critic_fixes: Sequence[TripleFix] = (),
 ) -> UnitFactsState:
     """Repair machine-found violations with bounded render-update visits.
 
@@ -178,7 +222,7 @@ async def _run_finding_driven_repair(
     ``render_facts_update`` call fed with the findings. Machine-applied,
     LLM-free rewrites are a different thing entirely and run at parse time
     (``agent/render_facts.py::_normalize_and_repair_graph``) and at the
-    post-merge gate (``tool/facts_invariants.py::apply_shacl_repairs``).
+    post-merge gate (``tool/facts_validation::apply_shacl_repairs``).
 
     Runs after the final render (where the LLM critic is skipped): mandatory
     findings — quarantined literals, unknown/near-miss terms — drive the loop.
@@ -189,9 +233,14 @@ async def _run_finding_driven_repair(
     only parsed operations) and is recorded rather than erased.
     """
     repair_visits = atomic.facts_llm_repair_visits
-    findings = _collect_facts_findings(
-        unit_state, atomic.additional_standard_namespaces
-    )
+    # Critic fixes join the deterministic findings for the first pass only.
+    # They are consumed by the render that reads them, exactly like
+    # `state.suggestions`; re-adding them after each pass would make a fix the
+    # renderer declined an unresolvable finding and burn the whole budget.
+    findings = [
+        *_collect_facts_findings(unit_state, atomic),
+        *critic_fixes_to_findings(critic_fixes, atomic.acceptance_policy),
+    ]
     for repair_attempt in range(1, repair_visits + 1):
         mandatory = [finding for finding in findings if finding.mandatory]
         if not mandatory:
@@ -204,14 +253,54 @@ async def _run_finding_driven_repair(
             len(mandatory),
         )
         unit_state.deterministic_findings = findings
+        graph_before = unit_state.content_unit.graph.copy()
+        triples_before = len(unit_state.content_unit.graph)
+        mandatory_before = len(mandatory)
         unit_state = await render_facts(
             unit_state, atomic, supplemental_ontologies=supplemental
         )
         repair_failed = unit_state.status != Status.SUCCESS
+        repair_delete_only = False
         if not repair_failed:
-            findings = _collect_facts_findings(
-                unit_state, atomic.additional_standard_namespaces
+            findings = _collect_facts_findings(unit_state, atomic)
+            mandatory_after = sum(1 for finding in findings if finding.mandatory)
+            triples_after = len(unit_state.content_unit.graph)
+            # The findings prompt orders every mandatory item to be fixed by
+            # rewriting the offending term *in place*, so a genuine repair
+            # always writes something back. A render that only removed triples
+            # answered a repair order with a deletion, and the fact that the
+            # finding is gone afterwards is the deletion working, not a fix.
+            #
+            # Keying on the finding count alone cannot see this: deleting the
+            # flagged statement drops `mandatory_after` below
+            # `mandatory_before`, so the dominant observed failure mode --
+            # repair responses deleting valid
+            # values outright -- scored as a successful repair. Comparing the
+            # written triples catches it, and stays quiet for a rewrite that
+            # happens to shrink the graph by collapsing a duplicate.
+            wrote_nothing = not (unit_state.content_unit.graph - graph_before)
+            deleted_something = bool(graph_before - unit_state.content_unit.graph)
+            no_progress = (
+                triples_after < triples_before and mandatory_after >= mandatory_before
             )
+            if (deleted_something and wrote_nothing) or no_progress:
+                # Roll back rather than keep the shrunken graph: the pre-repair
+                # graph holds strictly more data, and its mandatory findings are
+                # the ones the next attempt (or the residual metric) should see.
+                logger.warning(
+                    "Finding-driven repair deleted %d triple(s) and wrote %d "
+                    "(%d -> %d triples, mandatory %d -> %d) — rolling back the "
+                    "delete-only repair",
+                    len(graph_before - unit_state.content_unit.graph),
+                    len(unit_state.content_unit.graph - graph_before),
+                    triples_before,
+                    triples_after,
+                    mandatory_before,
+                    mandatory_after,
+                )
+                unit_state.content_unit.graph = graph_before
+                findings = _collect_facts_findings(unit_state, atomic)
+                repair_delete_only = True
         # Recorded counts are the residual AFTER this repair render (on failure
         # the graph is unchanged, so the pre-render findings still describe it).
         # This is what `facts_findings_residual` sums document-level; recording
@@ -225,6 +314,7 @@ async def _run_finding_driven_repair(
             n_findings=len(findings),
             n_mandatory=sum(1 for finding in findings if finding.mandatory),
             repair_failed=repair_failed,
+            repair_delete_only=repair_delete_only,
         )
         if repair_failed:
             # The pre-repair graph is intact, so the unit is still usable and
@@ -417,7 +507,7 @@ async def facts_loop(
                 unit_state.node_visits[WorkflowNode.CRITICISE_FACTS] += 1
                 _reset_node_evidence_context(unit_state, WorkflowNode.CRITICISE_FACTS)
                 unit_state.deterministic_findings = _collect_facts_findings(
-                    unit_state, atomic.additional_standard_namespaces
+                    unit_state, atomic
                 )
                 unit_state = await criticise_facts(unit_state, atomic)
                 if unit_state.status == Status.SUCCESS:
@@ -440,8 +530,8 @@ async def facts_loop(
                 )
                 if not critic_request.initiate_search:
                     logger.info(
-                        "Unit facts critic failed at render %s/%s critic %s/%s "
-                        "without search request",
+                        "Unit facts critic rejected at render %s/%s critic %s/%s "
+                        "without search request; repairing in place",
                         render_attempt,
                         max_visits,
                         critic_attempt,
@@ -471,6 +561,23 @@ async def facts_loop(
                         supplemental,
                         render_attempt=render_attempt,
                     )
+
+            # A rejecting critic no longer escalates to another full render.
+            # It used to fall through to the next `render_attempt`, which
+            # re-extracted the unit from scratch under a prompt that invited
+            # unrequested rewriting -- the expensive, open-ended answer to a
+            # signal that is now a list of specific defects. Its blocking fixes
+            # go through the same bounded rewrite-in-place pass the
+            # deterministic findings use. The outer loop therefore retries only
+            # on *render failure*, and a unit's worst-case call count no longer
+            # grows with MAX_VISITS.
+            return await _run_finding_driven_repair(
+                unit_state,
+                atomic,
+                supplemental,
+                render_attempt=render_attempt,
+                critic_fixes=unit_state.suggestions.actionable_fixes,
+            )
 
         logger.info("Unit facts loop exhausted retries")
         return unit_state
@@ -569,6 +676,11 @@ async def ontology_loop(
                     render_attempt,
                     max_visits,
                 )
+                # The residual metric needs findings even when no critic runs
+                # (the MAX_VISITS=1 default).
+                unit_state.deterministic_findings = _collect_ontology_findings(
+                    unit_state, atomic
+                )
                 return unit_state
 
             stage = FailureStage.ONTOLOGY_CRITIQUE
@@ -576,6 +688,9 @@ async def ontology_loop(
                 unit_state.node_visits[WorkflowNode.CRITICISE_ONTOLOGY] += 1
                 _reset_node_evidence_context(
                     unit_state, WorkflowNode.CRITICISE_ONTOLOGY
+                )
+                unit_state.deterministic_findings = _collect_ontology_findings(
+                    unit_state, atomic
                 )
                 unit_state = await criticise_ontology(unit_state, atomic)
                 if unit_state.status == Status.SUCCESS:
@@ -621,6 +736,9 @@ async def ontology_loop(
                     return unit_state
 
         logger.info("Unit ontology loop exhausted retries")
+        unit_state.deterministic_findings = _collect_ontology_findings(
+            unit_state, atomic
+        )
         return unit_state
     except Exception as exc:
         logger.exception("Unhandled exception in ontology_loop")

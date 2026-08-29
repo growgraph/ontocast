@@ -94,7 +94,7 @@ async def test_aselect_targets_ontologies_dataset(manager_and_transport) -> None
 async def test_aselect_can_target_facts_dataset(manager_and_transport) -> None:
     manager, transport = manager_and_transport([])
 
-    await manager.aselect("SELECT ?s WHERE { ?s ?p ?o }", use_ontologies_dataset=False)
+    await manager.aselect("SELECT ?s WHERE { ?s ?p ?o }", store="facts")
 
     assert transport.posted_urls == ["http://fuseki.invalid:3030/facts/sparql"]
 
@@ -242,9 +242,7 @@ async def test_aconstruct_targets_the_facts_dataset_when_asked(
 
     monkeypatch.setattr(httpx.AsyncClient, "post", post)
 
-    await manager.aconstruct(
-        "CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }", use_ontologies_dataset=False
-    )
+    await manager.aconstruct("CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }", store="facts")
     assert seen["url"] == "http://fuseki.invalid:3030/facts/sparql"
 
 

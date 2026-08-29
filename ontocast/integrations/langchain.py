@@ -61,6 +61,7 @@ from ontocast.onto.enum import LLMGraphFormat
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.state import AgentState
+from ontocast.onto.tenancy import StoreKind
 from ontocast.util.optional import is_available
 
 if TYPE_CHECKING:
@@ -423,11 +424,9 @@ def _reject_update_query(query: str) -> None:
 
 
 def _sparql_select(tools: "ToolBox", max_chars: int) -> BaseTool:
-    async def run(query: str, use_ontologies_dataset: bool = True) -> str:
+    async def run(query: str, store: StoreKind = "ontologies") -> str:
         _reject_update_query(query)
-        rows = await tools.triple_store_manager.aselect(
-            query, use_ontologies_dataset=use_ontologies_dataset
-        )
+        rows = await tools.triple_store_manager.aselect(query, store=store)
         return json_to_llm_text(rows, max_chars=max_chars)
 
     return _tool(
@@ -444,11 +443,9 @@ def _sparql_select(tools: "ToolBox", max_chars: int) -> BaseTool:
 
 
 def _sparql_construct(tools: "ToolBox", max_chars: int) -> BaseTool:
-    async def run(query: str, use_ontologies_dataset: bool = True) -> str:
+    async def run(query: str, store: StoreKind = "ontologies") -> str:
         _reject_update_query(query)
-        graph = await tools.triple_store_manager.aconstruct(
-            query, use_ontologies_dataset=use_ontologies_dataset
-        )
+        graph = await tools.triple_store_manager.aconstruct(query, store=store)
         return graph_to_llm_text(graph, max_chars=max_chars)
 
     return _tool(

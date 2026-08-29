@@ -247,3 +247,59 @@ def test_ontology_delete_with_tenant_query_uses_scoped_toolbox(
     )
     delete_by_iri.assert_awaited_once_with("https://example.org/onto")
     startup_delete.assert_not_called()
+
+
+def test_shapes_routes_use_the_scoped_toolbox() -> None:
+    """``/shapes`` follows ``?tenant=`` the same way ``/ontologies`` does."""
+    from ontocast.api.shapes import build_shapes_router
+
+    ingest = AsyncMock(return_value="https://example.org/q-shapes")
+    delete = AsyncMock()
+    scoped = SimpleNamespace(
+        ingest_shapes_ttl=ingest,
+        delete_shapes_by_uri=delete,
+        shapes_catalog=SimpleNamespace(
+            graph=lambda: None,
+            list_graph_uris=AsyncMock(return_value=["https://example.org/q-shapes"]),
+        ),
+    )
+    for_scope = AsyncMock(return_value=scoped)
+    tools = SimpleNamespace(
+        vector_store=object(),
+        triple_store_manager=None,
+        for_scope=for_scope,
+        ingest_shapes_ttl=AsyncMock(),
+        delete_shapes_by_uri=AsyncMock(),
+    )
+    app = FastAPI()
+    app.include_router(
+        build_shapes_router(
+            cast(ToolBox, tools),
+            active_tenant="startup_t",
+            active_project="startup_p",
+            server_config=ServerConfig(),
+        )
+    )
+    client = TestClient(app)
+
+    upload = client.post(
+        "/shapes",
+        params={"tenant": "acme", "project": "p1"},
+        files={"file": ("q-shapes.ttl", b"# shapes", "text/turtle")},
+    )
+    assert upload.status_code == 200, upload.text
+    assert upload.json()["graph_uri"] == "https://example.org/q-shapes"
+    ingest.assert_awaited_once_with(b"# shapes", filename="q-shapes.ttl")
+    tools.ingest_shapes_ttl.assert_not_called()
+
+    listed = client.get("/shapes", params={"tenant": "acme", "project": "p1"})
+    assert listed.status_code == 200
+    assert listed.json()["graph_uris"] == ["https://example.org/q-shapes"]
+
+    removed = client.delete(
+        "/shapes/https%3A%2F%2Fexample.org%2Fq-shapes",
+        params={"tenant": "acme", "project": "p1"},
+    )
+    assert removed.status_code == 200
+    delete.assert_awaited_once_with("https://example.org/q-shapes")
+    tools.delete_shapes_by_uri.assert_not_called()

@@ -135,6 +135,54 @@ LLM_MODEL_NAME=gemini-2.0-flash
 LLM_API_KEY=your_google_api_key_here
 ```
 
+### What happens to a response that will not parse
+
+None of this is configurable — it is the contract every `PydanticOutputParser`
+call runs under, and it decides how much a badly-behaved model costs. Read it
+alongside the `llm/*` counters in
+[Observability](observability.md#2-the-run-manifest), which is where each stage
+below is counted.
+
+A response is sanitised, then parsed **strictly** (`agent/common.py`):
+
+1. **Sanitise.** `unescape_json_delimiters` repairs two malformations that are
+   the model's, not the payload's: escaping the quotes that *delimit* JSON
+   strings (`"text_fragment": \"…\",`) and escaping the whitespace between
+   tokens. The scan is string-aware, so a legitimate in-string `\"` is left
+   alone. JSON comments and trailing commas are stripped next.
+2. **Parse strictly.** `parse_json_object` runs a real `json.loads`, keeping
+   only the `strict=False` leniency for raw control characters inside strings —
+   which models do emit. The lenient parser this replaced degraded a broken
+   document to `None`, or to a silently *truncated* prefix, so the retry prompt
+   carried a pydantic `input_value=None` error naming nothing.
+3. **Fall back, twice.** A fenced ```` ```json ```` block is extracted and
+   strict-parsed; failing that, `repair_bracket_kinds` rewrites closing brackets
+   to the kind their opener demands. It only substitutes characters — never
+   inserts, deletes or reorders — and gives up entirely on an unmatched closer
+   or an unclosed frame at EOF, because that is genuine truncation and closing
+   it would fabricate a payload the model never sent. A successful repair is
+   counted as `llm/json_bracket_repair`.
+4. **Fail loudly.** Anything still unparsed raises `LLMJsonParseError` carrying
+   the decoder's line, column and a ±150-character window. The retry prompt
+   shows the model that window rather than the whole ~11 KB response.
+
+Retries (`llm/parse_retry`) back off exponentially with jitter, so N units
+failing together do not re-issue in lockstep. Two rules bound them:
+
+- **The same JSON *syntax* error twice ends the call** (`llm/parse_abandoned`).
+  A model that emits one structural malformation twice emits it a third time,
+  so the remaining attempts are spend with no expected return. The comparison
+  is on the error *class*, not its position, which drifts between
+  regenerations. Schema `ValidationError`s are excluded — those retries do
+  converge.
+- **Only parsing failures retry.** A rate limit or connection error propagates
+  on first occurrence: showing the model its own malformed output is
+  meaningless when no output arrived, and retrying would triple the request
+  rate exactly when the provider is asking for less. The single exception is a
+  **timeout**, which is not a "send less" signal — it gets one identical
+  re-issue per call before propagating, because at `MAX_VISITS=2` a lost render
+  silently costs a unit its entire critique.
+
 ### Server
 
 ```bash
@@ -228,7 +276,7 @@ MiniLM ~458 MB), so **a default run holds two resident models**. Aligning all
 three is the single-model, low-memory configuration:
 
 ```bash
-# One resident local model instead of two (~650 MB of peak RSS, measured).
+# One resident local model instead of two.
 CHUNK_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 EMBEDDING_MODEL_NAME=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 AGG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
@@ -402,12 +450,17 @@ Details: [API Endpoints](api.md#post-process), [Workflow](workflow.md#2-chunking
 ### Triple Stores
 
 ```bash
-# Fuseki — dataset names default to ontocast--test--facts / ontocast--test--ontologies
+# Fuseki — dataset names default to ontocast--test--{facts,ontologies,shapes}
 FUSEKI_URI=http://localhost:3030
 FUSEKI_AUTH=admin/admin
 #FUSEKI_DATASET=custom--project--facts
 #FUSEKI_ONTOLOGIES_DATASET=custom--project--ontologies
+#FUSEKI_SHAPES_DATASET=custom--project--shapes
 ```
+
+SHACL shapes get a dataset of their own: catalog discovery claims every named
+graph carrying an `owl:Ontology` subject, and a shapes document declares one.
+See [Validation](validation.md#why-shapes-are-not-stored-with-the-ontologies).
 
 See [Tenancy](tenancy.md) for how tenant/project names relate to dataset, collection, and table names.
 
@@ -529,15 +582,16 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `FACTS_PROPERTY_ALIAS_MIN_RATIO` | `0.85` | SequenceMatcher cutoff for deterministic near-miss property rewrites in catalog namespaces (token containment always qualifies, e.g. `qudt:value` → `qudt:numericValue`) |
 | `FACTS_MERGE_REPAIR_PASSES` | `1` | Un-merge budget at the post-aggregation `VALIDATE_FACTS` gate: *merge-signature* error findings (functional violation, suspect multi-value, degenerate coreference) on merged subjects become full-cluster pair vetoes and the facts units are re-aggregated. `0` records findings without repairing. SHACL findings never drive it |
 | `FACTS_CODE_PREDICATES` | `qudt:ucumCode`, `qudt:symbol`, `skos:notation` | Predicates whose literal objects are machine-resolvable codes. A node carrying `qudt:ucumCode "d"` but no unit link gains the object property pointing at the catalog individual declaring that code, when exactly one does. Exact and case-sensitive — these are codes, not labels |
-| `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | `error` | Severity of SUSPECT_MULTI_VALUE gate findings (multiple distinct numeric values on one predicate, or multiple objects on a dominantly single-valued predicate); only `error` findings drive the un-merge repair |
-| `FACTS_SHAPES_DIR` | — | Directory of SHACL shape files for the gate; `sh:NodeShape` triples inlined in the ontology context are picked up automatically. SHACL runs only when `pyshacl` is installed (`uv sync --extra shacl`). Setting this without the extra, or pointing it at a missing/empty directory, logs a **warning** — it never passes silently |
+| `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | `error` | Severity of SUSPECT_MULTI_VALUE gate findings (multiple distinct numeric values on one predicate; mutually irreconcilable short string values on a dominantly string-single-valued predicate; or multiple objects on a dominantly single-valued predicate); only `error` findings drive the un-merge repair |
+| `FACTS_LITERAL_VARIANT_DEDUPE` | `true` | Collapse duplicate literals differing only in language tag or datatype on one (subject, predicate) before validation — `"X"@en` alongside `"X"^^xsd:string` alongside `"X"`. The language-tagged form wins, then the plain form; reified provenance follows the survivor. Each removal is a `literal_variant_pruned` repair record |
+| `FACTS_SHAPES_DIR` | — | **Seed** directory of SHACL shape files (searched recursively), materialized at startup into the tenant's `{tenant}--{project}--shapes` partition — the same read-only bootstrap contract `ONTOCAST_ONTOLOGY_DIRECTORY` has. The gate validates against the partition, so shapes uploaded over `POST /shapes` are equally in force and a container needs no shapes directory. `sh:NodeShape` triples inlined in the ontology context are picked up automatically. SHACL runs only when `pyshacl` is installed (`uv sync --extra shacl`). Setting this without the extra, or pointing it at a missing/empty directory, logs a **warning** — it never passes silently |
 | `FACTS_SHACL_INFERENCE` | `rdfs` | Pre-inference for the SHACL run: `none`, `rdfs`, `owlrl`. RDFS by default because SHACL property paths carry no `rdfs:subPropertyOf` entailment, so a shape naming a superproperty reports the specialised predicate the renderer emitted as missing |
 | `FACTS_SHACL_ADVANCED` | `true` | Enable SHACL Advanced Features (`sh:sparql` constraints, node expressions) |
 | `FACTS_SHACL_MAX_TRIPLES` | `200000` | Skip SHACL with a warning above this graph size; `0` disables the guard |
 | `FACTS_SHACL_AUTOFIX` | `prune` | LLM-free repair of SHACL violations at the gate. `rewrite` retypes literals against `sh:datatype` and resolves a literal to the unique catalog IRI declaring it; `prune` additionally drops `sh:minCount` violators that assert nothing beyond `rdf:type`/`rdfs:label`; `off` reports only. Nothing is ever invented — see [Validation](validation.md#llm-free-autofix) |
 | `FACTS_SHACL_AUTOFIX_PASSES` | `1` | Bounded validate → repair → revalidate rounds; a pass that does not strictly reduce violations is reverted |
 | `FACTS_FUNCTIONAL_MIN_SINGLE_SUPPORT` | `3` | Distinct single-valued subjects a predicate needs before the gate treats it as empirically functional. Below this the evidence is too thin to call a second value a violation |
-| `FACTS_QUANTITY_FALLBACK_VOCABULARY` | QUDT | Role → term mapping the facts prompt names as the fallback for bounded/approximate quantities when retrieval supplied no suitable class. Roles: `value_class`, `numeric_value`, `unit`. Override for catalogs modelling quantities with another vocabulary; set to `{}` to forbid the fallback entirely and keep the renderer inside the provided context. Terms in a configured fallback namespace are reported by `NON_CATALOG_VOCABULARY` as a *deliberate* fallback |
+| `FACTS_QUANTITY_FALLBACK_VOCABULARY` | QUDT | Role → term mapping the facts prompt names as the fallback for bounded/approximate quantities when retrieval supplied no suitable class. Roles: `value_class`, `numeric_value`, `unit`, plus optional `lower_bound`/`upper_bound` (and roles containing `inclusive`) naming the catalog's range properties. Override for catalogs modelling quantities with another vocabulary; set to `{}` to forbid the fallback entirely and keep the renderer inside the provided context. Terms in a configured fallback namespace are reported by `NON_CATALOG_VOCABULARY` as a *deliberate* fallback, and the configured terms are exempt from `UNKNOWN_TERM`. When all of `numeric_value`/`lower_bound`/`upper_bound` are set, equal-bound pairs are promoted to a single scalar at parse time; the `unit` role drives the `LABEL_ONLY_NUMBER` finding — see [Validation](validation.md#which-terms-count-as-unknown) |
 | `FACTS_ADDITIONAL_STANDARD_NAMESPACES` | schema.org | Namespaces exempt from `UNKNOWN_TERM` beyond the RDF/OWL substrate and annotation/provenance terms. Only meta-vocabularies are built in; a domain vocabulary shared across catalogs (SOSA/SSN, CSVW, FOAF, Dublin Core profiles) is exempted here. schema.org is the default because the shipped citation vocabulary uses it |
 | `CHUNK_CITATION_VOCABULARY` | schema.org | Role → term mapping used by the citation-metadata prompt in `citations_only` mode. Bibliographic entries are not domain content, so unlike the rest of the pipeline these terms are configuration rather than retrieval. Roles: `work_class`, `fallback_class`, `title`, `author`, `author_name`, `date_published`, `venue`, `identifier`, `cites` |
 
@@ -602,12 +656,11 @@ Budget behavior:
     The shipped retrieval defaults — notably
     `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` (raised 550 → 1200),
     `PER_ONTOLOGY_ATOM_FLOOR`, `PER_ROLE_ATOM_FLOOR`, and
-    `SCHEMA_CLOSURE_MAX_ENTITIES` — were tuned by a one-axis-at-a-time sweep on
-    a single 8-module materials-science catalog. They have **not** been
-    re-measured against Text2KGBench or other corpora, and the triple budget
-    more than doubles prompt-context cost per unit. Treat them as a starting
-    point and re-sweep for your catalog; the per-knob provenance is recorded in
-    each field's description in `ontocast/config/settings.py`.
+    `SCHEMA_CLOSURE_MAX_ENTITIES` — were tuned one axis at a time against a
+    single catalog, and the triple budget more than doubles prompt-context cost
+    per unit. Treat them as a starting point and re-sweep for your own catalog;
+    each field's description in `ontocast/config/settings.py` records what it
+    controls.
 
 See [Ontology Context](ontology_context.md) for vector-search mode requirements.
 
@@ -659,21 +712,21 @@ ONTOLOGY_PATCH_MMR_LAMBDA=1.0
 | `ONTOLOGY_PATCH_SCHEMA_CLOSURE_MAX_ENTITIES` | `32` | Cap on terms admitted by `rdfs:domain`/`rdfs:range` closure over the seeds: properties whose domain/range names an admitted class (or an ancestor), plus the domain/range classes of admitted properties. `0` disables |
 | `ONTOLOGY_PATCH_SCHEMA_CLOSURE_ANCESTOR_DEPTH` | `2` | How far to walk `rdfs:subClassOf` upward when matching a property's declared domain/range against an admitted class |
 
-#### Retrieval tuning: measured ranges
+#### Retrieval tuning: what each knob does
 
-Measured one axis at a time on an 8-module materials-science catalog against a
-four-paragraph measurement-heavy passage, scoring the snapshot the renderer would
-receive. "Needed terms" is recall over the 11 range / epistemic-qualifier /
-observation-result terms that passage required.
+The ranges below are starting points, not results. Tune against
+`catalog_context_triples` and the snapshot your own renderer receives; the
+retrieval metrics in [Observability](observability.md#retrieval-metrics) are
+what to read while doing so.
 
 | Variable | Default | Useful range | Effect |
 |---|---|---|---|
-| `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | `1200` | 1000–1600 | **Gates everything.** At `550` every other knob below is flat, because the snapshot is already pinned at the cap. `550 → 1200` moved declared-property coverage 21% → 36%. Flattens past ~1600 |
-| `ONTOLOGY_PATCH_SMALL_MODULE_CLOSURE_MAX_TRIPLES` | `300` | 250–400 | Largest single lever: with the atom floor at 2, `0 → 300` took needed-term recall 3/11 → 11/11 and property coverage 37% → 74%. Set it above the largest module you need whole; going past that adds triples for little gain |
-| `ONTOLOGY_PATCH_PER_ONTOLOGY_ATOM_FLOOR` | `2` | 2–4 | Saturates at 3–4 (`0 → 3` moved needed terms 1/11 → 5/11). **The closure above is inert without this** — a module must win ≥ 1 seed before its graph is considered |
-| `ONTOLOGY_PATCH_SCHEMA_CLOSURE_MAX_ENTITIES` | `32` | 16–48 | Property coverage 36% → 47% at 32; saturated by 64 |
-| `ONTOLOGY_PATCH_PER_ROLE_ATOM_FLOOR` | `12` | 8–16 | Weak on its own (flat to 12, useful only past ~24 in isolation); contributes once the closure is on — property coverage 74% → 82% in the combined setting |
-| `ONTOLOGY_PATCH_MAX_ATOMS` / `_BASE` | `96` | 96–192 | Now trades directly against context size once the triple budget is not binding: 96 → 192 gives 36% → 46% coverage for ~40% more triples |
+| `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | `1200` | 1000–1600 | **Gates everything.** Set too low, every knob below is flat, because the snapshot is already pinned at the cap. Raise this first; it saturates |
+| `ONTOLOGY_PATCH_SMALL_MODULE_CLOSURE_MAX_TRIPLES` | `300` | 250–400 | The largest single lever: admits a small module whole once it has won a seed. Set it above the largest module you need entire; going past that adds triples for little gain |
+| `ONTOLOGY_PATCH_PER_ONTOLOGY_ATOM_FLOOR` | `2` | 2–4 | Saturates quickly. **The closure above is inert without this** — a module must win at least one seed before its graph is considered |
+| `ONTOLOGY_PATCH_SCHEMA_CLOSURE_MAX_ENTITIES` | `32` | 16–48 | Admits properties whose domain/range names an admitted class. Saturates well before the top of the range |
+| `ONTOLOGY_PATCH_PER_ROLE_ATOM_FLOOR` | `12` | 8–16 | Weak on its own; contributes once the schema closure is on |
+| `ONTOLOGY_PATCH_MAX_ATOMS` / `_BASE` | `96` | 96–192 | Trades directly against context size once the triple budget is not binding |
 | `VECTOR_STORE_TOP_K` | `20` | — | **Insensitive** (10–40 all within 1 point). Effectively capped by `MAX_ATOMS_BASE`; leave alone |
 | `ONTOLOGY_PATCH_MMR_LAMBDA` | `1.0` | — | **Insensitive** (0.5–1.0 identical on this corpus). Leave alone unless you see near-duplicate terms crowding the snapshot |
 
@@ -713,16 +766,20 @@ scheduled and the `ontocast cache` commands that drive it manually.
 
 ```bash
 AGG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
-AGG_SIMILARITY_THRESHOLD=0.80
-AGG_CANDIDATE_SIMILARITY_THRESHOLD=0.70
+AGG_SIMILARITY_THRESHOLD=0.80          # EntityAligner only (align_entities, match-graphs)
+AGG_CANDIDATE_SIMILARITY_THRESHOLD=0.70  # the in-pipeline aggregator's threshold
 AGG_LEXICAL_LABEL_JACCARD=0.5
 AGG_LEXICAL_SEQUENCE_RATIO=0.90
 AGG_LEXICAL_TOKEN_JACCARD=0.75
 AGG_FUNCTIONAL_MIN_EMPIRICAL_SUPPORT=2
 AGG_SIBLING_GUARD_SCOPE=subject
+AGG_LITERAL_CONFLICT_GUARD=true
+AGG_INITIALS_DISTINCT_GUARD=true
+AGG_NATURAL_KEY_MERGE=true
+AGG_TYPE_GUARD_UNTYPED=permissive
 ```
 
-See [Aggregation](aggregation.md) for what each threshold does.
+See [Aggregation](aggregation.md) for what each threshold and guard does.
 
 ### Web Search
 
@@ -805,9 +862,9 @@ artifact — with no cap at all.
 | `selected_vector_search_ontology` | `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` (`1200`) binds first, then the budget above as a backstop |
 | Facts prompts (merged document context) | `ONTOLOGY_CONTEXT_MAX_TRIPLES` |
 
-**What it costs.** Measured through the repo's own serializers on an 796-triple
-module: **50.7 chars/triple in Turtle, 102.6 in JSON-LD**. So the `4000` default
-is roughly 51k tokens as Turtle and 103k as JSON-LD.
+**What it costs.** JSON-LD spends roughly twice the characters per triple that
+Turtle does, so the same budget is about twice the prompt under the default wire
+format. See [Performance](performance.md#how-much-a-triple-costs).
 
 **How the budget is met.** Over budget, triples are dropped in increasing order
 of harm, stopping as soon as the graph fits:

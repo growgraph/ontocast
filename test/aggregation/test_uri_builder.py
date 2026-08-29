@@ -62,7 +62,7 @@ def test_detect_role_infers_class_from_type_value_usage() -> None:
     ``a owl:Class`` declaration in the local per-sentence graph — must still
     receive EntityRole.CLASS so the matcher can align it correctly against
     OntoCast-predicted class entities.  This scenario arises when two ontology
-    entities share the same rdfs:label (e.g. Text2KGBench space ontology has
+    entities share the same rdfs:label (e.g. a space ontology has
     both property P59 and class Q8928 labeled "constellation"): without
     structural role inference the class would fall back to INSTANCE, causing
     false-negative entity matches."""

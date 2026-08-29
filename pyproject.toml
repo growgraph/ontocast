@@ -65,7 +65,7 @@ license-files = ["LICENSE"]
 name = "ontocast"
 readme = "README.md"
 requires-python = ">=3.12,<4.0"
-version = "0.6.1"
+version = "0.6.2"
 
 [project.optional-dependencies]
 # `plot` is deliberately excluded: pygraphviz builds from source against system
@@ -179,10 +179,12 @@ Issues = "https://github.com/growgraph/ontocast/issues"
 Repository = "https://github.com/growgraph/ontocast"
 
 # Without an explicit sdist target hatchling falls back to "everything not
-# VCS-ignored", which shipped `data/` (15 MB, and an importable top-level
-# `data` package), `docs/` and `demo/` in the source distribution -- exactly
-# what the 0.5.0 wheel change removed. `uv publish` uploads both artifacts, so
-# the wheel fix alone was not enough.
+# VCS-ignored", which shipped `docs/`, `demo/` and the (since removed) `data/`
+# corpus in the source distribution -- exactly what the 0.5.0 wheel change
+# removed. `uv publish` uploads both artifacts, so the wheel fix alone was not
+# enough. The include list is an allowlist for the same reason: `/test` ships,
+# so every test must resolve its fixtures under `test/` (guarded by
+# `test/test_repo_isolation.py`) or it cannot run from a published sdist.
 [tool.hatch.build.targets.sdist]
 exclude = [
   "**/.pytest_cache",

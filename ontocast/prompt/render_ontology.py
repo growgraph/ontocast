@@ -53,6 +53,26 @@ Rules:
 - Cross-links to other listed ontologies via existing IRIs are fine; do not mint terms under foreign namespaces you do not own.
 """
 
+#: Prepended to either update intro when the context was assembled by vector
+#: retrieval. The chapter is then a *retrieved subset*, and a prompt that
+#: presents it as the whole ontology invites two errors this block heads off:
+#: re-minting terms the catalog already defines (they simply were not
+#: retrieved), and deleting statements whose justification lives in the
+#: unretrieved remainder.
+partial_context_notice = """
+IMPORTANT — PARTIAL CONTEXT: the ontology chapter below is a RETRIEVED SUBSET
+of the catalog ontologies, selected for relevance to this text. It is NOT the
+complete ontology. Therefore:
+- The catalog may already define a concept that is not shown here. Prefer
+  reusing and specializing the terms you can see; introduce a new term only
+  when nothing shown fits, name it by its standard domain terminology, and
+  place it under the matching existing domain prefix.
+- Never delete or rewrite a shown statement unless the document contradicts it
+  AND you redeclare the corrected statement in the same update. Absence of
+  supporting context is not evidence of error — the support may simply not
+  have been retrieved.
+"""
+
 prefix_instruction = """Use {domain_ontologies_clause} for entities/properties placed in the domain ontologies. DECLARE all prefixes in preamble! New terms MUST use only those listed domain prefixes."""
 
 

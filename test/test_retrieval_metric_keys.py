@@ -23,10 +23,18 @@ EXPECTED_WIRE_NAMES = {
     "ONTOLOGY_WRITABLE_COUNT": "ontology_writable_count",
     "ONTOLOGY_PRIMARY_UNITS": "ontology_primary_units",
     "ONTOLOGY_SNAPSHOT_TRIPLES": "ontology_snapshot_triples",
+    "ONTOLOGY_FINDINGS_RESIDUAL": "ontology_findings_residual",
+    "ONTOLOGY_MANDATORY_RESIDUAL": "ontology_mandatory_residual",
+    "ONTOLOGY_CRITIC_CALLS": "ontology_critic_calls",
+    "ONTOLOGY_CRITIC_ACCEPTED": "ontology_critic_accepted",
     "FACTS_ANCHOR_COUNT": "facts_anchor_count",
     "FACTS_ANCHOR_UNITS": "facts_anchor_units",
     "FACTS_LLM_REPAIR_RENDERS_TOTAL": "facts_llm_repair_renders_total",
     "FACTS_LLM_REPAIR_RENDERS_FAILED": "facts_llm_repair_renders_failed",
+    "FACTS_REPAIR_DELETE_ONLY": "facts_repair_delete_only",
+    "FACTS_MANDATORY_RESIDUAL": "facts_mandatory_residual",
+    "FACTS_CRITIC_CALLS": "facts_critic_calls",
+    "FACTS_CRITIC_ACCEPTED": "facts_critic_accepted",
     "FACTS_FINDINGS_RESIDUAL": "facts_findings_residual",
     "FACTS_REJECTED_MERGES": "facts_rejected_merges",
     "FACTS_MERGE_REPAIR_PASSES": "facts_merge_repair_passes",
@@ -51,7 +59,7 @@ _WRITER_MODULES = (
     "ontocast/stategraph/node_factories.py",
     "ontocast/stategraph/context_resolver.py",
     "ontocast/api/process_helpers.py",
-    "ontocast/tool/facts_invariants.py",
+    "ontocast/tool/facts_validation",
 )
 
 
@@ -79,9 +87,10 @@ def test_no_bare_string_metric_keys_remain() -> None:
     """
     repo_root = Path(__file__).resolve().parents[1]
     pattern = re.compile(r"""retrieval_metrics\[\s*["']""")
-    offenders = [
-        module
-        for module in _WRITER_MODULES
-        if pattern.search((repo_root / module).read_text())
-    ]
+    offenders = []
+    for module in _WRITER_MODULES:
+        path = repo_root / module
+        files = sorted(path.glob("*.py")) if path.is_dir() else [path]
+        if any(pattern.search(file.read_text()) for file in files):
+            offenders.append(module)
     assert offenders == []

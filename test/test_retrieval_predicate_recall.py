@@ -43,7 +43,7 @@ def _hit(iri: str, score: float, role: str = ROLE_RESOURCE) -> OntologySearchHit
 
 
 def _mixed_ranking() -> list[OntologySearchHit]:
-    """Six classes outranking every property — the shape measured on case6."""
+    """Six classes outranking every property — an observed retrieval shape."""
     hits = [_hit(f"{ONTO}#Class{i}", 0.90 - i * 0.01) for i in range(6)]
     hits.append(_hit(f"{ONTO}#hasResult", 0.40, role=ROLE_PREDICATE))
     hits.append(_hit(f"{ONTO}#hasBound", 0.35, role=ROLE_PREDICATE))

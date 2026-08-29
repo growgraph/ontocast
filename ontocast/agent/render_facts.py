@@ -13,12 +13,15 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
+from ontocast.agent.update_common import finalize_update_report, log_quarantine
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import (
     FactsRenderReport,
     GraphRepairRecord,
     GraphUpdateRenderReport,
+    Suggestions,
+    format_findings_for_prompt,
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import (
@@ -26,7 +29,11 @@ from ontocast.onto.ontology_access import (
     build_llm_prefix_map,
     ontology_access_for_unit_facts,
 )
-from ontocast.onto.rdfgraph import RDFGraph, finalize_llm_graph
+from ontocast.onto.rdfgraph import (
+    RDFGraph,
+    RejectedLiteralTriple,
+    finalize_llm_graph,
+)
 from ontocast.onto.state import BudgetTracker
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.prompt.common import text_template, user_template
@@ -42,9 +49,10 @@ from ontocast.prompt.render_facts import (
 )
 from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
 from ontocast.tool.atomic import AtomicToolBox
-from ontocast.tool.facts_invariants import (
-    format_findings_for_prompt,
+from ontocast.tool.facts_validation import (
+    expand_vocabulary_terms,
     normalize_literals_against_schema,
+    promote_degenerate_bounds_from_vocabulary,
     repair_literal_type_objects,
     repair_property_aliases,
     resolve_code_literals,
@@ -57,9 +65,8 @@ logger = logging.getLogger(__name__)
 def _normalize_and_repair_graph(
     graph: RDFGraph,
     ontology_context_graph: RDFGraph,
+    tools: AtomicToolBox,
     *,
-    min_ratio: float,
-    code_predicates: Sequence[str] = (),
     budget_tracker: BudgetTracker | None = None,
 ) -> tuple[RDFGraph, list[GraphRepairRecord]]:
     """Apply LLM-free parse-time fixes to a rendered graph in place.
@@ -75,8 +82,9 @@ def _normalize_and_repair_graph(
     Args:
         graph: Rendered facts graph, repaired in place.
         ontology_context_graph: Read-only schema the repairs are checked against.
-        min_ratio: Similarity floor for accepting an alias rewrite.
-        code_predicates: Predicates carrying machine-resolvable codes.
+        tools: Supplies the alias-rewrite similarity floor, code predicates,
+            and the quantity fallback vocabulary (alias exemptions and the
+            degenerate-bound promotion roles).
         budget_tracker: Charged ``"repair/deterministic"``. Both scans here walk
             the whole ontology graph per call, so this is timed to show how much
             of it is per-unit-invariant work.
@@ -88,10 +96,18 @@ def _normalize_and_repair_graph(
     retyped = normalize_literals_against_schema(graph, ontology_context_graph)
     type_repaired, _type_findings, type_records = repair_literal_type_objects(graph)
     rewritten, _alias_findings, alias_records = repair_property_aliases(
-        graph, ontology_context_graph, min_ratio=min_ratio
+        graph,
+        ontology_context_graph,
+        min_ratio=tools.property_alias_min_ratio,
+        exempt_terms=expand_vocabulary_terms(
+            tools.quantity_fallback_vocabulary, graph, ontology_context_graph
+        ),
     )
     resolved, code_records = resolve_code_literals(
-        graph, ontology_context_graph, code_predicates
+        graph, ontology_context_graph, tools.code_predicates
+    )
+    promote_degenerate_bounds_from_vocabulary(
+        graph, ontology_context_graph, tools.quantity_fallback_vocabulary
     )
     if budget_tracker is not None:
         budget_tracker.add_duration(
@@ -346,8 +362,7 @@ async def render_facts_fresh(
         clean_graph, repair_records = _normalize_and_repair_graph(
             clean_graph,
             ontology_context_graph,
-            min_ratio=tools.property_alias_min_ratio,
-            code_predicates=tools.code_predicates,
+            tools,
             budget_tracker=state.budget_tracker,
         )
         state.applied_repairs.extend(repair_records)
@@ -453,39 +468,42 @@ async def render_facts_update(
             render_report.external_evidence_request,
             web_search_enabled,
         )
-        graph_update = render_report.graph_update
-        all_rejected = []
         ontology_context_graph = access.effective_ontology_for_prompt().graph
-        for op in graph_update.triple_operations:
-            clean_graph, rejected = finalize_llm_graph(op.graph)
-            # Only insert ops are normalized/checked: deleting a bad literal
-            # (or a bad alias triple) is desirable and must match verbatim.
-            if op.type == "insert":
-                clean_graph, repair_records = _normalize_and_repair_graph(
-                    clean_graph,
-                    ontology_context_graph,
-                    min_ratio=tools.property_alias_min_ratio,
-                    code_predicates=tools.code_predicates,
-                    budget_tracker=state.budget_tracker,
-                )
-                state.applied_repairs.extend(repair_records)
-            if tools.object_property_literal_check and op.type == "insert":
-                clean_graph, op_rejected = partition_object_property_literal_triples(
-                    clean_graph, ontology_context_graph
-                )
-                rejected = rejected + op_rejected
-            op.graph = clean_graph
-            all_rejected.extend(rejected)
-        state.quarantined_literal_triples = all_rejected
-        if all_rejected:
-            logger.warning(
-                "Facts update quarantined %d triple(s) with invalid literals",
-                len(all_rejected),
+
+        def repair_inserts(
+            graph: RDFGraph,
+        ) -> tuple[RDFGraph, list[RejectedLiteralTriple]]:
+            graph, repair_records = _normalize_and_repair_graph(
+                graph,
+                ontology_context_graph,
+                tools,
+                budget_tracker=state.budget_tracker,
             )
+            state.applied_repairs.extend(repair_records)
+            if not tools.object_property_literal_check:
+                return graph, []
+            return partition_object_property_literal_triples(
+                graph, ontology_context_graph
+            )
+
+        graph_update, rejected = finalize_update_report(
+            render_report, insert_hook=repair_inserts
+        )
+        state.quarantined_literal_triples = rejected
+        log_quarantine("Facts", rejected)
         state.facts_updates.append(graph_update)
         state.update_facts()
         # Findings were consumed by this render; the loop re-collects fresh.
         state.deterministic_findings = []
+        # Critic suggestions are consumed by exactly the render they were
+        # raised against. Leaving them set carried them into every later render
+        # of the unit -- including the finding-driven repair, which then ran
+        # under two contradictory contracts at once: the improvement template's
+        # "think independently, proactively fix additional problems" and the
+        # findings block's "apply every item, rewrite in place, never delete".
+        # Reachable only at MAX_VISITS >= 2, which is where the observed loss
+        # of graph connectivity and gain in validation errors came from.
+        state.suggestions = Suggestions()
 
         num_operations, num_triples = graph_update.count_total_triples()
         logger.info(

@@ -122,6 +122,92 @@ def test_get_summary_omits_tokens_when_zero() -> None:
     assert "tokens" not in summary
 
 
+def test_ratios_are_none_when_nothing_was_measured() -> None:
+    tracker = BudgetTracker()
+    assert tracker.prefix_cache_hit_rate is None
+    assert tracker.reasoning_share_of_output is None
+
+    # A provider that reports no token usage at all stays unmeasured rather
+    # than reporting a confident zero.
+    tracker.add_usage(100, 50)
+    assert tracker.prefix_cache_hit_rate is None
+    assert tracker.reasoning_share_of_output is None
+
+
+def test_prefix_cache_hit_rate_counts_replayed_input_in_the_denominator() -> None:
+    # The trap this guards: cache_read_input_tokens accumulates on billed *and*
+    # replayed calls, while input_tokens counts billed only. Dividing by
+    # input_tokens alone reports 180% cache hits on this workload.
+    tracker = BudgetTracker()
+    tracker.add_usage(
+        10, 5, usage=TokenUsage(input_tokens=1000, cache_read_input_tokens=400)
+    )
+    tracker.add_cache_hit(
+        10, 5, usage=TokenUsage(input_tokens=1000, cache_read_input_tokens=800)
+    )
+    assert tracker.prefix_cache_hit_rate == 0.6
+
+
+def test_prefix_cache_hit_rate_is_zero_when_nothing_was_cached() -> None:
+    # Distinct from None: tokens were reported, and none of them were cached --
+    # the signature of a fan-out that issued before any prefix was readable.
+    tracker = BudgetTracker()
+    tracker.add_usage(10, 5, usage=TokenUsage(input_tokens=1000, output_tokens=100))
+    assert tracker.prefix_cache_hit_rate == 0.0
+
+
+def test_reasoning_share_decomposes_output_rather_than_adding_to_it() -> None:
+    tracker = BudgetTracker()
+    tracker.add_usage(10, 5, usage=TokenUsage(output_tokens=400, reasoning_tokens=280))
+    assert tracker.reasoning_share_of_output == 0.7
+    assert tracker.output_tokens == 400, "reasoning tokens are already inside output"
+
+
+def test_reasoning_share_is_zero_for_a_non_reasoning_model() -> None:
+    # gpt-4o-mini and friends: a reasoning-effort setting cannot help here, and
+    # the ratio has to say so rather than read as unmeasured.
+    tracker = BudgetTracker()
+    tracker.add_usage(10, 5, usage=TokenUsage(input_tokens=100, output_tokens=250))
+    assert tracker.reasoning_share_of_output == 0.0
+
+
+def test_ratios_ride_the_serialized_budget() -> None:
+    # The wire contract: /process responses and <stem>.run.json both dump the
+    # tracker, and downstream consumers must read these rather than re-deriving
+    # them -- the denominator above is exactly what gets reimplemented wrongly.
+    tracker = BudgetTracker()
+    tracker.add_usage(
+        10,
+        5,
+        usage=TokenUsage(
+            input_tokens=1000,
+            output_tokens=400,
+            reasoning_tokens=280,
+            cache_read_input_tokens=500,
+        ),
+    )
+    dumped = tracker.model_dump()
+    assert dumped["prefix_cache_hit_rate"] == 0.5
+    assert dumped["reasoning_share_of_output"] == 0.7
+
+
+def test_get_summary_reports_the_ratios() -> None:
+    tracker = BudgetTracker()
+    tracker.add_usage(
+        10,
+        5,
+        usage=TokenUsage(
+            input_tokens=1000,
+            output_tokens=400,
+            reasoning_tokens=280,
+            cache_read_input_tokens=500,
+        ),
+    )
+    summary = tracker.get_summary()
+    assert "50% prefix-cache hits" in summary
+    assert "70% output is reasoning" in summary
+
+
 def test_add_duration_accumulates_per_name() -> None:
     tracker = BudgetTracker()
     tracker.add_duration("Chunk Text", 1.5)

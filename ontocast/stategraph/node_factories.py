@@ -42,10 +42,15 @@ from ontocast.stategraph.facts_gate import run_facts_gate
 from ontocast.stategraph.helpers import (
     all_unit_patch_source_iris,
     build_document_excerpt,
-    build_ontology_delta_graph,
+    enforce_redeclared_deletes,
     merge_unit_deltas,
+    reconcile_fresh_ontologies,
 )
 from ontocast.stategraph.unit_context import UnitLoopContext
+from ontocast.tool.ontology_validation import (
+    apply_minted_duplicate_rewrites,
+    detect_minted_duplicates,
+)
 from ontocast.tool.validate import RDFGraphConnectivityValidator
 from ontocast.toolbox import ToolBox
 from ontocast.util.loop_lag import loop_lag
@@ -217,6 +222,10 @@ def make_render_ontology_node(tools: ToolBox):
         all_writable: list[str] = []
         seen_writable: set[str] = set()
 
+        # Accumulated over *every* unit (see the facts reduce below): the
+        # residual's denominator is "units", not "units that ran a critic".
+        ontology_findings_residual = 0
+        ontology_mandatory_residual = 0
         for (
             unit_index,
             result,
@@ -225,6 +234,12 @@ def make_render_ontology_node(tools: ToolBox):
             assembly_mode,
         ) in ordered_results:
             state.budget_tracker.merge_from(result.budget_tracker)
+            ontology_findings_residual += len(result.deterministic_findings)
+            ontology_mandatory_residual += sum(
+                1 for finding in result.deterministic_findings if finding.mandatory
+            )
+            if result.attempt_log:
+                state.ontology_loop_telemetry[unit_index] = list(result.attempt_log)
             unit_contexts[unit_index] = (
                 primary_iri,
                 list(result.ontology_patch_sources),
@@ -260,7 +275,7 @@ def make_render_ontology_node(tools: ToolBox):
                 continue
 
             content_unit = result.content_unit
-            delta = build_ontology_delta_graph(result)
+            delta = result.build_delta()
             if not delta.is_empty():
                 unit_deltas.append(delta)
             if len(delta.inserts) > 0:
@@ -296,9 +311,89 @@ def make_render_ontology_node(tools: ToolBox):
         state.retrieval_metrics[RetrievalMetric.ONTOLOGY_PRIMARY_UNITS] = sum(
             primary_counts.values()
         )
+        state.retrieval_metrics[RetrievalMetric.ONTOLOGY_FINDINGS_RESIDUAL] = (
+            ontology_findings_residual
+        )
+        state.retrieval_metrics[RetrievalMetric.ONTOLOGY_MANDATORY_RESIDUAL] = (
+            ontology_mandatory_residual
+        )
+        # The ontology critic's own ledger, mirroring the facts block: without
+        # it, whether the critic ran at all (it never does at MAX_VISITS=1) and
+        # how often `success or score > 90` accepted are unrecoverable from a
+        # run's artifacts.
+        ontology_critic_attempts = [
+            attempt
+            for attempts in state.ontology_loop_telemetry.values()
+            for attempt in attempts
+            if attempt.kind == "critic"
+        ]
+        state.retrieval_metrics[RetrievalMetric.ONTOLOGY_CRITIC_CALLS] = len(
+            ontology_critic_attempts
+        )
+        state.retrieval_metrics[RetrievalMetric.ONTOLOGY_CRITIC_ACCEPTED] = sum(
+            1 for attempt in ontology_critic_attempts if attempt.success
+        )
 
         # Document-level insert/delete consensus + namespace apply onto catalog bases.
         merged_delta = merge_unit_deltas(unit_deltas)
+
+        # Single-ontology modes are untouched by the delete policy: there the
+        # model saw the whole graph, so its deletes were judged on full
+        # evidence.
+        if (
+            state.ontology_context_mode
+            == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+        ):
+            state.ontology_reduce_metrics["deletes_dropped_unredeclared"] = (
+                enforce_redeclared_deletes(merged_delta)
+            )
+
+        # Minted-duplicate reconciliation against the FULL terminals. The
+        # per-unit label-collision check indexes the snapshot — under
+        # vector retrieval that is exactly the part of the catalog where the
+        # duplicate is not, so a term the retrieval failed to surface gets
+        # re-minted under a fresh IRI and nothing else on the write path would
+        # ever notice. 'detect' (default) only measures; 'rewrite' substitutes
+        # after a sampling run has shown the matches are true duplicates.
+        reconcile_mode = (
+            tools.config.get_tool_config().ontology_validation.reconcile_minted_terms
+        )
+        if reconcile_mode != "off" and len(merged_delta.inserts) > 0 and all_writable:
+            terminal_graphs = {
+                iri: terminal.graph
+                for iri in all_writable
+                if (
+                    terminal
+                    := tools.ontology_manager.get_freshest_terminal_ontology_by_iri(iri)
+                )
+                is not None
+                and not terminal.is_null()
+            }
+            duplicates = detect_minted_duplicates(merged_delta.inserts, terminal_graphs)
+            state.ontology_reduce_metrics["minted_duplicates"] = len(duplicates)
+            if duplicates:
+                state.ontology_reduce_metrics["minted_duplicate_pairs"] = [
+                    duplicate.model_dump() for duplicate in duplicates
+                ]
+                for duplicate in duplicates:
+                    logger.warning(
+                        "Minted term <%s> duplicates catalog term <%s> "
+                        "(surface %r, role %s)%s",
+                        duplicate.minted_iri,
+                        duplicate.catalog_iri,
+                        duplicate.surface,
+                        duplicate.role,
+                        " — rewriting" if reconcile_mode == "rewrite" else "",
+                    )
+                if reconcile_mode == "rewrite":
+                    state.ontology_reduce_metrics["minted_duplicates_rewritten"] = (
+                        apply_minted_duplicate_rewrites(
+                            merged_delta.inserts, duplicates
+                        )
+                    )
+
+        fresh_ontologies, fresh_metrics = reconcile_fresh_ontologies(fresh_ontologies)
+        state.ontology_reduce_metrics.update(fresh_metrics)
 
         artifacts: list[Ontology] = list(fresh_ontologies)
         if not merged_delta.is_empty() and all_writable:
@@ -441,7 +536,7 @@ def make_consolidate_ontology_node(tools: ToolBox):
         )
         result = await render_ontology_update(consolidation_state, atomic_tools)
         if result.status == Status.SUCCESS and result.working_graph_changed():
-            delta = build_ontology_delta_graph(result)
+            delta = result.build_delta()
             if not delta.is_empty() and primary.iri:
                 # The consolidation delta is a complement of `primary` (the
                 # map-stage artifact), so it must be applied on top of exactly
@@ -580,6 +675,10 @@ def make_render_facts_node(tools: ToolBox):
         facts_units: list[ContentUnit] = []
         failed_without_output_count = unit_errors
         salvaged_failed_count = 0
+        # Accumulated over *every* unit, whether or not it ran a repair render,
+        # so the residual has "units" as its denominator.
+        findings_residual = 0
+        mandatory_residual = 0
         unit_contexts: dict[int, tuple[str, list[str], OntologyAssemblyMode]] = {}
         for (
             unit_index,
@@ -589,6 +688,10 @@ def make_render_facts_node(tools: ToolBox):
             assembly_mode,
         ) in ordered_results:
             state.budget_tracker.merge_from(result.budget_tracker)
+            findings_residual += len(result.deterministic_findings)
+            mandatory_residual += sum(
+                1 for finding in result.deterministic_findings if finding.mandatory
+            )
             if result.attempt_log:
                 state.facts_loop_telemetry[unit_index] = list(result.attempt_log)
             if result.applied_repairs:
@@ -647,10 +750,38 @@ def make_render_facts_node(tools: ToolBox):
         state.retrieval_metrics[RetrievalMetric.FACTS_LLM_REPAIR_RENDERS_FAILED] = sum(
             1 for attempt in all_attempts if attempt.repair_failed
         )
-        state.retrieval_metrics[RetrievalMetric.FACTS_FINDINGS_RESIDUAL] = sum(
-            attempts[-1].n_deterministic_findings
-            for attempts in state.facts_loop_telemetry.values()
-            if attempts and attempts[-1].kind == "llm_repair"
+        # Repair renders rolled back for answering the findings prompt with
+        # deletions. Non-zero means the prompt or the validator is provoking
+        # data-destroying responses -- the failure mode that has cost runs a
+        # large share of their value nodes while logging nothing a run
+        # could be judged by.
+        state.retrieval_metrics[RetrievalMetric.FACTS_REPAIR_DELETE_ONLY] = sum(
+            1 for attempt in all_attempts if attempt.repair_delete_only
+        )
+        # Residual is read off each unit's final findings, not off the attempt
+        # log. Summing `attempts[-1]` where `kind == "llm_repair"` silently
+        # contributed 0 for every unit that never ran a repair render -- the
+        # clean ones and the ones whose loop exhausted its retries -- so the
+        # metric's denominator was "units that needed repair", not "units", and
+        # a change that made *fewer* units enter repair read as a drop in
+        # residual findings. It also summed total findings, so advisory
+        # NUMERIC_COVERAGE (which fires on nearly every unit of numeric prose)
+        # dominated the number that was supposed to track mandatory defects.
+        state.retrieval_metrics[RetrievalMetric.FACTS_FINDINGS_RESIDUAL] = (
+            findings_residual
+        )
+        state.retrieval_metrics[RetrievalMetric.FACTS_MANDATORY_RESIDUAL] = (
+            mandatory_residual
+        )
+        # The critic's own ledger. `node_visits` counting CRITICISE_FACTS lived
+        # on the per-unit state copy and died with it, so the number of critic
+        # calls a run bought was not recoverable from its own artifacts.
+        critic_attempts = [a for a in all_attempts if a.kind == "critic"]
+        state.retrieval_metrics[RetrievalMetric.FACTS_CRITIC_CALLS] = len(
+            critic_attempts
+        )
+        state.retrieval_metrics[RetrievalMetric.FACTS_CRITIC_ACCEPTED] = sum(
+            1 for attempt in critic_attempts if attempt.success
         )
         state.facts_units = facts_units
         state.status = _map_stage_status(
@@ -706,6 +837,7 @@ def make_merge_facts_node(tools: ToolBox):
         )
         state.aggregated_facts = result.graph
         state.aggregation_clusters = result.merged_clusters
+        state.aggregation_key_clusters = result.key_supported_clusters
         state.retrieval_metrics[RetrievalMetric.FACTS_REJECTED_MERGES] = (
             result.rejected_merge_count
         )

@@ -1,6 +1,6 @@
 """Repro + regression for cross-chunk person-variant identity.
 
-Benchmark case7 produced ``doc:baranovD`` ("Baranov, D.", from the reference
+A document produced ``doc:baranovD`` ("Baranov, D.", from the reference
 list) and ``doc:personDmitryBaranov`` ("Dmitry Baranov", from the author
 block) with no ``owl:sameAs`` link. The merge gates blocked the pair twice:
 name-part literals (given/family name — mandated by prompt rule 7 atomicity)

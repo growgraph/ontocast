@@ -12,6 +12,7 @@ tells you to align.
 import re
 from pathlib import Path
 
+import pytest
 from pydantic import AliasChoices
 from pydantic_settings import BaseSettings
 
@@ -194,14 +195,25 @@ def test_quoted_variable_counts_are_accurate() -> None:
     hedged = re.compile(r"(?:around|roughly|about|~|under|over)\s*$", re.IGNORECASE)
 
     wrong: list[str] = []
+    checked = 0
     for name in _FILES_QUOTING_COUNTS:
-        text = (root / name).read_text()
+        path = root / name
+        # `docs/` is not in the sdist include list, so an installed-sdist run
+        # has no docs tree to check. Skipping keeps this a checkout-only guard
+        # instead of a FileNotFoundError; `test_repo_isolation.py` pins the
+        # arrangement from the other side.
+        if not path.is_file():
+            continue
+        checked += 1
+        text = path.read_text()
         for match in re.finditer(r"(\d+)\s+variables", text):
             if hedged.search(text[: match.start()]):
                 continue
             if int(match.group(1)) not in real:
                 wrong.append(f"{name}: claims {match.group(1)}")
 
+    if checked == 0:
+        pytest.skip("no prose file available to check (installed sdist)")
     assert wrong == [], (
         f"Stale variable counts (actual: {sorted(real)}): {wrong}. Update the "
         "prose, or rephrase it so it does not quote a number."
