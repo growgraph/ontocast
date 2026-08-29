@@ -11,14 +11,13 @@ degenerate bound pairs.
 
 from rdflib import URIRef
 
-from ontocast.onto.model import FactsUnitFindingKind
+from ontocast.onto.model import FactsUnitFindingKind, format_findings_for_prompt
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.facts_validation import (
     ValidationPolicy,
     collect_declared_namespaces,
     collect_unit_findings,
     expand_vocabulary_terms,
-    format_findings_for_prompt,
     promote_degenerate_bounds,
     promote_degenerate_bounds_from_vocabulary,
     shacl_catalog_contradictions,

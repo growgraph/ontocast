@@ -64,3 +64,15 @@ Provide a constructive, actionable critique following these priorities:
 - Flag restated context triples: GraphUpdate inserts that merely repeat triples already in the provided ontology context are errors — complements only
 - Flag terms minted under undeclared domain prefixes or under a namespace that is not one of the listed domain ontologies
 """
+
+#: Appended to the criteria when the unit's context was assembled by vector
+#: retrieval — the critic otherwise judges "Completeness" and "Domain
+#: Coverage" against a chapter that is a retrieved subset, and demands
+#: concepts that may already exist unretrieved in the catalog.
+partial_context_critique_notice = """
+NOTE — PARTIAL CONTEXT: the ontology chapter is a retrieved subset of the
+catalog, not the complete ontology. Do not demand fixes for concepts merely
+absent from the chapter — they may exist in the catalog unretrieved. Judge
+Completeness only for concepts central to THIS text, and never propose
+deleting a statement on the grounds that its support is not shown.
+"""

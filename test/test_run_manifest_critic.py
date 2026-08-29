@@ -9,14 +9,14 @@ cache -- which only worked because caching happened to be enabled.
 
 import pytest
 
-from ontocast.onto.model import FactsLoopAttempt
-from ontocast.onto.run_manifest import summarize_facts_loop
+from ontocast.onto.model import LoopAttempt
+from ontocast.onto.run_manifest import summarize_loop
 
 pytestmark = pytest.mark.unit
 
 
-def _critic(score: float, *, success: bool, **severities: int) -> FactsLoopAttempt:
-    return FactsLoopAttempt(
+def _critic(score: float, *, success: bool, **severities: int) -> LoopAttempt:
+    return LoopAttempt(
         kind="critic",
         score=score,
         success=success,
@@ -27,8 +27,8 @@ def _critic(score: float, *, success: bool, **severities: int) -> FactsLoopAttem
 
 def test_no_critic_calls_summarizes_to_zero() -> None:
     """The MAX_VISITS=1 default: the critic never runs, and that is not an error."""
-    summary = summarize_facts_loop(
-        {0: [FactsLoopAttempt(kind="render"), FactsLoopAttempt(kind="llm_repair")]}
+    summary = summarize_loop(
+        {0: [LoopAttempt(kind="render"), LoopAttempt(kind="llm_repair")]}
     )
 
     assert summary.calls == 0
@@ -38,10 +38,10 @@ def test_no_critic_calls_summarizes_to_zero() -> None:
 
 
 def test_scores_and_severities_are_summarized_across_units() -> None:
-    summary = summarize_facts_loop(
+    summary = summarize_loop(
         {
             0: [
-                FactsLoopAttempt(kind="render"),
+                LoopAttempt(kind="render"),
                 _critic(55, success=False, critical=2, minor=1),
             ],
             1: [_critic(85, success=False, important=4)],
@@ -64,11 +64,11 @@ def test_scores_and_severities_are_summarized_across_units() -> None:
 
 def test_render_and_repair_attempts_are_not_counted_as_critic_calls() -> None:
     """Only ``kind == "critic"`` is a critic call; the ledger must not inflate."""
-    summary = summarize_facts_loop(
+    summary = summarize_loop(
         {
             0: [
-                FactsLoopAttempt(kind="render", success=True),
-                FactsLoopAttempt(kind="llm_repair", success=True),
+                LoopAttempt(kind="render", success=True),
+                LoopAttempt(kind="llm_repair", success=True),
                 _critic(70, success=False),
             ]
         }
@@ -80,8 +80,8 @@ def test_render_and_repair_attempts_are_not_counted_as_critic_calls() -> None:
 
 def test_a_critic_call_with_no_score_still_counts_as_a_call() -> None:
     """A response whose score failed to parse is a billed call, not an absence."""
-    summary = summarize_facts_loop(
-        {0: [FactsLoopAttempt(kind="critic", score=None, success=False)]}
+    summary = summarize_loop(
+        {0: [LoopAttempt(kind="critic", score=None, success=False)]}
     )
 
     assert summary.calls == 1

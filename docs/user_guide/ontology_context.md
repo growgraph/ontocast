@@ -368,6 +368,15 @@ apply:     (U, O*) → versioned catalog ontologies O*'
 
 Ontology-update prompts use **complement** framing (single writable IRI or multi-source). Facts prompts treat S as read-only schema (`cd:` for instances).
 
+**In vector-retrieval mode, S is a lossy projection of O\*** — a stitched
+induced subgraph, not the full ontologies — while U is applied to the *full*
+catalog terminals. The prompts say so explicitly (a PARTIAL CONTEXT notice in
+the render intro and critic criteria), and three reduce-time policies close
+the gap that partiality opens: minted-duplicate reconciliation against the
+full terminals, a redeclare-only delete policy, and fresh-path union merging.
+See [Facts Validation and SHACL → Reduce-time policies](validation.md#reduce-time-policies-the-terminal-is-the-authority)
+and the workspace design note `planning/ontology-update-semantics.md`.
+
 ## Per-Request Overrides
 
 All modes can be overridden on `/process` and `/process_unit`, from the query

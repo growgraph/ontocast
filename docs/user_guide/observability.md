@@ -43,7 +43,10 @@ three modules, where a typo used to mean a silently missing metric.
 | `facts_anchor_count` / `facts_anchor_units` | Same for the facts fan-out |
 | `facts_llm_repair_renders_total` / `_failed` | Finding-driven repair renders attempted, and those that crashed (a failed repair leaves the pre-repair graph and the unit still reports success) |
 | `facts_repair_delete_only` | Repair renders rolled back for answering the findings prompt with deletions instead of an in-place rewrite. Non-zero means the findings prompt or the validator is provoking data-destroying responses — treat it as a release blocker, not a curiosity |
-| `facts_findings_residual` | Deterministic findings still open after the last repair render |
+| `facts_findings_residual` / `facts_mandatory_residual` | Deterministic findings still open after the last repair render, over every unit; the mandatory subset is the number that tracks defects |
+| `facts_critic_calls` / `facts_critic_accepted` | The facts critic's ledger: calls billed, and calls whose verdict let the unit exit the loop |
+| `ontology_findings_residual` / `ontology_mandatory_residual` | Same residuals for the ontology loop's delta validator (shadow mode — recorded, not yet gating) |
+| `ontology_critic_calls` / `ontology_critic_accepted` | The ontology critic's ledger under its incumbent `success or score > 90` gate |
 | `facts_rejected_merges` | Candidate merges the aggregator's guards refused, for the graph actually served |
 | `facts_merge_repair_passes` / `facts_merge_vetoes` / `facts_merge_repairs_rejected` | Un-merge repair loop: accepted passes, veto pairs accumulated, passes reverted |
 | `validated_without_ontology_context` | Facts were validated with no catalog vocabulary at all |
@@ -92,7 +95,10 @@ Two runs are comparable by diffing their manifests — which model, which
 generation settings, how many tokens, how long per node, and now what retrieval
 and the validation gate did. `loops` records the **effective** per-unit budgets
 (a `--max-visits` ablation whose flag silently failed to apply is detectable
-from the dump, not only from call arithmetic), and `graph_metrics` summarizes
+from the dump, not only from call arithmetic), `critic` and `ontology_critic`
+summarize each loop's LLM-critic decisions (call and accept counts, score
+histogram, fix-severity histogram — the evidence a gate recalibration reads),
+and `graph_metrics` summarizes
 the connectivity of the serialized facts graph so fragmentation regressions
 surface per document. It is also what makes a benchmark sweep auditable
 after the fact, rather than something to be re-run.

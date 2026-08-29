@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Literal
 
@@ -539,21 +540,109 @@ class FactsUnitFindingKind(StrEnum):
     CRITIC_FIX = "critic_fix"
 
 
-class FactsUnitFinding(BaseModel):
-    """One deterministic, machine-found issue in a rendered facts graph.
+class UnitFinding(BaseModel):
+    """One deterministic, machine-found issue in a rendered unit graph.
 
-    Mandatory findings are schema/namespace violations the renderer must fix;
-    non-mandatory findings (numeric coverage) list candidates the renderer
+    Base shape shared by the facts and ontology validators; the subclasses
+    pin ``kind`` to their own enum. Mandatory findings are violations the
+    renderer must fix; non-mandatory findings list candidates the renderer
     adjudicates item by item.
     """
 
-    kind: FactsUnitFindingKind
     mandatory: bool = True
     message: str
     subject: str = ""
     predicate: str = ""
     value: str = ""
     suggestions: list[str] = Field(default_factory=list)
+
+
+class FactsUnitFinding(UnitFinding):
+    """One deterministic, machine-found issue in a rendered facts graph."""
+
+    kind: FactsUnitFindingKind
+
+
+class OntologyUnitFindingKind(StrEnum):
+    """Kinds of deterministic per-unit ontology findings.
+
+    Computed against the unit's net insert/delete *delta*, never the whole
+    working graph — validating snapshot+delta would attribute every
+    pre-existing catalog defect to this unit, and the facts ``UNKNOWN_TERM``
+    rule is semantically inverted here (minting new terms is the ontology
+    renderer's job).
+    """
+
+    #: Term minted under a namespace no ontology in the unit's context
+    #: declares terms under — the reduce-time partition will drop it as
+    #: unattributed, so this predicts silent triple loss.
+    FOREIGN_NAMESPACE = "foreign_namespace"
+    #: ``owl:Restriction`` blank node with fewer than two meaningful
+    #: predicates: it constrains nothing and its subClassOf edge points at
+    #: noise.
+    DEGENERATE_RESTRICTION = "degenerate_restriction"
+    #: Newly declared class/property without ``rdfs:label``/``skos:prefLabel``.
+    MISSING_LABEL = "missing_label"
+    #: The unit's ``rdfs:subClassOf`` insert closes a cycle through the
+    #: snapshot-plus-delta hierarchy.
+    SUBCLASS_CYCLE = "subclass_cycle"
+    #: A term the catalog knows as a class used as a property, or vice versa.
+    ROLE_CONFUSION = "role_confusion"
+    #: New term whose label duplicates an existing catalog term's surface
+    #: form — likely a re-mint of a concept that should be reused.
+    LABEL_COLLISION = "label_collision"
+    #: Max-cardinality-1 / functional declaration contradicted by a
+    #: min-cardinality >= 2 on the same property.
+    CARDINALITY_CONTRADICTION = "cardinality_contradiction"
+    #: The unit deletes catalog content whose subject it does not redeclare —
+    #: ontology deletes propagate onto shared, versioned catalog terminals
+    #: cross-document, so an unowned delete is destructive beyond this unit.
+    FOREIGN_DELETE = "foreign_delete"
+
+
+class OntologyUnitFinding(UnitFinding):
+    """One deterministic, machine-found issue in a unit's ontology delta."""
+
+    kind: OntologyUnitFindingKind
+
+
+def format_findings_for_prompt(
+    findings: Sequence[UnitFinding],
+    *,
+    advisory_heading: str = "## Verify numeric coverage",
+) -> str:
+    """Render findings as MANDATORY-fixes + advisory blocks for a prompt.
+
+    The default advisory heading is the facts loop's (its only advisory kind
+    is numeric coverage) and is part of prompts already in the LLM cache —
+    callers with different advisory content pass their own heading rather
+    than changing the default.
+    """
+    mandatory = [finding for finding in findings if finding.mandatory]
+    advisory = [finding for finding in findings if not finding.mandatory]
+    sections: list[str] = []
+    if mandatory:
+        lines = [
+            "## MANDATORY fixes (deterministic validation — apply every item)",
+            "Fix each item by REWRITING the offending term or value in place. "
+            "Never resolve a finding by deleting the statement or dropping "
+            "extracted data — a response that only removes triples is wrong; "
+            "the corrected statement must survive with its subject and value "
+            "intact.",
+        ]
+        for index, finding in enumerate(mandatory, 1):
+            line = f"{index}. {finding.message}"
+            if finding.suggestions:
+                line += " Candidates: " + ", ".join(
+                    f"<{suggestion}>" for suggestion in finding.suggestions
+                )
+            lines.append(line)
+        sections.append("\n".join(lines))
+    if advisory:
+        lines = [advisory_heading]
+        lines.extend(finding.message for finding in advisory)
+        sections.append("\n".join(lines))
+    return "\n\n".join(sections)
 
 
 class FactsGateRepairKind(StrEnum):
@@ -600,8 +689,12 @@ class UnitFailure(BaseModel):
     reason: str | None = None
 
 
-class FactsLoopAttempt(BaseModel):
-    """Telemetry record for one attempt inside the per-unit facts loop.
+class LoopAttempt(BaseModel):
+    """Telemetry record for one attempt inside a per-unit render/critic loop.
+
+    Shared by the facts and the ontology loop — the fields are phase-neutral
+    and a record's home (``UnitFactsState.attempt_log`` vs
+    ``UnitOntologyState.attempt_log``) says which loop produced it.
 
     ``n_deterministic_findings`` / ``n_mandatory_findings`` count findings
     against the graph as of this record: for ``llm_repair`` records that is the
@@ -643,6 +736,15 @@ class FactsLoopAttempt(BaseModel):
     #: delete-only responses is visible as a number rather than a log line.
     repair_delete_only: bool = False
     triple_count: int = 0
+    #: Ontology critic only: triples in this unit's net insert delta at the
+    #: time of the record. The unit's own product is the delta, not the
+    #: snapshot+delta working graph that ``triple_count`` measures there.
+    delta_triple_count: int | None = None
+    #: Ontology critic only: proposed fixes whose ``incorrect_value`` names a
+    #: term the snapshot declares and this unit's delta does not touch — the
+    #: critic litigating pre-existing catalog content the renderer cannot own.
+    #: A substring heuristic, so a lower bound.
+    n_fixes_targeting_snapshot: int = 0
 
 
 class FactsValidationFindingKind(StrEnum):

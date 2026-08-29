@@ -19,9 +19,9 @@ from ontocast.onto.enum import (
 from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.model import (
     BasePydanticModel,
-    FactsLoopAttempt,
     FactsValidationFinding,
     GraphRepairRecord,
+    LoopAttempt,
     UnitFailure,
 )
 from ontocast.onto.ontology import Ontology
@@ -501,9 +501,15 @@ class AgentState(BasePydanticModel):
         default_factory=dict,
         description="Reduced ontology artifacts indexed by anchor IRI.",
     )
-    ontology_reduce_metrics: dict[str, int | float | str] = Field(
-        default_factory=dict,
-        description="Metrics emitted by ontology reduce stage.",
+    ontology_reduce_metrics: dict[str, int | float | str | list[dict[str, str]]] = (
+        Field(
+            default_factory=dict,
+            description=(
+                "Metrics emitted by ontology reduce stage. The list-valued "
+                "entry is minted_duplicate_pairs: the (minted IRI, catalog "
+                "IRI, surface, role) records the reconciliation scan found."
+            ),
+        )
     )
     unit_patch_sources: dict[int, list[str]] = Field(
         default_factory=dict,
@@ -585,11 +591,20 @@ class AgentState(BasePydanticModel):
         description="Successful per-unit facts outputs collected during parallel map phase",
     )
 
-    facts_loop_telemetry: dict[int, list[FactsLoopAttempt]] = Field(
+    facts_loop_telemetry: dict[int, list[LoopAttempt]] = Field(
         default_factory=dict,
         description=(
             "Per-unit facts loop attempt records (render/critic/repair) keyed "
             "by content unit index; makes visit efficacy measurable."
+        ),
+    )
+
+    ontology_loop_telemetry: dict[int, list[LoopAttempt]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-unit ontology loop attempt records keyed by content unit "
+            "index -- the ontology critic's ledger, recorded before its gate "
+            "is recalibrated so the incumbent's accept rate is measurable."
         ),
     )
 

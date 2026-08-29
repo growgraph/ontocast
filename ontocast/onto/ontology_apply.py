@@ -239,6 +239,7 @@ def apply_partitioned_updates(
         "apply_skipped_missing_base": 0,
         "apply_insert_triples": 0,
         "apply_delete_triples": 0,
+        "apply_deletes_no_match": 0,
     }
     for iri in sorted(set(partitioned_inserts) | set(deletes_by_iri)):
         insert_delta = partitioned_inserts.get(iri) or RDFGraph()
@@ -259,6 +260,23 @@ def apply_partitioned_updates(
             )
             metrics["apply_skipped_missing_base"] += 1
             continue
+        if len(delete_delta) > 0:
+            # A delete names a triple the unit's *snapshot* contained; the
+            # apply target is the freshest *terminal*. When the two diverge
+            # (a stale vector index, a terminal advanced by another run) the
+            # DELETE DATA is a silent no-op — count it, or the divergence is
+            # invisible in every artifact.
+            no_match = sum(1 for triple in delete_delta if triple not in base.graph)
+            if no_match:
+                metrics["apply_deletes_no_match"] += no_match
+                logger.warning(
+                    "%d of %d delete triple(s) for %s are absent from the "
+                    "catalog base — snapshot/terminal divergence (stale "
+                    "vector index?); they will apply as no-ops",
+                    no_match,
+                    len(delete_delta),
+                    iri,
+                )
         units = []
         if len(insert_delta) > 0:
             units.append(

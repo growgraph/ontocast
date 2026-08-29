@@ -653,7 +653,13 @@ class ToolBox:
         ).serialization_targets()
         for ontology in ontologies_to_serialize:
             if ontology and ontology.hash:
-                self.ontology_manager.add_ontology(ontology)
+                # The async variant is not optional here: the sync
+                # add_ontology() refuses to reindex the vector store inside a
+                # running event loop, and aserialize is by definition inside
+                # one — so with vector retrieval registered, the sync call
+                # raised RuntimeError on the first document that actually
+                # produced an ontology version to serialize.
+                await self.ontology_manager.aadd_ontology(ontology)
 
         if self.triple_store_manager is not None:
             for ontology in ontologies_to_serialize:

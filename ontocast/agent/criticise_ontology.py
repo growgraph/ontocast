@@ -4,13 +4,25 @@ This module provides functionality for analyzing and validating ontologies.
 """
 
 import logging
+from collections import Counter
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
+from rdflib import URIRef
 
 from ontocast.agent.common import call_llm_with_retry
-from ontocast.onto.enum import FailureStage, Status, WorkflowNode
-from ontocast.onto.model import OntologyCritiqueReport, Suggestions
+from ontocast.onto.enum import (
+    FailureStage,
+    OntologyAssemblyMode,
+    Status,
+    WorkflowNode,
+)
+from ontocast.onto.model import (
+    LoopAttempt,
+    OntologyCritiqueReport,
+    Suggestions,
+    format_findings_for_prompt,
+)
 from ontocast.onto.ontology_access import ontology_access_for_unit_ontology
 from ontocast.onto.unit_states import UnitOntologyState
 from ontocast.prompt.common import (
@@ -20,6 +32,7 @@ from ontocast.prompt.common import text_template
 from ontocast.prompt.criticise_ontology import (
     intro_instruction,
     ontology_criteria,
+    partial_context_critique_notice,
     template_prompt,
 )
 from ontocast.prompt.graph_format import get_graph_format_profile
@@ -27,6 +40,7 @@ from ontocast.prompt.ontology_context import build_ontology_index
 from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
 from ontocast.tool import LLMTool
 from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.ontology_validation import count_fixes_targeting_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +87,17 @@ async def criticise_ontology(
         suffix=build_ontology_index(current_graph),
         max_triples=state.ontology_context_max_triples,
     )
+    if state.deterministic_findings:
+        # Machine-found delta defects, presented exactly the way the facts
+        # critic receives its findings block.
+        ontology_chapter += (
+            "\n\n"
+            + format_findings_for_prompt(
+                state.deterministic_findings,
+                advisory_heading="## Advisory findings (verify; fix when warranted)",
+            )
+            + "\nTreat every MANDATORY item as a required actionable fix.\n"
+        )
 
     text_chapter = text_template.format(text=state.content_unit.extraction_text)
 
@@ -102,8 +127,15 @@ async def criticise_ontology(
         WorkflowNode.CRITICISE_ONTOLOGY, web_search_enabled
     )
     ontology_criteria_str = ontology_criteria
+    if (
+        state.ontology_snapshot.assembly_mode
+        == OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE
+    ):
+        ontology_criteria_str = (
+            f"{ontology_criteria_str}\n{partial_context_critique_notice}"
+        )
     if search_guidelines:
-        ontology_criteria_str = f"{ontology_criteria}\n{search_guidelines}"
+        ontology_criteria_str = f"{ontology_criteria_str}\n{search_guidelines}"
 
     try:
         critique: OntologyCritiqueReport = await call_llm_with_retry(
@@ -137,9 +169,61 @@ async def criticise_ontology(
             f"score: {critique.score}, n fixes: {len(critique.actionable_ontology_fixes)}."
         )
 
-        if critique.success or critique.score > 90:
+        # Incumbent gate, deliberately unchanged: `success or score > 90` is
+        # the top band of the prompt's own scoring rubric ("Excellent - minor
+        # refinements only"). Whether that demand for perfection is the right
+        # operating point is exactly what this record exists to measure -- the
+        # ontology critic has never run on a benchmark corpus, so unlike the
+        # facts gate there is no distribution to replace it from yet.
+        accepted = critique.success or critique.score > 90
+        delta = state.build_delta()
+        state.attempt_log.append(
+            LoopAttempt(
+                render_attempt=state.node_visits[WorkflowNode.TEXT_TO_ONTOLOGY],
+                critic_attempt=state.node_visits[WorkflowNode.CRITICISE_ONTOLOGY],
+                kind="critic",
+                score=critique.score,
+                success=accepted,
+                accept_reason=(
+                    "incumbent_success"
+                    if critique.success
+                    else "incumbent_score"
+                    if critique.score > 90
+                    else "incumbent_rejected"
+                ),
+                n_actionable_fixes=len(critique.actionable_ontology_fixes),
+                severity_counts=Counter(
+                    fix.severity for fix in critique.actionable_ontology_fixes
+                ),
+                n_deterministic_findings=len(state.deterministic_findings),
+                n_mandatory_findings=sum(
+                    1 for finding in state.deterministic_findings if finding.mandatory
+                ),
+                triple_count=len(state.working_graph),
+                delta_triple_count=len(delta.inserts),
+                n_fixes_targeting_snapshot=count_fixes_targeting_snapshot(
+                    critique.actionable_ontology_fixes,
+                    None
+                    if state.ontology_snapshot.is_empty()
+                    else state.ontology_snapshot.graph,
+                    {
+                        str(subject)
+                        for subject in delta.inserts.subjects()
+                        if isinstance(subject, URIRef)
+                    },
+                ),
+            )
+        )
+
+        if accepted:
             state.status = Status.SUCCESS
             state.set_node_status(WorkflowNode.CRITICISE_ONTOLOGY, Status.SUCCESS)
+            # An accepting critic has no outstanding requests. Not redundant
+            # with the reset in render_ontology_update: the loop can accept on a
+            # *later* critic attempt of the same render, after an
+            # external-evidence search, with no render in between to consume
+            # what the earlier rejecting attempt left behind.
+            state.suggestions = Suggestions()
             logger.info("Ontology critique passed")
         else:
             state.status = Status.FAILED

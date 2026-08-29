@@ -62,6 +62,16 @@ class RetrievalMetric(StrEnum):
     #: two that reported nothing.
     ONTOLOGY_SNAPSHOT_TRIPLES = "ontology_snapshot_triples"
 
+    # Ontology fan-out: the per-unit critic ledger and the deterministic
+    # findings residual, mirrors of the facts block below. Added before any
+    # gate change so the sampling corpus records the incumbent gate's own
+    # accept rate -- the facts gate was replaced on numbers (28/34 rejected,
+    # median score 79) and the ontology gate gets the same treatment.
+    ONTOLOGY_FINDINGS_RESIDUAL = "ontology_findings_residual"
+    ONTOLOGY_MANDATORY_RESIDUAL = "ontology_mandatory_residual"
+    ONTOLOGY_CRITIC_CALLS = "ontology_critic_calls"
+    ONTOLOGY_CRITIC_ACCEPTED = "ontology_critic_accepted"
+
     # Facts fan-out.
     FACTS_ANCHOR_COUNT = "facts_anchor_count"
     FACTS_ANCHOR_UNITS = "facts_anchor_units"

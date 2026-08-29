@@ -2207,6 +2207,33 @@ class FactsValidationConfig(BaseSettings):
     )
 
 
+class OntologyValidationConfig(BaseSettings):
+    """Deterministic post-checks applied to LLM-rendered ontology deltas."""
+
+    reconcile_minted_terms: Literal["off", "detect", "rewrite"] = Field(
+        default="detect",
+        description=(
+            "What to do at reduce time about a newly minted term whose "
+            "label/notation exactly matches one existing term of compatible "
+            "role in the FULL catalog terminal. Under vector-retrieval "
+            "context the snapshot is a retrieved subset, so the renderer "
+            "cannot see the catalog term it is duplicating — the per-unit "
+            "label-collision check indexes exactly the part of the catalog "
+            "where the duplicate is not. 'detect' (default) records and logs "
+            "each pair without touching the delta, so a sampling run measures "
+            "the duplication base rate; 'rewrite' additionally rewrites the "
+            "minted IRI to the catalog IRI in the merged inserts — flip it "
+            "only after 'detect' has shown the matches are true duplicates; "
+            "'off' disables the scan."
+        ),
+    )
+
+    model_config = SettingsConfigDict(
+        env_prefix="ONTOLOGY_",
+        case_sensitive=False,
+    )
+
+
 class ToolConfig(BaseSettings):
     """Configuration for tools (LLM, triple stores, paths, chunking)."""
 
@@ -2226,6 +2253,10 @@ class ToolConfig(BaseSettings):
     facts_validation: FactsValidationConfig = Field(
         default_factory=FactsValidationConfig,
         description="Deterministic post-checks on LLM-rendered facts graphs.",
+    )
+    ontology_validation: OntologyValidationConfig = Field(
+        default_factory=OntologyValidationConfig,
+        description="Deterministic post-checks on LLM-rendered ontology deltas.",
     )
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)

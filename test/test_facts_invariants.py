@@ -10,11 +10,10 @@ against a closed individual range.
 from rdflib import RDF, Literal, URIRef
 from rdflib.namespace import XSD
 
-from ontocast.onto.model import FactsUnitFindingKind
+from ontocast.onto.model import FactsUnitFindingKind, format_findings_for_prompt
 from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
 from ontocast.tool.facts_validation import (
     collect_unit_findings,
-    format_findings_for_prompt,
     normalize_literals_against_schema,
     repair_literal_type_objects,
     repair_property_aliases,

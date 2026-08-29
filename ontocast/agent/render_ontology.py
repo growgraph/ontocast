@@ -11,8 +11,17 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
-from ontocast.onto.enum import FailureStage, Status, WorkflowNode
-from ontocast.onto.model import GraphUpdateRenderReport, OntologyRenderReport
+from ontocast.onto.enum import (
+    FailureStage,
+    OntologyAssemblyMode,
+    Status,
+    WorkflowNode,
+)
+from ontocast.onto.model import (
+    GraphUpdateRenderReport,
+    OntologyRenderReport,
+    Suggestions,
+)
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import (
     UnitOntologyAccess,
@@ -30,6 +39,7 @@ from ontocast.prompt.render_ontology import (
     intro_instruction_fresh,
     intro_instruction_update_multi,
     intro_instruction_update_single,
+    partial_context_notice,
     template_prompt,
 )
 from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
@@ -84,15 +94,24 @@ def _prepare_ontology_common_prompt_layers(
 def _build_update_intro(state: UnitOntologyState, access: UnitOntologyAccess) -> str:
     writable = access.writable_iris()
     ontology_desc = access.prompt_ontology_description()
+    # Keyed on how the snapshot was ASSEMBLED, not on how many IRIs are
+    # writable: a vector-retrieval unit whose retrieval happened to hit one
+    # ontology used to get the single-ontology phrasing verbatim — presenting
+    # a retrieved subset as "the domain ontology provided below".
+    is_partial_view = (
+        state.ontology_snapshot.assembly_mode
+        == OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE
+    )
+    notice = partial_context_notice if is_partial_view else ""
     if len(writable) <= 1:
         ontology_iri = writable[0] if writable else "(unspecified)"
-        return intro_instruction_update_single.format(
+        return notice + intro_instruction_update_single.format(
             ontology_iri=ontology_iri,
             ontology_desc=ontology_desc,
         )
     sources = state.ontology_patch_sources or writable
     source_list = "\n".join(f"- <{iri}>" for iri in sources[:20])
-    return intro_instruction_update_multi.format(
+    return notice + intro_instruction_update_multi.format(
         ontology_desc=ontology_desc,
         source_list=source_list or "- (none listed)",
     )
@@ -286,7 +305,27 @@ async def render_ontology_update(
         )
         graph_update = render_report.graph_update
         state.ontology_updates.append(graph_update)
-        state.update_ontology()
+        applied = state.update_ontology()
+        if not applied:
+            # The ONTOLOGY_MAX_TRIPLES backstop discarded the whole update, so
+            # this billed render changed nothing. Returning SUCCESS with an
+            # unchanged graph is not a lie the run can see, and a validator run
+            # afterwards would inspect the *previous* graph and report it clean.
+            # The status stays SUCCESS -- the pre-update graph is intact and a
+            # re-render would hit the same ceiling -- but the discard is counted.
+            logger.warning(
+                "Ontology update discarded: applying it would exceed "
+                "ONTOLOGY_MAX_TRIPLES=%s. The render was billed and had no "
+                "effect on the working graph.",
+                state.ontology_max_triples,
+            )
+            state.budget_tracker.incr("ontology/update_rejected_over_budget")
+        # Suggestions are consumed by exactly the render they were raised
+        # against. Leaving them set carried them into every later render of the
+        # unit -- the leak that put two contradictory contracts in one facts
+        # prompt (see CHANGELOG [Unreleased]); the ontology path had the same
+        # defect and no repair pass to notice it.
+        state.suggestions = Suggestions()
 
         num_operations, num_triples = graph_update.count_total_triples()
         logger.info(

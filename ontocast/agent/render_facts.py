@@ -20,6 +20,7 @@ from ontocast.onto.model import (
     GraphRepairRecord,
     GraphUpdateRenderReport,
     Suggestions,
+    format_findings_for_prompt,
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import (
@@ -45,7 +46,6 @@ from ontocast.prompt.web_grounding import persist_search_request, search_guideli
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import (
     expand_vocabulary_terms,
-    format_findings_for_prompt,
     normalize_literals_against_schema,
     promote_degenerate_bounds_from_vocabulary,
     repair_literal_type_objects,

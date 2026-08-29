@@ -505,32 +505,3 @@ def collect_unit_findings(
         )
 
     return findings
-
-
-def format_findings_for_prompt(findings: list[FactsUnitFinding]) -> str:
-    """Render findings as MANDATORY-fixes + coverage blocks for the renderer."""
-    mandatory = [finding for finding in findings if finding.mandatory]
-    coverage = [finding for finding in findings if not finding.mandatory]
-    sections: list[str] = []
-    if mandatory:
-        lines = [
-            "## MANDATORY fixes (deterministic validation — apply every item)",
-            "Fix each item by REWRITING the offending term or value in place. "
-            "Never resolve a finding by deleting the statement or dropping "
-            "extracted data — a response that only removes triples is wrong; "
-            "the corrected statement must survive with its subject and value "
-            "intact.",
-        ]
-        for index, finding in enumerate(mandatory, 1):
-            line = f"{index}. {finding.message}"
-            if finding.suggestions:
-                line += " Candidates: " + ", ".join(
-                    f"<{suggestion}>" for suggestion in finding.suggestions
-                )
-            lines.append(line)
-        sections.append("\n".join(lines))
-    if coverage:
-        lines = ["## Verify numeric coverage"]
-        lines.extend(finding.message for finding in coverage)
-        sections.append("\n".join(lines))
-    return "\n\n".join(sections)

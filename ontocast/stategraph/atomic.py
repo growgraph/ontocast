@@ -29,8 +29,9 @@ from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import (
     ExternalEvidenceCacheEntry,
     ExternalEvidenceRequest,
-    FactsLoopAttempt,
     FactsUnitFinding,
+    LoopAttempt,
+    OntologyUnitFinding,
     TripleFix,
 )
 from ontocast.onto.ontology import Ontology
@@ -43,6 +44,7 @@ from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import collect_unit_findings
 from ontocast.tool.facts_validation.critic_findings import critic_fixes_to_findings
+from ontocast.tool.ontology_validation import collect_ontology_unit_findings
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -144,6 +146,38 @@ def _collect_facts_findings(
     )
 
 
+def _collect_ontology_findings(
+    unit_state: UnitOntologyState,
+    atomic: AtomicToolBox | None = None,
+) -> list[OntologyUnitFinding]:
+    """Run the deterministic delta validator against the unit's current state.
+
+    Validates the net insert/delete delta (never the shared snapshot), passing
+    the already-materialised ``working_graph`` as the merged view so the only
+    graph copy is the one inside ``build_delta``. Budget-timed because that
+    copy is exactly the cost the shared-by-reference snapshot exists to avoid.
+    """
+    started = time.perf_counter()
+    delta = unit_state.build_delta()
+    snapshot_graph = (
+        None
+        if unit_state.ontology_snapshot.is_empty()
+        else unit_state.ontology_snapshot.graph
+    )
+    findings = collect_ontology_unit_findings(
+        inserts=delta.inserts,
+        deletes=delta.deletes,
+        snapshot_graph=snapshot_graph,
+        merged_graph=unit_state.working_graph,
+        fact_namespaces=[DEFAULT_IRI, str(unit_state.content_unit.doc_iri)],
+        policy=atomic.validation_policy if atomic is not None else None,
+    )
+    unit_state.budget_tracker.add_duration(
+        "ontology_validation/unit_findings", time.perf_counter() - started
+    )
+    return findings
+
+
 def _record_facts_attempt(
     unit_state: UnitFactsState,
     *,
@@ -158,7 +192,7 @@ def _record_facts_attempt(
     """Append one telemetry record for the current loop attempt."""
     graph = unit_state.content_unit.graph
     unit_state.attempt_log.append(
-        FactsLoopAttempt(
+        LoopAttempt(
             render_attempt=render_attempt,
             critic_attempt=critic_attempt,
             kind=kind,
@@ -642,6 +676,11 @@ async def ontology_loop(
                     render_attempt,
                     max_visits,
                 )
+                # The residual metric needs findings even when no critic runs
+                # (the MAX_VISITS=1 default).
+                unit_state.deterministic_findings = _collect_ontology_findings(
+                    unit_state, atomic
+                )
                 return unit_state
 
             stage = FailureStage.ONTOLOGY_CRITIQUE
@@ -649,6 +688,9 @@ async def ontology_loop(
                 unit_state.node_visits[WorkflowNode.CRITICISE_ONTOLOGY] += 1
                 _reset_node_evidence_context(
                     unit_state, WorkflowNode.CRITICISE_ONTOLOGY
+                )
+                unit_state.deterministic_findings = _collect_ontology_findings(
+                    unit_state, atomic
                 )
                 unit_state = await criticise_ontology(unit_state, atomic)
                 if unit_state.status == Status.SUCCESS:
@@ -694,6 +736,9 @@ async def ontology_loop(
                     return unit_state
 
         logger.info("Unit ontology loop exhausted retries")
+        unit_state.deterministic_findings = _collect_ontology_findings(
+            unit_state, atomic
+        )
         return unit_state
     except Exception as exc:
         logger.exception("Unhandled exception in ontology_loop")

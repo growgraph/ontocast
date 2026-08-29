@@ -33,7 +33,9 @@ leftovers — but the *fix* is bought from the model. Set
 leave the residue to layers 1 and 3.
 
 The ontology loop has no repair stage, so at `MAX_VISITS=1` it is genuinely one
-call per unit.
+call per unit. It does run its own deterministic validator — see
+[Ontology delta validation](#ontology-delta-validation-shadow-mode) — but in
+shadow mode: findings are recorded and shown to the critic, and cost nothing.
 
 Above `MAX_VISITS=1` the facts critic runs, and a **rejection costs one repair
 render, not another full render**. So the ceiling is:
@@ -275,6 +277,77 @@ Grouping by constraint component is what makes a residue diagnosable: 36
 
 Batch runs (`ontocast process --output-dir …`) write the same payload beside the
 facts Turtle as `<name>.facts.validation.json`.
+
+## Ontology delta validation (shadow mode)
+
+The ontology loop has the same deterministic lane the facts loop gates on,
+with one structural difference: it validates the unit's net **insert/delete
+delta** against the prompt snapshot, never the whole working graph. The
+working graph is `snapshot + delta`, so validating it would test the shared
+catalog context against itself and attribute every pre-existing third-party
+defect to this unit. Two facts rules are deliberately absent: `UNKNOWN_TERM`
+is inverted here (minting new terms in a writable namespace is the ontology
+renderer's job), and connectivity is left to the document-level
+`STRUCTURAL_CHECK` node (a per-unit delta connects to the snapshot, not to
+itself).
+
+Checks (`tool/ontology_validation/unit_findings.py`), all mandatory unless
+noted:
+
+| Finding | What it catches |
+|---|---|
+| `foreign_namespace` | Term minted under a namespace no context ontology declares terms under — the catalog apply step silently drops these as unattributable, so this predicts triple loss. Also fires on `example.org` placeholders and ontology terms minted in facts namespaces. Skipped (except placeholders) on the fresh-create path, where there is no namespace authority |
+| `degenerate_restriction` | `owl:Restriction` blank node with fewer than 2 meaningful predicates — it constrains nothing |
+| `missing_label` | Newly declared class/property without `rdfs:label`/`skos:prefLabel` |
+| `subclass_cycle` | An inserted `rdfs:subClassOf` edge closing a cycle through snapshot + delta |
+| `role_confusion` | A catalog class used as a predicate, or a catalog property used in class position |
+| `cardinality_contradiction` | Functional / max-cardinality-1 declaration contradicted by a min-cardinality ≥ 2, where this unit participates in the conflict |
+| `foreign_delete` | Deleting catalog content whose subject the unit does not redeclare — ontology deletes propagate onto shared, versioned catalog terminals cross-document |
+| `label_collision` (advisory) | New term whose label duplicates an existing catalog surface form — likely a re-mint of a concept that should be reused |
+
+**Shadow mode means the gate is unchanged.** The ontology critic still accepts
+on `success or score > 90` — unlike the facts score gate, that threshold is
+backed by a scoring rubric in the critic's own prompt (`> 90` is its top band,
+"Excellent — minor refinements only"), so what it demands is perfection, and
+whether that is the right operating point is an empirical question no corpus
+has yet answered: every benchmark arm so far ran `render_mode: facts`, so the
+ontology critic has never executed on recorded data. The findings are
+collected before every critic call (and at loop exit, so the residual exists
+even at `MAX_VISITS=1` where the critic is skipped), injected into the critic
+prompt as MANDATORY items, and recorded per attempt: score, severity mix,
+findings counts, the delta size, and how many proposed fixes target
+snapshot-owned terms the delta never touched. Once a sampling run yields the
+distribution, the gate gets the same `material_defects()` treatment the facts
+loop received.
+
+Per-document telemetry lands in the run manifest under `ontology_critic`
+(sibling of `critic`) and in `retrieval_metrics` as
+`ontology_findings_residual` / `ontology_mandatory_residual` /
+`ontology_critic_calls` / `ontology_critic_accepted`.
+
+### Reduce-time policies: the terminal is the authority
+
+Under `ONTOLOGY_CONTEXT_MODE=selected_vector_search_ontology` the per-unit
+snapshot is a **retrieved subset** of the catalog, so judgments that require
+knowing what the catalog contains cannot be made inside the unit. Three
+policies therefore run at the reduce step, where the full catalog terminals
+are already in hand (design note:
+`planning/ontology-update-semantics.md` at the workspace root):
+
+| Policy | Behavior | Metric |
+|---|---|---|
+| **Minted-duplicate reconciliation** (`ONTOLOGY_RECONCILE_MINTED_TERMS`, default `detect`) | A newly minted term whose label/prefLabel/notation exactly matches one full-terminal term of compatible role is a re-mint of a concept retrieval failed to surface — the per-unit label-collision check indexes the snapshot, which is exactly where the duplicate is not. `detect` records the pairs; `rewrite` substitutes the minted IRI (flip only after `detect` has shown the matches are true duplicates); `off` disables | `minted_duplicates`, `minted_duplicate_pairs`, `minted_duplicates_rewritten` |
+| **Delete policy** (vector mode only, no knob) | A merged delete whose subject the merged inserts do not redeclare was judged on partial evidence and would propagate onto shared catalog terminals; it is dropped. Single-ontology modes are untouched — there the model saw the whole graph | `deletes_dropped_unredeclared` |
+| **Fresh-path reconciliation** | N units minting fresh ontologies under the same IRI union-merge into one root version (previously: silent last-wins, other units' content dropped); overlap across distinct fresh IRIs is counted, not merged | `fresh_ontologies_merged`, `fresh_minted_duplicates` |
+
+Divergence between what a unit saw and what the catalog holds is also counted:
+`apply_deletes_no_match` is the number of delete triples absent from the
+terminal at apply time — a stale vector index is the usual cause. All of these
+land in `ontology_reduce_metrics` in the run manifest.
+
+The render and critic prompts declare the partial view explicitly in vector
+mode (a PARTIAL CONTEXT notice), so the model is told that an absent term may
+simply be unretrieved rather than missing.
 
 ## Configuration reference
 

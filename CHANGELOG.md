@@ -7,7 +7,124 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Ontology update semantics under retrieved snapshots** (design note:
+  workspace `planning/ontology-update-semantics.md`). In vector-retrieval
+  mode the per-unit snapshot is a lossy projection of the catalog while the
+  delta is applied to the full terminal; the position adopted is *snapshot =
+  evidence context, terminal = authority*, implemented by four mechanisms:
+
+  - **Minted-duplicate reconciliation at reduce**
+    (`tool/ontology_validation/reconcile.py`,
+    `ONTOLOGY_RECONCILE_MINTED_TERMS=off|detect|rewrite`, default `detect`).
+    A term the catalog defines but retrieval did not surface is invisible to
+    the unit, so the model re-mints it under a fresh IRI — and the per-unit
+    label-collision check indexes the snapshot, which is exactly the part of
+    the catalog where the duplicate is not. The reduce step checks every
+    minted term against the FULL terminals by exact surface form
+    (label/prefLabel/notation), unique resolution, and compatible role.
+    `detect` records `minted_duplicates` / `minted_duplicate_pairs` so the
+    sampling run measures the duplication base rate before `rewrite` (which
+    substitutes minted → catalog IRI across subject and object positions) is
+    trusted.
+  - **Redeclare-only deletes in vector mode.** A merged delete whose subject
+    the merged inserts do not redeclare was judged on a partial view and
+    would propagate onto shared catalog terminals; the reduce drops it
+    (`deletes_dropped_unredeclared`). Not a knob — a safety invariant like
+    the insert-wins veto. Single-ontology modes are untouched: there the
+    model saw the whole graph.
+  - **Honest prompts.** Ensemble-assembled contexts carry an explicit
+    PARTIAL CONTEXT notice in the render intro and the critic criteria
+    (reuse over minting; delete only with a redeclaration; absence of
+    context is not evidence of error), and intro selection keys on the
+    snapshot's `assembly_mode` instead of `len(writable_iris)` — a
+    vector-mode unit whose retrieval hit one ontology used to be told it was
+    seeing "the domain ontology" in full.
+  - **Divergence observability.** `apply_deletes_no_match` counts delete
+    triples absent from the terminal at apply time (the stale-vector-index
+    signature; previously a silent no-op with no trace).
+
+- **Fresh-path reconciliation.** N parallel units minting fresh ontologies
+  under the same LLM-chosen IRI used to race: the reduce indexed by IRI and
+  kept whichever landed last, silently dropping the other units' content.
+  Same-IRI artifacts now union-merge (`Ontology.union_fresh` — a lineage
+  *root*, since the transient per-unit artifacts never enter the catalog;
+  `fresh_ontologies_merged`), and term overlap across *distinct* fresh IRIs
+  is counted (`fresh_minted_duplicates`), not merged.
+
+- **The ontology loop is instrumented before its gate is touched.** The
+  ontology critic still accepts on `critique.success or critique.score > 90`,
+  and unlike the facts gate that threshold is backed by a rubric in its own
+  prompt (`> 90` is the top band, "Excellent — minor refinements only") — a
+  demand for perfection whose accept rate has never been measured, because
+  every benchmark arm so far ran `render_mode: facts` and the ontology critic
+  has never executed on recorded data (zero cached calls against 2,920 facts
+  ones). Each critic call now appends a `LoopAttempt` (score, severity mix,
+  findings counts, delta size, and `n_fixes_targeting_snapshot` — proposed
+  fixes aimed at catalog content the unit's delta never touched), summarized
+  into the run manifest as `ontology_critic` and into `retrieval_metrics` as
+  `ontology_critic_calls` / `ontology_critic_accepted` /
+  `ontology_findings_residual` / `ontology_mandatory_residual`. `LoopAttempt`
+  is the renamed, phase-neutral `FactsLoopAttempt`; `summarize_facts_loop` is
+  now `summarize_loop`.
+
+- **Deterministic per-unit validation of ontology deltas, in shadow mode**
+  (`tool/ontology_validation/unit_findings.py`). Validates the unit's net
+  insert/delete delta against the prompt snapshot — never the working graph,
+  which is snapshot + delta and would attribute every pre-existing catalog
+  defect to the unit. Checks: terms minted under namespaces no context
+  ontology owns (predicts the reduce partition's silent `unattributed` drop),
+  degenerate `owl:Restriction` stubs, missing labels on new terms, subclass
+  cycles through snapshot + delta, class/property role confusion against
+  catalog roles, functional-vs-min-cardinality contradictions, deletes of
+  catalog content the unit does not redeclare (ontology deletes propagate onto
+  shared catalog terminals cross-document — there was no guard anywhere), and
+  advisory label collisions with existing catalog surface forms. The facts
+  `UNKNOWN_TERM` rule is deliberately not ported (inverted semantics: minting
+  terms is the renderer's job), nor is connectivity (owned by the
+  document-level structural check). Findings are collected before every critic
+  call and at loop exit — so the residual exists at the `MAX_VISITS=1` default
+  where the critic is skipped — and injected into the critic prompt as
+  MANDATORY items. **The gate is unchanged**: findings are evidence for the
+  recalibration, applied only after a sampling run yields the incumbent's
+  distribution, the same order the facts gate change followed.
+
+- `UnitOntologyState.build_delta()` — the per-unit insert/delete delta
+  extraction, moved from `stategraph/helpers.py::build_ontology_delta_graph`
+  onto the state so agents can use it without a layering cycle.
+
 ### Fixed
+
+- **Serialization crashed in vector-retrieval mode the moment a document
+  produced an ontology version.** `ToolBox.aserialize` called the sync
+  `add_ontology()`, whose guard refuses to reindex the vector store inside a
+  running event loop — and `aserialize` is by definition inside one, so with
+  the patch retriever registered it raised `RuntimeError`. Unseen until now
+  only because every benchmark arm ran `render_mode: facts`, which serializes
+  no ontology artifacts. Now awaits `aadd_ontology()`; the regression test
+  reproduces the exact failure on the sync path.
+
+- **The ontology loop had the facts loop's stale-suggestion leak, and no repair
+  pass to expose it.** Neither `render_ontology_update` nor
+  `criticise_ontology`'s accept branch cleared `state.suggestions`, so once the
+  critic rejected a unit its suggestions rode into every later render of that
+  unit — the same defect fixed for facts in this release, where it is recorded
+  as the mechanism by which the two-visit arm lost graph connectivity and gained
+  validation errors. Cleared at both writers, for the same two reasons: a render
+  consumes them, and the critic can *accept* on a later attempt of the same
+  render (after an external-evidence search) with no render in between.
+
+- **`update_ontology()` swallowed a budget rejection and the render reported
+  success anyway.** It returned `None` whether or not the update applied, so
+  when the `ONTOLOGY_MAX_TRIPLES` backstop discarded an update wholesale,
+  `render_ontology_update` still set `Status.SUCCESS` on an unchanged working
+  graph — a billed render with no effect, invisible in the run's own artifacts,
+  and a graph that any later validation pass would read as clean because it is
+  the *pre-render* graph. It now returns `bool`; the caller logs the discard and
+  counts it as `ontology/update_rejected_over_budget`. The status stays SUCCESS
+  by design — the pre-update graph is intact and a re-render would hit the same
+  ceiling — but the discard is no longer silent.
 
 - **Merge-guard vetoes now hold cluster-wide — a vetoed pair can no longer
   merge through a chain of accepted edges.** `_build_identity_clusters`

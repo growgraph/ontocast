@@ -11,7 +11,12 @@ from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
-from ontocast.onto.model import FactsCritiqueReport, FactsLoopAttempt, Suggestions
+from ontocast.onto.model import (
+    FactsCritiqueReport,
+    LoopAttempt,
+    Suggestions,
+    format_findings_for_prompt,
+)
 from ontocast.onto.ontology_access import ontology_access_for_unit_facts
 from ontocast.onto.rdfgraph import format_quarantine_for_prompt
 from ontocast.onto.unit_states import UnitFactsState
@@ -26,7 +31,6 @@ from ontocast.prompt.web_grounding import persist_search_request, search_guideli
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import (
     accept_reason,
-    format_findings_for_prompt,
     material_defects,
 )
 
@@ -173,7 +177,7 @@ async def criticise_facts(
         reason = accept_reason(defects)
 
         state.attempt_log.append(
-            FactsLoopAttempt(
+            LoopAttempt(
                 render_attempt=state.node_visits[WorkflowNode.TEXT_TO_FACTS],
                 critic_attempt=state.node_visits[WorkflowNode.CRITICISE_FACTS],
                 kind="critic",

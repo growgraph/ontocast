@@ -14,7 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from ontocast.onto.model import FactsLoopAttempt
+from ontocast.onto.model import LoopAttempt
 from ontocast.onto.state import BudgetTracker
 from ontocast.util.graph_metrics import GraphShapeMetrics
 
@@ -74,14 +74,19 @@ class RunManifestSelection(BaseModel):
 
 
 class RunManifestCritic(BaseModel):
-    """What the LLM critic decided, and on what evidence.
+    """What an LLM critic decided, and on what evidence.
 
-    The facts loop accepts a render on ``critique.success or
-    critique.score > 90`` -- a score the model is asked for with no rubric and
-    no statement of the threshold. Whether that gate is calibrated is a question
-    about the score distribution, and until this existed no artifact recorded a
-    single score: the 2026-08 matsci investigation had to mine the answer out of
-    the LLM disk cache, which only worked because caching happened to be on.
+    One record per loop: ``critic`` summarizes the facts loop,
+    ``ontology_critic`` the ontology loop. The facts loop once accepted a
+    render on ``critique.success or critique.score > 90`` -- a score the model
+    was asked for with no rubric and no statement of the threshold. Whether
+    such a gate is calibrated is a question about the score distribution, and
+    until this existed no artifact recorded a single score: the 2026-08 matsci
+    investigation had to mine the answer out of the LLM disk cache, which only
+    worked because caching happened to be on. The ontology loop still runs
+    that gate (backed there by a scoring rubric whose top band it demands),
+    and this record is how its accept rate gets measured before the gate is
+    recalibrated.
 
     A run must carry its own evidence for the decisions it made.
     """
@@ -107,13 +112,14 @@ class RunManifestCritic(BaseModel):
     )
 
 
-def summarize_facts_loop(
-    telemetry: dict[int, list[FactsLoopAttempt]],
+def summarize_loop(
+    telemetry: dict[int, list[LoopAttempt]],
 ) -> RunManifestCritic:
     """Reduce per-unit attempt logs to the document's critic record.
 
     Args:
-        telemetry: ``AgentState.facts_loop_telemetry`` -- unit index to its
+        telemetry: ``AgentState.facts_loop_telemetry`` or
+            ``AgentState.ontology_loop_telemetry`` -- unit index to its
             ordered attempt log.
 
     Returns:
@@ -158,6 +164,7 @@ class RunManifest(BaseModel):
     render_mode: str
     loops: RunManifestLoops | None = None
     critic: RunManifestCritic | None = None
+    ontology_critic: RunManifestCritic | None = None
     selection: RunManifestSelection | None = None
     graph_metrics: GraphShapeMetrics | None = Field(
         default=None,

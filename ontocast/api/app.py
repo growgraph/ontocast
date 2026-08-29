@@ -60,7 +60,6 @@ from ontocast.onto.retrieval_capabilities import (
 from ontocast.onto.state import AgentState
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.stategraph import create_agent_graph
-from ontocast.stategraph.helpers import build_ontology_delta_graph
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
 from ontocast.tool.agg.match_derivation import derive_pair_matches
 from ontocast.tool.agg.match_models import TaggedGraph
@@ -644,7 +643,7 @@ def create_app(
                 # Single-unit responses expose the insert complement; deletes
                 # are catalog-apply concerns and this path never writes the
                 # catalog.
-                delta_graph = build_ontology_delta_graph(onto_result).inserts
+                delta_graph = onto_result.build_delta().inserts
                 if len(delta_graph) > 0:
                     out_graph = (
                         TripleStoreManager.strip_provenance(delta_graph)

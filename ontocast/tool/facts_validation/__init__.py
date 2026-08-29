@@ -47,7 +47,6 @@ from ontocast.tool.facts_validation.terms import (
 from ontocast.tool.facts_validation.unit_findings import (
     collect_unit_findings,
     domain_violation_findings,
-    format_findings_for_prompt,
 )
 
 __all__ = [
@@ -67,7 +66,6 @@ __all__ = [
     "dedupe_literal_variants",
     "domain_violation_findings",
     "expand_vocabulary_terms",
-    "format_findings_for_prompt",
     "material_defects",
     "normalize_literals_against_schema",
     "promote_degenerate_bounds",

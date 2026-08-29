@@ -1,5 +1,6 @@
 """Dedicated state models for parallel unit loops."""
 
+import logging
 from collections import defaultdict
 
 from pydantic import Field
@@ -19,16 +20,20 @@ from ontocast.onto.model import (
     ExternalEvidenceHit,
     ExternalEvidencePlan,
     ExternalEvidenceRequest,
-    FactsLoopAttempt,
     FactsUnitFinding,
     GraphRepairRecord,
+    LoopAttempt,
+    OntologyUnitFinding,
     Suggestions,
 )
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_apply import OntologyDelta
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
 from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.state import AgentState, BudgetTracker
+
+logger = logging.getLogger(__name__)
 
 
 def _render_updated_graph(
@@ -91,6 +96,10 @@ class UnitState(BasePydanticModel):
         ),
     )
 
+    attempt_log: list[LoopAttempt] = Field(
+        default_factory=list,
+        description="Per-attempt telemetry (render/critic/repair) for this unit.",
+    )
     status: Status = Field(default=Status.NOT_VISITED)
     failure_stage: FailureStage | None = Field(default=None)
     failure_reason: str | None = Field(default=None)
@@ -185,10 +194,6 @@ class UnitFactsState(UnitState):
             "trail distinguishing machine-altered triples from LLM output."
         ),
     )
-    attempt_log: list[FactsLoopAttempt] = Field(
-        default_factory=list,
-        description="Per-attempt telemetry (render/critic/repair) for this unit.",
-    )
 
     def update_facts(self) -> None:
         """Apply facts_updates to content_unit.graph and clear the list."""
@@ -217,6 +222,13 @@ class UnitOntologyState(UnitState):
     ontology_updates_applied: list[GraphUpdate] = Field(default_factory=list)
     current_domain: str = Field(default=DEFAULT_DOMAIN)
     ontology_max_triples: int | None = Field(default=None)
+    deterministic_findings: list[OntologyUnitFinding] = Field(
+        default_factory=list,
+        description=(
+            "Machine-found issues in this unit's ontology delta, injected "
+            "into the critic prompt and summed into the document residual."
+        ),
+    )
 
     def model_post_init(self, __context) -> None:
         """Initialize mutable working graph from immutable snapshot."""
@@ -228,21 +240,78 @@ class UnitOntologyState(UnitState):
         """All ontology updates produced by this unit (applied and pending)."""
         return [*self.ontology_updates_applied, *self.ontology_updates]
 
-    def update_ontology(self) -> None:
-        """Apply ontology_updates to working_graph and clear the list."""
+    def build_delta(self) -> OntologyDelta:
+        """Net insert/delete delta of this unit against its prompt snapshot.
+
+        All GraphUpdates (applied and pending) are replayed in order onto a
+        copy of the snapshot, then diffed against it. This honors operation
+        order -- a triple deleted and later re-inserted nets out -- and yields:
+
+        - ``inserts``: true complements (``U \\ S``), never restated context
+          triples;
+        - ``deletes``: snapshot triples removed by delete operations, to be
+          propagated onto catalog terminals during reduce.
+
+        Fresh path (no GraphUpdates, empty seed): full working graph as
+        inserts. Costs a snapshot copy per call, which is why the snapshot is
+        otherwise shared by reference -- callers on the per-unit hot path
+        budget-time it.
+        """
+        if self.all_updates:
+            snapshot_graph = self.ontology_snapshot.graph
+            final_graph, _ = AgentState.render_updated_graph(
+                snapshot_graph, self.all_updates, max_triples=None
+            )
+            snapshot_set = set(snapshot_graph)
+            final_set = set(final_graph)
+            inserts = RDFGraph()
+            deletes = RDFGraph()
+            for prefix, namespace_uri in final_graph.namespaces():
+                if prefix:
+                    inserts.bind(prefix, namespace_uri)
+                    deletes.bind(prefix, namespace_uri)
+            for triple in final_set - snapshot_set:
+                inserts.add(triple)
+            for triple in snapshot_set - final_set:
+                deletes.add(triple)
+            if len(deletes) > 0:
+                logger.info(
+                    "build_delta: unit produced %d delete triple(s) for "
+                    "catalog propagation.",
+                    len(deletes),
+                )
+            return OntologyDelta(inserts=inserts, deletes=deletes)
+
+        # Fresh generation with no structured updates: emit the working graph
+        # only when the seed was empty (true create path).
+        if self.ontology_snapshot.is_empty() and len(self.working_graph) > 0:
+            return OntologyDelta(inserts=self.working_graph.copy())
+        return OntologyDelta()
+
+    def update_ontology(self) -> bool:
+        """Apply ontology_updates to working_graph and clear the list.
+
+        Returns:
+            True when the updates were applied. False means the
+            ``ontology_max_triples`` backstop rejected them and the working
+            graph is unchanged -- the caller must not report that as a
+            successful render without saying so, because a validator run
+            afterwards would inspect the pre-update graph and find it clean.
+        """
         if not self.ontology_updates:
-            return
+            return True
         updated_graph, was_applied = _render_updated_graph(
             self.working_graph,
             self.ontology_updates,
             max_triples=self.ontology_max_triples,
         )
         if not was_applied:
-            return
+            return False
 
         self.ontology_updates_applied += self.ontology_updates
         self.working_graph = updated_graph
         self.ontology_updates = []
+        return True
 
     def working_graph_changed(self) -> bool:
         """True when the scratchpad graph differs from the seed snapshot.
