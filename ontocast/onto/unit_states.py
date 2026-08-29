@@ -74,6 +74,14 @@ class UnitState(BasePydanticModel):
         description="Catalog IRIs that apply() may update from this unit's deltas.",
     )
     suggestions: Suggestions = Field(default_factory=Suggestions)
+    quarantined_literal_triples: list[RejectedLiteralTriple] = Field(
+        default_factory=list,
+        description=(
+            "Triples the render withheld from the applied graph because their "
+            "XSD typed literals were invalid. On the base state because both "
+            "update agents share the hygiene that produces it."
+        ),
+    )
     budget_tracker: BudgetTracker = Field(default_factory=BudgetTracker)
     max_visits_per_node: int = Field(default=1, ge=1)
     #: Critic attempts allowed per render attempt. None couples it to
@@ -175,10 +183,6 @@ class UnitFactsState(UnitState):
     content_unit: ContentUnit = Field(description="Unit under processing (mutable)")
     facts_user_instruction: str = Field(default="")
     facts_updates: list[GraphUpdate] = Field(default_factory=list)
-    quarantined_literal_triples: list[RejectedLiteralTriple] = Field(
-        default_factory=list,
-        description="Triples excluded from the applied graph due to invalid XSD typed literals.",
-    )
     deterministic_findings: list[FactsUnitFinding] = Field(
         default_factory=list,
         description=(

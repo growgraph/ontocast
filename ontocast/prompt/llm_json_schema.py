@@ -14,7 +14,9 @@ from ontocast.prompt.web_grounding import (
     WEB_SEARCH_REQUEST_FIELD,
 )
 
-_GRAPH_FIELD_NAMES = frozenset({"graph", "semantic_graph"})
+_GRAPH_FIELD_NAMES = frozenset(
+    {"graph", "semantic_graph", "insert_graph", "delete_graph"}
+)
 
 _GRAPH_WIRE_DESCRIPTIONS: dict[LLMGraphFormat, str] = {
     LLMGraphFormat.TURTLE: (

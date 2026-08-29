@@ -419,7 +419,7 @@ async def test_render_ontology_update_adds_external_evidence_when_enabled(
 
     async def fake_call_llm_with_retry(**kwargs):
         captured_prompt_kwargs.update(kwargs["prompt_kwargs"])
-        return GraphUpdateRenderReport(graph_update=GraphUpdate())
+        return GraphUpdateRenderReport()
 
     async def fake_get_llm_tool(_budget_tracker):
         return object()

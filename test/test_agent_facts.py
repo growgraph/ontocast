@@ -15,7 +15,6 @@ from ontocast.onto.model import (
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.tool.atomic import AtomicToolBox
 from test.snapshot_helpers import snapshot_from_ontology
@@ -234,11 +233,7 @@ async def test_render_facts_update_coerces_invalid_literal_in_update_graph(
                 ],
             }
         )
-        return GraphUpdateRenderReport(
-            graph_update=GraphUpdate(
-                triple_operations=[TripleOp(type="insert", graph=bad_graph)]
-            )
-        )
+        return GraphUpdateRenderReport(insert_graph=bad_graph)
 
     monkeypatch.setattr(
         render_facts_module, "call_llm_with_retry", fake_call_llm_with_retry

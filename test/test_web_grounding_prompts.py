@@ -17,7 +17,6 @@ from ontocast.onto.model import (
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.llm import LLMTool
@@ -176,7 +175,7 @@ async def test_per_node_facts_render_stripped_while_ontology_render_keeps_search
 
     async def fake_ontology_call(**kwargs):
         ontology_captured.update(kwargs["prompt_kwargs"])
-        return GraphUpdateRenderReport(graph_update=GraphUpdate())
+        return GraphUpdateRenderReport()
 
     async def fake_facts_call(**kwargs):
         facts_captured.update(kwargs["prompt_kwargs"])

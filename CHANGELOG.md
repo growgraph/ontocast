@@ -5,593 +5,686 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.2] - unreleased
 
-### Added
+### Breaking
 
-- **Ontology update semantics under retrieved snapshots** (design note:
-  workspace `planning/ontology-update-semantics.md`). In vector-retrieval
-  mode the per-unit snapshot is a lossy projection of the catalog while the
-  delta is applied to the full terminal; the position adopted is *snapshot =
-  evidence context, terminal = authority*, implemented by four mechanisms:
+- The ontology update wire is flat. `GraphUpdateRenderReport` carries
+  `insert_graph` and `delete_graph` as sibling graph fields, replacing
+  `graph_update.triple_operations[]`. `to_graph_update()` compiles them
+  delete-then-insert into the unchanged internal model, so `apply()`, the SPARQL
+  compiler and the LangChain tool are unaffected. Interleaving inserts and
+  deletes within a single render is no longer expressible. Cached ontology-render
+  responses are invalidated.
 
-  - **Minted-duplicate reconciliation at reduce**
-    (`tool/ontology_validation/reconcile.py`,
-    `ONTOLOGY_RECONCILE_MINTED_TERMS=off|detect|rewrite`, default `detect`).
-    A term the catalog defines but retrieval did not surface is invisible to
-    the unit, so the model re-mints it under a fresh IRI — and the per-unit
-    label-collision check indexes the snapshot, which is exactly the part of
-    the catalog where the duplicate is not. The reduce step checks every
-    minted term against the FULL terminals by exact surface form
-    (label/prefLabel/notation), unique resolution, and compatible role.
-    `detect` records `minted_duplicates` / `minted_duplicate_pairs` so the
-    sampling run measures the duplication base rate before `rewrite` (which
-    substitutes minted → catalog IRI across subject and object positions) is
-    trusted.
-  - **Redeclare-only deletes in vector mode.** A merged delete whose subject
-    the merged inserts do not redeclare was judged on a partial view and
-    would propagate onto shared catalog terminals; the reduce drops it
-    (`deletes_dropped_unredeclared`). Not a knob — a safety invariant like
-    the insert-wins veto. Single-ontology modes are untouched: there the
-    model saw the whole graph.
-  - **Honest prompts.** Ensemble-assembled contexts carry an explicit
-    PARTIAL CONTEXT notice in the render intro and the critic criteria
-    (reuse over minting; delete only with a redeclaration; absence of
-    context is not evidence of error), and intro selection keys on the
-    snapshot's `assembly_mode` instead of `len(writable_iris)` — a
-    vector-mode unit whose retrieval hit one ontology used to be told it was
-    seeing "the domain ontology" in full.
-  - **Divergence observability.** `apply_deletes_no_match` counts delete
-    triples absent from the terminal at apply time (the stale-vector-index
-    signature; previously a silent no-op with no trace).
+  Touches: `onto/model.py::GraphUpdateRenderReport`, `to_graph_update`;
+  `prompt/graph_format.py`; `prompt/llm_json_schema.py`.
+  Test: `test/test_graph_update_wire_regression.py`.
 
-- **Fresh-path reconciliation.** N parallel units minting fresh ontologies
-  under the same LLM-chosen IRI used to race: the reduce indexed by IRI and
-  kept whichever landed last, silently dropping the other units' content.
-  Same-IRI artifacts now union-merge (`Ontology.union_fresh` — a lineage
-  *root*, since the transient per-unit artifacts never enter the catalog;
-  `fresh_ontologies_merged`), and term overlap across *distinct* fresh IRIs
-  is counted (`fresh_minted_duplicates`), not merged.
-
-- **The ontology loop is instrumented before its gate is touched.** The
-  ontology critic still accepts on `critique.success or critique.score > 90`,
-  and unlike the facts gate that threshold is backed by a rubric in its own
-  prompt (`> 90` is the top band, "Excellent — minor refinements only") — a
-  demand for perfection whose accept rate has never been measured, because
-  every benchmark arm so far ran `render_mode: facts` and the ontology critic
-  has never executed on recorded data (zero cached calls against 2,920 facts
-  ones). Each critic call now appends a `LoopAttempt` (score, severity mix,
-  findings counts, delta size, and `n_fixes_targeting_snapshot` — proposed
-  fixes aimed at catalog content the unit's delta never touched), summarized
-  into the run manifest as `ontology_critic` and into `retrieval_metrics` as
-  `ontology_critic_calls` / `ontology_critic_accepted` /
-  `ontology_findings_residual` / `ontology_mandatory_residual`. `LoopAttempt`
-  is the renamed, phase-neutral `FactsLoopAttempt`; `summarize_facts_loop` is
-  now `summarize_loop`.
-
-- **Deterministic per-unit validation of ontology deltas, in shadow mode**
-  (`tool/ontology_validation/unit_findings.py`). Validates the unit's net
-  insert/delete delta against the prompt snapshot — never the working graph,
-  which is snapshot + delta and would attribute every pre-existing catalog
-  defect to the unit. Checks: terms minted under namespaces no context
-  ontology owns (predicts the reduce partition's silent `unattributed` drop),
-  degenerate `owl:Restriction` stubs, missing labels on new terms, subclass
-  cycles through snapshot + delta, class/property role confusion against
-  catalog roles, functional-vs-min-cardinality contradictions, deletes of
-  catalog content the unit does not redeclare (ontology deletes propagate onto
-  shared catalog terminals cross-document — there was no guard anywhere), and
-  advisory label collisions with existing catalog surface forms. The facts
-  `UNKNOWN_TERM` rule is deliberately not ported (inverted semantics: minting
-  terms is the renderer's job), nor is connectivity (owned by the
-  document-level structural check). Findings are collected before every critic
-  call and at loop exit — so the residual exists at the `MAX_VISITS=1` default
-  where the critic is skipped — and injected into the critic prompt as
-  MANDATORY items. **The gate is unchanged**: findings are evidence for the
-  recalibration, applied only after a sampling run yields the incumbent's
-  distribution, the same order the facts gate change followed.
-
-- `UnitOntologyState.build_delta()` — the per-unit insert/delete delta
-  extraction, moved from `stategraph/helpers.py::build_ontology_delta_graph`
-  onto the state so agents can use it without a layering cycle.
-
-### Fixed
-
-- **Serialization crashed in vector-retrieval mode the moment a document
-  produced an ontology version.** `ToolBox.aserialize` called the sync
-  `add_ontology()`, whose guard refuses to reindex the vector store inside a
-  running event loop — and `aserialize` is by definition inside one, so with
-  the patch retriever registered it raised `RuntimeError`. Unseen until now
-  only because every benchmark arm ran `render_mode: facts`, which serializes
-  no ontology artifacts. Now awaits `aadd_ontology()`; the regression test
-  reproduces the exact failure on the sync path.
-
-- **The ontology loop had the facts loop's stale-suggestion leak, and no repair
-  pass to expose it.** Neither `render_ontology_update` nor
-  `criticise_ontology`'s accept branch cleared `state.suggestions`, so once the
-  critic rejected a unit its suggestions rode into every later render of that
-  unit — the same defect fixed for facts in this release, where it is recorded
-  as the mechanism by which the two-visit arm lost graph connectivity and gained
-  validation errors. Cleared at both writers, for the same two reasons: a render
-  consumes them, and the critic can *accept* on a later attempt of the same
-  render (after an external-evidence search) with no render in between.
-
-- **`update_ontology()` swallowed a budget rejection and the render reported
-  success anyway.** It returned `None` whether or not the update applied, so
-  when the `ONTOLOGY_MAX_TRIPLES` backstop discarded an update wholesale,
-  `render_ontology_update` still set `Status.SUCCESS` on an unchanged working
-  graph — a billed render with no effect, invisible in the run's own artifacts,
-  and a graph that any later validation pass would read as clean because it is
-  the *pre-render* graph. It now returns `bool`; the caller logs the discard and
-  counts it as `ontology/update_rejected_over_budget`. The status stays SUCCESS
-  by design — the pre-update graph is intact and a re-render would hit the same
-  ceiling — but the discard is no longer silent.
-
-- **Merge-guard vetoes now hold cluster-wide — a vetoed pair can no longer
-  merge through a chain of accepted edges.** `_build_identity_clusters`
-  applied every distinctness guard pairwise, then union-found the accepted
-  edges into transitive closures: with A–C vetoed but A–B and B–C accepted,
-  all three united anyway, defeating every guard including the validation
-  gate's own un-merge vetoes (which explains `facts_merge_repairs_rejected`
-  on runs where the gate demonstrably fired). Diagnosed on the art6 (ECHR)
-  benchmark, where four judges, three companies, and ESA-plus-its-own-Appeals-
-  Board each collapsed into single nodes. Distinctness vetoes (direct
-  relation, sibling, literal conflict, functional-object conflict, type/role
-  incompatibility) are now precomputed per candidate cluster and checked
-  across all members of both components before a union; blocked unions are
-  counted in `facts_rejected_merges` with reason `cluster_veto`. The gate's
-  veto pass therefore actually dissolves a flagged cluster now.
-- **A string literal on an arbitrary domain predicate no longer acts as label
-  agreement.** Every untyped/language-tagged string ≥ 3 characters was
-  harvested as an `alt_label` and fed into the label-intersection merge tier —
-  so `echr:hasHonorific "Mrs"` made any two "Mrs …" persons lexical aliases
-  ("Mr", at 2 characters, slipped under the floor, which is why only the
-  female judges collapsed in the art6 run). `alt_labels` now stand in only
-  for entities carrying no `rdfs:label`.
-- **Labels differing only by conflicting initials are distinctness evidence.**
-  "French company S." and "French company T." merged because `_tokenize`
-  dropped tokens ≤ 2 characters, making the label token sets identical. Short
-  tokens are kept, token comparisons strip edge punctuation (also letting
-  "Baranov, D." / "Dmitry Baranov" alias through the initials tier itself
-  rather than through the alt-label side channel), and a new guard vetoes
-  pairs whose labels are identical except for non-alias-compatible short
-  tokens (`AGG_LITERAL_CONFLICT_GUARD`-style flag:
-  `AGG_INITIALS_DISTINCT_GUARD`, default on).
-- **Merge-created self-loops are dropped instead of asserted.** A triple whose
-  subject and object were distinct until the identity mapping unified them
-  (`esa schema:isPartOf esaAppealsBoard` after a bad merge) was silently
-  rewritten to `X isPartOf X`. The rewriter now drops such triples with a
-  warning; author-asserted reflexive triples are untouched.
-- **`AGG_SIMILARITY_THRESHOLD` no longer masquerades as the pipeline's
-  clustering knob.** The in-pipeline aggregator overrode it with
-  `AGG_CANDIDATE_SIMILARITY_THRESHOLD` for its only clustering call, so tuning
-  it changed nothing. The pipeline clusterer is now constructed at the
-  candidate threshold directly and the field is re-documented as what it is:
-  the cross-graph `EntityAligner` threshold (`/align_entities`,
-  `match-graphs`). Docs and `.env.example` updated to match.
-
-### Added
-
-- **Natural-key identity evidence** (`AGG_NATURAL_KEY_MERGE`, default on): two
-  instances asserting the identical short string value (≤ 64 normalized chars,
-  shared by ≤ 8 entities) on a single-valued identifier-like predicate —
-  schema-declared max-1, or observed single-valued on every subject — become
-  merge candidates and pass the lexical bar, even when their labels and
-  embeddings disagree. Every distinctness guard still applies. Closes the
-  art6 under-merge where two nodes carrying the identical
-  `echr:hasApplicationNumber "36760/06"` were left split: all literal
-  machinery was veto-only, so identical identifiers exerted zero pull.
-  Key-supported clusters are reported on `AggregationResult` /
-  `AgentState.aggregation_key_clusters`, and the gate downgrades string
-  multi-value findings on those subjects to warnings — "Application no.
-  36760/06" and "Case of Stanev v. Bulgaria" are two names for one
-  key-confirmed case, and an error there would drive the un-merge repair to
-  split a correct merge.
-- **String branch for `SUSPECT_MULTI_VALUE`.** The gate's multi-value detector
-  was numeric/IRI-only, so a node carrying four irreconcilable person names —
-  the loudest over-merge symptom — produced no finding and could never trigger
-  the un-merge repair. Short name-like string values (≤ 64 normalized chars)
-  on a predicate that is string-single-valued for a dominant majority now
-  yield an error-severity finding when any pair is not alias-compatible;
-  legitimate name variants ("Mr Beer" / "Mr Karlheinz Beer") pass.
-- **`MIXED_OBJECT_KINDS` warning finding**: a predicate used with both IRI and
-  literal objects across the facts graph (`schema:worksFor <org>` on one
-  subject, `schema:worksFor "Ministry of Justice"` on another) is reported as
-  telemetry — no single query shape matches both usages.
-- **Literal-variant dedupe at the gate** (`FACTS_LITERAL_VARIANT_DEDUPE`,
-  default on): duplicate literals differing only in language tag or datatype
-  on one (subject, predicate) — `"X"@en` / `"X"^^xsd:string` / `"X"` — are
-  collapsed before validation; the language-tagged form wins, then the plain
-  form, reified provenance is retargeted onto the survivor, and each removal
-  is recorded as a `literal_variant_pruned` repair.
-- **Ablation flags for the merge guards**: `AGG_LITERAL_CONFLICT_GUARD`
-  (default on) toggles the literal-conflict veto so its contribution to
-  `facts_rejected_merges` is measurable without editing code, and
-  `AGG_TYPE_GUARD_UNTYPED=strict` fails typed-vs-untyped pairs closed instead
-  of the default fail-open.
-- Regression suite `test/aggregation/test_art6_merge_regressions.py` pinning
-  each of the art6 failure shapes (judge collapse, company initials, part-of
-  self-loop, natural-key under-merge, prose-is-not-a-key, gate visibility of
-  label explosions, literal-variant dedupe).
-
-### Changed
-
-- **A rejecting critic now buys a repair, not a re-extraction — and a unit's
-  worst-case call count no longer grows with `MAX_VISITS`.** A rejection used to
-  fall through to the next `render_attempt`, which rendered the whole unit again
-  from scratch. So the answer to "this one term is wrong" was "write the unit
-  again", and raising the bound bought more full renders: the ledger was
-  `2 * max_visits - 1`. The critic's blocking fixes now go through the same
-  bounded rewrite-in-place pass the deterministic findings already used
-  (`FactsUnitFindingKind.CRITIC_FIX`, `tool/facts_validation/critic_findings.py`),
-  and the outer loop retries only on *render failure* — which is what that
-  branch was always for. With web grounding off (the default), a unit costs one
-  render plus one critique plus the repair budget, at any bound.
-
-  Critic fixes join the findings for the first repair pass only, exactly like
-  `state.suggestions`: re-adding them after each pass would turn a fix the
-  renderer declined into an unresolvable finding and burn the whole budget.
-
-- **The facts loop now accepts a render on the absence of verifiable defects,
-  not on the critic's score.** `criticise_facts` gated on `critique.success or
-  critique.score > 90` — an LLM-assigned 0-100 number compared against a
-  threshold the model is never shown, from a prompt (`prompt/criticise_facts.py`)
-  that never mentions scoring at all. Measured over the 34 cached critic calls
-  of the 2026-08 matsci runs: scores min 55 / **median 79** / max 98, **28 of 34
-  rejected**, 62% landing in a 70-85 "good, with suggestions" band. An LLM asked
-  to propose improvements proposes some every time — it did in 26 of 26
-  parseable calls — so the gate was very nearly unconditional, and ~80% of units
-  bought a second full render regardless of their quality.
-
-  It was also inverted. `deterministic_findings` — machine-derived, carrying an
-  explicit `mandatory` flag — was computed before every critic call and injected
-  into the critic's own prompt, then played no part in the decision: a unit with
-  twelve mandatory `UNKNOWN_TERM` findings was accepted if the model said so,
-  and a clean unit was rejected if the model said 85. On the same corpus **only
-  7 of 34 units had any mandatory finding when the critic ran**, so 79% were
-  re-rendered on the strength of a number alone. The expensive action hung on
-  the unreliable signal and the cheap one on the reliable signal.
-
-  New `tool/facts_validation/acceptance.py` decides it instead:
-  `material_defects()` over the deterministic findings plus the critic's own
-  `TripleFix` severities, carried by a `FactsAcceptancePolicy` built beside
-  `ValidationPolicy` on the toolbox. `score` and `success` are still recorded,
-  and are no longer consulted. Replaying the cached responses through the new
-  rule accepts 18 of 26, flipping 12 rejections that scored 65-85.
-  - `FACTS_ACCEPT_BLOCKING_SEVERITY` (default `critical`) is the cut on critic
-    fixes. `critical` is the only severity with measured discrimination: the
-    critic emitted 27 `critical` against 99 `important`, so `important` accepts
-    3 of 26 renders — worse than the threshold it replaces. `never` lets
-    deterministic findings gate alone.
-  - **A `REMOVE` fix never blocks**, whatever its severity: the repair prompt it
-    would be rendered into states that a finding is never resolved by deleting
-    the statement, so a mandatory REMOVE would contradict the block it sits in.
-  - `FactsAcceptancePolicy.blocking_finding_kinds` can silence one finding lane
-    without silencing its telemetry. This is not optional ergonomics: binding
-    acceptance to findings makes a systematically unfixable finding a permanent
-    per-unit tax, and this codebase has already shipped one.
-
-- **The improvement prompt gave the repair render two contradictory contracts.**
-  `improvement_instruction_template` told it "Critic's suggestions are advisory,
-  not mandatory. Think independently", to "Think beyond the critique …
-  **Proactively identify and fix additional problems not mentioned in the
-  critique**", and that its goal was "not to satisfy Critic" — while
-  `format_findings_for_prompt` in the same prompt ordered it to apply every
-  mandatory item by rewriting in place and never deleting. The permissive half
-  licensed exactly the broad rewriting the two-visit arm exhibited: +6-25%
-  triples, more isolated nodes and more validation errors on two of three
-  documents, with queryable measurement records flat. It is replaced by one
-  correction-pass contract, keeping a single bounded escape clause — an item
-  contradicted by the source text may be skipped, with a reason, and never by
-  altering other statements.
-
-### Added
-
-- **`RunManifestCritic`** on the run manifest (`critic:`), summarizing the
-  critic's own decisions per document: call count, accepted count, score
-  min/median/max, a decile score histogram, and the proposed-fix severity
-  histogram. Establishing that the score gate was miscalibrated required mining
-  the LLM disk cache, which only worked because caching happened to be on — a
-  run must carry the evidence for the decisions it made.
-- `facts_critic_calls` / `facts_critic_accepted` metrics. `node_visits` counting
-  `CRITICISE_FACTS` lived on the per-unit state copy and died with it, so the
-  number of critic calls a run bought was not recoverable from its artifacts.
-- `facts_mandatory_residual`, alongside a corrected `facts_findings_residual` —
-  see below.
-
-### Fixed
-
-- **`facts_findings_residual` was measured over the wrong population.** It
-  summed `attempts[-1].n_deterministic_findings` only for units whose *last*
-  attempt was an `llm_repair`, so every clean unit and every unit whose loop
-  exhausted its retries contributed a silent 0: the denominator was "units that
-  needed repair", not "units". A change that made *fewer* units enter repair
-  therefore read as a drop in residual findings. It also summed *total*
-  findings, so advisory `NUMERIC_COVERAGE` — which fires on nearly every unit of
-  numeric prose — dominated a number meant to track mandatory defects. It is now
-  read off each unit's final findings, and `facts_mandatory_residual` reports
-  the mandatory half separately. **Old runs are not comparable on this key.**
-
-- **Critic suggestions leaked across renders, putting two contradictory repair
-  contracts in one prompt.** `state.suggestions` was written by
-  `criticise_facts` and read by `render_facts_update`, but nothing ever cleared
-  it — while the sibling `state.deterministic_findings` *was* cleared after
-  every render. So once the critic rejected a unit, its suggestions rode along
-  into every later render of that unit, including the finding-driven repair,
-  which then received the improvement template's "Critic's suggestions are
-  advisory … proactively identify and fix additional problems not mentioned in
-  the critique" *together with* the findings block's "apply every item, rewrite
-  in place, never delete". The leak is unreachable at `MAX_VISITS=1`, where the
-  critic never runs — which is exactly the arm split of the 2026-08 matsci
-  benchmark, where the two-visit arm lost graph connectivity (isolated nodes
-  6→15 and 10→19 on two of three documents) and gained validation errors (0→2,
-  2→8) while the one-visit arm did not. Cleared in two places, because the loop
-  reaches the repair with stale suggestions by two routes: a render consuming
-  them, and the critic *accepting* on a later attempt of the same render (after
-  an external-evidence search) with no render in between.
-
-- **A repair render that answered the findings prompt by deleting triples was
-  detected and then kept anyway.** The delete-only guard logged a warning and
-  left the shrunken graph in place, making the detector a bystander to the data
-  loss the CHANGELOG below documents (25 of 58 cached repair responses deleted
-  valid values outright). Two changes:
-  - The guard now **rolls back** to the pre-repair graph, which by construction
-    holds strictly more data, and re-collects findings against it so the
-    recorded residual describes what actually survived.
-  - Its predicate was strengthened, because the old one could not see the
-    dominant failure mode. Keying on `mandatory_after >= mandatory_before` means
-    deleting the statement the finding *points at* scores as a successful
-    repair — the finding is gone precisely because the data is. The guard now
-    also fires when a render removed triples and **wrote none back**, which the
-    "rewrite the offending term in place" contract makes illegitimate by
-    definition, and which stays quiet for a rewrite that shrinks the graph by
-    collapsing a duplicate.
-  - New `facts_repair_delete_only` metric counts the rolled-back renders, so a
-    prompt or validator change that starts provoking deletions is a number
-    rather than a log line.
-
-- **LLM JSON parse failures now repair deterministically or fail with
-  actionable feedback, instead of the informationless `input_value=None`
-  retry loop.** Root-caused from the cached wire traffic of the 2026-08-28
-  `--max-visits 2` matsci run, where 4 of 7 units wasted a ~50k-token call
-  each on attempt 1: gpt-5-mini escapes the quotes that *delimit* JSON
-  strings (`"text_fragment": \"…\",`) and the whitespace between tokens
-  (`\",\n  "action"`), and occasionally under-closes one `{`. Langchain's
-  `parse_json_markdown` degraded all of these to a silent `None` — or a
-  silently *truncated* prefix of the object — so the retry prompt carried a
-  pydantic `input_value=None` error naming nothing, and retries repeated the
-  identical malformation. Three changes in `agent/common.py`:
-  - `unescape_json_delimiters` joins the sanitizer chain and repairs the
-    escaped-delimiter and escaped-whitespace classes without a retry
-    (string-aware scan; legitimate in-string `\"` escapes untouched).
-  - `parse_json_object` replaces the silently-lenient parse for every
-    `PydanticOutputParser` call: strict parse first (keeping only the
-    `strict=False` control-character leniency), fenced-block extraction as
-    the sole fallback, and any remaining failure raises with line/column and
-    a ±150-char context window — the same feedback shape that made the
-    Turtle-level retries recover on the first try. Partial recoveries and
-    non-object JSON (`null`) are rejected instead of validating silently.
-  - An LLM request *timeout* is re-issued identically exactly once per call
-    before propagating — a timeout is not a rate-limit "send less" signal,
-    and at `--max-visits 2` a lost render silently cost a unit its entire
-    critique. Rate limits and connection errors still propagate immediately.
-
-- **A false mandatory `UNKNOWN_TERM` finding ordered repair renders to destroy
-  correct numeric values.** Root-caused from the cached LLM wire traffic of the
-  2026-08-11 matsci runs: the catalog *references* `qudt:QuantityValue` and
-  `qudt:unit` (in `rdfs:subClassOf`/`owl:onProperty`), which made
-  `http://qudt.org/schema/qudt/` a catalog namespace, while `qudt:numericValue`
-  appears only in qqval's prose — so every unit carrying the canonical scalar
-  property got "`qudt:numericValue` does not exist in its ontology … Candidates:
-  `qudt:QuantityValue`" as a MANDATORY item, with a **class** suggested for a
-  predicate slot. Of 58 cached repair responses carrying the finding, 25
-  deleted the valid values outright, 28 re-encoded scalars as equal-bound fake
-  ranges, and 1 wrote the class as a predicate; the two benchmark arms measured
-  the fallout as 38–64% of value nodes with no number in any numeric slot and
-  0–5 SPARQL-answerable measurement records per corpus. Three rules changed:
-  - A namespace is **closed** (members eligible for `UNKNOWN_TERM` /
-    near-miss alias repair) only when the catalog *declares* terms in it —
-    subject-position statements — not when it merely references them
-    (`collect_declared_namespaces`).
-  - The configured quantity fallback vocabulary and `FACTS_CODE_PREDICATES`
-    are exempt: the validator must never order the renderer to remove the
-    vocabulary the facts prompt itself recommends. All deployment-blessed
-    exemptions travel as one `ValidationPolicy` object on the toolbox instead
-    of loose parameters.
-  - Alias candidates are **role-filtered** against the catalog's declarations:
-    a predicate never gets a known class suggested, and vice versa.
-- The findings prompt now states the repair contract explicitly — every
-  MANDATORY item must be fixed by rewriting in place, never by deleting the
-  statement — and a repair render that shrinks the unit graph without
-  resolving any mandatory finding is logged as data destruction rather than
-  passing as a successful repair.
-- `RunManifest.facts_triples` was not comparable to the manifest's own
-  `.facts.ttl` (raw aggregated count vs provenance-stripped dump; 1711 vs 557
-  on the matsci runs). `facts_triples_serialized` now records what the file
-  actually holds.
-
-### Added
-
-- **`BudgetTracker` reports the two ratios that locate a cost problem**:
-  `prefix_cache_hit_rate` (input tokens served from the *provider's* prompt
-  cache) and `reasoning_share_of_output` (thinking tokens as a share of output).
-  Both are `computed_field`s, so they ride the `/process` response and the run
-  manifest without a new wire shape, and both are `null` — unmeasured, not zero
-  — when the provider reports no tokens. The denominators span billed *and*
-  replayed tokens, because `cache_read_input_tokens` and `reasoning_tokens`
-  accumulate on both while `input_tokens` counts billed only; dividing by
-  `input_tokens` alone reports over 100% cache hits on a partly replayed run,
-  which is the reason these are computed here rather than by each consumer.
-  They make existing manifests retrospectively comparable: across the manifests
-  in `benchmarking/`, reasoning is **62–73% of all output tokens**, and the
-  provider prefix cache serves **35–44%** of input on the wide document
-  fan-outs against **91%** on a longer, more sequential run — same code, so the
-  gap is call sequencing, not configuration. No currency is reported; per
-  `docs/user_guide/observability.md` that stays with the deployment.
-- **SHACL-vs-catalog contradiction lint** (`shacl_catalog_contradictions`),
-  run when the validation gate loads shapes: any property the shapes require
-  (`sh:minCount >= 1`) that the term validator would flag as unknown is logged
-  as a configuration error — data cannot satisfy both sides. This exact
-  contradiction (shapes requiring `qudt:numericValue` while the validator
-  mandated its removal) is what silently destroyed the matsci numerics.
-- **`LABEL_ONLY_NUMBER` mandatory finding**: a node carrying the fallback
-  vocabulary's unit property but no numeric literal on any property, with a
-  number in its label, is a measurement invisible to every query — previously
-  numbers inside labels counted as "covered" and nothing ever flagged it.
-- **Degenerate-bound promotion** at parse time: equal lower/upper bounds
-  collapse to a single scalar on the configured numeric-value property.
-  Config-driven and off by default — activates when the quantity fallback
-  vocabulary names `numeric_value`, `lower_bound` and `upper_bound` roles
-  (58% of all bound pairs in the matsci runs were degenerate).
-- **The run manifest records the effective configuration and output shape**:
-  `loops` (`max_visits`, `max_critic_visits`, `llm_repair_visits`), `selection`
-  (`target_sections`, `exclude_sections`, `summarize_sections`,
-  `summary_max_sentences`, `bibliography_mode`), and `graph_metrics`
-  (connectivity of the serialized facts graph, via the new
-  `util/graph_metrics.py`). The 2026-08 `--max-visits 1` vs `2` ablation turned
-  out to be an A/A comparison — call accounting shows the critic never ran in
-  the second arm — and nothing in either dump could confirm or refute what the
-  run received; now the arm is auditable from its own manifest.
-  `test_max_visits_critic_propagation.py` additionally pins both ends of the
-  chain: the batch entry path writes the flag onto `AgentState`, and a unit
-  loop at `max_visits=2` observably spends a critic call.
-
-### Changed
-
-- **`tool/facts_invariants.py` (2,760 lines) is split into the
-  `tool/facts_validation/` package** — `terms` (catalog inventory, namespace
+- `tool/facts_invariants.py` is removed and split into the
+  `tool/facts_validation/` package: `terms` (catalog inventory, namespace
   closure, `ValidationPolicy`, alias candidates), `literal_repair` (parse-time
-  LLM-free rewrites), `unit_findings` (per-unit findings), `shacl` (execution,
-  autofix, catalog lint), `gate` (document-level validation). The package
-  `__init__` is the public surface; the old module name is gone.
-- `_normalize_and_repair_graph` and `_collect_facts_findings` take the atomic
-  toolbox instead of a growing list of unpacked scalars.
+  repairs), `unit_findings`, `shacl` (execution, autofix, catalog lint), `gate`
+  (document-level validation) and `acceptance`. The package `__init__` is the
+  public surface; the previous module name no longer resolves.
 
-### Changed
+- The `data/` directory is removed, together with the importable top-level
+  `data` package it contained. It was already excluded from the source
+  distribution while `test/` was included, so tests reading it could not run
+  from a published sdist. The two TTL fixtures required by tests are now in
+  `test/data/ontologies/`. `run/fetch_schema_samples.py` resolves its two
+  local-source entries through `ONTOCAST_SCHEMA_SAMPLE_DIR` and skips them when
+  that variable is unset; the corresponding extracts in
+  `test/data/schema_corpus.json` are unchanged.
 
-- **`LLM_GRAPH_FORMAT` now defaults to `jsonld`.** Turtle remains supported as
-  the legacy encoding, for providers whose structured output handles strings
-  more reliably than nested objects. This changes behaviour for anyone who
-  never set the variable. The default was declared in four independent places —
-  `ServerConfig`, `AgentState`, `UnitState`, and the `llm_graph_format_ctx`
-  ContextVar that `coerce_llm_graph_wire` falls back to when `model_validate`
-  is called without a validation context — and all four moved together;
-  `test_llm_graph_format_default.py` now pins them against drift.
-- **`ONTOLOGY_MAX_TRIPLES` now defaults to unlimited.** At `50000` it could not
-  bind: ~634k tokens as Turtle, ~1.28M as JSON-LD, against a largest real
-  ontology of 1409 triples — a graph that size became unusable as context ~40×
-  earlier. It is a runaway-growth backstop on the per-unit ontology working
-  graph, not a context cap, and its description said otherwise; use
-  `ONTOLOGY_CONTEXT_MAX_TRIPLES` for prompt size. Still available, off by
-  default, and now tested — it previously had no test at all.
-- `ontocast_extract` (LangChain/MCP tool) takes its `render_mode` default from
-  `RENDER_MODE` instead of hardcoding `ontology_and_facts`, and parses it
-  through `parse_render_mode_param` like every other entry point. Omitting the
-  argument now honours the server's configuration.
-
-### Fixed
-
-- **`.env.example` named two local encoder models without the
-  `sentence-transformers/` prefix.** `SharedEncoder` caches by the literal
-  `(model name, device)` string, so `AGG_EMBEDDING_MODEL` and
-  `EMBEDDING_MODEL_NAME` as shipped would not share a resident model with the
-  prefixed defaults — and a user who copied the file and then followed the
-  performance guide's advice to align all three got **two copies of the same
-  checkpoint**, the exact outcome the alignment exists to prevent. Both spellings
-  are valid and both work, so nothing surfaced it. Now prefixed, with a test
-  asserting all three encoder settings keep the prefix.
-- **`ONTOLOGY_MAX_TRIPLES` could lock the ontology loop out silently.** The
-  guard compared absolute post-apply size, so a working graph seeded above the
-  cap failed on every subsequent update — discarding the LLM's work for the rest
-  of the run with only a WARNING, and with no way back under, since deletions
-  were rejected too. It now rejects only updates that *grow* the graph past the
-  cap, and logs the already-over case distinctly.
-- **`pytest` no longer loads the developer's live `.env`.** Removing `env_files`
-  from `[tool.pytest.ini_options]` had not been enough: `pytest-dotenv` loads a
-  discovered dotenv file even with no `env_files` set, so every `BaseSettings`
-  built in a test silently took local configuration (a local `RENDER_MODE=facts`
-  left the ontology block untested) and a real `LLM_API_KEY` sat in the
-  environment. The plugin is uninstalled and blocked via `-pno:dotenv` —
-  deliberately **one token**, because `toml-sort` runs with `--all` and sorts
-  array values, which split a two-token `-p no:dotenv` apart and left pytest
-  unable to start. `test/conftest.py` now also asserts the pipeline mode
-  selectors read their declared defaults, so a future mangling fails loudly with
-  a pointer rather than silently readmitting the environment.
-- The LangChain `apply_graph_update` tool pins its own Turtle coercion. Its
-  interface is Turtle-in by parameter name (`insert_ttl` / `delete_ttl`) and was
-  incorrectly tracking the LLM wire format.
+  Touches: `pyproject.toml`; `run/fetch_schema_samples.py`; `demo/README.md`;
+  `cli/inspect_sections.py`.
+  Test: `test/test_repo_isolation.py`.
 
 ### Added
 
-- **`ONTOLOGY_CONTEXT_MAX_TRIPLES` (default `4000`) bounds the ontology context
-  in every mode.** Only `selected_vector_search_ontology` had ever bounded it;
-  `selected_single_ontology` (the default) and `fixed_single_ontology`
-  serialized the whole selected ontology into every prompt, and the facts
-  fan-out serialized the union of every artifact, with no cap. Over budget,
-  `onto/ontology_condense.py` drops in increasing order of harm — header/list
-  noise, then redundant structure, then glosses — and **never** drops labels,
-  types, hierarchy or domain/range. It is best-effort by design: a graph that
-  cannot fit is passed through with a warning naming the way out, because
-  cutting load-bearing schema to hit a number produces an extraction failure
-  that reads as a bad model. Enforced at `format_ontology_chapter`, the one
-  point every chapter passes through, and part of the snapshot memo key so a
-  shared snapshot cannot serve one unit's budget to the next.
-- `ONTOLOGY_SNAPSHOT_TRIPLES` retrieval metric, written for every context mode.
-  Previously only the vector resolver recorded a size, nested under
-  `patch_retrieval` — so the two modes that bounded nothing also reported
-  nothing.
-- The seed-free graph pruners and predicate vocabularies move to
-  `onto/graph_prune.py`, shared by induced-subgraph retrieval and the condenser
-  rather than duplicated.
-- **`.env.example.minimal` and a Configuration Playbooks guide.** The full
-  configuration surface is ~200 variables, which is not a thing anyone can
-  optimise at once. The minimal file carries 29, grouped by the decision they
-  belong to rather than by config class, and the guide gives a playbook per task
-  — evaluate, build an ontology, populate facts, scale the catalog, serve it —
-  each listing only what it changes, plus a symptom-to-knob triage table. Three
-  tests keep the curated file honest: every name resolves to a real setting, it
-  stays a subset of `.env.example`, and it stays under a variable ceiling so it
-  cannot accrete back toward the full surface. A fourth checks that exact
-  variable counts quoted in prose still match reality (hedged phrasing like
-  "around 200" is exempt).
-- The minimal file covers conversion and chunking (`CHUNK_MIN_SIZE` /
-  `CHUNK_MAX_SIZE`, `CHUNK_SEGMENTER`, `CHUNK_SECTION_CLASSIFIER`,
-  `CHUNK_BIBLIOGRAPHY_MODE`, `CONVERTER_PROFILE`), the local-encoder alignment,
-  SHACL shapes, LLM caching and the web-search toggle — all decisions a
-  first-time user faces that the first cut omitted.
+- Reduce-time ontology update semantics for retrieved snapshots. Under
+  `ONTOLOGY_CONTEXT_MODE=selected_vector_search_ontology` a per-unit snapshot is
+  a subset of the catalog while the delta applies to the full terminal, so
+  judgements requiring knowledge of the whole catalog are made at reduce:
+
+  - Minted-duplicate reconciliation. Each newly minted term is checked against
+    the full terminals by exact surface form (`rdfs:label`, `skos:prefLabel`,
+    `skos:notation`), unique resolution and compatible role.
+    `ONTOLOGY_RECONCILE_MINTED_TERMS` selects `off`, `detect` (default; records
+    matches without altering the delta) or `rewrite` (substitutes the catalog
+    IRI in subject and object position).
+  - Redeclare-only deletes. A merged delete whose subject the merged inserts do
+    not redeclare is dropped, since it was judged against a partial view and
+    would otherwise propagate onto shared catalog terminals. Applies to vector
+    mode only; single-ontology modes are unaffected.
+  - Partial-context prompts. Ensemble-assembled contexts carry an explicit
+    notice in the render intro and the critic criteria, and intro selection keys
+    on `OntologySnapshot.assembly_mode` rather than on the count of writable
+    IRIs.
+  - Divergence counters for delete triples absent from the terminal at apply
+    time.
+
+  Touches: `tool/ontology_validation/reconcile.py`;
+  `stategraph/helpers.py::enforce_redeclared_deletes`; `onto/ontology_apply.py`;
+  `prompt/render_ontology.py`; `prompt/criticise_ontology.py`.
+  Metrics: `minted_duplicates`, `minted_duplicate_pairs`,
+  `minted_duplicates_rewritten`, `deletes_dropped_unredeclared`,
+  `apply_deletes_no_match`.
+  Tests: `test/test_ontology_reconcile.py`,
+  `test/test_ontology_prompt_context.py`.
+
+- Fresh-path reconciliation. Ontology artifacts minted by different units under
+  the same IRI are union-merged into a single lineage root rather than resolved
+  last-writer-wins. Term overlap across distinct fresh IRIs is counted, not
+  merged.
+
+  Touches: `onto/ontology.py::Ontology.union_fresh`;
+  `stategraph/node_factories.py`.
+  Metrics: `fresh_ontologies_merged`, `fresh_minted_duplicates`.
+
+- Deterministic per-unit validation of ontology deltas, in shadow mode. Findings
+  are validated against the unit's net insert/delete delta relative to the
+  prompt snapshot, not against the working graph, which is snapshot plus delta
+  and would attribute pre-existing catalog defects to the unit. Checks: terms
+  minted under namespaces no context ontology declares, degenerate
+  `owl:Restriction` stubs, new terms without a label, subclass cycles across
+  snapshot and delta, class/property role confusion, functional versus
+  min-cardinality contradictions, deletes of catalog content the unit does not
+  redeclare, and advisory label collisions. `UNKNOWN_TERM` is deliberately not
+  ported, since minting terms is the ontology renderer's function; connectivity
+  remains with the document-level structural check. Findings are collected
+  before each critic call and at loop exit, so a residual exists at the
+  `MAX_VISITS=1` default, and are injected into the critic prompt as mandatory
+  items. **Acceptance is unchanged**; the findings are recorded for a later
+  recalibration.
+
+  Touches: `tool/ontology_validation/unit_findings.py`;
+  `onto/model.py::OntologyUnitFindingKind`.
+  Metrics: `ontology_findings_residual`, `ontology_mandatory_residual`.
+  Test: `test/test_ontology_unit_findings.py`.
+
+- Ontology critic telemetry. Each critic call appends a `LoopAttempt` recording
+  score, severity mix, findings counts, delta size and the number of proposed
+  fixes targeting snapshot content the delta does not touch. The ontology critic
+  continues to accept on `critique.success or critique.score > 90`. That
+  threshold is unmeasured: the ontology critic does not run under
+  `render_mode: facts`, so no recorded data covers it.
+
+  Touches: `onto/model.py::LoopAttempt` (renamed from `FactsLoopAttempt`);
+  `onto/run_manifest.py::summarize_loop` (renamed from
+  `summarize_facts_loop`).
+  Metrics: `ontology_critic_calls`, `ontology_critic_accepted`.
+  Manifest: `ontology_critic`.
+  Test: `test/test_ontology_loop_telemetry.py`.
+
+- `RunManifestCritic` on the run manifest, under `critic` and
+  `ontology_critic`: call count, accepted count, score minimum, median and
+  maximum, a decade-bucketed score histogram and a proposed-fix severity
+  histogram. `summarize_loop` returns an all-zero record when no critic call
+  ran, so `accepted: 0` at `MAX_VISITS=1` indicates that nothing was judged.
+
+  Touches: `onto/run_manifest.py`; `api/process_helpers.py`.
+  Metrics: `facts_critic_calls`, `facts_critic_accepted`.
+  Test: `test/test_run_manifest_critic.py`.
+
+- Effective configuration and output shape on the run manifest: `loops`
+  (`max_visits`, `max_critic_visits`, `llm_repair_visits`), `selection`
+  (`target_sections`, `exclude_sections`, `summarize_sections`,
+  `summary_max_sentences`, `bibliography_mode`) and `graph_metrics`
+  (connectivity of the serialized facts graph). A run whose per-unit budget
+  differs from the requested one is now detectable from its own dump.
+
+  Touches: `onto/run_manifest.py::RunManifestLoops`, `RunManifestSelection`;
+  `util/graph_metrics.py`.
+  Test: `test/test_max_visits_critic_propagation.py`.
+
+- `BudgetTracker.prefix_cache_hit_rate` and
+  `BudgetTracker.reasoning_share_of_output`, reported on the `/process` response
+  and the run manifest as computed fields. Both denominators span billed and
+  replayed tokens, because `cache_read_input_tokens` and `reasoning_tokens`
+  accumulate on both while `input_tokens` counts billed calls only. Both are
+  `null` when the provider reports no token usage.
+
+  Touches: `onto/state.py::BudgetTracker`.
+  Test: `test/test_budget_tracker.py`.
+
+- Natural-key identity evidence for entity aggregation
+  (`AGG_NATURAL_KEY_MERGE`, default enabled). Instances asserting an identical
+  short string value (at most 64 normalized characters, shared by at most 8
+  entities) on a single-valued identifier-like predicate — declared max-1, or
+  observed single-valued on every subject — become merge candidates and satisfy
+  the lexical bar even when labels and embeddings disagree. All distinctness
+  guards continue to apply. Key-supported clusters are reported, and the
+  validation gate downgrades string multi-value findings on those subjects to
+  warnings.
+
+  Touches: `tool/agg/aggregate.py`; `tool/agg/signatures.py`;
+  `AggregationResult.key_supported_clusters`;
+  `AgentState.aggregation_key_clusters`; `stategraph/facts_gate.py`.
+  Test: `test/aggregation/test_merge_regressions.py`.
+
+- String branch for the `SUSPECT_MULTI_VALUE` gate finding. Short name-like
+  values (at most 64 normalized characters) on a predicate that is
+  string-single-valued for a dominant majority of subjects yield an
+  error-severity finding when any pair is not alias-compatible. The detector was
+  previously numeric and IRI only, so a node carrying several irreconcilable
+  names produced no finding and could not trigger the un-merge repair.
+
+  Touches: `tool/facts_validation/gate.py`;
+  `FACTS_SUSPECT_MULTI_VALUE_SEVERITY`.
+
+- `MIXED_OBJECT_KINDS` warning finding: a predicate used with both IRI and
+  literal objects across the facts graph, reported as telemetry because no
+  single query shape matches both usages.
+
+  Touches: `tool/facts_validation/gate.py`.
+
+- Literal-variant deduplication at the validation gate
+  (`FACTS_LITERAL_VARIANT_DEDUPE`, default enabled). Duplicate literals
+  differing only in language tag or datatype on one subject-predicate pair are
+  collapsed before validation; the language-tagged form is preferred, then the
+  plain form. Reified provenance is retargeted onto the surviving triple and
+  each removal is recorded as a `literal_variant_pruned` repair.
+
+  Touches: `tool/facts_validation/gate.py`.
+  Test: `test/test_facts_gate_repairs.py`.
+
+- `LABEL_ONLY_NUMBER` mandatory finding: a node carrying the quantity fallback
+  vocabulary's unit property, no numeric literal on any property, and a number
+  in its label. Such nodes are not reachable by any numeric query; numbers
+  inside labels previously counted as covered.
+
+  Touches: `tool/facts_validation/unit_findings.py`;
+  `util/numeric_inventory.py`.
+
+- SHACL-versus-catalog contradiction lint (`shacl_catalog_contradictions`), run
+  when the gate loads shapes. Any property the shapes require
+  (`sh:minCount >= 1`) that the term validator would report as unknown is logged
+  as a configuration error, since no data can satisfy both rules.
+
+  Touches: `tool/facts_validation/shacl.py`.
+
+- Degenerate-bound promotion at parse time: equal lower and upper bounds
+  collapse to a single scalar on the configured numeric-value property. Active
+  only when the quantity fallback vocabulary declares `numeric_value`,
+  `lower_bound` and `upper_bound` roles.
+
+  Touches: `tool/facts_validation/literal_repair.py`;
+  `FACTS_QUANTITY_FALLBACK_VOCABULARY`.
+
+- Isolation flags for the merge guards: `AGG_LITERAL_CONFLICT_GUARD` (default
+  enabled) toggles the literal-conflict veto so its contribution to
+  `facts_rejected_merges` can be separated without a code change, and
+  `AGG_TYPE_GUARD_UNTYPED=strict` fails typed-versus-untyped pairs closed
+  instead of the default open.
+
+  Touches: `config/settings.py::AggregationConfig`; `tool/agg/aggregate.py`.
+  Test: `test/aggregation/test_merge_guards.py`.
+
+- `UnitOntologyState.build_delta()`, the per-unit insert/delete delta
+  extraction, moved from `stategraph/helpers.py::build_ontology_delta_graph`
+  onto the state so agents can call it without a layering cycle.
+
+  Touches: `onto/unit_states.py`.
+
+- `test/test_repo_isolation.py`, which asserts that no file under `test/`
+  resolves a path outside `test/`, with an explicit allowlist for the
+  declaration files the source distribution ships.
+
+### Changed
+
+- A rejecting facts critic now schedules a repair pass rather than a
+  re-extraction, and a unit's worst-case call count no longer grows with
+  `MAX_VISITS`. Previously a rejection fell through to the next render attempt,
+  re-rendering the whole unit, giving a per-unit ledger of `2 * max_visits - 1`.
+  Blocking critic fixes now enter the bounded rewrite-in-place pass already used
+  for deterministic findings, and the outer loop retries on render failure only.
+  With web grounding disabled (the default) a unit costs one render, one
+  critique and the repair budget at any bound. Critic fixes join the findings for
+  the first repair pass only.
+
+  Touches: `stategraph/atomic.py`; `tool/facts_validation/critic_findings.py`;
+  `FactsUnitFindingKind.CRITIC_FIX`.
+  Test: `test/test_atomic_loop_bounds.py`.
+
+- Facts render acceptance is decided by verifiable defects rather than by the
+  critic's score. `criticise_facts` previously gated on `critique.success or
+  critique.score > 90`, comparing a model-assigned value against a threshold the
+  model is not shown, from a prompt that does not describe scoring. A model asked
+  to propose improvements proposes them, so the gate rejected nearly every
+  render and each rejection bought a second full extraction. It was also
+  inverted: deterministic findings, which carry an explicit `mandatory` flag and
+  were already injected into the critic prompt, took no part in the decision, so
+  the expensive action depended on the unreliable signal and the cheap one on
+  the reliable signal. Acceptance is now `material_defects()` over the
+  deterministic findings and the critic's own `TripleFix` severities. `score`
+  and `success` are still recorded and are no longer consulted.
+
+  - `FACTS_ACCEPT_BLOCKING_SEVERITY` (default `critical`) sets the cut on critic
+    fixes. `critical` is the only severity the critic applies selectively
+    enough to discriminate on; `important` rejects almost everything. `never`
+    lets deterministic findings gate alone.
+  - A `REMOVE` fix never blocks, at any severity: the repair prompt states that
+    a finding is not resolved by deleting the statement it refers to.
+  - `FactsAcceptancePolicy.blocking_finding_kinds` silences a finding lane for
+    acceptance purposes without silencing its telemetry.
+
+  Touches: `tool/facts_validation/acceptance.py::material_defects`,
+  `FactsAcceptancePolicy`; `agent/criticise_facts.py`; `stategraph/atomic.py`.
+  Test: `test/test_facts_acceptance.py`.
+
+- The repair prompt states a single contract. `improvement_instruction_template`
+  previously described critic suggestions as advisory and instructed the model
+  to identify additional problems beyond the critique, while
+  `format_findings_for_prompt` in the same prompt required every mandatory item
+  to be applied by rewriting in place. The permissive half is replaced by one
+  correction-pass contract with a single bounded exception: an item contradicted
+  by the source text may be skipped with a reason, and never by altering other
+  statements.
+
+  Touches: `prompt/render_facts.py`.
+
+- Parse-retry feedback is a bounded excerpt: a window around the decode position
+  for syntax errors, or a head-and-tail excerpt for schema errors, rather than
+  the full response body on every retry.
+
+  Touches: `agent/common.py::_feedback_excerpt`.
+
+- A repeated JSON syntax-error class ends the call rather than consuming the
+  remaining attempts. Schema `ValidationError`s retain the full retry budget.
+
+  Touches: `agent/common.py::LLMJsonParseError`;
+  `tool/llm.py::record_active_count`.
+  Counters: `llm/parse_retry`, `llm/parse_abandoned`.
+  Test: `test/test_llm_resilience.py`.
+
+- A failed render logs one summary line per attempt, with the error context
+  window at `DEBUG`. The window was previously emitted by every parse attempt,
+  by the exhaustion branch and by the calling agent.
+
+  Touches: `agent/common.py`.
+
+- `_normalize_and_repair_graph` and `_collect_facts_findings` take the atomic
+  toolbox rather than a list of unpacked scalars.
+
+  Touches: `agent/render_facts.py`; `stategraph/atomic.py`.
+
+- The test suite is organised into packages mirroring the source layout:
+  `test/facts/`, `test/ontology/` and `test/chunking/` join the existing
+  `test/aggregation/`, taking 40 modules off the top level. Module names lose
+  the prefix the directory now carries (`test_facts_term_policy.py` becomes
+  `test/facts/test_term_policy.py`). No test was added, removed or rewritten.
+
+  The families are packages rather than concatenated modules by measurement:
+  the facts family alone defines 12 top-level names divergently across its
+  files (`_tools`, `_fake_tools`, `_ontology`, `_unit_state_with_violation`,
+  `CD`, `EX` and others), so merging the sources would shadow one fixture with
+  another while every test continued to pass. Where a merge is provably free of
+  that hazard it was taken: the four `test_graph_atomizer_*.py` modules are now
+  `test/test_graph_atomizer.py`, one section per original module, each retaining
+  its docstring.
+
+### Fixed
+
+- The batch path dropped the critic telemetry between the graph and the
+  manifest. `_merge_workflow_state_into_agent_state` copies an explicit field
+  list off the astream chunk, and `facts_loop_telemetry` /
+  `ontology_loop_telemetry` / `ontology_reduce_metrics` were not on it — so
+  the case10 sampling run's manifests reported `critic: {calls: 0}` while
+  their own `retrieval_metrics` recorded 20 facts-critic and 26
+  ontology-critic calls, and the score distributions had to be mined out of
+  the LLM cache again, which is exactly what the manifest blocks exist to
+  prevent. The three fields are now copied, and `RunManifest` gains
+  `ontology_reduce_metrics` — the reduce policies' evidence
+  (`minted_duplicates` and pairs, `deletes_dropped_unredeclared`,
+  `apply_deletes_no_match`, `fresh_ontologies_merged`) was computed and then
+  recorded nowhere.
+
+- Ontology renders failed to parse for units producing a single large update.
+  Responses were complete (`finish_reason: stop`) and bracket counts balanced;
+  only the closing bracket *kinds* were transposed at the tail of a JSON-LD
+  document nested in a singleton list, so the failure was concentrated in
+  updates carrying one long operation rather than several short ones. Addressed by the
+  flat wire above, by presenting a literal envelope skeleton in the prompt
+  instead of prose over a `$ref`-indirected schema, and by
+  `repair_bracket_kinds`, which rewrites each closing bracket to the kind its
+  opener requires without inserting, deleting or reordering, and abandons repair
+  on an unopened closer or on frames still open at end of input.
+
+  Touches: `agent/common.py::repair_bracket_kinds`; `prompt/graph_format.py`.
+  Counter: `llm/json_bracket_repair`.
+  Test: `test/test_graph_update_wire_regression.py`, with the recorded failures
+  in `test/data/llm_malformed_graph_updates.json`.
+
+- Malformed LLM JSON now repairs deterministically or fails with actionable
+  feedback. LangChain's `parse_json_markdown` degraded malformed input to `None`
+  or to a truncated prefix, so retry prompts carried a validation error naming
+  no location and retries reproduced the same malformation.
+  `unescape_json_delimiters` joins the sanitizer chain, repairing escaped string
+  delimiters and escaped inter-token whitespace with a string-aware scan that
+  leaves legitimate in-string escapes intact. `parse_json_object` replaces the
+  lenient parse for every `PydanticOutputParser` call: strict parsing first,
+  fenced-block extraction as a fallback, and any remaining failure raising with
+  line, column and a surrounding context window. Partial recoveries and
+  non-object JSON are rejected rather than validated. A request timeout is
+  re-issued once per call before propagating; rate-limit and connection errors
+  propagate immediately.
+
+  Touches: `agent/common.py`; `tool/llm.py::LLMRequestTimeoutError`.
+  Test: `test/test_llm_resilience.py`.
+
+- Ontology updates applied no post-parse hygiene. `render_ontology_update` did
+  not call `finalize_llm_graph`, so an invalid XSD typed literal reached the
+  working graph and the compiled SPARQL update. Both update agents now share one
+  mechanism: prefix sanitization, removal of invalid typed literals, then domain
+  repairs applied to the insert side only, since a delete must match the stored
+  triple exactly. `quarantined_literal_triples` moved to `UnitState`.
+
+  Touches: `agent/update_common.py::finalize_update_report`;
+  `agent/render_ontology.py`; `agent/render_facts.py`.
+  Test: `test/test_update_agents_aligned.py`.
+
+- `ToolBox.aserialize` raised `RuntimeError` whenever a document produced an
+  ontology version under vector retrieval. It called the synchronous
+  `add_ontology()`, whose guard refuses to reindex the vector store from within
+  a running event loop. It now awaits `aadd_ontology()`.
+
+  Touches: `toolbox.py`.
+  Test: `test/test_serialize_vector_mode.py`.
+
+- Critic suggestions leaked across facts renders. `state.suggestions` was
+  written by `criticise_facts` and read by `render_facts_update` but never
+  cleared, so a rejected unit's suggestions reached every later render of that
+  unit, including the finding-driven repair, which then held both the
+  improvement template's permissive contract and the findings block's
+  rewrite-in-place requirement. Cleared at both writers, since the repair is
+  reached either by a render consuming the suggestions or by the critic
+  accepting on a later attempt of the same render.
+
+  Touches: `agent/criticise_facts.py`; `agent/render_facts.py`.
+  Test: `test/test_facts_suggestions_lifecycle.py`.
+
+- The same suggestion leak in the ontology loop: neither
+  `render_ontology_update` nor the accept branch of `criticise_ontology` cleared
+  `state.suggestions`. Cleared at both writers.
+
+  Touches: `agent/criticise_ontology.py`; `agent/render_ontology.py`.
+  Test: `test/test_ontology_suggestions_lifecycle.py`.
+
+- `deterministic_findings` survived an ontology render, carrying findings raised
+  against the previous extract into the next iteration. Both update agents now
+  consume findings and suggestions identically.
+
+  Touches: `agent/render_ontology.py`.
+  Test: `test/test_update_agents_aligned.py`.
+
+- A false mandatory `UNKNOWN_TERM` finding caused repair renders to remove valid
+  numeric values. The catalog referenced `qudt:QuantityValue` and `qudt:unit` in
+  `rdfs:subClassOf` and `owl:onProperty` position, which made the QUDT namespace
+  closed, while `qudt:numericValue` was declared nowhere in it. Every unit using
+  that property therefore received a mandatory finding naming a class as the
+  candidate for a predicate slot. Repair renders answered it by deleting the
+  values outright or by re-encoding scalars as equal-bound ranges. Three rules
+  changed: a namespace is
+  closed only when the catalog declares terms in it in subject position; the
+  configured quantity fallback vocabulary and `FACTS_CODE_PREDICATES` are exempt;
+  and alias candidates are role-filtered against the catalog's declarations.
+  Deployment-configured exemptions now travel as a single `ValidationPolicy`
+  object on the toolbox.
+
+  Touches: `tool/facts_validation/terms.py::collect_declared_namespaces`,
+  `ValidationPolicy`; `FACTS_ADDITIONAL_STANDARD_NAMESPACES`;
+  `FACTS_QUANTITY_FALLBACK_VOCABULARY`; `FACTS_CODE_PREDICATES`.
+  Test: `test/test_facts_term_policy.py`.
+
+- A repair render that answered the findings prompt by deleting triples was
+  detected but retained. The guard now rolls back to the pre-repair graph and
+  re-collects findings against it, so the recorded residual describes the graph
+  that was kept. Its predicate was strengthened: the previous condition
+  (`mandatory_after >= mandatory_before`) scored the deletion of the statement a
+  finding refers to as a successful repair. It now also fires when a render
+  removed triples and wrote none back, while remaining quiet for a rewrite that
+  shrinks the graph by collapsing a duplicate. The findings prompt states the
+  repair contract explicitly.
+
+  Touches: `stategraph/atomic.py`; `prompt/render_facts.py`.
+  Metric: `facts_repair_delete_only`.
+  Test: `test/test_facts_repair_rollback.py`.
+
+- Merge-guard vetoes now hold across a cluster. `_build_identity_clusters`
+  applied distinctness guards pairwise and then union-found the accepted edges,
+  so a vetoed pair A–C was still united through accepted edges A–B and B–C. This
+  defeated every guard, including the validation gate's own un-merge vetoes.
+  Vetoes are precomputed per candidate cluster and checked across both
+  components before a union; blocked unions are recorded with reason
+  `cluster_veto`.
+
+  Touches: `tool/agg/aggregate.py::_build_identity_clusters`.
+  Metric: `facts_rejected_merges`.
+  Test: `test/aggregation/test_merge_regressions.py`.
+
+- String literals on arbitrary domain predicates no longer count as label
+  agreement. Every untyped or language-tagged string of at least 3 characters
+  was harvested as an `alt_label` and fed into the label-intersection merge
+  tier. `alt_labels` now apply only to entities carrying no `rdfs:label`.
+
+  Touches: `tool/agg/signatures.py`.
+
+- Labels differing only by conflicting initials are treated as distinctness
+  evidence. `_tokenize` dropped tokens of at most 2 characters, making such
+  label token sets identical. Short tokens are retained, token comparisons strip
+  edge punctuation, and a guard vetoes pairs whose labels are identical except
+  for non-alias-compatible short tokens.
+
+  Touches: `tool/agg/aggregate.py`; `AGG_INITIALS_DISTINCT_GUARD` (default
+  enabled).
+
+- Merge-created self-loops are dropped rather than asserted. A triple whose
+  subject and object became identical only through the identity mapping is
+  removed with a warning; reflexive triples asserted by the source are retained.
+
+  Touches: `tool/agg/rewriter.py`.
+
+- `AGG_SIMILARITY_THRESHOLD` no longer appears to control in-pipeline
+  clustering. The aggregator overrode it with
+  `AGG_CANDIDATE_SIMILARITY_THRESHOLD` for its only clustering call. The
+  pipeline clusterer is constructed at the candidate threshold directly, and the
+  field is documented as what it controls: the cross-graph `EntityAligner`
+  threshold used by `/align_entities` and `match-graphs`.
+
+  Touches: `tool/agg/aggregate.py`; `.env.example`;
+  `docs/user_guide/aggregation.md`.
+
+- `update_ontology()` returned `None` whether or not the update applied, so a
+  batch discarded by the `ONTOLOGY_MAX_TRIPLES` backstop still produced
+  `Status.SUCCESS` on an unchanged working graph. It now returns `bool` and the
+  caller records the discard. The status remains `SUCCESS`, since the
+  pre-update graph is intact and a re-render would meet the same ceiling.
+
+  Touches: `onto/unit_states.py::update_ontology`; `agent/render_ontology.py`.
+  Metric: `ontology/update_rejected_over_budget`.
+
+- `facts_findings_residual` was computed over the wrong population. It summed
+  `attempts[-1].n_deterministic_findings` only for units whose last attempt was
+  an LLM repair, so clean units and retry-exhausted units contributed zero, and
+  it summed total rather than mandatory findings. It is now read from each
+  unit's final findings, with `facts_mandatory_residual` reporting the mandatory
+  subset. Values from earlier runs are not comparable on this key.
+
+  Touches: `onto/run_manifest.py`; `stategraph/atomic.py`.
+
+- `RunManifest.facts_triples` was not comparable to the `.facts.ttl` file beside
+  it, counting the aggregated graph including provenance rather than the
+  serialized output. `facts_triples_serialized` records the file's triple count.
+
+  Touches: `onto/run_manifest.py`; `api/process_helpers.py`.
 
 ### Documentation
 
-- **`RENDER_MODE` has prose for the first time.** A `## Render Mode` section in
-  the configuration guide covering what each value actually skips — `ontology`
-  writes no facts to the triple store at all, `facts` bypasses the ontology
-  block and depends wholly on the existing catalog — plus the per-request
-  precedence chain and the 400-on-typo contract.
-- Ontology context behaviour that was only visible in code: a non-empty
-  `ontology_context_fixed_ontology_id` silently forces fixed mode over an
-  explicit `ontology_context_mode`; a fixed id matching no catalog entry
-  degrades to an empty snapshot with a warning rather than an error;
-  `selected_single_ontology` costs one extra LLM call per content unit; the
-  consistency critic runs *only* under `selected_vector_search_ontology`; and
-  facts units reuse a merged document-level context instead of re-resolving.
-- **Docs search now finds environment variables.** The Material search separator
-  did not split on `_`, so `ONTOLOGY_CONTEXT_MODE` indexed as one opaque token
-  and "ontology context mode" matched nothing; titles are boosted 1000× but no
-  heading carried the literal variable name. Separator updated, both mode
-  selectors now name their variable in the heading, and the configuration and
-  ontology-context pages carry a search boost.
-- `README.md` and `docs/index.md` gained a Configuration section — between them
-  they previously named five environment variables and not one mode selector.
-- The 20-variable `WEB_SEARCH_*` block is now three annotated tables instead of
-  a bare code fence, and states that the whole lane is inert at its default.
-- `MAX_VISITS_PER_NODE` is documented under its canonical name, not only as the
-  `MAX_VISITS` alias; stale "Qdrant"-only wording for vector mode corrected to
-  cover LanceDB.
+- Full audit of the documentation set against the code. Verified: every variable
+  in `.env.example`, every `RetrievalMetric` value, every module path and symbol
+  named in prose, every documented default against its declared field, and every
+  internal link and anchor. Corrections:
+
+  - `docs/contributing.md` instructed contributors to source `.env` before
+    running the suite, which this release blocks. It now documents the offline
+    run, the marker semantics, why sourcing `.env` invalidates the suite, and
+    the fixture-location rule.
+  - `docs/user_guide/workflow.md` stated that the ontology loop has no
+    deterministic finding lane. It has one, in shadow mode.
+  - `docs/user_guide/validation.md` stated that the ontology reduce counters
+    appear in the run manifest. They are not carried to any output surface;
+    the page now says so.
+  - `docs/user_guide/performance.md` stated that raising `MAX_VISITS` to 2
+    approximately doubles the calls per unit. It adds one call to a facts unit
+    and doubles only for the ontology loop.
+  - `docs/user_guide/playbooks.md` attributed unparsable model output to a
+    disabled critic; that path is handled by the parser.
+  - The validation page is retitled "Validation: Facts, Ontology Deltas and
+    SHACL", having covered both lanes since this release.
+
+- New sections: LLM response handling in the configuration guide (sanitizer
+  chain, strict parsing, fenced-block and bracket-kind fallbacks, retry bounds);
+  merge-refusal reason codes and key-supported clusters in the aggregation
+  guide; `ontology_snapshot_triples` and the corrected run-manifest sample,
+  including `selection`, `critic`, `ontology_critic` and
+  `facts_triples_serialized`, in the observability guide.
+
+## [0.6.1] - 2026-08-10
+
+### Changed
+
+- `LLM_GRAPH_FORMAT` defaults to `jsonld`. Turtle remains supported for
+  providers whose structured output handles strings more reliably than nested
+  objects. This changes behaviour for deployments that never set the variable.
+  The default was declared in four places — `ServerConfig`, `AgentState`,
+  `UnitState`, and the `llm_graph_format_ctx` context variable that
+  `coerce_llm_graph_wire` falls back to when `model_validate` is called without
+  a validation context — and all four moved together.
+
+  Test: `test/test_llm_graph_format_default.py`.
+
+- `ONTOLOGY_MAX_TRIPLES` defaults to unlimited. At its previous value of 50,000
+  it could not bind: such a graph is approximately 634,000 tokens as Turtle,
+  against a largest observed ontology of 1,409 triples. It is a runaway-growth
+  backstop on the per-unit working graph, not a context bound; use
+  `ONTOLOGY_CONTEXT_MAX_TRIPLES` for prompt size.
+
+  Test: `test/test_ontology_max_triples.py`.
+
+- `ontocast_extract` (LangChain/MCP tool) takes its `render_mode` default from
+  `RENDER_MODE` instead of hardcoding `ontology_and_facts`, and parses it
+  through `parse_render_mode_param` like every other entry point. Omitting the
+  argument honours the server's configuration.
+
+  Touches: `tool/langchain_tools.py`.
+
+### Added
+
+- `ONTOLOGY_CONTEXT_MAX_TRIPLES` (default 4,000) bounds the ontology context in
+  every context mode. Previously only `selected_vector_search_ontology` bounded
+  it: `selected_single_ontology` and `fixed_single_ontology` serialized the
+  whole selected ontology into every prompt, and the facts fan-out serialized
+  the union of every artifact without a cap. Over budget, the condenser drops in
+  increasing order of harm — header and list noise, then redundant structure,
+  then glosses — and never drops labels, types, hierarchy or domain and range
+  declarations. A graph that cannot be reduced to fit is passed through with a
+  warning rather than truncated, since removing load-bearing schema produces an
+  extraction failure. Enforced at `format_ontology_chapter` and included in the
+  snapshot memoization key.
+
+  Touches: `onto/ontology_condense.py`.
+  Test: `test/test_ontology_condense.py`.
+
+- `ONTOLOGY_SNAPSHOT_TRIPLES` retrieval metric, written for every context mode.
+  Previously only the vector resolver recorded a snapshot size, nested under
+  `patch_retrieval`.
+
+- The seed-free graph pruners and predicate vocabularies move to
+  `onto/graph_prune.py`, shared by induced-subgraph retrieval and the condenser.
+
+- `.env.example.minimal` and a Configuration Playbooks guide. The full
+  configuration surface is approximately 200 variables. The minimal file carries
+  29, grouped by the decision they belong to rather than by configuration class,
+  and the guide provides a playbook per task — evaluate, build an ontology,
+  populate facts, scale the catalog, serve it — with a symptom-to-setting triage
+  table. It covers conversion and chunking (`CHUNK_MIN_SIZE`, `CHUNK_MAX_SIZE`,
+  `CHUNK_SEGMENTER`, `CHUNK_SECTION_CLASSIFIER`, `CHUNK_BIBLIOGRAPHY_MODE`,
+  `CONVERTER_PROFILE`), local-encoder alignment, SHACL shapes, LLM caching and
+  the web-search toggle.
+
+  Touches: `.env.example.minimal`; `docs/user_guide/playbooks.md`.
+  Tests: `test/test_env_example_coverage.py` — every name resolves to a real
+  setting, the file remains a subset of `.env.example`, it stays under a
+  variable ceiling, and exact variable counts quoted in prose match reality.
+
+### Fixed
+
+- `.env.example` named two local encoder models without the
+  `sentence-transformers/` prefix. `SharedEncoder` caches by the literal
+  `(model name, device)` pair, so `AGG_EMBEDDING_MODEL` and
+  `EMBEDDING_MODEL_NAME` as shipped would not share a resident model with the
+  prefixed defaults, loading two copies of the same checkpoint. Both spellings
+  are valid, so nothing surfaced the difference.
+
+  Test: `test/test_env_example_coverage.py`.
+
+- `ONTOLOGY_MAX_TRIPLES` could lock the ontology loop out. The guard compared
+  absolute post-apply size, so a working graph seeded above the cap failed every
+  subsequent update, including deletions, for the remainder of the run. It now
+  rejects only updates that grow the graph past the cap, and logs the
+  already-over case distinctly.
+
+  Touches: `onto/unit_states.py`.
+
+- The test suite no longer loads a developer's `.env`. Removing `env_files` from
+  `[tool.pytest.ini_options]` was insufficient, because `pytest-dotenv` loads a
+  discovered dotenv file even with no `env_files` set: every `BaseSettings`
+  instance built in a test took local configuration, and a real `LLM_API_KEY`
+  was present in the environment. The plugin is uninstalled and blocked via
+  `-pno:dotenv`, written as a single token because `toml-sort --all` sorts array
+  values and would otherwise separate a two-token form. `test/conftest.py`
+  asserts that the pipeline mode selectors read their declared defaults.
+
+  Touches: `pyproject.toml`; `test/conftest.py`.
+
+- The LangChain `apply_graph_update` tool pins its own Turtle coercion. Its
+  interface is Turtle-in by parameter name (`insert_ttl`, `delete_ttl`) and was
+  incorrectly tracking the configured LLM wire format.
+
+  Touches: `tool/langchain_tools.py`.
+
+### Documentation
+
+- `RENDER_MODE` is documented: a Render Mode section in the configuration guide
+  covering what each value skips — `ontology` writes no facts to the triple
+  store, `facts` bypasses the ontology block and depends on the existing catalog
+  — with the per-request precedence chain and the 400-on-invalid-value contract.
+
+- Ontology context behaviour previously visible only in code: a non-empty
+  `ontology_context_fixed_ontology_id` forces fixed mode over an explicit
+  `ontology_context_mode`; a fixed id matching no catalog entry degrades to an
+  empty snapshot with a warning rather than an error; `selected_single_ontology`
+  costs one additional LLM call per content unit; the consistency critic runs
+  only under `selected_vector_search_ontology`; and facts units reuse a merged
+  document-level context rather than re-resolving it.
+
+- Documentation search indexes environment variables. The Material search
+  separator did not split on underscores, so `ONTOLOGY_CONTEXT_MODE` was indexed
+  as a single token. The separator is updated, both mode selectors name their
+  variable in a heading, and the configuration and ontology-context pages carry
+  a search boost.
+
+- `README.md` and `docs/index.md` gained a Configuration section.
+
+- The `WEB_SEARCH_*` block is presented as three annotated tables rather than a
+  code fence, and states that the lane is inactive at its defaults.
+
+- `MAX_VISITS_PER_NODE` is documented under its canonical name as well as the
+  `MAX_VISITS` alias. Vector-mode wording covers LanceDB as well as Qdrant.
 
 ## [0.6.0] - 2026-08-10
-
-*First release published to PyPI since 0.4.3: the 0.5.0 and 0.5.1
-sections below were in-tree version bumps that were never tagged or
-published.*
 
 ### Breaking
 
@@ -700,7 +793,7 @@ published.*
   neighbour. Callers that assumed a non-null label must handle `None`.
 - **`working_directory` / `ONTOCAST_WORKING_DIRECTORY` removed.** Nothing had
   read it since the filesystem triple-store backend was deleted in `9d3ab77`
-  (2026-06) — but `ontocast serve` and `ontocast process` still *raised* without
+  — but `ontocast serve` and `ontocast process` still *raised* without
   it and then created an empty directory, and `plot-graph` leaked a
   `tempfile.mkdtemp()` per invocation to satisfy a field `ToolBox` ignores.
   Both commands now start with no OntoCast env var set at all. Caches keep using
@@ -770,7 +863,7 @@ published.*
   Previously `usage_metadata` — a separate `AIMessage` attribute, not part of
   the `response_metadata` that was persisted — was dropped on write, so the
   cache-replay protocol in `docs/user_guide/performance.md`, the mode the
-  benchmark and ablation work runs in, reported zero tokens.
+  replayed runs are measured in, reported zero tokens.
 - `BudgetTracker.reasoning_tokens`, `cache_read_input_tokens` and
   `cache_creation_input_tokens`, read from LangChain's `UsageMetadata` detail
   keys (and the OpenAI `*_tokens_details` equivalents). Reasoning tokens
@@ -827,7 +920,7 @@ forced a paid re-run before any replay worked again.
   property is whichever object property the context declares with a matching
   range and domain, falling back to the graph's own observed usage when a
   vendored projection declares no range (the shipped QUDT unit subset does
-  not). Resolved all five ucum-coded nodes in the matsci pilot.
+  not).
 - **The validation result is reported, not just logged.** `ProcessResultMetadata`
   gains `facts_conformance` (whether SHACL ran, whether the graph conforms, and
   counts by finding kind, SHACL constraint component and shape),
@@ -921,15 +1014,14 @@ forced a paid re-run before any replay worked again.
   relabels an entire document silently.
   - The lexical tier scores on **exclusive** evidence only: a heading several
     schemas recognise counts zero, not a fraction. Weighting shared headings
-    fractionally measured strictly worse (clinical 1.4× → 2.0×, standard
-    4.2× → 14×, academic 6.1× → 600×) — `References` genuinely carries no
-    information about which cell a document is in.
-  - The content tier ships **off** (`auto`, not the default). It ranks 7/9 on
-    the corpus but its one confident error is severe: chemistry prose scores
-    `standard` over `academic` past the acceptance margin. It is gated to
-    documents with essentially no headings, excludes `news` (a measured
-    semantic attractor), and demands a 4.0 margin against the heading tiers'
-    1.8.
+    fractionally is strictly worse: `References` carries no information about
+    which cell a document is in, so scoring it only narrows the margins the
+    tier decides on.
+  - The content tier ships **off** (`auto`, not the default). Its errors are
+    few but severe — chemistry prose scores `standard` over `academic` past the
+    acceptance margin — so it is gated to documents with essentially no
+    headings, excludes `news` as a semantic attractor, and demands a 4.0 margin
+    against the heading tiers' 1.8.
 - **Three new section-label schemas** — `patent`, `standard` and `news` —
   completing the document-type partition. No `thesis` cell: a thesis shares the
   IMRaD body of a paper and differs only in front and back matter, so it is a
@@ -942,28 +1034,27 @@ forced a paid re-run before any replay worked again.
   and doubles as the content tier's prototype. `general` deliberately has none,
   which is what keeps the residual cell out of detection entirely.
 - **Verified keyword tiers for every schema.** All eight non-academic schemas
-  gained corpus-grounded `keywords`, with `order`/`ordered` where a canonical
-  order exists. Every keyword was authored against a real document in
-  `test/data/schema_corpus.json` and cut if it matched nothing — the baseline
-  before this was 4/9 cells detected, now 9/9.
+  gained `keywords`, with `order`/`ordered` where a canonical order exists.
+  Every keyword was authored against a real document in
+  `test/data/schema_corpus.json` and cut if it matched nothing, so no cell rests
+  on invented vocabulary.
 - **Document-type detection corpus** (`test/data/schema_corpus.json`,
   `run/fetch_schema_samples.py`). One real document per cell — RFC 7231, *Pride
   and Prejudice*, a USPTO patent, the CC BY 4.0 legal code, the nginx guide, a
   Europe PMC trial protocol, a Wikinews article, plus the in-repo 10-Q and
   chemistry paper. Only heading sequences and sampled paragraphs are committed,
   each with its source URL and licence, so the suite stays offline and a few
-  tens of kB. Tuning a nine-way classifier on the two document types previously
-  in `data/` was not sound.
+  tens of kB. A nine-way classifier cannot be tuned on two document types.
 - **Schema reporting in `ontocast sections`** — the resolved schema, the tier
   that chose it, its margin over the runner-up, and the ranked candidate
   evidence. The only way to see a weak-but-accepted detection; free in
   `lexical` mode.
 
-Measured on the Apple 10-Q, which is what the change is for: with detection off
-the document resolves to the academic default and 1 of 102 chunks receives a
-label — and that one is `methods`, i.e. wrong. With detection on it resolves to
-`financial` on the free lexical tier at an 8.7× margin and 17 of 75 chunks are
-labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
+What this changes for a financial document: with detection off it resolves to
+the academic default and almost nothing is labeled, since the academic
+vocabulary recognises none of its headings. With detection on it resolves to
+`financial` on the free lexical tier and its sections are labeled
+(`notes_to_financials`, `md_and_a`, `legal_proceedings`,
 `financial_statements`, `business_overview`, `highlights`, `cover`), so
 `--target-sections md_and_a` selects text for the first time.
 
@@ -1241,15 +1332,14 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
 - **SHACL now validates against the ontology context, not the facts alone.**
   A facts graph states that a value uses `unit:DAY`; that this individual *is*
   a `qudt:Unit` is stated only in the catalog, so every `sh:class` constraint
-  pointing at a catalog term failed. On the three-document matsci pilot this
-  was **128 of 360** reported violations — phantom findings describing the
+  pointing at a catalog term failed, producing phantom findings describing the
   absent schema.
 - **SHACL runs with RDFS inference by default** (`FACTS_SHACL_INFERENCE`,
   `FACTS_SHACL_ADVANCED`), matching how the shipped shapes are authored and
   validated by their own repo harness. SHACL property paths carry no
   `rdfs:subPropertyOf` entailment, so a shape naming a superproperty reported
   the specialised predicate the renderer emitted as missing: 268 violations at
-  `none` against 232 at `rdfs` on the same pilot. A `FACTS_SHACL_MAX_TRIPLES`
+  `none` than at `rdfs`. A `FACTS_SHACL_MAX_TRIPLES`
   guard skips oversized graphs with a warning rather than stalling, and a
   skipped run is reported as "did not run", never as "conforms".
 - **Generated API reference navigation.** `docs/gen_pages.py` indexed the
@@ -1291,8 +1381,8 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
   and Outlook`, `Device fabrication`, `Data Availability` and `Author
   Contributions` all failed. Publisher decoration defeated matching outright
   (`■ REFERENCES`, `■ ACKNOWLEDGMENTS`, `*sı Supporting Information`), as did
-  section numbering (`2.1 Synthesis of thin films`). Measured on real docling
-  conversions of three journal PDFs, 26 of 31 detected headings were unmatched
+  section numbering (`2.1 Synthesis of thin films`). On real converted journal
+  PDFs the great majority of detected headings were unmatched
   and two of the three documents produced **no spans at all**.
 - **Unheaded front matter was not recovered unless the paper opened with an
   IMRaD section.** `inject_front_matter_spans` bailed when the first labeled
@@ -1361,7 +1451,7 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
   segmentation and local-embedding phases run via `asyncio.to_thread`.
 - **Aligning `CHUNK_EMBEDDING_MODEL` with `EMBEDDING_MODEL_NAME` and
   `AGG_EMBEDDING_MODEL` now leaves one resident local model instead of two**
-  (measured: 1601 MB vs 2252 MB peak RSS). Defaults unchanged; opt-in recipe in
+  holding one resident model instead of two. Defaults unchanged; opt-in recipe in
   [Performance](docs/user_guide/performance.md).
 - **Fewer redundant loads and connections:** the docling `HybridChunker`
   tokenizer is cached instead of rebuilt per document; the docling converter
@@ -1428,7 +1518,7 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
 
 ### Removed
 
-- Dead/duplicate tests and unused fixtures (~992 → 943). Recall harness (`test_retrieval_recall.py` + support) moved out of the unit suite — measurement belongs in `ontocast-validation`. Relative case5 aggregation “no damage” test dropped.
+- Dead/duplicate tests and unused fixtures. Recall harness (`test_retrieval_recall.py` + support) moved out of the unit suite — measurement belongs in `ontocast-validation`. A relative aggregation “no damage” test dropped.
 - Hard `langchain` dependency (unused).
 
 ### Fixed
@@ -1455,7 +1545,7 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
   stdout and exiting 0.
 - Cross-chunk person/entity identity merge (initials-aware aliases; label-confirmed pairs bypass cosine gate).
 - Per-unit `retrieval_metrics` fold back into document state; Docling chunker tokenizer budgeted from `CHUNK_MAX_SIZE`; semantic chunker guards for tiny sections.
-- Path-dependent ontology/matsci tests; concurrency bound flake; dead tenancy self-assignment; `test-api` entry shim.
+- Path-dependent ontology tests; concurrency bound flake; dead tenancy self-assignment; `test-api` entry shim.
 
 ### Performance
 
@@ -1596,14 +1686,13 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
   funnel metrics across both *seed recall* (the share of expected ontology terms that survive
   retrieval ranking and budget truncation) and *snapshot recall* (the share of expected terms
   actually defined in the ontology context handed to the model, including neighbor nodes);
-  evaluates against Text2KGBench and prebuilt-corpus tiers (`ONTOCAST_RECALL_*`); and provides
-  ablation controls that flip index/retrieval axes without editing corpus files on disk.
+  evaluates against public and prebuilt corpus tiers (`ONTOCAST_RECALL_*`); and provides
+  controls that flip index/retrieval axes without editing corpus files on disk.
 
 ### Changed
 
-- **Retrieval defaults retuned against measured recall** (evaluated against Text2KGBench and
-  the internal materials-science corpus; configurations optimized only for the internal
-  corpus are flagged as single-corpus fits in the configuration guide to caution against
+- **Retrieval defaults retuned against measured recall**; configurations that
+  fit only one document collection are flagged as such in the configuration guide to caution against
   overfitting). Notable defaults: `ONTOLOGY_PATCH_MAX_ATOMS` / `_BASE` → 96;
   `VECTOR_STORE_TOP_K` 10 → 20; per-ontology seed quota 3 → 0; sparse fusion
   weight 0.2 → 0.8 and neighborhood 0.3 → 0.15; induced-subgraph triple
@@ -1726,7 +1815,7 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
 - **LLM disk cache controls** on `LLMConfig`: `LLM_CACHE_ENABLED` (default on), `LLM_CACHE_READ_ONLY`, and in-memory plus on-disk stats via `LLMTool.get_cache_stats()`; `GET /info` exposes `llm_cache`.
 - **Global LLM in-flight limit** (`LLM_MAX_INFLIGHT`, default 16) — shared semaphore caps concurrent provider requests across parallel unit workers.
 - **Optional process concurrency cap** (`MAX_CONCURRENT_PROCESSES`) — limits simultaneous `/process` and `/process_unit` handlers (additional requests wait for a slot).
-- **OpenAI Batch API helpers** (`ontocast.tool.llm_batch`) to export chat batch JSONL and import completed results into the LLM disk cache for offline benchmark pre-warming.
+- **OpenAI Batch API helpers** (`ontocast.tool.llm_batch`) to export chat batch JSONL and import completed results into the LLM disk cache for offline pre-warming.
 - **`BudgetTracker.cache_hits`** — disk-cache hits count toward character totals but not `calls_count`; included in budget summaries when non-zero.
 
 ### Changed
@@ -1758,7 +1847,7 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
 - **Tenancy-aware storage**: `tenant` / `project` request parameters partition Fuseki datasets and Qdrant collections (`{tenant}--{project}--facts|ontologies`); defaults derive from built-in `ontocast` / `test`.
 - REST **ontology management** routes: `POST/PUT/DELETE /ontologies` for catalog upload, replace, and delete.
 - **Graph matching API**: `POST /match/entities`, `POST /match/derive-matches`, and `POST /match/evaluate` for entity alignment and triple/entity precision-recall evaluation.
-- `match-dirs` standalone CLI client for batch benchmark evaluation against the match endpoints.
+- `match-dirs` standalone CLI client for batch evaluation against the match endpoints.
 
 ### Changed
 - **BREAKING**: Ontology post-render processing now uses `normalize_ontology_units()` instead of `sublimate_ontology()`; provenance is extracted rather than inlined in the working ontology graph.
@@ -1902,7 +1991,32 @@ labeled (`notes_to_financials`, `md_and_a`, `legal_proceedings`,
 
 ## Migration Guide
 
-### Upgrading to 0.6.0 (from 0.4.3, the last published release)
+### Upgrading to 0.6.2
+
+- **Ontology render output shape.** A caller that constructs or inspects
+  `GraphUpdateRenderReport` directly must move from
+  `graph_update.triple_operations[]` to the `insert_graph` / `delete_graph`
+  fields. `to_graph_update()` produces the unchanged internal `GraphUpdate`, so
+  code downstream of it is unaffected. Interleaved insert/delete sequences
+  within one render are no longer representable. On-disk LLM cache entries for
+  ontology renders are invalidated and will re-fetch.
+- **`ontocast.tool.facts_invariants` no longer exists.** Import from
+  `ontocast.tool.facts_validation` instead; the package `__init__` re-exports
+  the previous public names.
+- **`FACTS_ACCEPT_BLOCKING_SEVERITY`** (default `critical`) replaces the
+  critic's score threshold as the facts acceptance gate. Set it to `never` to
+  let deterministic findings gate alone. The critic's `score` and `success` are
+  still reported and are no longer consulted.
+- **The `data/` directory is gone.** Anything referencing `data/ontologies`,
+  `data/json` or `data/pdf` — including a local `ONTOCAST_ONTOLOGY_DIRECTORY`
+  pointing at it — must be repointed. The two TTL fixtures used by the test
+  suite are in `test/data/ontologies/`.
+- `facts_findings_residual` changed population and is not comparable with
+  values from earlier runs; `facts_triples` is joined by
+  `facts_triples_serialized`, which is the count matching the emitted
+  `.facts.ttl`.
+
+### Upgrading to 0.6.0 (from 0.4.3)
 
 Everything under 0.5.0, 0.5.1 and 0.6.0 above applies. The environment-level
 breaks, in one place:
@@ -1990,6 +2104,8 @@ BASE_RECURSION_LIMIT=1000
 
 See [docs/user_guide/](docs/user_guide/) for full guides.
 
+[0.6.2]: https://github.com/growgraph/ontocast/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/growgraph/ontocast/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/growgraph/ontocast/compare/v0.4.3...v0.6.0
 [0.4.3]: https://github.com/growgraph/ontocast/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/growgraph/ontocast/compare/v0.4.1...v0.4.2

@@ -87,3 +87,25 @@ def test_a_critic_call_with_no_score_still_counts_as_a_call() -> None:
     assert summary.calls == 1
     assert summary.score_median is None
     assert summary.score_histogram == {}
+
+
+def test_batch_state_merge_carries_the_critic_telemetry() -> None:
+    """The case10 failure shape: manifests said `critic: {calls: 0}` while
+    their own retrieval_metrics recorded 20 facts-critic and 26
+    ontology-critic calls. The batch path merges astream dict chunks through
+    an explicit copy list, and the telemetry fields were not on it -- so
+    everything summarize_loop reads arrived empty at manifest time.
+    """
+    from ontocast.api.process_helpers import _merge_workflow_state_into_agent_state
+    from ontocast.onto.state import AgentState
+
+    chunk = {
+        "facts_loop_telemetry": {0: [LoopAttempt(kind="critic", success=True)]},
+        "ontology_loop_telemetry": {0: [LoopAttempt(kind="critic", score=85.0)]},
+        "ontology_reduce_metrics": {"minted_duplicates": 2},
+    }
+    state = _merge_workflow_state_into_agent_state(AgentState(), chunk)
+
+    assert summarize_loop(state.facts_loop_telemetry).calls == 1
+    assert summarize_loop(state.ontology_loop_telemetry).calls == 1
+    assert state.ontology_reduce_metrics["minted_duplicates"] == 2

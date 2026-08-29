@@ -11,6 +11,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
+from ontocast.agent.update_common import finalize_update_report, log_quarantine
 from ontocast.onto.enum import (
     FailureStage,
     OntologyAssemblyMode,
@@ -238,6 +239,7 @@ async def render_ontology_update(
 ) -> UnitOntologyState:
     """Complement an existing snapshot via GraphUpdate inserts."""
 
+    state.quarantined_literal_triples = []
     profile = get_graph_format_profile(state.llm_graph_format)
     parser = PydanticOutputParser(pydantic_object=GraphUpdateRenderReport)
     access = ontology_access_for_unit_ontology(state)
@@ -303,7 +305,13 @@ async def render_ontology_update(
             render_report.external_evidence_request,
             web_search_enabled,
         )
-        graph_update = render_report.graph_update
+        # No insert_hook: the facts repairs are instance-level (literal retyping,
+        # unit-code resolution) and have no ontology counterpart. The ontology
+        # side's deterministic validator runs in the loop instead, against the
+        # net delta -- see stategraph/atomic.py::_collect_ontology_findings.
+        graph_update, rejected = finalize_update_report(render_report)
+        state.quarantined_literal_triples = rejected
+        log_quarantine("Ontology", rejected)
         state.ontology_updates.append(graph_update)
         applied = state.update_ontology()
         if not applied:
@@ -326,6 +334,8 @@ async def render_ontology_update(
         # prompt (see CHANGELOG [Unreleased]); the ontology path had the same
         # defect and no repair pass to notice it.
         state.suggestions = Suggestions()
+        # Findings were consumed by this render; the loop re-collects fresh.
+        state.deterministic_findings = []
 
         num_operations, num_triples = graph_update.count_total_triples()
         logger.info(

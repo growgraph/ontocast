@@ -223,6 +223,7 @@ def dump_run_manifest(
         ),
         critic=summarize_loop(state.facts_loop_telemetry),
         ontology_critic=summarize_loop(state.ontology_loop_telemetry),
+        ontology_reduce_metrics=dict(state.ontology_reduce_metrics),
         selection=RunManifestSelection(
             target_sections=state.target_sections,
             exclude_sections=state.exclude_sections,
@@ -562,6 +563,18 @@ def _merge_workflow_state_into_agent_state(
     metrics = workflow_state.get("retrieval_metrics")
     if metrics:
         state.retrieval_metrics = dict(metrics)
+    # The manifest's critic blocks read these; leaving them off this copy list
+    # is why case10's manifests reported `critic: {calls: 0}` while their own
+    # retrieval_metrics recorded 20 facts-critic and 26 ontology-critic calls.
+    facts_telemetry = workflow_state.get("facts_loop_telemetry")
+    if facts_telemetry:
+        state.facts_loop_telemetry = dict(facts_telemetry)
+    ontology_telemetry = workflow_state.get("ontology_loop_telemetry")
+    if ontology_telemetry:
+        state.ontology_loop_telemetry = dict(ontology_telemetry)
+    reduce_metrics = workflow_state.get("ontology_reduce_metrics")
+    if reduce_metrics:
+        state.ontology_reduce_metrics = dict(reduce_metrics)
     return state
 
 

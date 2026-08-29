@@ -41,11 +41,24 @@ def test_fresh_output_instruction_single_format(fmt: LLMGraphFormat) -> None:
         assert "Never use Turtle syntax" in text
 
 
-def test_turtle_update_instruction_names_triple_op_graph() -> None:
+def test_turtle_update_instruction_names_the_flat_graph_fields() -> None:
     profile = get_graph_format_profile(LLMGraphFormat.TURTLE)
     text = profile.render_update_output_instruction()
-    assert "TripleOp.graph" in text
+    assert "insert_graph" in text
+    assert "delete_graph" in text
     assert "Turtle string" in text
+
+
+def test_update_instruction_shows_a_concrete_envelope() -> None:
+    """A schema the model must resolve through $refs is what it closed wrongly.
+
+    Both formats must show an instance, and neither may reintroduce the
+    list-of-one wrapper.
+    """
+    for fmt in LLMGraphFormat:
+        text = get_graph_format_profile(fmt).render_update_output_instruction()
+        assert '"insert_graph"' in text, fmt
+        assert "triple_operations" not in text, fmt
 
 
 def test_graph_update_instruction_does_not_mention_sparql() -> None:
@@ -66,9 +79,23 @@ def test_graph_update_instruction_forbids_sparql_in_graph_field() -> None:
 
 def test_graph_update_schema_has_no_sparql_operations() -> None:
     schema = schema_for_model(GraphUpdateRenderReport, LLMGraphFormat.TURTLE)
-    graph_update_def = schema["$defs"]["GraphUpdate"]
-    assert "sparql_operations" not in graph_update_def.get("properties", {})
+    assert "sparql_operations" not in schema["properties"]
     assert "GenericSparqlQuery" not in schema.get("$defs", {})
+
+
+def test_graph_update_schema_is_flat() -> None:
+    """No list-of-one around the payload: that is the shape models close wrongly."""
+    schema = schema_for_model(GraphUpdateRenderReport, LLMGraphFormat.JSONLD)
+    assert set(schema["properties"]) == {
+        "insert_graph",
+        "delete_graph",
+        "external_evidence_request",
+    }
+    assert "GraphUpdate" not in schema.get("$defs", {})
+    assert "TripleOp" not in schema.get("$defs", {})
+    assert not any(
+        prop.get("type") == "array" for prop in schema["properties"].values()
+    )
 
 
 def test_jsonld_operational_guidelines_forbid_caret_caret() -> None:
@@ -92,10 +119,15 @@ def test_jsonld_schema_semantic_graph_is_object() -> None:
     assert sg.get("type") == "object"
 
 
-def test_turtle_schema_triple_op_graph_is_string() -> None:
-    schema = schema_for_model(GraphUpdateRenderReport, LLMGraphFormat.TURTLE)
-    triple_op = schema["$defs"]["TripleOp"]
-    assert triple_op["properties"]["graph"].get("type") == "string"
+def test_update_schema_binds_both_graph_fields_to_the_wire_format() -> None:
+    """The _GRAPH_FIELD_NAMES trap: an unlisted field keeps the permissive union."""
+    for fmt, expected in (
+        (LLMGraphFormat.TURTLE, "string"),
+        (LLMGraphFormat.JSONLD, "object"),
+    ):
+        schema = schema_for_model(GraphUpdateRenderReport, fmt)
+        for name in ("insert_graph", "delete_graph"):
+            assert schema["properties"][name].get("type") == expected, (fmt, name)
 
 
 def test_strict_turtle_rejects_dict() -> None:
@@ -171,16 +203,7 @@ def test_parse_report_jsonld_facts_is_canonical() -> None:
 def test_parse_report_turtle_graph_update_compiles_to_insert_data() -> None:
     profile = get_graph_format_profile(LLMGraphFormat.TURTLE)
     payload = {
-        "graph_update": {
-            "triple_operations": [
-                {
-                    "type": "insert",
-                    "graph": (
-                        "@prefix ex: <http://example.org/> .\nex:item a ex:Thing ."
-                    ),
-                }
-            ],
-        },
+        "insert_graph": "@prefix ex: <http://example.org/> .\nex:item a ex:Thing .",
         "external_evidence_request": {
             "initiate_search": False,
             "rationale": "",
@@ -189,8 +212,9 @@ def test_parse_report_turtle_graph_update_compiles_to_insert_data() -> None:
     }
     report = profile.parse_report(GraphUpdateRenderReport, json.dumps(payload))
     assert isinstance(report, FactsRenderReport) is False
-    assert isinstance(report.graph_update, GraphUpdate)
-    queries = report.graph_update.generate_sparql_queries()
+    graph_update = report.to_graph_update()
+    assert isinstance(graph_update, GraphUpdate)
+    queries = graph_update.generate_sparql_queries()
     assert len(queries) == 1
     assert "INSERT DATA" in queries[0]
 
@@ -254,16 +278,7 @@ def test_parsed_graph_update_applies_via_unit_facts_state() -> None:
 
     profile = get_graph_format_profile(LLMGraphFormat.TURTLE)
     payload = {
-        "graph_update": {
-            "triple_operations": [
-                {
-                    "type": "insert",
-                    "graph": (
-                        "@prefix ex: <http://example.org/> .\nex:bob a ex:Person ."
-                    ),
-                }
-            ],
-        },
+        "insert_graph": "@prefix ex: <http://example.org/> .\nex:bob a ex:Person .",
         "external_evidence_request": {
             "initiate_search": False,
             "rationale": "",
@@ -279,7 +294,7 @@ def test_parsed_graph_update_applies_via_unit_facts_state() -> None:
         ),
         ontology_snapshot=empty_snapshot(),
     )
-    state.facts_updates.append(report.graph_update)
+    state.facts_updates.append(report.to_graph_update())
     state.update_facts()
     assert len(state.content_unit.graph) >= 1
     assert state.facts_updates == []

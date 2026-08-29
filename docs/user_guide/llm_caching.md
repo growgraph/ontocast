@@ -494,9 +494,9 @@ converted = tools.converter(document_file)
 chunks = tools.chunker(text)
 ```
 
-### OpenAI Batch API (offline benchmarks)
+### OpenAI Batch API (offline pre-fill)
 
-For large first-pass benchmark runs, you can pre-fill the disk cache using the provider Batch API (~50% lower cost, hours of latency). See `ontocast.tool.llm_batch`:
+For a large first pass over a corpus, you can pre-fill the disk cache using the provider Batch API — substantially cheaper per token, at hours of latency. See `ontocast.tool.llm_batch`:
 
 ```python
 from pathlib import Path

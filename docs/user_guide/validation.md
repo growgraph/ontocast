@@ -1,11 +1,14 @@
-# Facts Validation and SHACL
+# Validation: Facts, Ontology Deltas and SHACL
 
 OntoCast treats the renderer LLM as a transcriber, not a guarantor. Everything
 it emits passes through deterministic checks, and everything a machine can fix
 is fixed by a machine — without asking the model again.
 
-This page describes the three validation layers, which of them cost a provider
-call, how SHACL fits in, and how to read the result.
+This page describes the three facts validation layers, which of them cost a
+provider call, how SHACL fits in, and how to read the result. The ontology
+loop's own deterministic lane — which validates a unit's *delta*, not its
+graph, and does not yet gate — is
+[at the end](#ontology-delta-validation-shadow-mode).
 
 ## The three layers
 
@@ -63,10 +66,10 @@ Acceptance is `material_defects()` over evidence that can be pointed at:
 | Advisory findings (`numeric_coverage`) | no |
 | The critic's `score` / `success` | **no** — recorded as telemetry only |
 
-The critic's score gated this until it was measured: over the 2026-08 matsci
-runs it rejected 28 of 34 renders with a median of 79, against a `> 90`
-threshold the model is never shown, while the deterministic findings the loop
-had already computed played no part at all. Set
+The critic's score gated this until it was measured. A model asked to propose
+improvements proposes them, so a `> 90` threshold it is never shown rejected
+nearly every render, while the deterministic findings the loop had already
+computed played no part at all. Set
 `FACTS_ACCEPT_BLOCKING_SEVERITY=never` to let deterministic findings gate alone.
 Per-document critic telemetry — call count, accept count, score histogram, fix
 severity histogram — is written to the run manifest under `critic`.
@@ -192,14 +195,14 @@ Two details matter more than they look:
 a value uses `unit:DAY`; that this individual *is* a `qudt:Unit` is stated only
 in the catalog. Validating the facts alone fails every `sh:class` constraint
 pointing at a catalog term — violations that describe the absent schema, not the
-data. On the three-document matsci pilot this accounted for **128 of 360**
+data. On a catalog-heavy document this is routinely a large fraction of all
 reported violations.
 
 **RDFS inference is on by default.** SHACL resolves class targets through
 `rdfs:subClassOf` itself, but property paths carry no entailment: a shape naming
 `obs:hasResult` does not see the `life:hasStorageResult` the renderer emitted,
-and reports a statement that is present as missing. Same pilot: 268 violations
-at `inference=none` against 232 with RDFS.
+and reports a statement that is present as missing. Turning inference off
+therefore raises the violation count rather than lowering it.
 
 ### LLM-free autofix
 
@@ -308,10 +311,10 @@ noted:
 **Shadow mode means the gate is unchanged.** The ontology critic still accepts
 on `success or score > 90` — unlike the facts score gate, that threshold is
 backed by a scoring rubric in the critic's own prompt (`> 90` is its top band,
-"Excellent — minor refinements only"), so what it demands is perfection, and
-whether that is the right operating point is an empirical question no corpus
-has yet answered: every benchmark arm so far ran `render_mode: facts`, so the
-ontology critic has never executed on recorded data. The findings are
+"Excellent — minor refinements only"), so what it demands is perfection.
+Whether that is the right operating point is an empirical question that is not
+yet answered: the ontology critic does not run under `render_mode: facts`, so
+no recorded data covers it. The findings are
 collected before every critic call (and at loop exit, so the residual exists
 even at `MAX_VISITS=1` where the critic is skipped), injected into the critic
 prompt as MANDATORY items, and recorded per attempt: score, severity mix,
@@ -342,8 +345,19 @@ are already in hand (design note:
 
 Divergence between what a unit saw and what the catalog holds is also counted:
 `apply_deletes_no_match` is the number of delete triples absent from the
-terminal at apply time — a stale vector index is the usual cause. All of these
-land in `ontology_reduce_metrics` in the run manifest.
+terminal at apply time — a stale vector index is the usual cause. Alongside it,
+`unattributed_insert_triples` / `unattributed_delete_triples` count delta
+triples the namespace partition could not attribute to any catalog terminal,
+which is the drop the `foreign_namespace` unit finding predicts.
+
+!!! warning "These counters do not leave the process yet"
+    All of the above accumulate in `AgentState.ontology_reduce_metrics`, which
+    — unlike `retrieval_metrics` — is carried into neither the `/process`
+    response metadata nor the run manifest. Today they are reachable only from
+    the returned state object (an embedded graph, or `run_unit_pipeline`).
+    Individual events do log — a minted duplicate raises a `WARNING` naming
+    both IRIs — but the counts themselves do not. Read the state object until
+    the plumbing lands.
 
 The render and critic prompts declare the partial view explicitly in vector
 mode (a PARTIAL CONTEXT notice), so the model is told that an absent term may
@@ -364,6 +378,9 @@ simply be unretrieved rather than missing.
 | `FACTS_MERGE_REPAIR_PASSES` | `1` | Un-merge passes at the gate |
 | `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | `error` | Severity of `SUSPECT_MULTI_VALUE` findings |
 | `FACTS_FUNCTIONAL_MIN_SINGLE_SUPPORT` | `3` | Subjects needed before a predicate counts as empirically functional |
+| `FACTS_ACCEPT_BLOCKING_SEVERITY` | `critical` | Which critic-proposed fix severities block a unit from leaving the loop; `never` lets deterministic findings gate alone. A `REMOVE` fix never blocks at any setting |
+| `FACTS_LITERAL_VARIANT_DEDUPE` | `true` | Collapse duplicate literals differing only in language tag or datatype before the gate validates |
+| `ONTOLOGY_RECONCILE_MINTED_TERMS` | `detect` | Reduce-time minted-duplicate scan: `off`, `detect` (count only), `rewrite` (substitute the catalog IRI) |
 
 See [Configuration System](configuration.md) for the full surface and
 [Entity Disambiguation](aggregation.md) for the merge stage this gate sits behind.

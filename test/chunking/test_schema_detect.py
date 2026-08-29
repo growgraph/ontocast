@@ -27,7 +27,6 @@ from ontocast.config.section_labels import (
     schema_id_from_hint,
 )
 from ontocast.tool.chunk.chunker import ChunkerTool
-from ontocast.tool.chunk.outline import markdown_headings
 from ontocast.tool.chunk.prepare import (
     PrepareOptions,
     prepare_content_units,
@@ -45,9 +44,9 @@ from ontocast.tool.chunk.schema_detect import (
 from ontocast.toolbox import ToolBox
 from test.docling_test_helpers import doc_from_markdown_lines
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-CORPUS_PATH = REPO_ROOT / "test" / "data" / "schema_corpus.json"
-DATA_JSON = REPO_ROOT / "data" / "json"
+CORPUS_PATH = (
+    pathlib.Path(__file__).resolve().parents[1] / "data" / "schema_corpus.json"
+)
 
 # Defaults of ChunkConfig.section_schema_detect_*; restated here so a threshold
 # change has to be made deliberately in both places rather than silently
@@ -70,11 +69,6 @@ def _clear_caches():
     clear_section_label_caches()
     yield
     clear_section_label_caches()
-
-
-def _document_headings(path: pathlib.Path) -> list[str]:
-    text = json.loads(path.read_text(encoding="utf-8")).get("text", "")
-    return [node.text for node in markdown_headings(text)]
 
 
 def _scores(evidence: list[SchemaEvidence]) -> dict[str, float]:
@@ -140,32 +134,6 @@ def test_lexical_tier_touches_no_embedding_model() -> None:
     )
     assert detection is not None
     assert detection.schema_id == "financial"
-
-
-@pytest.mark.parametrize(
-    ("filename", "expected"),
-    [
-        ("fin.10Q.apple.json", "financial"),
-        ("fin.10Q.nvidia.json", "financial"),
-        ("fin.10Q.sfix.json", "financial"),
-        ("chem.204703_1_5.0167542.json", "academic"),
-        (
-            "chem.bassani-et-al-2024-nanocrystal-assemblies-current-advances-"
-            "and-open-problems.json",
-            "academic",
-        ),
-    ],
-)
-def test_in_repo_documents_detect(filename: str, expected: str) -> None:
-    """The documents the pipeline is actually exercised on resolve correctly."""
-    path = DATA_JSON / filename
-    if not path.exists():
-        pytest.skip(f"{filename} not vendored")
-    detection = detect_document_schema(
-        _document_headings(path), min_score=MIN_SCORE, min_margin=MIN_MARGIN
-    )
-    assert detection is not None
-    assert detection.schema_id == expected
 
 
 def test_only_exclusive_headings_score() -> None:

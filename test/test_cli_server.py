@@ -753,7 +753,7 @@ def test_inspect_sections_reads_json_and_text_documents(tmp_path) -> None:
 
     JSON and plain-text documents are routed *around* the Docling converter by
     the Convert node -- Docling rejects them outright -- so a CLI that called
-    the converter for everything could not inspect `data/json/*.json` at all.
+    the converter for everything could not inspect a converted `*.json` at all.
     """
     import json as _json
 
@@ -785,7 +785,7 @@ def test_inspect_sections_rejects_a_json_payload_with_no_text(tmp_path) -> None:
     from ontocast.cli.inspect_sections import _load_document
 
     path = tmp_path / "record.json"
-    # The shape of data/json/clinical.trials.*.json: a registry API record, not
+    # The shape of a clinical-registry API record, not
     # a document -- it must fail loudly rather than inspect as an empty document.
     path.write_text(_json.dumps({"protocolSection": {"id": 1}}), encoding="utf-8")
     with pytest.raises(click.ClickException):

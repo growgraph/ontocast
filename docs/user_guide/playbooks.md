@@ -224,8 +224,8 @@ default run holds two resident models:
 | `EMBEDDING_MODEL_NAME` | dense retrieval | `…/paraphrase-multilingual-MiniLM-L12-v2` (~458 MB) |
 | `AGG_EMBEDDING_MODEL` | entity disambiguation | same MiniLM as above |
 
-Setting all three to one string drops it to a single resident model — ~650 MB of
-peak RSS, measured. The cache key is the **literal string**, so the spellings
+Setting all three to one string drops it to a single resident model. The cache
+key is the **literal string**, so the spellings
 must match character for character: `paraphrase-multilingual-MiniLM-L12-v2` and
 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` resolve to the
 same files on the hub and still load twice.
@@ -260,7 +260,8 @@ separates "the model did badly" from "that stage never ran".
 | Facts are sparse, schema looks fine | Empty/mismatched catalog under `RENDER_MODE=facts`, or a fixed id matching nothing | [Populate facts](#3-populate-facts) |
 | Schema invented instead of reused | Catalog not seeded, or the wrong ontology selected per unit | `ONTOCAST_ONTOLOGY_DIRECTORY`, [Ontology Context](ontology_context.md) |
 | Right ontology, wrong terms within it | Not enough schema in context | `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES`, or `ONTOLOGY_PATCH_MAX_ATOMS` if the catalog is noisy |
-| Structurally malformed output | Critic disabled | `MAX_VISITS_PER_NODE=2` |
+| Model output will not parse as JSON | Not a critic problem — the parser repairs what it can and abandons a repeated syntax error | `llm/parse_retry` / `llm/parse_abandoned` in `budget.counters`, then [Configuration](configuration.md#what-happens-to-a-response-that-will-not-parse) |
+| Extracted triples are structurally poor (wrong terms, thin coverage) | Critic disabled | `MAX_VISITS_PER_NODE=2` — costs one extra call per unit, not a second render |
 | Duplicate entities across chunks | Disambiguation too strict | `AGG_CANDIDATE_SIMILARITY_THRESHOLD` lower — [Aggregation](aggregation.md) |
 | Distinct entities merged | Disambiguation too loose | `AGG_CANDIDATE_SIMILARITY_THRESHOLD` higher, and check the guard flags (`AGG_LITERAL_CONFLICT_GUARD`, `AGG_INITIALS_DISTINCT_GUARD`) are on |
 | Vector mode returns nothing | Index empty, or scores under the floor | `EMBEDDING_*` contract, `--wipe-vector-store`, [Observability](observability.md) |

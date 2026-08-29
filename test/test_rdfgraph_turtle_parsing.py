@@ -420,23 +420,16 @@ def test_model_validate_uses_explicit_llm_graph_format_context() -> None:
     from ontocast.onto.model import GraphUpdateRenderReport
 
     payload = {
-        "graph_update": {
-            "triple_operations": [
-                {
-                    "type": "insert",
-                    "graph": {
-                        "@context": {"ex": "http://example.org/"},
-                        "@graph": [{"@id": "ex:item", "@type": "ex:Thing"}],
-                    },
-                }
-            ],
+        "insert_graph": {
+            "@context": {"ex": "http://example.org/"},
+            "@graph": [{"@id": "ex:item", "@type": "ex:Thing"}],
         },
     }
     report = GraphUpdateRenderReport.model_validate(
         payload,
         context={"llm_graph_format": LLMGraphFormat.JSONLD},
     )
-    assert len(report.graph_update.triple_operations[0].graph) >= 1
+    assert len(report.insert_graph) >= 1
 
 
 def test_serialize_canonical_turtle_handles_oxigraph_triple_terms() -> None:

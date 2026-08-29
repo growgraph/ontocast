@@ -174,7 +174,7 @@ The `dataset` query parameter is **not** supported. Use `tenant` and `project` i
 
 ## Graph Matching
 
-Benchmark-oriented endpoints for entity alignment and evaluation. Used by the standalone `match-graphs` CLI.
+Endpoints for entity alignment and for scoring an extracted graph against a reference one. Used by the standalone `match-graphs` CLI.
 
 ### `POST /match/entities`
 
@@ -203,7 +203,7 @@ Compute triple and entity precision/recall/F1 given graphs and entity matches. L
 
 ```bash
 match-graphs \
-  --gt ./benchmark \
+  --gt ./reference \
   --predicted ./extracted \
   --url http://localhost:8999 \
   --regime ontology_strict \

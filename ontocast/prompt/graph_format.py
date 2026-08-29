@@ -62,34 +62,48 @@ Provide each RDF graph field as a compact JSON-LD **object** (not a string) with
 _OUTPUT_INSTRUCTION_GRAPH_UPDATE_BASE = """\n\n
 # OUTPUT INSTRUCTION
 
-Generate structured graph patch operations that modify the existing graph incrementally.
+Generate a graph patch that modifies the existing graph incrementally.
 Do not replace the entire graph. Do not emit raw UPDATE query syntax or query-language keywords.
 
-Follow the Pydantic schema exactly. Use `triple_operations` only: each entry has `type`
-(`insert` or `delete`) and `graph` (plain triples for that operation, encoded per the
-graph-format instructions below).
+Emit exactly two graph fields at the TOP LEVEL of your JSON response:
 
-IMPORTANT: The `type` field (`insert` or `delete`) signals which triples to add or remove.
-The `graph` field ALWAYS contains plain triples — never wrap them in DELETE DATA { } or
+- `insert_graph` — the triples to ADD
+- `delete_graph` — the triples to REMOVE, written to match the stored triples exactly
+
+Both are optional: omit a field, or leave it empty, when there is nothing to add or remove.
+Most updates only add, so `insert_graph` alone is the normal answer. There is no wrapper
+object and no list of operations — never nest these fields inside another field.
+
+IMPORTANT: both fields ALWAYS contain plain triples — never wrap them in DELETE DATA { } or
 INSERT DATA { } blocks. That is update-query syntax and will fail validation.
 """
 
 _OUTPUT_INSTRUCTION_GRAPH_UPDATE_TURTLE_GRAPH = """
 
-For each `TripleOp.graph` field, provide a **single Turtle string** with:
-- `@prefix` declarations for every namespace used in that operation
+Provide `insert_graph` and `delete_graph` each as a **single Turtle string** with:
+- `@prefix` declarations for every namespace used in that string
 - Only the triples to insert or delete (no comments)
 - NEVER use UPDATE query syntax (`INSERT DATA`, `DELETE DATA`, bare `PREFIX` lines) in this field
 - Only `@prefix` lines and triples — parseable as plain Turtle, not as an UPDATE query
+
+Shape of the whole response:
+
+```json
+{
+  "insert_graph": "@prefix ex: <https://example.org/onto#> .\\nex:Foo a owl:Class .",
+  "delete_graph": ""
+}
+```
 """
 
 _OUTPUT_INSTRUCTION_GRAPH_UPDATE_JSONLD_GRAPH = """
 
-For each `TripleOp.graph` field, provide a compact JSON-LD **object** (not a string) with:
+Provide `insert_graph` and `delete_graph` each as a compact JSON-LD **object**
+(not a string) with:
 
 1. "@context": a map of every prefix alias used to its full namespace IRI.
    Always declare rdf, rdfs, owl, xsd, schema, the facts prefix (e.g. cd), and any
-   domain ontology prefixes referenced by the operation.
+   domain ontology prefixes referenced.
 2. "@graph": an array of subject nodes. Each node MUST have "@id" (compact IRI) and SHOULD
    include "@type" plus all predicate-value pairs for that subject grouped in one object.
 3. Use compact IRIs (`prefix:local`) throughout - never expand to full URIs in the body.
@@ -97,6 +111,21 @@ For each `TripleOp.graph` field, provide a compact JSON-LD **object** (not a str
    Language-tagged literals use {"@value": "...", "@language": "en"}.
 5. No comments, no trailing prose - output strictly valid JSON.
 6. NEVER use UPDATE query syntax or Turtle ^^/@prefix inside JSON values.
+
+Shape of the whole response — `insert_graph` sits at the top level, and its object is
+closed with `}` before the response's final `}`:
+
+```json
+{
+  "insert_graph": {
+    "@context": {"owl": "http://www.w3.org/2002/07/owl#", "ex": "https://example.org/onto#"},
+    "@graph": [
+      {"@id": "ex:Foo", "@type": "owl:Class", "rdfs:label": {"@value": "foo", "@language": "en"}},
+      {"@id": "ex:bar", "@type": "owl:ObjectProperty", "rdfs:domain": {"@id": "ex:Foo"}}
+    ]
+  }
+}
+```
 """
 
 _OUTPUT_INSTRUCTION_CRITIQUE_TURTLE = """\n\n

@@ -24,7 +24,7 @@ Token-efficient incremental graph modifications:
 - **Structured Operations**: LLM outputs `GraphUpdate` with ordered `TripleOp` insert/delete patches
 - **Wire Formats**: compact JSON-LD by default, or Turtle strings (`LLM_GRAPH_FORMAT`); canonical runtime models are the same either way
 - **Internal compilation**: Triple patches compile to rdflib UPDATE queries at apply time
-- **Token Savings**: Typically 80–95% fewer output tokens vs full graph regeneration
+- **Token Savings**: A patch is a fraction of the output tokens a full graph regeneration costs
 
 ## RDF 1.2 Provenance
 
@@ -244,8 +244,8 @@ The lexical tier scores on *exclusive* evidence: a heading several schemas
 recognise counts **zero**, not a fraction. `References` genuinely says nothing
 about which cell a document is in, so weighting it only adds noise — and
 dropping it is what produces the margins that make the tier safe to act on.
-Measured over `test/data/schema_corpus.json` (one real document per cell) it
-classifies all nine correctly on headings alone, with no model loaded.
+Against `test/data/schema_corpus.json`, which holds one real document per cell,
+every cell resolves on headings alone with no model loaded.
 
 Every tier **abstains** rather than guessing, falling back to the manifest
 default. This is the same trade the label cascade makes and for the same reason:
@@ -297,7 +297,7 @@ Rules the model is steered to follow:
 - A matching **class** does not mean a matching **individual** — text occurrences become new `cd:` nodes typed with that class.
 - Do not place ontology class IRIs in subject/object slots; do not type `cd:` entities as `rdfs:Class` or `rdf:Property`.
 
-**Prefix hygiene in facts prompts:** the domain-ontologies clause excludes rdflib’s default bindings (`brick`, `csvw`, `geo`, `xml`, …). Author-declared short prefixes (e.g. `matsci:`) stay canonical; IRI-tail `ontology_id` values do not force a duplicate prefix. Reserved namespaces such as `xml:` are left untouched (no `xml1:` minting).
+**Prefix hygiene in facts prompts:** the domain-ontologies clause excludes rdflib’s default bindings (`brick`, `csvw`, `geo`, `xml`, …). Author-declared short prefixes (e.g. `ex:`) stay canonical; IRI-tail `ontology_id` values do not force a duplicate prefix. Reserved namespaces such as `xml:` are left untouched (no `xml1:` minting).
 
 Details and examples: [User Instructions](user_instructions.md#facts-extraction-guidelines).
 
@@ -311,7 +311,7 @@ Cross-chunk identity resolution during facts aggregation:
 - `skos:altName` and label-aware matching
 - Provenance annotations on merged triples
 
-The same aligner backs benchmark **graph matching** (`/match/entities`, `/match/evaluate`). See [Aggregation](aggregation.md) for configuration and evaluation notes.
+The same aligner backs **graph matching** (`/match/entities`, `/match/evaluate`), which compares an extracted graph against a reference one. See [Aggregation](aggregation.md) for configuration and evaluation notes.
 
 ## Ontology Context
 

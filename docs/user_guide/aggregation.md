@@ -33,7 +33,7 @@ AGG_SIMILARITY_THRESHOLD=0.80
 | `AGG_LEXICAL_TOKEN_JACCARD` | Minimum normal-form token Jaccard (both sides ≥ 2 tokens) | `0.75` |
 | `AGG_FUNCTIONAL_MIN_EMPIRICAL_SUPPORT` | Min distinct subjects before a predicate counts as empirically single-valued | `2` |
 | `AGG_SIBLING_GUARD_SCOPE` | Co-object sibling guard scope: `subject` or `predicate` | `subject` |
-| `AGG_LITERAL_CONFLICT_GUARD` | Veto merges between entities asserting disjoint literal values on a shared predicate (ablation flag) | `true` |
+| `AGG_LITERAL_CONFLICT_GUARD` | Veto merges between entities asserting disjoint literal values on a shared predicate. Off isolates this guard's contribution to `facts_rejected_merges` | `true` |
 | `AGG_INITIALS_DISTINCT_GUARD` | Veto merges between entities whose labels are identical except for conflicting initials ("company S." vs "company T.") | `true` |
 | `AGG_NATURAL_KEY_MERGE` | Positive identity evidence: instances sharing an identical short string value on a single-valued identifier-like predicate become merge candidates | `true` |
 | `AGG_TYPE_GUARD_UNTYPED` | `permissive` lets a typed entity merge with an untyped one; `strict` fails typed-vs-untyped pairs closed | `permissive` |
@@ -52,7 +52,7 @@ Lower thresholds merge more aggressively (fewer duplicate entities, higher false
 8. **Provenance** — track which unit contributed each merged triple
 9. **Validation gate** (stategraph only) — after merging, the `VALIDATE_FACTS`
    node checks post-merge invariants and applies LLM-free repairs; see
-   [Facts Validation and SHACL](validation.md). *Merge-signature* error
+   [Validation and SHACL](validation.md). *Merge-signature* error
    findings on merged subjects turn the offending cluster into pair vetoes and
    the facts units are re-aggregated (`FACTS_MERGE_REPAIR_PASSES`, default 1);
    because vetoes hold cluster-wide, a veto pass dissolves the flagged cluster
@@ -60,7 +60,39 @@ Lower thresholds merge more aggressively (fewer duplicate entities, higher false
    deliberately not part of that loop — a constraint violation is not evidence
    of a bad identity merge.
 
-The standalone **EntityAligner** (`tool/agg/entity_aligner.py`) powers global alignment for the `/match/entities` API (benchmark use), using the same embedding and symbolic regime concepts (`ontology_loose` / `ontology_strict`).
+### Why a merge was refused
+
+`facts_rejected_merges` counts refusals; the log line beside it names the
+guard, so a surprising cluster can be traced to the rule that split it. The
+codes come from `_merge_validation_failures` in `tool/agg/aggregate.py`, and a
+pair can carry several:
+
+| Code | The pair was refused because |
+|---|---|
+| `sibling` | Both are objects of one subject — range bounds, a sample series, a grant list. `AGG_SIBLING_GUARD_SCOPE` |
+| `literal_conflict` | They assert disjoint values on a shared predicate (30 vs 230 μJ/cm²). `AGG_LITERAL_CONFLICT_GUARD` |
+| `functional_iri_conflict` | They assert different IRI objects on a schema-declared or empirically single-valued predicate (two `qudt:unit`s). `AGG_FUNCTIONAL_MIN_EMPIRICAL_SUPPORT` |
+| `initials_conflict` | Their labels are identical except for non-alias-compatible short tokens ("company S." / "company T."). `AGG_INITIALS_DISTINCT_GUARD` |
+| `role` | One is used as a predicate and the other as a resource |
+| `type` | Their asserted types are incompatible. `AGG_TYPE_GUARD_UNTYPED` decides typed-vs-untyped |
+| `lexical` | The lexical bar was not met — for literal-bearing entities that means an exact label or normal-form match |
+| `cluster_veto` | **The pair itself was mergeable.** Somewhere across the two components sits a vetoed pair, so accepting this edge would have chained around that guard. This is the code to look for when a guard appears to have fired and the entities merged anyway — before vetoes held cluster-wide, they did |
+
+`cluster_veto` is not tunable. It is the invariant that makes every other code
+in this table mean something: guards are pairwise, union-find is transitive,
+and without it A–B plus B–C reunited a vetoed A–C.
+
+### Key-supported clusters
+
+Clusters formed with natural-key evidence are reported on `AggregationResult`
+as `key_supported_clusters` and carried on `AgentState` as
+`aggregation_key_clusters` — a list of the final cluster URIs. The validation
+gate reads it: a `SUSPECT_MULTI_VALUE` string finding on a key-supported
+subject is downgraded from error to warning, because "Application no. 36760/06"
+and "Case of Stanev v. Bulgaria" are two names for one key-confirmed case, and
+an error there would drive the un-merge repair to split a correct merge.
+
+The standalone **EntityAligner** (`tool/agg/entity_aligner.py`) powers global alignment for the `/match/entities` API, using the same embedding and symbolic regime concepts (`ontology_loose` / `ontology_strict`).
 
 ## Graph Matching API
 

@@ -35,9 +35,9 @@ serialization by `ONTOLOGY_CONTEXT_MAX_TRIPLES` (default `4000`).
 | `selected_vector_search_ontology` | A retrieved subgraph capped at `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` (`1200`), which binds first. That is a growth budget during expansion, not a final ceiling — the small-module closure runs after it and can add whole modules past it, which the budget above then catches |
 | Facts prompts | Union of all ontology artifacts, condensed to the budget |
 
-Cost per triple, measured through the prompt serializers: **50.7 chars in
-Turtle, 102.6 in JSON-LD** — so the default budget is ~51k tokens as Turtle and
-~103k as JSON-LD. See [Performance](performance.md#how-much-a-triple-costs).
+JSON-LD costs roughly twice the characters per triple that Turtle does, so
+the same triple budget is about twice the prompt under the default wire format.
+See [Performance](performance.md#how-much-a-triple-costs).
 
 Condensing drops header/list noise first, then redundant structure (generic
 types, stub restrictions, orphan blank nodes), then glosses (`rdfs:comment`,
@@ -137,13 +137,13 @@ in other catalog ontologies via `rdfs:subClassOf`, `rdfs:domain`, or `rdfs:range
 
 ### Diagnostics
 
-There is no in-repo recall harness any more (it was removed in the 2026-08
-test trim; retrieval quality is evaluated with the out-of-repo
-`ontocast-validation` benchmark scripts, e.g.
-`ontocast-validation/run/build_recall_corpus.py` for corpus construction).
-When comparing configurations, note two things about recall measurement: the
-**case**-level figures saturate as soon as cases carry several expected terms,
-so per-**term** figures are the numbers to compare on; and approximate
+There is no in-repo recall harness. Retrieval quality is measured out of
+repo, in `ontocast-validation`; this page describes the mechanisms and the
+per-run telemetry, not their measured quality.
+
+When comparing configurations there, note two things about recall measurement:
+the **case**-level figures saturate as soon as cases carry several expected
+terms, so per-**term** figures are the numbers to compare on; and approximate
 nearest-neighbour search is not bit-reproducible across index builds, so
 treat sub-percentage-point differences as run-to-run noise.
 `test/test_retrieval_predicate_recall.py` covers predicate-surface indexing
@@ -193,11 +193,10 @@ per-seed quotas, the global triple cap, connectivity repair, component pruning �
 Python, because every triple it admits depends on how many have been admitted already.
 
 **It is off by default, and you should measure before turning it on.** Compare
-`catalog_context_triples` between the two modes on your own corpus. On the Text2KGBench
-benchmark set — 6 ontologies, 976 triples merged, 36 seeds — the candidate graph is **83%
-of the merged graph**, so there is nothing to gain there. The value is bounding memory and
-wire volume on a *large* catalog, where the seeds' neighborhood is a small fraction of what
-is stored.
+`catalog_context_triples` between the two modes on your own catalog. On a small
+catalog the candidate graph is most of the merged graph, so there is nothing to
+gain. The value is bounding memory and wire volume on a *large* catalog, where
+the seeds' neighborhood is a small fraction of what is stored.
 
 One known asymmetry: the cross-component schema-path repair can search past the fetched
 neighborhood, so a rare connectivity bridge may be missing. That makes a snapshot
@@ -240,7 +239,7 @@ After seeds are chosen, expansion builds a budgeted snapshot:
   term from.
 - **Author `@prefix` names survive the triple store.** Prefix bindings are serialization
   metadata that a SPARQL store never holds, so exports used to re-derive synthetic stem
-  names (`matsci_units:` for a namespace the author binds as `matsciunits:`). On catalog
+  names (`example_units:` for a namespace the author binds as `exampleunits:`). On catalog
   registration and store write, used non-well-known bindings are persisted as SHACL
   prefix declarations (`sh:declare [ sh:prefix … ; sh:namespace … ]`) on the ontology
   subject — excluded from the content hash, so identity is unaffected — and rebound on
@@ -260,10 +259,11 @@ atom only for a term it describes — one with a subject-position triple, or a l
 
 This matters more than it sounds. A referenced IRI has no local text, so its atom is its
 mangled local name (`a0e0l2i0m1h0t 3d0` for a QUDT dimension vector), and meaningless
-token strings embed near the corpus centroid — they are near-equidistant from every
-query, so they surface against all of them. On the 8-module matsci catalog, 247 of 690
-atoms (36%) were such references, and dimension vectors alone took 51 of 140 dense
-retrieval slots on one document, pushing four ontologies out of the results entirely.
+token strings embed near the centroid of the indexed set — they are
+near-equidistant from every query, so they surface against all of them. On a
+multi-module catalog that borrows heavily from an external vocabulary, such
+references can be a large fraction of all atoms and can crowd whole ontologies
+out of the retrieval slots for a document.
 
 Referenced IRIs stay reachable — induced-subgraph expansion walks into them from seeds.
 They just stop being seeds. Set `VECTOR_STORE_INDEX_UNDESCRIBED_IRIS=true` to restore
@@ -286,9 +286,9 @@ The sparse lane carries substantial fusion weight (`VECTOR_STORE_FUSION_BM25_WEI
 default `0.8`, against `0.7` core and `0.15` neighborhood). Terms identified by a symbol
 rather than a phrase are frequently absent from the dense lanes altogether, so the sparse
 lane is not a tie-breaker for them — it is the only evidence there is. At the former
-`0.2` the normalized weights were `0.583 / 0.250 / 0.167`, meaning a rank-1 BM25 hit was
-outvoted 3.5:1 by a rank-1 dense hit; `matsci-units#millielectronvolt` was a rank-1 BM25
-hit for a passage reporting `∼10−50 meV`, appeared in no dense lane, and still lost.
+`0.2` a rank-1 BM25 hit was outvoted several times over by a rank-1 dense hit,
+so a unit term that was the top sparse hit for the passage naming it — and
+absent from every dense lane — still lost its retrieval slot.
 
 Surface forms are capped per atom (`VECTOR_STORE_MINIMAL_LABEL_LIMIT`, default 5) and
 selected deterministically, ranked by predicate and then by language. Two consequences
@@ -304,9 +304,8 @@ are worth knowing when indexing an external vocabulary:
 
 This is what makes a **small** vocabulary findable by symbol in the sparse lane. It does
 **not** make indexing a large symbol vocabulary into the shared semantic pool practical:
-thousands of near-identical unit embeddings cluster together and displace domain terms under
-the global atom cap (measured on the matsci recall corpus when QUDT was indexed
-wholesale).
+thousands of near-identical unit embeddings cluster together and displace domain
+terms under the global atom cap.
 
 ### Lexical-trigger lane (exact-match codes)
 
@@ -324,7 +323,7 @@ paraphrase similarity. Those are handled by a separate **lexical-trigger** lane:
   **promoted** to `max(semantic, trigger)` score — a case-exact notation match is
   evidence, not a duplicate — and unseen atoms are appended (cap
   `VECTOR_STORE_LEXICAL_TRIGGER_MAX_ATOMS=16`, outside the semantic atom budget).
-  `append` restores the legacy add-only behavior for ablation.
+  `append` restores the legacy add-only behavior.
 - Toggle with `VECTOR_STORE_LEXICAL_TRIGGER_ENABLED` (default on). Predicate list and
   heuristic promotion are configurable via `VECTOR_STORE_LEXICAL_TRIGGER_*` — see
   [Configuration](configuration.md).
@@ -374,7 +373,7 @@ catalog terminals. The prompts say so explicitly (a PARTIAL CONTEXT notice in
 the render intro and critic criteria), and three reduce-time policies close
 the gap that partiality opens: minted-duplicate reconciliation against the
 full terminals, a redeclare-only delete policy, and fresh-path union merging.
-See [Facts Validation and SHACL → Reduce-time policies](validation.md#reduce-time-policies-the-terminal-is-the-authority)
+See [Validation → Reduce-time policies](validation.md#reduce-time-policies-the-terminal-is-the-authority)
 and the workspace design note `planning/ontology-update-semantics.md`.
 
 ## Per-Request Overrides

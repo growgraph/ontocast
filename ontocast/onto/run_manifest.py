@@ -165,6 +165,16 @@ class RunManifest(BaseModel):
     loops: RunManifestLoops | None = None
     critic: RunManifestCritic | None = None
     ontology_critic: RunManifestCritic | None = None
+    ontology_reduce_metrics: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "``AgentState.ontology_reduce_metrics``: apply/partition counters "
+            "plus the reduce policies' evidence -- minted_duplicates and "
+            "their pairs, deletes_dropped_unredeclared, apply_deletes_no_match, "
+            "fresh_ontologies_merged. The case10 sampling run computed all of "
+            "these and recorded none, because no manifest field carried them."
+        ),
+    )
     selection: RunManifestSelection | None = None
     graph_metrics: GraphShapeMetrics | None = Field(
         default=None,

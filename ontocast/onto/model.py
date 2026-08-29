@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from ontocast.onto.llm_graph_payload import LLMGraphWire
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.sparql_models import GraphUpdate
+from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 
 
 def _coerce_free_text(v: object) -> str:
@@ -191,15 +191,56 @@ class FactsRenderReport(BaseModel):
 
 
 class GraphUpdateRenderReport(BaseModel):
-    """Graph update rendering output with optional search decision."""
+    """Graph update rendering output with optional search decision.
 
-    graph_update: GraphUpdate = Field(
-        description="Structured graph patch payload: ordered insert/delete triple operations."
+    The wire shape is deliberately flat, and deliberately the same shape as
+    :class:`FactsRenderReport`: two sibling graph fields, no wrapper object and
+    no list. The previous shape nested the graph inside
+    ``graph_update.triple_operations[]``, and a *singleton* list holding one
+    long JSON-LD document is a shape models close wrongly -- measured at 20/24
+    malformed above ~4k characters on gpt-5-mini, versus 0/22 whenever the list
+    happened to hold two or more operations and the ``},{`` boundary reinforced
+    the array frame. Nothing here may reintroduce a list-of-one around a large
+    payload.
+
+    The internal :class:`GraphUpdate` keeps its ordered ``TripleOp`` list; this
+    is a wire encoding, not the patch model. See :meth:`to_graph_update`.
+    """
+
+    insert_graph: LLMGraphWire = Field(
+        default_factory=RDFGraph,
+        description=(
+            "Triples to ADD. Encoding is defined by deployment llm_graph_format "
+            "and OUTPUT INSTRUCTION. Omit or leave empty when adding nothing."
+        ),
+    )
+    delete_graph: LLMGraphWire = Field(
+        default_factory=RDFGraph,
+        description=(
+            "Triples to REMOVE, matching the stored triples exactly. Encoding is "
+            "defined by deployment llm_graph_format and OUTPUT INSTRUCTION. Omit "
+            "or leave empty when removing nothing."
+        ),
     )
     external_evidence_request: ExternalEvidenceRequest = Field(
         default_factory=ExternalEvidenceRequest,
         description="Optional request to run web search before retrying.",
     )
+
+    def to_graph_update(self) -> GraphUpdate:
+        """Compile the wire payload into an ordered patch.
+
+        Deletes are ordered before inserts, and an empty side contributes no
+        operation. Interleaving the two within a single render is not
+        expressible on this wire: it would only matter for a patch that removes
+        and re-adds the same triple, which nets out to nothing.
+        """
+        operations: list[TripleOp] = []
+        if len(self.delete_graph) > 0:
+            operations.append(TripleOp(type="delete", graph=self.delete_graph))
+        if len(self.insert_graph) > 0:
+            operations.append(TripleOp(type="insert", graph=self.insert_graph))
+        return GraphUpdate(triple_operations=operations)
 
 
 class TripleFix(BaseModel):

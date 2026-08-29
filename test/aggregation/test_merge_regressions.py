@@ -1,21 +1,20 @@
-"""Regressions from the art6 (ECHR) benchmark run of 2026-08-11.
+"""Regressions for simultaneous over- and under-merging in one document.
 
-`benchmarking/art6/result_c` exhibited simultaneous over- and under-merging:
+Four failure shapes, observed together on a legal corpus where every entity is
+a person or an organisation and most share honorifics and title fragments:
 
-- four judges ("Mrs E. Palm", "Mrs M. Tsatsa-Nikolovska", "Mrs N. Vajić",
-  "Mrs W. Thomassen") collapsed into one node — a shared honorific literal
-  acted as label agreement, and pairwise vetoes were chained around by the
-  union-find's transitive closure;
-- three companies ("French company S.", "French company T.", "Italian
-  company T.I.") collapsed — the tokenizer dropped the distinguishing
-  initials;
-- ESA merged with its own Appeals Board, producing a self-referential
+- four people with a shared honorific collapsed into one node -- the honorific
+  literal acted as label agreement, and pairwise vetoes were chained around by
+  the union-find's transitive closure;
+- three organisations whose names differ only by an initial collapsed -- the
+  tokenizer dropped the distinguishing initials;
+- an organisation merged with its own sub-body, producing a self-referential
   ``schema:isPartOf``;
-- two case nodes sharing the identical ``hasApplicationNumber`` literal were
-  left split — identical identifiers carried no positive identity evidence.
+- two case nodes sharing an identical identifier literal were left split --
+  identical identifiers carried no positive identity evidence.
 
-Each test pins the corresponding fix. Clustering is stubbed (single cluster
-or singletons) so no embedding model loads.
+Each test pins the corresponding fix. Clustering is stubbed (single cluster or
+singletons) so no embedding model loads.
 """
 
 from rdflib import RDF, Literal, URIRef

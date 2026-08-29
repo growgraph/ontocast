@@ -1,11 +1,9 @@
 """Pytest configuration for test suite."""
 
-import json
 import logging
 import os
 import uuid
 import warnings
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generator, Optional
 
 import pytest
@@ -275,57 +273,43 @@ def embeddings(real_embeddings, mock_embeddings):
 
 @pytest.fixture
 def sample_text():
-    """Fixture providing realistic sample text (~10k characters) from clinical trial JSON."""
-    json_file = (
-        Path(__file__).parent.parent
-        / "data"
-        / "json"
-        / "clinical.trials.NCT01239745.json"
-    )
-    if json_file.exists():
-        data = json.load(open(json_file))
+    """Deterministic prose (~10k characters) for the semantic chunker.
 
-        def json_to_md(data, depth=1):
-            md = []
-            if isinstance(data, dict):
-                for key, value in data.items():
-                    if isinstance(value, (str, int, float, bool, type(None))):
-                        md.append(f"{key}: {value}\n")
-                    elif isinstance(value, dict):
-                        md.append(f"{key}:\n")
-                        md.extend(json_to_md(value, depth + 1))
-                    elif isinstance(value, list):
-                        md.append(f"{key}:\n")
-                        for item in value:
-                            if isinstance(item, (str, int, float, bool, type(None))):
-                                md.append(f"  - {item}\n")
-                            else:
-                                md.extend(json_to_md(item, depth + 1))
-            elif isinstance(data, list):
-                for item in data:
-                    if isinstance(item, (str, int, float, bool, type(None))):
-                        md.append(f"- {item}\n")
-                    else:
-                        md.extend(json_to_md(item, depth))
-            return md
+    Synthesised rather than read from a corpus file: the chunker assertions are
+    round-trip length and word coverage, which are properties of *text*, not of
+    any particular document -- and a test that reaches outside `test/` cannot
+    run from the published sdist, which ships `/test` and nothing else.
 
-        text_lines = json_to_md(data)
-        text = "".join(text_lines)
-        return text[:10000]
-
-    # Fallback
-    return (
-        "This is the first sentence. "
-        "This is the second sentence. "
-        "This is the third sentence. "
-        "This is the fourth sentence. "
-        "This is the fifth sentence. "
-        "This is the sixth sentence. "
-        "This is the seventh sentence. "
-        "This is the eighth sentence. "
-        "This is the ninth sentence. "
-        "This is the tenth sentence."
-    ) * 100
+    The vocabulary rotates per sentence and the topic shifts per paragraph, so
+    the embedding boundaries the chunker looks for actually exist. A block of
+    one repeated sentence would make the semantic split degenerate and the
+    coverage assertion vacuous.
+    """
+    topics = [
+        ("catalyst", "perovskite lattice", "annealing", "crystallite"),
+        ("plaintiff", "appellate chamber", "admissibility", "remedy"),
+        ("liquidity", "deferred revenue", "amortisation", "covenant"),
+        ("cohort", "randomisation", "endpoint", "titration"),
+        ("segmenter", "embedding", "retrieval", "namespace"),
+    ]
+    verbs = ("describes", "constrains", "reports", "qualifies", "supersedes")
+    paragraphs = []
+    for index, terms in enumerate(topics):
+        sentences = []
+        for step in range(14):
+            subject = terms[step % len(terms)]
+            obj = terms[(step + 2) % len(terms)]
+            verb = verbs[(index + step) % len(verbs)]
+            sentences.append(
+                f"Section {index + 1} paragraph note {step + 1}: the {subject} "
+                f"{verb} the {obj} under measurement conditions {index + 1}.{step + 1}, "
+                f"and the recorded value of {100 + index * 10 + step} remains "
+                f"within the tolerance stated for this {subject}."
+            )
+        paragraphs.append(" ".join(sentences))
+    text = "\n\n".join(paragraphs)
+    assert len(text) >= 10000, f"sample_text shrank to {len(text)} characters"
+    return text[:10000]
 
 
 @pytest.fixture

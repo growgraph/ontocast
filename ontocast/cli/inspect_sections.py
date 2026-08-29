@@ -45,8 +45,8 @@ def _load_document(path: pathlib.Path, converter: ConverterTool):
 
     JSON and plain-text inputs are routed *around* the Docling converter -- it
     rejects them outright -- so inspecting the very files the pipeline is
-    normally driven with (``data/json/*.json``) requires mirroring that routing
-    rather than calling the converter for everything.
+    normally driven with (converted ``*.json`` payloads) requires mirroring that
+    routing rather than calling the converter for everything.
     """
     suffix = path.suffix.lower()
     if suffix in converter.supported_extensions:

@@ -155,7 +155,7 @@ def test_drift_prone_ontology_survives_store_round_trip() -> None:
 
 
 def _shipped_ontologies() -> list[Path]:
-    """The TTLs shipped in `data/ontologies`, resolved from this file.
+    """The TTL fixtures under `test/data/ontologies`, resolved from this file.
 
     A cwd-relative glob here silently produced *zero* parameters whenever pytest
     ran from anywhere but the repo root, so the round-trip guard vanished without
@@ -163,7 +163,7 @@ def _shipped_ontologies() -> list[Path]:
     below catch a genuine disappearance.
     """
     return sorted(
-        (Path(__file__).resolve().parents[1] / "data" / "ontologies").glob("*.ttl")
+        (Path(__file__).resolve().parent / "data" / "ontologies").glob("*.ttl")
     )
 
 
@@ -173,7 +173,7 @@ SHIPPED_ONTOLOGIES = _shipped_ontologies()
 @pytest.mark.unit
 def test_shipped_ontologies_are_discoverable() -> None:
     assert SHIPPED_ONTOLOGIES, (
-        "data/ontologies is empty -- the round trip below is vacuous"
+        "test/data/ontologies is empty -- the round trip below is vacuous"
     )
 
 

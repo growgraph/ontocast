@@ -40,6 +40,7 @@ three modules, where a typo used to mean a silently missing metric.
 | `patch_retrieval` | Nested per-retrieval telemetry from the patch retriever (query counts, atom funnel, seeds by ontology, and `ontology_rank_diagnostics` when `ONTOLOGY_PATCH_DUMP_ONTOLOGY_RANKS` is on) |
 | `empty_snapshot_reason` | Why a unit's ontology snapshot came back empty. Written per unit, last writer wins |
 | `ontology_writable_count` / `ontology_primary_units` | Writable anchors, and units assigned a primary anchor |
+| `ontology_snapshot_triples` | Size of the ontology snapshot a unit was actually shown, written in **every** context mode. Previously only the vector resolver recorded a size, nested under `patch_retrieval` — so the two modes that bound nothing also reported nothing. Read it against `ONTOLOGY_CONTEXT_MAX_TRIPLES` to tell a condensed snapshot from an unbounded one |
 | `facts_anchor_count` / `facts_anchor_units` | Same for the facts fan-out |
 | `facts_llm_repair_renders_total` / `_failed` | Finding-driven repair renders attempted, and those that crashed (a failed repair leaves the pre-repair graph and the unit still reports success) |
 | `facts_repair_delete_only` | Repair renders rolled back for answering the findings prompt with deletions instead of an in-place rewrite. Non-zero means the findings prompt or the validator is provoking data-destroying responses — treat it as a release blocker, not a curiosity |
@@ -78,9 +79,20 @@ pass actually ran — absent means "did not run", which is not the same as zero.
     "calls_count": 42, "cache_hits": 0,
     "input_tokens": 380174, "output_tokens": 51203, "reasoning_tokens": 39880,
     "prefix_cache_hit_rate": 0.41, "reasoning_share_of_output": 0.78,
-    "node_durations": {"Render Facts": 61.4, "Render Facts/unit_sum": 240.1}
+    "node_durations": {"Render Facts": 61.4, "Render Facts/unit_sum": 240.1},
+    "counters": {"llm/parse_retry": 3, "llm/json_bracket_repair": 1, "llm/parse_abandoned": 0}
   },
-  "facts_triples": 1204, "ontology_triples": 318,
+  "selection": {"target_sections": null, "exclude_sections": ["references"],
+                "summarize_sections": null, "summary_max_sentences": null,
+                "bibliography_mode": "exclude"},
+  "critic": {"calls": 34, "accepted": 6, "score_min": 55, "score_median": 79,
+             "score_max": 98,
+             "score_histogram": {"50-59": 2, "70-79": 9, "80-89": 12, "90-99": 5},
+             "fix_severity_histogram": {"critical": 27, "important": 99}},
+  "ontology_critic": {"calls": 0, "accepted": 0, "score_min": null,
+                      "score_median": null, "score_max": null,
+                      "score_histogram": {}, "fix_severity_histogram": {}},
+  "facts_triples": 1204, "facts_triples_serialized": 557, "ontology_triples": 318,
   "retrieval_metrics": {
     "ontology_context_mode": "selected_vector_search_ontology",
     "facts_shacl_violations_before": 232, "facts_shacl_violations_after": 221,
@@ -90,18 +102,49 @@ pass actually ran — absent means "did not run", which is not the same as zero.
 }
 ```
 
+`budget.counters` holds named event counts, summed across unit workers. Three
+of them cover how the LLM's JSON survived parsing, and they are worth reading on
+any run against a new model:
+
+| Counter | Meaning |
+|---|---|
+| `llm/parse_retry` | Renders re-issued because the previous response would not parse or validate. Each is a full re-extraction, so a non-trivial count is a real share of the bill. |
+| `llm/json_bracket_repair` | Responses recovered by rewriting mismatched closing brackets. Non-zero means the model is emitting structurally broken JSON that the deterministic repair caught — the run is correct, but the prompt or the schema shape is provoking it. |
+| `llm/parse_abandoned` | Calls given up on: retries exhausted, or the same JSON syntax error recurred and further attempts were judged pure spend. Every one of these is a content unit that contributed nothing. |
+
+A silent `llm/parse_abandoned` used to be visible only as a `failed without
+usable output` warning scrolling past in the logs; it is now in the manifest.
+
 This is the offline option: no service, no account, and it survives the process.
 Two runs are comparable by diffing their manifests — which model, which
 generation settings, how many tokens, how long per node, and now what retrieval
 and the validation gate did. `loops` records the **effective** per-unit budgets
-(a `--max-visits` ablation whose flag silently failed to apply is detectable
+(a `--max-visits` override whose flag silently failed to apply is detectable
 from the dump, not only from call arithmetic), `critic` and `ontology_critic`
 summarize each loop's LLM-critic decisions (call and accept counts, score
 histogram, fix-severity histogram — the evidence a gate recalibration reads),
-and `graph_metrics` summarizes
-the connectivity of the serialized facts graph so fragmentation regressions
-surface per document. It is also what makes a benchmark sweep auditable
-after the fact, rather than something to be re-run.
+`selection` records which
+sections the run was actually given — a `--target-sections` typo that matched
+nothing is otherwise indistinguishable from a document that genuinely had no
+such section — and `graph_metrics` summarizes the connectivity of the
+serialized facts graph so fragmentation regressions surface per document. It is
+also what makes a sweep of runs auditable after the fact, rather than something
+to be re-run.
+
+!!! warning "`facts_triples` is not the size of the `.facts.ttl` beside it"
+    `facts_triples` counts the aggregated graph in memory, provenance included;
+    `facts_triples_serialized` counts what the dump actually holds, after the
+    provenance split. The two routinely differ by a factor of several for the
+    same document. Compare runs on `facts_triples_serialized` when the question is
+    about extracted content, and on `facts_triples` when it is about pipeline
+    volume — mixing them silently compares a graph with its own subset.
+
+    Read `critic.calls` before `critic.accepted`. At the default
+    `MAX_VISITS=1` the critic never runs and `summarize_loop` returns an
+    all-zero record, so `accepted: 0` there means *nothing was judged*, not
+    *everything was rejected*. Score buckets are decade ranges keyed
+    `"70-79"`, so an empty `score_histogram` alongside `calls > 0` means the
+    critic ran and returned no parseable score.
 
 `retrieval_metrics` carries the same payload the HTTP response returns, so a
 batch run is no longer the blind path: before this, retrieval telemetry existed

@@ -4,6 +4,10 @@ Naming convention (separator default ``--``)::
 
     {tenant}{sep}{project}{sep}facts
     {tenant}{sep}{project}{sep}ontologies
+    {tenant}{sep}{project}{sep}shapes
+
+The shapes partition is a triple-store dataset only: it has no vector-store
+counterpart, because SHACL shapes are never retrieved by similarity.
 
 Runtime tenant and project are taken from CLI flags or HTTP request parameters only
 (not from environment variables). :data:`DEFAULT_TENANT` / :data:`DEFAULT_PROJECT`
@@ -21,7 +25,7 @@ TENANCY_SEP = "--"
 DEFAULT_TENANT = "ontocast"
 DEFAULT_PROJECT = "test"
 
-StoreKind = Literal["facts", "ontologies"]
+StoreKind = Literal["facts", "ontologies", "shapes"]
 
 
 class TenancyScope(BaseModel):
@@ -37,6 +41,7 @@ class TenancyScope(BaseModel):
     project: str
     facts_name: str
     ontologies_name: str
+    shapes_name: str
 
     @classmethod
     def build(
@@ -63,6 +68,7 @@ class TenancyScope(BaseModel):
             project=p,
             facts_name=tenant_project_facts_name(t, p, sep=sep),
             ontologies_name=tenant_project_ontologies_name(t, p, sep=sep),
+            shapes_name=tenant_project_shapes_name(t, p, sep=sep),
         )
 
     @property
@@ -98,3 +104,16 @@ def tenant_project_ontologies_name(
 ) -> str:
     """Ontologies dataset (Fuseki) or ontologies collection (Qdrant)."""
     return tenant_project_store_name(tenant, project, "ontologies", sep=sep)
+
+
+def tenant_project_shapes_name(
+    tenant: str, project: str, *, sep: str = TENANCY_SEP
+) -> str:
+    """SHACL shapes dataset (Fuseki or in-memory partition).
+
+    Shapes are kept out of the ontologies dataset on purpose: a shapes document
+    declares its own ``owl:Ontology`` header, and catalog discovery selects every
+    named graph that carries one. Co-located shapes would register as catalog
+    ontologies and be offered to the renderer as schema.
+    """
+    return tenant_project_store_name(tenant, project, "shapes", sep=sep)
