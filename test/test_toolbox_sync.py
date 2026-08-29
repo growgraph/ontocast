@@ -96,6 +96,8 @@ def test_initialize_materializes_then_adds_with_skip_vector(monkeypatch, test_on
 
         def __init__(self) -> None:
             self.ontology_manager = MagicMock()
+            self.shapes_catalog = MagicMock()
+            self.shapes_catalog.sync = AsyncMock()
             self.vector_store_ready = False
             self.vector_store_last_error = None
 
@@ -173,6 +175,8 @@ def test_initialize_skips_vector_store_in_full_ttl_mode(monkeypatch) -> None:
             self.vector_store_ready = False
             self.vector_store_last_error = None
             self.ontology_manager = MagicMock()
+            self.shapes_catalog = MagicMock()
+            self.shapes_catalog.sync = AsyncMock()
 
         async def _synchronize_ontologies(self):
             return synchronized
@@ -221,6 +225,8 @@ def test_initialize_vector_store_failure_is_non_fatal_when_configured(
             self.vector_store_ready = False
             self.vector_store_last_error = None
             self.ontology_manager = MagicMock()
+            self.shapes_catalog = MagicMock()
+            self.shapes_catalog.sync = AsyncMock()
 
         async def _synchronize_ontologies(self):
             return []
@@ -329,6 +335,8 @@ def test_initialize_materializes_with_bounded_concurrency(
 
         def __init__(self) -> None:
             self.ontology_manager = MagicMock()
+            self.shapes_catalog = MagicMock()
+            self.shapes_catalog.sync = AsyncMock()
             self.vector_store_ready = False
             self.vector_store_last_error = None
             self.config.tool_config.vector_store.reindex_concurrency = 2
@@ -388,6 +396,8 @@ def test_initialize_wipe_and_prune_follow_their_flags(
             self.vector_store_ready = False
             self.vector_store_last_error = None
             self.ontology_manager = MagicMock()
+            self.shapes_catalog = MagicMock()
+            self.shapes_catalog.sync = AsyncMock()
 
         async def _synchronize_ontologies(self):
             return [test_ontology]

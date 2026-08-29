@@ -291,7 +291,7 @@ def test_atomizer_collects_case_preserved_symbol_surfaces() -> None:
 
 
 def test_symbol_case_mismatch_demotes_counterfeit_match() -> None:
-    """The case4 regression: prose `meV` must not keep unit:MegaEV ranked
+    """Regression: prose `meV` must not keep unit:MegaEV ranked
     above the correct millielectronvolt atom."""
     from ontocast.config import SymbolCaseMismatchPolicy
     from ontocast.tool.vector_store.patch_retriever import (

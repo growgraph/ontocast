@@ -501,8 +501,8 @@ async def render_facts_update(
         # under two contradictory contracts at once: the improvement template's
         # "think independently, proactively fix additional problems" and the
         # findings block's "apply every item, rewrite in place, never delete".
-        # Reachable only at MAX_VISITS >= 2, which is where the 2026-08 matsci
-        # arm lost graph connectivity and gained validation errors.
+        # Reachable only at MAX_VISITS >= 2, which is where the observed loss
+        # of graph connectivity and gain in validation errors came from.
         state.suggestions = Suggestions()
 
         num_operations, num_triples = graph_update.count_total_triples()

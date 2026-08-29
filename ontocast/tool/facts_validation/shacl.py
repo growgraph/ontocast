@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from pathlib import Path
 from typing import Literal as TypingLiteral
 
 from pydantic import BaseModel, Field
@@ -110,8 +109,8 @@ def run_shacl(
     targets through ``rdfs:subClassOf`` on its own, but property paths carry no
     entailment: a shape on ``obs:hasResult`` does not see the
     ``life:hasStorageResult`` the renderer emitted, and reports the more
-    specific statement as a missing one. Measured on the three-document matsci
-    pilot: 268 violations at ``inference="none"`` against 232 with RDFS.
+    specific statement as a missing one, so turning inference off raises the
+    violation count rather than lowering it.
 
     Args:
         graph: Data graph to validate.
@@ -189,37 +188,28 @@ def run_shacl(
 
 
 def collect_shacl_shapes(
-    ontology_graph: RDFGraph | None, shapes_dir: str | None
+    ontology_graph: RDFGraph | None, stored_shapes: RDFGraph | None
 ) -> RDFGraph | None:
     """Assemble the SHACL shapes graph for the validation gate.
 
-    Sources: every ``.ttl`` file under ``shapes_dir`` (when configured), plus
-    the ontology context itself when it already carries ``sh:NodeShape``
-    declarations inline — the zero-config path for catalogs that ship shapes
-    next to their schema.
+    Sources: the deployment's shapes partition (``stored_shapes``, resolved by
+    :class:`~ontocast.tool.shapes_catalog.ShapesCatalog` -- seeded from
+    ``FACTS_SHAPES_DIR`` and mutable over ``/shapes``), plus the ontology
+    context itself when it already carries ``sh:NodeShape`` declarations inline
+    -- the zero-config path for catalogs that ship shapes next to their schema.
+
+    Args:
+        ontology_graph: Ontology context offered to the renderer.
+        stored_shapes: Merged shapes graph from the shapes partition.
+
+    Returns:
+        RDFGraph | None: The shapes to validate against, or ``None`` when there
+        are none -- which is what keeps ``shacl_evaluated`` at ``None``
+        ("never checked") rather than reporting a clean run.
     """
     shapes = RDFGraph()
-    if shapes_dir:
-        directory = Path(shapes_dir)
-        if not directory.is_dir():
-            # Configuring a shapes directory that does not exist must not read
-            # as "validated cleanly": glob() on a missing path yields nothing.
-            logger.warning(
-                "FACTS_SHAPES_DIR points at %s, which is not a directory; "
-                "no SHACL shapes loaded",
-                shapes_dir,
-            )
-        else:
-            files = sorted(directory.glob("**/*.ttl"))
-            if not files:
-                logger.warning(
-                    "FACTS_SHAPES_DIR %s contains no .ttl shape files", shapes_dir
-                )
-            for path in files:
-                try:
-                    shapes.parse(path.as_posix(), format="turtle")
-                except Exception as error:
-                    logger.warning("Failed to parse shapes file %s: %s", path, error)
+    if stored_shapes is not None and len(stored_shapes):
+        shapes += stored_shapes
     node_shape = SH.NodeShape
     if ontology_graph is not None and (None, RDF.type, node_shape) in ontology_graph:
         shapes += ontology_graph
@@ -238,7 +228,7 @@ def shacl_catalog_contradictions(
     the deterministic UNKNOWN_TERM check — same closure rules, same
     exemptions — would report as not existing. Data cannot satisfy both: the
     renderer is ordered to remove exactly what validation requires. Found live
-    on the matsci catalog, where the shapes required ``qudt:numericValue``
+    in practice, where shapes required ``qudt:numericValue``
     while the validator's mandatory findings drove repair renders to delete
     it. Callers log the returned IRIs as configuration errors.
     """

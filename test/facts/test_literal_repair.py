@@ -1,6 +1,6 @@
 """Deterministic facts normalization/repair/findings tests.
 
-Fixtures reproduce the exact case5 failure shapes: plain-int literals next
+Fixtures reproduce observed failure shapes: plain-int literals next
 to typed decimals, ``qudt:value`` for ``qudt:numericValue``,
 ``qqval:lowerBound`` for ``qqval:hasLowerBound``, ``ex:`` placeholder
 predicates, doc-namespace predicates, and string epistemic qualifiers
@@ -80,7 +80,7 @@ def test_normalize_literals_retypes_untyped_numeric() -> None:
 
 def test_repair_property_aliases_rewrites_qudt_value() -> None:
     # qudt:numericValue is dominant in the graph itself; qudt:value is the
-    # near-miss (the case5 paper-3 shape: 8 qudt:value vs many numericValue).
+    # near-miss: a few qudt:value against many qudt:numericValue.
     graph = _facts(
         """
         cd:a qudt:numericValue "1"^^xsd:decimal .
@@ -112,8 +112,8 @@ def test_repair_property_aliases_rewrites_qqval_bound() -> None:
 
 
 def test_repair_literal_type_objects_coerces_compact_and_absolute() -> None:
-    # The case5 failure shape: `a "matsci-ontology:Material"^^xsd:string`
-    # instead of `a matsci-ontology:Material`.
+    # The failure shape: `a "domain-ontology:Material"^^xsd:string`
+    # instead of `a domain-ontology:Material`.
     graph = _facts(
         f"""
         cd:s a "qqval:Approximate"^^xsd:string .

@@ -101,7 +101,7 @@ def test_a_remove_fix_never_blocks_whatever_its_severity() -> None:
     ``format_findings_for_prompt`` states that a finding is never resolved by
     deleting the statement. Rendering a mandatory REMOVE alongside that
     instruction is the contradiction class whose fallout the CHANGELOG records
-    as 25 of 58 repair responses deleting valid values.
+    as repair responses deleting valid values wholesale.
     """
     policy = FactsAcceptancePolicy(blocking_fix_severity="important")
 

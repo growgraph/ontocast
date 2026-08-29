@@ -30,8 +30,8 @@ def critic_fixes_to_findings(
     findings block it would be rendered into states that a finding is never
     resolved by deleting the statement, so a mandatory REMOVE would contradict
     the instruction printed directly above it -- the same contradiction shape
-    ``shacl_catalog_contradictions`` exists to catch, and the one whose fallout
-    is on record as 25 of 58 repair responses deleting valid values.
+    ``shacl_catalog_contradictions`` exists to catch, and one that has already
+    caused repair renders to delete valid values wholesale.
 
     Args:
         fixes: Fixes from the critique report, in the order proposed.

@@ -14,14 +14,20 @@ import httpx
 from pydantic import Field
 from rdflib import Graph, URIRef
 
-from ontocast.onto.constants import DEFAULT_DATASET, DEFAULT_ONTOLOGIES_DATASET
+from ontocast.onto.constants import (
+    DEFAULT_DATASET,
+    DEFAULT_ONTOLOGIES_DATASET,
+    DEFAULT_SHAPES_DATASET,
+)
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_header import OntologyHeader
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.tenancy import (
     TENANCY_SEP,
+    StoreKind,
     tenant_project_facts_name,
     tenant_project_ontologies_name,
+    tenant_project_shapes_name,
 )
 from ontocast.tool.triple_manager.core import (
     TripleStoreManagerWithAuth,
@@ -91,12 +97,19 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
     Attributes:
         dataset: Facts dataset name (first path segment in Fuseki HTTP API).
         ontologies_dataset: Ontologies dataset name.
+        shapes_dataset: SHACL shapes dataset name. Separate from the ontologies
+            dataset because catalog discovery claims every named graph holding an
+            ``owl:Ontology`` subject, and shapes documents declare one.
     """
 
     dataset: str | None = Field(default=None, description="Fuseki dataset name")
     ontologies_dataset: str = Field(
         default=DEFAULT_ONTOLOGIES_DATASET,
         description="Fuseki dataset name for ontologies",
+    )
+    shapes_dataset: str = Field(
+        default=DEFAULT_SHAPES_DATASET,
+        description="Fuseki dataset name for SHACL shapes",
     )
 
     def __init__(
@@ -105,6 +118,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         auth=None,
         dataset=None,
         ontologies_dataset=None,
+        shapes_dataset=None,
         **kwargs,
     ):
         """Initialize the Fuseki triple store manager.
@@ -118,6 +132,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             auth: Authentication tuple (username, password) or string in "user/password" format.
             dataset: Facts dataset name (Fuseki API path segment).
             ontologies_dataset: Ontologies dataset name (separate Fuseki dataset).
+            shapes_dataset: SHACL shapes dataset name (separate Fuseki dataset).
             **kwargs: Additional keyword arguments passed to the parent class.
 
         Example:
@@ -137,6 +152,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         else:
             self.dataset = dataset
         self.ontologies_dataset = ontologies_dataset or DEFAULT_ONTOLOGIES_DATASET
+        self.shapes_dataset = shapes_dataset or DEFAULT_SHAPES_DATASET
 
         # Initialize httpx client for async operations (recreated per event loop;
         # httpx.AsyncClient is bound to the loop it was created on).
@@ -170,10 +186,13 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                 self._client = original_client
 
     async def _initialize_datasets(self) -> None:
-        """Create configured facts/ontologies datasets when missing."""
+        """Create the configured facts/ontologies/shapes datasets when missing."""
         await self.init_dataset(self.dataset)
-        if self.ontologies_dataset != self.dataset:
-            await self.init_dataset(self.ontologies_dataset)
+        seen = {self.dataset}
+        for name in (self.ontologies_dataset, self.shapes_dataset):
+            if name not in seen:
+                seen.add(name)
+                await self.init_dataset(name)
 
     def _prepare_auth(self) -> httpx.BasicAuth | None:
         """Prepare httpx BasicAuth from self.auth.
@@ -242,34 +261,40 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         *,
         sep: str = TENANCY_SEP,
     ) -> None:
-        """Switch facts and ontologies Fuseki datasets for ``tenant`` / ``project``."""
-        facts = tenant_project_facts_name(tenant, project, sep=sep)
-        ontos = tenant_project_ontologies_name(tenant, project, sep=sep)
-        self.dataset = facts
-        self.ontologies_dataset = ontos
-        await self.init_dataset(self.dataset)
-        if self.ontologies_dataset != self.dataset:
-            await self.init_dataset(self.ontologies_dataset)
+        """Switch the facts/ontologies/shapes Fuseki datasets for ``tenant`` / ``project``."""
+        self.dataset = tenant_project_facts_name(tenant, project, sep=sep)
+        self.ontologies_dataset = tenant_project_ontologies_name(
+            tenant, project, sep=sep
+        )
+        self.shapes_dataset = tenant_project_shapes_name(tenant, project, sep=sep)
+        await self._initialize_datasets()
         logger.info(
-            "Fuseki tenancy set to tenant=%r project=%r (facts=%s ontologies=%s)",
+            "Fuseki tenancy set to tenant=%r project=%r "
+            "(facts=%s ontologies=%s shapes=%s)",
             tenant,
             project,
             self.dataset,
             self.ontologies_dataset,
+            self.shapes_dataset,
         )
 
-    async def clean(self) -> None:
-        """Clear the configured facts dataset and ontologies dataset (when distinct)."""
-        assert self.dataset is not None, "Dataset should never be None"
-        await self._clean_dataset_by_name(self.dataset)
-        logger.info("Fuseki dataset '%s' cleaned (all data deleted)", self.dataset)
+    async def clean(self, *, include_shapes: bool = False) -> None:
+        """Clear the configured facts and ontologies datasets (when distinct).
 
-        if self.ontologies_dataset != self.dataset:
-            await self._clean_dataset_by_name(self.ontologies_dataset)
-            logger.info(
-                "Fuseki ontologies dataset '%s' cleaned (all data deleted)",
-                self.ontologies_dataset,
-            )
+        The shapes dataset is retained unless ``include_shapes`` is set: dropping
+        it disarms the SHACL gate silently.
+        """
+        assert self.dataset is not None, "Dataset should never be None"
+        names = [self.dataset, self.ontologies_dataset]
+        if include_shapes:
+            names.append(self.shapes_dataset)
+        cleaned: set[str] = set()
+        for name in names:
+            if name in cleaned:
+                continue
+            cleaned.add(name)
+            await self._clean_dataset_by_name(name)
+            logger.info("Fuseki dataset '%s' cleaned (all data deleted)", name)
 
     async def clean_tenancy(
         self,
@@ -277,19 +302,30 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         project: str,
         *,
         sep: str = TENANCY_SEP,
+        include_shapes: bool = False,
     ) -> None:
-        """Flush facts and ontologies datasets for ``tenant`` / ``project`` (by derived names)."""
+        """Flush the datasets derived from ``tenant`` / ``project``.
+
+        Shapes are retained unless ``include_shapes`` is set -- see :meth:`clean`.
+        """
         facts = tenant_project_facts_name(tenant, project, sep=sep)
         ontos = tenant_project_ontologies_name(tenant, project, sep=sep)
-        await self._clean_dataset_by_name(facts)
-        if ontos != facts:
-            await self._clean_dataset_by_name(ontos)
+        shapes = tenant_project_shapes_name(tenant, project, sep=sep)
+        names = [facts, ontos] + ([shapes] if include_shapes else [])
+        cleaned: set[str] = set()
+        for name in names:
+            if name in cleaned:
+                continue
+            cleaned.add(name)
+            await self._clean_dataset_by_name(name)
         logger.info(
-            "Fuseki tenancy flush tenant=%r project=%r (facts=%s ontologies=%s)",
+            "Fuseki tenancy flush tenant=%r project=%r "
+            "(facts=%s ontologies=%s shapes=%s)",
             tenant,
             project,
             facts,
             ontos,
+            shapes if include_shapes else "retained",
         )
 
     async def _clean_dataset_by_name(self, dataset_name: str) -> None:
@@ -428,15 +464,27 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         """
         return f"{self.uri}/{self.ontologies_dataset}"
 
+    def _get_shapes_dataset_url(self):
+        """Get the full URL for the SHACL shapes dataset.
+
+        Returns:
+            str: The complete URL for the shapes dataset endpoint.
+        """
+        return f"{self.uri}/{self.shapes_dataset}"
+
+    def _dataset_url_for(self, store: StoreKind) -> str:
+        """Resolve a :data:`StoreKind` to its Fuseki dataset URL."""
+        if store == "ontologies":
+            return self._get_ontologies_dataset_url()
+        if store == "shapes":
+            return self._get_shapes_dataset_url()
+        return self._get_dataset_url()
+
     async def drop_named_graph(
-        self, graph_uri: str, *, use_ontologies_dataset: bool = True
+        self, graph_uri: str, *, store: StoreKind = "ontologies"
     ) -> None:
         """Drop a single named graph in the ontologies or main dataset."""
-        dataset_url = (
-            self._get_ontologies_dataset_url()
-            if use_ontologies_dataset
-            else self._get_dataset_url()
-        )
+        dataset_url = self._dataset_url_for(store)
         update_url = f"{dataset_url}/update"
         drop_query = f"DROP GRAPH <{graph_uri}>"
         async with httpx.AsyncClient(auth=self._prepare_auth(), timeout=30.0) as client:
@@ -449,11 +497,14 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                     response.text,
                 )
 
-    async def drop_all_ontology_graphs_for_iri(self, ontology_iri: str) -> None:
+    async def drop_all_ontology_graphs_for_iri(
+        self, ontology_iri: str, *, store: StoreKind = "ontologies"
+    ) -> None:
         """Remove named graphs for ``ontology_iri`` (base and ``iri#...`` versioned)."""
         prefix = f"{ontology_iri}#"
+        dataset_url = self._dataset_url_for(store)
         async with httpx.AsyncClient(auth=self._prepare_auth(), timeout=30.0) as client:
-            sparql_url = f"{self._get_ontologies_dataset_url()}/sparql"
+            sparql_url = f"{dataset_url}/sparql"
             list_query = """
             SELECT DISTINCT ?g WHERE {
               GRAPH ?g { ?s ?p ?o }
@@ -465,7 +516,8 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             )
             if response.status_code != 200:
                 logger.error(
-                    "Failed to list graphs from Fuseki ontologies dataset: %s",
+                    "Failed to list graphs from Fuseki %s dataset: %s",
+                    store,
                     response.text,
                 )
                 return
@@ -474,7 +526,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                 g = binding["g"]["value"]
                 if g == ontology_iri or g.startswith(prefix):
                     to_drop.append(g)
-            update_url = f"{self._get_ontologies_dataset_url()}/update"
+            update_url = f"{dataset_url}/update"
             for graph_uri in to_drop:
                 drop_query = f"DROP GRAPH <{graph_uri}>"
                 dr = await client.post(update_url, data={"update": drop_query})
@@ -542,14 +594,9 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             for binding in response.json().get("results", {}).get("bindings", [])
         ]
 
-    def _sparql_endpoint(self, *, use_ontologies_dataset: bool) -> str:
+    def _sparql_endpoint(self, *, store: StoreKind) -> str:
         """Resolve the SPARQL query endpoint for the active tenancy partition."""
-        dataset_url = (
-            self._get_ontologies_dataset_url()
-            if use_ontologies_dataset
-            else self._get_dataset_url()
-        )
-        return f"{dataset_url}/sparql"
+        return f"{self._dataset_url_for(store)}/sparql"
 
     def supports_sparql_select(self) -> bool:
         return True
@@ -558,7 +605,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         return True
 
     async def aconstruct(
-        self, query: str, *, use_ontologies_dataset: bool = True
+        self, query: str, *, store: StoreKind = "ontologies"
     ) -> RDFGraph:
         """Run a SPARQL CONSTRUCT against the active dataset, parsing Turtle back.
 
@@ -567,7 +614,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         client = await self._get_client()
         self._construct_queries += 1
         response = await client.post(
-            self._sparql_endpoint(use_ontologies_dataset=use_ontologies_dataset),
+            self._sparql_endpoint(store=store),
             data={"query": query},
             headers={"Accept": "text/turtle"},
         )
@@ -579,7 +626,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         return result
 
     async def aselect(
-        self, query: str, *, use_ontologies_dataset: bool = True
+        self, query: str, *, store: StoreKind = "ontologies"
     ) -> list[dict[str, str]]:
         """Run a SPARQL SELECT against the active dataset.
 
@@ -589,7 +636,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         client = await self._get_client()
         return await self._sparql_select_rows(
             client,
-            self._sparql_endpoint(use_ontologies_dataset=use_ontologies_dataset),
+            self._sparql_endpoint(store=store),
             query,
         )
 
@@ -782,14 +829,15 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
         Args:
             graph: The RDF graph to store.
-            **kwargs: Additional parameters including graph_uri, dataset_url, default_graph_uri, log_prefix.
+            **kwargs: ``graph_uri``, ``store`` (a :data:`StoreKind`, default
+                ``"facts"``), ``default_graph_uri`` and ``log_prefix``.
 
         Returns:
             bool: True if the graph was successfully stored, False otherwise.
         """
         client = await self._get_client()
         graph_uri = kwargs.get("graph_uri")
-        dataset_url = kwargs.get("dataset_url")
+        dataset_url = self._dataset_url_for(kwargs.get("store", "facts"))
         default_graph_uri = kwargs.get("default_graph_uri")
         log_prefix = kwargs.get("log_prefix")
 
@@ -871,7 +919,9 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
         Args:
             o: RDF graph or Ontology object.
-            **kwargs: Additional parameters including graph_uri.
+            **kwargs: ``graph_uri`` and ``store``. ``store`` overrides the
+                partition the payload type would otherwise imply -- an
+                ``Ontology`` carrying SHACL shapes goes to ``"shapes"``.
 
         Returns:
             bool: True if the graph was successfully stored, False otherwise.
@@ -883,6 +933,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             >>> success = await manager.serialize(graph, graph_uri="http://example.org/chunk1")
         """
         graph_uri = kwargs.get("graph_uri")
+        requested: StoreKind | None = kwargs.get("store")
 
         if isinstance(o, Ontology):
             if o.iri and not o.is_null():
@@ -894,21 +945,19 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             graph_uri = o.versioned_iri
             default_graph_uri = "urn:ontology:default"
             log_prefix = "Ontology"
-            # Use ontologies dataset for ontology storage
-            dataset_url = self._get_ontologies_dataset_url()
+            store: StoreKind = requested or "ontologies"
         elif isinstance(o, RDFGraph):
             graph = o
             default_graph_uri = "urn:data:default"
             log_prefix = "Graph"
-            # Use regular dataset for facts storage
-            dataset_url = self._get_dataset_url()
+            store = requested or "facts"
         else:
             raise TypeError(f"unsupported obj of type {type(o)} received")
 
         return await self._serialize_graph_async(
             graph=graph,
             graph_uri=graph_uri,
-            dataset_url=dataset_url,
+            store=store,
             default_graph_uri=default_graph_uri,
             log_prefix=log_prefix,
         )

@@ -109,19 +109,20 @@ def test_sameas_does_not_produce_suspect_multi_value() -> None:
 # --- SHACL degraded silently -------------------------------------------------
 
 
-def test_missing_shapes_dir_warns(caplog, tmp_path) -> None:
-    """A configured directory that does not exist must not read as 'clean'."""
-    with caplog.at_level(logging.WARNING):
-        shapes = collect_shacl_shapes(None, str(tmp_path / "nope"))
-    assert shapes is None
-    assert "not a directory" in caplog.text
+def test_empty_shapes_partition_reads_as_never_checked() -> None:
+    """No stored shapes and no inline ones is ``None``, not an empty graph.
+
+    ``None`` is what keeps ``shacl_evaluated`` at "never checked"; an empty
+    graph would report a clean run against nothing.
+    """
+    assert collect_shacl_shapes(None, None) is None
+    assert collect_shacl_shapes(None, RDFGraph()) is None
 
 
-def test_empty_shapes_dir_warns(caplog, tmp_path) -> None:
-    with caplog.at_level(logging.WARNING):
-        shapes = collect_shacl_shapes(None, str(tmp_path))
-    assert shapes is None
-    assert "no .ttl shape files" in caplog.text
+def test_stored_shapes_reach_the_gate() -> None:
+    """The shapes partition is a source in its own right, with no ontology context."""
+    shapes = collect_shacl_shapes(None, _value_shapes())
+    assert shapes is not None and len(shapes)
 
 
 def test_missing_pyshacl_warns(caplog, monkeypatch) -> None:
@@ -195,7 +196,7 @@ def test_alias_repair_rewrites_toward_a_declared_catalog_term() -> None:
 # --- the repaired graph must not blindly replace the original ---------------
 
 
-def _fake_tools(aggregator, **overrides) -> ToolBox:
+def _fake_tools(aggregator, *, shapes=None, **overrides) -> ToolBox:
     # model_construct: field defaults + overrides only, no environment reads --
     # a developer shell with FACTS_* exported must not steer these tests.
     facts_validation = FactsValidationConfig.model_construct(**overrides)
@@ -203,6 +204,7 @@ def _fake_tools(aggregator, **overrides) -> ToolBox:
         ToolBox,
         SimpleNamespace(
             aggregator=aggregator,
+            shapes_catalog=SimpleNamespace(graph=lambda: shapes),
             config=SimpleNamespace(
                 get_tool_config=lambda: SimpleNamespace(
                     facts_validation=facts_validation
@@ -711,7 +713,7 @@ def test_summary_groups_violations_by_constraint() -> None:
     assert summary["shacl_by_shape"] == {Q + "ValueShape": 3}
 
 
-def test_gate_repairs_and_reports_through_the_node(tmp_path) -> None:
+def test_gate_repairs_and_reports_through_the_node() -> None:
     """End-to-end through VALIDATE_FACTS: repair applied, result reported.
 
     Pins the wiring, not the repair logic: shapes reach the gate, the LLM-free
@@ -721,10 +723,6 @@ def test_gate_repairs_and_reports_through_the_node(tmp_path) -> None:
     from ontocast.onto.content_unit import ContentUnit, OutputType
     from ontocast.onto.state import AgentState
     from ontocast.stategraph.node_factories import make_validate_facts_node
-
-    (tmp_path / "shapes.ttl").write_text(
-        _value_shapes().serialize(format="turtle"), encoding="utf-8"
-    )
 
     node = URIRef(CD + "v1")
     facts = RDFGraph()
@@ -747,7 +745,7 @@ def test_gate_repairs_and_reports_through_the_node(tmp_path) -> None:
         )
     ]
 
-    tools = _fake_tools(None, shapes_dir=str(tmp_path))
+    tools = _fake_tools(None, shapes=_value_shapes())
     make_validate_facts_node(tools)(state)
 
     assert list(state.aggregated_facts.objects(node, NUMERIC)) == [

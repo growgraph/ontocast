@@ -38,11 +38,10 @@ class RunManifestLLM(BaseModel):
 class RunManifestLoops(BaseModel):
     """The effective per-unit loop budgets the run actually used.
 
-    The 2026-08 matsci ablation compared ``--max-visits 1`` against
-    ``--max-visits 2`` — but call accounting later proved the critic never ran
-    in the second arm, and no artifact recorded what the run received, so
-    flag-lost versus flag-not-passed was undecidable. An arm must be auditable
-    from its own dump.
+    A run whose ``--max-visits`` never reached the loop is indistinguishable
+    from one that used it, unless the effective budget is written down: call
+    accounting can show the critic did not run, but not whether the flag was
+    lost or never passed. A run must be auditable from its own dump.
     """
 
     max_visits: int = Field(
@@ -60,10 +59,10 @@ class RunManifestLoops(BaseModel):
 class RunManifestSelection(BaseModel):
     """The content-selection settings the run actually used.
 
-    A benchmark directory's *name* used to be the only record of its
-    ``--exclude-sections`` — and the 2026-08 case7/case8 volume difference took
-    a ``git blame`` over ``config/settings.py`` to attribute to the
-    ``bibliography_mode`` default flip, instead of a diff of two manifests.
+    An output directory's *name* used to be the only record of which sections
+    a run was given, so a volume difference between two runs took a ``git
+    blame`` over ``config/settings.py`` to attribute to a default flip, instead
+    of a diff of two manifests.
     """
 
     target_sections: list[str] | None = None
@@ -81,9 +80,9 @@ class RunManifestCritic(BaseModel):
     render on ``critique.success or critique.score > 90`` -- a score the model
     was asked for with no rubric and no statement of the threshold. Whether
     such a gate is calibrated is a question about the score distribution, and
-    until this existed no artifact recorded a single score: the 2026-08 matsci
-    investigation had to mine the answer out of the LLM disk cache, which only
-    worked because caching happened to be on. The ontology loop still runs
+    until this existed no artifact recorded a single score -- the answer had to
+    be mined out of the LLM disk cache, which only worked because caching
+    happened to be on. The ontology loop still runs
     that gate (backed there by a scoring rubric whose top band it demands),
     and this record is how its accept rate gets measured before the gate is
     recalibrated.
@@ -197,8 +196,8 @@ class RunManifest(BaseModel):
         description=(
             "Triples in the provenance-stripped graph the .facts.ttl dump "
             "actually holds. facts_triples counts the raw aggregated graph, "
-            "so the two differed ~3x on the 2026-08 matsci runs with nothing "
-            "explaining it."
+            "so the two routinely differ by a factor of several, with nothing "
+            "in either number explaining it."
         ),
     )
     retrieval_metrics: dict[str, Any] = Field(

@@ -1,11 +1,11 @@
-"""Provider Batch API helpers for offline benchmark pre-warming.
+"""Provider Batch API helpers for offline cache pre-warming.
 
 OpenAI and Anthropic offer asynchronous batch endpoints (~50% lower cost,
 multi-hour latency). This module supports exporting pending LLM prompts to
 batch JSONL and importing completed results into the OntoCast disk cache so
 subsequent server runs hit :class:`~ontocast.tool.llm.LLMTool` cache entries.
 
-This is intended for validation / benchmark workflows, not interactive
+This is intended for bulk offline workflows, not interactive
 ``/process`` traffic.
 """
 

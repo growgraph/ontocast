@@ -2,7 +2,7 @@
 
 The findings prompt orders every MANDATORY item to be fixed by rewriting in
 place. A model that answers it by deleting the offending statements resolves
-nothing and destroys extracted data -- and the 2026-08 matsci runs measured that
+nothing and destroys extracted data, which was observed
 happening at scale: of 58 cached repair responses carrying the false
 ``qudt:numericValue`` finding, 25 deleted valid values outright and 28
 re-encoded scalars as equal-bound fake ranges.

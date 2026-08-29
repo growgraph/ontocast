@@ -1,7 +1,7 @@
 """The ontology critic's ledger, recorded before its gate is recalibrated.
 
 The facts gate was replaced on numbers (28/34 rejected, median score 79). For
-the ontology critic no numbers exist -- it has never run on a benchmark corpus
+the ontology critic no numbers exist -- it has never run on recorded data
 (every arm ran ``render_mode: facts``) -- so the loop is instrumented first:
 each critic call appends a :class:`LoopAttempt`, the deterministic delta
 findings are collected and injected into the critic prompt (shadow mode), and

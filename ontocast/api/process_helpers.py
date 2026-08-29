@@ -205,7 +205,7 @@ def dump_run_manifest(
     facts_validation = config.get_tool_config().facts_validation
     # The .facts.ttl dump strips provenance; count what the file will actually
     # hold, or the manifest is not comparable to its own TTL (1711 vs 557 on
-    # the 2026-08 matsci runs).
+    # observed runs).
     serialized_facts = (
         TripleStoreManager.strip_provenance(state.aggregated_facts)
         if state.aggregated_facts is not None

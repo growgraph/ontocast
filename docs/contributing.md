@@ -109,6 +109,8 @@ So:
 Benchmark and evaluation results are tracked systematically in
 `ontocast-validation`. Link there when a number is genuinely needed.
 
+This is about *claims*, not vocabulary. Fixture data is exempt: an example namespace, a sample document that happens to say "we used a benchmark", or a test graph named after a domain are arbitrary test inputs, not assertions about a measured run.
+
 ### Retrieval quality
 
 There is no in-repo recall harness. Retrieval quality is measured in

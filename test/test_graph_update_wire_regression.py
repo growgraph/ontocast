@@ -1,9 +1,9 @@
 """Real malformed renders, pinned so the repair cannot silently regress.
 
-These are verbatim `gpt-5-mini` responses from the 2026-08-29 matsci aging run,
-in which 20 of 24 single-operation ontology updates over ~4k characters closed
-their brackets in the wrong *kind* -- `] }` where `} ]` was due -- and were
-dropped, costing 4 of 7 content units their entire ontology output.
+These are verbatim `gpt-5-mini` responses in which single-operation ontology
+updates over roughly 4k characters closed their brackets in the wrong *kind*
+-- `] }` where `} ]` was due -- and were dropped, costing content units their
+entire ontology output.
 
 They carry the pre-flattening `graph_update.triple_operations` envelope on
 purpose: what is pinned here is the JSON repair, which must keep working for

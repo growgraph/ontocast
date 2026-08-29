@@ -1,6 +1,6 @@
 """``--max-visits`` must observably reach the unit loops.
 
-The 2026-08 matsci ablation compared ``--max-visits 1`` against
+A run comparing ``--max-visits 1`` against
 ``--max-visits 2``, but LLM-call accounting later showed the critic never ran
 in the second arm — the two runs were an A/A comparison, and nothing recorded
 the effective setting. These tests pin the two ends of the chain that make a

@@ -1,6 +1,6 @@
 """Tests for closed-vs-open namespace rules, term exemptions, and repairs.
 
-Root cause reproduced from the 2026-08 matsci runs: the catalog *referenced*
+Root cause: the catalog *referenced*
 ``qudt:QuantityValue``/``qudt:unit`` (making qudt a catalog namespace under the
 old all-positions rule) while ``qudt:numericValue`` appeared only in prose — so
 every unit graph carrying the canonical scalar property received a mandatory

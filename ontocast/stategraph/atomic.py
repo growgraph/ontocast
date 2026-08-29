@@ -273,8 +273,8 @@ async def _run_finding_driven_repair(
             #
             # Keying on the finding count alone cannot see this: deleting the
             # flagged statement drops `mandatory_after` below
-            # `mandatory_before`, so the dominant failure mode of the 2026-08
-            # matsci runs -- 25 of 58 cached repair responses deleting valid
+            # `mandatory_before`, so the dominant observed failure mode --
+            # repair responses deleting valid
             # values outright -- scored as a successful repair. Comparing the
             # written triples catches it, and stays quiet for a rewrite that
             # happens to shrink the graph by collapsing a duplicate.

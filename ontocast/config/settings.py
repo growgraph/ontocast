@@ -32,6 +32,7 @@ from ontocast.onto.tenancy import (
     TenancyScope,
     tenant_project_facts_name,
     tenant_project_ontologies_name,
+    tenant_project_shapes_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -801,6 +802,16 @@ class FusekiConfig(BaseSettings):
             "from the same default tenant/project as dataset."
         ),
     )
+    shapes_dataset: str | None = Field(
+        default=None,
+        description=(
+            "SHACL shapes dataset (FUSEKI_SHAPES_DATASET); if unset, derived "
+            "from the same default tenant/project as dataset. Kept apart from "
+            "the ontologies dataset because catalog discovery claims every "
+            "named graph carrying an owl:Ontology subject, and a shapes "
+            "document declares one."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="FUSEKI_",
@@ -813,6 +824,10 @@ class FusekiConfig(BaseSettings):
             self.dataset = tenant_project_facts_name(DEFAULT_TENANT, DEFAULT_PROJECT)
         if self.ontologies_dataset is None:
             self.ontologies_dataset = tenant_project_ontologies_name(
+                DEFAULT_TENANT, DEFAULT_PROJECT
+            )
+        if self.shapes_dataset is None:
+            self.shapes_dataset = tenant_project_shapes_name(
                 DEFAULT_TENANT, DEFAULT_PROJECT
             )
         return self
@@ -1061,8 +1076,8 @@ class AggregationConfig(BaseSettings):
         description=(
             "Veto identity merges between entities asserting disjoint literal "
             "values on a shared predicate (numeric/temporal disjointness, or "
-            "string sets with no compatible cross-pair). Ablation flag: off "
-            "measures the guard's contribution to rejected merges."
+            "string sets with no compatible cross-pair). Turning it off "
+            "isolates this guard's contribution to rejected merges."
         ),
     )
     initials_distinct_guard: bool = Field(
@@ -1331,11 +1346,10 @@ class PatchRetrievalConfig(BaseSettings):
             "many triples. Partial inclusion of a tiny vocabulary pushes the "
             "renderer to improvise near-miss property names. Inert unless the "
             "module wins at least one seed, so it pairs with "
-            "per_ontology_atom_floor. The single largest lever measured on "
-            "case6: with the floor at 2 and the triple budget at 1200 it took "
-            "the needed-term recall from 3/11 to 11/11 and declared-property "
-            "coverage from 37% to 74%, because a qualified-quantity or "
-            "observation module is only useful whole. 0 disables."
+            "per_ontology_atom_floor. The single largest lever on snapshot "
+            "quality, because a qualified-quantity or observation module is "
+            "only useful whole. Set it above the largest module you need "
+            "entire; past that it adds triples for little gain. 0 disables."
         ),
     )
     per_role_atom_floor: int = Field(
@@ -1483,11 +1497,10 @@ class VectorStoreConfig(BaseSettings):
         ge=1,
         description=(
             "Hard cap on triples returned for induced subgraph retrieval. This, "
-            "not the atom cap, is what binds in practice: measured on the case6 "
-            "8-module catalog, every seed-side knob (top_k, max_atoms, MMR, the "
-            "atom floors) was flat while the snapshot sat pinned at the old 550, "
-            "and raising it alone moved declared-property coverage 21% -> 36%. "
-            "Gains flatten past ~1600."
+            "not the atom cap, is what binds in practice: set it too low and "
+            "every seed-side knob (top_k, max_atoms, MMR, the atom floors) is "
+            "flat, because the snapshot is already pinned at the cap. Raise "
+            "this before tuning anything below it; it saturates."
         ),
     )
     induced_subgraph_estimated_triples_per_query: int = Field(
@@ -1517,7 +1530,7 @@ class VectorStoreConfig(BaseSettings):
             "Seed expansion order under the induced-subgraph triple budget: 'score' "
             "expands in global relevance order; 'ontology_round_robin' interleaves "
             "seeds across source ontologies so no ontology is starved by another's "
-            "high scorers. Ablation knob; 'score' is the measured default."
+            "high scorers. 'score' is the default."
         ),
     )
     induced_subgraph_symbol_predicates: list[str] = Field(
@@ -1620,8 +1633,8 @@ class VectorStoreConfig(BaseSettings):
             "0.3 -> 0.15: the neighborhood text describes a term's edges rather than "
             "the term, so it corroborates the core lane more than it adds to it. "
             "Halving it "
-            "raised seed recall at rank 30 (0.69 -> 0.81 on the matsci case4 excerpt) "
-            "without changing which terms the core lane found."
+            "raises seed recall without changing which terms the core lane "
+            "found."
         ),
     )
     fusion_bm25_weight: float = Field(
@@ -1633,13 +1646,12 @@ class VectorStoreConfig(BaseSettings):
             "neighborhood weights when BM25 retrieval is enabled). Raised 0.2 -> 0.8: "
             "a term whose surface form is a symbol or notation (unit symbols, chemical "
             "formulae, gene symbols) is frequently invisible to the dense lanes, so the "
-            "sparse lane is its only evidence. At 0.2 the normalized weights were "
-            "0.583/0.250/0.167, meaning a rank-1 BM25 hit was outvoted 3.5:1 by a rank-1 "
-            "dense hit. Measured on the matsci case4 excerpt, where "
-            "'matsci-units#millielectronvolt' is a rank-1 BM25 hit and appears in no "
-            "dense lane at all: merged seed rank 32 -> 7, ground-truth recall at rank 40 "
-            "0.62 -> 0.81. This does not weaken the dense lanes -- it stops the sparse "
-            "lane from being a tie-breaker."
+            "sparse lane is its only evidence. At 0.2 a rank-1 BM25 hit was "
+            "outvoted several times over by a rank-1 dense hit, so a unit term "
+            "that was the top sparse hit for the passage naming it -- and "
+            "absent from every dense lane -- still lost its slot. This does not "
+            "weaken the dense lanes; it stops the sparse lane from being a "
+            "tie-breaker."
         ),
     )
     minimal_label_limit: int = Field(
@@ -1662,11 +1674,11 @@ class VectorStoreConfig(BaseSettings):
             "A merely referenced IRI carries no local text, so its atom is its mangled "
             "local name -- 'a0e0l2i0m1h0t 3d0' for a QUDT dimension vector -- and such "
             "strings embed near the corpus centroid, making them hubs that rank "
-            "against every query. Measured on the 8-module matsci catalog: 247 of 690 "
-            "atoms "
-            "(36%) were undescribed references, and dimension vectors alone took 51 of "
-            "140 dense retrieval slots on one document, crowding four ontologies out "
-            "entirely. Referenced IRIs stay reachable via induced-subgraph expansion; "
+            "against every query. On a multi-module catalog that borrows from an "
+            "external vocabulary, such references can be a large fraction of all "
+            "atoms, and dimension vectors alone can take a substantial share of "
+            "the dense retrieval slots for a document, crowding whole ontologies "
+            "out. Referenced IRIs stay reachable via induced-subgraph expansion; "
             "they just stop being seeds. Changing this requires a reindex."
         ),
     )
@@ -2043,11 +2055,11 @@ class FactsValidationConfig(BaseSettings):
             "the render/critic loop. Deterministic mandatory findings always "
             "block; this is the cut applied to the LLM critic's own severity "
             "label, which is model output from a field description with no "
-            "rubric and so has to be watched rather than trusted. On the "
-            "2026-08 matsci corpus the critic emitted 27 'critical' fixes "
-            "against 99 'important', so 'important' accepts 3 of 26 renders — "
-            "worse than the score threshold it replaces. Set 'never' to let "
-            "deterministic findings gate alone."
+            "rubric and so has to be watched rather than trusted. 'critical' "
+            "is the only severity the critic applies selectively enough to "
+            "discriminate on; it labels most fixes 'important', so gating "
+            "there accepts almost nothing. Set 'never' to let deterministic "
+            "findings gate alone."
         ),
     )
     suspect_multi_value_severity: Literal["error", "warning"] = Field(
@@ -2120,12 +2132,17 @@ class FactsValidationConfig(BaseSettings):
     shapes_dir: str | None = Field(
         default=None,
         description=(
-            "Directory of SHACL shape files (.ttl) for the validation gate. "
-            "Shapes inlined in the ontology context (sh:NodeShape) are picked "
-            "up automatically; SHACL runs only when pyshacl is installed "
-            "(extra: 'shacl'). Setting this without the extra installed, or "
-            "pointing it at a directory with no readable shapes, logs a "
-            "warning rather than silently skipping validation."
+            "Seed directory of SHACL shape files (.ttl, searched recursively), "
+            "read once at startup and materialized into the tenant's shapes "
+            "partition of the triple store — the same read-only bootstrap "
+            "contract ONTOCAST_ONTOLOGY_DIRECTORY has. The validation gate "
+            "reads the partition, not this directory, so shapes uploaded over "
+            "/shapes are equally in force. Shapes inlined in the ontology "
+            "context (sh:NodeShape) are still picked up automatically; SHACL "
+            "runs only when pyshacl is installed (extra: 'shacl'). Setting "
+            "this without the extra installed, or pointing it at a directory "
+            "with no readable shapes, logs a warning rather than silently "
+            "skipping validation."
         ),
     )
     shacl_inference: Literal["none", "rdfs", "owlrl"] = Field(
@@ -2136,9 +2153,10 @@ class FactsValidationConfig(BaseSettings):
             "can, and SHACL property paths carry no rdfs:subPropertyOf "
             "entailment: a shape naming the superproperty reports the "
             "specialised statement as missing. (Class targets need no help — "
-            "SHACL resolves those through rdfs:subClassOf itself.) Measured on "
-            "the matsci pilot: 268 violations at 'none' against 232 at 'rdfs'. "
-            "Set 'none' for shapes written against exactly the terms the graph "
+            "SHACL resolves those through rdfs:subClassOf itself.) Turning "
+            "inference off therefore raises the violation count rather than "
+            "lowering it. Set 'none' for shapes written against exactly the "
+            "terms the graph "
             "uses, or when validation time dominates."
         ),
     )
@@ -2362,6 +2380,7 @@ class Config(BaseSettings):
 
         tool_config.fuseki.dataset = scope.facts_name
         tool_config.fuseki.ontologies_dataset = scope.ontologies_name
+        tool_config.fuseki.shapes_dataset = scope.shapes_name
         tool_config.qdrant.facts_collection = scope.facts_name
         tool_config.qdrant.ontology_collection = scope.ontologies_name
         tool_config.lancedb.facts_table = scope.facts_name

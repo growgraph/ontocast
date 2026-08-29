@@ -905,7 +905,7 @@ class Ontology(OntologyPropertiesWithLineage):
     ) -> None:
         """Rebind only when the author prefix is missing or a degenerate placeholder.
 
-        Author-declared short prefixes (e.g. ``matsci``) are kept canonical;
+        Author-declared short prefixes (e.g. ``ex``) are kept canonical;
         IRI-tail-derived ``ontology_id`` is an identity key, not a forced
         prefix name.
         """

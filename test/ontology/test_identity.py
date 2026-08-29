@@ -195,7 +195,7 @@ def test_ontology_manager_prefix_collision_degrades_to_iri_addressing() -> None:
 
     The colliding prefix alias is skipped (first binding wins); the second
     ontology stays addressable by IRI and ontology_id. Regression: the
-    Text2KGBench corpus binds ``onto:`` in every ontology and could not be
+    A corpus that binds ``onto:`` in every ontology could not be
     ingested at all.
     """
     graph_a = RDFGraph._from_turtle_str(

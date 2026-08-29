@@ -275,7 +275,7 @@ def test_catalog_normalizes_non_semantic_version() -> None:
         manager.serialize_graph(
             graph,
             graph_uri="https://example.org/loose",
-            use_ontologies_dataset=True,
+            store="ontologies",
         )
 
         headers = await manager.afetch_ontology_catalog()

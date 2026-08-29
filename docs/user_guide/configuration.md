@@ -450,12 +450,17 @@ Details: [API Endpoints](api.md#post-process), [Workflow](workflow.md#2-chunking
 ### Triple Stores
 
 ```bash
-# Fuseki — dataset names default to ontocast--test--facts / ontocast--test--ontologies
+# Fuseki — dataset names default to ontocast--test--{facts,ontologies,shapes}
 FUSEKI_URI=http://localhost:3030
 FUSEKI_AUTH=admin/admin
 #FUSEKI_DATASET=custom--project--facts
 #FUSEKI_ONTOLOGIES_DATASET=custom--project--ontologies
+#FUSEKI_SHAPES_DATASET=custom--project--shapes
 ```
+
+SHACL shapes get a dataset of their own: catalog discovery claims every named
+graph carrying an `owl:Ontology` subject, and a shapes document declares one.
+See [Validation](validation.md#why-shapes-are-not-stored-with-the-ontologies).
 
 See [Tenancy](tenancy.md) for how tenant/project names relate to dataset, collection, and table names.
 
@@ -579,7 +584,7 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `FACTS_CODE_PREDICATES` | `qudt:ucumCode`, `qudt:symbol`, `skos:notation` | Predicates whose literal objects are machine-resolvable codes. A node carrying `qudt:ucumCode "d"` but no unit link gains the object property pointing at the catalog individual declaring that code, when exactly one does. Exact and case-sensitive — these are codes, not labels |
 | `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | `error` | Severity of SUSPECT_MULTI_VALUE gate findings (multiple distinct numeric values on one predicate; mutually irreconcilable short string values on a dominantly string-single-valued predicate; or multiple objects on a dominantly single-valued predicate); only `error` findings drive the un-merge repair |
 | `FACTS_LITERAL_VARIANT_DEDUPE` | `true` | Collapse duplicate literals differing only in language tag or datatype on one (subject, predicate) before validation — `"X"@en` alongside `"X"^^xsd:string` alongside `"X"`. The language-tagged form wins, then the plain form; reified provenance follows the survivor. Each removal is a `literal_variant_pruned` repair record |
-| `FACTS_SHAPES_DIR` | — | Directory of SHACL shape files for the gate; `sh:NodeShape` triples inlined in the ontology context are picked up automatically. SHACL runs only when `pyshacl` is installed (`uv sync --extra shacl`). Setting this without the extra, or pointing it at a missing/empty directory, logs a **warning** — it never passes silently |
+| `FACTS_SHAPES_DIR` | — | **Seed** directory of SHACL shape files (searched recursively), materialized at startup into the tenant's `{tenant}--{project}--shapes` partition — the same read-only bootstrap contract `ONTOCAST_ONTOLOGY_DIRECTORY` has. The gate validates against the partition, so shapes uploaded over `POST /shapes` are equally in force and a container needs no shapes directory. `sh:NodeShape` triples inlined in the ontology context are picked up automatically. SHACL runs only when `pyshacl` is installed (`uv sync --extra shacl`). Setting this without the extra, or pointing it at a missing/empty directory, logs a **warning** — it never passes silently |
 | `FACTS_SHACL_INFERENCE` | `rdfs` | Pre-inference for the SHACL run: `none`, `rdfs`, `owlrl`. RDFS by default because SHACL property paths carry no `rdfs:subPropertyOf` entailment, so a shape naming a superproperty reports the specialised predicate the renderer emitted as missing |
 | `FACTS_SHACL_ADVANCED` | `true` | Enable SHACL Advanced Features (`sh:sparql` constraints, node expressions) |
 | `FACTS_SHACL_MAX_TRIPLES` | `200000` | Skip SHACL with a warning above this graph size; `0` disables the guard |

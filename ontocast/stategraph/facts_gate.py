@@ -129,7 +129,7 @@ def run_facts_gate(
         raise ValueError("merge_repair=True requires document_metadata")
 
     facts_validation = tools.config.get_tool_config().facts_validation
-    shapes_graph = collect_shacl_shapes(ontology_graph, facts_validation.shapes_dir)
+    shapes_graph = collect_shacl_shapes(ontology_graph, tools.shapes_catalog.graph())
     contradictions = shacl_catalog_contradictions(
         shapes_graph,
         ontology_graph,
@@ -146,7 +146,7 @@ def run_facts_gate(
         # while the unit validator's mandatory findings order the renderer to
         # remove them. This is a catalog/configuration error, and it silently
         # destroys extracted data (observed live: qudt:numericValue on the
-        # matsci catalog). Loud, per document, until the catalog declares the
+        # catalog). Loud, per document, until the catalog declares the
         # term or the deployment exempts its namespace.
         logger.error(
             "SHACL shapes require %d propert%s the term validator would flag "

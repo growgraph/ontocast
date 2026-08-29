@@ -5,7 +5,7 @@ refuses to reindex the vector store while an event loop is running --
 ``aserialize`` is by definition inside one, so with vector retrieval
 registered the first document that actually produced an ontology version to
 serialize raised ``RuntimeError``. It never fired before because every
-benchmark ran ``render_mode: facts``, which serializes no ontology artifacts.
+prior run used ``render_mode: facts``, which serializes no ontology artifacts.
 """
 
 from types import SimpleNamespace

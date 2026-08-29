@@ -290,9 +290,9 @@ async def test_criticise_facts_records_the_score_but_does_not_gate_on_it(
     """The score is telemetry now, not a verdict.
 
     This test used to pin the opposite rule -- that ``score > 90`` accepted a
-    render regardless of ``success``. Measured over the 2026-08 matsci critic
-    calls that threshold rejected 28 of 34 renders, with a median score of 79
-    and no rubric anywhere in the prompt to anchor the number against. A low
+    render regardless of ``success``. That threshold rejected nearly every
+    render, with no rubric anywhere in the prompt to anchor the number
+    against. A low
     score with no material defect must now accept, and the score must still be
     recorded so the calibration stays auditable from the run's own artifacts.
     """

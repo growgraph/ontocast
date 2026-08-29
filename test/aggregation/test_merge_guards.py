@@ -2,8 +2,7 @@
 
 The guards encode one asymmetry: a false merge silently corrupts data
 (30 vs 230 μJ/cm² becomes one node), a false split leaves visible,
-recoverable redundancy. Fixtures mirror the measured case4/case5 failure
-shapes (docs/case4, docs/case5).
+recoverable redundancy. Fixtures mirror observed failure shapes.
 """
 
 from rdflib import Literal, URIRef

@@ -313,12 +313,15 @@ def test_vetoes_from_findings_builds_full_cluster_pairs() -> None:
 # --- VALIDATE_FACTS node -----------------------------------------------------
 
 
-def _fake_tools(aggregator: EmbeddingBasedAggregator, **overrides) -> ToolBox:
+def _fake_tools(
+    aggregator: EmbeddingBasedAggregator, *, shapes=None, **overrides
+) -> ToolBox:
     facts_validation = FactsValidationConfig(**overrides)
     return cast(
         ToolBox,
         SimpleNamespace(
             aggregator=aggregator,
+            shapes_catalog=SimpleNamespace(graph=lambda: shapes),
             config=SimpleNamespace(
                 get_tool_config=lambda: SimpleNamespace(
                     facts_validation=facts_validation

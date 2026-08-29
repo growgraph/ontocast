@@ -752,8 +752,8 @@ def make_render_facts_node(tools: ToolBox):
         )
         # Repair renders rolled back for answering the findings prompt with
         # deletions. Non-zero means the prompt or the validator is provoking
-        # data-destroying responses -- the failure mode that cost the 2026-08
-        # matsci arms 38-64% of their value nodes while logging nothing a run
+        # data-destroying responses -- the failure mode that has cost runs a
+        # large share of their value nodes while logging nothing a run
         # could be judged by.
         state.retrieval_metrics[RetrievalMetric.FACTS_REPAIR_DELETE_ONLY] = sum(
             1 for attempt in all_attempts if attempt.repair_delete_only

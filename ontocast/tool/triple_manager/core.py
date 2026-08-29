@@ -16,7 +16,7 @@ from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_header import OntologyHeader
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.tenancy import TENANCY_SEP
+from ontocast.onto.tenancy import TENANCY_SEP, StoreKind
 from ontocast.tool import Tool
 
 
@@ -103,15 +103,23 @@ class TripleStoreManager(Tool):
         )
 
     async def drop_named_graph(
-        self, graph_uri: str, *, use_ontologies_dataset: bool = True
+        self, graph_uri: str, *, store: StoreKind = "ontologies"
     ) -> None:
         """Drop a single named graph."""
         raise NotImplementedError(
             f"{type(self).__name__} does not support drop_named_graph()"
         )
 
-    async def drop_all_ontology_graphs_for_iri(self, ontology_iri: str) -> None:
-        """Remove named graphs for ``ontology_iri`` (base and versioned)."""
+    async def drop_all_ontology_graphs_for_iri(
+        self, ontology_iri: str, *, store: StoreKind = "ontologies"
+    ) -> None:
+        """Remove named graphs for ``ontology_iri`` (base and versioned).
+
+        Args:
+            ontology_iri: Base IRI whose ``iri`` and ``iri#...`` graphs are dropped.
+            store: Partition to drop from. Shapes documents are addressed the same
+                way and live in ``"shapes"``.
+        """
         raise NotImplementedError(
             f"{type(self).__name__} does not support drop_all_ontology_graphs_for_iri()"
         )
@@ -147,8 +155,16 @@ class TripleStoreManager(Tool):
         return clean
 
     @abc.abstractmethod
-    async def clean(self) -> None:
+    async def clean(self, *, include_shapes: bool = False) -> None:
         """Clean/flush data managed by this store (backend-specific scope).
+
+        The shapes partition is **retained by default**. Facts and ontologies are
+        reproducible from a rerun; shapes are the deployment's validation
+        contract, and dropping them turns the SHACL gate off silently -- a
+        cleared run then reports ``shacl_evaluated: null`` rather than failing.
+
+        Args:
+            include_shapes: Also drop the shapes partition. Opt in explicitly.
 
         Warning: This operation is irreversible and will delete data.
 
@@ -189,7 +205,7 @@ class TripleStoreManager(Tool):
         return False
 
     async def aselect(
-        self, query: str, *, use_ontologies_dataset: bool = True
+        self, query: str, *, store: StoreKind = "ontologies"
     ) -> list[dict[str, str]]:
         """Run a SPARQL SELECT against the active partition.
 
@@ -203,7 +219,8 @@ class TripleStoreManager(Tool):
 
         Args:
             query: A SPARQL SELECT query.
-            use_ontologies_dataset: Query the ontologies partition rather than facts.
+            store: Which partition to query -- ``"ontologies"``, ``"facts"`` or
+                ``"shapes"``.
 
         Returns:
             list[dict[str, str]]: One dict per solution.
@@ -223,7 +240,7 @@ class TripleStoreManager(Tool):
         return False
 
     async def aconstruct(
-        self, query: str, *, use_ontologies_dataset: bool = True
+        self, query: str, *, store: StoreKind = "ontologies"
     ) -> RDFGraph:
         """Run a SPARQL CONSTRUCT against the active partition.
 
@@ -237,7 +254,8 @@ class TripleStoreManager(Tool):
 
         Args:
             query: A SPARQL CONSTRUCT (or DESCRIBE) query.
-            use_ontologies_dataset: Query the ontologies partition rather than facts.
+            store: Which partition to query -- ``"ontologies"``, ``"facts"`` or
+                ``"shapes"``.
 
         Returns:
             RDFGraph: The constructed triples, without prefix bindings.
@@ -286,8 +304,12 @@ class TripleStoreManager(Tool):
         wanted = set(iris)
         return [onto for onto in await self.afetch_ontologies() if onto.iri in wanted]
 
-    async def clean_tenancy(self, tenant: str, project: str) -> None:
+    async def clean_tenancy(
+        self, tenant: str, project: str, *, include_shapes: bool = False
+    ) -> None:
         """Remove all triples for datasets derived from ``tenant`` / ``project``.
+
+        Shapes are retained unless ``include_shapes`` is set -- see :meth:`clean`.
 
         Backends without per-tenant partitions raise :class:`NotImplementedError`.
         """

@@ -28,6 +28,11 @@ from ontocast.tool.agg.entity_aligner import EntityAligner
 from ontocast.tool.cache import Cacher
 from ontocast.tool.llm import LLMTool
 from ontocast.tool.ontology_manager import OntologyManager
+from ontocast.tool.shapes_catalog import (
+    ShapesCatalog,
+    content_graph_uri,
+    shapes_graph_uri,
+)
 from ontocast.tool.sparql import SPARQLTool
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.tool.vector_store import (
@@ -174,12 +179,18 @@ class ToolBox:
                 auth=tool_config.fuseki.auth,
                 dataset=tool_config.fuseki.dataset,
                 ontologies_dataset=tool_config.fuseki.ontologies_dataset,
+                shapes_dataset=tool_config.fuseki.shapes_dataset,
             )
         else:
             self.triple_store_manager = InMemoryTripleStoreManager()
 
         self.ontology_manager: OntologyManager = OntologyManager()
         self.ontology_manager.register_triple_store(self.triple_store_manager)
+
+        # The shapes partition. Partition-scoped like the ontology catalog, and
+        # reset on a tenancy switch for the same reason.
+        self.shapes_catalog: ShapesCatalog = ShapesCatalog()
+        self.shapes_catalog.register_triple_store(self.triple_store_manager)
         # Tenancy the in-memory catalog currently reflects; None until first set.
         self._active_tenancy: tuple[str, str] | None = None
         # Guards the tenancy retarget, which mutates ToolBox-wide state (dataset
@@ -564,6 +575,7 @@ class ToolBox:
                 fuseki_cfg = self.config.tool_config.fuseki
                 fuseki_cfg.dataset = triple.dataset
                 fuseki_cfg.ontologies_dataset = triple.ontologies_dataset
+                fuseki_cfg.shapes_dataset = triple.shapes_dataset
 
         if tenancy_changed:
             # The catalog, its alias-collision ledger, and the graph caches are all
@@ -578,10 +590,16 @@ class ToolBox:
             # of a query parameter would be a surprise.
             is_first_assignment = self._active_tenancy is None
             self.ontology_manager.reset_catalog()
+            self.shapes_catalog.reset()
             self._active_tenancy = (t, p)
             if not is_first_assignment and triple is not None:
                 for ontology in await triple.afetch_ontologies():
                     self.ontology_manager.add_ontology(ontology, skip_vector_index=True)
+                # Seed TTLs are not replayed into a new tenant (see above), so
+                # the new scope's shapes are whatever its partition already
+                # holds -- possibly nothing, which correctly reads as "SHACL
+                # never checked" rather than "conforms".
+                await self.shapes_catalog.sync()
 
         if self.vector_store is not None:
             # No config copy-back: `create_vector_store_manager` passes
@@ -603,12 +621,25 @@ class ToolBox:
                         exc,
                     )
 
-    async def clean_tenancy_data(self, tenant: str, project: str) -> None:
+    async def clean_tenancy_data(
+        self, tenant: str, project: str, *, include_shapes: bool = False
+    ) -> None:
         """Flush triple-store and vector-store partitions for ``tenant`` / ``project``.
+
+        Shapes are retained unless ``include_shapes`` is set: facts and
+        ontologies come back from a rerun, but shapes are the deployment's
+        validation contract, and dropping them turns the SHACL gate off without
+        an error -- the next run reports ``shacl_evaluated: null`` instead of
+        failing.
 
         Takes the tenancy lock: this is destructive, and a concurrent retarget
         would let it resolve partition names against a scope that changed
         mid-flight.
+
+        Args:
+            tenant: Tenant identifier.
+            project: Project identifier within the tenant.
+            include_shapes: Also drop the shapes partition.
         """
         t, p = tenant.strip(), project.strip()
         if not t or not p:
@@ -621,11 +652,14 @@ class ToolBox:
                     raise NotImplementedError(
                         f"Triple store {type(triple).__name__} has no tenant/project partitions"
                     )
-                await triple.clean_tenancy(t, p)
+                await triple.clean_tenancy(t, p, include_shapes=include_shapes)
 
             vector = self.vector_store
             if vector is not None and vector.supports_tenancy_partition():
                 await vector.clean_tenancy(t, p)
+
+        if include_shapes and (t, p) == self._active_tenancy:
+            self.shapes_catalog.reset()
 
     def get_atomic_tools(self) -> AtomicToolBox:
         """Return the minimal toolbox used by atomic render/critic paths."""
@@ -752,6 +786,14 @@ class ToolBox:
                         "Vector store initialization failed; continuing without vector retrieval: %s",
                         exc,
                     )
+
+        shapes_started = time.perf_counter()
+        await self.shapes_catalog.sync(
+            self.config.tool_config.facts_validation.shapes_dir
+        )
+        logger.info(
+            "Shapes sync finished in %.2fs", time.perf_counter() - shapes_started
+        )
 
         sync_started = time.perf_counter()
         synchronized_ontologies = await self._synchronize_ontologies()
@@ -925,6 +967,61 @@ class ToolBox:
             await self.triple_store_manager.drop_all_ontology_graphs_for_iri(
                 ontology_iri
             )
+
+    async def ingest_shapes_ttl(
+        self, ttl: bytes, *, filename: str | None = None
+    ) -> str:
+        """Register a SHACL shapes document in the shapes partition.
+
+        Unlike :meth:`ingest_ontology_ttl` this neither requires an ontology
+        IRI nor touches the vector index: a shapes document may be a bare set
+        of ``sh:NodeShape`` declarations, and shapes are never retrieved by
+        similarity. A document that *does* declare an ``owl:Ontology`` header
+        is stored under that IRI, so uploading it again replaces it.
+
+        ``shapes_dir`` is a read-only seed fixture consulted at init, so
+        nothing is written there.
+
+        Args:
+            ttl: Turtle bytes of the shapes document.
+            filename: Original filename, used only to name a headerless
+                document when the bytes carry no ontology IRI.
+
+        Returns:
+            str: The named graph the document was stored under.
+
+        Raises:
+            ValueError: If the Turtle does not parse, or holds no triples.
+        """
+        import asyncio
+
+        graph = RDFGraph()
+
+        def _parse() -> None:
+            graph.parse(BytesIO(ttl), format="turtle")
+
+        try:
+            await asyncio.to_thread(_parse)
+        except Exception as error:
+            raise ValueError(f"Invalid Turtle: {error}") from error
+        if not len(graph):
+            raise ValueError("Shapes document holds no triples")
+
+        graph_uri = shapes_graph_uri(
+            graph,
+            fallback=(f"urn:shapes:{filename}" if filename else content_graph_uri(ttl)),
+        )
+        return await self.shapes_catalog.ingest(graph, graph_uri=graph_uri)
+
+    async def delete_shapes_by_uri(self, graph_uri: str) -> None:
+        """Remove one shapes document from the shapes partition.
+
+        ``shapes_dir`` is deliberately untouched, for the same reason
+        :meth:`delete_ontology_by_iri` leaves ``ontology_directory`` alone: a
+        store-level delete must not edit the operator's files. A document that
+        came from the seed directory therefore returns on the next init.
+        """
+        await self.shapes_catalog.delete(graph_uri)
 
 
 async def render_ontology_summary(ontology: Ontology, llm_tool) -> OntologyProperties:

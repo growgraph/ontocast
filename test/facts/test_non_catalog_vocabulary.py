@@ -1,6 +1,6 @@
 """Detecting the silent fallback out of the catalog.
 
-Reproduces the case6 shape. The catalog carried a qualified-quantity module
+The catalog carried a qualified-quantity module
 with ranges and epistemic qualifiers, retrieval admitted none of it, and the
 renderer took the prompt's documented escape hatch: ``qudt:QuantityValue``
 attached with ``schema:hasPart``. The result validated cleanly and scored in

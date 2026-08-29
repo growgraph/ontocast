@@ -41,7 +41,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cli/inspect_sections.py`.
   Test: `test/test_repo_isolation.py`.
 
+- SHACL shapes are stored in the triple store, in a third tenancy partition
+  `{tenant}--{project}--shapes` beside facts and ontologies
+  (`FUSEKI_SHAPES_DATASET`). `FACTS_SHAPES_DIR` keeps its name but changes
+  meaning: it is now a read-only **seed** directory materialized into that
+  partition at startup -- the contract `ONTOCAST_ONTOLOGY_DIRECTORY` already
+  had -- and the validation gate reads the partition, not the directory. A
+  containerised worker therefore needs no shapes directory, and a per-tenant
+  catalog carries its own shapes.
+
+  Shapes get a partition of their own because catalog discovery claims every
+  named graph holding an `owl:Ontology` subject, and a shapes document declares
+  one; co-located, each would register as a catalog ontology, be vector-indexed,
+  and be offered to the renderer as schema.
+
+  `collect_shacl_shapes(ontology_graph, shapes_dir)` now takes
+  `(ontology_graph, stored_shapes: RDFGraph | None)` and performs no disk I/O,
+  which also removes the per-document re-glob and re-parse. The inline
+  `sh:NodeShape` source is unchanged.
+
+  Touches: `onto/tenancy.py`; `onto/constants.py`; `config/settings.py`;
+  `tool/shapes_catalog.py` (new); `tool/facts_validation/shacl.py`;
+  `stategraph/facts_gate.py`; `toolbox.py`; `api/shapes.py` (new); `api/app.py`.
+  Test: `test/facts/test_shapes_catalog.py`.
+
+- The triple-store partition selector is a `StoreKind`
+  (`"facts" | "ontologies" | "shapes"`), replacing the two-valued
+  `use_ontologies_dataset: bool` on `aselect`, `aconstruct`,
+  `drop_named_graph`, `drop_all_ontology_graphs_for_iri`, `serialize_graph` and
+  `serialize`. `aserialize(ontology)` previously hard-coded the ontologies
+  dataset and silently overwrote a caller's `graph_uri`; it now honours a
+  `store=` override. Fuseki's `serialize_graph` took a pre-built `dataset_url`
+  while the in-memory backend took a boolean -- both now take `store`.
+  The LangChain `ontocast_sparql_select` / `ontocast_sparql_construct` tools
+  expose `store` in place of `use_ontologies_dataset`.
+
+  Touches: `tool/triple_manager/{core,fuseki,in_memory,mock}.py`;
+  `integrations/{langchain,schemas}.py`.
+
 ### Added
+
+- `/shapes` routes -- `GET` (list stored documents), `POST` (upload Turtle),
+  `DELETE /{graph_uri}` -- mirroring `/ontologies`, tenancy-scoped the same way.
+  A document declaring `<iri> a owl:Ontology` is stored under that IRI so
+  re-uploading replaces it; a headerless one is named after its seed path or
+  uploaded filename, stable across edits. The seed directory is never written
+  to, and `DELETE` leaves it untouched.
+
+  Touches: `api/shapes.py`, `api/schemas.py`, `api/app.py`, `toolbox.py`.
+  Test: `test/test_api_tenancy_resolution.py`.
+
+- `POST /flush?include_shapes=true`. Flush **retains** the shapes partition by
+  default: facts and ontologies come back from a rerun, but dropping shapes
+  disarms the SHACL gate without an error -- later runs report
+  `shacl_evaluated: null` instead of failing. `TripleStoreManager.clean()` and
+  `clean_tenancy()` take the matching `include_shapes` flag.
+
+  Touches: `api/app.py`; `toolbox.py::clean_tenancy_data`;
+  `tool/triple_manager/{core,fuseki,in_memory,mock}.py`.
 
 - Reduce-time ontology update semantics for retrieved snapshots. Under
   `ONTOLOGY_CONTEXT_MODE=selected_vector_search_ontology` a per-unit snapshot is
@@ -521,6 +578,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Touches: `onto/run_manifest.py`; `api/process_helpers.py`.
 
 ### Documentation
+
+- Shapes-as-a-stored-artifact documented across the set:
+  `docs/user_guide/validation.md` (three sources, why the partition is separate,
+  the flush policy), `docs/user_guide/tenancy.md` and
+  `docs/user_guide/triple_stores.md` (the third partition, seed vs persistence),
+  `docs/user_guide/api.md` (`/shapes`, `include_shapes` on `/flush`),
+  `docs/user_guide/configuration.md` and `docs/architecture/ontology_catalog.md`
+  (a `ShapesCatalog` row in the responsibility table, plus the `owl:Ontology`
+  collision that motivates the separation).
 
 - Full audit of the documentation set against the code. Verified: every variable
   in `.env.example`, every `RetrievalMetric` value, every module path and symbol

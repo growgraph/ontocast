@@ -1,10 +1,10 @@
-"""Regression suite for the measured case4/case5 aggregation damage.
+"""Regression suite for aggregation collapsing distinct quantity values.
 
-``test/data/case4/pre_merge_unit.jsonld`` is the verbatim pre-merge LLM
-output of the case4 run whose aggregation collapsed distinct quantity
-values (12.5 vs 96 meV merged into one node; the photon-propagation
-contribution absorbed into the impurity contribution). The tests assert
-the merge guards keep every quantity distinct.
+``test/data/pre_merge_unit.jsonld`` is a verbatim pre-merge LLM output
+whose aggregation merged distinct quantities into one node (12.5 and
+96 meV; a photon-propagation contribution absorbed into an impurity
+contribution). The tests assert the merge guards keep every quantity
+distinct.
 
 Real sentence-transformer embeddings are exercised (marker: slow).
 """
@@ -50,9 +50,9 @@ def test_case4_pre_merge_quantities_stay_distinct(
     aggregator: EmbeddingBasedAggregator,
 ) -> None:
     graph = RDFGraph()
-    graph.parse(DATA / "case4" / "pre_merge_unit.jsonld", format="json-ld")
+    graph.parse(DATA / "pre_merge_unit.jsonld", format="json-ld")
     unit = ContentUnit(
-        text="case4 excerpt",
+        text="excerpt",
         index=0,
         doc_iri=URIRef("https://growgraph.dev/doc/376c5e808804"),
         graph=graph,

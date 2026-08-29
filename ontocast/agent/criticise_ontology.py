@@ -173,7 +173,7 @@ async def criticise_ontology(
         # the top band of the prompt's own scoring rubric ("Excellent - minor
         # refinements only"). Whether that demand for perfection is the right
         # operating point is exactly what this record exists to measure -- the
-        # ontology critic has never run on a benchmark corpus, so unlike the
+        # ontology critic has never run on recorded data, so unlike the
         # facts gate there is no distribution to replace it from yet.
         accepted = critique.success or critique.score > 90
         delta = state.build_delta()

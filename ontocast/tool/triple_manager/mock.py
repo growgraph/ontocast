@@ -94,7 +94,8 @@ class _InMemoryGraphStoreMixin:
         self.serialize_graph(graph, graph_uri=graph_uri)
         return True
 
-    async def clean(self) -> None:
+    async def clean(self, *, include_shapes: bool = False) -> None:
+        _ = include_shapes  # the mock keeps no separate shapes partition
         self.clear()
 
 

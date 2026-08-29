@@ -15,6 +15,7 @@ from .converter import ConverterTool
 from .llm import LLMTool
 from .onto import Tool
 from .ontology_manager import OntologyManager
+from .shapes_catalog import ShapesCatalog
 from .triple_manager import (
     FusekiTripleStoreManager,
     InMemoryTripleStoreManager,
@@ -29,6 +30,7 @@ from .vector_store import (
 __all__ = [
     "LLMTool",
     "OntologyManager",
+    "ShapesCatalog",
     "TripleStoreManager",
     "FusekiTripleStoreManager",
     "InMemoryTripleStoreManager",

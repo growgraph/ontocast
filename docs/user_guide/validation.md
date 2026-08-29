@@ -169,9 +169,18 @@ set dissolved legitimate clusters.
 
 ### Where shapes come from
 
+Shapes are a **deployment artifact**, stored in the triple store in their own
+tenancy partition (`{tenant}--{project}--shapes`) alongside facts and
+ontologies. The gate reads that partition, so a containerised worker needs no
+shapes directory, and a per-tenant catalog carries its own shapes.
+
 Two sources, merged:
 
-- **`FACTS_SHAPES_DIR`** — every `.ttl` under the directory (recursive).
+- **The shapes partition** — seeded once at startup from `FACTS_SHAPES_DIR`
+  (every `.ttl` under the directory, recursively) and mutable thereafter over
+  [`/shapes`](api.md#shapes). The directory is a read-only bootstrap fixture,
+  the same contract `ONTOCAST_ONTOLOGY_DIRECTORY` has: nothing is written back
+  to it, and a `DELETE /shapes/...` never touches your files.
 - **The ontology context itself**, when it already carries `sh:NodeShape`
   declarations inline. This is the zero-config path for catalogs that ship
   shapes next to their schema.
@@ -179,6 +188,29 @@ Two sources, merged:
 Requires the extra: `uv sync --extra shacl`. Configuring shapes without it, or
 pointing at a missing or empty directory, logs a **warning** — a skipped run is
 never reported as a clean one.
+
+#### Why shapes are not stored with the ontologies
+
+Catalog discovery claims every named graph holding an `owl:Ontology` subject —
+and a shapes document declares one (`<…/qqval-shapes> a owl:Ontology`). Stored
+in the ontologies dataset, each shapes file would register as a catalog
+ontology, be indexed as ontology atoms, and be offered to the renderer as
+first-class schema. The separate partition makes that impossible structurally
+rather than by a filter every read path has to remember.
+
+A shapes document is addressed by the ontology IRI it declares, so re-uploading
+it replaces it. One with no header is named after its seed path
+(`urn:shapes:<relative/path.ttl>`) or, when uploaded, its filename — stable
+across edits, so re-seeding replaces the document instead of accumulating
+stale copies beside it.
+
+#### Flushing
+
+`POST /flush` **retains** the shapes partition by default. Facts and ontologies
+come back from a rerun; shapes are the validation contract, and dropping them
+disarms the gate without an error — subsequent runs report
+`shacl_evaluated: null` rather than failing. Pass `?include_shapes=true` to drop
+them too.
 
 ### How the validation is set up
 
@@ -367,7 +399,8 @@ simply be unretrieved rather than missing.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FACTS_SHAPES_DIR` | — | Directory of SHACL shape files; inline `sh:NodeShape` in the ontology context is picked up automatically |
+| `FACTS_SHAPES_DIR` | — | **Seed** directory of SHACL shape files (recursive), materialized into the shapes partition at startup; inline `sh:NodeShape` in the ontology context is picked up automatically |
+| `FUSEKI_SHAPES_DATASET` | derived from tenant/project | Fuseki dataset backing the shapes partition |
 | `FACTS_SHACL_INFERENCE` | `rdfs` | `none`, `rdfs` or `owlrl` pre-inference |
 | `FACTS_SHACL_ADVANCED` | `true` | Enable SHACL Advanced Features |
 | `FACTS_SHACL_MAX_TRIPLES` | `200000` | Skip validation above this graph size (`0` disables the guard) |

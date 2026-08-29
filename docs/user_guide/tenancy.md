@@ -7,7 +7,11 @@ OntoCast partitions triple-store datasets and vector-store partitions (Qdrant co
 ```
 {tenant}--{project}--facts
 {tenant}--{project}--ontologies
+{tenant}--{project}--shapes
 ```
+
+The shapes partition is a triple-store dataset only — SHACL shapes are never
+retrieved by similarity, so there is no vector-store counterpart.
 
 Separator default: `--` (double hyphen).
 
@@ -18,7 +22,8 @@ Separator default: `--` (double hyphen).
 | `tenant` | `ontocast` |
 | `project` | `test` |
 
-Default Fuseki datasets: `ontocast--test--facts`, `ontocast--test--ontologies`.
+Default Fuseki datasets: `ontocast--test--facts`, `ontocast--test--ontologies`,
+`ontocast--test--shapes`.
 
 ## How Tenancy Is Resolved
 
@@ -30,7 +35,7 @@ Tenant and project are **runtime parameters**, not environment variables. They m
 
 When `tenant` or `project` appears in the **query string**, the request is served by a `ToolBox` bound to that scope. Requests without tenancy query parameters use the server's active tenant/project from startup (defaults: `ontocast` / `test`).
 
-Seed TTLs from `ONTOCAST_ONTOLOGY_DIRECTORY` are **not** replayed into a new tenant — they are startup bootstrap only. Details: [Ontology Catalog](../architecture/ontology_catalog.md#why-it-resets-on-a-tenancy-switch).
+Seed TTLs from `ONTOCAST_ONTOLOGY_DIRECTORY` are **not** replayed into a new tenant — they are startup bootstrap only. Details: [Ontology Catalog](../architecture/ontology_catalog.md#why-it-resets-on-a-tenancy-switch). The same holds for `FACTS_SHAPES_DIR`: a new tenant's shapes are whatever its own partition already holds, which may be nothing — correctly read downstream as "SHACL never checked" rather than "conforms". See [Validation](validation.md#where-shapes-come-from).
 
 ### One ToolBox per scope
 
@@ -52,7 +57,7 @@ Returns the same ToolBox when the scope already matches, and otherwise builds (a
 
 ## Configuration Interaction
 
-When `FUSEKI_DATASET` or `FUSEKI_ONTOLOGIES_DATASET` are **unset**, Fuseki config derives names from the default tenant/project at startup. Per-request `tenant`/`project` overrides route to the corresponding datasets at runtime.
+When `FUSEKI_DATASET`, `FUSEKI_ONTOLOGIES_DATASET` or `FUSEKI_SHAPES_DATASET` are **unset**, Fuseki config derives names from the default tenant/project at startup. Per-request `tenant`/`project` overrides route to the corresponding datasets at runtime.
 
 When explicit dataset names are set in `.env`, they apply as the configured default scope; per-request tenancy still switches the active partition when supported by the store layer.
 
@@ -73,7 +78,11 @@ curl -X POST "http://localhost:8999/process?tenant=acme&project=reports" \
 curl -X POST "http://localhost:8999/ontologies?tenant=acme&project=reports" \
   -F "file=@domain.ttl"
 
-# Flush partition data
+# Upload SHACL shapes to the same partition
+curl -X POST "http://localhost:8999/shapes?tenant=acme&project=reports" \
+  -F "file=@domain-shapes.ttl"
+
+# Flush partition data (shapes are retained; add &include_shapes=true to drop them)
 curl -X POST "http://localhost:8999/flush?tenant=acme&project=reports"
 ```
 

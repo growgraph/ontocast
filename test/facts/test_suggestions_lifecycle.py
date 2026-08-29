@@ -10,7 +10,7 @@ critique", and the findings block's "apply every item, rewrite in place, never
 delete".
 
 The leak is unreachable at MAX_VISITS=1, where the critic never runs, and that
-is exactly the arm split of the 2026-08 matsci benchmark: the two-visit arm lost
+is exactly the arm split observed in practice: the two-visit arm lost
 graph connectivity and gained validation errors while the one-visit arm did not.
 
 Two writers had to be fixed, because the loop can reach the repair with stale

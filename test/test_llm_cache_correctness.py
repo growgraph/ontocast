@@ -131,7 +131,7 @@ def test_cache_hit_replays_token_usage(tmp_path) -> None:
 
     ``usage_metadata`` is a separate ``AIMessage`` attribute, so persisting
     ``response_metadata`` alone never captured it -- and the cache-replay
-    protocol used for benchmarking reported zero tokens.
+    replay protocol reported zero tokens.
     """
     config = LLMConfig(provider=LLMProvider.OPENAI, cache_enabled=True)
     usage = {
