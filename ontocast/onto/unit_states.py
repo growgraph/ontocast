@@ -190,6 +190,20 @@ class UnitFactsState(UnitState):
             "fixes into the next repair render."
         ),
     )
+    critic_fixes_applied: int = Field(
+        default=0,
+        description=(
+            "Critic fixes compiled straight to a patch with no LLM call (tier 1)."
+        ),
+    )
+    critic_fixes_residual: int = Field(
+        default=0,
+        description=(
+            "Critic fixes that could not be compiled and were handed to the "
+            "repair render (tier 2), or recorded unapplied on an accepted "
+            "render. Never silently dropped."
+        ),
+    )
     applied_repairs: list[GraphRepairRecord] = Field(
         default_factory=list,
         description=(

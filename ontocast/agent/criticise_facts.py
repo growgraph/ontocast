@@ -188,6 +188,10 @@ async def criticise_facts(
                 severity_counts=Counter(
                     fix.severity for fix in critique.actionable_triple_fixes
                 ),
+                action_severity_counts=Counter(
+                    f"{fix.action}:{fix.severity}"
+                    for fix in critique.actionable_triple_fixes
+                ),
                 n_deterministic_findings=len(state.deterministic_findings),
                 n_mandatory_findings=sum(
                     1 for finding in state.deterministic_findings if finding.mandatory
@@ -199,13 +203,13 @@ async def criticise_facts(
         if not defects:
             state.status = Status.SUCCESS
             state.set_node_status(WorkflowNode.CRITICISE_FACTS, Status.SUCCESS)
-            # An accepting critic has no outstanding requests. Clearing here is
-            # not redundant with the reset in render_facts_update: the loop can
-            # accept on a *later* critic attempt of the same render (after an
-            # external-evidence search), with no render in between to consume
-            # the suggestions the earlier, rejecting attempt left behind. The
-            # finding-driven repair then runs next, and must see only findings.
-            state.suggestions = Suggestions()
+            # Accepting means "no defect worth another render", NOT "the
+            # critique was empty". The fixes are kept: the repair lane compiles
+            # the mechanical ones for free and records the rest as residual.
+            # Clearing them here used to discard the entire critique of every
+            # accepted render -- the bulk of everything the critic produced,
+            # since a REMOVE fix can never make a render blocking.
+            state.suggestions = Suggestions.from_critique_report(critique)
             logger.info(
                 "Facts critique passed (score %s, no material defect)",
                 critique.score,

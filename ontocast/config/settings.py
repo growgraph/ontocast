@@ -690,10 +690,14 @@ class ServerConfig(BaseSettings):
         default=1,
         ge=1,
         description=(
-            "Maximum render attempts per unit loop. At the default of 1 the "
-            "critic never runs: the single render is also the final one, and a "
-            "critique that cannot drive a retry is skipped. Raise to 2 or more "
-            "to enable the LLM critic pass."
+            "Maximum *render* attempts per unit loop. This is no longer the "
+            "switch for the LLM critic: a critic verdict feeds the tiered "
+            "repair lane (mechanical fixes compiled with no LLM call, the rest "
+            "sent to a bounded repair render), so it does not need a spare "
+            "render slot. At the default of 1 the critic still runs whenever "
+            "FACTS_LLM_REPAIR_VISITS is above 0. Raise this only to allow a "
+            "second full extraction, which is the expensive response to a "
+            "local defect and rarely the right one."
         ),
         validation_alias=AliasChoices("max_visits_per_node", "max_visits"),
     )
@@ -750,6 +754,16 @@ class ServerConfig(BaseSettings):
         "graph: an update whose result would exceed this is skipped with a "
         "warning, all-or-nothing. Not a prompt bound -- use "
         "ontology_context_max_triples for context size. None (default) disables it.",
+    )
+    ontology_context_required: bool = Field(
+        default=True,
+        description="Fail the run when a content unit's ontology context "
+        "resolves to zero triples, instead of extracting with no catalog "
+        "vocabulary. An empty context is not a degraded extraction, it is a "
+        "different one: the renderer falls back on whatever standard "
+        "vocabulary the prompt names, and the SHACL gate then has no node to "
+        "constrain, so the run reports a vacuous pass. Set False only for "
+        "deployments that deliberately extract without a catalog.",
     )
     ontology_context_max_triples: int | None = Field(
         default=4000,
@@ -2142,6 +2156,25 @@ class FactsValidationConfig(BaseSettings):
             "such a pair is reported as a warning instead. Numeric and string "
             "branches are unaffected: two distinct quantities on one node are "
             "a defect whatever their provenance."
+        ),
+    )
+    domain_adherence_min_share: float = Field(
+        default=0.15,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Floor on the fraction of a render's distinct schema terms "
+            "(predicates and rdf:type objects, excluding minted instances and "
+            "RDF/RDFS/OWL/XSD/SKOS/DC/PROV plumbing) that must come from the "
+            "unit's ontology context, below which a mandatory "
+            "DOMAIN_ADHERENCE finding asks for a rewrite. Catches the failure "
+            "no per-triple check can see: a render that expresses everything "
+            "in a generic vocabulary is well-formed term by term, exempt from "
+            "UNKNOWN_TERM, and invisible to every shape, so it reads as "
+            "extracted while answering nothing. Set 0 to disable, and leave it "
+            "disabled for deployments that extract without a catalog. Raise it "
+            "toward the share your own healthy runs report -- watch "
+            "domain_adherence in the facts findings to calibrate."
         ),
     )
     additional_standard_namespaces: list[str] = Field(

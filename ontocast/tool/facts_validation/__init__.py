@@ -15,6 +15,7 @@ from ontocast.tool.facts_validation.acceptance import (
 )
 from ontocast.tool.facts_validation.gate import (
     FactsValidationReport,
+    count_shacl_focus_nodes,
     record_facts_gate_metrics,
     summarize_conformance,
     validate_aggregated_facts,
@@ -77,6 +78,7 @@ __all__ = [
     "resolve_unique_surface",
     "run_shacl",
     "shacl_catalog_contradictions",
+    "count_shacl_focus_nodes",
     "summarize_conformance",
     "validate_aggregated_facts",
 ]

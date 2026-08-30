@@ -23,6 +23,36 @@ Context is assembled **per unit** inside the ontology loop, not at document leve
     [`ONTOLOGY_CONTEXT_MAX_TRIPLES`](#how-large-is-the-context), like every
     other prompt.
 
+## What if the context is empty?
+
+The run stops. `ONTOLOGY_CONTEXT_REQUIRED` (default `true`) raises
+`EmptyOntologyContextError` when a content unit's ontology context resolves to
+zero triples.
+
+This is a deliberate refusal to degrade. The renderer is instructed to extract
+"based on provided domain ontology"; handed nothing, it does not fail — it
+falls back on whatever standard vocabulary the prompt names. What comes out is
+well-formed triple by triple, exempt from `UNKNOWN_TERM` (standard namespaces
+are exempt by default), and matched by no shape, since none of its subjects are
+in any shape's target class. So the conformance gate reports **zero
+violations** on it. A run with no vocabulary at all can therefore look, at
+every checkpoint, like the cleanest run in a series.
+
+Set `ONTOLOGY_CONTEXT_REQUIRED=false` only if extracting without a catalog is
+the intent. The run then continues and records
+`retrieval_metrics.empty_snapshot_reason`, which names the subsystem at fault —
+catalog-side causes first, because a catalog that resolved to no graphs and a
+retrieval threshold that matched nothing are different problems with different
+fixes, and the diagnostic used to report the former as the latter.
+
+Two companion signals for the same failure, both on by default:
+
+- **`DOMAIN_ADHERENCE`** (`FACTS_DOMAIN_ADHERENCE_MIN_SHARE`, default `0.15`) —
+  a mandatory finding when a render used almost none of the catalog it *did*
+  get. Covers the case where the context arrived but was ignored.
+- **`shacl_vacuous` / `shacl_focus_nodes`** in the conformance summary —
+  `conforms` is `null`, never `true`, when the shapes matched no node.
+
 ## How large is the context?
 
 Only vector mode bounds retrieval itself; every mode is bounded at

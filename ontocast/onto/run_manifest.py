@@ -109,6 +109,24 @@ class RunManifestCritic(BaseModel):
             "it is a run whose severity labels carry no signal."
         ),
     )
+    fix_action_severity_histogram: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "The same fixes keyed 'ACTION:severity'. Read this before "
+            "concluding anything from the severity histogram: a REMOVE cannot "
+            "block acceptance at any severity, so 'critical' alone conflates "
+            "fixes that gate a render with fixes that never could."
+        ),
+    )
+    accept_reason_histogram: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Why each verdict landed: 'clean', 'mandatory_findings', "
+            "'critic_critical'. Separates a critic that found nothing from one "
+            "overruled by the deterministic lane -- indistinguishable in the "
+            "accepted count alone."
+        ),
+    )
 
 
 def summarize_loop(
@@ -138,9 +156,15 @@ def summarize_loop(
         key = f"{bucket}-{bucket + 9}"
         histogram[key] = histogram.get(key, 0) + 1
     severities: dict[str, int] = {}
+    action_severities: dict[str, int] = {}
+    reasons: dict[str, int] = {}
     for attempt in attempts:
         for severity, count in attempt.severity_counts.items():
             severities[severity] = severities.get(severity, 0) + count
+        for key, count in attempt.action_severity_counts.items():
+            action_severities[key] = action_severities.get(key, 0) + count
+        if attempt.accept_reason:
+            reasons[attempt.accept_reason] = reasons.get(attempt.accept_reason, 0) + 1
     return RunManifestCritic(
         calls=len(attempts),
         accepted=sum(1 for a in attempts if a.success),
@@ -149,6 +173,8 @@ def summarize_loop(
         score_max=scores[-1] if scores else None,
         score_histogram=histogram,
         fix_severity_histogram=severities,
+        fix_action_severity_histogram=dict(sorted(action_severities.items())),
+        accept_reason_histogram=dict(sorted(reasons.items())),
     )
 
 

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 from collections import Counter
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -15,7 +16,10 @@ from ontocast.onto.enum import (
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.retrieval_capabilities import require_vector_retrieval
+from ontocast.onto.retrieval_capabilities import (
+    EmptyOntologyContextError,
+    require_vector_retrieval,
+)
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.chunk.proposition import split_proposition_windows
 from ontocast.tool.llm import use_budget_tracker
@@ -191,6 +195,57 @@ async def _resolve_fixed_single_ontology_context(
     )
 
 
+async def _diagnose_empty_snapshot(
+    tools: ToolBox, metrics: dict[str, Any] | None
+) -> str:
+    """Name the subsystem that produced an empty ontology snapshot.
+
+    Order matters, and it runs catalog-first. Retrieval can select the right
+    atoms from the vector index and still yield nothing when the triple store
+    lists no ontology graphs to expand them against -- the index and the store
+    disagreeing is a deployment fault, not a tuning one. Reporting it as a
+    threshold problem (the previous behaviour) sends an operator to lower
+    thresholds that were never involved.
+
+    Args:
+        tools: Toolbox, for inspecting the vector index as a last resort.
+        metrics: ``last_retrieval_metrics`` from the patch retriever.
+
+    Returns:
+        str: A one-line cause, stored under ``empty_snapshot_reason``.
+    """
+    metrics = metrics or {}
+    catalog_triples = metrics.get("catalog_context_triples")
+    graph_reads = (metrics.get("catalog_graph_cache_hits") or 0) + (
+        metrics.get("catalog_graph_cache_misses") or 0
+    )
+    if catalog_triples == 0 and graph_reads == 0:
+        return (
+            "the ontology catalog resolved to zero graphs -- the vector index "
+            "and the triple store disagree about which ontologies exist"
+        )
+    if catalog_triples == 0:
+        return "the ontology catalog is empty (no ontologies stored)"
+    if metrics.get("atoms_final"):
+        return (
+            "the catalog is populated but the induced subgraph over the "
+            "selected atoms came back empty"
+        )
+    indexed_iris: set[str] = set()
+    if tools.vector_store is not None:
+        try:
+            indexed_iris = await asyncio.to_thread(
+                tools.vector_store.list_indexed_ontology_iris
+            )
+        except Exception as exc:
+            logger.warning("Could not inspect the vector index: %s", exc)
+    if not indexed_iris:
+        return "vector index is empty or unreadable"
+    if metrics.get("atoms_after_dedupe"):
+        return "all candidate atoms scored below the retrieval thresholds"
+    return "no candidate atoms matched the unit's queries"
+
+
 async def _resolve_ensemble_context(
     context: UnitLoopContext,
     tools: ToolBox,
@@ -241,29 +296,11 @@ async def _resolve_ensemble_context(
         )
     if not len(patch_graph):
         # An empty snapshot reaching the renderer means it will extract with no
-        # vocabulary at all. Distinguish the causes: an empty index is a
-        # deployment problem, everything-below-threshold is a tuning problem,
-        # and neither should read as "this passage had no relevant terms".
-        indexed_iris: set[str] = set()
-        if tools.vector_store is not None:
-            try:
-                indexed_iris = await asyncio.to_thread(
-                    tools.vector_store.list_indexed_ontology_iris
-                )
-            except Exception as exc:
-                logger.warning("Could not inspect the vector index: %s", exc)
-        if not indexed_iris:
-            reason = "vector index is empty or unreadable"
-        elif metrics and metrics.get("atoms_after_dedupe"):
-            reason = "all candidate atoms scored below the retrieval thresholds"
-        else:
-            reason = "no candidate atoms matched the unit's queries"
+        # vocabulary at all, so name the subsystem at fault before deciding
+        # whether to continue.
+        reason = await _diagnose_empty_snapshot(tools, metrics)
         context.retrieval_metrics[RetrievalMetric.EMPTY_SNAPSHOT_REASON] = reason
-        logger.warning(
-            "Ontology context for this unit is empty (%s); extraction will "
-            "proceed with no catalog vocabulary.",
-            reason,
-        )
+        logger.warning("Ontology context for this unit is empty (%s)", reason)
 
     preferred = tools.ontology_manager.preferred_namespace_prefixes or None
     patch_graph.sanitize_prefixes_namespaces(preferred_namespace_prefixes=preferred)
@@ -305,6 +342,27 @@ async def resolve_unit_ontology_context(
     context.retrieval_metrics[RetrievalMetric.ONTOLOGY_SNAPSHOT_TRIPLES] = len(
         resolved.snapshot.graph
     )
+    # Checked here, not per mode, for the same reason the size is recorded here:
+    # every mode can return an empty context, and the two that bound nothing
+    # were also the two that reported nothing. A unit with no retrievable text
+    # is exempt -- it has nothing to extract either way, so an empty context for
+    # it is not a fault.
+    if (
+        not len(resolved.snapshot.graph)
+        and unit.text.strip()
+        and tools.config.server.ontology_context_required
+    ):
+        reason = context.retrieval_metrics.get(
+            RetrievalMetric.EMPTY_SNAPSHOT_REASON, "no ontology context was assembled"
+        )
+        raise EmptyOntologyContextError(
+            f"Ontology context for this content unit is empty: {reason}. "
+            "Extraction would fall back on generic vocabulary and the "
+            "conformance gate would then have no node to constrain, reporting "
+            "a vacuous pass. Fix the catalog, or set "
+            "ONTOLOGY_CONTEXT_REQUIRED=false to extract without one "
+            "deliberately."
+        )
     return resolved
 
 

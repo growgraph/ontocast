@@ -20,15 +20,22 @@ graph, and does not yet gate — is
 
 ### How many LLM calls a facts unit really costs
 
-At the default `MAX_VISITS=1` the critic never runs, but extraction is **not**
-one call per unit:
+At the default `MAX_VISITS=1` extraction is **not** one call per unit:
 
 ```
 render_facts                      1 provider call
-  ↓  critic skipped (MAX_VISITS reached)
-finding-driven repair render      1 more, if mandatory findings remain
+criticise_facts                   1 more, unless FACTS_LLM_REPAIR_VISITS=0
+  ↓  mechanical fixes compiled and applied here, no LLM call
+finding-driven repair render      1 more, if mandatory findings or
+                                  unresolved critic fixes remain
                                   (up to FACTS_LLM_REPAIR_VISITS, default 1)
 ```
+
+`MAX_VISITS` bounds *renders*, not the critic. A verdict no longer needs a
+spare render slot to land in: fixes that quote triples the graph actually holds
+are compiled into a patch and applied directly, and only the rest are handed to
+a repair render. The critic is skipped only at `FACTS_LLM_REPAIR_VISITS=0`,
+where there is genuinely nowhere to put its output.
 
 The *trigger* is deterministic — quarantined literals, unknown terms, alias
 leftovers — but the *fix* is bought from the model. Set

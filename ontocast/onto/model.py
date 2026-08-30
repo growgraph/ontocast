@@ -575,6 +575,9 @@ class FactsUnitFindingKind(StrEnum):
     LABEL_ONLY_NUMBER = "label_only_number"
     SCALAR_AS_BOUNDS = "scalar_as_bounds"
     DOMAIN_VIOLATION = "domain_violation"
+    #: The render used no term from the ontology it was given. Not a
+    #: property of any single triple, so no other kind can express it.
+    DOMAIN_ADHERENCE = "domain_adherence"
     #: Not machine-found: a fix the LLM critic proposed, carried through the
     #: same repair pipeline so a rejection costs one rewrite-in-place render
     #: instead of a full re-extraction.
@@ -762,6 +765,16 @@ class LoopAttempt(BaseModel):
     #: from a field description with no rubric is exactly the kind of signal
     #: that has to be watched rather than assumed.
     severity_counts: dict[str, int] = Field(default_factory=dict)
+    action_severity_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Proposed fixes keyed 'ACTION:severity'. Severity alone cannot be "
+            "read: a REMOVE never blocks acceptance whatever its severity, so "
+            "'critical' counts mix fixes that gate a render with fixes that "
+            "cannot. Splitting by action is what makes the two distinguishable "
+            "from the artifacts."
+        ),
+    )
     n_deterministic_findings: int = 0
     n_mandatory_findings: int = 0
     repair_failed: bool = False

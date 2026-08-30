@@ -30,6 +30,8 @@ from ontocast.onto.model import (
     ExternalEvidenceCacheEntry,
     ExternalEvidenceRequest,
     FactsUnitFinding,
+    FactsUnitFindingKind,
+    GraphRepairRecord,
     LoopAttempt,
     OntologyUnitFinding,
     TripleFix,
@@ -44,6 +46,10 @@ from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import collect_unit_findings
 from ontocast.tool.facts_validation.critic_findings import critic_fixes_to_findings
+from ontocast.tool.facts_validation.critic_patch import (
+    apply_compiled_patch,
+    compile_critic_fixes,
+)
 from ontocast.tool.ontology_validation import collect_ontology_unit_findings
 from ontocast.toolbox import ToolBox
 
@@ -106,9 +112,31 @@ def _resolve_max_visits_limit(state_visits: int, override: int | None) -> int:
     return max(1, visits)
 
 
-def _skip_critic_after_final_render(render_attempt: int, max_visits: int) -> bool:
-    """True when this render attempt is the last allowed; critic cannot drive a retry."""
-    return render_attempt == max_visits
+def _skip_critic_after_final_render(
+    render_attempt: int, max_visits: int, repair_visits: int = 0
+) -> bool:
+    """True when a critique on this render attempt could change nothing.
+
+    The rule used to be "the last render is final, so skip the critic" -- a
+    critique that cannot drive a retry was work with nowhere to go. That
+    reasoning is spent: a verdict now feeds the tiered repair lane, which
+    compiles mechanical fixes with no LLM call and sends the rest to a bounded
+    repair render. Neither needs a render slot to be left over.
+
+    So the critic is skipped only when there is genuinely nowhere to put its
+    output: the last render *and* no repair visits configured. At the default
+    ``max_visits=1`` with repair visits available, the critic now runs -- which
+    is what makes it evaluable without paying for a second full extraction.
+
+    Args:
+        render_attempt: 1-based render attempt about to be critiqued.
+        max_visits: Render attempts allowed for this unit.
+        repair_visits: Finding-driven repair renders allowed per unit.
+
+    Returns:
+        bool: True to skip the critic.
+    """
+    return render_attempt == max_visits and repair_visits <= 0
 
 
 def _resolve_critic_visits(unit_state: UnitFactsState | UnitOntologyState) -> int:
@@ -233,13 +261,32 @@ async def _run_finding_driven_repair(
     only parsed operations) and is recorded rather than erased.
     """
     repair_visits = atomic.facts_llm_repair_visits
-    # Critic fixes join the deterministic findings for the first pass only.
-    # They are consumed by the render that reads them, exactly like
+    # Tier 1: a fix that quotes triples the graph actually holds is already a
+    # patch, so apply it here for free rather than paying a render to retype
+    # it. Runs before the findings are collected so the deterministic checks
+    # score the repaired graph, and on every path -- including an accepted
+    # render, whose fixes used to be discarded unread.
+    compiled = compile_critic_fixes(critic_fixes, unit_state.content_unit.graph)
+    if compiled.update is not None:
+        apply_compiled_patch(unit_state.content_unit.graph, compiled.update)
+        unit_state.applied_repairs.extend(
+            GraphRepairRecord(
+                kind=FactsUnitFindingKind.CRITIC_FIX,
+                source=fix.incorrect_value or "",
+                target=fix.correct_value or "",
+            )
+            for fix in compiled.applied
+        )
+    unit_state.critic_fixes_applied = len(compiled.applied)
+    unit_state.critic_fixes_residual = len(compiled.residual)
+    # Tier 2: what did not compile is where the model's judgement is actually
+    # needed. Those join the deterministic findings for the first pass only --
+    # they are consumed by the render that reads them, exactly like
     # `state.suggestions`; re-adding them after each pass would make a fix the
     # renderer declined an unresolvable finding and burn the whole budget.
     findings = [
         *_collect_facts_findings(unit_state, atomic),
-        *critic_fixes_to_findings(critic_fixes, atomic.acceptance_policy),
+        *critic_fixes_to_findings(compiled.residual, atomic.acceptance_policy),
     ]
     for repair_attempt in range(1, repair_visits + 1):
         mandatory = [finding for finding in findings if finding.mandatory]
@@ -487,7 +534,9 @@ async def facts_loop(
                     )
                     continue
 
-            if _skip_critic_after_final_render(render_attempt, max_visits):
+            if _skip_critic_after_final_render(
+                render_attempt, max_visits, atomic.facts_llm_repair_visits
+            ):
                 logger.info(
                     "Unit facts loop finishing on final render attempt %s/%s "
                     "(skipping LLM critic; finding-driven repair renders may "
@@ -523,6 +572,7 @@ async def facts_loop(
                         atomic,
                         supplemental,
                         render_attempt=render_attempt,
+                        critic_fixes=unit_state.suggestions.actionable_fixes,
                     )
 
                 critic_request = unit_state.get_external_evidence_request(
@@ -560,6 +610,7 @@ async def facts_loop(
                         atomic,
                         supplemental,
                         render_attempt=render_attempt,
+                        critic_fixes=unit_state.suggestions.actionable_fixes,
                     )
 
             # A rejecting critic no longer escalates to another full render.

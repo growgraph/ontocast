@@ -679,6 +679,8 @@ def make_render_facts_node(tools: ToolBox):
         # so the residual has "units" as its denominator.
         findings_residual = 0
         mandatory_residual = 0
+        critic_fixes_applied = 0
+        critic_fixes_residual = 0
         unit_contexts: dict[int, tuple[str, list[str], OntologyAssemblyMode]] = {}
         for (
             unit_index,
@@ -692,6 +694,8 @@ def make_render_facts_node(tools: ToolBox):
             mandatory_residual += sum(
                 1 for finding in result.deterministic_findings if finding.mandatory
             )
+            critic_fixes_applied += result.critic_fixes_applied
+            critic_fixes_residual += result.critic_fixes_residual
             if result.attempt_log:
                 state.facts_loop_telemetry[unit_index] = list(result.attempt_log)
             if result.applied_repairs:
@@ -796,6 +800,16 @@ def make_render_facts_node(tools: ToolBox):
         )
         state.retrieval_metrics[RetrievalMetric.FACTS_CRITIC_ACCEPTED] = sum(
             1 for attempt in critic_attempts if attempt.success
+        )
+        # What the critique actually bought, split by how it was paid for. The
+        # loop used to discard every fix on an accepted render, so the honest
+        # value of these two together was once "far less than the call count
+        # suggests" -- and nothing recorded it.
+        state.retrieval_metrics[RetrievalMetric.FACTS_CRITIC_FIXES_APPLIED] = (
+            critic_fixes_applied
+        )
+        state.retrieval_metrics[RetrievalMetric.FACTS_CRITIC_FIXES_RESIDUAL] = (
+            critic_fixes_residual
         )
         state.facts_units = facts_units
         state.status = _map_stage_status(

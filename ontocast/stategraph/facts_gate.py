@@ -33,6 +33,7 @@ from ontocast.tool.facts_validation import (
     ValidationPolicy,
     apply_shacl_repairs,
     collect_shacl_shapes,
+    count_shacl_focus_nodes,
     dedupe_literal_variants,
     record_facts_gate_metrics,
     shacl_catalog_contradictions,
@@ -302,6 +303,7 @@ def run_facts_gate(
         report.findings,
         shacl_evaluated=report.shacl_evaluated,
         repairs=state.facts_gate_repairs,
+        focus_nodes=count_shacl_focus_nodes(state.aggregated_facts, shapes_graph),
     )
     record_facts_gate_metrics(
         state.retrieval_metrics,

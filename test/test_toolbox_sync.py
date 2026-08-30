@@ -1,6 +1,7 @@
 """Tests for ToolBox ontology synchronization helpers."""
 
 import asyncio
+import logging
 import tempfile
 from pathlib import Path
 from typing import cast
@@ -90,6 +91,13 @@ def test_initialize_materializes_then_adds_with_skip_vector(monkeypatch, test_on
         added.append((ontology, skip_vector_index))
 
     class Stub:
+        # Bound to the real implementation so the catalog/index agreement
+        # check runs in these tests rather than being stubbed away.
+        async def _check_catalog_index_agreement(self, ontologies):
+            await ToolBox._check_catalog_index_agreement(
+                cast(ToolBox, self), ontologies
+            )
+
         vector_store = None
         triple_store_manager = None
         llm = MagicMock()
@@ -166,6 +174,13 @@ def test_initialize_skips_vector_store_in_full_ttl_mode(monkeypatch) -> None:
     synchronized: list = []
 
     class Stub:
+        # Bound to the real implementation so the catalog/index agreement
+        # check runs in these tests rather than being stubbed away.
+        async def _check_catalog_index_agreement(self, ontologies):
+            await ToolBox._check_catalog_index_agreement(
+                cast(ToolBox, self), ontologies
+            )
+
         triple_store_manager = None
         llm = MagicMock()
         ontology_manager: MagicMock
@@ -214,6 +229,13 @@ def test_initialize_vector_store_failure_is_non_fatal_when_configured(
     )
 
     class Stub:
+        # Bound to the real implementation so the catalog/index agreement
+        # check runs in these tests rather than being stubbed away.
+        async def _check_catalog_index_agreement(self, ontologies):
+            await ToolBox._check_catalog_index_agreement(
+                cast(ToolBox, self), ontologies
+            )
+
         triple_store_manager = None
         llm = MagicMock()
         ontology_manager: MagicMock
@@ -278,6 +300,13 @@ def test_ingest_ontology_ttl_rejects_identity_conflict_before_persisting() -> No
         ontology_manager.add_ontology(existing)
 
         class Stub:
+            # Bound to the real implementation so the catalog/index agreement
+            # check runs in these tests rather than being stubbed away.
+            async def _check_catalog_index_agreement(self, ontologies):
+                await ToolBox._check_catalog_index_agreement(
+                    cast(ToolBox, self), ontologies
+                )
+
             def __init__(self) -> None:
                 self.config = config
                 self.ontology_manager = ontology_manager
@@ -329,6 +358,13 @@ def test_initialize_materializes_with_bounded_concurrency(
             active -= 1
 
     class Stub:
+        # Bound to the real implementation so the catalog/index agreement
+        # check runs in these tests rather than being stubbed away.
+        async def _check_catalog_index_agreement(self, ontologies):
+            await ToolBox._check_catalog_index_agreement(
+                cast(ToolBox, self), ontologies
+            )
+
         vector_store = None
         triple_store_manager = None
         llm = MagicMock()
@@ -383,6 +419,13 @@ def test_initialize_wipe_and_prune_follow_their_flags(
     orphans = ["https://example.org/legacy"] if prune else []
 
     class Stub:
+        # Bound to the real implementation so the catalog/index agreement
+        # check runs in these tests rather than being stubbed away.
+        async def _check_catalog_index_agreement(self, ontologies):
+            await ToolBox._check_catalog_index_agreement(
+                cast(ToolBox, self), ontologies
+            )
+
         triple_store_manager = None
         llm = MagicMock()
         ontology_manager: MagicMock
@@ -552,3 +595,76 @@ def test_repeated_tenancy_call_does_not_drop_the_catalog() -> None:
             assert toolbox.ontology_manager.get_ontology_iris() == [onto.iri]
 
         asyncio.run(main())
+
+
+# --- Catalog/vector-index agreement at startup ---------------------------
+
+
+def _agreement_toolbox(indexed: list[str], *, required: bool):
+    """A ToolBox stub whose only live parts are the two halves of retrieval."""
+    config = Config()
+    config.server.ontology_context_required = required
+
+    class Stub:
+        triple_store_manager = None
+        llm = MagicMock()
+
+        def __init__(self) -> None:
+            self.config = config
+            self.vector_store = MagicMock()
+            self.vector_store.list_indexed_ontology_iris = MagicMock(
+                return_value=set(indexed)
+            )
+
+        def is_vector_store_ready(self):
+            return True
+
+    return Stub()
+
+
+def test_an_empty_catalog_beside_a_populated_index_stops_startup() -> None:
+    """The confirmed failure: ontologies never reached the triple store.
+
+    Retrieval still selects atoms from the index and reports healthy metrics --
+    the expected seeds, the expected atom count -- while the induced subgraph
+    built over the empty catalog comes back with nothing. Every unit then
+    renders against an empty ontology chapter and the conformance gate passes
+    over zero nodes, so nothing downstream can tell this from a good run.
+    """
+    from ontocast.onto.retrieval_capabilities import EmptyOntologyContextError
+
+    stub = _agreement_toolbox(["https://example.org/o1"], required=True)
+
+    with pytest.raises(EmptyOntologyContextError) as excinfo:
+        asyncio.run(ToolBox._check_catalog_index_agreement(cast(ToolBox, stub), []))
+
+    assert "https://example.org/o1" in str(excinfo.value), (
+        "the error must name what the index still holds, or the operator has "
+        "nothing to act on"
+    )
+
+
+def test_the_agreement_check_can_be_opted_out_of() -> None:
+    stub = _agreement_toolbox(["https://example.org/o1"], required=False)
+
+    asyncio.run(ToolBox._check_catalog_index_agreement(cast(ToolBox, stub), []))
+
+
+def test_stale_index_entries_beside_a_real_catalog_only_warn(caplog) -> None:
+    """Ordinary staleness is what orphan pruning is for, not a startup failure."""
+    stub = _agreement_toolbox(
+        ["https://example.org/o1", "https://example.org/gone"], required=True
+    )
+    served = [Ontology(iri="https://example.org/o1", ontology_id="o1")]
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(ToolBox._check_catalog_index_agreement(cast(ToolBox, stub), served))
+
+    assert "https://example.org/gone" in caplog.text
+
+
+def test_agreement_check_is_silent_when_both_sides_match() -> None:
+    stub = _agreement_toolbox(["https://example.org/o1"], required=True)
+    served = [Ontology(iri="https://example.org/o1", ontology_id="o1")]
+
+    asyncio.run(ToolBox._check_catalog_index_agreement(cast(ToolBox, stub), served))

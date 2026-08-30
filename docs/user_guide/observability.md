@@ -140,7 +140,7 @@ to be re-run.
     volume — mixing them silently compares a graph with its own subset.
 
     Read `critic.calls` before `critic.accepted`. At the default
-    `MAX_VISITS=1` the critic never runs and `summarize_loop` returns an
+    `FACTS_LLM_REPAIR_VISITS=0` the critic never runs and `summarize_loop` returns an
     all-zero record, so `accepted: 0` there means *nothing was judged*, not
     *everything was rejected*. Score buckets are decade ranges keyed
     `"70-79"`, so an empty `score_histogram` alongside `calls > 0` means the

@@ -81,6 +81,8 @@ class RetrievalMetric(StrEnum):
     FACTS_FINDINGS_RESIDUAL = "facts_findings_residual"
     FACTS_MANDATORY_RESIDUAL = "facts_mandatory_residual"
     FACTS_CRITIC_CALLS = "facts_critic_calls"
+    FACTS_CRITIC_FIXES_APPLIED = "facts_critic_fixes_applied"
+    FACTS_CRITIC_FIXES_RESIDUAL = "facts_critic_fixes_residual"
     FACTS_CRITIC_ACCEPTED = "facts_critic_accepted"
 
     # Aggregation and the un-merge repair.

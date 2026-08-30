@@ -65,14 +65,14 @@ def _unit_state(**kwargs) -> UnitFactsState:
     )
 
 
-def _tools() -> ToolBox:
+def _tools(repair_visits: int = 0) -> ToolBox:
     return cast(
         ToolBox,
         SimpleNamespace(
             get_atomic_tools=lambda: cast(
                 AtomicToolBox,
                 SimpleNamespace(
-                    facts_llm_repair_visits=0,
+                    facts_llm_repair_visits=repair_visits,
                     additional_standard_namespaces=(),
                     validation_policy=None,
                     acceptance_policy=None,
@@ -90,7 +90,12 @@ def _tools() -> ToolBox:
 async def test_critic_spends_a_call_exactly_when_max_visits_allows(
     monkeypatch, max_visits: int, expected_critic_calls: int
 ) -> None:
-    """At 1 the critic is skipped; at 2 a successful render is criticised.
+    """With no repair budget, the critic runs only when a render slot is spare.
+
+    ``FACTS_LLM_REPAIR_VISITS=0`` is the one configuration where a verdict has
+    nowhere to go: no repair render to feed, and at ``max_visits=1`` no second
+    extraction either. See the companion test below for the default case, where
+    the critic runs at 1 visit because the repair lane can act on it.
 
     This is billing-visible in production (``criticise_facts`` is a provider
     call), which is how the silent A/A run was eventually detected — so the
@@ -124,6 +129,51 @@ async def test_critic_spends_a_call_exactly_when_max_visits_allows(
 
     assert result.status == Status.SUCCESS
     assert critic_calls == expected_critic_calls
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("max_visits", [1, 2])
+async def test_critic_runs_at_one_visit_when_a_repair_budget_exists(
+    monkeypatch, max_visits: int
+) -> None:
+    """The critic no longer needs a spare render slot to be worth calling.
+
+    It used to be skipped whenever the current render was the last allowed, on
+    the reasoning that a critique which cannot drive a retry is wasted. That is
+    spent: a verdict now feeds the tiered repair lane, which compiles
+    mechanical fixes with no LLM call and sends the rest to a bounded repair
+    render. At the shipped default (``MAX_VISITS=1``,
+    ``FACTS_LLM_REPAIR_VISITS=1``) the critic therefore runs — which is what
+    makes it measurable without paying for a second full extraction.
+    """
+    critic_calls = 0
+
+    async def ok_render(state, tools, **kwargs):
+        state.status = Status.SUCCESS
+        return state
+
+    async def converging_critic(state, tools):
+        nonlocal critic_calls
+        critic_calls += 1
+        state.status = Status.SUCCESS
+        return state
+
+    monkeypatch.setattr(atomic_module, "render_facts", ok_render)
+    monkeypatch.setattr(atomic_module, "criticise_facts", converging_critic)
+
+    context = UnitLoopContext.from_agent_state(AgentState(render_mode=RenderMode.FACTS))
+    resolved = UnitOntologyContext(
+        snapshot=empty_snapshot(), writable_iris=[], confidence=1.0
+    )
+    result = await facts_loop(
+        _unit_state(max_visits_per_node=max_visits),
+        _tools(repair_visits=1),
+        context,
+        pre_resolved_context=resolved,
+    )
+
+    assert result.status == Status.SUCCESS
+    assert critic_calls == 1
 
 
 @pytest.mark.anyio

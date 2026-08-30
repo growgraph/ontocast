@@ -39,6 +39,8 @@ EXPECTED_WIRE_NAMES = {
     "FACTS_MANDATORY_RESIDUAL": "facts_mandatory_residual",
     "FACTS_CRITIC_CALLS": "facts_critic_calls",
     "FACTS_CRITIC_ACCEPTED": "facts_critic_accepted",
+    "FACTS_CRITIC_FIXES_APPLIED": "facts_critic_fixes_applied",
+    "FACTS_CRITIC_FIXES_RESIDUAL": "facts_critic_fixes_residual",
     "FACTS_FINDINGS_RESIDUAL": "facts_findings_residual",
     "FACTS_REJECTED_MERGES": "facts_rejected_merges",
     "FACTS_MERGE_REPAIR_PASSES": "facts_merge_repair_passes",

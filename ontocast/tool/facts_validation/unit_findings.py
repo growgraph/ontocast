@@ -24,6 +24,7 @@ from ontocast.onto.rdfgraph import (
 from ontocast.tool.agg.signatures import canonical_literal, harvest_max_one_predicates
 from ontocast.tool.facts_validation.terms import (
     _FORBIDDEN_NAMESPACES,
+    _STANDARD_NAMESPACES,
     ValidationPolicy,
     _alias_candidates,
     _declared_domains,
@@ -298,6 +299,101 @@ def _scalar_as_bounds_findings(
     return findings
 
 
+def domain_vocabulary_share(
+    graph: RDFGraph,
+    catalog_terms: set[str],
+    fact_namespaces: Sequence[str],
+) -> tuple[int, int]:
+    """Count distinct schema terms drawn from the catalog, and the total.
+
+    Schema position only -- predicates and ``rdf:type`` objects. Instances in
+    the fact namespaces are excluded (they are supposed to be minted, not
+    looked up), and so are the RDF/RDFS/OWL/XSD/SKOS/DC/PROV plumbing
+    namespaces, which every graph uses regardless of which catalog it was
+    given and would otherwise float the ratio for free. Generic *content*
+    vocabularies such as schema.org deliberately stay in the denominator:
+    reaching for them instead of the catalog is exactly what this measures.
+
+    Args:
+        graph: The rendered unit graph.
+        catalog_terms: Terms declared by the unit's ontology context.
+        fact_namespaces: Namespaces holding minted instances.
+
+    Returns:
+        tuple[int, int]: ``(from_catalog, total)`` over distinct terms.
+    """
+    used: set[str] = set()
+    from_catalog: set[str] = set()
+    for _, predicate, obj in graph:
+        candidates = [predicate]
+        if predicate == RDF.type:
+            candidates.append(obj)
+        for term in candidates:
+            if not isinstance(term, URIRef):
+                continue
+            text = str(term)
+            if any(text.startswith(ns) for ns in fact_namespaces):
+                continue
+            if text.startswith(_STANDARD_NAMESPACES):
+                continue
+            used.add(text)
+            if text in catalog_terms:
+                from_catalog.add(text)
+    return len(from_catalog), len(used)
+
+
+def _domain_adherence_findings(
+    graph: RDFGraph,
+    catalog_terms: set[str],
+    fact_namespaces: Sequence[str],
+    min_share: float,
+) -> list[FactsUnitFinding]:
+    """Flag a render that barely used the vocabulary it was handed.
+
+    Every other finding here judges one triple. This one judges the render as a
+    whole, because the failure it catches is invisible term by term:
+    substituting a generic vocabulary for the catalog produces triples that are
+    individually well-formed, pass ``UNKNOWN_TERM`` (standard namespaces are
+    exempt by default), and satisfy every shape -- their subjects are in no
+    shape's target class. The graph looks extracted and answers nothing.
+
+    A share rather than an all-or-nothing test, because a graph picks up a
+    catalog term or two by accident (a unit class, a quantity wrapper) while
+    still expressing the substance in generic terms.
+
+    Silent when the unit has no catalog to adhere to, so a deliberately
+    catalog-free deployment is not spammed, and when ``min_share`` is 0.
+
+    Args:
+        graph: The rendered unit graph.
+        catalog_terms: Terms declared by the unit's ontology context.
+        fact_namespaces: Namespaces holding minted instances.
+        min_share: Floor on the catalog share, in [0, 1]. 0 disables.
+
+    Returns:
+        list[FactsUnitFinding]: At most one finding.
+    """
+    if not catalog_terms or not len(graph) or min_share <= 0:
+        return []
+    from_catalog, total = domain_vocabulary_share(graph, catalog_terms, fact_namespaces)
+    if not total or from_catalog / total >= min_share:
+        return []
+    return [
+        FactsUnitFinding(
+            kind=FactsUnitFindingKind.DOMAIN_ADHERENCE,
+            message=(
+                f"Only {from_catalog} of {total} schema terms in this render "
+                "come from the ontology you were given; the rest are generic "
+                "vocabulary. Re-express the same facts with terms from the "
+                "ONTOLOGY section wherever one fits -- a generic substitute is "
+                "validated by no shape and reachable by no query written "
+                "against the catalog. Keep the statements and their values; "
+                "change the terms."
+            ),
+        )
+    ]
+
+
 def collect_unit_findings(
     *,
     graph: RDFGraph,
@@ -470,6 +566,14 @@ def collect_unit_findings(
         _scalar_as_bounds_findings(graph, ontology_graph, normalized_fact_namespaces)
     )
     findings.extend(domain_violation_findings(graph, ontology_graph))
+    findings.extend(
+        _domain_adherence_findings(
+            graph,
+            catalog_terms,
+            normalized_fact_namespaces,
+            policy.domain_adherence_min_share,
+        )
+    )
     findings.extend(
         _label_only_number_findings(
             graph,

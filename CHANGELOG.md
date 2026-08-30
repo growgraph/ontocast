@@ -9,6 +9,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ONTOLOGY_CONTEXT_REQUIRED` (default `true`) stops a run whose ontology
+  context resolves to zero triples.** An empty context is not a milder version
+  of a good one: the renderer is instructed to extract "based on provided
+  domain ontology", and handed nothing it falls back on whatever standard
+  vocabulary the prompt names. The graph that comes out is well-formed triple
+  by triple, exempt from `UNKNOWN_TERM` (standard namespaces are exempt by
+  default), and matched by no shape — so it reads as extracted while answering
+  nothing, and the conformance gate reports a pass. Continuing produced a
+  finished, plausible, ungrounded result; stopping is strictly better. Set
+  `false` for deployments that extract without a catalog on purpose.
+
+  Touches: `stategraph/context_resolver.py`;
+  `onto/retrieval_capabilities.py::EmptyOntologyContextError`;
+  `config/settings.py::ServerConfig`.
+  Test: `test/test_stategraph_context_resolver.py`.
+
+- **`shacl_focus_nodes` and `shacl_vacuous` in the conformance summary, and
+  `conforms` is now `null` rather than `true` when the focus set is empty.**
+  `conforms` was silent about its own denominator: a validation pass over zero
+  targeted nodes reports no violations for the same reason an empty query
+  returns no rows. A graph that stops using the vocabulary its shapes are
+  written for therefore scores a *perfect* conformance result, which is the
+  opposite of what happened. Target matching follows `rdfs:subClassOf`, as
+  `sh:targetClass` does.
+
+  Touches: `tool/facts_validation/gate.py::count_shacl_focus_nodes`,
+  `summarize_conformance`; `stategraph/facts_gate.py`.
+  Test: `test/facts/test_grounding_guards.py`.
+
+- **`DOMAIN_ADHERENCE`, a mandatory per-unit finding for a render that barely
+  used the catalog it was given** (`FACTS_DOMAIN_ADHERENCE_MIN_SHARE`, default
+  `0.15`; `0` disables). Every other deterministic finding judges one triple,
+  and this failure is invisible triple by triple — each one is individually
+  valid. It is measured as a share of distinct schema terms (predicates and
+  `rdf:type` objects), excluding minted instances and RDF/RDFS/OWL/XSD/SKOS/DC/
+  PROV plumbing, which every graph uses regardless of catalog and would
+  otherwise float the ratio for free. Generic *content* vocabularies stay in
+  the denominator: reaching for one instead of the catalog is the thing being
+  measured. Silent when the unit has no catalog.
+
+  Touches: `tool/facts_validation/unit_findings.py::domain_vocabulary_share`,
+  `_domain_adherence_findings`; `tool/facts_validation/terms.py`;
+  `config/settings.py::FactsValidationConfig`.
+
+- **Startup check that the vector index and the ontology catalog agree.** The
+  two halves of retrieval can disagree, and when they did the pipeline could
+  not notice: vector search selects atoms from the index, then the induced
+  subgraph is built over the catalog, so an index still holding a vocabulary
+  the triple store no longer serves produces perfectly healthy retrieval
+  metrics — the expected seed IRIs, the expected atom count — and an empty
+  graph. An empty catalog beside a populated index now fails initialization,
+  naming what the index still holds; extra indexed IRIs beside a populated
+  catalog are ordinary staleness and only warn. Gated by
+  `ONTOLOGY_CONTEXT_REQUIRED`, and it fires before the first LLM call.
+
+  Touches: `toolbox.py::_check_catalog_index_agreement`.
+  Test: `test/test_toolbox_sync.py`.
+
+- **Critic telemetry that can be read without guessing**:
+  `fix_action_severity_histogram` (fixes keyed `ACTION:severity`) and
+  `accept_reason_histogram` on the critic manifest block, plus
+  `facts_critic_fixes_applied` / `facts_critic_fixes_residual`. Severity alone
+  could not be interpreted — a `REMOVE` never blocks acceptance at any
+  severity, so a `critical` count mixed fixes that gate a render with fixes
+  that never could, and the artifacts could not tell them apart.
+
+  Touches: `onto/model.py::LoopAttempt`; `onto/run_manifest.py`;
+  `agent/criticise_facts.py`; `stategraph/node_factories.py`; `onto/enum.py`.
+
+
 - `FACTS_CONTEXT_FROM_UNITS` (default off) seeds the merge/validate ontology
   context from the snapshots the facts units actually resolved. With
   `RENDER_MODE=facts` no ontology stage runs, so there are no reduced artifacts
@@ -93,6 +163,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Critic fixes are no longer discarded when a render is accepted.** Accepting
+  means "no defect worth another render", not "the critique was empty" — but
+  the accept path cleared the suggestion set and called the repair lane with no
+  critic fixes, so the entire critique of every accepted render was dropped
+  unread. Since a `REMOVE` fix cannot make a render blocking, and most renders
+  are accepted, that was the bulk of everything the critic produced. Fixes now
+  survive; what cannot be applied is counted as residual rather than lost.
+
+  Touches: `agent/criticise_facts.py`; `stategraph/atomic.py`.
+  Test: `test/facts/test_suggestions_lifecycle.py`.
+
+- **Tiered repair: a critic fix that is already a patch is applied without an
+  LLM call.** The loop's invariant is that every mutation is a compiled,
+  validated `GraphUpdate`; it had drifted into the stricter rule that every
+  mutation must come from a *render call*, which made a whole re-extraction the
+  only available response to a local defect — a high-variance operation for a
+  narrow problem. A fix whose `incorrect_value` matches triples the graph
+  actually holds, or whose `correct_value` parses, is compiled into the same
+  `GraphUpdate` a render's wire compiles to and applied directly. What does not
+  compile goes to the bounded repair render, where the model's judgement is
+  actually needed. Deliberately conservative: a fix that misquotes what it is
+  correcting has misunderstood the graph, so nothing is deleted on a miss.
+
+  Touches: `tool/facts_validation/critic_patch.py` (new);
+  `stategraph/atomic.py::_run_finding_driven_repair`.
+  Test: `test/facts/test_critic_patch.py`.
+
+- **`MAX_VISITS` no longer gates the facts critic.** The critic was skipped
+  whenever the current render was the last allowed, reasoning that a critique
+  which cannot drive a retry is wasted — so at the default `MAX_VISITS=1` it
+  never ran, and enabling it meant paying for a second full extraction. That
+  reasoning is spent now that a verdict feeds the tiered repair lane: the facts
+  critic runs at one visit whenever `FACTS_LLM_REPAIR_VISITS > 0`, and is
+  skipped only at `0`, where there is genuinely nowhere to put its output. The
+  ontology loop is unchanged. `MAX_VISITS` now bounds renders only.
+
+  Touches: `stategraph/atomic.py::_skip_critic_after_final_render`;
+  `config/settings.py::ServerConfig`; `docs/user_guide/{validation,workflow,
+  configuration,performance,observability}.md`.
+  Test: `test/test_max_visits_critic_propagation.py`.
+
+- **The facts prompt states vocabulary precedence instead of offering a
+  choice.** Rules 2 and 4 put the provided ontology and generic vocabularies on
+  equal footing ("either … or standard core vocabularies") and illustrated the
+  generic branch with two worked examples against one placeholder for the
+  domain branch. Catalog terms now take precedence explicitly, with the
+  mechanical reason stated — a catalog term is checked by the shapes and
+  reachable by queries written against them; a generic substitute is neither —
+  and generic vocabularies are named as a last resort. The block also no longer
+  points "above" at an ONTOLOGY section that is emitted below it, and says not
+  to mint entities for bare numbers or citation markers.
+
+  Touches: `prompt/facts_guidelines.py`.
+  Test: `test/test_prefix_namespace_hygiene.py`.
+
+
 - Test markers now mean what `pyproject.toml` documents. `unit` covered a
   handful of modules, so `-m "not slow"` and `-m integration` selected almost
   nothing and "the offline subset passes" was the same statement as "the suite
@@ -112,6 +238,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Test: `test/test_prompt_templates.py`.
 
 ### Fixed
+
+- **The empty-ontology-context diagnostic named the wrong subsystem.** It
+  inspected the vector index and atom counts and never consulted catalog state,
+  so a catalog that resolved to zero graphs — atoms selected and scored
+  normally, nothing to expand them against — was reported as *"all candidate
+  atoms scored below the retrieval thresholds"*, sending an operator to tune
+  numbers that were never involved. Catalog-side causes are now checked first
+  and named, including the vector-index-and-triple-store-disagree case.
+
+  Touches: `stategraph/context_resolver.py::_diagnose_empty_snapshot`.
+
 
 - A section list whose labels are *all* unrecognised is now rejected instead of
   silently disabling section handling. Unknown tokens were dropped with a

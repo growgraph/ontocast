@@ -150,6 +150,9 @@ class ValidationPolicy(BaseModel):
     #: Same class as the exemptions above -- something configuration says the
     #: deterministic checks must not put in front of the renderer.
     numeric_identifier_guard: bool = False
+    #: Floor on the share of schema terms a render must take from the
+    #: catalog before DOMAIN_ADHERENCE fires. 0 disables the check.
+    domain_adherence_min_share: float = 0.15
 
     def standard_namespaces(self) -> tuple[str, ...]:
         """Built-in meta-vocabulary namespaces plus the configured ones."""

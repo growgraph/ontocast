@@ -97,7 +97,7 @@ things:
 | `RENDER_MODE` | `ontology_and_facts` | Which halves run. `ontology` writes no facts; `facts` skips the ontology block and extracts only against the catalog you already have — see [Render Mode](user_guide/configuration.md#render-mode-render_mode) |
 | `ONTOLOGY_CONTEXT_MODE` | `selected_single_ontology` | Where each unit's schema comes from: LLM catalog selection, vector retrieval, or one pinned ontology — see [Ontology Context](user_guide/ontology_context.md) |
 | `LLM_GRAPH_FORMAT` | `jsonld` | Wire encoding the LLM emits graphs in; `turtle` is the legacy alternative |
-| `MAX_VISITS_PER_NODE` | `1` | Render/critic retry budget. At `1` the LLM critic never runs |
+| `MAX_VISITS_PER_NODE` | `1` | **Render** attempts per unit. The facts critic still runs at `1` (see `FACTS_LLM_REPAIR_VISITS`) |
 | `PARALLEL_WORKERS` | `16` | Concurrent content-unit workers |
 | `LLM_PROVIDER` / `LLM_MODEL_NAME` / `LLM_API_KEY` | `openai` | Provider selection and credentials |
 | `ONTOCAST_ONTOLOGY_DIRECTORY` | — | Seed ontologies synced on startup |

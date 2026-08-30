@@ -107,6 +107,7 @@ class AtomicToolBox:
             quantity_fallback_vocabulary=self.quantity_fallback_vocabulary,
             code_predicates=self.code_predicates,
             numeric_identifier_guard=facts_validation.numeric_identifier_guard,
+            domain_adherence_min_share=facts_validation.domain_adherence_min_share,
         )
         # A sibling of ValidationPolicy, deliberately not a field on it.
         # ValidationPolicy answers "what must never be flagged"; this answers

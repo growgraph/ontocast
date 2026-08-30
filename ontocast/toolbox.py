@@ -716,6 +716,71 @@ class ToolBox:
     def is_vector_store_ready(self) -> bool:
         return self.vector_store is not None and self.vector_store_ready
 
+    async def _check_catalog_index_agreement(
+        self, synchronized_ontologies: list[Ontology]
+    ) -> None:
+        """Refuse to start when the vector index knows ontologies the store lost.
+
+        The two halves of retrieval can disagree, and when they do the pipeline
+        does not notice: vector search selects atoms from the index, then the
+        induced subgraph is built over the *catalog*, so an index that still
+        holds a vocabulary the triple store no longer serves yields perfectly
+        healthy retrieval metrics -- the expected seed IRIs, the expected atom
+        count -- and an empty graph. Every unit then renders against an empty
+        ontology chapter, falls back on generic vocabulary, and passes a
+        conformance check that has no node left to constrain.
+
+        Only the unambiguous case is fatal: an index with content beside a
+        catalog with none. Extra indexed IRIs alongside a populated catalog are
+        ordinary staleness (that is what orphan pruning is for) and only warn.
+
+        Args:
+            synchronized_ontologies: What the catalog actually served.
+
+        Raises:
+            EmptyOntologyContextError: The catalog is empty and the index is
+                not, and this deployment requires a catalog.
+        """
+        # Deferred: retrieval_capabilities imports ToolBox, so a module-level
+        # import here would be circular.
+        from ontocast.onto.retrieval_capabilities import EmptyOntologyContextError
+
+        if not self.is_vector_store_ready() or self.vector_store is None:
+            return
+        try:
+            indexed = await asyncio.to_thread(
+                self.vector_store.list_indexed_ontology_iris
+            )
+        except Exception as exc:  # noqa: BLE001 - diagnostics must not break startup
+            logger.warning("Could not inspect the vector index: %s", exc)
+            return
+        if not indexed:
+            return
+        catalog = {o.iri for o in synchronized_ontologies if o.iri}
+        if not catalog:
+            message = (
+                "The ontology catalog is empty but the vector index holds "
+                f"{len(indexed)} ontology IRI(s): {sorted(indexed)}. Retrieval "
+                "would select atoms the triple store cannot expand, so every "
+                "unit would render against an empty ontology and the "
+                "conformance gate would report a vacuous pass. Load the "
+                "ontologies into the triple store, or set "
+                "ONTOLOGY_CONTEXT_REQUIRED=false to extract without a catalog."
+            )
+            if self.config.server.ontology_context_required:
+                raise EmptyOntologyContextError(message)
+            logger.warning(message)
+            return
+        orphans = indexed - catalog
+        if orphans:
+            logger.warning(
+                "Vector index holds %d ontology IRI(s) absent from the "
+                "catalog: %s. Retrieval can select atoms the induced subgraph "
+                "cannot expand. Enable orphan pruning or reindex.",
+                len(orphans),
+                sorted(orphans),
+            )
+
     async def initialize(
         self,
         *,
@@ -829,6 +894,8 @@ class ToolBox:
                         len(orphans),
                         orphans,
                     )
+
+        await self._check_catalog_index_agreement(synchronized_ontologies)
 
         for ontology in synchronized_ontologies:
             self.ontology_manager.add_ontology(ontology, skip_vector_index=True)

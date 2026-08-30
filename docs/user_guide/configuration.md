@@ -221,17 +221,20 @@ ENABLE_ONTOLOGY_CONSOLIDATION=false      # optional post-normalization merge pas
     can target any tenancy partition. Set `HOST=0.0.0.0` only behind a proxy
     that authenticates; the server logs a warning when you do.
 
-!!! note "`MAX_VISITS=1` means the LLM critic never runs — but not that there is only one LLM call"
+!!! note "`MAX_VISITS=1` does not mean one LLM call, and does not disable the facts critic"
 
-    A visit budget of 1 makes the single render also the final one, and a
-    critique that cannot drive a retry is skipped. The **finding-driven repair**
-    still runs: up to `FACTS_LLM_REPAIR_VISITS` (default `1`) additional
-    `render_facts_update` calls when mandatory findings remain, so a facts unit
-    costs up to two provider calls at the default. Only its *trigger* is
-    deterministic. Set `FACTS_LLM_REPAIR_VISITS=0` for exactly one call per
-    unit, or `MAX_VISITS=2`+ to enable `criticise_facts` /
-    `criticise_ontology`. The ontology loop has no repair stage, so there
-    `MAX_VISITS=1` really is one call per unit. See
+    `MAX_VISITS` bounds **renders**. At `1` the facts loop still runs
+    `criticise_facts`, because a verdict feeds the tiered repair lane rather
+    than a second extraction: mechanical fixes are compiled into a patch and
+    applied with no LLM call, and the rest go to up to
+    `FACTS_LLM_REPAIR_VISITS` (default `1`) `render_facts_update` calls,
+    alongside any mandatory deterministic findings. So a facts unit costs up to
+    three provider calls at the default. Set `FACTS_LLM_REPAIR_VISITS=0` for
+    exactly one call per unit — that also skips the critic, since there is then
+    nowhere to put its output. Raise `MAX_VISITS` to `2`+ only to allow a
+    second full extraction. The ontology loop has no repair stage, so there
+    `MAX_VISITS=1` really is one call per unit and its critic is still gated on
+    the render budget. See
     [Validation](validation.md#how-many-llm-calls-a-facts-unit-really-costs).
 
 !!! note "What `MAX_VISITS=2`+ actually costs"
@@ -605,7 +608,7 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `VECTOR_STORE_SYMBOL_CASE_MISMATCH_POLICY` | `demote` | Merge-time treatment of atoms whose declared symbol surfaces (`skos:notation`, `qudt:symbol`, `qudt:ucumCode`) match a query token only case-insensitively with no exact-case match anywhere — the BM25/dense text is case-folded, so prose "meV" also retrieves `unit:MegaEV` (symbol "MeV"). `demote` multiplies the atom score, `drop` removes it, `off` keeps legacy behavior; exact-case and label-only matches are never touched |
 | `VECTOR_STORE_SYMBOL_CASE_MISMATCH_DEMOTE_FACTOR` | `0.5` | Score multiplier applied under the `demote` policy |
 | `FACTS_OBJECT_PROPERTY_LITERAL_CHECK` | `true` | Quarantine string literals on predicates whose schema range is a class (e.g. `qudt:unit`); surfaced to the facts critic and the deterministic repair loop |
-| `FACTS_LLM_REPAIR_VISITS` | `1` | Finding-driven repair budget per unit, **in provider calls**: extra update renders fed with machine-found MANDATORY fixes (quarantined literals, unknown/near-miss terms, `rdfs:domain` contradictions) and numeric-coverage candidates. Fires even at `MAX_VISITS=1`, where the LLM critic never runs. `0` leaves the residue to the LLM-free repairs and the gate |
+| `FACTS_LLM_REPAIR_VISITS` | `1` | Finding-driven repair budget per unit, **in provider calls**: extra update renders fed with machine-found MANDATORY fixes (quarantined literals, unknown/near-miss terms, `rdfs:domain` contradictions), unresolved critic fixes, and numeric-coverage candidates. Fires at `MAX_VISITS=1`, and is also what lets the LLM critic run there: at `0` there is nowhere to put a verdict, so the critic is skipped. `0` leaves the residue to the LLM-free repairs and the gate |
 | `FACTS_PROPERTY_ALIAS_MIN_RATIO` | `0.85` | SequenceMatcher cutoff for deterministic near-miss property rewrites in catalog namespaces (token containment always qualifies, e.g. `qudt:value` → `qudt:numericValue`) |
 | `FACTS_MERGE_REPAIR_PASSES` | `1` | Un-merge budget at the post-aggregation `VALIDATE_FACTS` gate: *merge-signature* error findings (functional violation, suspect multi-value, degenerate coreference) on merged subjects become full-cluster pair vetoes and the facts units are re-aggregated. `0` records findings without repairing. SHACL findings never drive it |
 | `FACTS_CODE_PREDICATES` | `qudt:ucumCode`, `qudt:symbol`, `skos:notation` | Predicates whose literal objects are machine-resolvable codes. A node carrying `qudt:ucumCode "d"` but no unit link gains the object property pointing at the catalog individual declaring that code, when exactly one does. Exact and case-sensitive — these are codes, not labels |
@@ -619,6 +622,7 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `FACTS_SHACL_AUTOFIX_PASSES` | `1` | Bounded validate → repair → revalidate rounds; a pass that does not strictly reduce violations is reverted |
 | `FACTS_FUNCTIONAL_MIN_SINGLE_SUPPORT` | `3` | Distinct single-valued subjects a predicate needs before the gate treats it as empirically functional. Below this the evidence is too thin to call a second value a violation |
 | `FACTS_QUANTITY_FALLBACK_VOCABULARY` | QUDT | Role → term mapping the facts prompt names as the fallback for bounded/approximate quantities when retrieval supplied no suitable class. Roles: `value_class`, `numeric_value`, `unit`, plus optional `lower_bound`/`upper_bound` (and roles containing `inclusive`) naming the catalog's range properties. Override for catalogs modelling quantities with another vocabulary; set to `{}` to forbid the fallback entirely and keep the renderer inside the provided context. Terms in a configured fallback namespace are reported by `NON_CATALOG_VOCABULARY` as a *deliberate* fallback, and the configured terms are exempt from `UNKNOWN_TERM`. When all of `numeric_value`/`lower_bound`/`upper_bound` are set, equal-bound pairs are promoted to a single scalar at parse time; the `unit` role drives the `LABEL_ONLY_NUMBER` finding — see [Validation](validation.md#which-terms-count-as-unknown) |
+| `FACTS_DOMAIN_ADHERENCE_MIN_SHARE` | `0.15` | Floor on the fraction of a render's distinct schema terms (predicates and `rdf:type` objects, excluding minted instances and RDF/RDFS/OWL/XSD/SKOS/DC/PROV plumbing) that must come from the unit's ontology context. Below it a mandatory `DOMAIN_ADHERENCE` finding asks for a rewrite. Catches what no per-triple check can see: a render that says everything in a generic vocabulary is well-formed term by term, exempt from `UNKNOWN_TERM`, and matched by no shape — it reads as extracted while answering nothing. `0` disables; leave it disabled if you extract without a catalog |
 | `FACTS_ADDITIONAL_STANDARD_NAMESPACES` | schema.org | Namespaces exempt from `UNKNOWN_TERM` beyond the RDF/OWL substrate and annotation/provenance terms. Only meta-vocabularies are built in; a domain vocabulary shared across catalogs (SOSA/SSN, CSVW, FOAF, Dublin Core profiles) is exempted here. schema.org is the default because the shipped citation vocabulary uses it |
 | `CHUNK_CITATION_VOCABULARY` | schema.org | Role → term mapping used by the citation-metadata prompt in `citations_only` mode. Bibliographic entries are not domain content, so unlike the rest of the pipeline these terms are configuration rather than retrieval. Roles: `work_class`, `fallback_class`, `title`, `author`, `author_name`, `date_published`, `venue`, `identifier`, `cites` |
 

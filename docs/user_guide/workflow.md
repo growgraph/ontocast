@@ -169,7 +169,7 @@ Facts output uses the **`cd:` namespace** for text-derived instances; domain ont
 | `PARALLEL_WORKERS` | Max concurrent unit workers |
 | `LLM_MAX_INFLIGHT` | Max concurrent provider LLM requests (shared across units) |
 | `MAX_CONCURRENT_PROCESSES` | Optional cap on simultaneous `/process` pipelines |
-| `MAX_VISITS` / `max_visits` | Render/critic retry budget per loop (at `1`, the default, the LLM critic never runs — the critic is skipped after the final render). In the facts loop it bounds render-*failure* retries: a rejecting critic no longer consumes an attempt |
+| `MAX_VISITS` / `max_visits` | **Render** attempts per loop. Not the critic switch: in the facts loop the critic runs at the default `1` whenever `FACTS_LLM_REPAIR_VISITS > 0`, because a verdict feeds the tiered repair lane rather than needing a spare render slot. It bounds render-*failure* retries: a rejecting critic does not consume an attempt |
 | `FACTS_ACCEPT_BLOCKING_SEVERITY` | Which critic fix severities block a facts unit from leaving the loop (`critical` default, or `important` / `never`). Mandatory deterministic findings always block — see [Validation](validation.md) |
 | `MAX_CRITIC_VISITS_PER_NODE` | Critic attempts per render attempt. Unset couples it to `MAX_VISITS`; set to `1` for one critique per render. Only bites when the critic keeps requesting external evidence — see [Configuration](configuration.md) |
 | `FACTS_LLM_REPAIR_VISITS` | Finding-driven repair budget per facts unit, **in provider calls**: bounded update renders driven by machine-found violations; fires even at `MAX_VISITS=1`, so the default costs up to two calls per unit. See [Validation](validation.md#how-many-llm-calls-a-facts-unit-really-costs) |

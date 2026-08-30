@@ -215,7 +215,8 @@ better — the extra units queue behind the same synchronous section.
 
 Other knobs that change cost rather than concurrency:
 
-- `MAX_VISITS` (default 1) — at 1 the LLM critic never runs. Raising it to 2
+- `MAX_VISITS` (default 1) — **render** attempts, not the critic switch: the
+  facts critic runs at 1 whenever `FACTS_LLM_REPAIR_VISITS > 0`. Raising it to 2
   adds **one** call per unit, not a second render: a rejecting facts critic now
   buys a bounded repair pass rather than a full re-extraction, so the per-unit
   ledger is flat in `MAX_VISITS`. A facts unit costs one render plus
