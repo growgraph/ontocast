@@ -18,6 +18,7 @@ warning.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from rdflib import RDF, Graph, URIRef
@@ -43,10 +44,18 @@ _CHAPTER_CLOSING = (
 
 @dataclass(frozen=True)
 class ShapeRequirement:
-    """One node shape, reduced to a target label and its rule lines."""
+    """One node shape, reduced to a target label and its rule lines.
+
+    ``terms`` are the shape's own contract IRIs (targets, paths, classes,
+    datatypes, ``sh:in`` members). They serve two consumers: the union over
+    all requirements is the ``UNKNOWN_TERM`` exemption set, and the per-shape
+    set is what context-join selection intersects with a unit's resolved
+    ontology snapshot.
+    """
 
     anchor: str
     lines: tuple[str, ...]
+    terms: tuple[str, ...] = ()
     closed: bool = False
 
 
@@ -106,8 +115,26 @@ def derive_shape_requirements(shapes_graph: Graph) -> list[ShapeRequirement]:
         )
         if not anchors:
             continue
+        terms: set[str] = set()
+        for predicate in (SH.targetClass, SH.targetSubjectsOf, SH.targetObjectsOf):
+            terms.update(
+                str(t)
+                for t in shapes_graph.objects(shape, predicate)
+                if isinstance(t, URIRef)
+            )
         lines: list[str] = []
         for prop in shapes_graph.objects(shape, SH.property):
+            for predicate in (SH.path, SH["class"], SH.datatype):
+                value = shapes_graph.value(prop, predicate)
+                if isinstance(value, URIRef):
+                    terms.add(str(value))
+            in_list = shapes_graph.value(prop, SH["in"])
+            if in_list is not None:
+                terms.update(
+                    str(member)
+                    for member in shapes_graph.items(in_list)
+                    if isinstance(member, URIRef)
+                )
             message = shapes_graph.value(prop, SH.message)
             if message is not None:
                 lines.append(str(message))
@@ -131,6 +158,7 @@ def derive_shape_requirements(shapes_graph: Graph) -> list[ShapeRequirement]:
                 ShapeRequirement(
                     anchor=" / ".join(anchors),
                     lines=tuple(dict.fromkeys(lines)),
+                    terms=tuple(sorted(terms)),
                     closed=closed,
                 )
             )
@@ -145,7 +173,7 @@ def derive_shape_requirements(shapes_graph: Graph) -> list[ShapeRequirement]:
 
 
 def format_conformance_chapter(
-    requirements: list[ShapeRequirement],
+    requirements: Sequence[ShapeRequirement],
     *,
     max_lines: int = 40,
 ) -> str:
@@ -178,6 +206,24 @@ def format_conformance_chapter(
     if truncated:
         chapter += "\n(Further rules exist; validation checks all of them.)"
     return chapter
+
+
+def select_requirements(
+    requirements: Sequence[ShapeRequirement],
+    context_terms: set[str],
+) -> list[ShapeRequirement]:
+    """The requirements whose terms intersect a unit's ontology context.
+
+    Shape relevance is derivative of ontology-term relevance: a shape
+    constrains classes and properties, and a unit can only instantiate the
+    ones its resolved snapshot carries — so the snapshot's IRIs are the join
+    key, and no separate retrieval decision is needed. ``context_terms``
+    should be every IRI of the snapshot graph (subjects, predicates and
+    objects: the schema closure carries superclass IRIs as objects, which is
+    how a shape targeting a superclass joins a unit typed with the
+    subclass). Order is preserved.
+    """
+    return [r for r in requirements if context_terms.intersection(r.terms)]
 
 
 def contract_terms(shapes_graph: Graph) -> tuple[str, ...]:

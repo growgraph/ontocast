@@ -166,3 +166,60 @@ def test_contract_terms_are_exempt_from_unknown_term() -> None:
     assert str(qualifier) not in unknown_terms(
         ValidationPolicy(contract_exempt_terms=(str(qualifier),))
     )
+
+
+def test_per_shape_terms_are_extracted() -> None:
+    requirements = derive_shape_requirements(_shapes())
+    by_anchor = {r.anchor: r for r in requirements}
+    value_terms = set(by_anchor["qqval:QualifiedQuantityValue"].terms)
+    assert "https://example.org/qqval#QualifiedQuantityValue" in value_terms
+    assert "https://example.org/qqval#epistemicQualifier" in value_terms
+    assert "https://example.org/qudt#unit" in value_terms
+    edge = next(r for r in requirements if "subjects of" in r.anchor)
+    assert "https://example.org/qudt#hasResult" in set(edge.terms)
+
+
+def test_select_requirements_joins_on_context_terms() -> None:
+    from ontocast.prompt.shapes_contract import select_requirements
+
+    requirements = derive_shape_requirements(_shapes())
+    # A context carrying only the edge predicate selects only the edge shape.
+    selected = select_requirements(requirements, {"https://example.org/qudt#hasResult"})
+    assert [r.anchor for r in selected] == ["subjects of qudt:hasResult"]
+    # A superclass IRI appearing as a snapshot *object* (schema closure)
+    # joins the shape targeting it.
+    selected = select_requirements(
+        requirements, {"https://example.org/qqval#QualifiedQuantityValue"}
+    )
+    anchors = {r.anchor for r in selected}
+    assert "qqval:QualifiedQuantityValue" in anchors
+    # Order is preserved and the empty context selects nothing.
+    assert select_requirements(requirements, set()) == []
+    assert select_requirements(requirements, {"https://elsewhere/#X"}) == []
+
+
+def test_shapes_catalog_selection_modes() -> None:
+    """needs_selection flips on the cap; selected chapters are cached."""
+    from ontocast.onto.rdfgraph import RDFGraph
+    from ontocast.tool.shapes_catalog import ShapesCatalog
+
+    catalog = ShapesCatalog()
+    graph = RDFGraph()
+    graph.parse(data=SHAPES_TTL, format="turtle")
+    catalog._graph = graph  # materialized state, unit-test shortcut
+
+    # 5 renderable rule lines in the fixture: under a cap of 60, over 2.
+    assert catalog.needs_selection(max_lines=60) is False
+    assert catalog.needs_selection(max_lines=2) is True
+
+    full = catalog.conformance_chapter(max_lines=60)
+    assert "qqval:QualifiedQuantityValue" in full
+
+    context = {"https://example.org/qudt#hasResult"}
+    selected = catalog.selected_chapter(context, max_lines=60)
+    assert "hasResult must point at a QualifiedQuantityValue." in selected
+    assert "epistemicQualifier" not in selected
+    # Identical selection -> cached object.
+    assert catalog.selected_chapter(set(context), max_lines=60) is selected
+    # Empty context -> empty chapter.
+    assert catalog.selected_chapter(set(), max_lines=60) == ""

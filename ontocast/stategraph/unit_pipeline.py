@@ -168,7 +168,9 @@ async def run_unit_pipeline(
     )
 
     if agent_state.render_facts:
-        conformance_chapter, contract_terms = tools.shapes_prompt_contract()
+        conformance_chapter, contract_terms, selection_pending = (
+            tools.shapes_prompt_contract()
+        )
         facts_state = UnitFactsState(
             content_unit=unit,
             ontology_snapshot=_empty_snapshot(),
@@ -176,6 +178,7 @@ async def run_unit_pipeline(
             facts_user_instruction=agent_state.facts_user_instruction,
             conformance_chapter=conformance_chapter,
             shapes_contract_terms=contract_terms,
+            conformance_selection_pending=selection_pending,
             budget_tracker=deepcopy(agent_state.budget_tracker),
             max_visits_per_node=max_visits,
             llm_graph_format=agent_state.llm_graph_format,

@@ -679,20 +679,42 @@ class ToolBox:
         """Return the minimal toolbox used by atomic render/critic paths."""
         return self.atomic_tools
 
-    def shapes_prompt_contract(self) -> tuple[str, tuple[str, ...]]:
-        """The conformance chapter and its term exemptions for this tenancy.
+    def shapes_prompt_contract(self) -> tuple[str, tuple[str, ...], bool]:
+        """Conformance chapter, term exemptions, and the selection flag.
 
-        ``("", ())`` when the contract is off or the shapes partition is
-        empty -- the prompt is then byte-identical to a shape-less
-        deployment's. The chapter itself is memoized on the shapes catalog.
+        ``("", (), False)`` when the contract is off or the shapes partition
+        is empty -- the prompt is then byte-identical to a shape-less
+        deployment's. Full-catalog modes return the memoized whole chapter
+        with the flag False. When per-unit selection is in force (mode
+        ``context``, or ``auto`` with a catalog that outgrew the line cap)
+        the chapter comes back empty with the flag True, and the unit loop
+        fills it via :meth:`shapes_chapter_for_context` once the unit's
+        ontology snapshot exists. Exemption terms are the full catalog's in
+        every mode -- the gate validates against every shape, and the terms
+        are catalog IRIs either way.
         """
         cfg = self.config.tool_config.facts_validation
-        if cfg.shapes_prompt_contract == "off":
-            return "", ()
+        mode = cfg.shapes_prompt_contract
+        if mode == "off":
+            return "", (), False
         max_lines = cfg.shapes_prompt_max_lines
+        terms = self.shapes_catalog.prompt_contract_terms(max_lines=max_lines)
+        select = mode == "context" or (
+            mode == "auto" and self.shapes_catalog.needs_selection(max_lines=max_lines)
+        )
+        if select:
+            return "", terms, True
         return (
             self.shapes_catalog.conformance_chapter(max_lines=max_lines),
-            self.shapes_catalog.prompt_contract_terms(max_lines=max_lines),
+            terms,
+            False,
+        )
+
+    def shapes_chapter_for_context(self, context_terms: set[str]) -> str:
+        """Per-unit conformance chapter, joined on the unit's context IRIs."""
+        cfg = self.config.tool_config.facts_validation
+        return self.shapes_catalog.selected_chapter(
+            context_terms, max_lines=cfg.shapes_prompt_max_lines
         )
 
     def serialize(self, state: AgentState) -> None:

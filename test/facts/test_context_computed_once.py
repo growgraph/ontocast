@@ -81,7 +81,7 @@ def _tools(*, context_from_units: bool = False) -> ToolBox:
                 ),
                 get_tool_config=lambda: tool_config,
             ),
-            shapes_prompt_contract=lambda: ("", ()),
+            shapes_prompt_contract=lambda: ("", (), False),
         ),
     )
 

@@ -312,15 +312,45 @@ artifacts:
   line (`path: at least 1, of type C`); a message-less SPARQL constraint
   cannot be summarized and is omitted with a startup warning.
 - The chapter is **capped** (`FACTS_SHAPES_PROMPT_MAX_LINES`, default 60) and
-  notes in-text when rules were truncated. It is memoized per merged shapes
-  graph — run-constant, no per-unit cost.
+  notes in-text when rules were truncated.
 - With no shapes loaded, or `FACTS_SHAPES_PROMPT_CONTRACT=off`, the prompt is
   byte-identical to before.
-- **Terms the chapter requires are exempt from `UNKNOWN_TERM`**, for the same
+- **Terms the shapes require are exempt from `UNKNOWN_TERM`**, for the same
   reason the quantity fallback vocabulary is: the unit's retrieved ontology
-  context is a subset, and flagging a term the chapter instructed the
+  context is a subset, and flagging a term the contract instructed the
   renderer to emit would have the repair lane delete exactly what the
-  contract required.
+  contract required. The exemption is always the **full catalog's** terms,
+  whatever chapter selection (below) does — they are catalog IRIs either
+  way, and the gate validates against every shape.
+
+**How the chapter scales — selection by context join.** A small catalog is
+rendered whole: run-constant, memoized once per tenancy, shared by every
+unit. A large catalog must not be blind-truncated in document order, so above
+the line cap the chapter is **selected per unit**: a shape is included iff
+its own terms (its `sh:targetClass`, target predicates, `sh:path`,
+`sh:class`) intersect the IRIs of the unit's *resolved ontology snapshot*.
+Shape relevance is derivative of ontology-term relevance — a unit can only
+instantiate the classes its context carries — so the snapshot the retrieval
+already produced is the join key, and no second retrieval decision exists to
+get wrong. The join reads every IRI of the snapshot (subjects, predicates
+and objects: the schema closure carries superclass IRIs as objects, which is
+how a shape targeting a superclass reaches a unit typed with the subclass).
+A unit with an empty context gets no chapter — it has no classes to hold to
+their rules.
+
+`FACTS_SHAPES_PROMPT_CONTRACT` modes: `full` (whole catalog always),
+`context` (per-unit join always), `auto` (default — `full` while the catalog
+fits `FACTS_SHAPES_PROMPT_MAX_LINES`, `context` once it outgrows it), `off`.
+The run manifest records the resolved behavior as
+`validation_config.shapes_prompt_selection`.
+
+Shapes are deliberately **not** indexed in the vector store: the whole index
+lifecycle (tenancy collections, wipe, orphan pruning, the startup
+index↔catalog consistency checks) is keyed on ontology identity, and shape
+relevance needs no similarity search — the context join answers it exactly,
+from a retrieval that already happened. This extends the standing rule that
+shapes live in their own partition precisely so they are never mistaken for
+catalog schema.
 
 Write `sh:message` for every constraint you author: it is simultaneously the
 validation report's diagnostic and the renderer's instruction, one string

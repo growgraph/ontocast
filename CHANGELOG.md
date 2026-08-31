@@ -10,23 +10,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Shapes-driven prompt contract** (`FACTS_SHAPES_PROMPT_CONTRACT`, default
-  `auto`). The loaded SHACL shapes are rendered once per tenancy into a
+  `auto`). The loaded SHACL shapes are rendered into a
   `# CONFORMANCE REQUIREMENTS` chapter that both the facts renderer and the
   facts critic see — the model is no longer graded against a rulebook it was
   never shown. The chapter is derived from the deployment's shapes at run
   time (`sh:message` verbatim where the author wrote one, a synthesized
   structural line otherwise; message-less SPARQL constraints are omitted with
-  a warning), capped by `FACTS_SHAPES_PROMPT_MAX_LINES`, and memoized on the
-  shapes catalog. With no shapes loaded — or `off` — the prompt is
-  byte-identical to before, so the library stays domain-neutral: domain
-  knowledge enters only through the deployment's artifacts. Terms the chapter
-  requires join the `UNKNOWN_TERM` exempt set
-  (`ValidationPolicy.contract_exempt_terms`), for the same reason the
-  quantity fallback vocabulary is exempt: the validator must never order
-  removal of what the prompt asked for.
+  a warning) and capped by `FACTS_SHAPES_PROMPT_MAX_LINES`. With no shapes
+  loaded — or `off` — the prompt is byte-identical to before, so the library
+  stays domain-neutral: domain knowledge enters only through the
+  deployment's artifacts. Terms the shapes require join the `UNKNOWN_TERM`
+  exempt set (`ValidationPolicy.contract_exempt_terms`), full-catalog in
+  every mode, for the same reason the quantity fallback vocabulary is
+  exempt: the validator must never order removal of what the prompt asked
+  for.
+
+  The chapter **scales by context join** rather than truncation or a second
+  retrieval: a small catalog is rendered whole (memoized once per tenancy);
+  above the line cap the chapter is selected per unit, keeping only shapes
+  whose own terms (targets, paths, classes) intersect the IRIs of the
+  unit's resolved ontology snapshot — shape relevance is derivative of
+  ontology-term relevance, so the snapshot the retrieval already produced
+  is the join key. Modes: `full`, `context`, `auto` (size-switched,
+  default), `off`; the run manifest records the resolved behavior
+  (`validation_config.shapes_prompt_selection`). Shapes are deliberately
+  not vector-indexed: the index lifecycle is keyed on ontology identity,
+  and the join answers relevance exactly with no new index to drift.
   New module `prompt/shapes_contract.py`; wiring in
   `tool/shapes_catalog.py`, `toolbox.py`, `onto/unit_states.py`,
-  `agent/render_facts.py`, `agent/criticise_facts.py`.
+  `stategraph/atomic.py`, `agent/render_facts.py`,
+  `agent/criticise_facts.py`.
 
 - **Quantitative-completeness rule in the facts prompt** (rule 3a) and an
   actionable completeness guideline in the critic prompt. Rule 3 scopes

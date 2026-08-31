@@ -255,9 +255,19 @@ class UnitFactsState(UnitState):
     shapes_contract_terms: tuple[str, ...] = Field(
         default=(),
         description=(
-            "IRIs the conformance chapter instructs the renderer to emit; "
+            "IRIs the shapes contract instructs the renderer to emit; "
             "exempt from UNKNOWN_TERM so the validator never orders removal "
-            "of what the chapter required."
+            "of what the contract required. Always the full catalog's terms, "
+            "whatever chapter selection does."
+        ),
+    )
+    conformance_selection_pending: bool = Field(
+        default=False,
+        description=(
+            "The conformance chapter is to be selected per unit by joining "
+            "the shapes on this unit's resolved ontology snapshot -- set by "
+            "the fan-out when the shapes catalog outgrows the prompt cap, "
+            "consumed by the unit loop right after context resolution."
         ),
     )
     facts_updates: list[GraphUpdate] = Field(default_factory=list)

@@ -17,6 +17,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal, TypeVar
 
+from rdflib import URIRef
+
 from ontocast.agent.criticise_facts import criticise_facts
 from ontocast.agent.criticise_ontology import criticise_ontology
 from ontocast.agent.external_evidence import (
@@ -512,6 +514,32 @@ async def _apply_facts_ontology_context(
     _apply_unit_ontology_context(unit_state, ctx)
 
 
+def _select_conformance_chapter(unit_state: UnitFactsState, tools: ToolBox) -> None:
+    """Join the shapes contract on this unit's resolved ontology context.
+
+    Runs once per unit, right after context resolution: the fan-out could
+    not select earlier because the snapshot did not exist yet. The join key
+    is every IRI of the snapshot graph -- subjects, predicates and objects,
+    because the schema closure carries superclass IRIs as objects, which is
+    how a shape targeting a superclass reaches a unit typed with the
+    subclass -- plus the writable IRIs. An empty snapshot selects nothing:
+    a unit with no ontology context has no classes to hold to their rules.
+    """
+    context_terms: set[str] = set(unit_state.writable_iris or ())
+    for triple in unit_state.ontology_snapshot.graph:
+        for term in triple:
+            if isinstance(term, URIRef):
+                context_terms.add(str(term))
+    unit_state.conformance_chapter = tools.shapes_chapter_for_context(context_terms)
+    unit_state.conformance_selection_pending = False
+    logger.debug(
+        "Conformance chapter selected for unit %s: %d chars from %d context terms",
+        unit_state.content_unit.index,
+        len(unit_state.conformance_chapter),
+        len(context_terms),
+    )
+
+
 # --- phase adapters ----------------------------------------------------------
 #
 # The two unit loops were parallel implementations of the same control flow,
@@ -720,6 +748,11 @@ async def run_unit_loop(
                 can_create_vocabulary=True,
             )
             _apply_unit_ontology_context(unit_state, resolved)
+        if (
+            isinstance(unit_state, UnitFactsState)
+            and unit_state.conformance_selection_pending
+        ):
+            _select_conformance_chapter(unit_state, tools)
         phase.prepare(unit_state)
 
         max_visits = _resolve_max_visits_limit(

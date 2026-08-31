@@ -233,6 +233,7 @@ def dump_run_manifest(
     line_number: int | None = None,
     output_dir: pathlib.Path | None = None,
     shapes_triples: int | None = None,
+    shapes_prompt_selection: bool | None = None,
 ) -> pathlib.Path | None:
     """Write the run's cost and configuration beside the facts TTL.
 
@@ -278,6 +279,7 @@ def dump_run_manifest(
             context_from_units=facts_validation.context_from_units,
             json_mode=llm_config.json_mode,
             shapes_prompt_contract=facts_validation.shapes_prompt_contract,
+            shapes_prompt_selection=shapes_prompt_selection,
             shapes_triples=shapes_triples,
             shacl_inference=str(facts_validation.shacl_inference),
             numeric_coverage_mandatory=facts_validation.numeric_coverage_mandatory,
@@ -762,6 +764,7 @@ async def process_files_input(
                     output_dir=facts_dir,
                 )
                 shapes_graph = tools.shapes_catalog.graph()
+                _, _, selection_pending = tools.shapes_prompt_contract()
                 dump_run_manifest(
                     state,
                     file_path,
@@ -771,6 +774,7 @@ async def process_files_input(
                     shapes_triples=(
                         len(shapes_graph) if shapes_graph is not None else 0
                     ),
+                    shapes_prompt_selection=selection_pending,
                 )
         except Exception:
             logger.exception("Error processing %s", file_path)

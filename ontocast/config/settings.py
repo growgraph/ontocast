@@ -2308,21 +2308,29 @@ class FactsValidationConfig(BaseSettings):
             "unaffected."
         ),
     )
-    shapes_prompt_contract: Literal["off", "auto"] = Field(
+    shapes_prompt_contract: Literal["off", "auto", "full", "context"] = Field(
         default="auto",
         description=(
             "Render the loaded SHACL shapes as a CONFORMANCE REQUIREMENTS "
-            "chapter in the facts render and critic prompts. 'auto' (default) "
-            "renders the chapter only when the shapes partition is non-empty, "
-            "so a deployment without shapes sees an unchanged prompt. The "
-            "chapter is derived from the shapes at run time -- sh:message "
-            "verbatim where the author wrote one, a synthesized structural "
-            "line otherwise -- so the renderer is shown the same rulebook the "
-            "gate validates against, instead of being graded on rules no "
-            "prompt states. Terms the chapter requires are exempt from "
-            "UNKNOWN_TERM, for the same reason the quantity fallback "
-            "vocabulary is: the validator must never order removal of what "
-            "the prompt asked for."
+            "chapter in the facts render and critic prompts, so the renderer "
+            "is shown the same rulebook the gate validates against instead of "
+            "being graded on rules no prompt states. The chapter is derived "
+            "from the shapes at run time -- sh:message verbatim where the "
+            "author wrote one, a synthesized structural line otherwise. "
+            "Modes: 'off' -- no chapter; 'full' -- the whole catalog, capped "
+            "at shapes_prompt_max_lines and memoized per tenancy; 'context' "
+            "-- per-unit selection, keeping only shapes whose target "
+            "classes/properties intersect the unit's resolved ontology "
+            "snapshot (shape relevance is derivative of ontology-term "
+            "relevance, so the snapshot is the join key and no separate "
+            "retrieval is needed); 'auto' (default) -- 'full' while the "
+            "catalog fits the line cap, 'context' once it outgrows it, which "
+            "keeps small catalogs run-constant and stops large ones being "
+            "blind-truncated in document order. A deployment without shapes "
+            "sees an unchanged prompt in every mode. Terms the shapes "
+            "require are exempt from UNKNOWN_TERM (full catalog, whatever "
+            "the mode -- they are catalog IRIs, and the validator must never "
+            "order removal of what the contract asks for)."
         ),
     )
     shapes_prompt_max_lines: int = Field(

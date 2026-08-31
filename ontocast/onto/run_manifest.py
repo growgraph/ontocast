@@ -100,6 +100,15 @@ class RunManifestValidationConfig(BaseModel):
     context_from_units: bool | None = None
     json_mode: bool | None = None
     shapes_prompt_contract: str | None = None
+    shapes_prompt_selection: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the conformance chapter was selected per unit by the "
+            "ontology-context join. 'auto' resolves by catalog size, so two "
+            "arms with identical settings can differ here; this records the "
+            "behavior that actually ran."
+        ),
+    )
     shapes_triples: int | None = Field(
         default=None,
         description=(

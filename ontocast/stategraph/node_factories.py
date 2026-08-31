@@ -652,7 +652,9 @@ def make_render_facts_node(tools: ToolBox):
                 # does the work when facts run without an ontology stage.
                 await ensure_unit_summary(state, unit_index, tools, unit_budget)
                 unit_context = UnitLoopContext.from_agent_state(state, unit_budget)
-                conformance_chapter, contract_terms = tools.shapes_prompt_contract()
+                conformance_chapter, contract_terms, selection_pending = (
+                    tools.shapes_prompt_contract()
+                )
                 facts_state = UnitFactsState(
                     content_unit=state.content_units[unit_index],
                     ontology_snapshot=_empty_unit_snapshot(),
@@ -660,6 +662,7 @@ def make_render_facts_node(tools: ToolBox):
                     facts_user_instruction=state.facts_user_instruction,
                     conformance_chapter=conformance_chapter,
                     shapes_contract_terms=contract_terms,
+                    conformance_selection_pending=selection_pending,
                     budget_tracker=unit_budget,
                     max_visits_per_node=state.max_visits,
                     llm_graph_format=state.llm_graph_format,
