@@ -22,6 +22,7 @@ from ontocast.onto.run_manifest import (
     RunManifestLLM,
     RunManifestLoops,
     RunManifestSelection,
+    RunManifestValidationConfig,
     summarize_loop,
 )
 from ontocast.onto.state import AgentState
@@ -205,6 +206,25 @@ def dump_validation_report(
     return output_path
 
 
+def _selection_manifest(state: AgentState, config: Config) -> RunManifestSelection:
+    """Selection settings plus the label census that says whether they acted."""
+    histogram: dict[str, int] = {}
+    for unit in state.content_units or []:
+        label = unit.section_label or "(unlabeled)"
+        histogram[label] = histogram.get(label, 0) + 1
+    unlabeled = histogram.get("(unlabeled)", 0)
+    return RunManifestSelection(
+        target_sections=state.target_sections,
+        exclude_sections=state.exclude_sections,
+        summarize_sections=state.summarize_sections,
+        summary_max_sentences=state.summary_max_sentences,
+        bibliography_mode=str(config.get_tool_config().chunk_config.bibliography_mode),
+        labeled_units=(sum(histogram.values()) - unlabeled) if histogram else None,
+        unlabeled_units=unlabeled if histogram else None,
+        section_label_histogram=histogram or None,
+    )
+
+
 def dump_run_manifest(
     state: AgentState,
     file_path: pathlib.Path,
@@ -212,6 +232,7 @@ def dump_run_manifest(
     config: Config,
     line_number: int | None = None,
     output_dir: pathlib.Path | None = None,
+    shapes_triples: int | None = None,
 ) -> pathlib.Path | None:
     """Write the run's cost and configuration beside the facts TTL.
 
@@ -221,7 +242,15 @@ def dump_run_manifest(
     them. One small JSON per document closes that.
     """
     llm_config = config.tool_config.llm_config
-    facts_validation = config.get_tool_config().facts_validation
+    tool_config = config.get_tool_config()
+    facts_validation = tool_config.facts_validation
+    # The deprecated FACTS_LLM_REPAIR_VISITS names the same budget, so a run
+    # configured the old way must not be recorded as having run no passes.
+    facts_critic_passes = (
+        facts_validation.llm_repair_visits
+        if facts_validation.llm_repair_visits is not None
+        else facts_validation.critic_passes
+    )
     # The .facts.ttl dump strips provenance; count what the file will actually
     # hold, or the manifest is not comparable to its own TTL (1711 vs 557 on
     # observed runs).
@@ -238,19 +267,21 @@ def dump_run_manifest(
         loops=RunManifestLoops(
             max_visits=state.max_visits,
             max_critic_visits=config.server.max_critic_visits_per_node,
-            llm_repair_visits=facts_validation.llm_repair_visits,
+            facts_critic_passes=facts_critic_passes,
+            ontology_critic_passes=tool_config.ontology_validation.critic_passes,
         ),
         critic=summarize_loop(state.facts_loop_telemetry),
         ontology_critic=summarize_loop(state.ontology_loop_telemetry),
         ontology_reduce_metrics=dict(state.ontology_reduce_metrics),
-        selection=RunManifestSelection(
-            target_sections=state.target_sections,
-            exclude_sections=state.exclude_sections,
-            summarize_sections=state.summarize_sections,
-            summary_max_sentences=state.summary_max_sentences,
-            bibliography_mode=str(
-                config.get_tool_config().chunk_config.bibliography_mode
-            ),
+        selection=_selection_manifest(state, config),
+        validation_config=RunManifestValidationConfig(
+            context_from_units=facts_validation.context_from_units,
+            json_mode=llm_config.json_mode,
+            shapes_prompt_contract=facts_validation.shapes_prompt_contract,
+            shapes_triples=shapes_triples,
+            shacl_inference=str(facts_validation.shacl_inference),
+            numeric_coverage_mandatory=facts_validation.numeric_coverage_mandatory,
+            facts_user_instruction_chars=len(state.facts_user_instruction or ""),
         ),
         graph_metrics=(
             facts_graph_shape_metrics(
@@ -405,6 +436,7 @@ def expand_input_to_states(
     section_schema_id: str | None = None,
     max_visits: int | None = None,
     document_metadata: dict[str, object] | None = None,
+    facts_user_instruction: str = "",
 ) -> list[AgentState]:
     """Expand a local input file into one ``AgentState`` per logical record."""
     file_bytes = file_path.read_bytes()
@@ -431,6 +463,7 @@ def expand_input_to_states(
         "summary_max_sentences": summary_max_sentences,
         "document_type_hint": document_type_hint,
         "section_schema_id": section_schema_id,
+        "facts_user_instruction": facts_user_instruction,
     }
 
     if file_path.suffix.lower() != ".jsonl":
@@ -616,6 +649,7 @@ async def process_files_input(
     section_schema_id: str | None = None,
     max_visits: int | None = None,
     document_metadata: dict[str, object] | None = None,
+    facts_user_instruction: str = "",
     output_dir: pathlib.Path | None = None,
     facts_output_dir: pathlib.Path | None = None,
     ontology_output_dir: pathlib.Path | None = None,
@@ -658,6 +692,7 @@ async def process_files_input(
                 section_schema_id=section_schema_id,
                 max_visits=resolved_max_visits,
                 document_metadata=document_metadata,
+                facts_user_instruction=facts_user_instruction,
             )
             for state_index, state in enumerate(states):
                 if use_unit_pipeline:
@@ -726,12 +761,16 @@ async def process_files_input(
                     line_number=line_number,
                     output_dir=facts_dir,
                 )
+                shapes_graph = tools.shapes_catalog.graph()
                 dump_run_manifest(
                     state,
                     file_path,
                     config=config,
                     line_number=line_number,
                     output_dir=facts_dir,
+                    shapes_triples=(
+                        len(shapes_graph) if shapes_graph is not None else 0
+                    ),
                 )
         except Exception:
             logger.exception("Error processing %s", file_path)

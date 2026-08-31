@@ -93,9 +93,13 @@ async def criticise_facts(
     ontology_chapter = ctx.prompt_chapter(
         profile, max_triples=state.ontology_context_max_triples
     )
-    facts_chapter = profile.format_facts_chapter(
-        state.content_unit.graph
-    ) + _build_quarantine_chapter(state)
+    # Every statement gets a citable id, and the index is kept on the state so
+    # the fixes that come back can be resolved by lookup. The critic used to be
+    # asked to requote the statements it wanted changed, which it reproduces
+    # correctly only a minority of the time -- for a bare removal, almost never.
+    indexed_facts = profile.format_facts_chapter_indexed(state.content_unit.graph)
+    state.prompt_triple_index = indexed_facts.index
+    facts_chapter = indexed_facts.text + _build_quarantine_chapter(state)
 
     text_chapter = text_template.format(text=state.content_unit.extraction_text)
 
@@ -112,6 +116,7 @@ async def criticise_facts(
             "evaluation_instruction",
             "user_instruction",
             "ontology_chapter",
+            "conformance_chapter",
             "facts_chapter",
             "text_chapter",
             "graph_format_instruction",
@@ -135,6 +140,9 @@ async def criticise_facts(
         "evaluation_instruction": evaluation_instruction_str,
         "user_instruction": user_instruction,
         "ontology_chapter": ontology_chapter,
+        # Same rulebook the gate validates against; critique and render
+        # share one contract.
+        "conformance_chapter": state.conformance_chapter,
         "facts_chapter": facts_chapter,
         "text_chapter": text_chapter,
         "graph_format_instruction": graph_format_instruction,

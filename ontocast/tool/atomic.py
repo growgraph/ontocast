@@ -4,9 +4,17 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
-from ontocast.config import FactsValidationConfig, WebSearchConfig
+from ontocast.config import (
+    FactsValidationConfig,
+    OntologyValidationConfig,
+    WebSearchConfig,
+)
 from ontocast.onto.enum import WorkflowNode
-from ontocast.tool.facts_validation import FactsAcceptancePolicy, ValidationPolicy
+from ontocast.tool.facts_validation import (
+    CriticPatchPolicy,
+    FactsAcceptancePolicy,
+    ValidationPolicy,
+)
 from ontocast.tool.llm import LLMTool
 
 
@@ -57,6 +65,7 @@ class AtomicToolBox:
         search_provider: AtomicSearchProvider | None = None,
         web_search_config: WebSearchConfig | None = None,
         facts_validation_config: FactsValidationConfig | None = None,
+        ontology_validation_config: OntologyValidationConfig | None = None,
         citation_vocabulary: dict[str, str] | None = None,
     ):
         """Build the atomic tool surface.
@@ -68,13 +77,17 @@ class AtomicToolBox:
             web_search_config: Web-grounding settings. Defaults to
                 :class:`WebSearchConfig`, which is disabled unless configured.
             facts_validation_config: Facts-gate settings consumed by the render
-                and repair paths. Defaults to :class:`FactsValidationConfig`.
+                and critic paths. Defaults to :class:`FactsValidationConfig`.
+            ontology_validation_config: Ontology-delta settings, including the
+                ontology critic's pass budget and patch limits. Defaults to
+                :class:`OntologyValidationConfig`.
             citation_vocabulary: Bibliographic terms for citation-metadata
                 units. Configuration rather than retrieval: a reference list is
                 not domain content, so its vocabulary never reaches the catalog.
         """
         web_search = web_search_config or WebSearchConfig()
         facts_validation = facts_validation_config or FactsValidationConfig()
+        ontology_validation = ontology_validation_config or OntologyValidationConfig()
 
         self.llm_provider = llm_provider
         self.search_provider = search_provider
@@ -83,8 +96,29 @@ class AtomicToolBox:
         self.object_property_literal_check = (
             facts_validation.object_property_literal_check
         )
-        # Finding-driven repair renders: each one is a provider call.
-        self.facts_llm_repair_visits = facts_validation.llm_repair_visits
+        # Review-and-patch passes: each one is a provider call. The deprecated
+        # FACTS_LLM_REPAIR_VISITS named the same budget for the separate repair
+        # render that the critic pass replaced, so it is honoured as an alias
+        # rather than silently ignored on an existing deployment.
+        self.facts_critic_passes = (
+            facts_validation.llm_repair_visits
+            if facts_validation.llm_repair_visits is not None
+            else facts_validation.critic_passes
+        )
+        self.ontology_critic_passes = ontology_validation.critic_passes
+        self.facts_patch_policy = CriticPatchPolicy(
+            max_delete_share=facts_validation.critic_max_delete_share,
+            min_deletes=facts_validation.critic_min_deletes,
+            allow_subject_rename=facts_validation.critic_allow_subject_rename,
+        )
+        self.ontology_patch_policy = CriticPatchPolicy(
+            max_delete_share=ontology_validation.critic_max_delete_share,
+            min_deletes=ontology_validation.critic_min_deletes,
+            allow_subject_rename=False,
+        )
+        # Numeric-coverage knobs for the deterministic per-unit validator.
+        self.numeric_coverage_limit = facts_validation.numeric_coverage_limit
+        self.numeric_coverage_mandatory = facts_validation.numeric_coverage_mandatory
         # Code predicates for the LLM-free code -> catalog IRI repair.
         self.code_predicates: tuple[str, ...] = tuple(facts_validation.code_predicates)
         self.property_alias_min_ratio = facts_validation.property_alias_min_ratio
@@ -115,6 +149,12 @@ class AtomicToolBox:
         # loop, but the term checks and the catalog lint have no business
         # knowing about acceptance.
         self.acceptance_policy = FactsAcceptancePolicy(
+            blocking_fix_severity=facts_validation.accept_blocking_severity,
+        )
+        self.ontology_acceptance_policy = FactsAcceptancePolicy(
+            blocking_finding_kinds=frozenset(
+                ontology_validation.accept_blocking_finding_kinds
+            ),
             blocking_fix_severity=facts_validation.accept_blocking_severity,
         )
 

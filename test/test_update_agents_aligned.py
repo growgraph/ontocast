@@ -1,11 +1,16 @@
-"""The two graph-update agents must run the same post-parse hygiene.
+"""Post-parse hygiene for the graph-update render agent.
 
-Facts updates and ontology updates consume the same
-:class:`GraphUpdateRenderReport`, but everything after the parse had drifted
-apart: the facts path quarantined invalid typed literals and cleared consumed
-findings, and the ontology path did neither -- a malformed literal went from
-the model straight into the working graph and on into a compiled SPARQL
-UPDATE. These tests hold the two paths together.
+This began as an alignment suite: facts and ontology both had update renderers
+consuming the same :class:`GraphUpdateRenderReport`, and everything after the
+parse had drifted apart -- the facts path quarantined invalid typed literals and
+cleared consumed findings, the ontology path did neither, so a malformed literal
+went from the model straight into the working graph and on into a compiled
+SPARQL UPDATE.
+
+The facts update renderer is gone: the loop no longer re-renders a unit that
+rendered successfully, so its dispatch condition became unreachable. What
+survives is the hygiene itself, which the remaining ontology renderer must keep
+running, and the shared ``finalize_update_report`` both paths were built on.
 """
 
 from __future__ import annotations
@@ -132,33 +137,22 @@ def _stub_render(monkeypatch, module, ttl: str) -> None:
     monkeypatch.setattr(module, "call_llm_with_retry", fake_call_llm_with_retry)
 
 
-async def test_both_update_agents_quarantine_an_invalid_typed_literal(
+async def test_the_update_agent_quarantines_an_invalid_typed_literal(
     monkeypatch,
 ) -> None:
-    _stub_render(monkeypatch, render_facts_module, BAD_LITERAL_TTL)
-    facts = await render_facts_module.render_facts_update(_facts_state(), _tools())
-
+    """Without this a malformed literal reaches a compiled SPARQL UPDATE."""
     _stub_render(monkeypatch, render_ontology_module, BAD_LITERAL_TTL)
     ontology = await render_ontology_module.render_ontology_update(
         _ontology_state(), _tools()
     )
 
-    assert len(facts.quarantined_literal_triples) == 1
     assert len(ontology.quarantined_literal_triples) == 1
-    assert (
-        facts.quarantined_literal_triples[0].datatype
-        == ontology.quarantined_literal_triples[0].datatype
-    )
 
 
-async def test_both_update_agents_consume_findings_and_suggestions(
+async def test_the_update_agent_consumes_findings_and_suggestions(
     monkeypatch,
 ) -> None:
-    facts_state = _facts_state()
-    facts_state.suggestions = Suggestions(systemic_critique_summary="fix it")
-    _stub_render(monkeypatch, render_facts_module, GOOD_TTL)
-    facts = await render_facts_module.render_facts_update(facts_state, _tools())
-
+    """A render consumes what it was given, so the next pass collects fresh."""
     ontology_state = _ontology_state()
     ontology_state.suggestions = Suggestions(systemic_critique_summary="fix it")
     _stub_render(monkeypatch, render_ontology_module, GOOD_TTL)
@@ -166,9 +160,8 @@ async def test_both_update_agents_consume_findings_and_suggestions(
         ontology_state, _tools()
     )
 
-    for result in (facts, ontology):
-        assert result.deterministic_findings == []
-        assert result.suggestions.systemic_critique_summary == ""
+    assert ontology.deterministic_findings == []
+    assert ontology.suggestions.systemic_critique_summary == ""
 
 
 def test_insert_hook_never_sees_the_delete_side() -> None:

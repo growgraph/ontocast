@@ -24,7 +24,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from ontocast.onto.model import FactsUnitFinding, FactsUnitFindingKind, TripleFix
+from ontocast.onto.model import TripleFix, UnitFinding
 
 #: Severity cut for critic-proposed fixes. ``never`` means the critic's
 #: severity label is not trusted to block at all and only deterministic
@@ -61,24 +61,30 @@ class FactsAcceptancePolicy(BaseModel):
             worse than the score gate it replaces.
     """
 
-    blocking_finding_kinds: frozenset[FactsUnitFindingKind] | None = None
+    blocking_finding_kinds: frozenset[str] | None = None
     blocking_fix_severity: BlockingFixSeverity = "critical"
 
-    def blocks_finding(self, finding: FactsUnitFinding) -> bool:
-        """True when this deterministic finding must be repaired before exit."""
+    def blocks_finding(self, finding: UnitFinding) -> bool:
+        """True when this deterministic finding must be repaired before exit.
+
+        Typed on the shared base, and matched on the kind's *value*, so one
+        policy serves both phases: the facts and ontology finding kinds are
+        separate enums with no member in common, and the alternative was a
+        second policy class differing only in an annotation.
+        """
         if self.blocking_finding_kinds is None:
             return finding.mandatory
-        return finding.kind in self.blocking_finding_kinds
+        return str(finding.kind) in self.blocking_finding_kinds
 
     def blocks_fix(self, fix: TripleFix) -> bool:
         """True when this critic-proposed fix must be applied before exit.
 
-        A ``REMOVE`` fix never blocks, whatever its severity. The repair prompt
-        it would be rendered into states that a finding is never resolved by
-        deleting the statement, so a mandatory REMOVE would contradict the block
-        it sits in -- the same shape of contradiction that
-        ``shacl_catalog_contradictions`` exists to catch, and one that has
-        already caused repair renders to delete valid values wholesale.
+        A ``REMOVE`` fix never blocks, whatever its severity. Acceptance is
+        about whether the unit may leave the loop, and a removal that the patch
+        screening refused -- because it would empty a subject, or exceed the
+        delete cap -- is precisely a removal that should not hold the unit back.
+        The screening decides what may be deleted; this decides what is worth
+        another pass, and a deletion is never the thing worth insisting on.
         """
         if self.blocking_fix_severity == "never":
             return False
@@ -90,7 +96,7 @@ class FactsAcceptancePolicy(BaseModel):
 
 
 def material_defects(
-    findings: Sequence[FactsUnitFinding],
+    findings: Sequence[UnitFinding],
     fixes: Sequence[TripleFix],
     policy: FactsAcceptancePolicy | None = None,
 ) -> list[MaterialDefect]:
@@ -99,8 +105,9 @@ def material_defects(
     Args:
         findings: Deterministic findings collected against the current graph.
         fixes: Fixes the LLM critic proposed, if it ran. Empty is normal --
-            at ``MAX_VISITS=1`` the critic never runs and acceptance rests
-            entirely on the findings.
+            with ``FACTS_CRITIC_PASSES=0`` the critic never runs and
+            acceptance rests entirely on the findings. (The critic budget is
+            independent of ``MAX_VISITS``, which bounds failed renders only.)
         policy: The deployment's cut. ``None`` uses the defaults.
 
     Returns:

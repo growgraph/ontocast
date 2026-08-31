@@ -280,7 +280,7 @@ Document processing uses a **parallel map/reduce** architecture:
 
 - **Map**: each content unit runs an independent ontology or facts loop (bounded by `PARALLEL_WORKERS`)
 - **Reduce**: normalize merged ontology updates; merge and disambiguate facts across units
-- Per-request `max_visits` overrides the server default for render/critic retry budgets
+- Per-request `max_visits` overrides the server default for retrying a **failed** render
 
 ## Facts Extraction Model
 

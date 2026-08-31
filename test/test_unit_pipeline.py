@@ -92,7 +92,8 @@ async def test_run_unit_pipeline_feeds_ontology_loop_output_to_facts(
                     ontology_max_triples=50_000,
                     ontology_context_max_triples=4000,
                 )
-            )
+            ),
+            shapes_prompt_contract=lambda: ("", ()),
         ),
     )
 
@@ -151,7 +152,8 @@ async def test_run_unit_pipeline_uses_agent_state_max_visits(monkeypatch) -> Non
                     ontology_max_triples=50_000,
                     ontology_context_max_triples=4000,
                 )
-            )
+            ),
+            shapes_prompt_contract=lambda: ("", ()),
         ),
     )
 

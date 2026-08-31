@@ -15,51 +15,91 @@ graph, and does not yet gate — is
 | # | Layer | Where | LLM calls |
 |---|-------|-------|-----------|
 | 1 | **Machine repair, at parse time** | `agent/render_facts.py::_normalize_and_repair_graph`, per unit, on every rendered graph | **none** |
-| 2 | **Finding-driven repair render** | `stategraph/atomic.py::_run_finding_driven_repair`, per unit — fed by deterministic findings *and* the critic's blocking fixes | **up to `FACTS_LLM_REPAIR_VISITS`** |
+| 2 | **Critic pass** | `stategraph/atomic.py::run_unit_loop`, per unit — the critique itself costs a call; compiling and applying it costs none | **one per `FACTS_CRITIC_PASSES`** |
 | 3 | **Post-merge gate** | `VALIDATE_FACTS` node, once per document | **none** |
 
 ### How many LLM calls a facts unit really costs
 
-At the default `MAX_VISITS=1` extraction is **not** one call per unit:
-
-```
-render_facts                      1 provider call
-criticise_facts                   1 more, unless FACTS_LLM_REPAIR_VISITS=0
-  ↓  mechanical fixes compiled and applied here, no LLM call
-finding-driven repair render      1 more, if mandatory findings or
-                                  unresolved critic fixes remain
-                                  (up to FACTS_LLM_REPAIR_VISITS, default 1)
-```
-
-`MAX_VISITS` bounds *renders*, not the critic. A verdict no longer needs a
-spare render slot to land in: fixes that quote triples the graph actually holds
-are compiled into a patch and applied directly, and only the rest are handed to
-a repair render. The critic is skipped only at `FACTS_LLM_REPAIR_VISITS=0`,
-where there is genuinely nowhere to put its output.
-
-The *trigger* is deterministic — quarantined literals, unknown terms, alias
-leftovers — but the *fix* is bought from the model. Set
-`FACTS_LLM_REPAIR_VISITS=0` to pin extraction at exactly one call per unit and
-leave the residue to layers 1 and 3.
-
-The ontology loop has no repair stage, so at `MAX_VISITS=1` it is genuinely one
-call per unit. It does run its own deterministic validator — see
-[Ontology delta validation](#ontology-delta-validation-shadow-mode) — but in
-shadow mode: findings are recorded and shown to the critic, and cost nothing.
-
-Above `MAX_VISITS=1` the facts critic runs, and a **rejection costs one repair
-render, not another full render**. So the ceiling is:
+At the defaults, two:
 
 ```
 render_facts                      1 provider call
   ↓
-criticise_facts                   1 more (MAX_VISITS > 1 only)
-  ↓  rejected -> its blocking fixes become findings
-finding-driven repair render      1 more, up to FACTS_LLM_REPAIR_VISITS
+deterministic checks              free — re-run before every critique
+  ↓
+criticise_facts                   1 per pass (FACTS_CRITIC_PASSES, default 1)
+  ↓  the critique is compiled and applied here, no LLM call
 ```
 
-That total does not grow with `MAX_VISITS`; the bound now governs render
-*failure* retries only.
+The two budgets are independent and mean different things:
+
+- **`MAX_VISITS`** retries a render that *failed*. A render that succeeded is
+  never repeated — re-extracting a whole unit to fix a local defect is the
+  expensive answer to a cheap question, and reliably introduces new defects of
+  its own. Raise it only if renders are failing outright.
+- **`FACTS_CRITIC_PASSES`** buys review-and-patch passes. Each one re-runs the
+  deterministic checks for free, sends the graph and its findings to the critic,
+  and applies what comes back.
+
+Set `FACTS_CRITIC_PASSES=0` to pin extraction at exactly one call per unit and
+leave the residue to layers 1 and 3.
+
+A pass ends the loop early when it changed nothing, or when it was rolled back:
+a second critique of an unchanged graph is the same answer billed twice.
+
+The ontology loop is the same loop. It defaults to `ONTOLOGY_CRITIC_PASSES=0`,
+so it is one call per unit unless you turn its critic on. It does run its own
+deterministic validator — see
+[Ontology delta validation](#ontology-delta-validation-shadow-mode) — which
+costs nothing.
+
+### How a critique reaches the graph
+
+The critic does not describe the statement it wants changed; it **cites the
+statement's id**. Every graph chapter in a critic prompt carries a number per
+statement — inline in Turtle, in a `TRIPLE INDEX` table under JSON-LD — and a
+fix names those numbers in `triple_ids`.
+
+That is the difference between a critique that lands and one that does not. The
+previous contract asked the critic to retype the offending statement into
+`incorrect_value`, and to be applied it had to reproduce the stored triple
+exactly: same prefix form, same predicate, same literal shape. Models reproduce
+graph content from memory poorly, and a single wrong predicate in a node-shaped
+quote discarded the whole fix. Authoring *new* content has no such problem,
+because nothing has to match — so `correct_value` is still free-hand.
+
+The payload is parsed **format-tolerantly**, not by dispatch. `LLM_GRAPH_FORMAT`
+names one syntax for fix payloads and models do not reliably use it — under a
+JSON-LD deployment a large share of authored payloads come back as Turtle, often
+as a Turtle body with a JSON-LD term object where the object belongs
+(`rdfs:label {"@value": "x", "@language": "en"}`). Those are mapped onto the
+equivalent Turtle literal forms, `@id` is unwrapped, and bare absolute IRIs are
+bracketed. Nothing guesses at meaning: a payload that is still not a statement
+afterwards — a bare literal, a predicate with no subject — stays unparseable and
+is reported as residual.
+
+On the ontology side the ids are scoped to the unit's own delta. The retrieved
+catalog is still shown, because a term choice cannot be judged without it, but
+those statements carry no id — so a delete that would propagate onto a shared,
+versioned terminal is not expressible rather than merely reported afterwards.
+
+### What a pass may not destroy
+
+Both halves of a compiled patch are known before anything is touched, so the
+limits are enforced by withholding, not by inspecting the damage:
+
+| Rule | Why |
+|------|-----|
+| Deletes are by cited id only | A statement the critic was never shown cannot be removed |
+| `FACTS_CRITIC_MAX_DELETE_SHARE`, with a `FACTS_CRITIC_MIN_DELETES` floor | Past the share a critique has stopped correcting and started rewriting. The floor keeps short units correctable, where one legitimate fix is already a large fraction of the graph |
+| A `REMOVE` may not empty a subject | Removing the last statement about a node deletes the node, which is not a correction |
+| A `REPLACE` may not write about a different subject than it deletes | That is a rename: it orphans the old node and leaves the new one bare. `FACTS_CRITIC_ALLOW_SUBJECT_RENAME` opts in |
+| A blank node goes whole or not at all | A partial delete leaves the degenerate stub the validator exists to flag |
+| A fix that re-adds exactly what it removes is dropped and counted | It asks for no change; counting it as applied overstates what the critique bought |
+
+After the patch, a pass is rolled back whole if it deleted without writing,
+shrank the unit's product without resolving anything, or *created* mandatory
+findings.
 
 ### What makes a render acceptable
 
@@ -97,7 +137,7 @@ can always tell machine-altered triples from what the model asserted.
 
 ### Which terms count as unknown
 
-`UNKNOWN_TERM` findings drive mandatory repair renders, so the closure rule
+`UNKNOWN_TERM` findings are mandatory, so the closure rule
 behind them matters. A namespace is *closed* — members the catalog does not
 list get flagged — only when the catalog **declares** terms in it
 (subject-position statements). A namespace the catalog merely *references*
@@ -242,6 +282,49 @@ reported violations.
 `obs:hasResult` does not see the `life:hasStorageResult` the renderer emitted,
 and reports a statement that is present as missing. Turning inference off
 therefore raises the violation count rather than lowering it.
+
+!!! warning "In facts-only runs, the mixed-in context can be empty"
+    With `RENDER_MODE=facts` there is no ontology stage, so the document-level
+    context the gate mixes in is empty unless `FACTS_CONTEXT_FROM_UNITS=true`
+    seeds it from the units' retrieved snapshots. An empty context means no
+    `rdfs:subClassOf` axioms, so `sh:class` constraints fire on every node
+    typed with a subclass of what a shape names — the gate then overstates
+    violations and misattributes them to typing. The run records this as
+    `validated_without_ontology_context` in the retrieval metrics; treat the
+    conformance figure of such a run as an upper bound, not a measurement.
+
+### The shapes-driven prompt contract
+
+The shapes judge every extracted graph — and, with
+`FACTS_SHAPES_PROMPT_CONTRACT=auto` (the default), they also *inform* it: the
+loaded shapes are rendered once per tenancy into a `# CONFORMANCE
+REQUIREMENTS` chapter that both the facts renderer and the facts critic see.
+Without it the model is graded against a rulebook it is never shown, and the
+dominant violation classes are reliably the rules no prompt states.
+
+The chapter is derived from the shapes at run time, so the library prompt
+stays domain-neutral — domain knowledge enters only through the deployment's
+artifacts:
+
+- Each constraint renders its **`sh:message` verbatim** when the shape author
+  wrote one (SPARQL constraints included — a message states the rule in
+  prose). Message-less property constraints get one synthesized structural
+  line (`path: at least 1, of type C`); a message-less SPARQL constraint
+  cannot be summarized and is omitted with a startup warning.
+- The chapter is **capped** (`FACTS_SHAPES_PROMPT_MAX_LINES`, default 60) and
+  notes in-text when rules were truncated. It is memoized per merged shapes
+  graph — run-constant, no per-unit cost.
+- With no shapes loaded, or `FACTS_SHAPES_PROMPT_CONTRACT=off`, the prompt is
+  byte-identical to before.
+- **Terms the chapter requires are exempt from `UNKNOWN_TERM`**, for the same
+  reason the quantity fallback vocabulary is: the unit's retrieved ontology
+  context is a subset, and flagging a term the chapter instructed the
+  renderer to emit would have the repair lane delete exactly what the
+  contract required.
+
+Write `sh:message` for every constraint you author: it is simultaneously the
+validation report's diagnostic and the renderer's instruction, one string
+maintained in one place.
 
 ### LLM-free autofix
 
@@ -405,7 +488,7 @@ simply be unretrieved rather than missing.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FACTS_SHAPES_DIR` | — | **Seed** directory of SHACL shape files (recursive), materialized into the shapes partition at startup; inline `sh:NodeShape` in the ontology context is picked up automatically |
+| `FACTS_SHAPES_DIR` | — | **Seed** directory of SHACL shape files (recursive), materialized into the shapes partition at startup; inline `sh:NodeShape` in the ontology context is picked up automatically. `--shapes-dir` overrides it per run |
 | `FUSEKI_SHAPES_DATASET` | derived from tenant/project | Fuseki dataset backing the shapes partition |
 | `FACTS_SHACL_INFERENCE` | `rdfs` | `none`, `rdfs` or `owlrl` pre-inference |
 | `FACTS_SHACL_ADVANCED` | `true` | Enable SHACL Advanced Features |
@@ -413,7 +496,7 @@ simply be unretrieved rather than missing.
 | `FACTS_SHACL_AUTOFIX` | `prune` | `off`, `rewrite`, or `prune` |
 | `FACTS_SHACL_AUTOFIX_PASSES` | `1` | Bounded validate → repair → revalidate rounds |
 | `FACTS_CODE_PREDICATES` | `qudt:ucumCode`, `qudt:symbol`, `skos:notation` | Predicates whose literals are machine-resolvable codes |
-| `FACTS_LLM_REPAIR_VISITS` | `1` | Finding-driven repair renders per unit — **each one is a provider call** |
+| `FACTS_CRITIC_PASSES` | `1` | Review-and-patch passes per unit — **each one is a provider call** |
 | `FACTS_MERGE_REPAIR_PASSES` | `1` | Un-merge passes at the gate |
 | `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | `error` | Severity of `SUSPECT_MULTI_VALUE` findings |
 | `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT` | `false` | Report an IRI-branch `SUSPECT_MULTI_VALUE` as an error only when its objects came from different units |

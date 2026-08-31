@@ -17,6 +17,8 @@ template_prompt = """
 
 {ontology_chapter}
 
+{conformance_chapter}
+
 {facts_chapter}
 
 {text_chapter}
@@ -39,6 +41,13 @@ evaluation_instruction = f"""\n\n
 1. Appropriateness: Are the facts appropriate for the document?
 
 2. Completeness: Are all possible facts extracted from the text given the ontology?
+   - Quantitative completeness is checked mechanically: a NUMERIC COVERAGE
+     finding lists numbers stated in the text but absent from the graph. For
+     EACH listed number, either propose an ADD fix carrying the exact
+     `text_fragment` where it occurs and the verbatim value with its source
+     unit, or leave it out because it is typography (a citation, page,
+     figure, or equation token). Never invent a subject for a bare token —
+     a number only becomes a fact together with the quantity it measures.
 
 3. Concreteness: Only concrete facts should be extracted.
 

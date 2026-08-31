@@ -1,3 +1,4 @@
+import re
 from collections.abc import Sequence
 from enum import StrEnum
 from typing import Literal
@@ -302,11 +303,53 @@ class TripleFix(BaseModel):
         ),
     )
 
+    triple_ids: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Ids of the statements this fix removes, taken from the bracketed "
+            "numbers in the graph chapter. REQUIRED for REMOVE and REPLACE. "
+            "Cite the id; never retype the statement."
+        ),
+    )
+
+    @field_validator("triple_ids", mode="before")
+    @classmethod
+    def coerce_triple_ids(cls, v: object) -> object:
+        """Accept the shapes providers actually return for a list of ints.
+
+        A bare ``12``, a string ``"12"``, a stringified list ``"[12, 13]"`` and a
+        list of strings all mean the same thing. This field is the only way a
+        REMOVE or REPLACE can address anything, so a formatting quirk here would
+        discard the fix -- and, because the report validates as a whole, every
+        other fix alongside it.
+        """
+        if v is None:
+            return []
+        if isinstance(v, int) and not isinstance(v, bool):
+            return [v]
+        if isinstance(v, str):
+            v = [part for part in re.split(r"[^0-9]+", v) if part]
+        if not isinstance(v, (list, tuple, set)):
+            return v
+        ids: list[int] = []
+        for item in v:
+            if isinstance(item, bool):
+                continue
+            if isinstance(item, int):
+                ids.append(item)
+                continue
+            if isinstance(item, str):
+                digits = "".join(ch for ch in item if ch.isdigit())
+                if digits:
+                    ids.append(int(digits))
+        return ids
+
     incorrect_value: str | None = Field(
         default=None,
         description=(
-            "Current incorrect triple/entity/value (for REMOVE and REPLACE). "
-            "Encoding is defined by deployment llm_graph_format and GRAPH FORMAT INSTRUCTION."
+            "Legacy. Prefer `triple_ids`. Only consulted when a REMOVE or "
+            "REPLACE cites no ids, because a retyped statement matches the "
+            "stored one a minority of the time."
         ),
     )
 
@@ -358,9 +401,13 @@ class TripleFix(BaseModel):
         if self.text_fragment:
             lines.append(f'  - **Source text:** "{self.text_fragment}"')
 
-        # Add incorrect value for REMOVE and REPLACE actions
-        if self.action in ["REMOVE", "REPLACE"] and self.incorrect_value:
-            lines.append(f"  - **Current (incorrect):** `{self.incorrect_value}`")
+        # Add the addressed statements for REMOVE and REPLACE actions
+        if self.action in ["REMOVE", "REPLACE"]:
+            if self.triple_ids:
+                cited = ", ".join(str(triple_id) for triple_id in self.triple_ids)
+                lines.append(f"  - **Statements:** `[{cited}]`")
+            elif self.incorrect_value:
+                lines.append(f"  - **Current (incorrect):** `{self.incorrect_value}`")
 
         # Add correct value for ADD and REPLACE actions
         if self.action in ["ADD", "REPLACE"] and self.correct_value:
@@ -593,6 +640,12 @@ class UnitFinding(BaseModel):
     adjudicates item by item.
     """
 
+    #: Declared here as a plain string so code serving both phases -- the
+    #: acceptance policy, the findings prompt block -- can read it without
+    #: knowing which enum it came from. Each subclass narrows it to its own
+    #: ``StrEnum``, whose members *are* strings, so nothing is widened in
+    #: practice and no kind from one phase can satisfy the other's annotation.
+    kind: str
     mandatory: bool = True
     message: str
     subject: str = ""
@@ -736,23 +789,25 @@ class UnitFailure(BaseModel):
 class LoopAttempt(BaseModel):
     """Telemetry record for one attempt inside a per-unit render/critic loop.
 
-    Shared by the facts and the ontology loop — the fields are phase-neutral
-    and a record's home (``UnitFactsState.attempt_log`` vs
-    ``UnitOntologyState.attempt_log``) says which loop produced it.
+        Shared by the facts and the ontology loop — the fields are phase-neutral
+        and a record's home (``UnitFactsState.attempt_log`` vs
+        ``UnitOntologyState.attempt_log``) says which loop produced it.
 
-    ``n_deterministic_findings`` / ``n_mandatory_findings`` count findings
-    against the graph as of this record: for ``llm_repair`` records that is the
-    residual *after* the repair render, so summing the last repair record per
-    unit yields the true document-level residual.
+        ``n_deterministic_findings`` / ``n_mandatory_findings`` count findings
+        against the graph as of this record: for ``llm_repair`` records that is the
+        residual *after* the repair render, so summing the last repair record per
+        unit yields the true document-level residual.
 
-    ``kind="llm_repair"`` is a finding-*driven* render — it costs a provider
-    call. LLM-free machine rewrites are not attempts and are recorded as
-    ``GraphRepairRecord`` instead.
+    ``kind="critic_patch"`` is the LLM-free application of a critique: it costs
+        nothing and is recorded separately from the ``critic`` call that produced
+        the fixes, so "what the critique cost" and "what it changed" stay
+        distinguishable. ``kind="llm_repair"`` is retained for artifacts written by
+        earlier releases, when a separate finding-driven repair render existed.
     """
 
     render_attempt: int = 0
     critic_attempt: int = 0
-    kind: Literal["render", "critic", "llm_repair"] = "render"
+    kind: Literal["render", "critic", "critic_patch", "llm_repair"] = "render"
     score: float | None = None
     success: bool | None = None
     n_actionable_fixes: int = 0
@@ -773,6 +828,37 @@ class LoopAttempt(BaseModel):
             "'critical' counts mix fixes that gate a render with fixes that "
             "cannot. Splitting by action is what makes the two distinguishable "
             "from the artifacts."
+        ),
+    )
+    #: What a ``critic_patch`` attempt actually did.
+    n_fixes_applied: int = 0
+    n_fixes_noop: int = Field(
+        default=0,
+        description=(
+            "Fixes whose delete set and insert set were the same statements. "
+            "Counted because a critique made mostly of these is a critic "
+            "producing motion rather than corrections."
+        ),
+    )
+    n_triples_deleted: int = 0
+    n_triples_inserted: int = 0
+    patch_rolled_back: bool = Field(
+        default=False,
+        description="The pass left the unit worse and was undone whole.",
+    )
+    patch_delete_capped: bool = Field(
+        default=False,
+        description=(
+            "The delete-share cap fired: the pass kept its inserts and dropped "
+            "its deletes."
+        ),
+    )
+    incumbent_accepted: bool | None = Field(
+        default=None,
+        description=(
+            "What the retired score gate would have decided for this critic "
+            "attempt, recorded so the switch to a findings-based gate can be "
+            "judged against a distribution rather than an argument."
         ),
     )
     n_deterministic_findings: int = 0

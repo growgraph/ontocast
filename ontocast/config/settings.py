@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 # BaseSettings, SettingsConfigDict, AliasChoices, Path, Literal, StrEnum)
 # became part of the package's public API.
 __all__ = [
+    "OntologyValidationConfig",
     "AggregationConfig",
     "ChunkConfig",
     "ClaudeModel",
@@ -690,14 +691,12 @@ class ServerConfig(BaseSettings):
         default=1,
         ge=1,
         description=(
-            "Maximum *render* attempts per unit loop. This is no longer the "
-            "switch for the LLM critic: a critic verdict feeds the tiered "
-            "repair lane (mechanical fixes compiled with no LLM call, the rest "
-            "sent to a bounded repair render), so it does not need a spare "
-            "render slot. At the default of 1 the critic still runs whenever "
-            "FACTS_LLM_REPAIR_VISITS is above 0. Raise this only to allow a "
-            "second full extraction, which is the expensive response to a "
-            "local defect and rarely the right one."
+            "Retries of a *failed* fresh extraction, and nothing else. A render "
+            "that succeeds is never repeated: improving it is what the critic "
+            "passes are for, and re-extracting a unit from scratch to fix a "
+            "local defect is the expensive answer to a cheap question. Raise "
+            "this only if renders are failing outright (unparseable responses, "
+            "provider errors)."
         ),
         validation_alias=AliasChoices("max_visits_per_node", "max_visits"),
     )
@@ -705,18 +704,12 @@ class ServerConfig(BaseSettings):
         default=None,
         ge=1,
         description=(
-            "Maximum critic attempts per render attempt. The inner critic loop "
-            "is otherwise bounded by MAX_VISITS_PER_NODE -- the same constant "
-            "as the outer render loop -- so its worst case is that value "
-            "*squared* in billed critic calls. That worst case is only "
-            "reachable when the critic keeps requesting external evidence "
-            "(WEB_SEARCH_ENABLED=true): a critic that fails without a search "
-            "request breaks out of the loop, so with grounding off the critic "
-            "runs at most once per render regardless. None keeps that coupling; "
-            "set it to 1 to cap the evidence-driven retry path explicitly. "
-            "Left unset by default because lowering it changes call counts for "
-            "grounded runs, and that default belongs to a measurement rather "
-            "than to an argument."
+            "Deprecated and inert. It capped critic *retries within one render "
+            "attempt*, a path reachable only through external evidence, and the "
+            "loop no longer retries a critic inside a pass. It is still recorded "
+            "in the run manifest so an existing deployment's setting stays "
+            "auditable, and will be removed in the next minor release. The "
+            "budget you now want is FACTS_CRITIC_PASSES."
         ),
     )
     render_mode: RenderMode = Field(
@@ -756,14 +749,19 @@ class ServerConfig(BaseSettings):
         "ontology_context_max_triples for context size. None (default) disables it.",
     )
     ontology_context_required: bool = Field(
-        default=True,
-        description="Fail the run when a content unit's ontology context "
+        default=False,
+        description="Fail the run when a FACTS unit's ontology context "
         "resolves to zero triples, instead of extracting with no catalog "
-        "vocabulary. An empty context is not a degraded extraction, it is a "
-        "different one: the renderer falls back on whatever standard "
+        "vocabulary. For facts an empty context is not a degraded extraction, "
+        "it is a different one: the renderer falls back on whatever standard "
         "vocabulary the prompt names, and the SHACL gate then has no node to "
-        "constrain, so the run reports a vacuous pass. Set False only for "
-        "deployments that deliberately extract without a catalog.",
+        "constrain, so the run reports a vacuous pass. Turn it on for a "
+        "deployment that extracts against a curated catalog, where an empty "
+        "context can only mean the catalog did not load. It is off by default "
+        "because the default render mode builds ontologies as well as facts, "
+        "and a corpus with no catalog is that mode's starting point rather "
+        "than a fault. It never applies to an ONTOLOGY unit, whose empty "
+        "context is the signal to create a new ontology.",
     )
     ontology_context_max_triples: int | None = Field(
         default=4000,
@@ -2057,18 +2055,54 @@ class FactsValidationConfig(BaseSettings):
             "to an IRI from the ontology context."
         ),
     )
-    llm_repair_visits: int = Field(
+    critic_passes: int = Field(
         default=1,
         ge=0,
         description=(
-            "Finding-driven repair budget per unit, in **LLM calls**: extra "
-            "render_facts_update requests fed with machine-found MANDATORY "
-            "fixes (quarantined literals, unknown terms, alias leftovers) and "
-            "numeric-coverage candidates. Only the trigger is deterministic — "
-            "each visit is billed. They fire even at MAX_VISITS=1, where the "
-            "LLM critic never runs, so the default costs up to two provider "
-            "calls per unit. Set 0 to keep extraction at exactly one call per "
-            "unit and leave findings to the LLM-free repairs and the gate."
+            "Review-and-patch passes per facts unit, in **LLM calls**. Each "
+            "pass re-runs the deterministic checks for free, sends the graph "
+            "and its findings to the critic, and applies what comes back as a "
+            "compiled patch. At the default of 1 a unit costs two provider "
+            "calls: one extraction, one review. Set 0 for extraction only, "
+            "leaving findings to the LLM-free repairs and the gate."
+        ),
+    )
+    llm_repair_visits: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Deprecated alias for FACTS_CRITIC_PASSES. The separate "
+            "finding-driven repair render is gone: its trigger and its budget "
+            "both belong to the critic pass, which now applies fixes itself "
+            "instead of describing them to a second call."
+        ),
+    )
+    critic_max_delete_share: float = Field(
+        default=0.25,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Largest share of a unit graph one critic pass may remove. Past "
+            "this the pass keeps its inserts and drops its deletes: a critique "
+            "wanting to remove more than this has stopped correcting and "
+            "started rewriting."
+        ),
+    )
+    critic_min_deletes: int = Field(
+        default=5,
+        ge=0,
+        description=(
+            "Deletions always permitted regardless of share. Without a floor "
+            "the share cap is strictest on short units, where a single "
+            "legitimate correction is already a large fraction of the graph."
+        ),
+    )
+    critic_allow_subject_rename: bool = Field(
+        default=False,
+        description=(
+            "Whether a REPLACE may delete statements about one subject while "
+            "writing about another. That is a rename, and carried out literally "
+            "it orphans the old node and leaves the new one bare."
         ),
     )
     property_alias_min_ratio: float = Field(
@@ -2274,6 +2308,55 @@ class FactsValidationConfig(BaseSettings):
             "unaffected."
         ),
     )
+    shapes_prompt_contract: Literal["off", "auto"] = Field(
+        default="auto",
+        description=(
+            "Render the loaded SHACL shapes as a CONFORMANCE REQUIREMENTS "
+            "chapter in the facts render and critic prompts. 'auto' (default) "
+            "renders the chapter only when the shapes partition is non-empty, "
+            "so a deployment without shapes sees an unchanged prompt. The "
+            "chapter is derived from the shapes at run time -- sh:message "
+            "verbatim where the author wrote one, a synthesized structural "
+            "line otherwise -- so the renderer is shown the same rulebook the "
+            "gate validates against, instead of being graded on rules no "
+            "prompt states. Terms the chapter requires are exempt from "
+            "UNKNOWN_TERM, for the same reason the quantity fallback "
+            "vocabulary is: the validator must never order removal of what "
+            "the prompt asked for."
+        ),
+    )
+    shapes_prompt_max_lines: int = Field(
+        default=60,
+        ge=1,
+        description=(
+            "Cap on total rule lines in the shapes-derived conformance "
+            "chapter. A prompt-size guard, not a relevance ranking: the "
+            "chapter notes in-text when rules were truncated, so the model "
+            "does not read absence as nonexistence."
+        ),
+    )
+    numeric_coverage_limit: int = Field(
+        default=30,
+        ge=0,
+        description=(
+            "Cap on missing-numeric mentions listed in a NUMERIC_COVERAGE "
+            "finding. Bounds prompt size; ordering is shortest-first "
+            "presentation order, not relevance. 0 disables the finding "
+            "entirely."
+        ),
+    )
+    numeric_coverage_mandatory: bool = Field(
+        default=False,
+        description=(
+            "Make NUMERIC_COVERAGE findings mandatory, so unextracted source "
+            "numerics block unit acceptance like any other deterministic "
+            "finding. Default off: coverage is advisory because the renderer "
+            "decides per item whether a mention is an extractable quantity or "
+            "an artifact, and blocking on it forces that judgement into the "
+            "repair loop. Turn on only for benchmark arms measuring the "
+            "trade-off."
+        ),
+    )
     shacl_max_triples: int = Field(
         default=200_000,
         ge=0,
@@ -2349,6 +2432,48 @@ class OntologyValidationConfig(BaseSettings):
             "minted IRI to the catalog IRI in the merged inserts — flip it "
             "only after 'detect' has shown the matches are true duplicates; "
             "'off' disables the scan."
+        ),
+    )
+    critic_passes: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Review-and-patch passes per ontology unit, in **LLM calls**. "
+            "Defaults to 0, which is what the loop has always done in practice: "
+            "the ontology critic was gated behind a spare render slot and so "
+            "has never run on a default deployment. Enabling it is a real "
+            "increase in cost per unit, so it is opt-in until measured."
+        ),
+    )
+    critic_max_delete_share: float = Field(
+        default=0.10,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Largest share of the delta one critic pass may remove. Stricter "
+            "than the facts equivalent because an ontology delete propagates "
+            "onto shared, versioned catalog terminals: its blast radius is "
+            "every document using the term, not this unit."
+        ),
+    )
+    critic_min_deletes: int = Field(
+        default=3,
+        ge=0,
+        description="Deletions always permitted regardless of share.",
+    )
+    accept_blocking_finding_kinds: list[str] = Field(
+        default_factory=lambda: [
+            "foreign_delete",
+            "foreign_namespace",
+            "subclass_cycle",
+            "role_confusion",
+        ],
+        description=(
+            "Deterministic ontology findings that block acceptance. The default "
+            "is the destructive-or-lossy subset only. Blocking on every "
+            "mandatory finding would put `missing_label` in the set, which "
+            "fires whenever a render mints a term without a label -- routine, "
+            "and a permanent per-unit tax rather than a defect signal."
         ),
     )
 

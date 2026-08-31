@@ -13,8 +13,9 @@ own ontology context according to mode/policy.
 
 import logging
 import time
-from collections.abc import Sequence
-from typing import Literal
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Literal, TypeVar
 
 from ontocast.agent.criticise_facts import criticise_facts
 from ontocast.agent.criticise_ontology import criticise_ontology
@@ -34,9 +35,11 @@ from ontocast.onto.model import (
     GraphRepairRecord,
     LoopAttempt,
     OntologyUnitFinding,
-    TripleFix,
+    Suggestions,
 )
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.retrieval_capabilities import OntologyContextConfigError
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.context_resolver import (
     UnitOntologyContext,
@@ -44,16 +47,25 @@ from ontocast.stategraph.context_resolver import (
 )
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.atomic import AtomicToolBox
-from ontocast.tool.facts_validation import collect_unit_findings
-from ontocast.tool.facts_validation.critic_findings import critic_fixes_to_findings
+from ontocast.tool.facts_validation import (
+    FactsAcceptancePolicy,
+    ValidationPolicy,
+    collect_unit_findings,
+    material_defects,
+)
 from ontocast.tool.facts_validation.critic_patch import (
-    apply_compiled_patch,
+    CriticPatchPolicy,
     compile_critic_fixes,
 )
 from ontocast.tool.ontology_validation import collect_ontology_unit_findings
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
+
+#: The two unit states the loop is generic over. Constrained rather than bound:
+#: the driver hands its state to helpers that are themselves generic, and a
+#: bound would widen those to the union at every call.
+UnitStateT = TypeVar("UnitStateT", UnitFactsState, UnitOntologyState)
 
 
 def _document_supplemental_ontologies(context: UnitLoopContext) -> list[Ontology]:
@@ -112,46 +124,6 @@ def _resolve_max_visits_limit(state_visits: int, override: int | None) -> int:
     return max(1, visits)
 
 
-def _skip_critic_after_final_render(
-    render_attempt: int, max_visits: int, repair_visits: int = 0
-) -> bool:
-    """True when a critique on this render attempt could change nothing.
-
-    The rule used to be "the last render is final, so skip the critic" -- a
-    critique that cannot drive a retry was work with nowhere to go. That
-    reasoning is spent: a verdict now feeds the tiered repair lane, which
-    compiles mechanical fixes with no LLM call and sends the rest to a bounded
-    repair render. Neither needs a render slot to be left over.
-
-    So the critic is skipped only when there is genuinely nowhere to put its
-    output: the last render *and* no repair visits configured. At the default
-    ``max_visits=1`` with repair visits available, the critic now runs -- which
-    is what makes it evaluable without paying for a second full extraction.
-
-    Args:
-        render_attempt: 1-based render attempt about to be critiqued.
-        max_visits: Render attempts allowed for this unit.
-        repair_visits: Finding-driven repair renders allowed per unit.
-
-    Returns:
-        bool: True to skip the critic.
-    """
-    return render_attempt == max_visits and repair_visits <= 0
-
-
-def _resolve_critic_visits(unit_state: UnitFactsState | UnitOntologyState) -> int:
-    """Critic attempts allowed per render attempt.
-
-    Unset means the legacy coupling to ``max_visits_per_node``: the inner
-    critic loop shares the outer render loop's bound, so the worst case is
-    ``max_visits ** 2`` billed critic calls. Setting it decouples the two.
-    """
-    override = unit_state.max_critic_visits_per_node
-    if override is None:
-        return unit_state.max_visits_per_node
-    return max(1, override)
-
-
 def _collect_facts_findings(
     unit_state: UnitFactsState,
     atomic: AtomicToolBox | None = None,
@@ -159,8 +131,26 @@ def _collect_facts_findings(
     """Run the deterministic per-unit validator against the current graph.
 
     The toolbox supplies the deployment's namespace exemptions and quantity
-    fallback vocabulary; ``None`` (tests) means no exemptions.
+    fallback vocabulary; ``None`` (tests) means no exemptions. Terms the
+    shapes-derived conformance chapter requires join the exempt set per
+    unit -- they come from the tenancy's shapes catalog, which the
+    tenancy-independent toolbox policy cannot carry.
     """
+    policy = atomic.validation_policy if atomic is not None else None
+    if unit_state.shapes_contract_terms:
+        base = policy if policy is not None else ValidationPolicy()
+        policy = base.model_copy(
+            update={
+                "contract_exempt_terms": (
+                    *base.contract_exempt_terms,
+                    *unit_state.shapes_contract_terms,
+                )
+            }
+        )
+    coverage_limit = atomic.numeric_coverage_limit if atomic is not None else 30
+    coverage_mandatory = (
+        atomic.numeric_coverage_mandatory if atomic is not None else False
+    )
     return collect_unit_findings(
         graph=unit_state.content_unit.graph,
         ontology_graph=unit_state.ontology_snapshot.graph,
@@ -169,8 +159,11 @@ def _collect_facts_findings(
         fact_namespaces=[DEFAULT_IRI, str(unit_state.content_unit.doc_iri)],
         # Citation numerics (pages, years, volume numbers) are not extractable
         # quantities — never push coverage repair on bibliography units.
-        coverage_limit=0 if unit_state.content_unit.is_citation_metadata else 30,
-        policy=atomic.validation_policy if atomic is not None else None,
+        coverage_limit=(
+            0 if unit_state.content_unit.is_citation_metadata else coverage_limit
+        ),
+        coverage_mandatory=coverage_mandatory,
+        policy=policy,
     )
 
 
@@ -206,19 +199,28 @@ def _collect_ontology_findings(
     return findings
 
 
-def _record_facts_attempt(
-    unit_state: UnitFactsState,
+def _record_attempt(
+    unit_state: UnitStateT,
     *,
-    kind: Literal["render", "critic", "llm_repair"],
+    kind: Literal["render", "critic", "critic_patch", "llm_repair"],
     render_attempt: int,
     critic_attempt: int = 0,
     n_findings: int = 0,
     n_mandatory: int = 0,
     repair_failed: bool = False,
-    repair_delete_only: bool = False,
+    n_fixes_applied: int = 0,
+    n_fixes_noop: int = 0,
+    n_triples_deleted: int = 0,
+    n_triples_inserted: int = 0,
+    patch_rolled_back: bool = False,
+    patch_delete_capped: bool = False,
 ) -> None:
-    """Append one telemetry record for the current loop attempt."""
-    graph = unit_state.content_unit.graph
+    """Append one telemetry record for the current loop attempt.
+
+    ``triple_count`` is the phase's own product measure, so an ontology record
+    reports what the unit contributes rather than the size of its scratchpad --
+    the working graph is the snapshot plus a small delta and barely moves.
+    """
     unit_state.attempt_log.append(
         LoopAttempt(
             render_attempt=render_attempt,
@@ -228,165 +230,237 @@ def _record_facts_attempt(
             n_deterministic_findings=n_findings,
             n_mandatory_findings=n_mandatory,
             repair_failed=repair_failed,
-            repair_delete_only=repair_delete_only,
             failure_stage=(str(unit_state.failure_stage) if repair_failed else None),
             failure_reason=unit_state.failure_reason if repair_failed else None,
-            triple_count=len(graph),
+            triple_count=unit_state.product_triple_count(),
+            n_fixes_applied=n_fixes_applied,
+            n_fixes_noop=n_fixes_noop,
+            n_triples_deleted=n_triples_deleted,
+            n_triples_inserted=n_triples_inserted,
+            patch_rolled_back=patch_rolled_back,
+            patch_delete_capped=patch_delete_capped,
         )
     )
 
 
-async def _run_finding_driven_repair(
-    unit_state: UnitFactsState,
-    atomic,
-    supplemental: list[Ontology],
+@dataclass(frozen=True)
+class PatchOutcome:
+    """What one critic pass changed, and whether the loop should run another."""
+
+    applied: int = 0
+    residual: int = 0
+    noop: int = 0
+    rolled_back: bool = False
+    mandatory_after: int = 0
+
+    @property
+    def converged(self) -> bool:
+        """True when another pass has nothing left to work with.
+
+        A rolled-back pass counts as converged: it was handed the same graph and
+        the same findings the next one would see, so repeating it buys a second
+        identical answer at full price.
+        """
+        return self.rolled_back or (self.applied == 0 and self.mandatory_after == 0)
+
+
+def _patch_regressed(
+    *,
+    graph_before: RDFGraph,
+    graph_after: RDFGraph,
+    product_before: int,
+    product_after: int,
+    mandatory_before: int,
+    mandatory_after: int,
+) -> bool:
+    """Whether a pass left the unit worse than it found it.
+
+    Three signals, each learned from a different way a repair went wrong:
+
+    1. It deleted and wrote nothing. The finding is gone because the data is
+       gone, which is the outcome the repair contract exists to forbid.
+    2. It shrank the product without resolving anything. Counting findings alone
+       cannot see this -- deleting the flagged statement drops the count, so the
+       dominant failure mode scored as a success.
+    3. It *created* mandatory findings. A pass that manufactures new defects is
+       strictly worse than no pass, however much else it fixed.
+    """
+    wrote_nothing = not (graph_after - graph_before)
+    deleted_something = bool(graph_before - graph_after)
+    no_progress = product_after < product_before and mandatory_after >= mandatory_before
+    return (
+        (deleted_something and wrote_nothing)
+        or no_progress
+        or mandatory_after > mandatory_before
+    )
+
+
+def _reevaluate_unit_status(
+    unit_state: UnitStateT,
+    phase: "LoopPhase",
+    atomic: AtomicToolBox,
+    findings: list,
+) -> None:
+    """Re-run acceptance on the unit's *current* graph and findings.
+
+    The critic decides acceptance before its patch is applied, so a unit
+    whose patch then resolved every defect still carried ``FAILED`` out of
+    the loop -- and was counted as "salvaged from a non-converged loop" by
+    the reduce, overstating non-convergence. Acceptance is re-derived here
+    from the post-patch findings and the still-outstanding critic fixes,
+    with the same ``material_defects`` rule the critic itself used.
+    """
+    defects = material_defects(
+        findings,
+        unit_state.suggestions.actionable_fixes,
+        phase.acceptance_policy(atomic),
+    )
+    if not defects:
+        if unit_state.status != Status.SUCCESS:
+            logger.info("%s unit clean after critic patch; marking SUCCESS", phase.name)
+        unit_state.status = Status.SUCCESS
+        unit_state.clear_failure()
+    else:
+        unit_state.set_failure(
+            phase.critic_stage,
+            f"{phase.name} unit has {len(defects)} material defect(s) "
+            "after critic patch",
+        )
+
+
+def _apply_critic_patch(
+    unit_state: UnitStateT,
+    atomic: AtomicToolBox,
+    phase: "LoopPhase",
     *,
     render_attempt: int,
-    critic_fixes: Sequence[TripleFix] = (),
-) -> UnitFactsState:
-    """Repair machine-found violations with bounded render-update visits.
+    pass_index: int,
+    mandatory_before: int,
+) -> PatchOutcome:
+    """Compile the critique into a patch and apply it, or undo it.
 
-    Only the *trigger* here is deterministic: each visit is a paid
-    ``render_facts_update`` call fed with the findings. Machine-applied,
-    LLM-free rewrites are a different thing entirely and run at parse time
-    (``agent/render_facts.py::_normalize_and_repair_graph``) and at the
-    post-merge gate (``tool/facts_validation::apply_shacl_repairs``).
-
-    Runs after the final render (where the LLM critic is skipped): mandatory
-    findings — quarantined literals, unknown/near-miss terms — drive the loop.
-    Advisory findings (numeric coverage) ride along in the prompt when a repair
-    does run, but never trigger one on their own: they fire on nearly every
-    unit of numeric prose, so gating on them cost an extra render per unit.
-    A failed repair leaves the pre-repair graph intact (the patch path applies
-    only parsed operations) and is recorded rather than erased.
+    This is where a critique stops being a description and becomes a change.
+    The critic cites statement ids, so the delete side resolves by lookup rather
+    than by matching text the model retyped from memory -- which is what made
+    the previous contract lose most of its own removals. Screening then withhelds
+    what the deployment does not allow a pass to destroy, and the rollback below
+    undoes a pass that made things worse.
     """
-    repair_visits = atomic.facts_llm_repair_visits
-    # Tier 1: a fix that quotes triples the graph actually holds is already a
-    # patch, so apply it here for free rather than paying a render to retype
-    # it. Runs before the findings are collected so the deterministic checks
-    # score the repaired graph, and on every path -- including an accepted
-    # render, whose fixes used to be discarded unread.
-    compiled = compile_critic_fixes(critic_fixes, unit_state.content_unit.graph)
-    if compiled.update is not None:
-        apply_compiled_patch(unit_state.content_unit.graph, compiled.update)
+    graph = unit_state.patch_target_graph()
+    compiled = compile_critic_fixes(
+        unit_state.suggestions.actionable_fixes,
+        graph,
+        index=unit_state.prompt_triple_index,
+        policy=phase.patch_policy(atomic),
+    )
+    # An index is paired with the critique it was built for. Clearing it here
+    # means a later compile reaching for a previous pass's table resolves
+    # nothing rather than resolving to the wrong statement.
+    unit_state.prompt_triple_index = None
+
+    unit_state.critic_fixes_applied += len(compiled.applied)
+    unit_state.critic_fixes_residual = len(compiled.residual)
+    unit_state.critic_fixes_noop += len(compiled.noop)
+    # An applied fix must stop existing as a request: `suggestions` is what the
+    # next pass sees as outstanding work, and a fix already carried out would
+    # be asked for again against a graph that no longer matches it.
+    unit_state.suggestions = Suggestions(
+        actionable_fixes=list(compiled.residual),
+        systemic_critique_summary=unit_state.suggestions.systemic_critique_summary,
+    )
+
+    if compiled.update is None:
+        findings = phase.collect_findings(unit_state, atomic)
+        unit_state.deterministic_findings = findings
+        mandatory_after = sum(1 for finding in findings if finding.mandatory)
+        _reevaluate_unit_status(unit_state, phase, atomic, findings)
+        _record_attempt(
+            unit_state,
+            kind="critic_patch",
+            render_attempt=render_attempt,
+            critic_attempt=pass_index,
+            n_findings=len(findings),
+            n_mandatory=mandatory_after,
+            n_fixes_noop=len(compiled.noop),
+        )
+        return PatchOutcome(
+            residual=len(compiled.residual),
+            noop=len(compiled.noop),
+            mandatory_after=mandatory_after,
+        )
+
+    token = unit_state.snapshot_for_rollback()
+    graph_before = graph.copy()
+    product_before = unit_state.product_triple_count()
+    deleted = sum(
+        len(op.graph) for op in compiled.update.triple_operations if op.type == "delete"
+    )
+    inserted = sum(
+        len(op.graph) for op in compiled.update.triple_operations if op.type == "insert"
+    )
+
+    applied_ok = unit_state.apply_patch(compiled.update)
+    findings = phase.collect_findings(unit_state, atomic)
+    mandatory_after = sum(1 for finding in findings if finding.mandatory)
+    rolled_back = False
+    if applied_ok and _patch_regressed(
+        graph_before=graph_before,
+        graph_after=unit_state.patch_target_graph(),
+        product_before=product_before,
+        product_after=unit_state.product_triple_count(),
+        mandatory_before=mandatory_before,
+        mandatory_after=mandatory_after,
+    ):
+        logger.warning(
+            "Critic patch left the unit worse (-%d/+%d triples, mandatory %d -> %d)"
+            " — rolling it back",
+            deleted,
+            inserted,
+            mandatory_before,
+            mandatory_after,
+        )
+        unit_state.restore(token)
+        findings = phase.collect_findings(unit_state, atomic)
+        mandatory_after = sum(1 for finding in findings if finding.mandatory)
+        rolled_back = True
+    elif not applied_ok:
+        logger.warning("Critic patch refused by the phase; graph unchanged")
+        rolled_back = True
+
+    unit_state.deterministic_findings = findings
+    _reevaluate_unit_status(unit_state, phase, atomic, findings)
+    if not rolled_back and isinstance(unit_state, UnitFactsState):
         unit_state.applied_repairs.extend(
             GraphRepairRecord(
                 kind=FactsUnitFindingKind.CRITIC_FIX,
-                source=fix.incorrect_value or "",
+                source=f"ids={fix.triple_ids}" if fix.triple_ids else "",
                 target=fix.correct_value or "",
             )
             for fix in compiled.applied
         )
-    unit_state.critic_fixes_applied = len(compiled.applied)
-    unit_state.critic_fixes_residual = len(compiled.residual)
-    # Tier 2: what did not compile is where the model's judgement is actually
-    # needed. Those join the deterministic findings for the first pass only --
-    # they are consumed by the render that reads them, exactly like
-    # `state.suggestions`; re-adding them after each pass would make a fix the
-    # renderer declined an unresolvable finding and burn the whole budget.
-    findings = [
-        *_collect_facts_findings(unit_state, atomic),
-        *critic_fixes_to_findings(compiled.residual, atomic.acceptance_policy),
-    ]
-    for repair_attempt in range(1, repair_visits + 1):
-        mandatory = [finding for finding in findings if finding.mandatory]
-        if not mandatory:
-            break
-        logger.info(
-            "Finding-driven facts repair render %s/%s: %d finding(s) (%d mandatory)",
-            repair_attempt,
-            repair_visits,
-            len(findings),
-            len(mandatory),
-        )
-        unit_state.deterministic_findings = findings
-        graph_before = unit_state.content_unit.graph.copy()
-        triples_before = len(unit_state.content_unit.graph)
-        mandatory_before = len(mandatory)
-        unit_state = await render_facts(
-            unit_state, atomic, supplemental_ontologies=supplemental
-        )
-        repair_failed = unit_state.status != Status.SUCCESS
-        repair_delete_only = False
-        if not repair_failed:
-            findings = _collect_facts_findings(unit_state, atomic)
-            mandatory_after = sum(1 for finding in findings if finding.mandatory)
-            triples_after = len(unit_state.content_unit.graph)
-            # The findings prompt orders every mandatory item to be fixed by
-            # rewriting the offending term *in place*, so a genuine repair
-            # always writes something back. A render that only removed triples
-            # answered a repair order with a deletion, and the fact that the
-            # finding is gone afterwards is the deletion working, not a fix.
-            #
-            # Keying on the finding count alone cannot see this: deleting the
-            # flagged statement drops `mandatory_after` below
-            # `mandatory_before`, so the dominant observed failure mode --
-            # repair responses deleting valid
-            # values outright -- scored as a successful repair. Comparing the
-            # written triples catches it, and stays quiet for a rewrite that
-            # happens to shrink the graph by collapsing a duplicate.
-            wrote_nothing = not (unit_state.content_unit.graph - graph_before)
-            deleted_something = bool(graph_before - unit_state.content_unit.graph)
-            no_progress = (
-                triples_after < triples_before and mandatory_after >= mandatory_before
-            )
-            if (deleted_something and wrote_nothing) or no_progress:
-                # Roll back rather than keep the shrunken graph: the pre-repair
-                # graph holds strictly more data, and its mandatory findings are
-                # the ones the next attempt (or the residual metric) should see.
-                logger.warning(
-                    "Finding-driven repair deleted %d triple(s) and wrote %d "
-                    "(%d -> %d triples, mandatory %d -> %d) — rolling back the "
-                    "delete-only repair",
-                    len(graph_before - unit_state.content_unit.graph),
-                    len(unit_state.content_unit.graph - graph_before),
-                    triples_before,
-                    triples_after,
-                    mandatory_before,
-                    mandatory_after,
-                )
-                unit_state.content_unit.graph = graph_before
-                findings = _collect_facts_findings(unit_state, atomic)
-                repair_delete_only = True
-        # Recorded counts are the residual AFTER this repair render (on failure
-        # the graph is unchanged, so the pre-render findings still describe it).
-        # This is what `facts_findings_residual` sums document-level; recording
-        # the pre-render counts here measured what the repair was asked to fix,
-        # not what survived it.
-        _record_facts_attempt(
-            unit_state,
-            kind="llm_repair",
-            render_attempt=render_attempt,
-            critic_attempt=repair_attempt,
-            n_findings=len(findings),
-            n_mandatory=sum(1 for finding in findings if finding.mandatory),
-            repair_failed=repair_failed,
-            repair_delete_only=repair_delete_only,
-        )
-        if repair_failed:
-            # The pre-repair graph is intact, so the unit is still usable and
-            # the loop reports SUCCESS. The diagnosis is copied onto the attempt
-            # record *before* the state is cleared -- clearing it outright left
-            # `repair_failed=True` with no stage or reason, so a provider
-            # timeout and an unparseable response looked identical.
-            logger.warning(
-                "Finding-driven facts repair render failed (%s: %s); keeping graph",
-                unit_state.failure_stage,
-                unit_state.failure_reason,
-            )
-            unit_state.clear_failure()
-            unit_state.status = Status.SUCCESS
-            break
-
-    unit_state.deterministic_findings = findings
-    if findings:
-        mandatory_count = sum(1 for finding in findings if finding.mandatory)
-        if mandatory_count:
-            logger.warning(
-                "%d mandatory deterministic finding(s) remain unresolved",
-                mandatory_count,
-            )
-    return unit_state
+    _record_attempt(
+        unit_state,
+        kind="critic_patch",
+        render_attempt=render_attempt,
+        critic_attempt=pass_index,
+        n_findings=len(findings),
+        n_mandatory=mandatory_after,
+        n_fixes_applied=0 if rolled_back else len(compiled.applied),
+        n_fixes_noop=len(compiled.noop),
+        n_triples_deleted=0 if rolled_back else deleted,
+        n_triples_inserted=0 if rolled_back else inserted,
+        patch_rolled_back=rolled_back,
+        patch_delete_capped=compiled.delete_capped,
+    )
+    if rolled_back:
+        unit_state.critic_fixes_applied -= len(compiled.applied)
+    return PatchOutcome(
+        applied=0 if rolled_back else len(compiled.applied),
+        residual=len(compiled.residual),
+        noop=len(compiled.noop),
+        rolled_back=rolled_back,
+        mandatory_after=mandatory_after,
+    )
 
 
 def _reset_node_evidence_context(
@@ -422,7 +496,7 @@ async def _apply_facts_ontology_context(
     unit_state: UnitFactsState,
     context: UnitLoopContext,
     tools: ToolBox,
-) -> UnitFactsState:
+) -> None:
     """Set ontology_snapshot for facts from the per-unit context resolver.
 
     Only reached when the caller has no merged document context to hand down
@@ -436,7 +510,322 @@ async def _apply_facts_ontology_context(
         ctx.writable_iris,
     )
     _apply_unit_ontology_context(unit_state, ctx)
-    return unit_state
+
+
+# --- phase adapters ----------------------------------------------------------
+#
+# The two unit loops were parallel implementations of the same control flow,
+# and they had drifted: only one recorded render attempts, only one stopped
+# escalating a rejection into a fresh extraction, and only one kept the
+# critique it had just paid for. Rather than fix each divergence twice, the
+# flow is written once and the genuine differences -- which agent, which graph,
+# which validator, which budget -- are declared here.
+#
+# The callables are module-level wrappers rather than direct references on
+# purpose: a frozen adapter capturing ``render_facts`` at import time would
+# defeat every test that monkeypatches this module's globals, and those tests
+# would go on passing while silently exercising the real agents.
+
+
+def _same_state(returned: object, given: object) -> None:
+    """The agents mutate the state they are handed and return it.
+
+    The driver relies on that: it keeps its own reference so the loop stays
+    generic over the two unit types rather than widening to their union at every
+    call. If an agent ever starts returning a copy, the loop would carry on with
+    the stale object and quietly lose that step's work -- so it fails here
+    instead.
+    """
+    assert returned is given, "unit-loop agents must mutate the state in place"
+
+
+async def _render_facts_phase(state, atomic, supplemental) -> None:
+    _same_state(
+        await render_facts(state, atomic, supplemental_ontologies=supplemental), state
+    )
+
+
+async def _render_ontology_phase(state, atomic, supplemental) -> None:
+    _same_state(
+        await render_ontology(state, atomic, supplemental_ontologies=supplemental),
+        state,
+    )
+
+
+async def _criticise_facts_phase(state, atomic) -> None:
+    _same_state(await criticise_facts(state, atomic), state)
+
+
+async def _criticise_ontology_phase(state, atomic) -> None:
+    _same_state(await criticise_ontology(state, atomic), state)
+
+
+def _prepare_facts(unit_state: UnitFactsState) -> None:
+    """Nothing to stage: the facts graph is the unit's product in place."""
+
+
+def _prepare_ontology(unit_state: UnitOntologyState) -> None:
+    """Copy the snapshot into the scratchpad the loop renders against."""
+    started = time.perf_counter()
+    unit_state.working_graph = unit_state.ontology_snapshot.graph.copy()
+    unit_state.budget_tracker.add_duration(
+        "ctx/working_graph_copy", time.perf_counter() - started
+    )
+
+
+@dataclass(frozen=True)
+class LoopPhase:
+    """Everything that differs between the facts and ontology unit loops."""
+
+    name: Literal["facts", "ontology"]
+    render_node: WorkflowNode
+    critic_node: WorkflowNode
+    render_stage: FailureStage
+    critic_stage: FailureStage
+    # The two agent hooks are side-effecting: they mutate the state the driver
+    # holds. That is what the agents already do, and saying so here is what lets
+    # the driver stay generic over the two unit types instead of widening to
+    # their union at every call. `_same_state` keeps the assumption honest.
+    prepare: Callable[..., None]
+    render: Callable[..., Awaitable[None]]
+    criticise: Callable[..., Awaitable[None]]
+    collect_findings: Callable[..., list]
+    critic_passes: Callable[[AtomicToolBox], int]
+    patch_policy: Callable[[AtomicToolBox], CriticPatchPolicy]
+    acceptance_policy: Callable[[AtomicToolBox], FactsAcceptancePolicy]
+
+
+FACTS_PHASE = LoopPhase(
+    name="facts",
+    render_node=WorkflowNode.TEXT_TO_FACTS,
+    critic_node=WorkflowNode.CRITICISE_FACTS,
+    render_stage=FailureStage.GENERATE_GRAPH_UPDATE_FOR_FACTS,
+    critic_stage=FailureStage.FACTS_CRITIQUE,
+    prepare=_prepare_facts,
+    render=_render_facts_phase,
+    criticise=_criticise_facts_phase,
+    collect_findings=_collect_facts_findings,
+    critic_passes=lambda atomic: atomic.facts_critic_passes,
+    patch_policy=lambda atomic: atomic.facts_patch_policy,
+    acceptance_policy=lambda atomic: atomic.acceptance_policy,
+)
+
+ONTOLOGY_PHASE = LoopPhase(
+    name="ontology",
+    render_node=WorkflowNode.TEXT_TO_ONTOLOGY,
+    critic_node=WorkflowNode.CRITICISE_ONTOLOGY,
+    render_stage=FailureStage.GENERATE_GRAPH_UPDATE_FOR_ONTOLOGY,
+    critic_stage=FailureStage.ONTOLOGY_CRITIQUE,
+    prepare=_prepare_ontology,
+    render=_render_ontology_phase,
+    criticise=_criticise_ontology_phase,
+    collect_findings=_collect_ontology_findings,
+    critic_passes=lambda atomic: atomic.ontology_critic_passes,
+    patch_policy=lambda atomic: atomic.ontology_patch_policy,
+    acceptance_policy=lambda atomic: atomic.ontology_acceptance_policy,
+)
+
+
+async def _render_with_evidence(
+    unit_state: UnitStateT,
+    atomic: AtomicToolBox,
+    phase: LoopPhase,
+    supplemental: list[Ontology],
+    *,
+    render_attempt: int,
+) -> bool:
+    """One render attempt, with the evidence-backed retry. True on success."""
+    unit_state.node_visits[phase.render_node] += 1
+    _reset_node_evidence_context(unit_state, phase.render_node)
+    await phase.render(unit_state, atomic, supplemental)
+    _record_attempt(unit_state, kind="render", render_attempt=render_attempt)
+    if unit_state.status == Status.SUCCESS:
+        return True
+
+    request = unit_state.get_external_evidence_request(phase.render_node)
+    if not request.initiate_search:
+        logger.info(
+            "Unit %s render failed at attempt %s (no search request)",
+            phase.name,
+            render_attempt,
+        )
+        return False
+
+    await plan_external_evidence_for_node(unit_state, atomic, phase.render_node)
+    await fetch_external_evidence_for_node(unit_state, atomic, phase.render_node)
+    await phase.render(unit_state, atomic, supplemental)
+    _record_attempt(unit_state, kind="render", render_attempt=render_attempt)
+    logger.info(
+        "Unit %s render %s at attempt %s (with search)",
+        phase.name,
+        "recovered" if unit_state.status == Status.SUCCESS else "failed",
+        render_attempt,
+    )
+    return unit_state.status == Status.SUCCESS
+
+
+async def run_unit_loop(
+    state: UnitStateT,
+    tools: ToolBox,
+    document_context: UnitLoopContext,
+    phase: LoopPhase,
+    max_visits_per_node: int | None = None,
+    pre_resolved_context: UnitOntologyContext | None = None,
+) -> UnitStateT:
+    """Extract a unit once, then review and patch it a bounded number of times.
+
+    The two budgets mean different things and no longer trade against each
+    other. ``MAX_VISITS`` retries a render that *failed*; a render that
+    succeeded is never repeated, because re-extracting a whole unit is the
+    expensive answer to a local defect and reliably introduces new ones. The
+    critic passes then improve what came back, each one re-running the
+    deterministic checks for free before paying for the critique.
+
+    Args:
+        state: Unit state to run the loop over.
+        tools: Tool container.
+        document_context: Document-level inputs, shared read-only.
+        phase: Which of the two loops this is.
+        max_visits_per_node: Override for the render-failure bound.
+        pre_resolved_context: Ontology context resolved once by the caller. The
+            merged document ontology depends only on document-level state, so
+            the fan-out builds it once and hands the *same object* to every
+            unit; resolving it per unit cost a full rdflib merge and two graph
+            copies each time.
+    """
+    atomic = tools.get_atomic_tools()
+    unit_state = state.model_copy(deep=True)
+    # Charge resolver LLM calls (e.g. ontology selection) to this unit's
+    # tracker -- the copy that survives the loop and is merged by the caller.
+    # Shallow copy: retrieval_metrics stays shared with the caller's context.
+    document_context = document_context.model_copy(
+        update={"budget_tracker": unit_state.budget_tracker}
+    )
+    # The stage the loop is currently in, so an unhandled exception is
+    # attributed to where it happened rather than always naming the critique.
+    stage = phase.render_stage
+    try:
+        if pre_resolved_context is not None:
+            _apply_unit_ontology_context(unit_state, pre_resolved_context)
+        elif isinstance(unit_state, UnitFactsState):
+            await _apply_facts_ontology_context(unit_state, document_context, tools)
+        else:
+            # The ontology loop is the caller that can answer an empty context
+            # by inventing vocabulary: ``render_ontology`` branches on an empty
+            # seed into ``render_ontology_fresh``.
+            resolved = await resolve_unit_ontology_context(
+                document_context,
+                tools,
+                unit_state.content_unit,
+                can_create_vocabulary=True,
+            )
+            _apply_unit_ontology_context(unit_state, resolved)
+        phase.prepare(unit_state)
+
+        max_visits = _resolve_max_visits_limit(
+            unit_state.max_visits_per_node, max_visits_per_node
+        )
+        unit_state.max_visits_per_node = max_visits
+
+        rendered = False
+        render_attempt = 0
+        supplemental: list[Ontology] = []
+        for render_attempt in range(1, max_visits + 1):
+            stage = phase.render_stage
+            supplemental = _supplemental_ontologies_for_unit(
+                document_context, unit_state, tools
+            )
+            rendered = await _render_with_evidence(
+                unit_state,
+                atomic,
+                phase,
+                supplemental,
+                render_attempt=render_attempt,
+            )
+            if rendered:
+                break
+
+        if not rendered:
+            logger.info("Unit %s loop exhausted render retries", phase.name)
+            unit_state.deterministic_findings = phase.collect_findings(
+                unit_state, atomic
+            )
+            return unit_state
+
+        stage = phase.critic_stage
+        for pass_index in range(1, phase.critic_passes(atomic) + 1):
+            findings = phase.collect_findings(unit_state, atomic)
+            unit_state.deterministic_findings = findings
+            mandatory_before = sum(1 for finding in findings if finding.mandatory)
+
+            unit_state.node_visits[phase.critic_node] += 1
+            _reset_node_evidence_context(unit_state, phase.critic_node)
+            await phase.criticise(unit_state, atomic)
+            if unit_state.status != Status.SUCCESS:
+                request = unit_state.get_external_evidence_request(phase.critic_node)
+                if request.initiate_search:
+                    await plan_external_evidence_for_node(
+                        unit_state, atomic, phase.critic_node
+                    )
+                    await fetch_external_evidence_for_node(
+                        unit_state, atomic, phase.critic_node
+                    )
+                    await phase.criticise(unit_state, atomic)
+
+            outcome = _apply_critic_patch(
+                unit_state,
+                atomic,
+                phase,
+                render_attempt=render_attempt,
+                pass_index=pass_index,
+                mandatory_before=mandatory_before,
+            )
+            logger.info(
+                "Unit %s critic pass %s/%s: %d applied, %d residual, %d no-op%s",
+                phase.name,
+                pass_index,
+                phase.critic_passes(atomic),
+                outcome.applied,
+                outcome.residual,
+                outcome.noop,
+                " (rolled back)" if outcome.rolled_back else "",
+            )
+            if outcome.converged:
+                break
+        else:
+            if phase.critic_passes(atomic) == 0:
+                # No pass ran, so nothing collected the residual the document
+                # metric sums. Without this the denominator silently counts
+                # only units that happened to be criticised.
+                unit_state.deterministic_findings = phase.collect_findings(
+                    unit_state, atomic
+                )
+
+        mandatory = sum(
+            1 for finding in unit_state.deterministic_findings if finding.mandatory
+        )
+        if mandatory:
+            logger.warning(
+                "%d mandatory deterministic finding(s) remain unresolved", mandatory
+            )
+        return unit_state
+    except OntologyContextConfigError:
+        # Not a unit failure. An unresolvable ontology context is a property of
+        # the deployment, identical for every other unit in the document, and
+        # the whole point of ONTOLOGY_CONTEXT_REQUIRED is that the run stops
+        # rather than emitting an ungrounded graph. Recording it per unit
+        # instead let the fan-out finish, write a zero-triple manifest and exit
+        # successfully -- the vacuous pass this error exists to prevent, now
+        # with a traceback per unit to bury the cause.
+        logger.error(
+            "Ontology context is unusable for %s units; stopping the run",
+            phase.name,
+        )
+        raise
+    except Exception as exc:
+        logger.exception("Unhandled exception in %s unit loop", phase.name)
+        unit_state.set_failure(stage, str(exc))
+        return unit_state
 
 
 async def facts_loop(
@@ -446,196 +835,15 @@ async def facts_loop(
     max_visits_per_node: int | None = None,
     pre_resolved_context: UnitOntologyContext | None = None,
 ) -> UnitFactsState:
-    """Run facts render/critic loop for one content unit.
-
-    Args:
-        state: Unit facts state to run the loop over.
-        tools: Tool container.
-        document_context: Document-level inputs, shared read-only.
-        max_visits_per_node: Override for the render/critic bound.
-        pre_resolved_context: Ontology context resolved once by the caller.
-            The merged document ontology depends only on document-level state,
-            so the fan-out builds it once and hands the *same object* to every
-            unit; resolving it here instead cost one full rdflib merge and two
-            graph copies per unit. Falls back to per-unit resolution when None.
-    """
-    atomic = tools.get_atomic_tools()
-    unit_state = state.model_copy(deep=True)
-    # Charge resolver LLM calls (e.g. ontology selection) to this unit's
-    # tracker — the copy that survives the loop and is merged by the caller.
-    # Shallow copy: retrieval_metrics stays shared with the caller's context.
-    document_context = document_context.model_copy(
-        update={"budget_tracker": unit_state.budget_tracker}
+    """Run the render/critic loop for one content unit's facts."""
+    return await run_unit_loop(
+        state,
+        tools,
+        document_context,
+        FACTS_PHASE,
+        max_visits_per_node=max_visits_per_node,
+        pre_resolved_context=pre_resolved_context,
     )
-    # The stage the loop is currently in, so an unhandled exception is
-    # attributed to where it happened. Hardcoding the critique stage reported
-    # a render or context-resolution crash as a failed critique.
-    stage = FailureStage.GENERATE_GRAPH_UPDATE_FOR_FACTS
-    try:
-        if pre_resolved_context is not None:
-            _apply_unit_ontology_context(unit_state, pre_resolved_context)
-        else:
-            unit_state = await _apply_facts_ontology_context(
-                unit_state, document_context, tools
-            )
-        max_visits = _resolve_max_visits_limit(
-            unit_state.max_visits_per_node, max_visits_per_node
-        )
-        unit_state.max_visits_per_node = max_visits
-
-        for render_attempt in range(1, max_visits + 1):
-            stage = FailureStage.GENERATE_GRAPH_UPDATE_FOR_FACTS
-            unit_state.node_visits[WorkflowNode.TEXT_TO_FACTS] += 1
-            _reset_node_evidence_context(unit_state, WorkflowNode.TEXT_TO_FACTS)
-            supplemental = _supplemental_ontologies_for_unit(
-                document_context, unit_state, tools
-            )
-            unit_state = await render_facts(
-                unit_state, atomic, supplemental_ontologies=supplemental
-            )
-            _record_facts_attempt(
-                unit_state, kind="render", render_attempt=render_attempt
-            )
-            if unit_state.status != Status.SUCCESS:
-                render_request = unit_state.get_external_evidence_request(
-                    WorkflowNode.TEXT_TO_FACTS
-                )
-                if render_request.initiate_search:
-                    unit_state = await plan_external_evidence_for_node(
-                        unit_state, atomic, WorkflowNode.TEXT_TO_FACTS
-                    )
-                    unit_state = await fetch_external_evidence_for_node(
-                        unit_state, atomic, WorkflowNode.TEXT_TO_FACTS
-                    )
-                    unit_state = await render_facts(
-                        unit_state, atomic, supplemental_ontologies=supplemental
-                    )
-                    _record_facts_attempt(
-                        unit_state, kind="render", render_attempt=render_attempt
-                    )
-                    if unit_state.status == Status.SUCCESS:
-                        logger.info(
-                            "Unit facts render recovered with search at attempt %s/%s",
-                            render_attempt,
-                            max_visits,
-                        )
-                    else:
-                        logger.info(
-                            "Unit facts render failed at attempt %s/%s (with search)",
-                            render_attempt,
-                            max_visits,
-                        )
-                        continue
-                else:
-                    logger.info(
-                        "Unit facts render failed at attempt %s/%s (no search request)",
-                        render_attempt,
-                        max_visits,
-                    )
-                    continue
-
-            if _skip_critic_after_final_render(
-                render_attempt, max_visits, atomic.facts_llm_repair_visits
-            ):
-                logger.info(
-                    "Unit facts loop finishing on final render attempt %s/%s "
-                    "(skipping LLM critic; finding-driven repair renders may "
-                    "still run)",
-                    render_attempt,
-                    max_visits,
-                )
-                return await _run_finding_driven_repair(
-                    unit_state,
-                    atomic,
-                    supplemental,
-                    render_attempt=render_attempt,
-                )
-
-            stage = FailureStage.FACTS_CRITIQUE
-            for critic_attempt in range(1, _resolve_critic_visits(unit_state) + 1):
-                unit_state.node_visits[WorkflowNode.CRITICISE_FACTS] += 1
-                _reset_node_evidence_context(unit_state, WorkflowNode.CRITICISE_FACTS)
-                unit_state.deterministic_findings = _collect_facts_findings(
-                    unit_state, atomic
-                )
-                unit_state = await criticise_facts(unit_state, atomic)
-                if unit_state.status == Status.SUCCESS:
-                    logger.info(
-                        "Unit facts loop converged at render %s/%s critic %s/%s",
-                        render_attempt,
-                        max_visits,
-                        critic_attempt,
-                        max_visits,
-                    )
-                    return await _run_finding_driven_repair(
-                        unit_state,
-                        atomic,
-                        supplemental,
-                        render_attempt=render_attempt,
-                        critic_fixes=unit_state.suggestions.actionable_fixes,
-                    )
-
-                critic_request = unit_state.get_external_evidence_request(
-                    WorkflowNode.CRITICISE_FACTS
-                )
-                if not critic_request.initiate_search:
-                    logger.info(
-                        "Unit facts critic rejected at render %s/%s critic %s/%s "
-                        "without search request; repairing in place",
-                        render_attempt,
-                        max_visits,
-                        critic_attempt,
-                        max_visits,
-                    )
-                    break
-
-                unit_state = await plan_external_evidence_for_node(
-                    unit_state, atomic, WorkflowNode.CRITICISE_FACTS
-                )
-                unit_state = await fetch_external_evidence_for_node(
-                    unit_state, atomic, WorkflowNode.CRITICISE_FACTS
-                )
-                unit_state = await criticise_facts(unit_state, atomic)
-                if unit_state.status == Status.SUCCESS:
-                    logger.info(
-                        "Unit facts loop converged with critic search at "
-                        "render %s/%s critic %s/%s",
-                        render_attempt,
-                        max_visits,
-                        critic_attempt,
-                        max_visits,
-                    )
-                    return await _run_finding_driven_repair(
-                        unit_state,
-                        atomic,
-                        supplemental,
-                        render_attempt=render_attempt,
-                        critic_fixes=unit_state.suggestions.actionable_fixes,
-                    )
-
-            # A rejecting critic no longer escalates to another full render.
-            # It used to fall through to the next `render_attempt`, which
-            # re-extracted the unit from scratch under a prompt that invited
-            # unrequested rewriting -- the expensive, open-ended answer to a
-            # signal that is now a list of specific defects. Its blocking fixes
-            # go through the same bounded rewrite-in-place pass the
-            # deterministic findings use. The outer loop therefore retries only
-            # on *render failure*, and a unit's worst-case call count no longer
-            # grows with MAX_VISITS.
-            return await _run_finding_driven_repair(
-                unit_state,
-                atomic,
-                supplemental,
-                render_attempt=render_attempt,
-                critic_fixes=unit_state.suggestions.actionable_fixes,
-            )
-
-        logger.info("Unit facts loop exhausted retries")
-        return unit_state
-    except Exception as exc:
-        logger.exception("Unhandled exception in facts_loop")
-        unit_state.set_failure(stage, str(exc))
-        return unit_state
 
 
 async def ontology_loop(
@@ -644,154 +852,11 @@ async def ontology_loop(
     document_context: UnitLoopContext,
     max_visits_per_node: int | None = None,
 ) -> UnitOntologyState:
-    """Run ontology render/critic loop for one content unit.
-
-    Per-unit ontology context is assembled via ``resolve_unit_ontology_context``
-    before the first render.
-    """
-    atomic = tools.get_atomic_tools()
-    unit_state = state.model_copy(deep=True)
-    # Charge resolver LLM calls to this unit's surviving tracker; shallow copy
-    # keeps retrieval_metrics shared with the caller's context.
-    document_context = document_context.model_copy(
-        update={"budget_tracker": unit_state.budget_tracker}
+    """Run the render/critic loop for one content unit's ontology delta."""
+    return await run_unit_loop(
+        state,
+        tools,
+        document_context,
+        ONTOLOGY_PHASE,
+        max_visits_per_node=max_visits_per_node,
     )
-    # See facts_loop: the stage an unhandled exception is attributed to tracks
-    # where the loop actually is, rather than always naming the critique.
-    stage = FailureStage.GENERATE_GRAPH_UPDATE_FOR_ONTOLOGY
-    try:
-        ctx = await resolve_unit_ontology_context(
-            document_context, tools, unit_state.content_unit
-        )
-        _apply_unit_ontology_context(unit_state, ctx)
-        working_copy_start = time.perf_counter()
-        unit_state.working_graph = unit_state.ontology_snapshot.graph.copy()
-        unit_state.budget_tracker.add_duration(
-            "ctx/working_graph_copy", time.perf_counter() - working_copy_start
-        )
-
-        max_visits = _resolve_max_visits_limit(
-            unit_state.max_visits_per_node, max_visits_per_node
-        )
-        unit_state.max_visits_per_node = max_visits
-
-        for render_attempt in range(1, max_visits + 1):
-            stage = FailureStage.GENERATE_GRAPH_UPDATE_FOR_ONTOLOGY
-            unit_state.node_visits[WorkflowNode.TEXT_TO_ONTOLOGY] += 1
-            _reset_node_evidence_context(unit_state, WorkflowNode.TEXT_TO_ONTOLOGY)
-            supplemental = _supplemental_ontologies_for_unit(
-                document_context, unit_state, tools
-            )
-            unit_state = await render_ontology(
-                unit_state, atomic, supplemental_ontologies=supplemental
-            )
-            if unit_state.status != Status.SUCCESS:
-                render_request = unit_state.get_external_evidence_request(
-                    WorkflowNode.TEXT_TO_ONTOLOGY
-                )
-                if render_request.initiate_search:
-                    unit_state = await plan_external_evidence_for_node(
-                        unit_state, atomic, WorkflowNode.TEXT_TO_ONTOLOGY
-                    )
-                    unit_state = await fetch_external_evidence_for_node(
-                        unit_state, atomic, WorkflowNode.TEXT_TO_ONTOLOGY
-                    )
-                    unit_state = await render_ontology(
-                        unit_state, atomic, supplemental_ontologies=supplemental
-                    )
-                    if unit_state.status == Status.SUCCESS:
-                        logger.info(
-                            "Unit ontology render recovered with search at attempt %s/%s",
-                            render_attempt,
-                            max_visits,
-                        )
-                    else:
-                        logger.info(
-                            "Unit ontology render failed at attempt %s/%s (with search)",
-                            render_attempt,
-                            max_visits,
-                        )
-                        continue
-                else:
-                    logger.info(
-                        "Unit ontology render failed at attempt %s/%s (no search request)",
-                        render_attempt,
-                        max_visits,
-                    )
-                    continue
-
-            if _skip_critic_after_final_render(render_attempt, max_visits):
-                logger.info(
-                    "Unit ontology loop finishing on final render attempt %s/%s "
-                    "(no further extract; skipping critic)",
-                    render_attempt,
-                    max_visits,
-                )
-                # The residual metric needs findings even when no critic runs
-                # (the MAX_VISITS=1 default).
-                unit_state.deterministic_findings = _collect_ontology_findings(
-                    unit_state, atomic
-                )
-                return unit_state
-
-            stage = FailureStage.ONTOLOGY_CRITIQUE
-            for critic_attempt in range(1, _resolve_critic_visits(unit_state) + 1):
-                unit_state.node_visits[WorkflowNode.CRITICISE_ONTOLOGY] += 1
-                _reset_node_evidence_context(
-                    unit_state, WorkflowNode.CRITICISE_ONTOLOGY
-                )
-                unit_state.deterministic_findings = _collect_ontology_findings(
-                    unit_state, atomic
-                )
-                unit_state = await criticise_ontology(unit_state, atomic)
-                if unit_state.status == Status.SUCCESS:
-                    logger.info(
-                        "Unit ontology loop converged at render %s/%s critic %s/%s",
-                        render_attempt,
-                        max_visits,
-                        critic_attempt,
-                        max_visits,
-                    )
-                    return unit_state
-
-                critic_request = unit_state.get_external_evidence_request(
-                    WorkflowNode.CRITICISE_ONTOLOGY
-                )
-                if not critic_request.initiate_search:
-                    logger.info(
-                        "Unit ontology critic failed at render %s/%s critic %s/%s "
-                        "without search request",
-                        render_attempt,
-                        max_visits,
-                        critic_attempt,
-                        max_visits,
-                    )
-                    break
-
-                unit_state = await plan_external_evidence_for_node(
-                    unit_state, atomic, WorkflowNode.CRITICISE_ONTOLOGY
-                )
-                unit_state = await fetch_external_evidence_for_node(
-                    unit_state, atomic, WorkflowNode.CRITICISE_ONTOLOGY
-                )
-                unit_state = await criticise_ontology(unit_state, atomic)
-                if unit_state.status == Status.SUCCESS:
-                    logger.info(
-                        "Unit ontology loop converged with critic search at "
-                        "render %s/%s critic %s/%s",
-                        render_attempt,
-                        max_visits,
-                        critic_attempt,
-                        max_visits,
-                    )
-                    return unit_state
-
-        logger.info("Unit ontology loop exhausted retries")
-        unit_state.deterministic_findings = _collect_ontology_findings(
-            unit_state, atomic
-        )
-        return unit_state
-    except Exception as exc:
-        logger.exception("Unhandled exception in ontology_loop")
-        unit_state.set_failure(stage, str(exc))
-        return unit_state

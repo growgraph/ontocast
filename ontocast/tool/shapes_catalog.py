@@ -91,6 +91,12 @@ class ShapesCatalog(Tool):
         super().__init__(**kwargs)
         self._triple_store_manager: TripleStoreManager | None = None
         self._graph: RDFGraph | None = None
+        # Prompt-contract memo, keyed on the merged graph's identity: every
+        # (re)materialization builds a new graph object, so the key
+        # invalidates itself without each assignment site knowing about it.
+        self._contract_key: tuple[int, int] | None = None
+        self._contract_chapter: str = ""
+        self._contract_terms: tuple[str, ...] = ()
 
     def register_triple_store(self, manager: TripleStoreManager | None) -> None:
         """Register the triple store holding the shapes partition."""
@@ -108,6 +114,38 @@ class ShapesCatalog(Tool):
         rather than reporting a clean run against no shapes.
         """
         return self._graph if self._graph is not None and len(self._graph) else None
+
+    def _contract(self, max_lines: int) -> tuple[str, tuple[str, ...]]:
+        graph = self.graph()
+        if graph is None:
+            return "", ()
+        key = (id(graph), max_lines)
+        if self._contract_key != key:
+            from ontocast.prompt.shapes_contract import (
+                contract_terms,
+                derive_shape_requirements,
+                format_conformance_chapter,
+            )
+
+            requirements = derive_shape_requirements(graph)
+            self._contract_chapter = format_conformance_chapter(
+                requirements, max_lines=max_lines
+            )
+            self._contract_terms = contract_terms(graph)
+            self._contract_key = key
+        return self._contract_chapter, self._contract_terms
+
+    def conformance_chapter(self, *, max_lines: int) -> str:
+        """The shapes rendered as a prompt chapter; "" without shapes.
+
+        Memoized per merged graph -- the chapter is run-constant, and every
+        unit of every document in a tenancy shares it.
+        """
+        return self._contract(max_lines)[0]
+
+    def prompt_contract_terms(self, *, max_lines: int) -> tuple[str, ...]:
+        """IRIs the chapter instructs the renderer to emit (exemption set)."""
+        return self._contract(max_lines)[1]
 
     async def sync(self, shapes_dir: str | None = None) -> None:
         """Seed from ``shapes_dir`` when needed, then materialize the merged graph.

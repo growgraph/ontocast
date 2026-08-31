@@ -14,10 +14,26 @@ from ontocast.onto.enum import LLMGraphFormat
 from ontocast.onto.llm_graph_payload import llm_graph_format_ctx
 from ontocast.onto.ontology_condense import condense_graph_for_prompt
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.triple_index import TripleIndex, build_triple_index
 from ontocast.prompt.facts_guidelines import format_facts_operational_guidelines
+from ontocast.prompt.graph_index import render_index_table, render_indexed_turtle
 from ontocast.prompt.llm_json_schema import format_instructions_for_model
 
 T = TypeVar("T", bound=BaseModel)
+
+
+@dataclass(frozen=True)
+class IndexedChapter:
+    """A prompt chapter and the triple ids it hands the model.
+
+    The two travel together because they must not drift: the index is only
+    meaningful for the exact graph state the text was rendered from, and the
+    resolver checks that before it will delete anything.
+    """
+
+    text: str
+    index: TripleIndex
+
 
 # --- Output instructions (single-format per profile; graph-update = base + suffix) ---
 
@@ -128,26 +144,51 @@ closed with `}` before the response's final `}`:
 ```
 """
 
-_OUTPUT_INSTRUCTION_CRITIQUE_TURTLE = """\n\n
+_CRITIQUE_ADDRESSING_INSTRUCTION = """\n\n
+# HOW TO ADDRESS A STATEMENT
+
+Every statement in the graph chapters above carries an id -- the bracketed number
+before it, or its row in the TRIPLE INDEX table.
+
+1. To REMOVE a statement, put its id in `triple_ids`. Leave `correct_value` empty.
+2. To REPLACE a statement, put the id(s) you are replacing in `triple_ids` and put
+   the replacement in `correct_value`.
+3. To ADD, leave `triple_ids` empty and put the new statement in `correct_value`.
+
+Cite the id. Do NOT retype an existing statement into `incorrect_value`: a retyped
+statement has to match the stored one exactly, and a single differing predicate,
+prefix, or literal form silently discards the whole fix. The id cannot be wrong.
+
+Cite several ids in one fix when a change affects several statements about the same
+subject. Cite only ids you can see; never guess a number.
+"""
+
+_OUTPUT_INSTRUCTION_CRITIQUE_TURTLE = (
+    _CRITIQUE_ADDRESSING_INSTRUCTION
+    + """\n\n
 # GRAPH FORMAT INSTRUCTION (LLM_GRAPH_FORMAT=turtle)
 
 The deployment emits RDF graph fixes in Turtle syntax.
-For each `incorrect_value` and `correct_value` in actionable fixes, provide a **string**
-containing valid Turtle: `@prefix` declarations when needed, then one or more triples.
+Provide `correct_value` as a **string** containing valid Turtle: `@prefix` declarations
+when needed, then one or more triples.
 Example: "@prefix schema: <https://schema.org/> . cd:alice schema:worksFor cd:acme ."
 """
+)
 
-_OUTPUT_INSTRUCTION_CRITIQUE_JSONLD = """\n\n
+_OUTPUT_INSTRUCTION_CRITIQUE_JSONLD = (
+    _CRITIQUE_ADDRESSING_INSTRUCTION
+    + """\n\n
 # GRAPH FORMAT INSTRUCTION (LLM_GRAPH_FORMAT=jsonld)
 
-Render output uses embedded JSON-LD objects for graph fields, but critique fixes use **strings**
-containing JSON for one subject node each.
-For each `incorrect_value` and `correct_value`, provide a **string** with valid JSON for one
-subject node (inline `@context` or compact IRIs only):
+Render output uses embedded JSON-LD objects for graph fields, but critique fixes use a **string**
+containing JSON for one subject node.
+Provide `correct_value` as a **string** with valid JSON for one subject node
+(inline `@context` or compact IRIs only):
 Example: "{\\"@context\\": {\\"schema\\": \\"https://schema.org/\\"}, \\"@id\\": \\"cd:alice\\", \\"schema:worksFor\\": {\\"@id\\": \\"cd:acme\\"}}"
 Use `{"@value": "...", "@type": "xsd:date"}` for typed literals and `{"@value": "...", "@language": "en"}`
 for language-tagged literals. Never use Turtle ^^ syntax inside these JSON strings.
 """
+)
 
 
 @dataclass(frozen=True)
@@ -186,13 +227,110 @@ class GraphFormatProfile:
         chapter = f"\n\n# ONTOLOGY\n\n```{self.context_fence_lang()}\n{body}\n```\n"
         return chapter + suffix
 
-    def format_facts_chapter(self, graph: RDFGraph) -> str:
-        body = self.serialize_graph_for_prompt(graph)
-        return (
-            "\n\n# SEMANTIC GRAPH OF FACTS\n"
-            "The following facts were extracted\n\n"
-            f"```{self.context_fence_lang()}\n{body}\n```\n"
+    def _indexed_body(self, graph: RDFGraph, index: TripleIndex) -> str:
+        """Body plus ids, in whichever way this format can carry them.
+
+        Turtle takes the ids inline, where the critic is already reading. JSON-LD
+        cannot: rule 7 of its output instruction demands strictly valid JSON, and
+        an ``[12]`` marker inside a node object would contradict it -- so the ids
+        ride in a table after the fenced block instead. One resolver serves both.
+        """
+        if self.format == LLMGraphFormat.TURTLE:
+            return render_indexed_turtle(graph, index)
+        return self.serialize_graph_for_prompt(graph)
+
+    def _index_appendix(self, graph: RDFGraph, index: TripleIndex) -> str:
+        if self.format == LLMGraphFormat.TURTLE or index.is_empty:
+            return ""
+        return "\n" + render_index_table(graph, index) + "\n"
+
+    def format_facts_chapter_indexed(self, graph: RDFGraph) -> IndexedChapter:
+        """The facts chapter with a citable id on every triple.
+
+        Scope is the whole unit graph: for facts the graph *is* the unit's
+        product, so every triple in it is the critic's to change.
+        """
+        graph.sanitize_prefixes_namespaces()
+        index = build_triple_index(graph)
+        body = self._indexed_body(graph, index)
+        return IndexedChapter(
+            text=(
+                "\n\n# SEMANTIC GRAPH OF FACTS\n"
+                "The following facts were extracted. "
+                f"{self._addressing_note(index, len(graph))}\n\n"
+                f"```{self.context_fence_lang()}\n{body}\n```\n"
+                f"{self._index_appendix(graph, index)}"
+            ),
+            index=index,
         )
+
+    def format_ontology_chapter_indexed(
+        self,
+        graph: RDFGraph,
+        *,
+        scope: RDFGraph | None = None,
+        suffix: str = "",
+        max_triples: int | None = None,
+    ) -> IndexedChapter:
+        """The ontology chapter with ids, assigned **after** condensing.
+
+        Condensing drops triples to fit the prompt budget. Numbering before it
+        would hand out ids for statements the critic never sees, and a delete
+        cited against one of those is ordered blind.
+
+        ``scope`` narrows which statements are addressable. The ontology critic
+        is shown the retrieved snapshot *plus* this unit's delta but owns only
+        the delta, so passing the delta here leaves catalog statements visible
+        and unciteable -- a delete that would propagate to every document
+        sharing the terminal simply cannot be expressed.
+        """
+        condensed, _ = condense_graph_for_prompt(graph, max_triples)
+        condensed.sanitize_prefixes_namespaces()
+        index = build_triple_index(condensed, scope=scope)
+        body = self._indexed_body(condensed, index)
+        return IndexedChapter(
+            text=(
+                "\n\n# ONTOLOGY\n"
+                f"{self._addressing_note(index, len(condensed))}\n\n"
+                f"```{self.context_fence_lang()}\n{body}\n```\n"
+                f"{self._index_appendix(condensed, index)}"
+                f"{suffix}"
+            ),
+            index=index,
+        )
+
+    def _addressing_note(self, index: TripleIndex, shown: int) -> str:
+        """Explain the ids, and the absence of an id, in one sentence each."""
+        if shown == 0:
+            # Nothing to address, so nothing to explain. A note naming the index
+            # for an empty chapter invites a citation there is no statement for.
+            return ""
+        if len(index) == 0:
+            return (
+                "Every statement below is existing context: read it, but none "
+                "of it can be cited or removed."
+            )
+        if self.format == LLMGraphFormat.TURTLE:
+            note = (
+                "The bracketed number before each statement is its id; cite ids "
+                "in `triple_ids` to change or remove a statement."
+            )
+            if len(index) < shown:
+                note += (
+                    " Statements marked `[-]` are existing context: read them, "
+                    "but they cannot be cited or removed."
+                )
+            return note
+        note = (
+            "The TRIPLE INDEX below lists the id of each addressable statement; "
+            "cite ids in `triple_ids` to change or remove one."
+        )
+        if len(index) < shown:
+            note += (
+                " Statements absent from the table are existing context: read "
+                "them, but they cannot be cited or removed."
+            )
+        return note
 
     def render_fresh_output_instruction(self, *, target: str = "facts") -> str:
         if self.format == LLMGraphFormat.JSONLD:

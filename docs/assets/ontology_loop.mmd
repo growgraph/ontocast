@@ -17,20 +17,26 @@ config:
 
 flowchart TD;
 	start([Unit start])
-	ctx[Resolve unit<br/>ontology context]
-	render_loop{render attempt<br/>1 … max_visits}
+	ctx[Resolve / apply<br/>ontology context]
+	render_loop{failed render<br/>1 … MAX_VISITS}
 	render_ontology[Render ontology]
-	final_render{final render<br/>attempt?}
+	pass_loop{critic pass<br/>1 … ONTOLOGY_CRITIC_PASSES}
+	findings[Deterministic checks<br/>(no LLM call)]
+	criticise_ontology[Criticise ontology<br/>(cites statement ids)]
+	patch[Compile, screen, apply<br/>patch (no LLM call)]
+	converged{changed nothing, or<br/>rolled back?}
 	done([Return unit state])
-	criticise_ontology[Criticise ontology]
 	exhausted([Return (retries exhausted)])
 	start --> ctx;
 	ctx --> render_loop;
 	render_loop --> render_ontology;
-	render_ontology -.->|success| final_render;
+	render_ontology -.->|success| pass_loop;
 	render_ontology -.->|fail| render_loop;
-	final_render -.->|no| criticise_ontology;
-	criticise_ontology -.->|success| done;
-	criticise_ontology -.->|fail| render_loop;
 	render_loop -.->|exhausted| exhausted;
-	final_render -.->|yes| done;
+	pass_loop -.->|pass| findings;
+	findings --> criticise_ontology;
+	criticise_ontology -.->|accept or reject| patch;
+	patch --> converged;
+	converged -.->|yes| done;
+	converged -.->|no| pass_loop;
+	pass_loop -.->|budget spent| done;

@@ -594,8 +594,17 @@ def _filter_and_merge_patch_hits(
     min_bm25_query_best_score: float,
     min_merged_max_score: float,
     max_atoms_total: int = 0,
+    stats: dict[str, int] | None = None,
 ) -> list[GraphAtom]:
-    """Filter each channel per query, then merge across queries."""
+    """Filter each channel per query, then merge across queries.
+
+    Args:
+        stats: Optional sink for counts taken *before* the score gates, which
+            the returned list can no longer distinguish: an empty result reads
+            the same whether search found nothing or a threshold rejected
+            everything, and the diagnostic downstream used to guess wrong.
+            Filled with ``candidate_hits`` and ``threshold_rejected``.
+    """
     cw, nw, bw = normalized_fusion_weights(store_config)
     collected: list[OntologySearchHit] = []
     for query_hits in hits_by_query:
@@ -631,6 +640,9 @@ def _filter_and_merge_patch_hits(
             )
         )
 
+    if stats is not None:
+        stats["candidate_hits"] = len(collected)
+        stats["threshold_rejected"] = 0
     if not collected:
         return []
 
@@ -640,6 +652,8 @@ def _filter_and_merge_patch_hits(
     # threshold against it would be meaningless.
     best_window_score = max(hit.score for hit in collected)
     if min_merged_max_score > 0.0 and best_window_score < min_merged_max_score:
+        if stats is not None:
+            stats["threshold_rejected"] = len(collected)
         return []
 
     merged_hits = _merge_hits_across_queries(
@@ -1605,6 +1619,7 @@ class OntologyPatchRetriever(Tool):
         sc = self.vector_store.store_config
         pc = self.patch
         eff_max_atoms = pc.effective_max_atoms(len(queries))
+        merge_stats: dict[str, int] = {}
         merged = _filter_and_merge_patch_hits(
             hits_by_query,
             store_config=sc,
@@ -1616,6 +1631,7 @@ class OntologyPatchRetriever(Tool):
             min_neighborhood_query_best_score=pc.min_neighborhood_query_best_score,
             min_bm25_query_best_score=pc.min_bm25_query_best_score,
             min_merged_max_score=pc.min_merged_max_score,
+            stats=merge_stats,
             max_atoms_total=0,
         )
         atoms_after_dedupe = len(merged)
@@ -1680,6 +1696,8 @@ class OntologyPatchRetriever(Tool):
                 "query_count": len(queries),
                 "top_k": eff_top_k,
                 "effective_max_atoms": eff_max_atoms,
+                "candidate_hits": merge_stats.get("candidate_hits", 0),
+                "threshold_rejected": merge_stats.get("threshold_rejected", 0),
                 "atoms_after_dedupe": atoms_after_dedupe,
                 "atoms_final": 0,
                 "seed_iris": [],
@@ -1708,6 +1726,8 @@ class OntologyPatchRetriever(Tool):
             "top_k": eff_top_k,
             "effective_max_atoms": eff_max_atoms,
             "merge_mode": pc.cross_query_merge_mode.value,
+            "candidate_hits": merge_stats.get("candidate_hits", 0),
+            "threshold_rejected": merge_stats.get("threshold_rejected", 0),
             "atoms_after_dedupe": atoms_after_dedupe,
             "atoms_final": len(merged),
             "seed_iris": [atom.iri for atom in merged if atom.iri],

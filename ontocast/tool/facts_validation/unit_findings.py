@@ -402,6 +402,7 @@ def collect_unit_findings(
     extraction_text: str,
     fact_namespaces: list[str],
     coverage_limit: int = 30,
+    coverage_mandatory: bool = False,
     policy: ValidationPolicy | None = None,
 ) -> list[FactsUnitFinding]:
     """Assemble all deterministic findings for one rendered unit graph.
@@ -601,7 +602,10 @@ def collect_unit_findings(
         findings.append(
             FactsUnitFinding(
                 kind=FactsUnitFindingKind.NUMERIC_COVERAGE,
-                mandatory=False,
+                # Advisory by default: the renderer judges per mention whether
+                # it is an extractable quantity or an artifact. Deployments
+                # measuring the trade-off flip FACTS_NUMERIC_COVERAGE_MANDATORY.
+                mandatory=coverage_mandatory,
                 message=(
                     "These numbers appear in the source text but not in the "
                     "graph. For each: extract it as a typed literal on an "

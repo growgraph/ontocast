@@ -40,6 +40,7 @@ from ontocast.prompt.ontology_context import build_ontology_index
 from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
 from ontocast.tool import LLMTool
 from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.facts_validation import accept_reason, material_defects
 from ontocast.tool.ontology_validation import count_fixes_targeting_snapshot
 
 logger = logging.getLogger(__name__)
@@ -82,11 +83,18 @@ async def criticise_ontology(
     # With the index appendix, as the renderer sends it: a critic shown bare
     # opaque IRIs cannot judge the term choices it is asked about. No memo here
     # -- effective_graph_for_prompt returns a bare graph, not a snapshot.
-    ontology_chapter = profile.format_ontology_chapter(
+    # Ids are scoped to this unit's own delta. The chapter still shows the
+    # retrieved catalog -- the critic cannot judge a term choice without it --
+    # but those statements carry no id, so a delete that would propagate onto a
+    # shared, versioned terminal is not expressible rather than merely flagged.
+    indexed_ontology = profile.format_ontology_chapter_indexed(
         current_graph,
+        scope=state.build_delta().inserts,
         suffix=build_ontology_index(current_graph),
         max_triples=state.ontology_context_max_triples,
     )
+    state.prompt_triple_index = indexed_ontology.index
+    ontology_chapter = indexed_ontology.text
     if state.deterministic_findings:
         # Machine-found delta defects, presented exactly the way the facts
         # critic receives its findings block.
@@ -169,13 +177,24 @@ async def criticise_ontology(
             f"score: {critique.score}, n fixes: {len(critique.actionable_ontology_fixes)}."
         )
 
-        # Incumbent gate, deliberately unchanged: `success or score > 90` is
-        # the top band of the prompt's own scoring rubric ("Excellent - minor
-        # refinements only"). Whether that demand for perfection is the right
-        # operating point is exactly what this record exists to measure -- the
-        # ontology critic has never run on recorded data, so unlike the
-        # facts gate there is no distribution to replace it from yet.
-        accepted = critique.success or critique.score > 90
+        # The gate is the deterministic findings, as on the facts side. The
+        # incumbent rule was `success or score > 90` -- the top band of the
+        # prompt's own rubric, which calls 70-89 "Good", so it rejected
+        # ontologies its own instructions considered good. Its verdict is still
+        # recorded, because replacing a gate deserves a distribution rather than
+        # an argument, and the ontology critic has never run on recorded data.
+        #
+        # The blocking set is the destructive-or-lossy subset only. Blocking on
+        # every mandatory finding would include `missing_label`, which fires
+        # whenever a render mints an unlabelled term: routine, and a permanent
+        # per-unit tax rather than a defect signal.
+        incumbent_accepted = critique.success or critique.score > 90
+        defects = material_defects(
+            state.deterministic_findings,
+            critique.actionable_ontology_fixes,
+            tools.ontology_acceptance_policy,
+        )
+        accepted = not defects
         delta = state.build_delta()
         state.attempt_log.append(
             LoopAttempt(
@@ -184,13 +203,8 @@ async def criticise_ontology(
                 kind="critic",
                 score=critique.score,
                 success=accepted,
-                accept_reason=(
-                    "incumbent_success"
-                    if critique.success
-                    else "incumbent_score"
-                    if critique.score > 90
-                    else "incumbent_rejected"
-                ),
+                accept_reason=accept_reason(defects),
+                incumbent_accepted=incumbent_accepted,
                 n_actionable_fixes=len(critique.actionable_ontology_fixes),
                 severity_counts=Counter(
                     fix.severity for fix in critique.actionable_ontology_fixes
@@ -218,19 +232,21 @@ async def criticise_ontology(
         if accepted:
             state.status = Status.SUCCESS
             state.set_node_status(WorkflowNode.CRITICISE_ONTOLOGY, Status.SUCCESS)
-            # An accepting critic has no outstanding requests. Not redundant
-            # with the reset in render_ontology_update: the loop can accept on a
-            # *later* critic attempt of the same render, after an
-            # external-evidence search, with no render in between to consume
-            # what the earlier rejecting attempt left behind.
-            state.suggestions = Suggestions()
+            # Kept, not cleared. Acceptance decides whether the unit may leave
+            # the loop; it does not decide whether the critique is worth
+            # applying. Clearing here discarded every fix attached to an
+            # accepted render -- which, since a REMOVE can never by itself
+            # cause a rejection, was most of them.
+            state.suggestions = Suggestions.from_critique_report(critique)
             logger.info("Ontology critique passed")
         else:
             state.status = Status.FAILED
             state.failure_stage = FailureStage.ONTOLOGY_CRITIQUE
             state.set_node_status(WorkflowNode.CRITICISE_ONTOLOGY, Status.FAILED)
             state.suggestions = Suggestions.from_critique_report(critique)
-            state.failure_reason = "Ontology Critic suggests improvements"
+            state.failure_reason = (
+                f"Ontology unit has {len(defects)} material defect(s)"
+            )
             logger.info(
                 f"Ontology critique failed: {critique.systemic_critique_summary}"
             )

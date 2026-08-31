@@ -6,10 +6,11 @@ from typing import TYPE_CHECKING
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
+from rdflib.namespace import OWL, RDF
 
 from ontocast.config import Config
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI
-from ontocast.onto.enum import OntologyContextMode
+from ontocast.onto.enum import OntologyContextMode, RenderMode
 from ontocast.onto.ontology import Ontology, OntologyProperties
 from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.rdfgraph import RDFGraph
@@ -213,6 +214,11 @@ class ToolBox:
         self.patch_retriever: OntologyPatchRetriever | None = None
         self.vector_store_ready: bool = False
         self.vector_store_last_error: Exception | None = None
+        # Seed ontologies the last sync had to supply because the partition
+        # served no graph for them. Read by the tenancy switch, which must
+        # materialize exactly those and nothing else -- rewriting a whole
+        # catalog on every switch is what scoped ToolBoxes exist to avoid.
+        self._last_seed_repairs: list[Ontology] = []
 
         # The factory owns backend selection, including resolving AUTO and
         # returning None when the backend is explicitly disabled. Both
@@ -585,21 +591,29 @@ class ToolBox:
             # ``None`` means this is the first assignment, which happens at startup
             # before ``initialize()``; leave the population to it rather than
             # fetching twice. Any later switch must repopulate -- including when the
-            # partition we are leaving was empty. Seed TTLs are deliberately not
-            # replayed here: writing them into a different tenant as a side effect
-            # of a query parameter would be a surprise.
+            # partition we are leaving was empty.
             is_first_assignment = self._active_tenancy is None
             self.ontology_manager.reset_catalog()
             self.shapes_catalog.reset()
             self._active_tenancy = (t, p)
             if not is_first_assignment and triple is not None:
-                for ontology in await triple.afetch_ontologies():
+                # Seed TTLs are replayed into the new partition, but only where
+                # it serves no graph of its own: a scope whose catalog is empty
+                # for want of a bootstrap is the same fault as a startup one,
+                # and answering it with "the seeds are startup-only" left the
+                # tenant extracting against no vocabulary at all. A partition
+                # that already serves an ontology keeps it -- the seed never
+                # overwrites a terminal a previous run evolved.
+                for ontology in await self._synchronize_ontologies():
                     self.ontology_manager.add_ontology(ontology, skip_vector_index=True)
-                # Seed TTLs are not replayed into a new tenant (see above), so
-                # the new scope's shapes are whatever its partition already
-                # holds -- possibly nothing, which correctly reads as "SHACL
-                # never checked" rather than "conforms".
-                await self.shapes_catalog.sync()
+                for seed in self._last_seed_repairs:
+                    await self._materialize_ontology(seed)
+                # Shapes are still whatever the partition holds plus the
+                # configured directory, and may be nothing -- which correctly
+                # reads as "SHACL never checked" rather than "conforms".
+                await self.shapes_catalog.sync(
+                    self.config.tool_config.facts_validation.shapes_dir
+                )
 
         if self.vector_store is not None:
             # No config copy-back: `create_vector_store_manager` passes
@@ -664,6 +678,22 @@ class ToolBox:
     def get_atomic_tools(self) -> AtomicToolBox:
         """Return the minimal toolbox used by atomic render/critic paths."""
         return self.atomic_tools
+
+    def shapes_prompt_contract(self) -> tuple[str, tuple[str, ...]]:
+        """The conformance chapter and its term exemptions for this tenancy.
+
+        ``("", ())`` when the contract is off or the shapes partition is
+        empty -- the prompt is then byte-identical to a shape-less
+        deployment's. The chapter itself is memoized on the shapes catalog.
+        """
+        cfg = self.config.tool_config.facts_validation
+        if cfg.shapes_prompt_contract == "off":
+            return "", ()
+        max_lines = cfg.shapes_prompt_max_lines
+        return (
+            self.shapes_catalog.conformance_chapter(max_lines=max_lines),
+            self.shapes_catalog.prompt_contract_terms(max_lines=max_lines),
+        )
 
     def serialize(self, state: AgentState) -> None:
         """Persist the document's ontologies and facts.
@@ -730,16 +760,27 @@ class ToolBox:
         ontology chapter, falls back on generic vocabulary, and passes a
         conformance check that has no node left to constrain.
 
-        Only the unambiguous case is fatal: an index with content beside a
-        catalog with none. Extra indexed IRIs alongside a populated catalog are
-        ordinary staleness (that is what orphan pruning is for) and only warn.
+        Only the unambiguous case is fatal here: an index with content beside
+        a catalog with none. Extra indexed IRIs alongside a populated catalog
+        are ordinary staleness (that is what orphan pruning is for) and only
+        warn. The mirror case -- an empty index, which a wipe guarantees and
+        which this check therefore cannot see -- belongs to
+        :meth:`_check_catalog_ready`, after materialization has had its chance
+        to refill it.
+
+        This does not consult ``ONTOLOGY_CONTEXT_REQUIRED``. That setting says
+        whether a run wants a catalog; this says the two halves of retrieval
+        disagree about which ontologies exist, which no configuration asks for.
+        A run that deliberately extracts without a catalog does not thereby ask
+        for a stale index to select atoms nothing can expand. Nor does it fire
+        during a legitimate bootstrap, where index and catalog are both empty.
 
         Args:
             synchronized_ontologies: What the catalog actually served.
 
         Raises:
             EmptyOntologyContextError: The catalog is empty and the index is
-                not, and this deployment requires a catalog.
+                not.
         """
         # Deferred: retrieval_capabilities imports ToolBox, so a module-level
         # import here would be circular.
@@ -764,13 +805,10 @@ class ToolBox:
                 "would select atoms the triple store cannot expand, so every "
                 "unit would render against an empty ontology and the "
                 "conformance gate would report a vacuous pass. Load the "
-                "ontologies into the triple store, or set "
-                "ONTOLOGY_CONTEXT_REQUIRED=false to extract without a catalog."
+                "ontologies into the triple store, or wipe the "
+                "index (VECTOR_STORE_WIPE_ON_INIT / --wipe-vector-store)."
             )
-            if self.config.server.ontology_context_required:
-                raise EmptyOntologyContextError(message)
-            logger.warning(message)
-            return
+            raise EmptyOntologyContextError(message)
         orphans = indexed - catalog
         if orphans:
             logger.warning(
@@ -781,6 +819,113 @@ class ToolBox:
                 sorted(orphans),
             )
 
+    def _catalog_sources_description(self) -> str:
+        """Name the places a catalog could have come from, for an error message."""
+        directory = self.config.tool_config.path_config.ontology_directory
+        sources = [
+            f"ontology_directory={directory}"
+            if directory is not None
+            else "ontology_directory is unset"
+        ]
+        triple = self.triple_store_manager
+        if isinstance(triple, FusekiTripleStoreManager):
+            sources.append(f"triple-store dataset={triple.ontologies_dataset!r}")
+        elif triple is not None:
+            sources.append(f"triple store={type(triple).__name__}")
+        return "; ".join(sources)
+
+    async def _check_catalog_ready(
+        self, synchronized_ontologies: list[Ontology], *, required: bool
+    ) -> None:
+        """Refuse to run against a catalog nothing can be extracted from.
+
+        Two failures reach this point looking like success, because the wipe in
+        :meth:`initialize` is unconditional while the refill that follows it is
+        not:
+
+        1. The sync found no ontologies at all, so materialization had nothing
+           to write and the index a wipe just emptied stays empty.
+        2. The sync found ontologies but every one of them indexed to nothing,
+           so retrieval has a catalog it can expand and no atoms to select.
+
+        Either way every content unit resolves an empty ontology context. Under
+        ``ONTOLOGY_CONTEXT_REQUIRED`` that is fatal per unit anyway -- failing
+        here instead names the subsystem, costs no provider calls, and happens
+        before a document is converted.
+
+        The two are gated differently. An empty catalog may be exactly what
+        the operator meant -- a server filled later over HTTP, or a render mode
+        that builds its own vocabulary -- so it is fatal only where the caller
+        says it cannot be. An empty index over a *populated* catalog is never
+        meant: it says materialization ran and produced nothing, which no
+        configuration asks for, so it does not consult
+        ``ONTOLOGY_CONTEXT_REQUIRED`` either.
+
+        Args:
+            synchronized_ontologies: What the sync resolved.
+            required: Whether an empty catalog is fatal. False for a server that
+                legitimately starts empty and is filled through ``POST
+                /ontologies``, and for any run whose render mode creates
+                ontologies; True for a facts-only batch run, which can only
+                produce an ungrounded graph without one.
+
+        Raises:
+            EmptyOntologyContextError: The catalog is empty and this entry
+                point requires one, or the index is empty over a populated
+                catalog.
+        """
+        # Deferred: retrieval_capabilities imports ToolBox, so a module-level
+        # import here would be circular.
+        from ontocast.onto.retrieval_capabilities import EmptyOntologyContextError
+
+        fatal = required and self.config.server.ontology_context_required
+
+        def _report(message: str) -> None:
+            if fatal:
+                raise EmptyOntologyContextError(message)
+            logger.warning(message)
+
+        if not synchronized_ontologies:
+            if self.config.server.render_mode != RenderMode.FACTS:
+                # The starting point of an ontology-rendering run, not a fault:
+                # each unit with no context is sent to render_ontology_fresh,
+                # which mints a catalog ontology from the text.
+                logger.info(
+                    "The ontology catalog is empty (%s); render_mode=%s will "
+                    "create ontologies from the corpus.",
+                    self._catalog_sources_description(),
+                    self.config.server.render_mode.value,
+                )
+                return
+            _report(
+                "The ontology catalog resolved to zero ontologies "
+                f"({self._catalog_sources_description()}) and render_mode="
+                f"{self.config.server.render_mode.value} creates none. Every "
+                "content unit would render against an empty ontology, fall "
+                "back on generic vocabulary, and pass a conformance check with "
+                "no node left to constrain. Seed the catalog, or render "
+                "ontologies as well as facts."
+            )
+            return
+
+        if not self.is_vector_store_ready() or self.vector_store is None:
+            return
+        try:
+            indexed = await asyncio.to_thread(
+                self.vector_store.list_indexed_ontology_iris
+            )
+        except Exception as exc:  # noqa: BLE001 - diagnostics must not break startup
+            logger.warning("Could not inspect the vector index: %s", exc)
+            return
+        if not indexed:
+            raise EmptyOntologyContextError(
+                f"The ontology catalog holds {len(synchronized_ontologies)} "
+                "ontolog(ies) but the vector index is empty after "
+                "materialization, so vector retrieval has nothing to select. "
+                "Check for indexing errors above, or switch "
+                "ONTOLOGY_CONTEXT_MODE away from selected_vector_search_ontology."
+            )
+
     async def initialize(
         self,
         *,
@@ -788,6 +933,7 @@ class ToolBox:
         fail_on_vector_store_error: bool = True,
         wipe_vector_store: bool | None = None,
         prune_orphan_iris: bool | None = None,
+        require_populated_catalog: bool = False,
     ) -> None:
         """Initialize the toolbox with ontologies and their properties.
 
@@ -803,6 +949,17 @@ class ToolBox:
                 ``None`` uses ``VECTOR_STORE_WIPE_ON_INIT`` (default False).
             prune_orphan_iris: Delete indexed IRIs absent from the sync catalog.
                 ``None`` uses ``VECTOR_STORE_PRUNE_ORPHAN_IRIS_ON_INIT`` (default True).
+            require_populated_catalog: Fail rather than warn when the catalog or
+                its index comes out empty. A batch run sets this -- it has no
+                later chance to be given ontologies, so an empty catalog can
+                only yield an ungrounded graph. A server leaves it False:
+                starting empty and being filled through ``POST /ontologies`` is
+                a supported way to run.
+
+        Raises:
+            EmptyOntologyContextError: ``require_populated_catalog`` and
+                ``ONTOLOGY_CONTEXT_REQUIRED`` are both set and the catalog or
+                its index is empty once synchronization has finished.
         """
         import asyncio
         import time
@@ -906,11 +1063,12 @@ class ToolBox:
         async def _materialize_one(ontology: Ontology) -> None:
             async with semaphore:
                 onto_started = time.perf_counter()
-                await self._materialize_ontology(ontology)
+                indexed = await self._materialize_ontology(ontology)
                 logger.info(
-                    "Materialized ontology %s in %.2fs",
+                    "Materialized ontology %s in %.2fs (%d atom(s) indexed)",
                     ontology.iri,
                     time.perf_counter() - onto_started,
+                    indexed,
                 )
 
         materialize_started = time.perf_counter()
@@ -927,16 +1085,44 @@ class ToolBox:
             time.perf_counter() - init_started,
         )
 
+        # After materialization, not before: the wipe above is unconditional and
+        # the refill is not, so an empty index is only evidence of a fault once
+        # the reindex has had its turn.
+        await self._check_catalog_ready(
+            synchronized_ontologies, required=require_populated_catalog
+        )
+
     def _load_seed_ontologies_from_directory(self) -> list[Ontology]:
-        """Load seed ontologies from ``ontology_directory`` (*.ttl)."""
+        """Load seed ontologies from ``ontology_directory`` (*.ttl).
+
+        Every way this returns nothing says so at INFO or louder. A silent
+        empty list here is indistinguishable downstream from a healthy run
+        against a catalog that happens to live in the triple store, and it is
+        the difference between a five-minute diagnosis and a long one.
+        """
         ontology_dir = self.config.tool_config.path_config.ontology_directory
         if ontology_dir is None:
+            logger.info(
+                "No ontology_directory configured; seed ontologies come from "
+                "the triple store only"
+            )
             return []
         directory = pathlib.Path(ontology_dir).expanduser()
         if not directory.is_dir():
+            logger.warning(
+                "Configured ontology_directory %s is not a directory (resolved "
+                "from %s); no seed ontologies will be loaded",
+                directory.absolute(),
+                ontology_dir,
+            )
             return []
         ontologies: list[Ontology] = []
-        for path in sorted(directory.glob("*.ttl")):
+        paths = sorted(directory.glob("*.ttl"))
+        if not paths:
+            logger.warning(
+                "No *.ttl files in ontology_directory %s", directory.absolute()
+            )
+        for path in paths:
             try:
                 ontologies.append(Ontology.from_file(path))
                 logger.debug("Loaded seed ontology from %s", path)
@@ -944,17 +1130,64 @@ class ToolBox:
                 logger.error("Failed to load seed ontology %s: %s", path, exc)
         return ontologies
 
+    @staticmethod
+    def _defines_terms(ontology: Ontology) -> bool:
+        """Whether an ontology carries terms rather than only its own header.
+
+        The header is not the ontology. A catalog read builds one of these from
+        the ``owl:Ontology`` subject and fills in the graph separately, so an
+        ontology whose graph never arrived still answers with three triples
+        about itself -- a non-empty graph that defines nothing, and that no
+        amount of retrieval can expand into context.
+        """
+        header_subjects = {
+            subject
+            for subject, _, _ in ontology.graph.triples((None, RDF.type, OWL.Ontology))
+        }
+        return any(subject not in header_subjects for subject, _, _ in ontology.graph)
+
+    @classmethod
+    def _seed_ontologies_missing_from(
+        cls, served: list[Ontology], seeds: list[Ontology]
+    ) -> list[Ontology]:
+        """Seeds the partition serves no usable graph for.
+
+        The test is the graph, not the IRI. A store that *lists* an ontology but
+        serves no terms for it -- a lost dataset, a partition that was never
+        populated, a graph dropped out from under a still-registered header --
+        used to be indistinguishable from a healthy one, so the seed that could
+        have repaired it was skipped and the catalog stayed empty.
+
+        A served ontology that does define terms always wins. Ontology-mode runs
+        write evolved terminals back to the store, and re-materializing an older
+        seed over one of those would silently revert the catalog to whatever is
+        on disk.
+        """
+        served_by_iri = {ontology.iri: ontology for ontology in served if ontology.iri}
+        missing: list[Ontology] = []
+        for seed in seeds:
+            existing = served_by_iri.get(seed.iri)
+            if existing is not None and cls._defines_terms(existing):
+                continue
+            missing.append(seed)
+        return missing
+
     async def _synchronize_ontologies(self) -> list[Ontology]:
-        """Synchronize seed ontologies from disk into the triple store."""
+        """Resolve the catalog from the triple store, repaired from disk.
+
+        Records the seeds it had to supply on ``_last_seed_repairs`` so a caller
+        that is not :meth:`initialize` -- which materializes everything anyway --
+        can write back exactly those.
+        """
         import asyncio
 
         seed_ontologies = await asyncio.to_thread(
             self._load_seed_ontologies_from_directory
         )
-        if seed_ontologies:
-            logger.info(
-                "Found %d seed ontologies in ontology_directory", len(seed_ontologies)
-            )
+        logger.info(
+            "Found %d seed ontolog(ies) in ontology_directory",
+            len(seed_ontologies),
+        )
 
         triple_store_ontologies: list[Ontology] = []
         if self.triple_store_manager is not None:
@@ -965,27 +1198,51 @@ class ToolBox:
                 "Found %d ontologies in triple store", len(triple_store_ontologies)
             )
 
-        triple_store_iris = {o.iri for o in triple_store_ontologies}
-        for seed_onto in seed_ontologies:
-            if seed_onto.iri not in triple_store_iris:
-                logger.info(
-                    "Syncing seed ontology to triple store: %s (version: %s)",
-                    seed_onto.iri,
-                    seed_onto.version,
-                )
-                triple_store_ontologies.append(seed_onto)
+        repairs = self._seed_ontologies_missing_from(
+            triple_store_ontologies, seed_ontologies
+        )
+        self._last_seed_repairs = repairs
+        repaired_iris = {seed.iri for seed in repairs}
+        resolved = [
+            ontology
+            for ontology in triple_store_ontologies
+            if ontology.iri not in repaired_iris
+        ]
+        for seed_onto in repairs:
+            logger.info(
+                "Syncing seed ontology to triple store: %s (version: %s)",
+                seed_onto.iri,
+                seed_onto.version,
+            )
+            resolved.append(seed_onto)
 
-        return triple_store_ontologies
+        return resolved
 
-    async def _materialize_ontology(self, ontology: Ontology) -> None:
-        """Write ontology to the triple store and rebuild vector atoms."""
+    async def _materialize_ontology(self, ontology: Ontology) -> int:
+        """Write ontology to the triple store and rebuild vector atoms.
+
+        Returns:
+            int: Atoms indexed. Zero when no vector store is ready, and zero
+            when the ontology atomized to nothing -- which the reindex cannot
+            distinguish, having already deleted the previous atoms, so it is
+            reported here rather than left to look like a successful pass.
+        """
         import asyncio
 
         if self.triple_store_manager is not None:
             await self.triple_store_manager.aserialize(ontology)
 
-        if self.is_vector_store_ready() and self.vector_store is not None:
-            await asyncio.to_thread(self.vector_store.reindex_ontology, ontology)
+        if not (self.is_vector_store_ready() and self.vector_store is not None):
+            return 0
+        indexed = await asyncio.to_thread(self.vector_store.reindex_ontology, ontology)
+        if not indexed:
+            logger.warning(
+                "Ontology %s indexed 0 atoms (%d triples). Retrieval cannot "
+                "select any of its terms.",
+                ontology.iri,
+                len(ontology.graph),
+            )
+        return indexed
 
     async def ingest_ontology_ttl(
         self, ttl: bytes, *, filename: str | None = None

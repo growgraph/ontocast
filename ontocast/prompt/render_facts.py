@@ -9,6 +9,8 @@ template_prompt = """
 
 {ontology_chapter}
 
+{conformance_chapter}
+
 {text_chapter}
 
 {fact_chapter}

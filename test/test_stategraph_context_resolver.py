@@ -53,6 +53,7 @@ def _build_unit() -> ContentUnit:
 
 
 def _stub_ontology_manager(**kwargs: object) -> SimpleNamespace:
+    kwargs.setdefault("has_ontologies", True)
     return SimpleNamespace(preferred_namespace_prefixes={}, **kwargs)
 
 
@@ -125,9 +126,38 @@ def test_empty_ontology_context_stops_the_run_when_required() -> None:
     nothing it falls back on generic vocabulary, and the SHACL gate then finds
     no node its shapes target, so the run reports a vacuous pass. This shipped
     once and was invisible at every checkpoint.
+
+    This is the *facts* reading of an empty context, which is the only one it
+    has: a facts unit cannot answer one.
     """
     with pytest.raises(EmptyOntologyContextError):
         _resolve_empty({"atoms_final": 99}, ontology_context_required=True)
+
+
+def test_a_caller_that_can_create_vocabulary_is_handed_the_empty_context() -> None:
+    """The ontology loop answers an empty context by inventing vocabulary.
+
+    ``render_ontology`` branches on an empty seed into
+    ``render_ontology_fresh``, which mints a catalog ontology from the text.
+    Raising ahead of it made that branch unreachable, so a corpus with no
+    ontology yet -- the starting point of every ontology-building run, and the
+    documented first run -- read as a deployment fault. It also stopped a
+    populated-catalog run whenever the selector honestly reported that no
+    catalog ontology fits the unit.
+    """
+    tools = _empty_context_tools({"atoms_final": 99}, ontology_context_required=True)
+    state = AgentState(
+        ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+    )
+    context = UnitLoopContext.from_agent_state(state)
+
+    result = asyncio.run(
+        resolve_unit_ontology_context(
+            context, tools, _build_unit(), can_create_vocabulary=True
+        )
+    )
+
+    assert len(result.snapshot.graph) == 0
 
 
 def test_empty_ontology_context_is_survivable_when_opted_out() -> None:
@@ -160,9 +190,18 @@ def test_an_empty_catalog_is_not_reported_as_a_threshold_problem() -> None:
 
 
 def test_a_genuine_threshold_miss_still_reads_as_one() -> None:
+    """Signalled by the pre-gate counts, not by ``atoms_after_dedupe``.
+
+    That one is measured *after* the score gate, so a threshold rejection
+    records zero of them -- the reading this test asserts was unreachable from
+    a real run, which is why a threshold miss used to report as "no candidate
+    atoms matched".
+    """
     context, _ = _resolve_empty(
         {
-            "atoms_after_dedupe": 238,
+            "candidate_hits": 238,
+            "threshold_rejected": 238,
+            "atoms_after_dedupe": 0,
             "catalog_context_triples": 1400,
             "catalog_graph_cache_hits": 15,
         }
@@ -170,6 +209,34 @@ def test_a_genuine_threshold_miss_still_reads_as_one() -> None:
     reason = context.retrieval_metrics[RetrievalMetric.EMPTY_SNAPSHOT_REASON]
 
     assert "threshold" in reason
+
+
+def test_an_empty_catalog_is_found_even_when_retrieval_never_asked_it() -> None:
+    """The short-circuit on zero atoms leaves the catalog keys absent.
+
+    ``metrics.get("catalog_context_triples") == 0`` is then ``None == 0``, so
+    both catalog branches were skipped on exactly the run where the catalog was
+    the cause and the empty index -- the symptom -- was reported instead.
+    """
+    retriever = _StubPatchRetriever(graph=RDFGraph(), sources=[])
+    retriever.last_retrieval_metrics = {
+        "query_count": 12,
+        "atoms_final": 0,
+        "atoms_after_dedupe": 0,
+    }
+    tools = _build_tools(
+        patch_retriever=retriever,
+        vector_store=_StubVectorStore(indexed=[]),
+        ontology_manager=_stub_ontology_manager(has_ontologies=False),
+    )
+    state = AgentState(
+        ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+    )
+    context = UnitLoopContext.from_agent_state(state)
+    asyncio.run(resolve_unit_ontology_context(context, tools, _build_unit()))
+    reason = str(context.retrieval_metrics[RetrievalMetric.EMPTY_SNAPSHOT_REASON])
+
+    assert "catalog" in reason
 
 
 def test_a_unit_with_no_text_may_have_an_empty_context() -> None:
@@ -217,6 +284,21 @@ def test_the_empty_context_guard_covers_the_single_ontology_modes_too() -> None:
                 UnitLoopContext.from_agent_state(state), tools, _build_unit()
             )
         )
+
+    # ... and the phase exemption is equally mode-agnostic.
+    assert (
+        len(
+            asyncio.run(
+                resolve_unit_ontology_context(
+                    UnitLoopContext.from_agent_state(state),
+                    tools,
+                    _build_unit(),
+                    can_create_vocabulary=True,
+                )
+            ).snapshot.graph
+        )
+        == 0
+    )
 
 
 def test_resolver_vector_retrieval_prefers_ensemble() -> None:

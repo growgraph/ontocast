@@ -104,9 +104,11 @@ the store.
 
 ## Seed Ontologies and Shapes
 
-Place `.ttl` files in `ONTOCAST_ONTOLOGY_DIRECTORY`. On startup, `ToolBox` scans that directory and materializes any ontologies not already present in the triple store. This is a one-way bootstrap path — ongoing persistence is through the triple store.
+Place `.ttl` files in `ONTOCAST_ONTOLOGY_DIRECTORY` (or pass `--ontology-dir` for one run). On startup, `ToolBox` scans that directory and materializes any ontologies the triple store does not already serve. This is a one-way bootstrap path — ongoing persistence is through the triple store.
 
-`FACTS_SHAPES_DIR` works the same way for SHACL shapes, into the shapes partition, except that the scan is **recursive** and each document is written on every startup rather than only when absent — so editing a seed shapes file takes effect on restart. Neither directory is ever written to: `POST /ontologies` and `POST /shapes` mutate the store alone, and the matching `DELETE` routes leave your files untouched. See [Validation](validation.md#where-shapes-come-from) for why shapes get a partition of their own.
+Naming a directory that does not exist is a configuration error, not an empty catalog: `ontocast process` refuses to start on it, since nothing downstream can tell it apart from having named none. Naming none is fine — `--ontology-dir ''` says so explicitly, and an ontology-rendering run then creates the first ontology from the corpus.
+
+`FACTS_SHAPES_DIR` (or `--shapes-dir`) works the same way for SHACL shapes, into the shapes partition, except that the scan is **recursive** and each document is written on every startup rather than only when absent — so editing a seed shapes file takes effect on restart. Neither directory is ever written to: `POST /ontologies` and `POST /shapes` mutate the store alone, and the matching `DELETE` routes leave your files untouched. See [Validation](validation.md#where-shapes-come-from) for why shapes get a partition of their own.
 
 ## Why Shapes Are Not in the Ontologies Dataset
 

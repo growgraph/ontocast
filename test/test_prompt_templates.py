@@ -140,3 +140,31 @@ def test_chat_templates_render(module_name: str) -> None:
             **dict.fromkeys(template.input_variables, "x")
         )
         assert messages, f"{module_name}.{name} rendered no messages"
+
+
+def test_facts_prompts_carry_the_conformance_placeholder() -> None:
+    """Render and critic share one conformance contract slot."""
+    from ontocast.prompt import criticise_facts, render_facts
+
+    assert "{conformance_chapter}" in render_facts.template_prompt
+    assert "{conformance_chapter}" in criticise_facts.template_prompt
+
+
+def test_quantitative_completeness_rule_is_stated() -> None:
+    """Rule 3a counters the ontology-scoped selectivity of rule 3 without
+    weakening the anti-junk guard of rule 4."""
+    from ontocast.prompt import facts_guidelines
+
+    text = facts_guidelines.facts_instruction_shared
+    assert "QUANTITATIVE COMPLETENESS" in text
+    assert "EVERY quantitative statement" in text
+    # The anti-junk guard stays verbatim.
+    assert "Do NOT mint an entity for a bare number" in text
+
+
+def test_critic_completeness_guideline_is_actionable() -> None:
+    from ontocast.prompt import criticise_facts
+
+    text = criticise_facts.evaluation_instruction
+    assert "NUMERIC COVERAGE" in text
+    assert "text_fragment" in text

@@ -215,14 +215,13 @@ better — the extra units queue behind the same synchronous section.
 
 Other knobs that change cost rather than concurrency:
 
-- `MAX_VISITS` (default 1) — **render** attempts, not the critic switch: the
-  facts critic runs at 1 whenever `FACTS_LLM_REPAIR_VISITS > 0`. Raising it to 2
-  adds **one** call per unit, not a second render: a rejecting facts critic now
-  buys a bounded repair pass rather than a full re-extraction, so the per-unit
-  ledger is flat in `MAX_VISITS`. A facts unit costs one render plus
-  `FACTS_LLM_REPAIR_VISITS` (default 1) at either setting, plus the critique at
-  2 — so 2 calls becomes 3, not 4. The ontology loop has no repair lane, so
-  there it genuinely doubles, 1 to 2. See
+- `MAX_VISITS` (default 1) — retries of a **failed** render, nothing else.
+  Raising it costs nothing on units that render successfully, which is most of
+  them.
+- `FACTS_CRITIC_PASSES` (default 1) — the budget that actually buys critic
+  calls. Each pass is one call and applies its own fixes, so a facts unit costs
+  two calls at the defaults; each extra pass adds one. Passes stop early once
+  one changes nothing. `ONTOLOGY_CRITIC_PASSES` defaults to `0`. See
   [Validation](validation.md#how-many-llm-calls-a-facts-unit-really-costs).
 - `CONVERTER_PROFILE=born_digital` — skips OCR on digital PDFs.
 - `ONTOLOGY_CONTEXT_MAX_TRIPLES` (default `4000`) — the budget for the ontology

@@ -201,7 +201,7 @@ PORT=8999
 BASE_RECURSION_LIMIT=1000                # LangGraph step ceiling, scaled by ESTIMATED_CHUNKS
 ESTIMATED_CHUNKS=30                      # expected units per document; only sizes the limit above
 MAX_VISITS_PER_NODE=1                    # canonical name; MAX_VISITS is an accepted alias
-#MAX_CRITIC_VISITS_PER_NODE=             # unset: critic shares the MAX_VISITS bound
+FACTS_CRITIC_PASSES=1                    # review-and-patch passes per facts unit
 RENDER_MODE=ontology_and_facts           # which pipeline blocks run — see below
 LLM_GRAPH_FORMAT=jsonld                  # jsonld | turtle (legacy) — see below
 ONTOLOGY_CONTEXT_MODE=selected_single_ontology   # where per-unit schema comes from — see below
@@ -221,35 +221,27 @@ ENABLE_ONTOLOGY_CONSOLIDATION=false      # optional post-normalization merge pas
     can target any tenancy partition. Set `HOST=0.0.0.0` only behind a proxy
     that authenticates; the server logs a warning when you do.
 
-!!! note "`MAX_VISITS=1` does not mean one LLM call, and does not disable the facts critic"
+!!! note "The two per-unit budgets are independent"
 
-    `MAX_VISITS` bounds **renders**. At `1` the facts loop still runs
-    `criticise_facts`, because a verdict feeds the tiered repair lane rather
-    than a second extraction: mechanical fixes are compiled into a patch and
-    applied with no LLM call, and the rest go to up to
-    `FACTS_LLM_REPAIR_VISITS` (default `1`) `render_facts_update` calls,
-    alongside any mandatory deterministic findings. So a facts unit costs up to
-    three provider calls at the default. Set `FACTS_LLM_REPAIR_VISITS=0` for
-    exactly one call per unit — that also skips the critic, since there is then
-    nowhere to put its output. Raise `MAX_VISITS` to `2`+ only to allow a
-    second full extraction. The ontology loop has no repair stage, so there
-    `MAX_VISITS=1` really is one call per unit and its critic is still gated on
-    the render budget. See
+    `MAX_VISITS` retries a render that **failed**. A render that succeeded is
+    never repeated: re-extracting a whole unit to fix a local defect is the
+    expensive answer to a cheap question, and reliably introduces new defects.
+    Raise it only if renders are failing outright.
+
+    `FACTS_CRITIC_PASSES` (default `1`) buys review-and-patch passes. Each pass
+    re-runs the deterministic checks for free, sends the graph and its findings
+    to the critic, and applies what comes back as a compiled patch — no second
+    call to carry out the fixes. So a facts unit costs **two** provider calls at
+    the defaults, whatever `MAX_VISITS` is. Set `FACTS_CRITIC_PASSES=0` for
+    exactly one call per unit.
+
+    Neither budget multiplies the other. A pass also ends the loop early when it
+    changed nothing or was rolled back, so raising the pass count buys passes
+    only while they are still doing something. See
     [Validation](validation.md#how-many-llm-calls-a-facts-unit-really-costs).
 
-!!! note "What `MAX_VISITS=2`+ actually costs"
-
-    Less than the nested loops suggest. The critic loop is bounded by
-    `MAX_VISITS` as well, so its nominal worst case is that value *squared* —
-    but a critic that fails **without requesting external evidence** breaks out
-    of the loop immediately. With web grounding off (the default) the critic
-    therefore runs at most **once per render**, and only the last render is
-    skipped. The quadratic case needs `WEB_SEARCH_ENABLED=true` and a critic
-    that keeps asking for evidence.
-
-    `MAX_CRITIC_VISITS_PER_NODE` caps that path explicitly. Leave it unset to
-    keep the coupling to `MAX_VISITS`; set it to `1` for exactly one critique
-    per render.
+    The ontology loop is the same loop, with `ONTOLOGY_CRITIC_PASSES` defaulting
+    to `0`.
 
 `MAX_CONCURRENT_PROCESSES` **queues** requests beyond the limit; they are not
 rejected.
@@ -608,13 +600,21 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `VECTOR_STORE_SYMBOL_CASE_MISMATCH_POLICY` | `demote` | Merge-time treatment of atoms whose declared symbol surfaces (`skos:notation`, `qudt:symbol`, `qudt:ucumCode`) match a query token only case-insensitively with no exact-case match anywhere — the BM25/dense text is case-folded, so prose "meV" also retrieves `unit:MegaEV` (symbol "MeV"). `demote` multiplies the atom score, `drop` removes it, `off` keeps legacy behavior; exact-case and label-only matches are never touched |
 | `VECTOR_STORE_SYMBOL_CASE_MISMATCH_DEMOTE_FACTOR` | `0.5` | Score multiplier applied under the `demote` policy |
 | `FACTS_OBJECT_PROPERTY_LITERAL_CHECK` | `true` | Quarantine string literals on predicates whose schema range is a class (e.g. `qudt:unit`); surfaced to the facts critic and the deterministic repair loop |
-| `FACTS_LLM_REPAIR_VISITS` | `1` | Finding-driven repair budget per unit, **in provider calls**: extra update renders fed with machine-found MANDATORY fixes (quarantined literals, unknown/near-miss terms, `rdfs:domain` contradictions), unresolved critic fixes, and numeric-coverage candidates. Fires at `MAX_VISITS=1`, and is also what lets the LLM critic run there: at `0` there is nowhere to put a verdict, so the critic is skipped. `0` leaves the residue to the LLM-free repairs and the gate |
+| `FACTS_CRITIC_PASSES` | `1` | Review-and-patch passes per unit, **in provider calls**. Each pass re-runs the deterministic checks for free, sends the graph and its findings to the critic, and applies what comes back as a compiled patch. `0` leaves the residue to the LLM-free repairs and the gate |
+| `FACTS_LLM_REPAIR_VISITS` | unset | Deprecated alias for `FACTS_CRITIC_PASSES`, honoured for one release |
+| `FACTS_CRITIC_MAX_DELETE_SHARE` | `0.25` | Largest share of a unit graph one pass may remove; past it the pass keeps its inserts and drops its deletes |
+| `FACTS_CRITIC_MIN_DELETES` | `5` | Deletions always permitted regardless of share, so short units stay correctable |
+| `FACTS_CRITIC_ALLOW_SUBJECT_RENAME` | `false` | Whether a `REPLACE` may delete about one subject while writing about another |
+| `ONTOLOGY_CRITIC_PASSES` | `0` | The same budget for ontology units, opt-in |
+| `ONTOLOGY_CRITIC_MAX_DELETE_SHARE` | `0.10` | Stricter than the facts side: an ontology delete propagates onto shared catalog terminals |
+| `ONTOLOGY_CRITIC_MIN_DELETES` | `3` | Deletions always permitted regardless of share |
+| `ONTOLOGY_ACCEPT_BLOCKING_FINDING_KINDS` | destructive subset | Deterministic ontology findings that block acceptance |
 | `FACTS_PROPERTY_ALIAS_MIN_RATIO` | `0.85` | SequenceMatcher cutoff for deterministic near-miss property rewrites in catalog namespaces (token containment always qualifies, e.g. `qudt:value` → `qudt:numericValue`) |
 | `FACTS_MERGE_REPAIR_PASSES` | `1` | Un-merge budget at the post-aggregation `VALIDATE_FACTS` gate: *merge-signature* error findings (functional violation, suspect multi-value, degenerate coreference) on merged subjects become full-cluster pair vetoes and the facts units are re-aggregated. `0` records findings without repairing. SHACL findings never drive it |
 | `FACTS_CODE_PREDICATES` | `qudt:ucumCode`, `qudt:symbol`, `skos:notation` | Predicates whose literal objects are machine-resolvable codes. A node carrying `qudt:ucumCode "d"` but no unit link gains the object property pointing at the catalog individual declaring that code, when exactly one does. Exact and case-sensitive — these are codes, not labels |
 | `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | `error` | Severity of SUSPECT_MULTI_VALUE gate findings (multiple distinct numeric values on one predicate; mutually irreconcilable short string values on a dominantly string-single-valued predicate; or multiple objects on a dominantly single-valued predicate); only `error` findings drive the un-merge repair |
 | `FACTS_LITERAL_VARIANT_DEDUPE` | `true` | Collapse duplicate literals differing only in language tag or datatype on one (subject, predicate) before validation — `"X"@en` alongside `"X"^^xsd:string` alongside `"X"`. The language-tagged form wins, then the plain form; reified provenance follows the survivor. Each removal is a `literal_variant_pruned` repair record |
-| `FACTS_SHAPES_DIR` | — | **Seed** directory of SHACL shape files (searched recursively), materialized at startup into the tenant's `{tenant}--{project}--shapes` partition — the same read-only bootstrap contract `ONTOCAST_ONTOLOGY_DIRECTORY` has. The gate validates against the partition, so shapes uploaded over `POST /shapes` are equally in force and a container needs no shapes directory. `sh:NodeShape` triples inlined in the ontology context are picked up automatically. SHACL runs only when `pyshacl` is installed (`uv sync --extra shacl`). Setting this without the extra, or pointing it at a missing/empty directory, logs a **warning** — it never passes silently |
+| `FACTS_SHAPES_DIR` | — | **Seed** directory of SHACL shape files (searched recursively), materialized at startup into the tenant's `{tenant}--{project}--shapes` partition — the same read-only bootstrap contract `ONTOCAST_ONTOLOGY_DIRECTORY` has. The gate validates against the partition, so shapes uploaded over `POST /shapes` are equally in force and a container needs no shapes directory. `sh:NodeShape` triples inlined in the ontology context are picked up automatically. SHACL runs only when `pyshacl` is installed (`uv sync --extra shacl`). Setting this without the extra, or pointing it at an empty directory, logs a **warning** — it never passes silently; a directory that does not exist stops `ontocast process` outright. `--shapes-dir` overrides it per run |
 | `FACTS_SHACL_INFERENCE` | `rdfs` | Pre-inference for the SHACL run: `none`, `rdfs`, `owlrl`. RDFS by default because SHACL property paths carry no `rdfs:subPropertyOf` entailment, so a shape naming a superproperty reports the specialised predicate the renderer emitted as missing |
 | `FACTS_SHACL_ADVANCED` | `true` | Enable SHACL Advanced Features (`sh:sparql` constraints, node expressions) |
 | `FACTS_SHACL_MAX_TRIPLES` | `200000` | Skip SHACL with a warning above this graph size; `0` disables the guard |
@@ -779,7 +779,7 @@ VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=600
 
 ```bash
 CURRENT_DOMAIN=https://example.com               # base for minted IRIs; also the default facts namespace
-ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files   # seed .ttl files, synced to the catalog on startup
+ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files   # seed .ttl files, synced to the catalog on startup (CLI: --ontology-dir)
 ONTOCAST_CACHE_DIR=/path/to/cache/directory      # LLM + converter disk cache root
 
 # Cache eviction. The cache bounds itself: once it exceeds the ceiling,
@@ -852,7 +852,7 @@ describe a lane that does not run until you turn it on.
 | `WEB_SEARCH_REGION` | `wt-wt` | DuckDuckGo region code |
 | `WEB_SEARCH_SAFESEARCH` | `moderate` | DuckDuckGo safesearch mode |
 
-!!! note "Enabling search is what makes the critic loop expensive"
+!!! note "Enabling search adds a second critic call per pass"
 
     The critic breaks out of its loop immediately when it fails *without*
     requesting external evidence, so with search off it runs at most once per
@@ -940,6 +940,31 @@ system: two of the three values skip an entire half of the graph.
     catalog leaves the renderer with no schema to instantiate against. Seed the
     catalog first (see [Ontology Context](ontology_context.md#seeding-the-catalog)),
     or run `ontology_and_facts` once.
+
+    This is the one mode `ontocast process` **refuses to start** in with an
+    empty catalog, and the only mode `ONTOLOGY_CONTEXT_REQUIRED` applies to.
+    The other two answer an empty context by creating vocabulary, so for them
+    it is a starting point rather than a fault — see
+    [Ontology Context](ontology_context.md#what-if-the-context-is-empty).
+
+!!! tip "Recommended companions for `RENDER_MODE=facts`"
+
+    Three settings ship default-off/auto but earn their keep in facts-only
+    runs, and belong together in a facts-extraction environment:
+
+    ```bash
+    FACTS_CONTEXT_FROM_UNITS=true      # gate + aggregator see the units' resolved
+                                       # ontology context instead of an empty graph
+    LLM_JSON_MODE=true                 # constrained decoding (OpenAI): removes the
+                                       # malformed-JSON retry failure mode
+    FACTS_SHAPES_PROMPT_CONTRACT=auto  # default; shows the renderer the shapes
+                                       # rulebook it is validated against
+    ```
+
+    Without `FACTS_CONTEXT_FROM_UNITS` the SHACL gate validates against an
+    empty ontology and overstates class violations (recorded as
+    `validated_without_ontology_context`) — see
+    [Validation](validation.md#how-the-validation-is-set-up).
 
 Which stages that corresponds to is drawn out in [Workflow](workflow.md).
 

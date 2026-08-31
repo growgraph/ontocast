@@ -45,14 +45,17 @@ class RunManifestLoops(BaseModel):
     """
 
     max_visits: int = Field(
-        description="Render/critic budget per unit; at 1 the LLM critic never runs."
+        description="Retries of a *failed* fresh extraction; not a critic switch."
     )
     max_critic_visits: int | None = Field(
         default=None,
-        description="Critic attempts per render attempt; None couples to max_visits.",
+        description="Deprecated alias for the facts pass count; None when unset.",
     )
-    llm_repair_visits: int = Field(
-        description="Finding-driven repair renders allowed per unit."
+    facts_critic_passes: int = Field(
+        default=0, description="Review-and-patch passes allowed per facts unit."
+    )
+    ontology_critic_passes: int = Field(
+        default=0, description="Review-and-patch passes allowed per ontology unit."
     )
 
 
@@ -70,6 +73,50 @@ class RunManifestSelection(BaseModel):
     summarize_sections: list[str] | None = None
     summary_max_sentences: int | None = None
     bibliography_mode: str | None = None
+    labeled_units: int | None = Field(
+        default=None,
+        description=(
+            "Content units that carried a section_label after classification. "
+            "Together with unlabeled_units this records whether a section "
+            "filter could act at all: an exclusion list against mostly "
+            "unlabeled units is a no-op the arm name would never reveal."
+        ),
+    )
+    unlabeled_units: int | None = None
+    section_label_histogram: dict[str, int] | None = Field(
+        default=None,
+        description="section_label -> unit count, '(unlabeled)' included.",
+    )
+
+
+class RunManifestValidationConfig(BaseModel):
+    """The validation-facing configuration the run actually used.
+
+    Arms are launched by env vars nothing records; every row here is a knob
+    whose setting changed a measured outcome in some past run and had to be
+    reconstructed from logs. The manifest is the record.
+    """
+
+    context_from_units: bool | None = None
+    json_mode: bool | None = None
+    shapes_prompt_contract: str | None = None
+    shapes_triples: int | None = Field(
+        default=None,
+        description=(
+            "Size of the merged shapes partition at dump time; 0 or absent "
+            "means the gate and the prompt contract had no shapes."
+        ),
+    )
+    shacl_inference: str | None = None
+    numeric_coverage_mandatory: bool | None = None
+    facts_user_instruction_chars: int | None = Field(
+        default=None,
+        description=(
+            "Length of the per-request facts_user_instruction; 0 = none. The "
+            "text itself stays out of the manifest -- deployment guidance can "
+            "carry secrets and the dump is shareable."
+        ),
+    )
 
 
 class RunManifestCritic(BaseModel):
@@ -82,10 +129,13 @@ class RunManifestCritic(BaseModel):
     such a gate is calibrated is a question about the score distribution, and
     until this existed no artifact recorded a single score -- the answer had to
     be mined out of the LLM disk cache, which only worked because caching
-    happened to be on. The ontology loop still runs
-    that gate (backed there by a scoring rubric whose top band it demands),
-    and this record is how its accept rate gets measured before the gate is
-    recalibrated.
+    happened to be on. Both loops now gate on the deterministic findings and
+    record what that score gate *would* have said, so the change can be judged
+    from a distribution rather than an argument.
+
+    ``fixes_*`` describe what the critique actually did, which is a different
+    question from what it proposed: a critique can name a dozen corrections and
+    change nothing, and for a long time nothing here could tell the difference.
 
     A run must carry its own evidence for the decisions it made.
     """
@@ -127,6 +177,36 @@ class RunManifestCritic(BaseModel):
             "accepted count alone."
         ),
     )
+    incumbent_accepted: int = Field(
+        default=0,
+        description=(
+            "Calls the retired score gate would have accepted. Recorded so "
+            "replacing that gate can be judged against a distribution."
+        ),
+    )
+    patch_passes: int = Field(
+        default=0, description="Critique applications attempted, LLM-free."
+    )
+    fixes_applied: int = Field(
+        default=0, description="Proposed fixes that reached the graph."
+    )
+    fixes_noop: int = Field(
+        default=0,
+        description=(
+            "Fixes that removed exactly what they re-added. High against "
+            "`fixes_applied` means the critic is producing motion, not "
+            "corrections."
+        ),
+    )
+    patches_rolled_back: int = Field(
+        default=0,
+        description=(
+            "Passes undone for leaving the unit worse. Non-zero means the "
+            "critique is provoking data-destroying edits."
+        ),
+    )
+    triples_deleted: int = Field(default=0)
+    triples_inserted: int = Field(default=0)
 
 
 def summarize_loop(
@@ -141,13 +221,19 @@ def summarize_loop(
 
     Returns:
         The document-level critic summary; all-zero when no critic call ran,
-        which is the default at ``MAX_VISITS=1``.
+        which is what a zero pass budget buys.
     """
     attempts = [
         attempt
         for unit_attempts in telemetry.values()
         for attempt in unit_attempts
         if attempt.kind == "critic"
+    ]
+    patches = [
+        attempt
+        for unit_attempts in telemetry.values()
+        for attempt in unit_attempts
+        if attempt.kind == "critic_patch"
     ]
     scores = sorted(a.score for a in attempts if a.score is not None)
     histogram: dict[str, int] = {}
@@ -175,6 +261,13 @@ def summarize_loop(
         fix_severity_histogram=severities,
         fix_action_severity_histogram=dict(sorted(action_severities.items())),
         accept_reason_histogram=dict(sorted(reasons.items())),
+        incumbent_accepted=sum(1 for a in attempts if a.incumbent_accepted),
+        patch_passes=len(patches),
+        fixes_applied=sum(a.n_fixes_applied for a in patches),
+        fixes_noop=sum(a.n_fixes_noop for a in patches),
+        patches_rolled_back=sum(1 for a in patches if a.patch_rolled_back),
+        triples_deleted=sum(a.n_triples_deleted for a in patches),
+        triples_inserted=sum(a.n_triples_inserted for a in patches),
     )
 
 
@@ -190,6 +283,7 @@ class RunManifest(BaseModel):
     loops: RunManifestLoops | None = None
     critic: RunManifestCritic | None = None
     ontology_critic: RunManifestCritic | None = None
+    validation_config: RunManifestValidationConfig | None = None
     ontology_reduce_metrics: dict[str, Any] = Field(
         default_factory=dict,
         description=(

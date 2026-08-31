@@ -146,6 +146,12 @@ class ValidationPolicy(BaseModel):
     additional_standard_namespaces: tuple[str, ...] = ()
     quantity_fallback_vocabulary: dict[str, str] | None = None
     code_predicates: tuple[str, ...] = ()
+    #: IRIs the shapes-derived conformance chapter instructs the renderer to
+    #: emit. Same class of exemption as the fallback vocabulary: the prompt
+    #: recommends these terms, so flagging them UNKNOWN_TERM would have the
+    #: repair lane delete exactly what the prompt required. Threaded per unit
+    #: from the tenancy's shapes catalog.
+    contract_exempt_terms: tuple[str, ...] = ()
     #: Keep identifier digit groups out of the numeric-coverage inventory.
     #: Same class as the exemptions above -- something configuration says the
     #: deterministic checks must not put in front of the renderer.
@@ -159,9 +165,11 @@ class ValidationPolicy(BaseModel):
         return (*_STANDARD_NAMESPACES, *self.additional_standard_namespaces)
 
     def exempt_terms(self, *graphs: RDFGraph | None) -> set[str]:
-        """Exact IRIs configuration blessed: fallback vocabulary + code predicates."""
+        """Exact IRIs configuration blessed: fallback vocabulary, code
+        predicates, and the shapes-contract terms."""
         terms = expand_vocabulary_terms(self.quantity_fallback_vocabulary, *graphs)
         terms.update(self.code_predicates)
+        terms.update(self.contract_exempt_terms)
         return terms
 
 

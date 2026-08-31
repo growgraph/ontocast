@@ -31,6 +31,7 @@ from ontocast.onto.ontology_apply import (
 )
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.retrieval_capabilities import OntologyContextConfigError
 from ontocast.onto.state import UNIT_SUM_SUFFIX, AgentState, BudgetTracker
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.atomic import facts_loop, ontology_loop
@@ -95,6 +96,13 @@ async def _gather_units(
     the node while its siblings kept running as orphans -- their provider spend
     billed and then discarded.
 
+    One class of failure is deliberately not isolated:
+    :class:`~ontocast.onto.retrieval_capabilities.OntologyContextConfigError`
+    describes the deployment, not the unit, so it is identical for every sibling
+    and isolating it turns a configuration fault into N unit failures and a
+    successful, empty run. It is re-raised once the gather has drained, which
+    orphans nothing -- every sibling has already been awaited.
+
     Args:
         node: Fan-out node the tasks belong to; namespaces the metric keys.
         state: Document state whose tracker the stage metrics land on.
@@ -108,6 +116,10 @@ async def _gather_units(
         raw = await asyncio.gather(*tasks, return_exceptions=True)
     state.budget_tracker.add_duration(f"{node}/loop_lag_total", lag.total)
     state.budget_tracker.add_duration(f"{node}/loop_lag_max", lag.peak)
+
+    for item in raw:
+        if isinstance(item, OntologyContextConfigError):
+            raise item
 
     results: list[T] = []
     failures = 0
@@ -179,9 +191,6 @@ def make_render_ontology_node(tools: ToolBox):
                     ontology_user_instruction=state.ontology_user_instruction,
                     budget_tracker=unit_budget,
                     max_visits_per_node=state.max_visits,
-                    max_critic_visits_per_node=(
-                        tools.config.server.max_critic_visits_per_node
-                    ),
                     current_domain=state.current_domain,
                     ontology_max_triples=tools.config.server.ontology_max_triples,
                     llm_graph_format=state.llm_graph_format,
@@ -332,6 +341,21 @@ def make_render_ontology_node(tools: ToolBox):
         )
         state.retrieval_metrics[RetrievalMetric.ONTOLOGY_CRITIC_ACCEPTED] = sum(
             1 for attempt in ontology_critic_attempts if attempt.success
+        )
+        ontology_patch_attempts = [
+            attempt
+            for attempts in state.ontology_loop_telemetry.values()
+            for attempt in attempts
+            if attempt.kind == "critic_patch"
+        ]
+        state.retrieval_metrics[RetrievalMetric.ONTOLOGY_CRITIC_FIXES_APPLIED] = sum(
+            attempt.n_fixes_applied for attempt in ontology_patch_attempts
+        )
+        state.retrieval_metrics[RetrievalMetric.ONTOLOGY_CRITIC_FIXES_NOOP] = sum(
+            attempt.n_fixes_noop for attempt in ontology_patch_attempts
+        )
+        state.retrieval_metrics[RetrievalMetric.ONTOLOGY_CRITIC_PATCHES_ROLLED_BACK] = (
+            sum(1 for attempt in ontology_patch_attempts if attempt.patch_rolled_back)
         )
 
         # Document-level insert/delete consensus + namespace apply onto catalog bases.
@@ -628,16 +652,16 @@ def make_render_facts_node(tools: ToolBox):
                 # does the work when facts run without an ontology stage.
                 await ensure_unit_summary(state, unit_index, tools, unit_budget)
                 unit_context = UnitLoopContext.from_agent_state(state, unit_budget)
+                conformance_chapter, contract_terms = tools.shapes_prompt_contract()
                 facts_state = UnitFactsState(
                     content_unit=state.content_units[unit_index],
                     ontology_snapshot=_empty_unit_snapshot(),
                     ontology_patch_sources=[],
                     facts_user_instruction=state.facts_user_instruction,
+                    conformance_chapter=conformance_chapter,
+                    shapes_contract_terms=contract_terms,
                     budget_tracker=unit_budget,
                     max_visits_per_node=state.max_visits,
-                    max_critic_visits_per_node=(
-                        tools.config.server.max_critic_visits_per_node
-                    ),
                     llm_graph_format=state.llm_graph_format,
                     ontology_context_max_triples=tools.config.server.ontology_context_max_triples,
                 )
@@ -681,6 +705,7 @@ def make_render_facts_node(tools: ToolBox):
         mandatory_residual = 0
         critic_fixes_applied = 0
         critic_fixes_residual = 0
+        critic_fixes_noop = 0
         unit_contexts: dict[int, tuple[str, list[str], OntologyAssemblyMode]] = {}
         for (
             unit_index,
@@ -696,6 +721,7 @@ def make_render_facts_node(tools: ToolBox):
             )
             critic_fixes_applied += result.critic_fixes_applied
             critic_fixes_residual += result.critic_fixes_residual
+            critic_fixes_noop += result.critic_fixes_noop
             if result.attempt_log:
                 state.facts_loop_telemetry[unit_index] = list(result.attempt_log)
             if result.applied_repairs:
@@ -759,22 +785,13 @@ def make_render_facts_node(tools: ToolBox):
             for attempts in state.facts_loop_telemetry.values()
             for attempt in attempts
         ]
-        state.retrieval_metrics[RetrievalMetric.FACTS_LLM_REPAIR_RENDERS_TOTAL] = sum(
-            1 for attempt in all_attempts if attempt.kind == "llm_repair"
-        )
-        # A repair render that itself fails leaves the pre-repair graph intact
-        # and the unit reports SUCCESS, so without this the crash is recorded on
-        # the attempt log and observed nowhere.
-        state.retrieval_metrics[RetrievalMetric.FACTS_LLM_REPAIR_RENDERS_FAILED] = sum(
-            1 for attempt in all_attempts if attempt.repair_failed
-        )
-        # Repair renders rolled back for answering the findings prompt with
-        # deletions. Non-zero means the prompt or the validator is provoking
-        # data-destroying responses -- the failure mode that has cost runs a
-        # large share of their value nodes while logging nothing a run
-        # could be judged by.
-        state.retrieval_metrics[RetrievalMetric.FACTS_REPAIR_DELETE_ONLY] = sum(
-            1 for attempt in all_attempts if attempt.repair_delete_only
+        # Patch passes undone for leaving the unit worse -- deleting without
+        # writing, shrinking without resolving, or manufacturing new mandatory
+        # findings. Non-zero means the critique is provoking data-destroying
+        # responses, the failure mode that has cost runs a large share of their
+        # value nodes while logging nothing a run could be judged by.
+        state.retrieval_metrics[RetrievalMetric.FACTS_CRITIC_PATCHES_ROLLED_BACK] = sum(
+            1 for attempt in all_attempts if attempt.patch_rolled_back
         )
         # Residual is read off each unit's final findings, not off the attempt
         # log. Summing `attempts[-1]` where `kind == "llm_repair"` silently
@@ -810,6 +827,13 @@ def make_render_facts_node(tools: ToolBox):
         )
         state.retrieval_metrics[RetrievalMetric.FACTS_CRITIC_FIXES_RESIDUAL] = (
             critic_fixes_residual
+        )
+        # Fixes that removed exactly what they re-added. A critique made mostly
+        # of these is a critic producing motion rather than corrections, which
+        # nothing could see before: they used to be counted as fixes that
+        # landed.
+        state.retrieval_metrics[RetrievalMetric.FACTS_CRITIC_FIXES_NOOP] = (
+            critic_fixes_noop
         )
         state.facts_units = facts_units
         state.status = _map_stage_status(
