@@ -7,7 +7,6 @@ environment variables and usage patterns in the OntoCast system.
 from __future__ import annotations
 
 import logging
-import os
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
@@ -2667,28 +2666,17 @@ class Config(BaseSettings):
         return self.tool_config
 
     def validate_llm_config(self) -> None:
-        """Fail fast when no API key can reach the configured provider.
-
-        ``LLM_API_KEY`` is the provider-agnostic override; each client also
-        resolves its provider's native variable when the override is unset,
-        which is what lets one environment carry keys for several providers
-        at once with ``LLM_PROVIDER`` alone selecting between them. This
-        check therefore accepts either spelling -- requiring ``LLM_API_KEY``
-        specifically used to reject exactly that recommended setup.
-        """
+        """Validate LLM configuration and raise errors for missing required settings."""
         provider = self.tool_config.llm_config.provider
-        native_key_vars = {
-            LLMProvider.OPENAI: "OPENAI_API_KEY",
-            LLMProvider.ANTHROPIC: "ANTHROPIC_API_KEY",
-            LLMProvider.GOOGLE: "GOOGLE_API_KEY",
-        }
-        native = native_key_vars.get(provider)
-        if native is None:
-            return
-        if self.tool_config.llm_config.api_key or os.environ.get(native):
-            return
-        raise ValueError(
-            f"No API key for the {provider.value} provider: set {native} "
-            "(preferred -- one environment can then carry keys for several "
-            "providers) or the provider-agnostic LLM_API_KEY override."
-        )
+        if (
+            provider
+            in (
+                LLMProvider.OPENAI,
+                LLMProvider.ANTHROPIC,
+                LLMProvider.GOOGLE,
+            )
+            and not self.tool_config.llm_config.api_key
+        ):
+            raise ValueError(
+                f"LLM_API_KEY environment variable is required for {provider.value} provider"
+            )
