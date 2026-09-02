@@ -33,6 +33,15 @@ class RunManifestLLM(BaseModel):
     think: bool | None = None
     num_ctx: int | None = None
     num_predict: int | None = None
+    requests_per_second: float | None = Field(
+        default=None,
+        description=(
+            "Provider request pacing the run used; None = unpaced. A "
+            "throttled run (llm/rate_limited or llm/timeouts in "
+            "budget.counters) has directional cost figures only."
+        ),
+    )
+    max_retries: int | None = None
 
 
 class RunManifestLoops(BaseModel):

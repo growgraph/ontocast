@@ -190,6 +190,26 @@ def _inflight_semaphore(max_inflight: int) -> asyncio.Semaphore:
     return per_loop[max_inflight]
 
 
+#: Exception class names the providers raise on throttling. Matched by name
+#: so no provider SDK is imported here: openai.RateLimitError, anthropic's
+#: RateLimitError, and Google's ResourceExhausted all identify themselves.
+_RATE_LIMIT_ERROR_NAMES = ("RateLimitError", "ResourceExhausted")
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """Whether an exception (or its cause chain) is a provider throttle."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if type(current).__name__ in _RATE_LIMIT_ERROR_NAMES:
+            return True
+        if "429" in str(current) and "rate" in str(current).lower():
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _opt_int(source: Any, key: str) -> int | None:
     """Read ``key`` from a mapping as an int, or None when absent/unusable."""
     if not isinstance(source, dict):
@@ -450,6 +470,27 @@ class LLMTool(Tool):
         Raises:
             ValueError: If the provider is not supported.
         """
+        # Cross-provider pacing and retry kwargs. The rate limiter is a
+        # per-process token bucket on request *starts* (langchain-core
+        # InMemoryRateLimiter): the inflight semaphore caps concurrency, this
+        # paces the sustained rate underneath it -- set it from the provider
+        # tier. `max_retries` tunes the provider SDK's own 429/backoff
+        # retries; there is deliberately no retry loop at this layer (see
+        # agent/common.py -- retrying here multiplies request rate exactly
+        # when the provider asks for less).
+        pacing_kwargs: dict[str, Any] = {}
+        if self.config.requests_per_second is not None:
+            from langchain_core.rate_limiters import InMemoryRateLimiter
+
+            pacing_kwargs["rate_limiter"] = InMemoryRateLimiter(
+                requests_per_second=self.config.requests_per_second,
+                check_every_n_seconds=0.1,
+                max_bucket_size=max(1.0, self.config.requests_per_second),
+            )
+        retry_kwargs: dict[str, Any] = {}
+        if self.config.max_retries is not None:
+            retry_kwargs["max_retries"] = self.config.max_retries
+
         if self.config.provider == LLMProvider.OPENAI:
             if self.config.model_name.startswith("gpt-5"):
                 self.config.temperature = 1.0
@@ -476,6 +517,8 @@ class LLMTool(Tool):
                     SecretStr(self.config.api_key) if self.config.api_key else None
                 ),
                 model_kwargs=openai_kwargs,
+                **pacing_kwargs,
+                **retry_kwargs,
             )
         elif self.config.provider == LLMProvider.OLLAMA:
             ollama_kwargs: dict[str, Any] = {
@@ -492,7 +535,7 @@ class LLMTool(Tool):
             ChatOllama = require(
                 "langchain_ollama", feature="The Ollama LLM provider"
             ).ChatOllama
-            self._llm = ChatOllama(**ollama_kwargs)
+            self._llm = ChatOllama(**ollama_kwargs, **pacing_kwargs)
         elif self.config.provider == LLMProvider.ANTHROPIC:
             anthropic_kwargs: dict[str, Any] = {
                 "model": self.config.model_name,
@@ -505,7 +548,9 @@ class LLMTool(Tool):
             ChatAnthropic = require(
                 "langchain_anthropic", feature="The Anthropic LLM provider"
             ).ChatAnthropic
-            self._llm = ChatAnthropic(**anthropic_kwargs)
+            self._llm = ChatAnthropic(
+                **anthropic_kwargs, **pacing_kwargs, **retry_kwargs
+            )
         elif self.config.provider == LLMProvider.GOOGLE:
             ChatGoogleGenerativeAI = require(
                 "langchain_google_genai", feature="The Google LLM provider"
@@ -514,6 +559,8 @@ class LLMTool(Tool):
                 model=self.config.model_name,
                 temperature=self.config.temperature,
                 google_api_key=self.config.api_key,
+                **pacing_kwargs,
+                **retry_kwargs,
             )
         else:
             raise ValueError(f"Unsupported provider: {self.config.provider}")
@@ -683,6 +730,29 @@ class LLMTool(Tool):
                     f"LLM request exceeded {timeout}s "
                     f"({self.config.provider}/{self.config.model_name})"
                 ) from exc
+            except Exception as exc:
+                # A provider throttle that survived the SDK's own retries
+                # surfaces as a failed render; without a counter it is
+                # indistinguishable from a model failure in the telemetry,
+                # which is how a throttled arm once read as a quality
+                # regression. Detected by exception shape rather than type so
+                # no provider SDK is imported here. Re-raised unchanged --
+                # this layer deliberately does not retry (see
+                # agent/common.py): raise LLM_MAX_RETRIES or lower
+                # LLM_REQUESTS_PER_SECOND instead.
+                if _is_rate_limit_error(exc):
+                    bt = self._current_budget_tracker()
+                    if bt is not None:
+                        bt.incr("llm/rate_limited")
+                    logger.warning(
+                        "Provider rate limit hit (%s/%s): %s -- pace with "
+                        "LLM_REQUESTS_PER_SECOND / LLM_MAX_INFLIGHT, or raise "
+                        "LLM_MAX_RETRIES",
+                        self.config.provider,
+                        self.config.model_name,
+                        exc,
+                    )
+                raise
             finally:
                 self.record_span("llm/provider", time.perf_counter() - provider_start)
 

@@ -304,6 +304,8 @@ def dump_run_manifest(
             think=llm_config.think,
             num_ctx=llm_config.num_ctx,
             num_predict=llm_config.num_predict,
+            requests_per_second=llm_config.requests_per_second,
+            max_retries=llm_config.max_retries,
         ),
         budget=state.budget_tracker,
         ontology_triples=sum(

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Provider rate-limit safeguards**: `LLM_REQUESTS_PER_SECOND` (per-process
+  token-bucket pacing of request starts, passed as a langchain
+  `InMemoryRateLimiter` to every provider) and `LLM_MAX_RETRIES` (the
+  provider SDK's transport-retry budget, previously stuck at each SDK's
+  invisible default). `LLM_MAX_INFLIGHT` caps concurrency but not rate, so a
+  fan-out of short calls could exceed a tier's requests-per-minute while
+  never holding many connections — and a 429 that survived the SDK's retries
+  surfaced as an ordinary failed render, indistinguishable from a model
+  failure. Throttles are now also **counted** (`llm/rate_limited` in
+  `budget.counters`, beside `llm/timeouts`) and both pacing knobs are
+  recorded in the run manifest's `llm` block, so a throttled or paced run is
+  identifiable from its own dump. The pipeline still deliberately retries no
+  transport failure itself — the SDK backoff honours `Retry-After`; retrying
+  above it multiplies request rate exactly when the provider asks for less.
+
 - **Shapes-driven prompt contract** (`FACTS_SHAPES_PROMPT_CONTRACT`, default
   `auto`). The loaded SHACL shapes are rendered into a
   `# CONFORMANCE REQUIREMENTS` chapter that both the facts renderer and the

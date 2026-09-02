@@ -303,6 +303,35 @@ class LLMConfig(BaseSettings):
             "pipeline's effective width. Set to None to wait forever."
         ),
     )
+    requests_per_second: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Sustained provider request rate, paced by a per-process token "
+            "bucket on request starts (langchain InMemoryRateLimiter). "
+            "Complements LLM_MAX_INFLIGHT, which caps *concurrency* but not "
+            "rate: a fan-out of short calls can exceed a provider tier's "
+            "requests-per-minute while never holding many connections at "
+            "once. Set from the deployment's provider tier; None (default) "
+            "means unpaced. A throttle that slips through anyway is counted "
+            "as llm/rate_limited in the budget. Set via "
+            "LLM_REQUESTS_PER_SECOND."
+        ),
+    )
+    max_retries: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Retry budget handed to the provider SDK for transport-level "
+            "failures (rate limits, connection resets), which back off and "
+            "honour Retry-After. None (default) keeps each SDK's own "
+            "default. This is the knob to raise when a tier throttles -- the "
+            "pipeline itself deliberately never retries transport failures "
+            "(that multiplies request rate exactly when the provider asks "
+            "for less). Ignored by the Ollama provider, which exposes no "
+            "retry budget. Set via LLM_MAX_RETRIES."
+        ),
+    )
     think: bool | None = Field(
         default=None,
         description=(

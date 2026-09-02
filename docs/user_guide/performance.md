@@ -18,6 +18,35 @@ effective provider concurrency is `PARALLEL_WORKERS`. Across `K` concurrent
 documents it is `min(K x PARALLEL_WORKERS, LLM_MAX_INFLIGHT)` — which is why a
 busy server can stop scaling with `PARALLEL_WORKERS` alone.
 
+## Provider rate limits
+
+Concurrency caps are not rate caps: a fan-out of short calls can exceed a
+provider tier's requests-per-minute while never holding many connections at
+once. Three knobs, three roles:
+
+- **`LLM_REQUESTS_PER_SECOND`** (unset = unpaced) — the sustained rate, paced
+  by a per-process token bucket on request *starts*. Set it from your
+  provider tier with headroom (a 500 RPM tier is ~8 RPS; leave a margin for
+  the SDK's own retries). The limiter is acquired inside an
+  `LLM_MAX_INFLIGHT` slot, so aggressive pacing also lowers effective
+  concurrency — that is the point.
+- **`LLM_MAX_RETRIES`** (unset = each SDK's default: OpenAI 2, Anthropic 2,
+  Google 6) — the provider SDK's transport-retry budget. The SDKs back off
+  and honour `Retry-After`, so raising this is the correct response to
+  residual throttling. The pipeline itself deliberately never retries
+  transport failures: retrying at this layer multiplies the request rate
+  exactly when the provider is asking for less.
+- **`LLM_MAX_INFLIGHT`** — the burst ceiling, as above.
+
+**What a throttle looks like.** A rate-limit error that survives the SDK's
+retries fails the unit's render (one loop visit burned) and increments
+`llm/rate_limited` in `budget.counters` — beside `llm/timeouts`, both in the
+run manifest. **Read those counters before reading a run's cost or quality
+figures**: a throttled run's token totals and failure counts describe the
+throttle, not the pipeline. Both pacing knobs are recorded in the manifest's
+`llm` block, so a paced run is distinguishable from an unpaced one after the
+fact.
+
 ## Reading the metrics
 
 Every run reports `budget.node_durations` (seconds) and `budget.counters`
