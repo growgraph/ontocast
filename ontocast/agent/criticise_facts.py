@@ -81,7 +81,13 @@ async def criticise_facts(
     )
 
     llm_tool = await tools.get_llm_tool(state.budget_tracker)
-    profile = get_graph_format_profile(state.llm_graph_format)
+    # Same profile the renderer used, chapter override included: the memoised
+    # ontology chapter is only shared between the two calls when both ask for
+    # the same syntax.
+    profile = get_graph_format_profile(
+        state.llm_graph_format,
+        ontology_chapter_format=state.ontology_chapter_format,
+    )
     parser = PydanticOutputParser(pydantic_object=FactsCritiqueReport)
 
     ctx = ontology_access_for_unit_facts(state).effective_ontology_for_prompt()
@@ -166,6 +172,7 @@ async def criticise_facts(
             critique.external_evidence_request,
             web_search_enabled,
         )
+        state.critic_outcome = "reviewed"
 
         logger.debug(
             f"Parsed critique report - success: {critique.success}, "
@@ -238,7 +245,29 @@ async def criticise_facts(
         return state
 
     except Exception as e:
+        # A critic that did not answer -- timeout, transport error, a response
+        # that never parsed -- is not a critic that accepted. The unit leaves
+        # the loop FAILED at the critique stage with its render intact, and
+        # the attempt is on the record as a billed call that produced no
+        # critique; the loop reads ``critic_outcome`` and applies no patch.
         logger.error(f"Failed to criticize facts: {str(e)}")
+        state.critic_outcome = "unavailable"
+        state.attempt_log.append(
+            LoopAttempt(
+                render_attempt=state.node_visits[WorkflowNode.TEXT_TO_FACTS],
+                critic_attempt=state.node_visits[WorkflowNode.CRITICISE_FACTS],
+                kind="critic",
+                success=False,
+                accept_reason="critic_unavailable",
+                failure_stage=str(FailureStage.FACTS_CRITIQUE),
+                failure_reason=str(e),
+                n_deterministic_findings=len(state.deterministic_findings),
+                n_mandatory_findings=sum(
+                    1 for finding in state.deterministic_findings if finding.mandatory
+                ),
+                triple_count=len(state.content_unit.graph),
+            )
+        )
         state.set_failure(FailureStage.FACTS_CRITIQUE, str(e))
         state.set_node_status(WorkflowNode.CRITICISE_FACTS, Status.FAILED)
         return state

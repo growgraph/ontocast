@@ -2,6 +2,7 @@
 
 import logging
 from collections import defaultdict
+from typing import Literal
 
 from pydantic import Field
 
@@ -11,6 +12,7 @@ from ontocast.onto.enum import (
     FailureStage,
     LLMGraphFormat,
     OntologyAssemblyMode,
+    OntologyChapterFormat,
     Status,
     WorkflowNode,
 )
@@ -104,6 +106,16 @@ class UnitState(BasePydanticModel):
             "all hold a ToolBox."
         ),
     )
+    ontology_chapter_format: OntologyChapterFormat = Field(
+        default=OntologyChapterFormat.INHERIT,
+        description=(
+            "Syntax of the ontology chapter in this unit's prompts: 'inherit' "
+            "follows llm_graph_format, 'turtle' pins the chapter to Turtle. "
+            "Threaded from ServerConfig like ontology_context_max_triples. "
+            "Read by the facts loop only; the ontology loop keeps its chapter "
+            "in the wire format because its output patches what it reads."
+        ),
+    )
 
     critic_fixes_applied: int = Field(
         default=0,
@@ -121,6 +133,29 @@ class UnitState(BasePydanticModel):
         description=(
             "Critic fixes whose delete set and insert set are the same "
             "statements, so they asked for no change at all."
+        ),
+    )
+    critic_fixes_rolled_back: int = Field(
+        default=0,
+        description=(
+            "Critic fixes applied and then undone, one at a time, for leaving "
+            "the unit worse: deleting without writing, or raising the "
+            "mandatory finding count. The other fixes of the same pass stay."
+        ),
+    )
+    critic_fixes_junk_refused: int = Field(
+        default=0,
+        description=(
+            "Critic inserts refused at compile time for minting a placeholder "
+            "-- a subject named for an ignored token or artifact, or a new "
+            "node carrying only annotations and no type."
+        ),
+    )
+    critic_fixes_unresolved_prefix: int = Field(
+        default=0,
+        description=(
+            "Critic fixes whose payload named a prefix neither it nor the "
+            "unit graph declares, so its statements could not be identified."
         ),
     )
 
@@ -284,6 +319,19 @@ class UnitFactsState(UnitState):
             "Deterministic rewrites the machine applied to rendered graphs "
             "(alias repairs, rdf:type literal coercions) — the provenance "
             "trail distinguishing machine-altered triples from LLM output."
+        ),
+    )
+    critic_outcome: Literal["reviewed", "unavailable", "skipped"] | None = Field(
+        default=None,
+        description=(
+            "How the critic pass ended for this unit: 'reviewed' -- a "
+            "critique came back and was compiled; 'unavailable' -- the call "
+            "failed (timeout, unparseable response), so the render stands "
+            "unreviewed and no patch is applied; 'skipped' -- the loop did not "
+            "call the critic (render below FACTS_CRITIC_MIN_TRIPLES, or a "
+            "citation-metadata unit). None when no critic pass was configured. "
+            "A unit whose critic timed out used to leave the loop as SUCCESS, "
+            "indistinguishable from one the critic accepted."
         ),
     )
 

@@ -75,7 +75,8 @@ pass actually ran — absent means "did not run", which is not the same as zero.
   "render_mode": "ontology_and_facts",
   "loops": {"max_visits": 1, "max_critic_visits": null, "llm_repair_visits": 1},
   "graph_metrics": {"nodes": 130, "edges": 112, "components": 24, "largest_component": 61, "isolated_nodes": 18},
-  "llm": {"provider": "ollama", "model_name": "qwen3.6", "temperature": 0.0, "think": true},
+  "llm": {"provider": "ollama", "model_name": "qwen3.6", "temperature": 0.0, "think": true,
+          "reasoning_effort": null, "thinking_budget": null},
   "budget": {
     "calls_count": 42, "cache_hits": 0,
     "input_tokens": 380174, "output_tokens": 51203, "reasoning_tokens": 39880,
@@ -84,7 +85,11 @@ pass actually ran — absent means "did not run", which is not the same as zero.
     "counters": {"llm/parse_retry": 3, "llm/json_bracket_repair": 1, "llm/parse_abandoned": 0}
   },
   "selection": {"target_sections": null, "exclude_sections": ["references"],
-                "summarize_sections": null, "summary_max_sentences": null,
+                "summarize_sections": null,
+                "labeled_units": 9, "unlabeled_units": 4,
+                "section_label_histogram": {"results": 5, "methods": 4, "(unlabeled)": 4},
+                "non_content_mode": "extract", "undersized_units_skipped": 0,
+                "bibliography_units_skipped": 1, "non_content_units_skipped": 0,
                 "bibliography_mode": "exclude"},
   "critic": {"calls": 34, "accepted": 6, "score_min": 55, "score_median": 79,
              "score_max": 98,
@@ -93,6 +98,9 @@ pass actually ran — absent means "did not run", which is not the same as zero.
   "ontology_critic": {"calls": 0, "accepted": 0, "score_min": null,
                       "score_median": null, "score_max": null,
                       "score_histogram": {}, "fix_severity_histogram": {}},
+  "completion": {"calls": 0, "units": 0, "subjects_inserted": 0,
+                 "subjects_rolled_back": 0, "triples_inserted": 0,
+                 "measurements_recovered": 0},
   "facts_triples": 1204, "facts_triples_serialized": 557, "ontology_triples": 318,
   "retrieval_metrics": {
     "ontology_context_mode": "selected_vector_search_ontology",
@@ -112,6 +120,7 @@ any run against a new model:
 | `llm/parse_retry` | Renders re-issued because the previous response would not parse or validate. Each is a full re-extraction, so a non-trivial count is a real share of the bill. |
 | `llm/json_bracket_repair` | Responses recovered by rewriting mismatched closing brackets. Non-zero means the model is emitting structurally broken JSON that the deterministic repair caught — the run is correct, but the prompt or the schema shape is provoking it. |
 | `llm/parse_abandoned` | Calls given up on: retries exhausted, or the same JSON syntax error recurred and further attempts were judged pure spend. Every one of these is a content unit that contributed nothing. |
+| `llm/calls_failed` | Every provider call that raised; `llm/timeouts` and `llm/rate_limited` are its subsets. A timed-out call is charged its prompt characters, so `calls_count = llm/calls_timed + llm/timeouts` — a run whose timeouts cost tokens no longer hides them. |
 
 A silent `llm/parse_abandoned` used to be visible only as a `failed without
 usable output` warning scrolling past in the logs; it is now in the manifest.
@@ -127,7 +136,10 @@ histogram, fix-severity histogram — the evidence a gate recalibration reads),
 `selection` records which
 sections the run was actually given — a `--target-sections` typo that matched
 nothing is otherwise indistinguishable from a document that genuinely had no
-such section — and `graph_metrics` summarizes the connectivity of the
+such section — and its `labeled_units` / `unlabeled_units` /
+`section_label_histogram` census says whether a section filter had anything to
+act on at all (a body the classifier could not label passes every denylist
+untouched; `summary_max_sentences` appears only when summarization ran) — and `graph_metrics` summarizes the connectivity of the
 serialized facts graph so fragmentation regressions surface per document. It is
 also what makes a sweep of runs auditable after the fact, rather than something
 to be re-run.
@@ -166,6 +178,20 @@ compared without reconstructing each run's environment:
   all: `--exclude-sections` is a denylist over *labels*, so against mostly
   unlabeled units it is a no-op that the arm's name — and previously its
   manifest — would never reveal.
+- **`selection.non_content_mode` and the `*_units_skipped` counters**
+  (`undersized`, `bibliography`, `non_content`) say what the pre-fan-out
+  routing dropped, in rule order; a document that lost half its units to a
+  routing rule otherwise reads as one that extracted little.
+- **`completion`** summarizes the insert-only completion pass (see
+  [Validation](validation.md#completion-pass-insert-only-recovery)), read off
+  the same per-unit attempt log `critic` is: all-zero at the default
+  `FACTS_COMPLETION_PASSES=0`, which is what a zero pass budget buys.
+  `measurements_recovered` is missed measurements the numeric inventory
+  stopped listing after the inserts that stayed — read it against
+  `retrieval_metrics.facts_mandatory_residual` and the `NUMERIC_COVERAGE`
+  finding count to see how much of the coverage gap the pass closed;
+  `subjects_rolled_back` non-zero means some proposed subjects made the unit
+  worse and were undone, the same as a rolled-back critic fix.
 
 !!! note "Salvaged-unit counts reflect the post-patch verdict"
     The reduce warning `Parallel facts map salvaged output from non-converged

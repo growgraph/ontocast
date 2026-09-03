@@ -5,261 +5,326 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.4] - unreleased
+
+### Added
+
+- **Reasoning controls for cloud providers.** `LLM_REASONING_EFFORT`
+  (`minimal|low|medium|high`, OpenAI `reasoning_effort`) and
+  `LLM_THINKING_BUDGET` (Google `thinking_budget`; `0` disables where the
+  model allows it, `-1` is model-chosen, a positive value is a cap). Cloud
+  equivalents of `LLM_THINK` for Ollama: reasoning tokens count toward the
+  output total. Each knob joins the LLM disk-cache key only when set, so an
+  unset knob leaves existing cache entries valid. Setting the other
+  provider's knob logs a warning and is ignored. Both are recorded in the
+  run manifest `llm` block.
+
+- **Unit-scoped fact IRIs before aggregation** (`AGG_UNIT_SCOPED_FACT_IRIS`,
+  default `true`). After sanitization, instance IRIs under the fact
+  namespaces are rewritten to `<local>__u<unit index>`. Aggregation keys by
+  that scoped IRI, so a shared local name is a merge decision (cluster,
+  then guard) rather than a dictionary collision. Served IRIs never carry
+  the suffix: unmerged same-name entities mint `<name>` and `<name>_1` in
+  unit order. Reifiers, `prov:wasDerivedFrom`, and `owl:sameAs` reference
+  unscoped IRIs. `aggregation_clusters` and `AggregationResult.decisions`
+  report scoped source IRIs. Predicates, `rdf:type` objects, schema
+  targets, and terms typed as class or property are exempt.
+  `unit_scope.strip_unit_scope` unwraps scoped IRIs for consumers that read
+  per-unit graphs after aggregation. `false` restores name-keyed identity.
+
+- **Inert-threshold warning.** The aggregator logs a warning when
+  `AGG_SIMILARITY_THRESHOLD` is changed while
+  `AGG_CANDIDATE_SIMILARITY_THRESHOLD` is at its default. The former
+  belongs to the cross-graph `EntityAligner`; the in-pipeline aggregator
+  does not read it.
+
+- **`AtomicToolBox.catalog_terms()`** — memoised union of catalog-declared
+  terms, built lazily by `OntologyManager.catalog_terms()` and keyed on
+  content-addressed ontology ids so it rebuilds when the catalog changes.
+  `ToolBox.get_atomic_tools()` returns a per-call copy bound to the
+  requesting tenancy's catalog. Parse-time repairs use this to distinguish
+  terms absent from the unit snapshot from terms absent from the catalog.
+
+- **Batch validation dump records repairs and failures.**
+  `*.facts.validation.json` gains `unit_repairs` (per-unit
+  `GraphRepairRecord`s applied at parse: kind, source, target, triple count
+  — same shape as HTTP `facts_repairs`) and `unit_failures` (unit index,
+  phase, stage, reason).
+
+- **`llm/calls_failed` budget counter.** Counts every provider call that
+  raised. Timeouts and rate limits remain subsets (`llm/timeouts`,
+  `llm/rate_limited`). Invariant: `calls_count = llm/calls_timed +
+  llm/timeouts`. A timed-out call is charged its prompt characters.
+
+- **`ONTOLOGY_CHAPTER_FORMAT`** (`inherit|turtle`, default `inherit`). Pins
+  the `# ONTOLOGY` chapter of the facts render and critic prompts to Turtle
+  regardless of `LLM_GRAPH_FORMAT`. Does not change the output wire, the
+  facts chapter, or the ontology loop's chapters. The snapshot
+  prompt-chapter memo is keyed on the chapter wire; the setting invalidates
+  the LLM cache for facts calls.
+
+- **Startup warning when `PARALLEL_WORKERS` exceeds `LLM_MAX_INFLIGHT`.** A
+  unit never issues two provider calls at once, so extra workers only queue
+  on the semaphore (`llm/inflight_wait`).
+
+- **Front/back-matter routing (`CHUNK_NON_CONTENT_MODE`).** Units headed
+  author information, notes, ORCID, data availability, competing interests,
+  licence, supporting information, and similar (or whose tokens are mostly
+  emails, URLs, ORCIDs, and initials) are recognised alongside bibliography
+  detection. `extract` (default) keeps them and sets
+  `SourceUnit.is_non_content`; `skip` drops them before fan-out. Routing
+  order: `CHUNK_MIN_UNIT_CHARS` → bibliography → non-content. Each decision
+  is logged; the run manifest `selection` block counts
+  `undersized_units_skipped`, `bibliography_units_skipped`, and
+  `non_content_units_skipped`.
+
+- **Density-aware chunk split (`CHUNK_MAX_MEASUREMENTS_PER_UNIT`, default
+  off).** A sized unit that states more unit-adjacent numbers than the cap
+  is split at the sentence or paragraph boundary nearest its midpoint,
+  recursively, never below `CHUNK_MIN_SIZE`. Pieces inherit headings,
+  references, and section label; each split is logged.
+
+- **`CONVERTER_REPAIR_NUMERIC_ARTIFACTS`** (default off, not part of
+  `born_digital`). Pattern-local conversion repairs inside values: HTML
+  entities (`&lt;` `&gt;` `&amp;` `&quot;` `&apos;`), carriage-return
+  column wraps, flattened exponents (`2 × 10 6` → `2 × 10^6`; a bare
+  `10 6` only after `~`/`≈`/"order of"), and single-sided ligature gaps
+  with one reading. Superscript/subscript duplication and citation markers
+  fused into values are left unchanged. The flag joins the converter cache
+  key only when on.
+
+- **`ontocast.util.measurement_lexicon`.** Shared scanner for unit-adjacent
+  numbers (built-in SI/prefix/percent/time lexicon plus caller-supplied
+  unit surfaces; compound tokens matched factor by factor), used by the
+  density split and the numeric-coverage lane.
+
+- **Insert-only facts completion pass (`FACTS_COMPLETION_PASSES`, default
+  `0`).** After the critic loop, while the unit's numeric-coverage inventory
+  still lists a measurement (number with unit) absent from the graph, a
+  narrower pass runs. Each pass is shown a compact term sheet (the unit's
+  quantity/observation/condition classes and unit individuals) plus
+  existing catalog-typed subjects, not the full ontology chapter. Proposed
+  fixes are insert-only (`action=ADD`); `REMOVE`/`REPLACE` are dropped.
+  Each new subject closure goes through the same per-subject regression
+  check as a critic fix; an insert that worsens the unit is rolled back.
+  The loop stops when the inventory is empty. Telemetry: run manifest
+  `completion` block and `retrieval_metrics` (`facts_completion_calls`,
+  `facts_completion_triples_inserted`,
+  `facts_completion_measurements_recovered`).
+
+### Changed
+
+- **Near-miss predicate repair requires token containment.**
+  `repair_property_aliases` no longer rewrites a catalog-namespace
+  predicate absent from the unit snapshot to the single `SequenceMatcher`
+  candidate above `FACTS_PROPERTY_ALIAS_MIN_RATIO`. The repair now (1)
+  never rewrites a predicate declared anywhere in the catalog
+  (`catalog_terms()`), (2) rewrites only when exactly one candidate
+  qualifies by token containment or equality (case and separator folded),
+  and (3) uses the ratio only to break ties. Default
+  `FACTS_PROPERTY_ALIAS_MIN_RATIO` is `0.95` (tie-break floor). Other
+  cases remain mandatory findings with suggestions.
+
+- **Facts prompts put constant chapters first.** Render and critic
+  templates are now `preamble → conformance requirements → ontology → TASK
+  → phase instruction → user instruction → text …`. Shared ontology
+  chapters therefore share a byte-identical prefix through the end of that
+  chapter. Placeholder names are unchanged; `prefix_cache_hit_rate` reports
+  the effect. Cached prompts are invalidated by the reorder.
+
+- **`chars_received` counts characters for every provider.** Previously
+  `len(result.content)`, which counted content blocks for list-valued
+  providers. It now measures the normalised text.
+
+- **Batch run manifests populate the selection census.** The batch state
+  merge-back now carries `content_units`, `unit_failures`,
+  `facts_repairs_applied`, and aggregation clusters from workflow state, so
+  `selection.labeled_units`, `unlabeled_units`, and
+  `section_label_histogram` are no longer built from the pre-run empty
+  list. `selection.summary_max_sentences` is emitted only when
+  summarization ran.
+
+- **Facts-mode companions are now the defaults.** `FACTS_CONTEXT_FROM_UNITS`
+  and `FACTS_NUMERIC_IDENTIFIER_GUARD` default to `true`. In
+  `RENDER_MODE=facts` there is no ontology stage; without the first,
+  aggregator guards and the SHACL gate ran against an empty vocabulary
+  (`validated_without_ontology_context`). The second keeps identifier digit
+  groups out of the numeric-coverage inventory. Set either to `false` to
+  restore previous behaviour. `LLM_JSON_MODE` remains off.
+
 ## [0.6.3] - unreleased
 
 ### Added
 
-- **Provider rate-limit safeguards**: `LLM_REQUESTS_PER_SECOND` (per-process
-  token-bucket pacing of request starts, passed as a langchain
-  `InMemoryRateLimiter` to every provider) and `LLM_MAX_RETRIES` (the
-  provider SDK's transport-retry budget, previously stuck at each SDK's
-  invisible default). `LLM_MAX_INFLIGHT` caps concurrency but not rate, so a
-  fan-out of short calls could exceed a tier's requests-per-minute while
-  never holding many connections — and a 429 that survived the SDK's retries
-  surfaced as an ordinary failed render, indistinguishable from a model
-  failure. Throttles are now also **counted** (`llm/rate_limited` in
-  `budget.counters`, beside `llm/timeouts`) and both pacing knobs are
-  recorded in the run manifest's `llm` block, so a throttled or paced run is
-  identifiable from its own dump. The pipeline still deliberately retries no
-  transport failure itself — the SDK backoff honours `Retry-After`; retrying
-  above it multiplies request rate exactly when the provider asks for less.
+- **Provider rate-limit safeguards.** `LLM_REQUESTS_PER_SECOND`
+  (per-process token-bucket pacing, passed as a langchain
+  `InMemoryRateLimiter` to every provider) and `LLM_MAX_RETRIES` (provider
+  SDK transport-retry budget; previously each SDK's default).
+  `LLM_MAX_INFLIGHT` caps concurrency, not rate. Throttles are counted
+  (`llm/rate_limited` in `budget.counters`, beside `llm/timeouts`). Both
+  knobs are recorded in the run manifest `llm` block. The pipeline does not
+  retry transport failures itself; the SDK backoff honours `Retry-After`.
 
 - **Shapes-driven prompt contract** (`FACTS_SHAPES_PROMPT_CONTRACT`, default
-  `auto`). The loaded SHACL shapes are rendered into a
-  `# CONFORMANCE REQUIREMENTS` chapter that both the facts renderer and the
-  facts critic see — the model is no longer graded against a rulebook it was
-  never shown. The chapter is derived from the deployment's shapes at run
-  time (`sh:message` verbatim where the author wrote one, a synthesized
-  structural line otherwise; message-less SPARQL constraints are omitted with
-  a warning) and capped by `FACTS_SHAPES_PROMPT_MAX_LINES`. With no shapes
-  loaded — or `off` — the prompt is byte-identical to before, so the library
-  stays domain-neutral: domain knowledge enters only through the
-  deployment's artifacts. Terms the shapes require join the `UNKNOWN_TERM`
-  exempt set (`ValidationPolicy.contract_exempt_terms`), full-catalog in
-  every mode, for the same reason the quantity fallback vocabulary is
-  exempt: the validator must never order removal of what the prompt asked
-  for.
+  `auto`). Loaded SHACL shapes are rendered into a
+  `# CONFORMANCE REQUIREMENTS` chapter for the facts renderer and critic.
+  Messages come from `sh:message` where present, otherwise a synthesized
+  structural line; message-less SPARQL constraints are omitted with a
+  warning. Capped by `FACTS_SHAPES_PROMPT_MAX_LINES`. With no shapes
+  loaded, or `off`, the prompt is unchanged. Terms the shapes require join
+  `ValidationPolicy.contract_exempt_terms` (full-catalog, every mode).
 
-  The chapter **scales by context join** rather than truncation or a second
-  retrieval: a small catalog is rendered whole (memoized once per tenancy);
-  above the line cap the chapter is selected per unit, keeping only shapes
-  whose own terms (targets, paths, classes) intersect the IRIs of the
-  unit's resolved ontology snapshot — shape relevance is derivative of
-  ontology-term relevance, so the snapshot the retrieval already produced
-  is the join key. Modes: `full`, `context`, `auto` (size-switched,
-  default), `off`; the run manifest records the resolved behavior
-  (`validation_config.shapes_prompt_selection`). Shapes are deliberately
-  not vector-indexed: the index lifecycle is keyed on ontology identity,
-  and the join answers relevance exactly with no new index to drift.
+  Chapter selection is by context join, not truncation: a small catalog is
+  rendered whole (memoized per tenancy); above the line cap, only shapes
+  whose terms intersect the unit snapshot IRIs are kept. Modes: `full`,
+  `context`, `auto` (size-switched, default), `off`. The run manifest
+  records `validation_config.shapes_prompt_selection`. Shapes are not
+  vector-indexed.
+
   New module `prompt/shapes_contract.py`; wiring in
   `tool/shapes_catalog.py`, `toolbox.py`, `onto/unit_states.py`,
   `stategraph/atomic.py`, `agent/render_facts.py`,
   `agent/criticise_facts.py`.
 
-- **Quantitative-completeness rule in the facts prompt** (rule 3a) and an
-  actionable completeness guideline in the critic prompt. Rule 3 scopes
-  extraction to ontology-covered mentions, which quietly licensed dropping
-  stated measurements the retrieved context had no term for; rule 3a
-  requires every quantitative statement (the rule-8 fallback applies when no
-  term covers it) while keeping rule 4's anti-junk guard verbatim. The
-  critic's completeness guideline now tells it what to do with a NUMERIC
-  COVERAGE finding: propose an ADD fix with the exact `text_fragment` and
-  verbatim value+unit, or classify the mention as typography — never invent
+- **Quantitative-completeness rule** in the facts prompt (rule 3a) and an
+  actionable completeness guideline in the critic prompt. Rule 3a requires
+  every quantitative statement (rule-8 fallback when no term covers it)
+  while keeping rule 4's anti-junk guard. On a NUMERIC COVERAGE finding the
+  critic proposes an ADD fix with the exact `text_fragment` and verbatim
+  value+unit, or classifies the mention as typography — it must not invent
   a subject for a bare token.
 
 - **`FACTS_NUMERIC_COVERAGE_LIMIT`** (default 30, previously hard-coded) and
-  **`FACTS_NUMERIC_COVERAGE_MANDATORY`** (default off): the cap on mentions a
-  NUMERIC_COVERAGE finding lists, and whether such findings block unit
-  acceptance. Both default to the previous behaviour.
+  **`FACTS_NUMERIC_COVERAGE_MANDATORY`** (default off): cap on mentions a
+  NUMERIC_COVERAGE finding lists, and whether those findings block unit
+  acceptance.
 
-- **`--facts-user-instruction` on `ontocast process`.** The per-request
-  deployment-guidance slot the HTTP API already exposes was unreachable from
-  the batch path, so batch runs could not carry the guidance a server request
-  could. The manifest records only the instruction's length.
+- **`--facts-user-instruction` on `ontocast process`.** Exposes the
+  per-request deployment-guidance slot already available on the HTTP API.
+  The manifest records the instruction's length only.
 
 - **Self-describing run manifest.** New `validation_config` block
   (`context_from_units`, `json_mode`, `shapes_prompt_contract`,
   `shapes_triples`, `shacl_inference`, `numeric_coverage_mandatory`,
   `facts_user_instruction_chars`) and section-label census on `selection`
-  (`labeled_units`, `unlabeled_units`, `section_label_histogram`). Arms are
-  launched by env vars nothing recorded; a sweep of output directories is
-  now comparable without reconstructing each run's environment, and an
-  `--exclude-sections` list that could not act (mostly unlabeled units) is
-  visible in the dump instead of silently inert.
+  (`labeled_units`, `unlabeled_units`, `section_label_histogram`).
 
 - **`--ontology-dir` and `--shapes-dir` on `ontocast serve` and `ontocast
   process`**, overriding `ONTOCAST_ONTOLOGY_DIRECTORY` and `FACTS_SHAPES_DIR`
-  for one run. Both carry three states: omitted leaves the environment in
-  force, a path overrides it, and the **empty string clears it** — which is how
-  a run declares "no seed ontologies, infer them" without editing its
-  environment. They are typed as strings rather than paths for that last state:
-  `Path("")` is `.`, so an empty path-typed flag would silently seed the
-  working directory.
-
-  `--ontology-dir` is the input catalog; `--ontology-output-dir` is where
-  results are written.
+  for one run. Three states: omitted leaves the environment in force; a
+  path overrides it; the empty string clears it (no seed ontologies). Typed
+  as strings: `Path("")` is `.`. `--ontology-dir` is the input catalog;
+  `--ontology-output-dir` is where results are written.
 
   Touches: `cli/server.py::_shared_runtime_options`, `_prepare_path_config`,
   `_resolve_seed_directory`, `_bootstrap_tools`.
   Test: `test/test_cli_seed_directories.py`.
 
-- **A seed directory that does not exist stops `ontocast process` at startup.**
-  Naming a directory is an assertion; nothing downstream can tell a mistyped
-  path from "deliberately none", so a typo used to surface much later as an
-  unexplained empty catalog, with the diagnostic naming the vector index rather
-  than the path. The error names what asserted the path — the flag or the
-  environment variable — and its resolved absolute form. An *empty* directory
-  still only warns, since that may well be deliberate. `ontocast serve` warns
-  in both cases: a long-lived server may have the directory appear under it
-  later.
+- **A missing seed directory stops `ontocast process` at startup.** The
+  error names the flag or environment variable and the resolved absolute
+  path. An empty directory still only warns. `ontocast serve` warns in both
+  cases.
 
-- **`FACTS_CRITIC_PASSES` (default `1`) and `ONTOLOGY_CRITIC_PASSES` (default
-  `0`).** Review-and-patch passes per unit, in provider calls. A facts unit
-  costs two calls at the defaults — one extraction, one review — whatever
-  `MAX_VISITS` is. The ontology default preserves existing behaviour exactly:
-  its critic was previously unreachable at default settings, so enabling it is a
-  real cost increase and is opt-in. A pass ends the loop early when it changed
-  nothing or was rolled back, because a second critique of an unchanged graph is
-  the same answer billed twice.
+- **`FACTS_CRITIC_PASSES` (default `1`) and `ONTOLOGY_CRITIC_PASSES`
+  (default `0`).** Review-and-patch passes per unit. A facts unit costs two
+  provider calls at the defaults (one extraction, one review), independent
+  of `MAX_VISITS`. The ontology default is opt-in. A pass ends the loop
+  early when it changed nothing or was rolled back.
 
-- **Screening limits on what one critic pass may destroy.**
-  `FACTS_CRITIC_MAX_DELETE_SHARE` / `ONTOLOGY_CRITIC_MAX_DELETE_SHARE` with a
-  `*_MIN_DELETES` floor (share alone is strictest on short units, where one
-  legitimate correction is already a large fraction of the graph); a `REMOVE`
-  may not empty a subject; a `REPLACE` may not write about a different subject
-  than it deletes unless `FACTS_CRITIC_ALLOW_SUBJECT_RENAME`; a blank node is
-  deleted whole or not at all. A pass is rolled back entirely if it deleted
-  without writing, shrank the unit's product without resolving anything, or
-  created new mandatory findings.
+- **Screening limits on critic deletions.**
+  `FACTS_CRITIC_MAX_DELETE_SHARE` / `ONTOLOGY_CRITIC_MAX_DELETE_SHARE` with
+  a `*_MIN_DELETES` floor. A `REMOVE` may not empty a subject; a `REPLACE`
+  may not write about a different subject than it deletes unless
+  `FACTS_CRITIC_ALLOW_SUBJECT_RENAME`; a blank node is deleted whole or not
+  at all. A pass is rolled back if it deleted without writing, shrank the
+  unit without resolving anything, or created new mandatory findings.
 
-- **No-op fix detection.** A fix whose delete set equals its insert set asks for
-  no change. These were previously counted as fixes that landed, overstating
-  what a critique bought. They are now dropped and reported as
-  `facts_critic_fixes_noop`.
+- **No-op fix detection.** A fix whose delete set equals its insert set is
+  dropped and reported as `facts_critic_fixes_noop`.
 
-- **Patch telemetry**: `LoopAttempt(kind="critic_patch")` with applied/no-op and
-  inserted/deleted counts, rollback and delete-cap flags; `RunManifestCritic`
-  gains `patch_passes`, `fixes_applied`, `fixes_noop`, `patches_rolled_back`,
-  `triples_deleted`, `triples_inserted`, `incumbent_accepted`; new retrieval
-  metrics `facts_critic_fixes_noop`, `facts_critic_patches_rolled_back` and the
-  `ontology_critic_*` equivalents.
+- **Patch telemetry.** `LoopAttempt(kind="critic_patch")` with applied/no-op
+  and inserted/deleted counts, rollback and delete-cap flags;
+  `RunManifestCritic` gains `patch_passes`, `fixes_applied`, `fixes_noop`,
+  `patches_rolled_back`, `triples_deleted`, `triples_inserted`,
+  `incumbent_accepted`; retrieval metrics `facts_critic_fixes_noop`,
+  `facts_critic_patches_rolled_back`, and `ontology_critic_*` equivalents.
 
-- **`ONTOLOGY_ACCEPT_BLOCKING_FINDING_KINDS`** — which deterministic ontology
-  findings block acceptance.
+- **`ONTOLOGY_ACCEPT_BLOCKING_FINDING_KINDS`** — which deterministic
+  ontology findings block acceptance.
 
-
-- **`ONTOLOGY_CONTEXT_REQUIRED` (default `true`) stops a run whose ontology
-  context resolves to zero triples.** An empty context is not a milder version
-  of a good one: the renderer is instructed to extract "based on provided
-  domain ontology", and handed nothing it falls back on whatever standard
-  vocabulary the prompt names. The graph that comes out is well-formed triple
-  by triple, exempt from `UNKNOWN_TERM` (standard namespaces are exempt by
-  default), and matched by no shape — so it reads as extracted while answering
-  nothing, and the conformance gate reports a pass. Continuing produced a
-  finished, plausible, ungrounded result; stopping is strictly better. Set
-  `false` for deployments that extract without a catalog on purpose.
+- **`ONTOLOGY_CONTEXT_REQUIRED` (default `false`) stops a facts run whose
+  ontology context resolves to zero triples.** An empty facts context
+  yields generic vocabulary, `UNKNOWN_TERM` exemption, and a vacuous SHACL
+  pass. Set `true` for deployments that extract against a curated catalog.
+  Ontology units are not gated: `render_ontology_fresh` is the path when
+  there is no seed. Applies to facts units only, even when set.
 
   Touches: `stategraph/context_resolver.py`;
   `onto/retrieval_capabilities.py::EmptyOntologyContextError`;
   `config/settings.py::ServerConfig`.
   Test: `test/test_stategraph_context_resolver.py`.
 
-- **`shacl_focus_nodes` and `shacl_vacuous` in the conformance summary, and
-  `conforms` is now `null` rather than `true` when the focus set is empty.**
-  `conforms` was silent about its own denominator: a validation pass over zero
-  targeted nodes reports no violations for the same reason an empty query
-  returns no rows. A graph that stops using the vocabulary its shapes are
-  written for therefore scores a *perfect* conformance result, which is the
-  opposite of what happened. Target matching follows `rdfs:subClassOf`, as
-  `sh:targetClass` does.
+- **`shacl_focus_nodes` and `shacl_vacuous` in the conformance summary.**
+  `conforms` is `null` rather than `true` when the focus set is empty.
+  Target matching follows `rdfs:subClassOf`, as `sh:targetClass` does.
 
   Touches: `tool/facts_validation/gate.py::count_shacl_focus_nodes`,
   `summarize_conformance`; `stategraph/facts_gate.py`.
   Test: `test/facts/test_grounding_guards.py`.
 
-- **`DOMAIN_ADHERENCE`, a mandatory per-unit finding for a render that barely
-  used the catalog it was given** (`FACTS_DOMAIN_ADHERENCE_MIN_SHARE`, default
-  `0.15`; `0` disables). Every other deterministic finding judges one triple,
-  and this failure is invisible triple by triple — each one is individually
-  valid. It is measured as a share of distinct schema terms (predicates and
-  `rdf:type` objects), excluding minted instances and RDF/RDFS/OWL/XSD/SKOS/DC/
-  PROV plumbing, which every graph uses regardless of catalog and would
-  otherwise float the ratio for free. Generic *content* vocabularies stay in
-  the denominator: reaching for one instead of the catalog is the thing being
-  measured. Silent when the unit has no catalog.
+- **`DOMAIN_ADHERENCE`**, a mandatory per-unit finding when a render barely
+  used the catalog (`FACTS_DOMAIN_ADHERENCE_MIN_SHARE`, default `0.15`; `0`
+  disables). Measured as a share of distinct schema terms (predicates and
+  `rdf:type` objects), excluding minted instances and
+  RDF/RDFS/OWL/XSD/SKOS/DC/PROV plumbing. Generic content vocabularies stay
+  in the denominator. Silent when the unit has no catalog.
 
   Touches: `tool/facts_validation/unit_findings.py::domain_vocabulary_share`,
   `_domain_adherence_findings`; `tool/facts_validation/terms.py`;
   `config/settings.py::FactsValidationConfig`.
 
-- **Startup check that the vector index and the ontology catalog agree.** The
-  two halves of retrieval can disagree, and when they did the pipeline could
-  not notice: vector search selects atoms from the index, then the induced
-  subgraph is built over the catalog, so an index still holding a vocabulary
-  the triple store no longer serves produces perfectly healthy retrieval
-  metrics — the expected seed IRIs, the expected atom count — and an empty
-  graph. An empty catalog beside a populated index now fails initialization,
-  naming what the index still holds; extra indexed IRIs beside a populated
-  catalog are ordinary staleness and only warn. Gated by
-  `ONTOLOGY_CONTEXT_REQUIRED`, and it fires before the first LLM call.
+- **Startup check that the vector index and ontology catalog agree.** An
+  empty catalog beside a populated index fails initialization, naming what
+  the index still holds. Extra indexed IRIs beside a populated catalog warn
+  (ordinary staleness). Fires before the first LLM call.
 
   Touches: `toolbox.py::_check_catalog_index_agreement`.
   Test: `test/test_toolbox_sync.py`.
 
-- **Critic telemetry that can be read without guessing**:
-  `fix_action_severity_histogram` (fixes keyed `ACTION:severity`) and
-  `accept_reason_histogram` on the critic manifest block, plus
-  `facts_critic_fixes_applied` / `facts_critic_fixes_residual`. Severity alone
-  could not be interpreted — a `REMOVE` never blocks acceptance at any
-  severity, so a `critical` count mixed fixes that gate a render with fixes
-  that never could, and the artifacts could not tell them apart.
+- **Critic telemetry:** `fix_action_severity_histogram` (fixes keyed
+  `ACTION:severity`) and `accept_reason_histogram` on the critic manifest
+  block, plus `facts_critic_fixes_applied` / `facts_critic_fixes_residual`.
 
   Touches: `onto/model.py::LoopAttempt`; `onto/run_manifest.py`;
   `agent/criticise_facts.py`; `stategraph/node_factories.py`; `onto/enum.py`.
 
-
 - `FACTS_CONTEXT_FROM_UNITS` (default off) seeds the merge/validate ontology
-  context from the snapshots the facts units actually resolved. With
-  `RENDER_MODE=facts` no ontology stage runs, so there are no reduced artifacts
-  for `build_merged_document_ontology_context` to merge and
-  `_facts_aggregation_inputs` handed an empty graph to **both** consumers: the
-  aggregator lost the type and functionality declarations its guards read, and
-  the gate skipped every check needing a vocabulary. Snapshots are deduplicated
-  by contributing catalog IRI, so a single-select run merges one graph rather
-  than one per unit. `validated_without_ontology_context` and
-  `ontology_snapshot_triples` report which side a run is on.
+  context from the snapshots the facts units resolved. With
+  `RENDER_MODE=facts` no ontology stage runs, so without this both the
+  aggregator and the gate received an empty vocabulary. Snapshots are
+  deduplicated by contributing catalog IRI. `validated_without_ontology_context`
+  and `ontology_snapshot_triples` report which side a run is on.
 
   Touches: `stategraph/node_factories.py::_union_unit_ontology_context`,
   `make_render_facts_node`; `config/settings.py::FactsValidationConfig`.
   Test: `test/facts/test_context_computed_once.py`.
 
 - `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT` (default off) requires
-  merge-created evidence before the IRI branch of `SUSPECT_MULTI_VALUE` reports
-  an error. That branch flags any subject with two objects on a predicate that
-  is single-valued elsewhere in the graph, and error findings drive the un-merge
-  repair -- so a statement one unit asserted with two genuine objects was
-  repaired away. Frequency cannot separate the cases, because a legitimately
-  multi-valued statement is rare by construction; provenance can, since only
-  objects arriving from different units could have been brought together by an
-  identity decision. `AggregationResult` gains `cross_unit_object_pairs`,
-  canonicalized through the same mapping that produces `merged_clusters`, and
-  the un-merge loop recomputes it per pass. Numeric and string branches are
-  unchanged.
+  merge-created evidence before the IRI branch of `SUSPECT_MULTI_VALUE`
+  reports an error. `AggregationResult` gains `cross_unit_object_pairs`,
+  canonicalized through the same mapping as `merged_clusters`; the un-merge
+  loop recomputes it per pass. Numeric and string branches are unchanged.
 
   Touches: `tool/agg/aggregate.py::build_cross_unit_object_pairs`;
   `onto/state.py`; `stategraph/node_factories.py`; `stategraph/facts_gate.py`;
   `tool/facts_validation/gate.py::validate_aggregated_facts`.
   Test: `test/facts/test_gate.py`.
 
-- `FACTS_NUMERIC_IDENTIFIER_GUARD` (default off) keeps identifier digit groups
-  out of the numeric-coverage inventory. A group sitting against `/` or `:`
-  belongs to one identifier, not to a magnitude; offering it as a "number
-  missing from the graph" invited the repair render to structure a file number
-  or a citation into numeric properties, which the post-merge multi-value check
-  then flagged. A digit group standing alone as its own token is deliberately
-  not covered -- nothing around it distinguishes a file-number component from a
-  small quantity -- and neither a value with its unit nor a hyphenated range is
-  affected.
+- `FACTS_NUMERIC_IDENTIFIER_GUARD` (default off) keeps identifier digit
+  groups out of the numeric-coverage inventory. A group against `/` or `:`
+  is treated as part of an identifier, not a magnitude. A digit group that
+  is its own token is not covered. Values with units and hyphenated ranges
+  are unaffected.
 
   Touches: `util/numeric_inventory.py::_is_identifier_fragment`,
   `extract_numeric_tokens`, `missing_numeric_mentions`;
@@ -268,33 +333,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `CHUNK_MIN_UNIT_CHARS` (default `0`, disabled) drops content units below a
   character floor before the extraction fan-out. Distinct from
-  `CHUNK_MIN_SIZE`, which is a target the chunker aims at while merging
-  segments: a heading stub or a caption fragment can still leave chunking well
-  under it, and each such unit costs a patch retrieval, a full render and a
-  critic call. Every drop is logged individually, as with bibliography routing.
+  `CHUNK_MIN_SIZE` (chunker merge target). Each drop is logged.
 
   Touches: `agent/chunk_text.py`; `config/settings.py::ChunkConfig`.
   Test: `test/chunking/test_section_pipeline.py`.
 
 - `LLM_JSON_MODE` (default off) constrains OpenAI decoding to syntactically
-  valid JSON via `response_format: json_object`. Every response is parsed as a
-  JSON envelope whatever `LLM_GRAPH_FORMAT` is -- Turtle only makes the graph
-  fields flat strings inside it -- so this makes a class of syntax error
-  unreachable rather than repaired afterwards. Off by default because OpenAI
-  rejects the request unless the prompt mentions JSON, which is a property of
-  the prompt set; a test holds every format instruction to that precondition.
-  Strict `json_schema` mode is not offered: it requires closed schemas and the
+  valid JSON via `response_format: json_object`. Off by default because
+  OpenAI rejects the request unless the prompt mentions JSON. Strict
+  `json_schema` mode is not offered: it requires closed schemas and the
   graph fields are open.
 
   Touches: `tool/llm.py::LLMTool.setup`; `config/settings.py::LLMConfig`.
   Test: `test/test_llm_json_mode.py`.
 
 - `ontocast process --keep-provenance` retains chunk-level provenance in the
-  facts dump. `dump_facts_ttl` hardcoded the strip, so a batch output carried no
-  chunk references at all and nothing in it could be traced back to a source
-  span or re-verified against the document. Stripping remains the default, and
-  the flag mirrors the HTTP `strip_provenance` parameter rather than adding a
-  second spelling.
+  facts dump. Stripping remains the default; the flag mirrors the HTTP
+  `strip_provenance` parameter.
 
   Touches: `api/process_helpers.py::dump_facts_ttl`, `process_files_input`;
   `cli/server.py`.
@@ -302,392 +357,239 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **An empty ontology context is no longer a failure for the loop that exists
-  to fix it.** `ONTOLOGY_CONTEXT_REQUIRED` now defaults to `false`, and applies
-  only to **facts** units even when set.
-
-  The ontology renderer already branches on an empty seed into
-  `render_ontology_fresh`, which mints a new catalog ontology from the text —
-  the designed answer to a corpus that has no ontology yet. Raising ahead of it
-  made that branch unreachable: the documented first run (`ontocast process`
-  against a document, with no seed directory and the default render mode)
-  aborted at startup, and a populated-catalog run stopped whenever the selector
-  honestly reported that no catalog ontology fits the unit. A tool for
-  inferring ontologies has to run against a corpus that has none.
-
-  What the setting guards is unchanged and still available: a *facts* unit
-  cannot answer an empty context, so it falls back on generic vocabulary and
-  the conformance gate then reports a vacuous pass over an empty focus set.
-  Turn it on for a deployment that extracts against a curated catalog, where an
-  empty context can only mean the catalog failed to load.
-
-  Touches: `config/settings.py::ServerConfig.ontology_context_required`;
-  `stategraph/context_resolver.py::resolve_unit_ontology_context`
-  (`can_create_vocabulary`); `stategraph/atomic.py::run_unit_loop`.
-  Tests: `test/test_stategraph_context_resolver.py`,
-  `test/test_atomic_loop_bounds.py`.
-
-- **The startup catalog check follows the render mode.** `ontocast process`
-  requires a populated catalog only under `RENDER_MODE=facts`, the one mode
-  that creates no vocabulary of its own; the others log that they will build
-  ontologies from the corpus and start.
+- **Startup catalog check follows render mode.** `ontocast process` requires
+  a populated catalog only under `RENDER_MODE=facts`. Other modes log that
+  they will build ontologies from the corpus and start.
 
   Touches: `cli/server.py::_bootstrap_tools` (`batch`);
   `toolbox.py::_check_catalog_ready`.
   Test: `test/test_toolbox_ontology_seed.py`.
 
-- **The two retrieval-integrity checks no longer consult
+- **Retrieval-integrity checks no longer consult
   `ONTOLOGY_CONTEXT_REQUIRED`.** A populated vector index beside an empty
-  catalog, and an empty index over a populated catalog, are not statements
-  about wanting a context — they say the two halves of retrieval disagree about
-  which ontologies exist, which nothing configures on purpose. Gating them on a
-  preference meant flipping that preference also disarmed them. Neither fires
-  during a legitimate bootstrap, where catalog and index are both empty.
+  catalog, or an empty index over a populated catalog, is a retrieval
+  disagreement, not a preference. Neither fires during bootstrap when both
+  are empty.
 
   Touches: `toolbox.py::_check_catalog_index_agreement`, `_check_catalog_ready`.
   Test: `test/test_toolbox_sync.py`.
 
 - **Seed TTLs are replayed into a new tenancy scope**, where the partition
   serves no terms for them; `FACTS_SHAPES_DIR` is seeded on the same switch.
-  Previously they were startup-only, on the reasoning that materializing them
-  into another tenant as a side effect of a query parameter would be a surprise.
-  The surprise it produced instead was worse: a scope whose catalog was empty
-  for want of a bootstrap is the same fault as a startup one, and the tenant
-  extracted against no vocabulary at all. An ontology the scope already defines
-  is never overwritten by the on-disk copy.
+  An ontology the scope already defines is never overwritten by the on-disk
+  copy.
 
   Touches: `toolbox.py::_update_tenancy_with_vector_mode_locked`.
   Docs: `docs/user_guide/tenancy.md`, `docs/architecture/ontology_catalog.md`.
 
-- **The critic cites statement ids instead of retyping statements, and applies
-  its own fixes.** Every graph chapter in a critic prompt now carries a number
-  per statement — inline in Turtle, in a `TRIPLE INDEX` table under JSON-LD —
-  and `TripleFix.triple_ids` names them. The previous contract asked the critic
-  to reproduce the offending statement into `incorrect_value`, and to be applied
-  it had to match the stored triple exactly: same prefix form, same predicate,
-  same literal shape. Models reproduce graph content from memory poorly, and one
-  wrong predicate in a node-shaped quote discarded the whole fix — so most
-  removals never reached the graph. Authoring *new* content has no such problem,
-  because nothing has to match, and `correct_value` stays free-hand.
-  `incorrect_value` remains as a fallback for a fix that cites no id.
-
-  On the ontology side the ids are scoped to the unit's own delta. The retrieved
-  catalog is still shown — a term choice cannot be judged without it — but those
-  statements carry no id, so a delete that would propagate onto a shared,
-  versioned terminal is not expressible rather than merely reported afterwards.
+- **The critic cites statement ids and applies its own fixes.** Every graph
+  chapter in a critic prompt carries a number per statement — inline in
+  Turtle, in a `TRIPLE INDEX` table under JSON-LD — and
+  `TripleFix.triple_ids` names them. `incorrect_value` remains as a fallback
+  for a fix that cites no id. `correct_value` stays free-hand. On the
+  ontology side, ids are scoped to the unit's own delta: retrieved catalog
+  statements carry no id, so a delete that would propagate onto a shared
+  terminal is not expressible.
 
   Touches: `onto/triple_index.py`; `prompt/graph_index.py`;
   `prompt/graph_format.py`; `onto/model.py::TripleFix`;
   `tool/facts_validation/critic_patch.py`; both critic agents.
   Tests: `test/test_triple_index.py`, `test/facts/test_critic_patch.py`.
 
-- **The separate finding-driven repair render is gone; the critic pass is the
-  repair.** A critique used to be turned back into prompt text for a second,
-  paid `render_facts_update` call. That call now does not happen: the fixes are
-  compiled into a validated `GraphUpdate` and applied with no LLM call. The
-  invariant is unchanged — every mutation is still a compiled, validated
-  `GraphUpdate` — but producing one no longer requires a model.
+- **The separate finding-driven repair render is gone; the critic pass is
+  the repair.** Fixes are compiled into a validated `GraphUpdate` and
+  applied with no LLM call. The invariant is unchanged: every mutation is
+  still a compiled, validated `GraphUpdate`.
 
   Removed: `stategraph/atomic.py::_run_finding_driven_repair`,
   `tool/facts_validation/critic_findings.py`.
 
-- **Fix payloads are parsed format-tolerantly rather than by dispatch.** The
-  deployment's `llm_graph_format` names one syntax for a fix payload and the
-  model does not reliably use it: under a JSON-LD deployment roughly two in five
-  authored payloads come back as Turtle, and the ones that failed were usually a
-  Turtle body with a JSON-LD term object where the object belongs
-  (`rdfs:label {"@value": "x", "@language": "en"}`). The parser chose a backend
-  from the payload's first character, so that hybrid matched neither and was
-  discarded whole. `_parse_fragment` now also maps `@value`/`@language`/`@type`
-  onto the equivalent Turtle literal forms, unwraps `@id`, and brackets bare
-  absolute IRIs. Nothing guesses at meaning, and a payload that still is not a
-  statement stays unparseable.
+- **Fix payloads are parsed format-tolerantly rather than by dispatch.**
+  `_parse_fragment` maps `@value`/`@language`/`@type` onto the equivalent
+  Turtle literal forms, unwraps `@id`, and brackets bare absolute IRIs. A
+  payload that is not a statement stays unparseable.
 
-- **The facts and ontology unit loops are one implementation.** They were
-  parallel copies that had drifted: only one recorded render attempts, only one
-  stopped escalating a rejection into a fresh extraction, and only one kept the
-  critique it had just paid for. `stategraph/atomic.py::run_unit_loop` now
-  serves both, with a `LoopPhase` adapter for the genuine differences.
-  `facts_loop` and `ontology_loop` remain as wrappers.
+- **The facts and ontology unit loops are one implementation.**
+  `stategraph/atomic.py::run_unit_loop` serves both, with a `LoopPhase`
+  adapter for the differences. `facts_loop` and `ontology_loop` remain as
+  wrappers.
 
-- **`MAX_VISITS` retries a *failed* render and nothing else.** A render that
-  succeeded is never repeated. Improving it is what the critic passes are for,
-  and re-extracting a whole unit to fix a local defect reliably introduces new
-  defects. The critic's budget is now named directly.
+- **`MAX_VISITS` retries a failed render and nothing else.** A successful
+  render is never repeated. Improving it is the critic's job. `MAX_VISITS`
+  bounds renders only.
 
-- **The ontology critic gates on deterministic findings, not on its own score.**
-  The previous rule accepted on `success or score > 90` — the top band of the
-  prompt's own rubric, which calls 70–89 "Good", so it rejected ontologies its
-  instructions considered good, on a number the model was never shown a scale
-  for. The blocking set is the destructive-or-lossy subset of findings only;
-  blocking on every mandatory finding would include `missing_label`, which fires
-  whenever a render mints an unlabelled term. The retired gate's verdict is
-  recorded as `incumbent_accepted` so the change can be judged from a
-  distribution rather than an argument.
+- **The ontology critic gates on deterministic findings, not on its own
+  score.** The blocking set is the destructive-or-lossy subset of findings;
+  it does not include `missing_label`. The retired gate's verdict is
+  recorded as `incumbent_accepted`.
 
-- **An accepting ontology critic keeps its fixes.** They were cleared, which
-  discarded every fix attached to an accepted render — and since a `REMOVE` can
-  never by itself cause a rejection, that was most of them. The facts critic
-  already kept them.
-
-
-- **Critic fixes are no longer discarded when a render is accepted.** Accepting
-  means "no defect worth another render", not "the critique was empty" — but
-  the accept path cleared the suggestion set and called the repair lane with no
-  critic fixes, so the entire critique of every accepted render was dropped
-  unread. Since a `REMOVE` fix cannot make a render blocking, and most renders
-  are accepted, that was the bulk of everything the critic produced. Fixes now
-  survive; what cannot be applied is counted as residual rather than lost.
+- **An accepting critic keeps its fixes.** Accepting means no defect worth
+  another render, not that the critique was empty. Fixes that cannot be
+  applied are counted as residual.
 
   Touches: `agent/criticise_facts.py`; `stategraph/atomic.py`.
   Test: `test/facts/test_suggestions_lifecycle.py`.
 
-- **Tiered repair: a critic fix that is already a patch is applied without an
-  LLM call.** The loop's invariant is that every mutation is a compiled,
-  validated `GraphUpdate`; it had drifted into the stricter rule that every
-  mutation must come from a *render call*, which made a whole re-extraction the
-  only available response to a local defect — a high-variance operation for a
-  narrow problem. A fix whose `incorrect_value` matches triples the graph
-  actually holds, or whose `correct_value` parses, is compiled into the same
-  `GraphUpdate` a render's wire compiles to and applied directly. What does not
-  compile goes to the bounded repair render, where the model's judgement is
-  actually needed. Deliberately conservative: a fix that misquotes what it is
-  correcting has misunderstood the graph, so nothing is deleted on a miss.
-
-  Touches: `tool/facts_validation/critic_patch.py` (new);
-  `stategraph/atomic.py::_run_finding_driven_repair`.
-  Test: `test/facts/test_critic_patch.py`.
-
-- **`MAX_VISITS` no longer gates the facts critic.** The critic was skipped
-  whenever the current render was the last allowed, reasoning that a critique
-  which cannot drive a retry is wasted — so at the default `MAX_VISITS=1` it
-  never ran, and enabling it meant paying for a second full extraction. That
-  reasoning is spent now that a verdict feeds the tiered repair lane: the facts
-  critic runs at one visit whenever `FACTS_LLM_REPAIR_VISITS > 0`, and is
-  skipped only at `0`, where there is genuinely nowhere to put its output. The
-  ontology loop is unchanged. `MAX_VISITS` now bounds renders only.
+- **`MAX_VISITS` no longer gates the facts critic.** The facts critic runs
+  whenever `FACTS_CRITIC_PASSES > 0` (and is skipped only at `0`). The
+  ontology loop is unchanged.
 
   Touches: `stategraph/atomic.py::_skip_critic_after_final_render`;
   `config/settings.py::ServerConfig`; `docs/user_guide/{validation,workflow,
   configuration,performance,observability}.md`.
   Test: `test/test_max_visits_critic_propagation.py`.
 
-- **The facts prompt states vocabulary precedence instead of offering a
-  choice.** Rules 2 and 4 put the provided ontology and generic vocabularies on
-  equal footing ("either … or standard core vocabularies") and illustrated the
-  generic branch with two worked examples against one placeholder for the
-  domain branch. Catalog terms now take precedence explicitly, with the
-  mechanical reason stated — a catalog term is checked by the shapes and
-  reachable by queries written against them; a generic substitute is neither —
-  and generic vocabularies are named as a last resort. The block also no longer
-  points "above" at an ONTOLOGY section that is emitted below it, and says not
-  to mint entities for bare numbers or citation markers.
+- **The facts prompt states vocabulary precedence.** Catalog terms take
+  precedence over generic vocabularies, which are a last resort. The block
+  no longer points "above" at an ONTOLOGY section emitted below it, and
+  says not to mint entities for bare numbers or citation markers.
 
   Touches: `prompt/facts_guidelines.py`.
   Test: `test/test_prefix_namespace_hygiene.py`.
 
+- Test markers now match `pyproject.toml`. Every collected test outside
+  `test/manual/` carries a kind marker, applied at module level, with
+  `slow` assigned from isolated runtime. Markers are not mutually
+  exclusive: a service test is both `integration` and `slow`.
 
-- Test markers now mean what `pyproject.toml` documents. `unit` covered a
-  handful of modules, so `-m "not slow"` and `-m integration` selected almost
-  nothing and "the offline subset passes" was the same statement as "the suite
-  passes". Every collected test outside `test/manual/` now carries a kind
-  marker, applied at module level, with `slow` assigned from measured isolated
-  runtime rather than from file names. The markers are not mutually exclusive: a
-  service test is both `integration` and `slow`, and `-m "not slow"` -- what CI
-  selects on -- deselects it correctly.
-
-- `ontocast/prompt/` has smoke coverage. Seven of its twelve modules had no test
-  contact, so a broken `.format()` slot surfaced only on a live run, after
-  paying for the call. Templates are discovered from how the package renders
-  them -- `str.format` call sites and `PromptTemplate` construction -- so
-  literal blocks like `facts_literal_rules_jsonld`, which are substituted *into*
-  a slot and legitimately carry raw JSON braces, are not mistaken for templates.
+- `ontocast/prompt/` has smoke coverage. Templates are discovered from
+  `str.format` call sites and `PromptTemplate` construction, so literal
+  blocks substituted into a slot (raw JSON braces) are not treated as
+  templates.
 
   Test: `test/test_prompt_templates.py`.
 
 ### Removed
 
 - **`render_facts_update` and the facts update-render mode.** `render_facts`
-  dispatched on the unit graph being non-empty, and nothing populates that graph
-  except a successful render — after which the render loop has already finished.
-  Audited across every shipped entry path: no construction site passes a graph,
-  no route accepts facts triples, every mutation site is downstream of the render
-  that populates it, and no replay path returns a populated unit graph. The one
-  structural window (an exception between the graph assignment and the return)
-  consists only of plain attribute writes, two integer additions, and logging
-  calls with pre-formatted scalars, none of which can raise.
+  dispatched on the unit graph being non-empty, and nothing populates that
+  graph except a successful render, after which the render loop has already
+  finished. `render_ontology_update` is unchanged: it dispatches on the
+  retrieved snapshot, a different field from the one it writes.
 
-  `render_ontology_update` is untouched and remains the normal ontology path:
-  it dispatches on the retrieved *snapshot*, a different field from the one it
-  writes, so its update mode is reached whenever a catalog exists. That
-  asymmetry is why one renderer lost its second mode and the other did not.
-
-  Also removed with it: `_findings_instruction` and
-  `GraphFormatProfile.format_facts_chapter`, whose only callers it was. The
+  Also removed: `_findings_instruction` and
+  `GraphFormatProfile.format_facts_chapter`, whose only caller it was. The
   critic uses `format_facts_chapter_indexed`.
 
 ### Deprecated
 
-- `FACTS_LLM_REPAIR_VISITS` — alias for `FACTS_CRITIC_PASSES`, honoured for one
-  release.
-- `MAX_CRITIC_VISITS_PER_NODE` — inert. It capped critic retries *within* one
-  render attempt, a path reachable only through external evidence, and the loop
-  no longer retries a critic inside a pass. Still recorded in the run manifest
-  so an existing setting stays auditable.
+- `FACTS_LLM_REPAIR_VISITS` — alias for `FACTS_CRITIC_PASSES`, honoured for
+  one release.
+- `MAX_CRITIC_VISITS_PER_NODE` — inert. It capped critic retries within one
+  render attempt; the loop no longer retries a critic inside a pass. Still
+  recorded in the run manifest so an existing setting stays auditable.
 
 ### Fixed
 
-- **Unit status now reflects the critic's patch, not its pre-patch verdict.**
-  Acceptance was decided by the critic *before* its fixes were compiled and
-  applied, and nothing re-evaluated afterwards — so a unit whose patch
-  resolved every material defect still exited `FAILED` and was counted by
-  the reduce as "salvaged from a non-converged loop", overstating
-  non-convergence in the logs and telemetry. `_apply_critic_patch` now
-  re-runs `material_defects` on the post-patch findings and outstanding
-  fixes (rollback included, where it recomputes the pre-patch verdict) and
-  sets the unit's status accordingly. `LoopPhase` carries the phase's
-  acceptance policy to make that decision with.
+- **Unit status now reflects the critic's patch, not its pre-patch
+  verdict.** `_apply_critic_patch` re-runs `material_defects` on the
+  post-patch findings and outstanding fixes (including rollback, which
+  recomputes the pre-patch verdict) and sets the unit's status accordingly.
+  `LoopPhase` carries the phase's acceptance policy.
 
 - Stale docstring on `material_defects` claiming the critic never runs at
-  `MAX_VISITS=1` — the critic budget (`FACTS_CRITIC_PASSES`) has been
-  independent of the render-failure bound since the critic rewire.
+  `MAX_VISITS=1` — the critic budget (`FACTS_CRITIC_PASSES`) is independent
+  of the render-failure bound.
 
-- **A facts-only batch run started against an empty ontology catalog and only
-  found out per unit.** `ontocast process` under `RENDER_MODE=facts` now
-  refuses to start when the catalog resolves to zero ontologies, and any run
-  refuses when the vector index is still empty once materialization has run.
-  Both halves of retrieval have to be checked, because they fail in opposite
-  directions and each hides the other: a populated index beside an empty
-  catalog produces healthy-looking retrieval metrics and an empty graph, while
-  an empty index beside a populated catalog is what a wipe leaves behind when
-  the sync found nothing to reindex — the wipe is unconditional, the refill is
-  not. The existing agreement check could only see the first, because it needs
-  a populated index to compare against, so `--wipe-vector-store` disabled the
-  guard on exactly the run that needed it. `ontocast serve` warns about an
-  empty catalog instead of failing: starting empty and being filled through
-  `POST /ontologies` is a supported way to run.
+- **A facts-only batch run against an empty catalog now fails at startup.**
+  `ontocast process` under `RENDER_MODE=facts` refuses to start when the
+  catalog resolves to zero ontologies, and any run refuses when the vector
+  index is still empty after materialization. `ontocast serve` warns about
+  an empty catalog instead of failing: starting empty and filling through
+  `POST /ontologies` is supported.
 
   Touches: `toolbox.py::_check_catalog_ready`, `_catalog_sources_description`,
   `initialize(require_populated_catalog=...)`; `cli/server.py::_bootstrap_tools`.
   Test: `test/test_toolbox_sync.py`.
 
-- **`EmptyOntologyContextError` was caught as a per-unit failure.** The setting
-  it comes from promises the run stops; the fan-out's blanket handler recorded
-  it as a render failure instead. Since the cause is the deployment, every
-  sibling unit raised it too, so the run finished, wrote a zero-triple manifest
-  and exited successfully — the vacuous pass the setting exists to prevent, now
-  with one traceback per unit burying the cause. `OntologyContextConfigError`
-  now propagates out of both the unit loop and the fan-out, which orphans
-  nothing: it is re-raised after the gather has drained.
+- **`EmptyOntologyContextError` was caught as a per-unit failure.**
+  `OntologyContextConfigError` now propagates out of both the unit loop and
+  the fan-out, re-raised after the gather has drained.
 
   Touches: `stategraph/atomic.py::run_unit_loop`;
   `stategraph/node_factories.py::_gather_units`.
   Tests: `test/test_atomic_loop_bounds.py`, `test/test_unit_fanout_failures.py`.
 
-- **A seed ontology could not repair a partition that had lost its graphs.**
-  The sync copied a seed only when the triple store did not *list* its IRI, so a
-  store that listed an ontology and served no terms for it — a dataset restored
-  empty, a graph dropped from under a still-registered header — was
-  indistinguishable from a healthy one and the one copy that could have fixed it
-  was skipped. The test is now whether the served ontology defines terms rather
-  than only its own `owl:Ontology` header, which a catalog read synthesizes
-  regardless. An ontology that does define terms is never overwritten: a
-  previous run's evolved terminal outranks whatever is on disk.
+- **A seed ontology can repair a partition that listed its IRI but served
+  no terms.** Sync now tests whether the served ontology defines terms,
+  rather than only its own `owl:Ontology` header (which a catalog read
+  synthesizes regardless). An ontology that does define terms is never
+  overwritten.
 
   Touches: `toolbox.py::_seed_ontologies_missing_from`, `_defines_terms`,
   `_synchronize_ontologies`.
   Test: `test/test_toolbox_ontology_seed.py`.
 
 - **A threshold rejection reported as "no candidate atoms matched".**
-  `atoms_after_dedupe` is counted *after* the score gate, so the branch naming
-  the thresholds was unreachable from a real run. `candidate_hits` and
-  `threshold_rejected`, both counted before the gate, are now recorded and used
-  instead. Relatedly, the catalog-first ordering of the diagnostic never fired
-  on the run that needed it most: when retrieval short-circuits on zero atoms it
-  never consults the catalog, so `catalog_context_triples` is *absent* rather
-  than `0` and `metrics.get(...) == 0` was `None == 0`. The catalog is now asked
-  directly when the metrics cannot answer.
+  `atoms_after_dedupe` is counted after the score gate, so the branch
+  naming the thresholds was unreachable. `candidate_hits` and
+  `threshold_rejected`, both counted before the gate, are now recorded and
+  used instead. When retrieval short-circuits on zero atoms,
+  `catalog_context_triples` is absent rather than `0`; the catalog is now
+  asked directly when the metrics cannot answer.
 
   Touches: `stategraph/context_resolver.py::_diagnose_empty_snapshot`;
   `tool/vector_store/patch_retriever.py::_filter_and_merge_patch_hits`.
   Test: `test/test_stategraph_context_resolver.py`.
 
-- **An ontology that indexed to zero atoms looked like a successful reindex.**
-  `reindex_ontology` deletes before it indexes and discarded the count, and both
-  backends return `0` early without logging, so a startup that emptied the index
-  logged the same lines as one that filled it. The count is now logged per
-  ontology and warned on when it is zero.
+- **An ontology that indexed to zero atoms looked like a successful
+  reindex.** `reindex_ontology` deletes before it indexes and discarded the
+  count. The count is now logged per ontology and warned on when it is
+  zero.
 
   Touches: `toolbox.py::_materialize_ontology`.
 
 - **The empty-ontology-context diagnostic named the wrong subsystem.** It
-  inspected the vector index and atom counts and never consulted catalog state,
-  so a catalog that resolved to zero graphs — atoms selected and scored
-  normally, nothing to expand them against — was reported as *"all candidate
-  atoms scored below the retrieval thresholds"*, sending an operator to tune
-  numbers that were never involved. Catalog-side causes are now checked first
-  and named, including the vector-index-and-triple-store-disagree case.
+  inspected the vector index and atom counts and never consulted catalog
+  state. Catalog-side causes are now checked first and named, including
+  vector-index and triple-store disagreement.
 
   Touches: `stategraph/context_resolver.py::_diagnose_empty_snapshot`.
 
-
-- A section list whose labels are *all* unrecognised is now rejected instead of
-  silently disabling section handling. Unknown tokens were dropped with a
-  warning and the empty result reads downstream as an explicit "no sections",
-  which *replaces* the resolved schema's `default_exclude` rather than adding to
-  it -- so one typo in `--exclude-sections` switched off exclusions the caller
-  never touched. A partly recognised list still warns and continues, because it
-  expresses a real intent. The CLI reports it as a usage error rather than a
-  traceback.
+- A section list whose labels are all unrecognised is now rejected instead
+  of silently disabling section handling. Unknown tokens were dropped with
+  a warning and the empty result replaced the resolved schema's
+  `default_exclude`. A partly recognised list still warns and continues.
+  The CLI reports it as a usage error rather than a traceback.
 
   Touches: `api/parse.py::_resolve_section_tokens`,
   `_normalise_section_tokens`; `cli/inspect_sections.py`.
   Test: `test/chunking/test_section_pipeline.py`.
 
-- Serializing a graph carrying an unusable term raises a diagnostic naming the
-  term, its rdflib type, its triple position and its graph, instead of a bare
-  `AssertionError`. The three asserts in `_rdflib_graph_to_quads` carried no
-  message, so the failure named nothing and could not be attributed to the code
-  that built the graph -- and they vanish entirely under `python -O`. The
-  reachable case is a term that converts to something which is not a term at
-  all: `to_ox` maps `urn:x-rdflib:default` to a `DefaultGraph`. The asserts also
-  admitted `ox.Triple`, which `to_ox` cannot return.
+- Serializing a graph that carries an unusable term raises a diagnostic
+  naming the term, its rdflib type, its triple position, and its graph,
+  instead of a bare `AssertionError`. The reachable case is a term that
+  converts to something which is not a term: `to_ox` maps
+  `urn:x-rdflib:default` to a `DefaultGraph`. The asserts also admitted
+  `ox.Triple`, which `to_ox` cannot return.
 
   Touches: `tool/triple_manager/in_memory.py::_to_ox_term`,
   `_rdflib_graph_to_quads`.
   Test: `test/test_in_memory_manager.py`.
 
 - `FusekiTripleStoreManager._initialize_datasets` falls back to the default
-  facts dataset rather than passing `None` to Fuseki as a dataset name, which
-  would have created one literally named `None`. Surfaced by annotating
-  `init_dataset`.
+  facts dataset rather than passing `None` to Fuseki as a dataset name.
 
   Touches: `tool/triple_manager/fuseki.py`.
 
 ### Documentation
 
-- **Facts-loop diagrams regenerated** (`docs/assets/facts_loop*`). They showed a
-  critic gated on a spare render attempt and a rejection routed back to a full
-  re-render — the second was already stale, since 0.6.2 routed a rejection to
-  the repair lane. They now show the repair lane itself: the gate on the repair
-  budget, the LLM-free tier, and both critic outcomes landing in the same
-  place. The ontology-loop diagrams are unchanged, as is that loop.
+- **Facts-loop diagrams regenerated** (`docs/assets/facts_loop*`). They now
+  show the repair lane: the gate on the repair budget, the LLM-free tier,
+  and both critic outcomes landing in the same place. The ontology-loop
+  diagrams are unchanged.
 
   Touches: `cli/plot_graph.py::_facts_loop_core_edges`,
   `_facts_loop_evidence_edges`, `facts_loop_flow`;
   `docs/user_guide/workflow.md`.
 
-
 - `demo/README.md` named sample files that do not exist (`sample.pdf`,
-  `sample.txt`, `sample.ttl`), so the first command a new user is told to run
-  failed. It now names the two PDFs the directory actually holds, states that
-  commands run from the repository root, and lists the recorded response and
-  figure.
+  `sample.txt`, `sample.ttl`). It now names the two PDFs the directory
+  actually holds, states that commands run from the repository root, and
+  lists the recorded response and figure.
 
 - Every public callable reported by griffe now carries parameter and return
-  annotations, and `uv run mkdocs build` is warning-free. Fifty warnings across
-  fourteen modules rendered as untyped rows in the generated reference, against
-  a convention of type hints everywhere.
+  annotations, and `uv run mkdocs build` is warning-free.
 
   Touches: `runtime.py`, `toolbox.py`, `tool/llm.py`, `tool/converter.py`,
   `tool/validate.py`, `tool/onto.py`, `tool/ontology_manager.py`,
@@ -696,8 +598,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `docs/user_guide/configuration.md` documents `LLM_JSON_MODE`,
   `CHUNK_MIN_UNIT_CHARS` and the fail-closed section-label rule;
-  `docs/user_guide/validation.md` documents the three facts-validation arms and
-  why each defaults to off; `docs/user_guide/concepts.md` documents
+  `docs/user_guide/validation.md` documents the three facts-validation arms
+  and why each defaults to off; `docs/user_guide/concepts.md` documents
   `--keep-provenance`.
 
 ## [0.6.2] - 2026-08-29

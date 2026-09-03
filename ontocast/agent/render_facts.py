@@ -72,14 +72,17 @@ def _normalize_and_repair_graph(
     ``qudt:numericValue``), and links nodes to the catalog individual whose
     code they carry (``qudt:ucumCode "d"`` -> ``qudt:unit unit:DAY``).
     Ambiguous near-misses and unresolvable type literals are left for findings
-    collection.
+    collection. The alias rewrite checks membership against the scope's *full*
+    catalog, not only the unit's snapshot: a predicate the catalog declares
+    but retrieval did not bring into this unit's context is a real term and
+    is never rewritten toward a look-alike the snapshot happens to carry.
 
     Args:
         graph: Rendered facts graph, repaired in place.
         ontology_context_graph: Read-only schema the repairs are checked against.
-        tools: Supplies the alias-rewrite similarity floor, code predicates,
-            and the quantity fallback vocabulary (alias exemptions and the
-            degenerate-bound promotion roles).
+        tools: Supplies the alias tie-break floor, the full-catalog term set,
+            code predicates, and the quantity fallback vocabulary (alias
+            exemptions and the degenerate-bound promotion roles).
         budget_tracker: Charged ``"repair/deterministic"``. Both scans here walk
             the whole ontology graph per call, so this is timed to show how much
             of it is per-unit-invariant work.
@@ -97,6 +100,7 @@ def _normalize_and_repair_graph(
         exempt_terms=expand_vocabulary_terms(
             tools.quantity_fallback_vocabulary, graph, ontology_context_graph
         ),
+        full_catalog_terms=tools.catalog_terms(),
     )
     resolved, code_records = resolve_code_literals(
         graph, ontology_context_graph, tools.code_predicates
@@ -295,7 +299,10 @@ async def render_facts_fresh(
     logger.info("Rendering fresh facts")
     state.quarantined_literal_triples = []
     llm_tool = await tools.get_llm_tool(state.budget_tracker)
-    profile = get_graph_format_profile(state.llm_graph_format)
+    profile = get_graph_format_profile(
+        state.llm_graph_format,
+        ontology_chapter_format=state.ontology_chapter_format,
+    )
     parser = PydanticOutputParser(pydantic_object=FactsRenderReport)
 
     access = ontology_access_for_unit_facts(state)

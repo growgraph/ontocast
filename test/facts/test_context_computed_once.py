@@ -16,7 +16,12 @@ import pytest
 from rdflib import URIRef
 
 from ontocast.onto.content_unit import ContentUnit
-from ontocast.onto.enum import OntologyContextMode, RetrievalMetric, Status
+from ontocast.onto.enum import (
+    OntologyChapterFormat,
+    OntologyContextMode,
+    RetrievalMetric,
+    Status,
+)
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
@@ -78,6 +83,7 @@ def _tools(*, context_from_units: bool = False) -> ToolBox:
                     parallel_workers=4,
                     max_critic_visits_per_node=None,
                     ontology_context_max_triples=4000,
+                    ontology_chapter_format=OntologyChapterFormat.INHERIT,
                 ),
                 get_tool_config=lambda: tool_config,
             ),

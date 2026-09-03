@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Sequence
+from typing import Literal as TypingLiteral
 
 from rdflib import RDF, RDFS, SKOS, Literal, URIRef
 
@@ -30,6 +31,7 @@ from ontocast.tool.facts_validation.terms import (
     _declared_domains,
     _described_classes,
     _local_name,
+    _name_tokens,
     _namespace_of,
     _resolve_type_literal,
     _superclass_closure,
@@ -38,9 +40,64 @@ from ontocast.tool.facts_validation.terms import (
     collect_declared_namespaces,
     expand_vocabulary_terms,
 )
-from ontocast.util.numeric_inventory import canonical_number, missing_numeric_mentions
+from ontocast.util.numeric_inventory import (
+    NumericInventory,
+    canonical_number,
+    missing_numeric_inventory,
+    unit_surfaces_in_ontology,
+)
 
 logger = logging.getLogger(__name__)
+
+CoverageMode = TypingLiteral["off", "measurements", "all"]
+
+
+def coverage_mode(value: str | bool | None) -> CoverageMode:
+    """Normalise the coverage-mandatory knob, boolean form included.
+
+    ``True`` is the setting's old spelling of ``all`` and ``False`` of
+    ``off``; anything unrecognised is ``off``, the advisory default.
+    """
+    if isinstance(value, bool):
+        return "all" if value else "off"
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered == "measurements":
+            return "measurements"
+        if lowered in ("all", "true", "1", "yes", "on"):
+            return "all"
+    return "off"
+
+
+def unit_numeric_inventory(
+    *,
+    graph: RDFGraph,
+    ontology_graph: RDFGraph | None,
+    extraction_text: str,
+    policy: ValidationPolicy | None = None,
+    limit: int = 30,
+) -> NumericInventory:
+    """Numbers of the unit text absent from its graph, measurements first.
+
+    The unit surfaces come from the unit individuals of the ontology context
+    (found through the configured unit-role property), so a catalog-specific
+    unit counts as a measurement once the catalog declares it. Shared by the
+    coverage findings and the completion pass, which must agree on what is
+    missing.
+    """
+    policy = policy or ValidationPolicy()
+    unit_properties = expand_vocabulary_terms(
+        _vocabulary_role_subset(policy.quantity_fallback_vocabulary, "unit"),
+        graph,
+        ontology_graph,
+    )
+    return missing_numeric_inventory(
+        extraction_text,
+        graph,
+        unit_surfaces=unit_surfaces_in_ontology(ontology_graph, unit_properties),
+        ignore_identifier_fragments=policy.numeric_identifier_guard,
+        limit=limit,
+    )
 
 
 def domain_violation_findings(
@@ -347,6 +404,8 @@ def _domain_adherence_findings(
     catalog_terms: set[str],
     fact_namespaces: Sequence[str],
     min_share: float,
+    *,
+    min_terms: int = 4,
 ) -> list[FactsUnitFinding]:
     """Flag a render that barely used the vocabulary it was handed.
 
@@ -362,13 +421,20 @@ def _domain_adherence_findings(
     still expressing the substance in generic terms.
 
     Silent when the unit has no catalog to adhere to, so a deliberately
-    catalog-free deployment is not spammed, and when ``min_share`` is 0.
+    catalog-free deployment is not spammed; when ``min_share`` is 0; and when
+    the render uses fewer than ``min_terms`` distinct schema terms. The last
+    guard exists because a share has no meaning over a denominator of one or
+    two: a front-matter unit that types an identifier and an author with
+    generic vocabulary is not a render that abandoned the catalog, and the
+    mandatory finding it used to raise drove the critic into retyping the
+    identifier as a quantity value.
 
     Args:
         graph: The rendered unit graph.
         catalog_terms: Terms declared by the unit's ontology context.
         fact_namespaces: Namespaces holding minted instances.
         min_share: Floor on the catalog share, in [0, 1]. 0 disables.
+        min_terms: Fewest distinct schema terms before the share is judged.
 
     Returns:
         list[FactsUnitFinding]: At most one finding.
@@ -376,7 +442,7 @@ def _domain_adherence_findings(
     if not catalog_terms or not len(graph) or min_share <= 0:
         return []
     from_catalog, total = domain_vocabulary_share(graph, catalog_terms, fact_namespaces)
-    if not total or from_catalog / total >= min_share:
+    if not total or total < min_terms or from_catalog / total >= min_share:
         return []
     return [
         FactsUnitFinding(
@@ -394,6 +460,36 @@ def _domain_adherence_findings(
     ]
 
 
+def _folded_local_name(iri: str) -> str:
+    return re.sub(r"[_\-]", "", _local_name(iri)).lower()
+
+
+def _containment_qualified(term: URIRef, candidates: list[str]) -> list[str]:
+    """Keep only replacement candidates that are near-misses of the term.
+
+    The same qualification the LLM-free alias repair applies: a suggestion is
+    offered when the local-name tokens of one side are a subset of the
+    other's (``value`` in ``numericValue``), or when the two spell the same
+    name once case and separators are folded -- never on string similarity
+    alone. A pair that swaps one token for another
+    (``hasASiteComponent`` / ``hasBSiteComponent``) is a different property,
+    and offering it as a candidate would reproduce through the critic the
+    substitution the repair no longer makes.
+    """
+    alias_tokens = _name_tokens(_local_name(str(term)))
+    folded = _folded_local_name(str(term))
+    kept: list[str] = []
+    for candidate in candidates:
+        candidate_tokens = _name_tokens(_local_name(candidate))
+        if alias_tokens and (
+            alias_tokens <= candidate_tokens or candidate_tokens <= alias_tokens
+        ):
+            kept.append(candidate)
+        elif folded and folded == _folded_local_name(candidate):
+            kept.append(candidate)
+    return kept
+
+
 def collect_unit_findings(
     *,
     graph: RDFGraph,
@@ -402,8 +498,11 @@ def collect_unit_findings(
     extraction_text: str,
     fact_namespaces: list[str],
     coverage_limit: int = 30,
-    coverage_mandatory: bool = False,
+    coverage_mandatory: str | bool = "off",
     policy: ValidationPolicy | None = None,
+    is_citation_metadata: bool = False,
+    is_non_content: bool = False,
+    full_catalog_terms: set[str] | None = None,
 ) -> list[FactsUnitFinding]:
     """Assemble all deterministic findings for one rendered unit graph.
 
@@ -411,16 +510,31 @@ def collect_unit_findings(
     suggestions), forbidden-namespace terms (``example.org``), doc-namespace
     predicates, unresolved catalog near-misses, predicates asserted on a
     subject whose type contradicts their ``rdfs:domain``, and value nodes
-    whose only numeric content sits in a label. Advisory-strong: numeric
-    mentions of the source text absent from the graph — the renderer decides
-    per item whether each is an extractable quantity or an artifact.
+    whose only numeric content sits in a label. Advisory by default: numeric
+    mentions of the source text absent from the graph, as two findings --
+    measurements (a number with its unit, in text order with context) and
+    bare numbers -- whose mandatory flag ``coverage_mandatory`` sets
+    (``off`` | ``measurements`` | ``all``; the booleans are ``off``/``all``).
 
     The policy's exempt terms (the sanctioned fallback vocabulary the facts
     prompt itself names, plus code predicates) never raise UNKNOWN_TERM:
     flagging the vocabulary the prompt recommends produced mandatory findings
     that repair renders obeyed by deleting correct data.
+
+    A citation-metadata unit is rendered with the bibliographic vocabulary
+    and told to keep away from the domain ontology, so its catalog share is
+    zero by instruction; ``DOMAIN_ADHERENCE`` is not judged there, nor on a
+    non-content unit (front matter, author notes, identifiers), which has no
+    domain facts for the catalog to describe.
+
+    ``full_catalog_terms`` is the whole catalog's inventory, as opposed to
+    the unit's retrieved snapshot in ``ontology_graph``. A term the snapshot
+    did not retrieve is still a term, so it is never reported as unknown --
+    and, for a term that is genuinely unknown, replacement candidates are
+    offered only under token containment, never on similarity alone.
     """
     policy = policy or ValidationPolicy()
+    known_terms = set(full_catalog_terms or ())
     findings: list[FactsUnitFinding] = []
     standard_namespaces = policy.standard_namespaces()
     fallback_terms = policy.exempt_terms(graph, ontology_graph)
@@ -492,12 +606,15 @@ def collect_unit_findings(
                             "statement with catalog/standard vocabulary."
                         ),
                         predicate=text,
-                        suggestions=_alias_candidates(
+                        suggestions=_containment_qualified(
                             term,
-                            graph,
-                            catalog_terms,
-                            ontology_graph=ontology_graph,
-                            position=position,
+                            _alias_candidates(
+                                term,
+                                graph,
+                                catalog_terms,
+                                ontology_graph=ontology_graph,
+                                position=position,
+                            ),
                         )
                         if catalog_terms
                         else [],
@@ -521,12 +638,15 @@ def collect_unit_findings(
                         kind=FactsUnitFindingKind.UNKNOWN_TERM,
                         message=role_message,
                         predicate=text,
-                        suggestions=_alias_candidates(
+                        suggestions=_containment_qualified(
                             term,
-                            graph,
-                            catalog_terms,
-                            ontology_graph=ontology_graph,
-                            position=position,
+                            _alias_candidates(
+                                term,
+                                graph,
+                                catalog_terms,
+                                ontology_graph=ontology_graph,
+                                position=position,
+                            ),
                         )
                         if catalog_terms
                         else [],
@@ -538,6 +658,7 @@ def collect_unit_findings(
                 catalog_terms
                 and namespace in declared_namespaces
                 and text not in catalog_terms
+                and text not in known_terms
                 and text not in fallback_terms
                 and not namespace.startswith(standard_namespaces)
             ):
@@ -553,12 +674,15 @@ def collect_unit_findings(
                             "the statement."
                         ),
                         predicate=text,
-                        suggestions=_alias_candidates(
+                        suggestions=_containment_qualified(
                             term,
-                            graph,
-                            catalog_terms,
-                            ontology_graph=ontology_graph,
-                            position=position,
+                            _alias_candidates(
+                                term,
+                                graph,
+                                catalog_terms,
+                                ontology_graph=ontology_graph,
+                                position=position,
+                            ),
                         ),
                     )
                 )
@@ -567,14 +691,16 @@ def collect_unit_findings(
         _scalar_as_bounds_findings(graph, ontology_graph, normalized_fact_namespaces)
     )
     findings.extend(domain_violation_findings(graph, ontology_graph))
-    findings.extend(
-        _domain_adherence_findings(
-            graph,
-            catalog_terms,
-            normalized_fact_namespaces,
-            policy.domain_adherence_min_share,
+    if not is_citation_metadata and not is_non_content:
+        findings.extend(
+            _domain_adherence_findings(
+                graph,
+                catalog_terms,
+                normalized_fact_namespaces,
+                policy.domain_adherence_min_share,
+                min_terms=policy.domain_adherence_min_terms,
+            )
         )
-    )
     findings.extend(
         _label_only_number_findings(
             graph,
@@ -592,29 +718,70 @@ def collect_unit_findings(
         )
     )
 
-    missing = missing_numeric_mentions(
-        extraction_text,
-        graph,
-        ignore_identifier_fragments=policy.numeric_identifier_guard,
-        limit=coverage_limit,
-    )
-    if missing:
+    if coverage_limit > 0:
+        findings.extend(
+            _numeric_coverage_findings(
+                unit_numeric_inventory(
+                    graph=graph,
+                    ontology_graph=ontology_graph,
+                    extraction_text=extraction_text,
+                    policy=policy,
+                    limit=coverage_limit,
+                ),
+                coverage_mode(coverage_mandatory),
+            )
+        )
+
+    return findings
+
+
+def _numeric_coverage_findings(
+    inventory: NumericInventory, mode: CoverageMode
+) -> list[FactsUnitFinding]:
+    """The two coverage findings, measurements first.
+
+    Advisory unless the mode says otherwise: the critic judges per mention
+    whether it is a quantity or an artifact, and blocking forces that
+    judgement into the loop. The measurement list carries each value's unit
+    and the phrase it occurs in, which is what lets the completion pass place
+    it; the bare-number list is what the text alone cannot classify.
+    """
+    findings: list[FactsUnitFinding] = []
+    if inventory.measurements:
+        listed = "; ".join(
+            f"{mention.value} {mention.unit} («{mention.context}»)"
+            for mention in inventory.measurements
+        )
         findings.append(
             FactsUnitFinding(
                 kind=FactsUnitFindingKind.NUMERIC_COVERAGE,
-                # Advisory by default: the renderer judges per mention whether
-                # it is an extractable quantity or an artifact. Deployments
-                # measuring the trade-off flip FACTS_NUMERIC_COVERAGE_MANDATORY.
-                mandatory=coverage_mandatory,
+                facet="measurements",
+                mandatory=mode in ("measurements", "all"),
+                message=(
+                    "These measurements — a number written with its unit — "
+                    "appear in the source text but not in the graph. Each is a "
+                    "stated quantity unless it is typography: extract it as a "
+                    "typed literal on the quantity it measures, with the "
+                    "verbatim value and the source unit (never convert): " + listed
+                ),
+                value=", ".join(inventory.measurement_values()),
+            )
+        )
+    if inventory.unclassified:
+        findings.append(
+            FactsUnitFinding(
+                kind=FactsUnitFindingKind.NUMERIC_COVERAGE,
+                facet="unclassified",
+                mandatory=mode == "all",
                 message=(
                     "These numbers appear in the source text but not in the "
                     "graph. For each: extract it as a typed literal on an "
                     "appropriate node (verbatim value and source unit — never "
                     "convert units) if it is a factual quantity, or ignore it "
-                    "if it is a page/citation/figure artifact: " + ", ".join(missing)
+                    "if it is a page/citation/figure artifact: "
+                    + ", ".join(inventory.unclassified)
                 ),
-                value=", ".join(missing),
+                value=", ".join(inventory.unclassified),
             )
         )
-
     return findings

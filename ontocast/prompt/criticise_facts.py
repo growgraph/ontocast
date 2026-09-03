@@ -8,31 +8,38 @@ from ontocast.onto.constants import DEFAULT_IRI
 
 from .common import system_preamble_semantic
 
+# Opens exactly like the render template (preamble, conformance contract,
+# ontology chapter) so the two prompts on a unit share their prefix through
+# the end of the ontology chapter -- the part a provider's prefix cache can
+# reuse. See prompt/render_facts.py; a test pins the two heads to each other.
 template_prompt = """
 {preamble}
+
+{conformance_chapter}
+
+{ontology_chapter}
+
+# TASK
+
+You are given an ontology, a text and a semantic graph of facts, generated from the text (guided by ontology).
+Following evaluation guidelines provide concrete suggestions for improvement of the extracted facts graph with respect to provided text and ontology.
 
 {evaluation_instruction}
 
 {user_instruction}
 
-{ontology_chapter}
-
-{conformance_chapter}
+{text_chapter}
 
 {facts_chapter}
-
-{text_chapter}
 
 {graph_format_instruction}
 
 {format_instructions}
 """
 
-preamble = f"""
-{system_preamble_semantic}
-You are given an ontology, a text and a semantic graph of facts, generated from the text (guided by ontology).
-Following evaluation guidelines provide concrete suggestions for improvement of the extracted facts graph with respect to provided text and ontology.
-"""
+# Shared verbatim with the renderer; the task statement sits in the template
+# after the ontology chapter for the same reason.
+preamble = system_preamble_semantic
 
 
 evaluation_instruction = f"""\n\n
@@ -41,13 +48,20 @@ evaluation_instruction = f"""\n\n
 1. Appropriateness: Are the facts appropriate for the document?
 
 2. Completeness: Are all possible facts extracted from the text given the ontology?
-   - Quantitative completeness is checked mechanically: a NUMERIC COVERAGE
-     finding lists numbers stated in the text but absent from the graph. For
-     EACH listed number, either propose an ADD fix carrying the exact
-     `text_fragment` where it occurs and the verbatim value with its source
-     unit, or leave it out because it is typography (a citation, page,
-     figure, or equation token). Never invent a subject for a bare token —
-     a number only becomes a fact together with the quantity it measures.
+   - Quantitative completeness is checked mechanically: the NUMERIC COVERAGE
+     findings list numbers stated in the text but absent from the graph —
+     measurements (a number with its unit) first, bare numbers after. Do NOT
+     propose an ADD fix per listed number. A number only becomes a fact
+     together with the quantity it measures, and a value whose quantity you
+     can name is an omission the extractor must see in full context: list the
+     measurements you judge missed — verbatim value, unit, and the phrase
+     they occur in — in `systemic_critique_summary`; a separate completion pass
+     extracts them.
+   - NEVER mint an entity or placeholder node for a bare number, an ignored
+     token, a citation marker, a page/figure/equation token, or a conversion
+     artifact. Such tokens are typography, not facts: name them in
+     `explanation` if at all, never as a subject in `correct_value`. A node
+     whose only content is a label or comment is not a fact either.
 
 3. Concreteness: Only concrete facts should be extracted.
 

@@ -10,7 +10,7 @@ from typing import TypeVar
 from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel
 
-from ontocast.onto.enum import LLMGraphFormat
+from ontocast.onto.enum import LLMGraphFormat, OntologyChapterFormat
 from ontocast.onto.llm_graph_payload import llm_graph_format_ctx
 from ontocast.onto.ontology_condense import condense_graph_for_prompt
 from ontocast.onto.rdfgraph import RDFGraph
@@ -191,17 +191,43 @@ for language-tagged literals. Never use Turtle ^^ syntax inside these JSON strin
 )
 
 
+def _fence_lang(fmt: LLMGraphFormat) -> str:
+    """Code-fence language tag for a graph serialized in ``fmt``."""
+    return "ttl" if fmt == LLMGraphFormat.TURTLE else "json"
+
+
 @dataclass(frozen=True)
 class GraphFormatProfile:
     """Prompt, context serialization, and parser configuration for one LLM graph format."""
 
     format: LLMGraphFormat
+    #: Syntax of the ``# ONTOLOGY`` chapter built by :meth:`format_ontology_chapter`.
+    #: ``INHERIT`` follows :attr:`format`; ``TURTLE`` decouples the read-only
+    #: context from the wire the model writes on. Nothing else on the profile
+    #: -- output instructions, the facts chapter, parsing -- reads it.
+    ontology_chapter_format: OntologyChapterFormat = OntologyChapterFormat.INHERIT
+
+    @property
+    def ontology_chapter_wire(self) -> LLMGraphFormat:
+        """The syntax :meth:`format_ontology_chapter` serializes in."""
+        if self.ontology_chapter_format == OntologyChapterFormat.TURTLE:
+            return LLMGraphFormat.TURTLE
+        return self.format
 
     def context_fence_lang(self) -> str:
-        return "ttl" if self.format == LLMGraphFormat.TURTLE else "json"
+        return _fence_lang(self.format)
 
-    def serialize_graph_for_prompt(self, graph: RDFGraph) -> str:
-        if self.format == LLMGraphFormat.TURTLE:
+    def serialize_graph_for_prompt(
+        self, graph: RDFGraph, *, wire: LLMGraphFormat | None = None
+    ) -> str:
+        """Serialize ``graph`` for a prompt chapter.
+
+        Args:
+            graph: The graph to serialize.
+            wire: Syntax to use; defaults to the profile's own format.
+        """
+        fmt = self.format if wire is None else wire
+        if fmt == LLMGraphFormat.TURTLE:
             return graph.serialize_canonical_turtle()
         return graph.serialize_compact_jsonld_for_prompt()
 
@@ -218,13 +244,21 @@ class GraphFormatProfile:
         loops, render and critique, the shared snapshot and the ontology loop's
         mutable working graph -- so it is where the prompt budget is enforced.
 
+        The chapter is written in :attr:`ontology_chapter_wire`, which the
+        deployment may pin to Turtle independently of the wire format: here the
+        ontology is context the model reads, not a graph it patches, so its
+        syntax is free to be the denser one. The indexed variant the ontology
+        critic uses stays on the wire format -- its output is a patch against
+        the very statements it reads.
+
         ``suffix`` is built by the caller from the uncondensed graph, which stays
         correct: the index only names terms by ``rdfs:label`` and their
         domain/range, none of which condensing drops.
         """
+        wire = self.ontology_chapter_wire
         condensed, _ = condense_graph_for_prompt(graph, max_triples)
-        body = self.serialize_graph_for_prompt(condensed)
-        chapter = f"\n\n# ONTOLOGY\n\n```{self.context_fence_lang()}\n{body}\n```\n"
+        body = self.serialize_graph_for_prompt(condensed, wire=wire)
+        chapter = f"\n\n# ONTOLOGY\n\n```{_fence_lang(wire)}\n{body}\n```\n"
         return chapter + suffix
 
     def _indexed_body(self, graph: RDFGraph, index: TripleIndex) -> str:
@@ -404,11 +438,25 @@ class _LLMGraphFormatContext(AbstractContextManager[LLMGraphFormat]):
             llm_graph_format_ctx.reset(self._token)
 
 
-_PROFILES: dict[LLMGraphFormat, GraphFormatProfile] = {
-    LLMGraphFormat.TURTLE: GraphFormatProfile(format=LLMGraphFormat.TURTLE),
-    LLMGraphFormat.JSONLD: GraphFormatProfile(format=LLMGraphFormat.JSONLD),
+_PROFILES: dict[tuple[LLMGraphFormat, OntologyChapterFormat], GraphFormatProfile] = {
+    (fmt, chapter): GraphFormatProfile(format=fmt, ontology_chapter_format=chapter)
+    for fmt in LLMGraphFormat
+    for chapter in OntologyChapterFormat
 }
 
 
-def get_graph_format_profile(fmt: LLMGraphFormat) -> GraphFormatProfile:
-    return _PROFILES[fmt]
+def get_graph_format_profile(
+    fmt: LLMGraphFormat,
+    *,
+    ontology_chapter_format: OntologyChapterFormat = OntologyChapterFormat.INHERIT,
+) -> GraphFormatProfile:
+    """The profile for a wire format.
+
+    Args:
+        fmt: Syntax the model emits graph payloads in.
+        ontology_chapter_format: Syntax of the ``# ONTOLOGY`` chapter in the
+            prompts built from this profile. The facts loop passes the
+            deployment's ``ONTOLOGY_CHAPTER_FORMAT``; callers that leave it at
+            ``INHERIT`` get a chapter in ``fmt``.
+    """
+    return _PROFILES[(fmt, ontology_chapter_format)]

@@ -177,6 +177,14 @@ def llm_cache_config(
         "num_predict": config.num_predict,
         "num_ctx": config.num_ctx,
     }
+    # The reasoning knobs join the key only when set. The key is a hash of
+    # this whole mapping, so an unconditional ``None`` entry would evict every
+    # entry written before the knobs existed -- and those were produced under
+    # the provider default, which is exactly what ``None`` still means.
+    if config.reasoning_effort is not None:
+        config_dict["reasoning_effort"] = config.reasoning_effort
+    if config.thinking_budget is not None:
+        config_dict["thinking_budget"] = config.thinking_budget
     config_dict.update(extra)
     return config_dict
 
@@ -305,8 +313,15 @@ def _usage_metadata_from(usage: TokenUsage) -> dict[str, Any] | None:
 
 
 def _chars_received_from_result(result: Any) -> int:
-    if isinstance(result, AIMessage) and result.content:
-        return len(result.content)
+    """Response length in characters, whatever shape the content arrived in.
+
+    Providers that answer with a list of typed content blocks would otherwise
+    be measured in *blocks*: ``len`` of a two-block reply is 2, and
+    ``chars_received`` for such a run under-reports by orders of magnitude.
+    Measured on the same normalised text every parser reads.
+    """
+    if isinstance(result, AIMessage):
+        return len(_content_to_str(result.content)) if result.content else 0
     return len(str(result))
 
 
@@ -490,6 +505,7 @@ class LLMTool(Tool):
         retry_kwargs: dict[str, Any] = {}
         if self.config.max_retries is not None:
             retry_kwargs["max_retries"] = self.config.max_retries
+        self._warn_ignored_reasoning_knobs()
 
         if self.config.provider == LLMProvider.OPENAI:
             if self.config.model_name.startswith("gpt-5"):
@@ -509,6 +525,11 @@ class LLMTool(Tool):
                 # test_prompt_json_mode_precondition holds the prompt set to
                 # that.
                 openai_kwargs["response_format"] = {"type": "json_object"}
+            reasoning_kwargs: dict[str, Any] = {}
+            if self.config.reasoning_effort is not None:
+                # A client field rather than a model_kwargs entry: the client
+                # routes it to whichever API parameter the model expects.
+                reasoning_kwargs["reasoning_effort"] = self.config.reasoning_effort
             self._llm = ChatOpenAI(
                 model=self.config.model_name,
                 temperature=self.config.temperature,
@@ -517,6 +538,7 @@ class LLMTool(Tool):
                     SecretStr(self.config.api_key) if self.config.api_key else None
                 ),
                 model_kwargs=openai_kwargs,
+                **reasoning_kwargs,
                 **pacing_kwargs,
                 **retry_kwargs,
             )
@@ -555,15 +577,40 @@ class LLMTool(Tool):
             ChatGoogleGenerativeAI = require(
                 "langchain_google_genai", feature="The Google LLM provider"
             ).ChatGoogleGenerativeAI
+            google_kwargs: dict[str, Any] = {}
+            if self.config.thinking_budget is not None:
+                google_kwargs["thinking_budget"] = self.config.thinking_budget
             self._llm = ChatGoogleGenerativeAI(
                 model=self.config.model_name,
                 temperature=self.config.temperature,
                 google_api_key=self.config.api_key,
+                **google_kwargs,
                 **pacing_kwargs,
                 **retry_kwargs,
             )
         else:
             raise ValueError(f"Unsupported provider: {self.config.provider}")
+
+    def _warn_ignored_reasoning_knobs(self) -> None:
+        """Warn about a reasoning knob the configured provider does not read.
+
+        The two knobs are one lever spelled per provider, so setting the
+        other provider's spelling is a silent no-op: the run bills full
+        reasoning while the manifest records a budget that never applied.
+        """
+        provider = self.config.provider
+        ignored: list[str] = []
+        if self.config.reasoning_effort is not None and provider != LLMProvider.OPENAI:
+            ignored.append(f"LLM_REASONING_EFFORT={self.config.reasoning_effort}")
+        if self.config.thinking_budget is not None and provider != LLMProvider.GOOGLE:
+            ignored.append(f"LLM_THINKING_BUDGET={self.config.thinking_budget}")
+        for knob in ignored:
+            logger.warning(
+                "%s is ignored by the %s provider (OpenAI reads "
+                "LLM_REASONING_EFFORT, Google reads LLM_THINKING_BUDGET)",
+                knob,
+                provider,
+            )
 
     def _cache_config_dict(self, **extra: Any) -> dict[str, Any]:
         """Cache-key config for this tool's settings; see :func:`llm_cache_config`."""
@@ -722,6 +769,14 @@ class LLMTool(Tool):
                 bt = self._current_budget_tracker()
                 if bt is not None:
                     bt.incr("llm/timeouts")
+                    bt.incr("llm/calls_failed")
+                    # The provider received and worked on the prompt; only the
+                    # answer was abandoned. Charged as a call that received
+                    # nothing, so calls_count and chars_sent cover every
+                    # request the provider processed rather than only those
+                    # that returned -- otherwise a run of timeouts reads as a
+                    # run of few, cheap calls.
+                    bt.add_usage(len(prompt_str), 0)
                 # Re-raised as a plain error so the unit loop's handler treats
                 # it as a failed render rather than a cancellation: letting a
                 # bare TimeoutError escape asyncio.gather would abort the whole
@@ -740,8 +795,13 @@ class LLMTool(Tool):
                 # this layer deliberately does not retry (see
                 # agent/common.py): raise LLM_MAX_RETRIES or lower
                 # LLM_REQUESTS_PER_SECOND instead.
+                bt = self._current_budget_tracker()
+                if bt is not None:
+                    # Every raised call, whatever the cause; llm/timeouts and
+                    # llm/rate_limited are its attributed subsets. Not charged
+                    # as usage: a rejected or dropped request cost nothing.
+                    bt.incr("llm/calls_failed")
                 if _is_rate_limit_error(exc):
-                    bt = self._current_budget_tracker()
                     if bt is not None:
                         bt.incr("llm/rate_limited")
                     logger.warning(

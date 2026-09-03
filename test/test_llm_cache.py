@@ -128,6 +128,48 @@ def test_config_change_invalidates_cache(llm_config, cache_dir) -> None:
     asyncio.run(run())
 
 
+def test_reasoning_knob_change_invalidates_cache(llm_config, cache_dir) -> None:
+    # A different reasoning budget is a different response: the same prompt at
+    # a lower effort must not replay the answer paid for at a higher one.
+    tracker = BudgetTracker()
+
+    async def run() -> None:
+        tool = await _make_tool(llm_config, cache_dir, tracker)
+        await tool.complete("reasoned question")
+        assert tracker.calls_count == 1
+
+        tool.config.reasoning_effort = "low"
+        await tool.complete("reasoned question")
+        assert tracker.calls_count == 2
+
+        tool.config.thinking_budget = 0
+        await tool.complete("reasoned question")
+        assert tracker.calls_count == 3
+
+    asyncio.run(run())
+
+
+def test_unset_reasoning_knobs_keep_the_pre_existing_cache_key() -> None:
+    """Entries written before the knobs existed must still be found.
+
+    The key hashes the whole config mapping, so an unconditional ``None``
+    entry would evict every existing entry -- each produced under the
+    provider default, which is exactly what ``None`` still means.
+    """
+    from ontocast.tool.llm import llm_cache_config
+
+    config = LLMConfig(provider=LLMProvider.OPENAI, model_name=OpenAIModel.GPT4_O_MINI)
+    key = llm_cache_config(config)
+    assert "reasoning_effort" not in key
+    assert "thinking_budget" not in key
+
+    config.reasoning_effort = "high"
+    config.thinking_budget = 512
+    key = llm_cache_config(config)
+    assert key["reasoning_effort"] == "high"
+    assert key["thinking_budget"] == 512
+
+
 def test_get_cache_stats_includes_disk(llm_config, cache_dir) -> None:
     async def run() -> None:
         tool = await _make_tool(llm_config, cache_dir)

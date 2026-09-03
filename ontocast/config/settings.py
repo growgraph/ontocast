@@ -21,6 +21,7 @@ from ontocast.onto.constants import (
 )
 from ontocast.onto.enum import (
     LLMGraphFormat,
+    OntologyChapterFormat,
     OntologyContextMode,
     RenderMode,
     VectorDistance,
@@ -378,6 +379,33 @@ class LLMConfig(BaseSettings):
             "only; other providers ignore it."
         ),
     )
+    reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = Field(
+        default=None,
+        description=(
+            "How much reasoning an OpenAI reasoning model spends before it "
+            "answers (minimal | low | medium | high). Reasoning tokens are "
+            "billed inside the output total, so this bounds the part of the "
+            "bill that reasoning_share_of_output in the budget attributes to "
+            "thinking; lower effort trades that for latency and cost. None "
+            "keeps the provider default. Joins the LLM cache key, so changing "
+            "it re-issues every prompt. OpenAI only; other providers warn and "
+            "ignore it. Set via LLM_REASONING_EFFORT."
+        ),
+    )
+    thinking_budget: int | None = Field(
+        default=None,
+        ge=-1,
+        description=(
+            "Thinking-token budget for Google Gemini thinking models: 0 "
+            "disables thinking on models that allow it, -1 lets the model "
+            "choose, a positive value caps it. The same lever as "
+            "LLM_REASONING_EFFORT spelled for the other provider, and read "
+            "the same way (reasoning_share_of_output). None keeps the "
+            "provider default. Joins the LLM cache key, so changing it "
+            "re-issues every prompt. Google only; other providers warn and "
+            "ignore it. Set via LLM_THINKING_BUDGET."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="LLM_",
@@ -570,6 +598,34 @@ class ChunkConfig(BaseSettings):
             "summary to size it for a corpus."
         ),
     )
+    non_content_mode: Literal["extract", "skip"] = Field(
+        default="extract",
+        description=(
+            "Routing for units detected as front/back matter with no domain "
+            "facts: a unit whose leading heading names author information, "
+            "notes, ORCID, data availability, competing interests, licence, "
+            "supporting information and the like *and* that states no "
+            "unit-adjacent number; or a unit whose tokens are mostly emails, "
+            "URLs, ORCIDs and initials. 'extract' (default) keeps the unit and "
+            "marks it is_non_content; 'skip' drops it before the fan-out. "
+            "Every decision is logged, and skipped units are counted in the "
+            "run manifest. A measurement anywhere in the unit keeps it, "
+            "whatever its heading."
+        ),
+    )
+    max_measurements_per_unit: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Split a sized unit at the sentence boundary nearest its midpoint, "
+            "recursively, while it states more unit-adjacent numbers than "
+            "this; 0 (default) disables. Extraction loss tracks how densely a "
+            "unit packs measurements rather than how long it is, so this "
+            "targets the dense units without shrinking every unit's share of "
+            "the prompt. Pieces never go below min_size: a dense unit shorter "
+            "than twice min_size is left whole."
+        ),
+    )
     citation_vocabulary: dict[str, str] = Field(
         default_factory=lambda: {
             "work_class": "schema:ScholarlyArticle",
@@ -681,6 +737,21 @@ class ConverterConfig(BaseSettings):
             "be dropped in a breaking release."
         ),
     )
+    repair_numeric_artifacts: bool = Field(
+        default=False,
+        description=(
+            "Repair pattern-local conversion artifacts in every text item at "
+            "conversion time, so chunk boundaries are computed on repaired "
+            "text: escaped HTML entities (&lt; &gt; &amp;), carriage-return "
+            "column wraps, flattened exponents ('2 x 10 6' -> '2 × 10^6'; the "
+            "bare '10 6' only behind an approximation cue) and single-sided "
+            "ligature gaps that cannot read as two words ('a ffected', "
+            "'signifi cant'). Off by default; when on it joins the converter "
+            "cache key, so enabling it re-converts. Superscript duplication "
+            "and citation markers fused into values are left alone: they are "
+            "not recoverable from the text."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="CONVERTER_",
@@ -751,6 +822,19 @@ class ServerConfig(BaseSettings):
             "Format used by the LLM when emitting RDF graph payloads: "
             "'jsonld' (default, compact JSON-LD objects) or 'turtle' "
             "(legacy, Turtle strings)."
+        ),
+    )
+    ontology_chapter_format: OntologyChapterFormat = Field(
+        default=OntologyChapterFormat.INHERIT,
+        description=(
+            "Syntax of the ontology chapter in the facts render and critic "
+            "prompts: 'inherit' (default) follows llm_graph_format; 'turtle' "
+            "serializes the chapter as Turtle regardless, which spends fewer "
+            "characters per triple than pretty-printed JSON-LD. Context only: "
+            "the graph payloads the model emits stay in llm_graph_format, and "
+            "the ontology loop is unaffected because its output is a patch "
+            "against the chapter it reads. Changing it invalidates the LLM "
+            "cache for facts calls."
         ),
     )
     ontology_context_mode: OntologyContextMode = Field(
@@ -1220,6 +1304,18 @@ class AggregationConfig(BaseSettings):
             "Co-object sibling guard scope: 'subject' forbids merging any "
             "two objects of one subject; 'predicate' restricts the "
             "prohibition to objects sharing the same predicate."
+        ),
+    )
+    unit_scoped_fact_iris: bool = Field(
+        default=True,
+        description=(
+            "Suffix every minted fact IRI with the index of the unit that "
+            "minted it (<local>__u<index>) before aggregation. Units mint "
+            "instance IRIs independently, so without this the same local "
+            "name from two units is one node before any merge guard runs, "
+            "and the validation gate cannot split a singleton. With it, the "
+            "pair is a merge candidate like any alias pair; final IRIs never "
+            "carry the suffix. Off reproduces name-keyed fusion."
         ),
     )
 
@@ -2112,9 +2208,11 @@ class FactsValidationConfig(BaseSettings):
         le=1.0,
         description=(
             "Largest share of a unit graph one critic pass may remove. Past "
-            "this the pass keeps its inserts and drops its deletes: a critique "
-            "wanting to remove more than this has stopped correcting and "
-            "started rewriting."
+            "this every fix that removes something goes back as residual and "
+            "only pure additions are applied: a critique wanting to remove "
+            "more than this has stopped correcting and started rewriting, and "
+            "a REPLACE stripped of its delete half would be an ADD of the new "
+            "value beside the old one."
         ),
     )
     critic_min_deletes: int = Field(
@@ -2135,13 +2233,19 @@ class FactsValidationConfig(BaseSettings):
         ),
     )
     property_alias_min_ratio: float = Field(
-        default=0.85,
+        default=0.95,
         ge=0.0,
         le=1.0,
         description=(
-            "SequenceMatcher cutoff for deterministic near-miss property "
-            "rewrites in catalog namespaces (token containment always "
-            "qualifies)."
+            "SequenceMatcher floor for breaking a tie in the deterministic "
+            "near-miss property rewrite. A predicate absent from both the "
+            "unit's ontology context and the full catalog is rewritten only "
+            "to a catalog term whose name tokens contain, are contained by, "
+            "or spell the same as its own; when several such terms qualify, "
+            "the best-scoring one wins if it clears this ratio outright. "
+            "Similarity alone never licenses a rewrite: a high ratio also "
+            "joins names that differ by a single token, and rewriting across "
+            "that gap substitutes one property for another."
         ),
     )
     merge_repair_passes: int = Field(
@@ -2169,33 +2273,32 @@ class FactsValidationConfig(BaseSettings):
         ),
     )
     numeric_identifier_guard: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Exclude digit groups that are parts of an identifier from the "
             "numeric-coverage inventory. Without it a file number or a "
             "citation ('600/92', '2024-01-15') is tokenized into digit groups "
-            "and offered to the repair render as numbers missing from the "
-            "graph, and the repair structures them into numeric properties -- "
-            "which the post-merge multi-value check then flags. Only groups "
+            "and offered to the critic as numbers missing from the graph, "
+            "which it answers by structuring them into numeric properties -- "
+            "and the post-merge multi-value check then flags them. Only groups "
             "joined to an identifier inside one token are dropped; a unit "
-            "attached to a value ('5mg') still counts. Default off because it "
-            "narrows an advisory finding that repair renders act on."
+            "attached to a value ('5mg') still counts. Set false to list every "
+            "digit group."
         ),
     )
     context_from_units: bool = Field(
-        default=False,
+        default=True,
         description=(
             "In facts-only runs, seed the merge/validate ontology context from "
             "the ontology snapshots the units actually resolved. With no "
             "ontology stage there are no reduced artifacts to merge, so the "
-            "document-level context is empty and BOTH consumers see it: the "
-            "aggregator loses the type and functionality declarations its "
-            "merge guards read, and the validation gate skips every check that "
-            "needs a vocabulary (reported as validated_without_ontology_context "
-            "in the retrieval metrics). Default off because it changes what "
-            "merges and what the gate reports; watch "
-            "validated_without_ontology_context and ontology_snapshot_triples "
-            "when turning it on."
+            "document-level context is otherwise empty and BOTH consumers see "
+            "it: the aggregator loses the type and functionality declarations "
+            "its merge guards read, and the validation gate skips every check "
+            "that needs a vocabulary (reported as "
+            "validated_without_ontology_context in the retrieval metrics). Set "
+            "false to reproduce the empty-context behaviour; watch "
+            "validated_without_ontology_context and ontology_snapshot_triples."
         ),
     )
     suspect_multi_value_severity: Literal["error", "warning"] = Field(
@@ -2238,6 +2341,18 @@ class FactsValidationConfig(BaseSettings):
             "disabled for deployments that extract without a catalog. Raise it "
             "toward the share your own healthy runs report -- watch "
             "domain_adherence in the facts findings to calibrate."
+        ),
+    )
+    domain_adherence_min_terms: int = Field(
+        default=4,
+        ge=0,
+        description=(
+            "Fewest distinct schema terms a render must use before its catalog "
+            "share is judged at all. A share over one or two terms is noise: a "
+            "front-matter unit that types an identifier and an author with "
+            "generic vocabulary has not abandoned the catalog, and the "
+            "mandatory finding it raised drove the critic into retyping the "
+            "identifier as a quantity value. 0 judges every non-empty render."
         ),
     )
     additional_standard_namespaces: list[str] = Field(
@@ -2382,16 +2497,66 @@ class FactsValidationConfig(BaseSettings):
             "entirely."
         ),
     )
-    numeric_coverage_mandatory: bool = Field(
-        default=False,
+    numeric_coverage_mandatory: Literal["off", "measurements", "all"] = Field(
+        default="off",
         description=(
-            "Make NUMERIC_COVERAGE findings mandatory, so unextracted source "
-            "numerics block unit acceptance like any other deterministic "
-            "finding. Default off: coverage is advisory because the renderer "
-            "decides per item whether a mention is an extractable quantity or "
-            "an artifact, and blocking on it forces that judgement into the "
-            "repair loop. Turn on only for benchmark arms measuring the "
-            "trade-off."
+            "Which NUMERIC_COVERAGE findings are mandatory, so unextracted "
+            "source numerics block unit acceptance like any other "
+            "deterministic finding. The inventory is split in two: "
+            "'measurements' are numbers written next to a unit, 'unclassified' "
+            "are bare numbers. 'off' (default) keeps both findings advisory; "
+            "'measurements' blocks on the unit-adjacent list only; 'all' "
+            "blocks on both. The booleans true/false are accepted as all/off. "
+            "Advisory by default because the critic judges per mention "
+            "whether it is a quantity or an artifact, and blocking forces that "
+            "judgement into the loop; 'measurements' is the setting for runs "
+            "that treat a missed unit-adjacent value as a defect."
+        ),
+    )
+
+    @field_validator("numeric_coverage_mandatory", mode="before")
+    @classmethod
+    def _coverage_mode_from_bool(cls, value: object) -> object:
+        """Accept the boolean this knob used to be.
+
+        ``true`` meant every coverage finding blocks, which is now ``all``;
+        ``false`` is ``off``. Env values arrive as strings, so the textual
+        booleans are folded too.
+        """
+        if isinstance(value, bool):
+            return "all" if value else "off"
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in ("true", "1", "yes", "on"):
+                return "all"
+            if lowered in ("false", "0", "no", ""):
+                return "off"
+            return lowered
+        return value
+
+    critic_min_triples: int = Field(
+        default=1,
+        ge=0,
+        description=(
+            "Skip the facts critic for a unit whose render holds fewer triples "
+            "than this. A critic shown an empty graph scores it perfect and "
+            "bills a call for nothing; the default skips exactly the empty "
+            "renders, which are then recorded as skipped rather than reviewed. "
+            "0 reviews every unit."
+        ),
+    )
+    completion_passes: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Completion passes per facts unit, in **LLM calls**, run after the "
+            "critic loop and only when the numeric inventory still lists "
+            "measurements (a number with its unit) absent from the graph. The "
+            "pass is insert-only: it is shown a term sheet instead of the "
+            "ontology chapter, the unit's existing catalog-typed subjects, the "
+            "text, and the missed measurements with their context, and each "
+            "new subject it writes is kept or rolled back by the same "
+            "regression check a critic fix goes through. 0 disables it."
         ),
     )
     shacl_max_triples: int = Field(

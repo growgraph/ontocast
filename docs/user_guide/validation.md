@@ -121,6 +121,40 @@ computed played no part at all. Set
 Per-document critic telemetry — call count, accept count, score histogram, fix
 severity histogram — is written to the run manifest under `critic`.
 
+### Completion pass: insert-only recovery
+
+The critic answers *conformance* — is what was rendered correct? — not
+*completeness*. `NUMERIC_COVERAGE` findings tell it about measurements the
+render missed, but the critic's own guideline is to describe them in
+`systemic_critique_summary` rather than mint a fix for each one: a fix
+compiled from a bare number with no place to attach it is exactly the
+placeholder-subject failure mode the compiler's junk check exists to refuse.
+
+`FACTS_COMPLETION_PASSES` (default `0`, off) adds a second, narrower pass for
+this gap. Once the critic loop above is done, and only while the unit's
+numeric-coverage inventory still lists a *measurement* — a number with its
+unit — absent from the graph, up to this many completion passes run. Each
+one:
+
+- is shown a compact **term sheet** (the unit's quantity/observation/condition
+  classes and unit individuals) instead of the full ontology chapter, plus the
+  unit's existing catalog-typed subjects, so a recovered measurement attaches
+  to what is already there instead of minting a duplicate;
+- proposes **insert-only** fixes — `action=ADD` only, never `REMOVE` or
+  `REPLACE` — one per new subject closure; anything else the model returns is
+  dropped rather than trusted;
+- applies each proposed subject through the **same per-subject regression
+  check** a critic fix goes through (see
+  [What a pass may not destroy](#what-a-pass-may-not-destroy)): an insert that
+  leaves the unit worse — creates a mandatory finding, for instance — is
+  rolled back on its own, the rest of the pass stands.
+
+The loop stops early once the inventory is empty, so a unit missing nothing
+never pays for a pass it does not need. Per-document telemetry — calls,
+subjects inserted and rolled back, triples inserted, measurements recovered —
+is written to the run manifest under `completion`
+(see [Observability](observability.md)).
+
 ## Layer 1 — machine repair at parse time
 
 Applied to every rendered graph before it is accepted. Each repair is recorded
@@ -131,7 +165,7 @@ can always tell machine-altered triples from what the model asserted.
 |--------|--------------|
 | Numeric literal retyping | `qudt:numericValue 230` → `"230"^^xsd:decimal` when the schema declares a numeric range |
 | `rdf:type` literal coercion | A type emitted as a string becomes an IRI when it resolves unambiguously |
-| Near-miss predicate rewrite | `qudt:value` → `qudt:numericValue` when exactly one catalog term is a near match (`FACTS_PROPERTY_ALIAS_MIN_RATIO`) |
+| Near-miss predicate rewrite | `qudt:value` → `qudt:numericValue` when exactly one catalog term **contains** the written name's tokens (or equals it once case and separators are folded). String similarity never licenses a rewrite on its own — a site letter or a negating prefix is one character and an opposite meaning — it only breaks ties among containing candidates above `FACTS_PROPERTY_ALIAS_MIN_RATIO`. A predicate declared anywhere in the full catalog is never treated as a near-miss, even when this unit's snapshot did not retrieve it |
 | **Code resolution** | A node carrying `qudt:ucumCode "d"` but no unit link gains `qudt:unit unit:DAY` when exactly one catalog individual declares that code (`FACTS_CODE_PREDICATES`) |
 | Degenerate-bound promotion | Equal lower/upper bounds collapse to a single scalar on the configured numeric-value property — active only when the quantity fallback vocabulary names `numeric_value`, `lower_bound` **and** `upper_bound` roles |
 
@@ -285,7 +319,7 @@ therefore raises the violation count rather than lowering it.
 
 !!! warning "In facts-only runs, the mixed-in context can be empty"
     With `RENDER_MODE=facts` there is no ontology stage, so the document-level
-    context the gate mixes in is empty unless `FACTS_CONTEXT_FROM_UNITS=true`
+    context the gate mixes in is empty unless `FACTS_CONTEXT_FROM_UNITS` (on by default)
     seeds it from the units' retrieved snapshots. An empty context means no
     `rdfs:subClassOf` axioms, so `sh:class` constraints fire on every node
     typed with a subclass of what a shape names — the gate then overstates
@@ -431,7 +465,12 @@ Grouping by constraint component is what makes a residue diagnosable: 36
 36 problems to triage.
 
 Batch runs (`ontocast process --output-dir …`) write the same payload beside the
-facts Turtle as `<name>.facts.validation.json`.
+facts Turtle as `<name>.facts.validation.json`, plus two blocks the HTTP response
+splits out elsewhere: `unit_repairs` (the layer-1 `GraphRepairRecord`s per unit —
+kind, source, target, triple count — so a machine rewrite of a model's statement
+is auditable from the dump alone) and `unit_failures` (unit index, phase, stage,
+reason). The file is written whenever any of its blocks is non-empty, so a run
+whose units all failed still leaves a record.
 
 ## Ontology delta validation (shadow mode)
 
@@ -530,8 +569,8 @@ simply be unretrieved rather than missing.
 | `FACTS_MERGE_REPAIR_PASSES` | `1` | Un-merge passes at the gate |
 | `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | `error` | Severity of `SUSPECT_MULTI_VALUE` findings |
 | `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT` | `false` | Report an IRI-branch `SUSPECT_MULTI_VALUE` as an error only when its objects came from different units |
-| `FACTS_NUMERIC_IDENTIFIER_GUARD` | `false` | Keep identifier digit groups out of the numeric-coverage inventory |
-| `FACTS_CONTEXT_FROM_UNITS` | `false` | In facts-only runs, seed the merge/validate ontology context from the snapshots the units resolved |
+| `FACTS_NUMERIC_IDENTIFIER_GUARD` | `true` | Keep identifier digit groups out of the numeric-coverage inventory |
+| `FACTS_CONTEXT_FROM_UNITS` | `true` | In facts-only runs, seed the merge/validate ontology context from the snapshots the units resolved |
 | `FACTS_FUNCTIONAL_MIN_SINGLE_SUPPORT` | `3` | Subjects needed before a predicate counts as empirically functional |
 | `FACTS_ACCEPT_BLOCKING_SEVERITY` | `critical` | Which critic-proposed fix severities block a unit from leaving the loop; `never` lets deterministic findings gate alone. A `REMOVE` fix never blocks at any setting |
 | `FACTS_LITERAL_VARIANT_DEDUPE` | `true` | Collapse duplicate literals differing only in language tag or datatype before the gate validates |
@@ -560,10 +599,10 @@ reports, and the right setting depends on the corpus:
   standing alone as its own token is deliberately *not* covered — nothing around
   it distinguishes a file-number component from a small quantity — and a value
   with its unit (`8.5 nm`) or a range (`10-15 meV`) is untouched.
-- **`FACTS_CONTEXT_FROM_UNITS`.** With `RENDER_MODE=facts` no ontology stage
+- **`FACTS_CONTEXT_FROM_UNITS`** (on by default). With `RENDER_MODE=facts` no ontology stage
   runs, so there are no reduced artifacts to merge and the document-level
-  ontology context is empty — even though every unit resolved and rendered
-  against a real one. Both consumers see that: the aggregator loses the type and
+  ontology context is empty unless it is seeded from the units' snapshots — even though every unit resolved and rendered
+  against a real one. Turned off, both consumers see that: the aggregator loses the type and
   functionality declarations its guards read, and the gate skips every check
   that needs a vocabulary. Watch `validated_without_ontology_context` and
   `ontology_snapshot_triples` in the retrieval metrics to see which side you are

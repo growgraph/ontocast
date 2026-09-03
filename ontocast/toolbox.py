@@ -50,6 +50,38 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def warn_if_workers_exceed_inflight(config: Config) -> bool:
+    """Warn when PARALLEL_WORKERS cannot all reach the provider at once.
+
+    A unit worker never issues two LLM calls concurrently, so the provider
+    concurrency one document can reach is ``min(PARALLEL_WORKERS,
+    LLM_MAX_INFLIGHT)``. Workers past the in-flight cap do not run: they queue
+    behind it -- the wait lands in ``llm/inflight_wait`` -- while each still
+    holds a unit slot and its memory. Said once, where the LLM client is built,
+    rather than at every call that queues.
+
+    Args:
+        config: Fully resolved configuration.
+
+    Returns:
+        Whether a warning was emitted.
+    """
+    workers = config.server.parallel_workers
+    inflight = config.get_tool_config().llm_config.llm_max_inflight
+    if workers <= inflight:
+        return False
+    logger.warning(
+        "PARALLEL_WORKERS=%d exceeds LLM_MAX_INFLIGHT=%d: at most %d units of a "
+        "document reach the provider at once and the rest queue "
+        "(budget.node_durations['llm/inflight_wait']). Lower PARALLEL_WORKERS, "
+        "or raise LLM_MAX_INFLIGHT to what the provider tier allows.",
+        workers,
+        inflight,
+        inflight,
+    )
+    return True
+
+
 async def update_ontology_properties(o: Ontology, llm_tool: LLMTool):
     """Update ontology properties using LLM analysis, only if missing.
 
@@ -141,6 +173,7 @@ class ToolBox:
             A ready ToolBox. Call :meth:`initialize` to sync ontologies and
             prepare backend schema.
         """
+        warn_if_workers_exceed_inflight(config)
         runtime = await ToolBoxRuntime.acreate(config)
         return cls(config, runtime=runtime)
 
@@ -170,6 +203,10 @@ class ToolBox:
 
         # Tools that do not vary by tenant live on the runtime, so a registry of
         # scoped ToolBoxes shares one LLM client, converter and embedding model.
+        if runtime is None:
+            # A process-level fact, said where the process builds its LLM
+            # client -- not once per tenancy scope over a shared runtime.
+            warn_if_workers_exceed_inflight(config)
         self.runtime = runtime or ToolBoxRuntime(config, llm=llm)
 
         # Create triple store manager: Fuseki when configured, otherwise in-memory.
@@ -676,8 +713,17 @@ class ToolBox:
             self.shapes_catalog.reset()
 
     def get_atomic_tools(self) -> AtomicToolBox:
-        """Return the minimal toolbox used by atomic render/critic paths."""
-        return self.atomic_tools
+        """Return the minimal toolbox used by atomic render/critic paths.
+
+        The runtime's :class:`AtomicToolBox` is shared by every scope; what is
+        handed out here is a shallow copy bound to *this* scope's ontology
+        catalog, so the per-unit repairs can ask the whole catalog whether a
+        term exists rather than only the unit's retrieved snapshot. The copy
+        is per call and carries no state of its own -- the catalog-term memo
+        lives on the catalog -- so a tool replaced on the shared instance is
+        seen by the next unit.
+        """
+        return self.atomic_tools.scoped_to_catalog(self.ontology_manager)
 
     def shapes_prompt_contract(self) -> tuple[str, tuple[str, ...], bool]:
         """Conformance chapter, term exemptions, and the selection flag.

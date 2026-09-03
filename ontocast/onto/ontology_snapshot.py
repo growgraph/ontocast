@@ -6,7 +6,7 @@ writeback (``U → O*``) targets real :class:`Ontology` instances by namespace o
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from pydantic import Field, PrivateAttr
 
@@ -15,6 +15,9 @@ from ontocast.onto.llm_graph_payload import LLMGraphWire
 from ontocast.onto.model import BasePydanticModel
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+
+if TYPE_CHECKING:
+    from ontocast.prompt.graph_format import GraphFormatProfile
 
 
 class OntologySnapshot(BasePydanticModel):
@@ -72,7 +75,9 @@ class OntologySnapshot(BasePydanticModel):
         """
         self._prompt_cache.clear()
 
-    def prompt_chapter(self, profile: Any, *, max_triples: int | None = None) -> str:
+    def prompt_chapter(
+        self, profile: GraphFormatProfile, *, max_triples: int | None = None
+    ) -> str:
         """Serialised ontology chapter for prompts, memoised per graph.
 
         Serialising the ontology is the single most expensive step in building a
@@ -80,12 +85,12 @@ class OntologySnapshot(BasePydanticModel):
         every render attempt within a unit -- would otherwise redo it on an
         identical graph, synchronously, on the event loop.
 
-        The memo is keyed on the graph's identity, length and the profile's wire
-        format. It is therefore correct for a snapshot whose graph is replaced,
-        and *assumes* the graph is not mutated in place, which is the contract
-        this class already documents ("ephemeral" context, read-only in the unit
-        loops). Any code that does mutate it must call
-        :meth:`invalidate_prompt_cache`.
+        The memo is keyed on the graph's identity, length and the syntax the
+        chapter is serialised in. It is therefore correct for a snapshot whose
+        graph is replaced, and *assumes* the graph is not mutated in place,
+        which is the contract this class already documents ("ephemeral"
+        context, read-only in the unit loops). Any code that does mutate it
+        must call :meth:`invalidate_prompt_cache`.
 
         Args:
             profile: Graph format profile supplying the serialisation.
@@ -97,8 +102,15 @@ class OntologySnapshot(BasePydanticModel):
 
         # max_triples is part of the key: the snapshot is shared by reference
         # across the whole fan-out, so without it the first budget seen would be
-        # served to every later caller.
-        key = (id(self.graph), len(self.graph), str(profile.format), max_triples)
+        # served to every later caller. The syntax key is the chapter's own,
+        # not the profile's wire format: ONTOLOGY_CHAPTER_FORMAT can decouple
+        # the two, and it is the chapter text that is memoised.
+        key = (
+            id(self.graph),
+            len(self.graph),
+            str(profile.ontology_chapter_wire),
+            max_triples,
+        )
         cached = self._prompt_cache.get(key)
         if cached is not None:
             return cached

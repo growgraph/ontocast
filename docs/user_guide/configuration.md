@@ -121,12 +121,21 @@ shrink the pipeline's effective width. A timed-out call fails only its own unit.
 **Ollama-specific generation controls** (ignored by other providers):
 
 ```bash
-LLM_THINK=                      # true/false: thinking mode for qwen3, deepseek-r1, ...
+LLM_THINK=                      # true/false: thinking mode for qwen3, deepseek-r1, ... (Ollama)
+LLM_REASONING_EFFORT=           # minimal|low|medium|high: OpenAI reasoning_effort
+LLM_THINKING_BUDGET=            # Google thinking_budget: 0 off, -1 model-chosen, N caps it
                                 # unset uses the model default
 LLM_NUM_PREDICT=                # max tokens to generate; unset = Ollama default
 LLM_NUM_CTX=                    # context window (prompt + output). Ollama defaults to
                                 # 2048-4096; raise to 16384+ for large prompts
 ```
+
+`LLM_REASONING_EFFORT` and `LLM_THINKING_BUDGET` are the cloud spellings of
+the same lever: reasoning tokens are counted inside the output total and can
+dominate it (`reasoning_share_of_output` in the run manifest says by how
+much). Each knob joins the LLM cache key only when it is set — leaving it
+unset keeps existing cache entries valid, setting it re-issues every prompt —
+and setting the other provider's spelling logs a warning and is ignored.
 
 `LLM_THINK=false` guarantees a non-empty `content` response; `true` captures
 reasoning separately. Leaving it unset can yield an empty response when a
@@ -204,11 +213,12 @@ MAX_VISITS_PER_NODE=1                    # canonical name; MAX_VISITS is an acce
 FACTS_CRITIC_PASSES=1                    # review-and-patch passes per facts unit
 RENDER_MODE=ontology_and_facts           # which pipeline blocks run — see below
 LLM_GRAPH_FORMAT=jsonld                  # jsonld | turtle (legacy) — see below
+ONTOLOGY_CHAPTER_FORMAT=inherit          # inherit | turtle: the facts prompts' ontology chapter only — see below
 ONTOLOGY_CONTEXT_MODE=selected_single_ontology   # where per-unit schema comes from — see below
 #ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID=catalog_iri_or_id_or_prefix
 ONTOLOGY_CONTEXT_MAX_TRIPLES=4000        # prompt budget for the ontology chapter — see below
 #ONTOLOGY_MAX_TRIPLES=                   # write-path growth backstop, NOT a context cap; unset = unlimited
-PARALLEL_WORKERS=16                      # concurrent content-unit workers; see Performance before raising
+PARALLEL_WORKERS=16                      # concurrent content-unit workers; startup warns when above LLM_MAX_INFLIGHT
 ENABLE_ONTOLOGY_CONSOLIDATION=false      # optional post-normalization merge pass; inert for multi-ontology documents
 # MAX_CONCURRENT_PROCESSES=4      # optional cap on simultaneous /process handlers
 # MAX_TENANCY_SCOPES=16           # resident per-tenant/project ToolBoxes (LRU)
@@ -264,6 +274,9 @@ CHUNK_SECTION_SCHEMA_DETECT_MIN_MARGIN=1.8          # factor over the runner-up
 CHUNK_SECTION_SCHEMA_DETECT_CONTENT_MIN_MARGIN=4.0  # stricter margin for the content tier
 CHUNK_SECTION_FILTER_ON_EMPTY=warn  # warn (default) | error
 CHUNK_BIBLIOGRAPHY_MODE=skip        # skip | citations_only | domain_facts
+CHUNK_MIN_UNIT_CHARS=0              # chars; drop units below this before the fan-out (0 = off)
+CHUNK_NON_CONTENT_MODE=extract      # extract | skip — front/back-matter units (authors, notes, licence, …)
+CHUNK_MAX_MEASUREMENTS_PER_UNIT=0   # split units stating more unit-adjacent numbers than this (0 = off)
 ```
 
 `CHUNK_SEGMENTER=semantic` (default) detects section spans on the markdown
@@ -302,6 +315,34 @@ chunking well under it. Every such unit costs a patch retrieval, a full render
 and a critic call to extract from a fragment; the per-node durations and the
 budget summary are what to size it against. Each drop is logged individually,
 as with bibliography routing.
+
+`CHUNK_NON_CONTENT_MODE` routes front and back matter: units headed author
+information, contributions, notes, ORCID, data or code availability, competing
+or conflicting interests, licence, open access, supporting information,
+associated content, additional information, publisher's note, funding or
+acknowledgements (also any unit whose section label is `acknowledgements`)
+**that state no unit-adjacent number**; units whose tokens are mostly emails,
+URLs, ORCIDs and initials; and short licence notices. A measurement anywhere in
+the unit keeps it -- the heading list is evidence, not a verdict. `extract`
+(the default) keeps such units and flags them `is_non_content`, which
+downstream checks that assume domain prose read; `skip` drops them before the
+fan-out. Routing order is `CHUNK_MIN_UNIT_CHARS` → bibliography → non-content,
+every decision is logged, and the run manifest counts what each rule dropped
+(`undersized_units_skipped`, `bibliography_units_skipped`,
+`non_content_units_skipped`). Like bibliography detection it is
+English/Latin-script bound -- elsewhere it only under-detects.
+
+`CHUNK_MAX_MEASUREMENTS_PER_UNIT` splits a sized unit at the sentence or
+paragraph boundary nearest its midpoint while it states more unit-adjacent
+numbers than the cap, recursing on the pieces; `0` (the default) disables it.
+Pieces inherit the unit's headings, references and section label and never
+fall below `CHUNK_MIN_SIZE` (a unit shorter than twice the floor stays whole).
+Unlike lowering `CHUNK_MIN_SIZE` / `CHUNK_MAX_SIZE`, it reaches only the units
+where extraction has the most to lose -- a dense methods paragraph -- and
+leaves sparse prose in large units where the ontology chapter is paid for
+once. Each split is logged. A number counts when it stands next to a unit
+token (`96 meV`, `77 K`, `0.5 %`), matched against the built-in unit lexicon
+(`ontocast.util.measurement_lexicon`); a range yields one mention per number.
 
 #### Section classification
 
@@ -421,6 +462,7 @@ CONVERTER_PROFILE=default               # default | born_digital
 # CONVERTER_FORCE_FULL_PAGE_OCR=false
 # CONVERTER_OCR_BITMAP_AREA_THRESHOLD=0.05
 # CONVERTER_REPAIR_LIGATURE_GAPS=false  # on under profile=born_digital
+# CONVERTER_REPAIR_NUMERIC_ARTIFACTS=false  # entities, CR wraps, flattened exponents; not part of born_digital
 ```
 
 Recommended preset for publisher PDFs with selectable text:
@@ -441,6 +483,7 @@ That preset currently implies:
 Notes:
 
 - `CONVERTER_REPAIR_LIGATURE_GAPS` repairs ASCII `fi` / `fl` / `ff` gap patterns that Docling passes through on some publisher PDFs. It is off by default but **on** under `CONVERTER_PROFILE=born_digital`, and it participates in the converter cache key, so flipping it re-converts. It becomes removable — as a breaking change — once Docling normalises these patterns upstream.
+- `CONVERTER_REPAIR_NUMERIC_ARTIFACTS` repairs pattern-local artifacts that the export leaves inside values: the HTML entities `&lt;` `&gt;` `&amp;` `&quot;` `&apos;` (an explicit map, not a general unescape), carriage-return column wraps (`\r` plus inline whitespace before a newline; a blank line after it stays a paragraph break), flattened exponents (`2 × 10 6` → `2 × 10^6`, and a bare `10 6` only behind `~`, `≈`, `∼`, `≃` or "order of"), and single-sided ligature gaps with only one reading (a gap before `ff…`, a gap after a letter-preceded `fi`/`fl`; `the field`, `fl oz`, `cliff face` are left alone). It does **not** touch superscript/subscript duplication, citation markers fused into a value, or a gap before `fi`/`fl` -- those need layout evidence the exported text no longer carries. Off by default and not part of `born_digital`; it composes with `CONVERTER_REPAIR_LIGATURE_GAPS` (the two-sided rule runs first) and joins the converter cache key only when on, so every earlier conversion stays cached.
 - Prefer `CONVERTER_PROFILE=born_digital` for text-selectable PDFs before trying heavier OCR settings.
 - If OCR remains enabled and you pick `rapidocr`, set `CONVERTER_OCR_LANG=english` for English scans; RapidOCR's upstream default language is Chinese.
 
@@ -605,11 +648,12 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `FACTS_CRITIC_MAX_DELETE_SHARE` | `0.25` | Largest share of a unit graph one pass may remove; past it the pass keeps its inserts and drops its deletes |
 | `FACTS_CRITIC_MIN_DELETES` | `5` | Deletions always permitted regardless of share, so short units stay correctable |
 | `FACTS_CRITIC_ALLOW_SUBJECT_RENAME` | `false` | Whether a `REPLACE` may delete about one subject while writing about another |
+| `FACTS_COMPLETION_PASSES` | `0` | Insert-only completion passes per unit, **in provider calls**, run after the critic loop above and only while the numeric-coverage inventory still lists a measurement absent from the graph. Shown a compact term sheet and the unit's existing catalog-typed subjects instead of the full ontology chapter; every proposed fix is `action=ADD` and goes through the same per-subject regression check a critic fix does. `0` (default) disables it — see [Validation](validation.md#completion-pass-insert-only-recovery) |
 | `ONTOLOGY_CRITIC_PASSES` | `0` | The same budget for ontology units, opt-in |
 | `ONTOLOGY_CRITIC_MAX_DELETE_SHARE` | `0.10` | Stricter than the facts side: an ontology delete propagates onto shared catalog terminals |
 | `ONTOLOGY_CRITIC_MIN_DELETES` | `3` | Deletions always permitted regardless of share |
 | `ONTOLOGY_ACCEPT_BLOCKING_FINDING_KINDS` | destructive subset | Deterministic ontology findings that block acceptance |
-| `FACTS_PROPERTY_ALIAS_MIN_RATIO` | `0.85` | SequenceMatcher cutoff for deterministic near-miss property rewrites in catalog namespaces (token containment always qualifies, e.g. `qudt:value` → `qudt:numericValue`) |
+| `FACTS_PROPERTY_ALIAS_MIN_RATIO` | `0.95` | Tie-break floor for deterministic near-miss property rewrites in catalog namespaces. Only token containment or folded equality qualifies a candidate (`qudt:value` → `qudt:numericValue`); the ratio decides between several qualifying candidates and never licenses a rewrite alone. Predicates present anywhere in the full catalog are left untouched |
 | `FACTS_MERGE_REPAIR_PASSES` | `1` | Un-merge budget at the post-aggregation `VALIDATE_FACTS` gate: *merge-signature* error findings (functional violation, suspect multi-value, degenerate coreference) on merged subjects become full-cluster pair vetoes and the facts units are re-aggregated. `0` records findings without repairing. SHACL findings never drive it |
 | `FACTS_CODE_PREDICATES` | `qudt:ucumCode`, `qudt:symbol`, `skos:notation` | Predicates whose literal objects are machine-resolvable codes. A node carrying `qudt:ucumCode "d"` but no unit link gains the object property pointing at the catalog individual declaring that code, when exactly one does. Exact and case-sensitive — these are codes, not labels |
 | `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | `error` | Severity of SUSPECT_MULTI_VALUE gate findings (multiple distinct numeric values on one predicate; mutually irreconcilable short string values on a dominantly string-single-valued predicate; or multiple objects on a dominantly single-valued predicate); only `error` findings drive the un-merge repair |
@@ -808,6 +852,7 @@ AGG_LITERAL_CONFLICT_GUARD=true
 AGG_INITIALS_DISTINCT_GUARD=true
 AGG_NATURAL_KEY_MERGE=true
 AGG_TYPE_GUARD_UNTYPED=permissive
+AGG_UNIT_SCOPED_FACT_IRIS=true           # identity across units is decided by the aggregator, not by name
 ```
 
 See [Aggregation](aggregation.md) for what each threshold and guard does.
@@ -874,6 +919,15 @@ LOGGING_LEVEL=info                       # debug | info | warning | error
 
 Overridable per request as `llm_graph_format`, with the same precedence and the
 same 400-on-typo contract as [`RENDER_MODE`](#render-mode-render_mode).
+
+`ONTOLOGY_CHAPTER_FORMAT` (`inherit` default, or `turtle`) narrows the choice
+to one chapter: with `turtle` the `# ONTOLOGY` chapter of the facts render and
+critic prompts is serialized as canonical Turtle while everything else keeps
+the wire format above. That chapter is the bulk of a facts prompt and JSON-LD
+spends about twice the characters per triple, so this is the context lever
+that leaves parsing untouched. It applies to the facts loop only (the ontology
+loop's chapters are unaffected), is not overridable per request, and changes
+the LLM cache key for facts calls.
 
 ## Ontology Context Size (`ONTOLOGY_CONTEXT_MAX_TRIPLES`)
 
@@ -949,8 +1003,9 @@ system: two of the three values skip an entire half of the graph.
 
 !!! tip "Recommended companions for `RENDER_MODE=facts`"
 
-    Three settings ship default-off/auto but earn their keep in facts-only
-    runs, and belong together in a facts-extraction environment:
+    Three settings earn their keep in facts-only runs and belong together in a
+    facts-extraction environment (the first is on by default; it is listed so a
+    preset that pins it off stands out):
 
     ```bash
     FACTS_CONTEXT_FROM_UNITS=true      # gate + aggregator see the units' resolved
@@ -961,7 +1016,7 @@ system: two of the three values skip an entire half of the graph.
                                        # rulebook it is validated against
     ```
 
-    Without `FACTS_CONTEXT_FROM_UNITS` the SHACL gate validates against an
+    With `FACTS_CONTEXT_FROM_UNITS=false` the SHACL gate validates against an
     empty ontology and overstates class violations (recorded as
     `validated_without_ontology_context`) — see
     [Validation](validation.md#how-the-validation-is-set-up).

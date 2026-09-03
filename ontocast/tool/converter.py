@@ -227,6 +227,11 @@ class ConverterTool(Tool):
         # Check cache first. The format version lives in the key, so bumping it
         # orphans stale entries in place rather than stranding a whole directory.
         config_dict = self.converter_config.model_dump(mode="json")
+        # Off is the pre-existing output, so the flag joins the key only when
+        # it changes the text: enabling it re-converts, leaving it off keeps
+        # every conversion cached before the flag existed.
+        if not config_dict.get("repair_numeric_artifacts"):
+            config_dict.pop("repair_numeric_artifacts", None)
         config_dict["cache_format_version"] = CONVERTER_CACHE_FORMAT_VERSION
         cached_result = self.cache.get(content_for_cache, config=config_dict)
         if cached_result is not None:
@@ -267,6 +272,9 @@ class ConverterTool(Tool):
         converted_result = apply_text_sanitizers(
             converted_result,
             repair_ligature_gaps_enabled=self.converter_config.repair_ligature_gaps,
+            repair_numeric_artifacts_enabled=(
+                self.converter_config.repair_numeric_artifacts
+            ),
         )
 
         # Cache the result as JSON for stable serialization

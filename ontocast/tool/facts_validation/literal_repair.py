@@ -222,25 +222,99 @@ def repair_literal_type_objects(
     return rewritten, findings, applied
 
 
+def _folded_name(local: str) -> str:
+    """A local name with case and separators removed, for spelling equality."""
+    return re.sub(r"[_\-]", "", local).lower()
+
+
+def _alias_qualifies(alias_local: str, candidate_local: str) -> bool:
+    """Whether a candidate is a near-miss of the alias rather than a look-alike.
+
+    Token containment either way (``value`` in ``numericValue``, ``lowerBound``
+    in ``hasLowerBound``), or the same spelling once case and separators are
+    folded (``numericvalue`` for ``numericValue``). A candidate that swaps one
+    token for another never qualifies, however close the two strings are:
+    that is a different term, not a misspelt one.
+    """
+    alias_tokens = _name_tokens(alias_local)
+    candidate_tokens = _name_tokens(candidate_local)
+    if alias_tokens and (
+        alias_tokens <= candidate_tokens or candidate_tokens <= alias_tokens
+    ):
+        return True
+    folded = _folded_name(alias_local)
+    return bool(folded) and folded == _folded_name(candidate_local)
+
+
+def _select_alias_target(
+    alias: str, candidates: Sequence[str], min_ratio: float
+) -> str | None:
+    """The one candidate ``alias`` may be rewritten to, or None.
+
+    Exactly one qualifying candidate (see :func:`_alias_qualifies`) wins
+    outright. Among several, the ``SequenceMatcher`` ratio breaks the tie only
+    when the best-scoring candidate clears ``min_ratio`` and no other
+    candidate matches its score; the ratio never admits a candidate that did
+    not qualify on its own.
+    """
+    alias_local = _local_name(alias)
+    qualifying = [
+        candidate
+        for candidate in candidates
+        if _alias_qualifies(alias_local, _local_name(candidate))
+    ]
+    if len(qualifying) == 1:
+        return qualifying[0]
+    if not qualifying:
+        return None
+    scored = sorted(
+        (
+            (
+                SequenceMatcher(
+                    None, alias_local.lower(), _local_name(candidate).lower()
+                ).ratio(),
+                candidate,
+            )
+            for candidate in qualifying
+        ),
+        key=lambda item: (-item[0], item[1]),
+    )
+    best_ratio, best = scored[0]
+    if best_ratio < min_ratio or scored[1][0] == best_ratio:
+        return None
+    return best
+
+
 def repair_property_aliases(
     graph: RDFGraph,
     ontology_graph: RDFGraph | None,
     *,
-    min_ratio: float = 0.85,
+    min_ratio: float = 0.95,
     exempt_terms: set[str] | None = None,
+    full_catalog_terms: set[str] | None = None,
 ) -> tuple[int, list[FactsUnitFinding], list[GraphRepairRecord]]:
     """Rewrite near-miss predicates in catalog namespaces; report ambiguity.
 
     A predicate whose namespace belongs to the ontology context but which is
     not itself a catalog term is a near-miss (``qqval:lowerBound`` for
-    ``qqval:hasLowerBound``). When exactly one candidate scores above
-    ``min_ratio`` (token containment counts as 1.0) the rewrite is applied
-    deterministically; otherwise a mandatory finding carries the top
-    suggestions.
+    ``qqval:hasLowerBound``). The rewrite is deterministic and fires only when
+    exactly one candidate *qualifies*: its name tokens contain the alias's,
+    the alias's contain its, or the two spell the same once case and
+    separators are folded. Several qualifying candidates are a tie that the
+    ``SequenceMatcher`` ratio may break -- the best-scoring one wins when it
+    clears ``min_ratio`` and nothing ties it. Similarity alone never licenses
+    a rewrite: a high ratio also joins names that differ by exactly one token,
+    and rewriting across that gap substitutes one property for another.
+    Anything else becomes a mandatory finding carrying the top suggestions.
 
     Only namespaces the catalog *declares* terms in are eligible (see
     :func:`collect_declared_namespaces`); ``exempt_terms`` (expanded fallback
-    vocabulary) are never treated as near-misses.
+    vocabulary) are never treated as near-misses, and neither is a predicate
+    in ``full_catalog_terms``: a term the whole catalog declares is real even
+    when this unit's snapshot did not retrieve it, and the snapshot's
+    look-alike is then a different property, not the intended one. Such a
+    predicate is left untouched here; whether it is reported is the term
+    checks' business.
 
     Returns:
         Tuple of (number of rewritten triples, unresolved findings,
@@ -251,6 +325,7 @@ def repair_property_aliases(
         return 0, [], []
     declared_namespaces = collect_declared_namespaces(ontology_graph)
     exempt = exempt_terms or set()
+    known_elsewhere = full_catalog_terms or set()
 
     findings: list[FactsUnitFinding] = []
     applied: list[GraphRepairRecord] = []
@@ -261,31 +336,16 @@ def repair_property_aliases(
         if isinstance(predicate, URIRef)
         and str(predicate) not in catalog_terms
         and str(predicate) not in exempt
+        and str(predicate) not in known_elsewhere
         and _namespace_of(str(predicate)) in declared_namespaces
     }
     for alias in sorted(predicates, key=str):
         candidates = _alias_candidates(
             alias, graph, catalog_terms, ontology_graph=ontology_graph
         )
-        strong = [
-            candidate
-            for candidate in candidates
-            if _name_tokens(_local_name(str(alias)))
-            and (
-                _name_tokens(_local_name(str(alias)))
-                <= _name_tokens(_local_name(candidate))
-                or _name_tokens(_local_name(candidate))
-                <= _name_tokens(_local_name(str(alias)))
-                or SequenceMatcher(
-                    None,
-                    _local_name(str(alias)).lower(),
-                    _local_name(candidate).lower(),
-                ).ratio()
-                >= min_ratio
-            )
-        ]
-        if len(strong) == 1:
-            replacement = URIRef(strong[0])
+        target = _select_alias_target(str(alias), candidates, min_ratio)
+        if target is not None:
+            replacement = URIRef(target)
             alias_triples = 0
             for subject, predicate, obj in list(graph.triples((None, alias, None))):
                 graph.remove((subject, predicate, obj))

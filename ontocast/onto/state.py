@@ -489,6 +489,24 @@ class AgentState(BasePydanticModel):
         default_factory=list,
         description="Pending content units to process.",
     )
+    bibliography_units_skipped: int = Field(
+        default=0,
+        description=(
+            "Prepared chunks dropped by reference-list routing "
+            "(CHUNK_BIBLIOGRAPHY_MODE=skip)."
+        ),
+    )
+    undersized_units_skipped: int = Field(
+        default=0,
+        description="Prepared chunks dropped by the CHUNK_MIN_UNIT_CHARS floor.",
+    )
+    non_content_units_skipped: int = Field(
+        default=0,
+        description=(
+            "Prepared chunks dropped by front/back-matter routing "
+            "(CHUNK_NON_CONTENT_MODE=skip)."
+        ),
+    )
     ontology_artifacts: list[Ontology] = Field(
         default_factory=list,
         description="Final per-anchor ontology artifacts produced for this document.",

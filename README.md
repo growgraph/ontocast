@@ -88,7 +88,7 @@ OntoCast uses seed ontologies (in Turtle `.ttl` format) to guide extraction. Pro
 ## Configuration
 
 Start from [`.env.example.minimal`](.env.example.minimal) — 47 variables instead
-of 202, grouped by the decision they belong to. Then pick a
+of 253, grouped by the decision they belong to. Then pick a
 [playbook](https://growgraph.github.io/ontocast/user_guide/playbooks/) for what
 you are actually doing: evaluating, building an ontology, populating facts,
 scaling to a large catalog, or serving it.

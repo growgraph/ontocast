@@ -14,11 +14,12 @@ own ontology context according to mode/policy.
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, TypeVar
 
 from rdflib import URIRef
 
+from ontocast.agent.complete_facts import complete_facts
 from ontocast.agent.criticise_facts import criticise_facts
 from ontocast.agent.criticise_ontology import criticise_ontology
 from ontocast.agent.external_evidence import (
@@ -37,6 +38,7 @@ from ontocast.onto.model import (
     GraphRepairRecord,
     LoopAttempt,
     OntologyUnitFinding,
+    RolledBackFix,
     Suggestions,
 )
 from ontocast.onto.ontology import Ontology
@@ -54,9 +56,11 @@ from ontocast.tool.facts_validation import (
     ValidationPolicy,
     collect_unit_findings,
     material_defects,
+    unit_numeric_inventory,
 )
 from ontocast.tool.facts_validation.critic_patch import (
     CriticPatchPolicy,
+    FixPatch,
     compile_critic_fixes,
 )
 from ontocast.tool.ontology_validation import collect_ontology_unit_findings
@@ -150,15 +154,20 @@ def _collect_facts_findings(
             }
         )
     coverage_limit = atomic.numeric_coverage_limit if atomic is not None else 30
-    coverage_mandatory = (
-        atomic.numeric_coverage_mandatory if atomic is not None else False
+    coverage_mandatory: str | bool = (
+        atomic.numeric_coverage_mandatory if atomic is not None else "off"
     )
+    # The whole catalog, not the unit's retrieved snapshot: a term the
+    # snapshot omitted is still a term, and must not be reported unknown with
+    # a look-alike from the snapshot offered as its replacement.
+    full_catalog_terms = atomic.catalog_terms() if atomic is not None else None
     return collect_unit_findings(
         graph=unit_state.content_unit.graph,
         ontology_graph=unit_state.ontology_snapshot.graph,
         quarantined=unit_state.quarantined_literal_triples,
         extraction_text=unit_state.content_unit.extraction_text,
         fact_namespaces=[DEFAULT_IRI, str(unit_state.content_unit.doc_iri)],
+        full_catalog_terms=full_catalog_terms,
         # Citation numerics (pages, years, volume numbers) are not extractable
         # quantities — never push coverage repair on bibliography units.
         coverage_limit=(
@@ -166,6 +175,8 @@ def _collect_facts_findings(
         ),
         coverage_mandatory=coverage_mandatory,
         policy=policy,
+        is_citation_metadata=unit_state.content_unit.is_citation_metadata,
+        is_non_content=unit_state.content_unit.is_non_content,
     )
 
 
@@ -204,7 +215,9 @@ def _collect_ontology_findings(
 def _record_attempt(
     unit_state: UnitStateT,
     *,
-    kind: Literal["render", "critic", "critic_patch", "llm_repair"],
+    kind: Literal[
+        "render", "critic", "critic_patch", "critic_skipped", "completion", "llm_repair"
+    ],
     render_attempt: int,
     critic_attempt: int = 0,
     n_findings: int = 0,
@@ -216,6 +229,11 @@ def _record_attempt(
     n_triples_inserted: int = 0,
     patch_rolled_back: bool = False,
     patch_delete_capped: bool = False,
+    accept_reason: str = "",
+    rolled_back_fixes: list[RolledBackFix] | None = None,
+    n_fixes_junk_refused: int = 0,
+    n_fixes_unresolved_prefix: int = 0,
+    n_measurements_recovered: int = 0,
 ) -> None:
     """Append one telemetry record for the current loop attempt.
 
@@ -223,12 +241,14 @@ def _record_attempt(
     reports what the unit contributes rather than the size of its scratchpad --
     the working graph is the snapshot plus a small delta and barely moves.
     """
+    undone = list(rolled_back_fixes or ())
     unit_state.attempt_log.append(
         LoopAttempt(
             render_attempt=render_attempt,
             critic_attempt=critic_attempt,
             kind=kind,
             success=unit_state.status == Status.SUCCESS,
+            accept_reason=accept_reason,
             n_deterministic_findings=n_findings,
             n_mandatory_findings=n_mandatory,
             repair_failed=repair_failed,
@@ -239,8 +259,13 @@ def _record_attempt(
             n_fixes_noop=n_fixes_noop,
             n_triples_deleted=n_triples_deleted,
             n_triples_inserted=n_triples_inserted,
-            patch_rolled_back=patch_rolled_back,
+            patch_rolled_back=patch_rolled_back or bool(undone),
+            n_fixes_rolled_back=len(undone),
+            rolled_back_fixes=undone,
             patch_delete_capped=patch_delete_capped,
+            n_fixes_junk_refused=n_fixes_junk_refused,
+            n_fixes_unresolved_prefix=n_fixes_unresolved_prefix,
+            n_measurements_recovered=n_measurements_recovered,
         )
     )
 
@@ -252,18 +277,58 @@ class PatchOutcome:
     applied: int = 0
     residual: int = 0
     noop: int = 0
-    rolled_back: bool = False
+    #: Fixes applied and undone on their own; the rest of the pass stands.
+    rolled_back: int = 0
     mandatory_after: int = 0
 
     @property
     def converged(self) -> bool:
         """True when another pass has nothing left to work with.
 
-        A rolled-back pass counts as converged: it was handed the same graph and
-        the same findings the next one would see, so repeating it buys a second
-        identical answer at full price.
+        A pass that changed nothing -- every fix rolled back, or nothing to
+        apply and nothing mandatory left -- counts as converged: the next pass
+        would be handed the same graph and the same findings, so repeating it
+        buys a second identical answer at full price.
         """
-        return self.rolled_back or (self.applied == 0 and self.mandatory_after == 0)
+        return self.applied == 0 and (self.rolled_back > 0 or self.mandatory_after == 0)
+
+
+def _regression_reason(
+    *,
+    graph_before: RDFGraph,
+    graph_after: RDFGraph,
+    product_before: int,
+    product_after: int,
+    mandatory_before: int,
+    mandatory_after: int,
+) -> str | None:
+    """Why a fix left the unit worse than it found it, or ``None``.
+
+    Three signals, each learned from a different way a repair went wrong:
+
+    1. ``delete_only``: it deleted and wrote nothing. The finding is gone
+       because the data is gone, which is the outcome the repair contract
+       exists to forbid.
+    2. ``no_progress``: it shrank the product without resolving anything.
+       Counting findings alone cannot see this -- deleting the flagged
+       statement drops the count, so the dominant failure mode scored as a
+       success.
+    3. ``new_mandatory``: it *created* mandatory findings. A fix that
+       manufactures new defects is strictly worse than no fix, however much
+       else it changed.
+
+    Judged per fix against the running baseline, so one bad correction is
+    undone alone instead of taking the whole critique with it.
+    """
+    wrote_nothing = not (graph_after - graph_before)
+    deleted_something = bool(graph_before - graph_after)
+    if deleted_something and wrote_nothing:
+        return "delete_only"
+    if mandatory_after > mandatory_before:
+        return "new_mandatory"
+    if product_after < product_before and mandatory_after >= mandatory_before:
+        return "no_progress"
+    return None
 
 
 def _patch_regressed(
@@ -275,26 +340,126 @@ def _patch_regressed(
     mandatory_before: int,
     mandatory_after: int,
 ) -> bool:
-    """Whether a pass left the unit worse than it found it.
-
-    Three signals, each learned from a different way a repair went wrong:
-
-    1. It deleted and wrote nothing. The finding is gone because the data is
-       gone, which is the outcome the repair contract exists to forbid.
-    2. It shrank the product without resolving anything. Counting findings alone
-       cannot see this -- deleting the flagged statement drops the count, so the
-       dominant failure mode scored as a success.
-    3. It *created* mandatory findings. A pass that manufactures new defects is
-       strictly worse than no pass, however much else it fixed.
-    """
-    wrote_nothing = not (graph_after - graph_before)
-    deleted_something = bool(graph_before - graph_after)
-    no_progress = product_after < product_before and mandatory_after >= mandatory_before
+    """Whether a fix left the unit worse; see :func:`_regression_reason`."""
     return (
-        (deleted_something and wrote_nothing)
-        or no_progress
-        or mandatory_after > mandatory_before
+        _regression_reason(
+            graph_before=graph_before,
+            graph_after=graph_after,
+            product_before=product_before,
+            product_after=product_after,
+            mandatory_before=mandatory_before,
+            mandatory_after=mandatory_after,
+        )
+        is not None
     )
+
+
+@dataclass
+class _PatchRun:
+    """What applying a list of per-fix patches one at a time did."""
+
+    applied: list[FixPatch] = field(default_factory=list)
+    rolled_back: list[RolledBackFix] = field(default_factory=list)
+    deleted: int = 0
+    inserted: int = 0
+    #: Findings against the graph as the run left it.
+    findings: list = field(default_factory=list)
+    mandatory_after: int = 0
+
+
+def _timed_findings(
+    unit_state: UnitStateT, atomic: AtomicToolBox, phase: "LoopPhase"
+) -> list:
+    """The phase's findings, charged to the deterministic repair budget.
+
+    Applying fixes one at a time runs the validator once per fix instead of
+    once per pass; the walk is LLM-free but not free, so it is timed where
+    the other deterministic repairs are.
+    """
+    started = time.perf_counter()
+    findings = phase.collect_findings(unit_state, atomic)
+    unit_state.budget_tracker.add_duration(
+        "repair/deterministic", time.perf_counter() - started
+    )
+    return findings
+
+
+def _apply_patches(
+    unit_state: UnitStateT,
+    atomic: AtomicToolBox,
+    phase: "LoopPhase",
+    patches: list[FixPatch],
+    *,
+    mandatory_before: int,
+) -> _PatchRun:
+    """Apply patches one at a time, undoing each that leaves the unit worse.
+
+    The baseline a fix is judged against is the graph as the previous kept
+    fix left it, so a fix that resolves a finding lowers the bar for the ones
+    after it and a fix that manufactures one is caught on its own. A whole
+    pass used to be undone for the one fix that regressed, which is how a
+    critique lost its good corrections to one bad one.
+    """
+    run = _PatchRun()
+    baseline = mandatory_before
+    current_findings: list | None = None
+    for patch in patches:
+        token = unit_state.snapshot_for_rollback()
+        graph_before = unit_state.patch_target_graph().copy()
+        product_before = unit_state.product_triple_count()
+        if not unit_state.apply_patch(patch.update):
+            logger.warning("Critic fix refused by the phase; graph unchanged")
+            run.rolled_back.append(
+                RolledBackFix(
+                    triple_ids=list(patch.fix.triple_ids),
+                    correct_value=patch.fix.correct_value or "",
+                    reason="refused",
+                )
+            )
+            continue
+        findings = _timed_findings(unit_state, atomic, phase)
+        mandatory_after = sum(1 for finding in findings if finding.mandatory)
+        reason = _regression_reason(
+            graph_before=graph_before,
+            graph_after=unit_state.patch_target_graph(),
+            product_before=product_before,
+            product_after=unit_state.product_triple_count(),
+            mandatory_before=baseline,
+            mandatory_after=mandatory_after,
+        )
+        if reason is not None:
+            logger.warning(
+                "Critic fix left the unit worse (%s; -%d/+%d triples, "
+                "mandatory %d -> %d) — rolling it back",
+                reason,
+                patch.deletes,
+                patch.inserts,
+                baseline,
+                mandatory_after,
+            )
+            unit_state.restore(token)
+            run.rolled_back.append(
+                RolledBackFix(
+                    triple_ids=list(patch.fix.triple_ids),
+                    correct_value=patch.fix.correct_value or "",
+                    reason=reason,
+                    mandatory_delta=mandatory_after - baseline,
+                )
+            )
+            continue
+        run.applied.append(patch)
+        run.deleted += patch.deletes
+        run.inserted += patch.inserts
+        baseline = mandatory_after
+        current_findings = findings
+    if current_findings is None:
+        # Nothing stayed, so the graph is as it was; the findings are still
+        # collected here because the caller records and re-evaluates on them.
+        current_findings = _timed_findings(unit_state, atomic, phase)
+        baseline = sum(1 for finding in current_findings if finding.mandatory)
+    run.findings = current_findings
+    run.mandatory_after = baseline
+    return run
 
 
 def _reevaluate_unit_status(
@@ -339,14 +504,15 @@ def _apply_critic_patch(
     pass_index: int,
     mandatory_before: int,
 ) -> PatchOutcome:
-    """Compile the critique into a patch and apply it, or undo it.
+    """Compile the critique into per-fix patches and apply them one at a time.
 
     This is where a critique stops being a description and becomes a change.
     The critic cites statement ids, so the delete side resolves by lookup rather
     than by matching text the model retyped from memory -- which is what made
-    the previous contract lose most of its own removals. Screening then withhelds
-    what the deployment does not allow a pass to destroy, and the rollback below
-    undoes a pass that made things worse.
+    the previous contract lose most of its own removals. Screening then withholds
+    what the deployment does not allow a pass to destroy, and each fix that
+    survives is applied on its own and undone on its own if it leaves the unit
+    worse.
     """
     graph = unit_state.patch_target_graph()
     compiled = compile_critic_fixes(
@@ -360,109 +526,144 @@ def _apply_critic_patch(
     # nothing rather than resolving to the wrong statement.
     unit_state.prompt_triple_index = None
 
-    unit_state.critic_fixes_applied += len(compiled.applied)
     unit_state.critic_fixes_residual = len(compiled.residual)
     unit_state.critic_fixes_noop += len(compiled.noop)
+    unit_state.critic_fixes_junk_refused += compiled.junk_refused
+    unit_state.critic_fixes_unresolved_prefix += compiled.unresolved_prefix
     # An applied fix must stop existing as a request: `suggestions` is what the
     # next pass sees as outstanding work, and a fix already carried out would
-    # be asked for again against a graph that no longer matches it.
+    # be asked for again against a graph that no longer matches it. A rolled
+    # back fix is not re-requested either: the next pass would repeat it.
     unit_state.suggestions = Suggestions(
         actionable_fixes=list(compiled.residual),
         systemic_critique_summary=unit_state.suggestions.systemic_critique_summary,
     )
 
-    if compiled.update is None:
-        findings = phase.collect_findings(unit_state, atomic)
-        unit_state.deterministic_findings = findings
-        mandatory_after = sum(1 for finding in findings if finding.mandatory)
-        _reevaluate_unit_status(unit_state, phase, atomic, findings)
-        _record_attempt(
-            unit_state,
-            kind="critic_patch",
-            render_attempt=render_attempt,
-            critic_attempt=pass_index,
-            n_findings=len(findings),
-            n_mandatory=mandatory_after,
-            n_fixes_noop=len(compiled.noop),
-        )
-        return PatchOutcome(
-            residual=len(compiled.residual),
-            noop=len(compiled.noop),
-            mandatory_after=mandatory_after,
-        )
-
-    token = unit_state.snapshot_for_rollback()
-    graph_before = graph.copy()
-    product_before = unit_state.product_triple_count()
-    deleted = sum(
-        len(op.graph) for op in compiled.update.triple_operations if op.type == "delete"
+    run = _apply_patches(
+        unit_state, atomic, phase, compiled.patches, mandatory_before=mandatory_before
     )
-    inserted = sum(
-        len(op.graph) for op in compiled.update.triple_operations if op.type == "insert"
-    )
-
-    applied_ok = unit_state.apply_patch(compiled.update)
-    findings = phase.collect_findings(unit_state, atomic)
-    mandatory_after = sum(1 for finding in findings if finding.mandatory)
-    rolled_back = False
-    if applied_ok and _patch_regressed(
-        graph_before=graph_before,
-        graph_after=unit_state.patch_target_graph(),
-        product_before=product_before,
-        product_after=unit_state.product_triple_count(),
-        mandatory_before=mandatory_before,
-        mandatory_after=mandatory_after,
-    ):
-        logger.warning(
-            "Critic patch left the unit worse (-%d/+%d triples, mandatory %d -> %d)"
-            " — rolling it back",
-            deleted,
-            inserted,
-            mandatory_before,
-            mandatory_after,
-        )
-        unit_state.restore(token)
-        findings = phase.collect_findings(unit_state, atomic)
-        mandatory_after = sum(1 for finding in findings if finding.mandatory)
-        rolled_back = True
-    elif not applied_ok:
-        logger.warning("Critic patch refused by the phase; graph unchanged")
-        rolled_back = True
-
-    unit_state.deterministic_findings = findings
-    _reevaluate_unit_status(unit_state, phase, atomic, findings)
-    if not rolled_back and isinstance(unit_state, UnitFactsState):
+    unit_state.critic_fixes_applied += len(run.applied)
+    unit_state.critic_fixes_rolled_back += len(run.rolled_back)
+    unit_state.deterministic_findings = run.findings
+    _reevaluate_unit_status(unit_state, phase, atomic, run.findings)
+    if isinstance(unit_state, UnitFactsState):
         unit_state.applied_repairs.extend(
             GraphRepairRecord(
                 kind=FactsUnitFindingKind.CRITIC_FIX,
-                source=f"ids={fix.triple_ids}" if fix.triple_ids else "",
-                target=fix.correct_value or "",
+                source=f"ids={patch.fix.triple_ids}" if patch.fix.triple_ids else "",
+                target=patch.fix.correct_value or "",
             )
-            for fix in compiled.applied
+            for patch in run.applied
         )
     _record_attempt(
         unit_state,
         kind="critic_patch",
         render_attempt=render_attempt,
         critic_attempt=pass_index,
-        n_findings=len(findings),
-        n_mandatory=mandatory_after,
-        n_fixes_applied=0 if rolled_back else len(compiled.applied),
+        n_findings=len(run.findings),
+        n_mandatory=run.mandatory_after,
+        n_fixes_applied=len(run.applied),
         n_fixes_noop=len(compiled.noop),
-        n_triples_deleted=0 if rolled_back else deleted,
-        n_triples_inserted=0 if rolled_back else inserted,
-        patch_rolled_back=rolled_back,
+        n_triples_deleted=run.deleted,
+        n_triples_inserted=run.inserted,
+        rolled_back_fixes=run.rolled_back,
         patch_delete_capped=compiled.delete_capped,
+        n_fixes_junk_refused=compiled.junk_refused,
+        n_fixes_unresolved_prefix=compiled.unresolved_prefix,
     )
-    if rolled_back:
-        unit_state.critic_fixes_applied -= len(compiled.applied)
     return PatchOutcome(
-        applied=0 if rolled_back else len(compiled.applied),
+        applied=len(run.applied),
         residual=len(compiled.residual),
         noop=len(compiled.noop),
-        rolled_back=rolled_back,
-        mandatory_after=mandatory_after,
+        rolled_back=len(run.rolled_back),
+        mandatory_after=run.mandatory_after,
     )
+
+
+async def _run_completion_passes(
+    unit_state: UnitFactsState,
+    atomic: AtomicToolBox,
+    phase: "LoopPhase",
+    *,
+    render_attempt: int,
+) -> None:
+    """Insert-only completion passes, run once the critic loop is done.
+
+    Each pass asks :func:`ontocast.agent.complete_facts.complete_facts` for
+    subjects recovering measurements the numeric inventory still lists as
+    missing, then applies the proposal through :func:`_apply_patches` -- the
+    same per-subject regression check a critic fix goes through, so an
+    insert that leaves the unit worse is rolled back on its own. Stops early
+    once the inventory is empty; the caller has already checked
+    ``atomic.facts_completion_passes > 0`` and that this is the facts phase.
+    """
+    for pass_index in range(1, atomic.facts_completion_passes + 1):
+        inventory = unit_numeric_inventory(
+            graph=unit_state.content_unit.graph,
+            ontology_graph=unit_state.ontology_snapshot.graph,
+            extraction_text=unit_state.content_unit.extraction_text,
+            policy=atomic.validation_policy,
+            limit=atomic.numeric_coverage_limit,
+        )
+        if not inventory.measurements:
+            break
+
+        findings = phase.collect_findings(unit_state, atomic)
+        unit_state.deterministic_findings = findings
+        mandatory_before = sum(1 for finding in findings if finding.mandatory)
+
+        fixes = await complete_facts(unit_state, atomic, inventory)
+        compiled = compile_critic_fixes(
+            fixes, unit_state.patch_target_graph(), policy=atomic.facts_patch_policy
+        )
+        run = _apply_patches(
+            unit_state,
+            atomic,
+            phase,
+            compiled.patches,
+            mandatory_before=mandatory_before,
+        )
+        unit_state.deterministic_findings = run.findings
+        _reevaluate_unit_status(unit_state, phase, atomic, run.findings)
+
+        post_inventory = unit_numeric_inventory(
+            graph=unit_state.content_unit.graph,
+            ontology_graph=unit_state.ontology_snapshot.graph,
+            extraction_text=unit_state.content_unit.extraction_text,
+            policy=atomic.validation_policy,
+            limit=atomic.numeric_coverage_limit,
+        )
+        recovered = max(
+            0, len(inventory.measurements) - len(post_inventory.measurements)
+        )
+        logger.info(
+            "Unit facts completion pass %s/%s: %d applied, %d rolled back, "
+            "%d measurement(s) recovered",
+            pass_index,
+            atomic.facts_completion_passes,
+            len(run.applied),
+            len(run.rolled_back),
+            recovered,
+        )
+        _record_attempt(
+            unit_state,
+            kind="completion",
+            render_attempt=render_attempt,
+            critic_attempt=pass_index,
+            n_findings=len(run.findings),
+            n_mandatory=run.mandatory_after,
+            n_fixes_applied=len(run.applied),
+            n_fixes_noop=len(compiled.noop),
+            n_triples_deleted=run.deleted,
+            n_triples_inserted=run.inserted,
+            rolled_back_fixes=run.rolled_back,
+            patch_delete_capped=compiled.delete_capped,
+            n_fixes_junk_refused=compiled.junk_refused,
+            n_fixes_unresolved_prefix=compiled.unresolved_prefix,
+            n_measurements_recovered=recovered,
+        )
+        if not post_inventory.measurements:
+            break
 
 
 def _reset_node_evidence_context(
@@ -592,6 +793,37 @@ def _prepare_facts(unit_state: UnitFactsState) -> None:
     """Nothing to stage: the facts graph is the unit's product in place."""
 
 
+def _facts_critic_skip_reason(
+    unit_state: UnitFactsState, atomic: AtomicToolBox
+) -> str | None:
+    """Why the facts critic should not be spent on this unit, or ``None``.
+
+    A citation-metadata unit is rendered under the bibliographic instruction
+    and has no domain facts to review. A render below the triple floor is,
+    at the default, an empty graph: the critic scores one perfect and bills
+    a call for it.
+    """
+    if unit_state.content_unit.is_citation_metadata:
+        return "citation_metadata"
+    if len(unit_state.content_unit.graph) < atomic.facts_critic_min_triples:
+        return "empty_render"
+    return None
+
+
+def _ontology_critic_skip_reason(
+    unit_state: UnitOntologyState, atomic: AtomicToolBox
+) -> str | None:
+    """The ontology critic has no skip rule; its budget alone decides."""
+    return None
+
+
+def _critic_unavailable(unit_state: UnitFactsState | UnitOntologyState) -> bool:
+    return (
+        isinstance(unit_state, UnitFactsState)
+        and unit_state.critic_outcome == "unavailable"
+    )
+
+
 def _prepare_ontology(unit_state: UnitOntologyState) -> None:
     """Copy the snapshot into the scratchpad the loop renders against."""
     started = time.perf_counter()
@@ -621,6 +853,9 @@ class LoopPhase:
     critic_passes: Callable[[AtomicToolBox], int]
     patch_policy: Callable[[AtomicToolBox], CriticPatchPolicy]
     acceptance_policy: Callable[[AtomicToolBox], FactsAcceptancePolicy]
+    #: Why a critic pass should not be spent on the unit, or ``None`` to run
+    #: it. Decided per pass, on the current graph.
+    critic_skip_reason: Callable[..., str | None]
 
 
 FACTS_PHASE = LoopPhase(
@@ -636,6 +871,7 @@ FACTS_PHASE = LoopPhase(
     critic_passes=lambda atomic: atomic.facts_critic_passes,
     patch_policy=lambda atomic: atomic.facts_patch_policy,
     acceptance_policy=lambda atomic: atomic.acceptance_policy,
+    critic_skip_reason=_facts_critic_skip_reason,
 )
 
 ONTOLOGY_PHASE = LoopPhase(
@@ -651,6 +887,7 @@ ONTOLOGY_PHASE = LoopPhase(
     critic_passes=lambda atomic: atomic.ontology_critic_passes,
     patch_policy=lambda atomic: atomic.ontology_patch_policy,
     acceptance_policy=lambda atomic: atomic.ontology_acceptance_policy,
+    critic_skip_reason=_ontology_critic_skip_reason,
 )
 
 
@@ -791,10 +1028,36 @@ async def run_unit_loop(
             unit_state.deterministic_findings = findings
             mandatory_before = sum(1 for finding in findings if finding.mandatory)
 
+            skip_reason = phase.critic_skip_reason(unit_state, atomic)
+            if skip_reason is not None:
+                # No call is billed, and the record says why: an empty render
+                # reviewed by the critic scores perfect for nothing, and a
+                # citation-metadata unit has no domain facts to review.
+                logger.info(
+                    "Unit %s critic pass %s skipped (%s)",
+                    phase.name,
+                    pass_index,
+                    skip_reason,
+                )
+                if isinstance(unit_state, UnitFactsState):
+                    unit_state.critic_outcome = "skipped"
+                _record_attempt(
+                    unit_state,
+                    kind="critic_skipped",
+                    render_attempt=render_attempt,
+                    critic_attempt=pass_index,
+                    n_findings=len(findings),
+                    n_mandatory=mandatory_before,
+                    accept_reason=skip_reason,
+                )
+                break
+
             unit_state.node_visits[phase.critic_node] += 1
             _reset_node_evidence_context(unit_state, phase.critic_node)
             await phase.criticise(unit_state, atomic)
-            if unit_state.status != Status.SUCCESS:
+            if unit_state.status != Status.SUCCESS and not _critic_unavailable(
+                unit_state
+            ):
                 request = unit_state.get_external_evidence_request(phase.critic_node)
                 if request.initiate_search:
                     await plan_external_evidence_for_node(
@@ -804,6 +1067,19 @@ async def run_unit_loop(
                         unit_state, atomic, phase.critic_node
                     )
                     await phase.criticise(unit_state, atomic)
+            if _critic_unavailable(unit_state):
+                # The critic produced no critique, so there is nothing to
+                # compile and nothing to re-evaluate acceptance from. The
+                # render is kept as it was and the unit leaves FAILED at the
+                # critique stage: unreviewed, not accepted. Applying the
+                # previous pass's suggestions here would patch against a
+                # critique of a graph that has since changed.
+                logger.warning(
+                    "Unit %s critic unavailable on pass %s; render kept unreviewed",
+                    phase.name,
+                    pass_index,
+                )
+                break
 
             outcome = _apply_critic_patch(
                 unit_state,
@@ -814,14 +1090,15 @@ async def run_unit_loop(
                 mandatory_before=mandatory_before,
             )
             logger.info(
-                "Unit %s critic pass %s/%s: %d applied, %d residual, %d no-op%s",
+                "Unit %s critic pass %s/%s: %d applied, %d residual, %d no-op, "
+                "%d rolled back",
                 phase.name,
                 pass_index,
                 phase.critic_passes(atomic),
                 outcome.applied,
                 outcome.residual,
                 outcome.noop,
-                " (rolled back)" if outcome.rolled_back else "",
+                outcome.rolled_back,
             )
             if outcome.converged:
                 break
@@ -833,6 +1110,15 @@ async def run_unit_loop(
                 unit_state.deterministic_findings = phase.collect_findings(
                     unit_state, atomic
                 )
+
+        if (
+            phase.name == "facts"
+            and atomic.facts_completion_passes > 0
+            and isinstance(unit_state, UnitFactsState)
+        ):
+            await _run_completion_passes(
+                unit_state, atomic, phase, render_attempt=render_attempt
+            )
 
         mandatory = sum(
             1 for finding in unit_state.deterministic_findings if finding.mandatory

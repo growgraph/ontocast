@@ -667,6 +667,7 @@ def make_render_facts_node(tools: ToolBox):
                     max_visits_per_node=state.max_visits,
                     llm_graph_format=state.llm_graph_format,
                     ontology_context_max_triples=tools.config.server.ontology_context_max_triples,
+                    ontology_chapter_format=tools.config.server.ontology_chapter_format,
                 )
                 loop_start = time.perf_counter()
                 result = await facts_loop(
@@ -709,6 +710,11 @@ def make_render_facts_node(tools: ToolBox):
         critic_fixes_applied = 0
         critic_fixes_residual = 0
         critic_fixes_noop = 0
+        critic_fixes_rolled_back = 0
+        critic_fixes_junk_refused = 0
+        critic_fixes_unresolved_prefix = 0
+        critic_units_unreviewed = 0
+        critic_units_skipped = 0
         unit_contexts: dict[int, tuple[str, list[str], OntologyAssemblyMode]] = {}
         for (
             unit_index,
@@ -725,6 +731,14 @@ def make_render_facts_node(tools: ToolBox):
             critic_fixes_applied += result.critic_fixes_applied
             critic_fixes_residual += result.critic_fixes_residual
             critic_fixes_noop += result.critic_fixes_noop
+            critic_fixes_rolled_back += result.critic_fixes_rolled_back
+            critic_fixes_junk_refused += result.critic_fixes_junk_refused
+            critic_fixes_unresolved_prefix += result.critic_fixes_unresolved_prefix
+            # A unit whose critic call failed used to leave the loop SUCCESS,
+            # indistinguishable from one the critic accepted; a unit the loop
+            # never sent to the critic looked the same. Both are counted.
+            critic_units_unreviewed += result.critic_outcome == "unavailable"
+            critic_units_skipped += result.critic_outcome == "skipped"
             if result.attempt_log:
                 state.facts_loop_telemetry[unit_index] = list(result.attempt_log)
             if result.applied_repairs:
@@ -838,6 +852,34 @@ def make_render_facts_node(tools: ToolBox):
         state.retrieval_metrics[RetrievalMetric.FACTS_CRITIC_FIXES_NOOP] = (
             critic_fixes_noop
         )
+        state.retrieval_metrics[RetrievalMetric.FACTS_CRITIC_FIXES_ROLLED_BACK] = (
+            critic_fixes_rolled_back
+        )
+        state.retrieval_metrics[RetrievalMetric.FACTS_CRITIC_FIXES_JUNK_REFUSED] = (
+            critic_fixes_junk_refused
+        )
+        state.retrieval_metrics[
+            RetrievalMetric.FACTS_CRITIC_FIXES_UNRESOLVED_PREFIX
+        ] = critic_fixes_unresolved_prefix
+        state.retrieval_metrics[RetrievalMetric.FACTS_CRITIC_UNITS_UNREVIEWED] = (
+            critic_units_unreviewed
+        )
+        state.retrieval_metrics[RetrievalMetric.FACTS_CRITIC_UNITS_SKIPPED] = (
+            critic_units_skipped
+        )
+        # The insert-only completion pass, read off the attempt log like the
+        # critic's own ledger: calls billed, inserts that stayed, and missed
+        # measurements the inventory stopped listing.
+        completion_attempts = [a for a in all_attempts if a.kind == "completion"]
+        state.retrieval_metrics[RetrievalMetric.FACTS_COMPLETION_CALLS] = len(
+            completion_attempts
+        )
+        state.retrieval_metrics[RetrievalMetric.FACTS_COMPLETION_TRIPLES_INSERTED] = (
+            sum(a.n_triples_inserted for a in completion_attempts)
+        )
+        state.retrieval_metrics[
+            RetrievalMetric.FACTS_COMPLETION_MEASUREMENTS_RECOVERED
+        ] = sum(a.n_measurements_recovered for a in completion_attempts)
         state.facts_units = facts_units
         state.status = _map_stage_status(
             failed_without_output_count, len(state.content_units)

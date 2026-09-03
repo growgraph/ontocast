@@ -58,6 +58,7 @@ def _atomic() -> AtomicToolBox:
             additional_standard_namespaces=(),
             validation_policy=None,
             acceptance_policy=None,
+            catalog_terms=lambda: set(),
         ),
     )
 
@@ -105,9 +106,13 @@ def test_a_pass_that_only_deletes_is_rolled_back() -> None:
 
     outcome = _run(state, [_finding()], mandatory_before=1)
 
-    assert outcome.rolled_back is True
+    assert outcome.rolled_back == 1
     assert (_SUBJECT, _EX_PREDICATE, _VALUE) in state.content_unit.graph
     assert state.critic_fixes_applied == 0
+    assert state.critic_fixes_rolled_back == 1
+    undone = state.attempt_log[-1].rolled_back_fixes
+    assert [fix.reason for fix in undone] == ["delete_only"]
+    assert undone[0].triple_ids == doomed
 
 
 def test_a_pass_that_rewrites_in_place_is_kept() -> None:
@@ -126,7 +131,7 @@ def test_a_pass_that_rewrites_in_place_is_kept() -> None:
 
     outcome = _run(state, [], mandatory_before=1)
 
-    assert outcome.rolled_back is False
+    assert outcome.rolled_back == 0
     assert outcome.applied == 1
     assert (_SUBJECT, URIRef("http://example.org/shift"), _VALUE) in (
         state.content_unit.graph
@@ -134,7 +139,7 @@ def test_a_pass_that_rewrites_in_place_is_kept() -> None:
 
 
 def test_a_pass_that_creates_mandatory_findings_is_rolled_back() -> None:
-    """Undone whole, however much else it fixed.
+    """Undone on its own, whatever else the pass fixed.
 
     The render path could not see this: it compared finding counts and graph
     size, and a pass that fixed two things while breaking three scored as
@@ -148,8 +153,10 @@ def test_a_pass_that_creates_mandatory_findings_is_rolled_back() -> None:
 
     outcome = _run(state, [_finding(), _finding()], mandatory_before=1)
 
-    assert outcome.rolled_back is True
+    assert outcome.rolled_back == 1
     assert set(state.content_unit.graph) == before
+    assert state.attempt_log[-1].rolled_back_fixes[0].reason == "new_mandatory"
+    assert state.attempt_log[-1].rolled_back_fixes[0].mandatory_delta == 1
 
 
 def test_a_growing_pass_is_never_flagged() -> None:
@@ -160,7 +167,7 @@ def test_a_growing_pass_is_never_flagged() -> None:
 
     outcome = _run(state, [], mandatory_before=0)
 
-    assert outcome.rolled_back is False
+    assert outcome.rolled_back == 0
     assert outcome.applied == 1
 
 
@@ -243,7 +250,7 @@ def test_a_rolled_back_patch_keeps_the_pre_patch_verdict() -> None:
 
     outcome = _run(state, [], mandatory_before=0)
 
-    assert outcome.rolled_back is True
+    assert outcome.rolled_back == 1
     assert state.status == Status.SUCCESS
 
 
@@ -258,3 +265,82 @@ def test_an_empty_no_update_pass_reevaluates_status_too() -> None:
 
     assert state.status == Status.SUCCESS
     assert state.failure_stage is None
+
+
+# --- one fix at a time --------------------------------------------------------
+
+
+def test_only_the_offending_fix_is_rolled_back() -> None:
+    """A whole pass used to be undone for one bad fix; the good ones stay.
+
+    Real critiques lost measurements this way: an ADD carrying a value the
+    render had missed rode in the same pass as a REMOVE that deleted without
+    writing, and the rollback took both.
+    """
+    state = _unit_state()
+    index = build_triple_index(state.content_unit.graph)
+    state.prompt_triple_index = index
+    doomed = [tid for tid, (_, p, _) in index.by_id.items() if p == _EX_PREDICATE]
+    good = _fix("ADD", correct=f'<{_SUBJECT}> <http://example.org/new> "x" .')
+    state.suggestions.actionable_fixes = [good, _fix("REMOVE", triple_ids=doomed)]
+
+    outcome = _run(state, [], mandatory_before=0)
+
+    assert outcome.applied == 1
+    assert outcome.rolled_back == 1
+    graph = state.content_unit.graph
+    assert (_SUBJECT, URIRef("http://example.org/new"), Literal("x")) in graph
+    assert (_SUBJECT, _EX_PREDICATE, _VALUE) in graph, "the removal was undone"
+    assert state.critic_fixes_applied == 1
+    assert state.critic_fixes_rolled_back == 1
+    attempt = state.attempt_log[-1]
+    assert attempt.n_fixes_applied == 1
+    assert attempt.n_fixes_rolled_back == 1
+    assert attempt.patch_rolled_back is True
+    assert attempt.rolled_back_fixes[0].triple_ids == doomed
+    assert attempt.rolled_back_fixes[0].reason == "delete_only"
+
+
+def test_a_capped_replace_does_not_become_an_add() -> None:
+    """Over the delete cap a REPLACE goes back whole.
+
+    Keeping its insert half put the new value beside the old one -- a
+    different edit from the one proposed, and one that left the old value
+    the critic had flagged in place.
+    """
+    state = _unit_state()
+    index = build_triple_index(state.content_unit.graph)
+    state.prompt_triple_index = index
+    label_ids = [
+        tid for tid, (s, p, _) in index.by_id.items() if s == _VALUE and p == _LABEL
+    ]
+    state.suggestions.actionable_fixes = [
+        _fix(
+            "REPLACE",
+            triple_ids=label_ids,
+            correct=f'<{_VALUE}> <{_LABEL}> "96 milli-electronvolt" .',
+        )
+    ]
+    strict = _atomic()
+    strict.facts_patch_policy = CriticPatchPolicy(max_delete_share=0.01, min_deletes=0)
+
+    outcome = _run(state, [], mandatory_before=0, atomic=strict)
+
+    graph = state.content_unit.graph
+    assert outcome.applied == 0
+    assert outcome.residual == 1
+    assert (_VALUE, _LABEL, Literal("96 meV")) in graph
+    assert (_VALUE, _LABEL, Literal("96 milli-electronvolt")) not in graph
+    assert state.attempt_log[-1].patch_delete_capped is True
+
+
+def test_the_finding_walk_per_fix_is_charged_to_deterministic_repair() -> None:
+    state = _unit_state()
+    state.suggestions.actionable_fixes = [
+        _fix("ADD", correct=f'<{_SUBJECT}> <http://example.org/new> "x" .'),
+        _fix("ADD", correct=f'<{_SUBJECT}> <http://example.org/other> "y" .'),
+    ]
+
+    _run(state, [])
+
+    assert "repair/deterministic" in state.budget_tracker.node_durations

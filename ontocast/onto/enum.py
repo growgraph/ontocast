@@ -90,6 +90,22 @@ class RetrievalMetric(StrEnum):
     ONTOLOGY_CRITIC_FIXES_NOOP = "ontology_critic_fixes_noop"
     ONTOLOGY_CRITIC_PATCHES_ROLLED_BACK = "ontology_critic_patches_rolled_back"
     FACTS_CRITIC_ACCEPTED = "facts_critic_accepted"
+    #: Units whose critic call failed (timeout, unparseable response) and
+    #: left the loop unreviewed, and units the loop did not send to the
+    #: critic at all (empty render, citation metadata).
+    FACTS_CRITIC_UNITS_UNREVIEWED = "facts_critic_units_unreviewed"
+    FACTS_CRITIC_UNITS_SKIPPED = "facts_critic_units_skipped"
+    #: Per-fix outcomes of the compiled critique: fixes undone for leaving
+    #: the unit worse, inserts refused for minting a placeholder or an
+    #: annotation-only node, and payloads naming a prefix nothing declared.
+    FACTS_CRITIC_FIXES_ROLLED_BACK = "facts_critic_fixes_rolled_back"
+    FACTS_CRITIC_FIXES_JUNK_REFUSED = "facts_critic_fixes_junk_refused"
+    FACTS_CRITIC_FIXES_UNRESOLVED_PREFIX = "facts_critic_fixes_unresolved_prefix"
+    #: The insert-only completion pass: calls billed, triples that stayed
+    #: in, and missed measurements the inventory no longer lists afterwards.
+    FACTS_COMPLETION_CALLS = "facts_completion_calls"
+    FACTS_COMPLETION_TRIPLES_INSERTED = "facts_completion_triples_inserted"
+    FACTS_COMPLETION_MEASUREMENTS_RECOVERED = "facts_completion_measurements_recovered"
 
     # Aggregation and the un-merge repair.
     FACTS_REJECTED_MERGES = "facts_rejected_merges"
@@ -132,6 +148,23 @@ class LLMGraphFormat(StrEnum):
 
     TURTLE = "turtle"
     JSONLD = "jsonld"
+
+
+class OntologyChapterFormat(StrEnum):
+    """Syntax of the ``# ONTOLOGY`` chapter in the facts prompts.
+
+    - ``inherit`` (default): the chapter follows :class:`LLMGraphFormat`, so
+      the model reads the ontology in the syntax it is asked to write.
+    - ``turtle``: the chapter is Turtle whatever the wire format is. In a
+      facts prompt the ontology is read-only context -- nothing the model
+      emits has to match its syntax -- and Turtle spends fewer characters per
+      triple than pretty-printed JSON-LD, so this trades the read/write
+      symmetry for a shorter prompt. The graph payloads the model emits stay
+      in the wire format.
+    """
+
+    INHERIT = "inherit"
+    TURTLE = "turtle"
 
 
 class OntologyContextMode(StrEnum):

@@ -1,15 +1,27 @@
 from .common import system_preamble_semantic
 
+# Chapter order is a cost lever, not a stylistic choice. The ontology chapter
+# is most of a facts prompt and identical between the render and the critic
+# call on a unit, so everything up to its end -- preamble, conformance
+# contract, ontology -- is kept byte-identical across the two templates and
+# everything phase-specific (task, guidelines, user instruction, text) follows
+# it. A provider's prefix cache can then serve the critic the chapter the
+# render already paid for. The critic template opens the same way; a test
+# pins the two heads to each other.
 template_prompt = """
 {preamble}
+
+{conformance_chapter}
+
+{ontology_chapter}
+
+# TASK
+
+Generate semantic triples representing facts (not abstract entities) based on provided domain ontology.
 
 {facts_instruction}
 
 {user_instruction}
-
-{ontology_chapter}
-
-{conformance_chapter}
 
 {text_chapter}
 
@@ -22,10 +34,10 @@ template_prompt = """
 {format_instructions}
 """
 
-preamble = f"""
-{system_preamble_semantic}
-Generate semantic triples representing facts (not abstract entities) based on provided domain ontology.
-"""
+# Shared verbatim with the critic: the cacheable prefix starts at byte zero,
+# so the task statement lives in the template after the ontology chapter
+# rather than here.
+preamble = system_preamble_semantic
 
 _CITATION_METADATA_HEADER = """
 # CITATION-METADATA UNIT

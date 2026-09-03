@@ -23,6 +23,7 @@ from ontocast.onto.run_manifest import (
     RunManifestLoops,
     RunManifestSelection,
     RunManifestValidationConfig,
+    summarize_completion,
     summarize_loop,
 )
 from ontocast.onto.state import AgentState
@@ -179,8 +180,19 @@ def dump_validation_report(
     A batch run otherwise leaves no record of *why* a graph is non-conformant:
     the findings live on the state and are logged, and every downstream reader
     ends up re-running a validator to rebuild what the gate already computed.
+
+    ``unit_repairs`` and ``unit_failures`` are the per-unit counterparts of
+    ``gate_repairs``: what the deterministic passes rewrote in each render
+    before aggregation, and which units produced nothing. A predicate the
+    machine substituted is otherwise indistinguishable in the TTL from one the
+    model asserted, and a unit that failed from one that found nothing.
     """
-    if not state.facts_conformance and not state.facts_validation_findings:
+    if not (
+        state.facts_conformance
+        or state.facts_validation_findings
+        or state.facts_repairs_applied
+        or state.unit_failures
+    ):
         return None
     payload = {
         "source": file_path.name,
@@ -191,6 +203,14 @@ def dump_validation_report(
         "findings": [
             finding.model_dump(mode="json")
             for finding in state.facts_validation_findings
+        ],
+        # Keyed by unit index, as facts_repairs is in the HTTP response.
+        "unit_repairs": {
+            str(unit_index): [record.model_dump(mode="json") for record in records]
+            for unit_index, records in sorted(state.facts_repairs_applied.items())
+        },
+        "unit_failures": [
+            failure.model_dump(mode="json") for failure in state.unit_failures
         ],
     }
     if output_dir is not None:
@@ -217,11 +237,19 @@ def _selection_manifest(state: AgentState, config: Config) -> RunManifestSelecti
         target_sections=state.target_sections,
         exclude_sections=state.exclude_sections,
         summarize_sections=state.summarize_sections,
-        summary_max_sentences=state.summary_max_sentences,
+        # The cap only acts when summarization runs; recording its default
+        # beside an empty summarize_sections reads as a setting that was on.
+        summary_max_sentences=(
+            state.summary_max_sentences if state.summarize_sections else None
+        ),
         bibliography_mode=str(config.get_tool_config().chunk_config.bibliography_mode),
+        non_content_mode=str(config.get_tool_config().chunk_config.non_content_mode),
         labeled_units=(sum(histogram.values()) - unlabeled) if histogram else None,
         unlabeled_units=unlabeled if histogram else None,
         section_label_histogram=histogram or None,
+        bibliography_units_skipped=state.bibliography_units_skipped,
+        undersized_units_skipped=state.undersized_units_skipped,
+        non_content_units_skipped=state.non_content_units_skipped,
     )
 
 
@@ -273,6 +301,7 @@ def dump_run_manifest(
         ),
         critic=summarize_loop(state.facts_loop_telemetry),
         ontology_critic=summarize_loop(state.ontology_loop_telemetry),
+        completion=summarize_completion(state.facts_loop_telemetry),
         ontology_reduce_metrics=dict(state.ontology_reduce_metrics),
         selection=_selection_manifest(state, config),
         validation_config=RunManifestValidationConfig(
@@ -304,6 +333,8 @@ def dump_run_manifest(
             think=llm_config.think,
             num_ctx=llm_config.num_ctx,
             num_predict=llm_config.num_predict,
+            reasoning_effort=llm_config.reasoning_effort,
+            thinking_budget=llm_config.thinking_budget,
             requests_per_second=llm_config.requests_per_second,
             max_retries=llm_config.max_retries,
         ),
@@ -619,6 +650,17 @@ def _merge_workflow_state_into_agent_state(
     metrics = workflow_state.get("retrieval_metrics")
     if metrics:
         state.retrieval_metrics = dict(metrics)
+    # The chunk node is the only writer of the routing counters; without this
+    # the manifest's selection block reports every run as having skipped
+    # nothing.
+    for counter in (
+        "bibliography_units_skipped",
+        "undersized_units_skipped",
+        "non_content_units_skipped",
+    ):
+        value = workflow_state.get(counter)
+        if value:
+            setattr(state, counter, int(value))
     # The manifest's critic blocks read these; leaving them off this copy list
     # is why case10's manifests reported `critic: {calls: 0}` while their own
     # retrieval_metrics recorded 20 facts-critic and 26 ontology-critic calls.
@@ -631,6 +673,30 @@ def _merge_workflow_state_into_agent_state(
     reduce_metrics = workflow_state.get("ontology_reduce_metrics")
     if reduce_metrics:
         state.ontology_reduce_metrics = dict(reduce_metrics)
+    # The manifest's selection census reads content_units and the validation
+    # dump reads the per-unit repairs and failures. Off this copy list, the
+    # census was always empty on the batch path (labeled_units absent, so a
+    # section filter that never acted was unrecordable) and the repairs were
+    # logged and dropped -- while the HTTP path returned both.
+    content_units = workflow_state.get("content_units")
+    if content_units is not None:
+        state.content_units = list(content_units)
+    unit_failures = workflow_state.get("unit_failures")
+    if unit_failures is not None:
+        state.unit_failures = list(unit_failures)
+    unit_repairs = workflow_state.get("facts_repairs_applied")
+    if unit_repairs:
+        state.facts_repairs_applied = {
+            unit_index: list(records) for unit_index, records in unit_repairs.items()
+        }
+    clusters = workflow_state.get("aggregation_clusters")
+    if clusters:
+        state.aggregation_clusters = {
+            final_iri: list(members) for final_iri, members in clusters.items()
+        }
+    key_clusters = workflow_state.get("aggregation_key_clusters")
+    if key_clusters is not None:
+        state.aggregation_key_clusters = list(key_clusters)
     return state
 
 

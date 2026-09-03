@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import pytest
 from pydantic import BaseModel
 
-from ontocast.onto.enum import LLMGraphFormat
+from ontocast.onto.enum import LLMGraphFormat, OntologyChapterFormat
 from ontocast.onto.llm_graph_payload import (
     _coerce_jsonld_graph_payload,
     _coerce_turtle_graph_payload,
@@ -269,6 +269,79 @@ def test_serialize_compact_jsonld_for_prompt() -> None:
     assert "@context" in data
     assert "@graph" in data
     assert any(n.get("@id") == "ex:item" for n in data["@graph"])
+
+
+def _ontology_for_chapter() -> RDFGraph:
+    """A small schema with the shapes an ontology chapter carries."""
+    from rdflib import OWL, RDF, RDFS, XSD, Literal, Namespace
+
+    ex = Namespace("https://example.org/onto#")
+    graph = RDFGraph()
+    graph.bind("ex", ex)
+    for index in range(12):
+        cls = ex[f"Class{index}"]
+        graph.add((cls, RDF.type, OWL.Class))
+        graph.add((cls, RDFS.label, Literal(f"class {index}", lang="en")))
+        graph.add((cls, RDFS.comment, Literal(f"Things of kind {index}.")))
+        prop = ex[f"prop{index}"]
+        graph.add((prop, RDF.type, OWL.DatatypeProperty))
+        graph.add((prop, RDFS.domain, cls))
+        graph.add((prop, RDFS.range, XSD.decimal))
+    return graph
+
+
+def test_turtle_ontology_chapter_is_the_denser_context() -> None:
+    """The override swaps the chapter's syntax for the one that costs less."""
+    graph = _ontology_for_chapter()
+    inherit = get_graph_format_profile(LLMGraphFormat.JSONLD)
+    overridden = get_graph_format_profile(
+        LLMGraphFormat.JSONLD, ontology_chapter_format=OntologyChapterFormat.TURTLE
+    )
+
+    jsonld = inherit.format_ontology_chapter(graph, suffix="\nINDEX")
+    turtle = overridden.format_ontology_chapter(graph, suffix="\nINDEX")
+
+    assert jsonld.startswith("\n\n# ONTOLOGY\n\n```json\n")
+    assert turtle.startswith("\n\n# ONTOLOGY\n\n```ttl\n")
+    assert jsonld.endswith("\nINDEX")
+    assert turtle.endswith("\nINDEX")
+    assert len(turtle) < len(jsonld)
+
+    # The Turtle body is real Turtle carrying the whole graph.
+    body = turtle.split("```ttl\n", 1)[1].split("\n```", 1)[0]
+    parsed = RDFGraph()
+    parsed.parse(data=body, format="turtle")
+    assert len(parsed) == len(graph)
+
+
+def test_chapter_override_leaves_the_wire_format_alone() -> None:
+    """Only the read-only ontology context changes syntax.
+
+    Output instructions, the facts chapter and the indexed ontology chapter
+    (the ontology critic's) stay in the wire format: the model still writes
+    JSON-LD, and the critic's patch still targets what it reads.
+    """
+    graph = _ontology_for_chapter()
+    inherit = get_graph_format_profile(LLMGraphFormat.JSONLD)
+    overridden = get_graph_format_profile(
+        LLMGraphFormat.JSONLD, ontology_chapter_format=OntologyChapterFormat.TURTLE
+    )
+
+    assert inherit.ontology_chapter_wire is LLMGraphFormat.JSONLD
+    assert overridden.format is LLMGraphFormat.JSONLD
+    assert overridden.ontology_chapter_wire is LLMGraphFormat.TURTLE
+    assert (
+        overridden.render_fresh_output_instruction()
+        == inherit.render_fresh_output_instruction()
+    )
+    assert (
+        overridden.critique_graph_instruction() == inherit.critique_graph_instruction()
+    )
+    assert (
+        overridden.format_facts_chapter_indexed(graph).text
+        == inherit.format_facts_chapter_indexed(graph).text
+    )
+    assert "```json" in overridden.format_ontology_chapter_indexed(graph).text
 
 
 def test_parsed_graph_update_applies_via_unit_facts_state() -> None:

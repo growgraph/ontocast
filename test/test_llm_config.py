@@ -1,8 +1,10 @@
 """Tests for LLM provider/model configuration validation."""
 
 import logging
+from typing import Literal
 
 import pytest
+from pydantic import ValidationError
 
 from ontocast.config import (
     ClaudeModel,
@@ -119,3 +121,61 @@ def _default_model_for(provider: LLMProvider):
     if provider == LLMProvider.ANTHROPIC:
         return ClaudeModel.CLAUDE_SONNET_4
     return GeminiModel.GEMINI_2_0_FLASH
+
+
+@pytest.mark.parametrize("effort", ["minimal", "low", "medium", "high"])
+def test_llm_config_accepts_each_reasoning_effort(
+    effort: Literal["minimal", "low", "medium", "high"],
+) -> None:
+    config = LLMConfig(provider=LLMProvider.OPENAI, reasoning_effort=effort)
+    assert config.reasoning_effort == effort
+
+
+def test_llm_config_rejects_an_unknown_reasoning_effort() -> None:
+    # A typo would otherwise reach the provider as a request error on the
+    # first call, after the ontology sync has already been paid for.
+    with pytest.raises(ValidationError):
+        LLMConfig.model_validate(
+            {"provider": LLMProvider.OPENAI, "reasoning_effort": "max"}
+        )
+
+
+def test_llm_config_thinking_budget_allows_off_and_model_chosen() -> None:
+    # 0 turns thinking off where the model allows it; -1 hands the choice to
+    # the model. Anything lower is not a value the provider defines.
+    assert LLMConfig(thinking_budget=0).thinking_budget == 0
+    assert LLMConfig(thinking_budget=-1).thinking_budget == -1
+    with pytest.raises(ValidationError):
+        LLMConfig(thinking_budget=-2)
+
+
+def test_reasoning_knobs_are_read_from_the_environment(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "low")
+    monkeypatch.setenv("LLM_THINKING_BUDGET", "1024")
+    config = LLMConfig()
+    assert config.reasoning_effort == "low"
+    assert config.thinking_budget == 1024
+
+
+def test_workers_above_inflight_warn_at_construction(caplog) -> None:
+    """PARALLEL_WORKERS past LLM_MAX_INFLIGHT only queue; say so up front.
+
+    A unit worker never issues two calls at once, so the provider concurrency
+    a document reaches is min(workers, inflight). Each surplus worker holds a
+    unit slot and its memory while it waits -- a cost with no return that
+    nothing at runtime names beyond a growing llm/inflight_wait.
+    """
+    from ontocast.toolbox import warn_if_workers_exceed_inflight
+
+    config = Config()
+    config.server.parallel_workers = 16
+    config.tool_config.llm_config.llm_max_inflight = 8
+    with caplog.at_level(logging.WARNING, logger="ontocast.toolbox"):
+        assert warn_if_workers_exceed_inflight(config) is True
+    assert "PARALLEL_WORKERS=16 exceeds LLM_MAX_INFLIGHT=8" in caplog.text
+
+    caplog.clear()
+    config.server.parallel_workers = 8
+    with caplog.at_level(logging.WARNING, logger="ontocast.toolbox"):
+        assert warn_if_workers_exceed_inflight(config) is False
+    assert caplog.text == ""

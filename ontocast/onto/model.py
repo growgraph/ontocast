@@ -529,6 +529,29 @@ class FactsCritiqueReport(BaseModel):
     )
 
 
+class FactsCompletionReport(BaseModel):
+    """Output of the insert-only facts completion pass.
+
+    Structurally the ADD-only slice of :class:`FactsCritiqueReport`: no
+    ``success``/``score`` because this pass does not judge the render, and no
+    ``systemic_critique_summary`` because there is nothing to summarize beyond
+    the fixes themselves. No web-search request either -- the pass runs after
+    the critic loop has already used its evidence budget.
+    """
+
+    proposed_fixes: list[TripleFix] = Field(
+        default_factory=list,
+        description=(
+            "One fix per new subject closure, action ADD only -- never REMOVE "
+            "or REPLACE, and `triple_ids` is unused. `correct_value` holds "
+            "every triple the closure needs (rdf:type, the recovered "
+            "measurement, rdfs:label), attached to an existing catalog-typed "
+            "subject when the EXISTING SUBJECTS chapter offers one for the "
+            "same entity rather than minting a duplicate."
+        ),
+    )
+
+
 class ExternalEvidenceHit(BaseModel):
     """Normalized external evidence hit metadata."""
 
@@ -652,6 +675,14 @@ class UnitFinding(BaseModel):
     predicate: str = ""
     value: str = ""
     suggestions: list[str] = Field(default_factory=list)
+    facet: str = Field(
+        default="",
+        description=(
+            "Variant within ``kind`` for findings that come in more than one: "
+            "numeric coverage is split into 'measurements' (a number written "
+            "with its unit) and 'unclassified' (a bare number)."
+        ),
+    )
 
 
 class FactsUnitFinding(UnitFinding):
@@ -786,6 +817,25 @@ class UnitFailure(BaseModel):
     reason: str | None = None
 
 
+class RolledBackFix(BaseModel):
+    """One critic fix applied and undone on its own for leaving the unit worse.
+
+    Carried on the ``critic_patch`` attempt that rolled it back, so a dump
+    shows *which* correction was refused and why -- previously the whole
+    pass was undone and the record said only that it had been.
+    """
+
+    triple_ids: list[int] = Field(default_factory=list)
+    correct_value: str = ""
+    #: ``delete_only`` (removed and wrote nothing), ``no_progress`` (shrank the
+    #: product without resolving anything), ``new_mandatory`` (raised the
+    #: mandatory finding count), or ``refused`` (the phase rejected the patch).
+    reason: str = ""
+    #: Mandatory findings after minus before the fix; positive means it
+    #: manufactured defects.
+    mandatory_delta: int = 0
+
+
 class LoopAttempt(BaseModel):
     """Telemetry record for one attempt inside a per-unit render/critic loop.
 
@@ -803,11 +853,20 @@ class LoopAttempt(BaseModel):
         the fixes, so "what the critique cost" and "what it changed" stay
         distinguishable. ``kind="llm_repair"`` is retained for artifacts written by
         earlier releases, when a separate finding-driven repair render existed.
+
+    ``kind="critic_skipped"`` records a pass the loop decided not to spend --
+        no call was billed -- with the reason in ``accept_reason``
+        (``empty_render``, ``citation_metadata``). A ``critic`` record whose
+        ``accept_reason`` is ``critic_unavailable`` is a billed call that
+        produced no critique; the unit leaves the loop unreviewed.
+        ``kind="completion"`` is the insert-only completion pass.
     """
 
     render_attempt: int = 0
     critic_attempt: int = 0
-    kind: Literal["render", "critic", "critic_patch", "llm_repair"] = "render"
+    kind: Literal[
+        "render", "critic", "critic_patch", "critic_skipped", "completion", "llm_repair"
+    ] = "render"
     score: float | None = None
     success: bool | None = None
     n_actionable_fixes: int = 0
@@ -844,7 +903,38 @@ class LoopAttempt(BaseModel):
     n_triples_inserted: int = 0
     patch_rolled_back: bool = Field(
         default=False,
-        description="The pass left the unit worse and was undone whole.",
+        description=(
+            "At least one fix of the pass was undone for leaving the unit "
+            "worse. Fixes are applied and judged one at a time, so the rest "
+            "of the pass stands; ``n_fixes_rolled_back`` says how many went."
+        ),
+    )
+    n_fixes_rolled_back: int = 0
+    rolled_back_fixes: list[RolledBackFix] = Field(
+        default_factory=list,
+        description="The undone fixes, each with the reason it was refused.",
+    )
+    n_fixes_junk_refused: int = Field(
+        default=0,
+        description=(
+            "Inserts refused at compile time for minting a placeholder: a "
+            "subject named for an ignored token or artifact, or a new node "
+            "carrying only annotations and no type."
+        ),
+    )
+    n_fixes_unresolved_prefix: int = Field(
+        default=0,
+        description=(
+            "Fixes whose payload named a prefix nothing declared, so the "
+            "statement it meant could not be identified."
+        ),
+    )
+    n_measurements_recovered: int = Field(
+        default=0,
+        description=(
+            "Completion pass only: missed measurements the numeric inventory "
+            "no longer lists after the inserts that stayed."
+        ),
     )
     patch_delete_capped: bool = Field(
         default=False,

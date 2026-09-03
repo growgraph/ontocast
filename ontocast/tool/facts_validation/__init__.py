@@ -54,6 +54,7 @@ from ontocast.tool.facts_validation.terms import (
 from ontocast.tool.facts_validation.unit_findings import (
     collect_unit_findings,
     domain_violation_findings,
+    unit_numeric_inventory,
 )
 
 __all__ = [
@@ -90,5 +91,6 @@ __all__ = [
     "shacl_catalog_contradictions",
     "count_shacl_focus_nodes",
     "summarize_conformance",
+    "unit_numeric_inventory",
     "validate_aggregated_facts",
 ]

@@ -48,7 +48,7 @@ def _unit_state(**kwargs) -> UnitFactsState:
     )
 
 
-def _tools(critic_passes: int = 1) -> ToolBox:
+def _tools(critic_passes: int = 1, *, critic_min_triples: int = 0) -> ToolBox:
     return cast(
         ToolBox,
         SimpleNamespace(
@@ -65,6 +65,12 @@ def _tools(critic_passes: int = 1) -> ToolBox:
                     ontology_acceptance_policy=None,
                     numeric_coverage_limit=30,
                     numeric_coverage_mandatory=False,
+                    # The stub renders leave the graph empty, so the floor
+                    # that skips empty renders must be off for the critic to
+                    # be reached at all; the skip itself is tested below.
+                    facts_critic_min_triples=critic_min_triples,
+                    facts_completion_passes=0,
+                    catalog_terms=lambda: set(),
                 ),
             ),
         ),
@@ -300,6 +306,137 @@ async def test_max_visits_retries_only_a_failed_render(monkeypatch) -> None:
     )
 
     assert calls["render"] == 3
+
+
+# -- when the critic is not spent, and when it does not answer ---------------
+
+
+@pytest.mark.anyio
+async def test_the_critic_is_skipped_on_an_empty_render(monkeypatch) -> None:
+    """A critic shown an empty graph scores it perfect and bills a call."""
+    calls = {"critic": 0}
+
+    async def ok_render(state, tools, **kwargs):
+        state.status = Status.SUCCESS
+        return state
+
+    async def critic(state, tools):
+        calls["critic"] += 1
+        return state
+
+    monkeypatch.setattr(atomic_module, "render_facts", ok_render)
+    monkeypatch.setattr(atomic_module, "criticise_facts", critic)
+
+    result = await facts_loop(
+        _unit_state(),
+        _tools(critic_min_triples=1),
+        _context(),
+        pre_resolved_context=_resolved_context(),
+    )
+
+    assert calls["critic"] == 0
+    assert result.critic_outcome == "skipped"
+    skipped = [a for a in result.attempt_log if a.kind == "critic_skipped"]
+    assert [a.accept_reason for a in skipped] == ["empty_render"]
+    assert result.status == Status.SUCCESS
+
+
+@pytest.mark.anyio
+async def test_the_critic_is_skipped_on_citation_metadata(monkeypatch) -> None:
+    calls = {"critic": 0}
+
+    async def ok_render(state, tools, **kwargs):
+        state.content_unit.graph.add(
+            (
+                URIRef("https://example.com/w1"),
+                URIRef("https://schema.org/name"),
+                URIRef("https://example.com/n"),
+            )
+        )
+        state.status = Status.SUCCESS
+        return state
+
+    async def critic(state, tools):
+        calls["critic"] += 1
+        return state
+
+    monkeypatch.setattr(atomic_module, "render_facts", ok_render)
+    monkeypatch.setattr(atomic_module, "criticise_facts", critic)
+
+    unit = ContentUnit(
+        text="[1] A. Author, J. Stuff 12 (2019) 34.",
+        index=0,
+        doc_iri=URIRef("https://example.com/doc/d1"),
+        graph=RDFGraph(),
+        is_citation_metadata=True,
+    )
+    result = await facts_loop(
+        UnitFactsState(content_unit=unit, ontology_snapshot=empty_snapshot()),
+        _tools(critic_min_triples=1),
+        _context(),
+        pre_resolved_context=_resolved_context(),
+    )
+
+    assert calls["critic"] == 0
+    assert result.critic_outcome == "skipped"
+    assert result.attempt_log[-1].accept_reason == "citation_metadata"
+
+
+@pytest.mark.anyio
+async def test_an_unavailable_critic_leaves_the_render_unreviewed(
+    monkeypatch,
+) -> None:
+    """A critic that did not answer has not accepted.
+
+    The unit used to leave the loop SUCCESS with whatever suggestions the
+    state happened to hold; now it leaves FAILED at the critique stage with
+    its render intact, and nothing is compiled against a critique that never
+    arrived.
+    """
+    triple = (
+        URIRef("https://example.com/s"),
+        URIRef("https://example.com/p"),
+        URIRef("https://example.com/o"),
+    )
+
+    async def ok_render(state, tools, **kwargs):
+        state.content_unit.graph.add(triple)
+        state.status = Status.SUCCESS
+        return state
+
+    async def unavailable_critic(state, tools):
+        # What the agent's failure branch records: an outcome, a billed
+        # attempt, and stale suggestions that must not be applied.
+        state.critic_outcome = "unavailable"
+        state.suggestions = Suggestions(
+            actionable_fixes=[
+                TripleFix(
+                    text_fragment="Alice",
+                    action="ADD",
+                    severity="critical",
+                    correct_value='<https://example.com/s> <https://example.com/q> "v" .',
+                    explanation="stale",
+                )
+            ]
+        )
+        state.set_failure(FailureStage.FACTS_CRITIQUE, "request timed out")
+        return state
+
+    monkeypatch.setattr(atomic_module, "render_facts", ok_render)
+    monkeypatch.setattr(atomic_module, "criticise_facts", unavailable_critic)
+
+    result = await facts_loop(
+        _unit_state(),
+        _tools(critic_passes=2),
+        _context(),
+        pre_resolved_context=_resolved_context(),
+    )
+
+    assert result.status == Status.FAILED
+    assert result.failure_stage == FailureStage.FACTS_CRITIQUE
+    assert set(result.content_unit.graph) == {triple}, "the render is kept as is"
+    assert result.critic_fixes_applied == 0
+    assert not [a for a in result.attempt_log if a.kind == "critic_patch"]
 
 
 # -- a deployment fault is not a unit failure -------------------------------

@@ -5,6 +5,7 @@ from langchain_core.messages.ai import AIMessage
 
 from ontocast.onto.token_usage import TokenUsage
 from ontocast.tool.llm import (
+    _chars_received_from_result,
     _usage_from_llm_result,
     _usage_metadata_from,
     token_usage_from_openai_payload,
@@ -117,3 +118,23 @@ def test_usage_metadata_round_trips() -> None:
 
 def test_usage_metadata_is_none_without_totals() -> None:
     assert _usage_metadata_from(TokenUsage(reasoning_tokens=5)) is None
+
+
+def test_chars_received_counts_characters_of_block_content() -> None:
+    # Providers that answer in typed content blocks were measured in blocks:
+    # len() of a two-block reply is 2, so chars_received for such a run
+    # measured a different quantity from a string-content provider's, and
+    # every chars-per-call comparison across providers was on different units.
+    blocks = AIMessage(
+        content=[
+            {"type": "text", "text": "abc"},
+            {"type": "text", "text": "defgh"},
+        ]
+    )
+    assert _chars_received_from_result(blocks) == 8
+    assert _chars_received_from_result(AIMessage(content="abcdefgh")) == 8
+
+
+def test_chars_received_is_zero_for_an_empty_reply() -> None:
+    assert _chars_received_from_result(AIMessage(content="")) == 0
+    assert _chars_received_from_result(AIMessage(content=[])) == 0

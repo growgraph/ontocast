@@ -83,6 +83,7 @@ def _tools() -> AtomicToolBox:
             web_grounding_enabled_for_node=lambda _node: False,
             object_property_literal_check=True,
             property_alias_min_ratio=0.85,
+            catalog_terms=lambda: set(),
             code_predicates=(),
             citation_vocabulary={},
             quantity_fallback_vocabulary=None,

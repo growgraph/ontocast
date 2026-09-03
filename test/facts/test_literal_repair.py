@@ -11,7 +11,11 @@ import pytest
 from rdflib import RDF, Literal, URIRef
 from rdflib.namespace import XSD
 
-from ontocast.onto.model import FactsUnitFindingKind, format_findings_for_prompt
+from ontocast.onto.model import (
+    FactsUnitFinding,
+    FactsUnitFindingKind,
+    format_findings_for_prompt,
+)
 from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
 from ontocast.tool.facts_validation import (
     collect_unit_findings,
@@ -112,6 +116,167 @@ def test_repair_property_aliases_rewrites_qqval_bound() -> None:
         URIRef(f"{QQVAL}hasLowerBound"),
         None,
     ) in graph
+
+
+DOM = "https://example.com/domain#"
+
+
+def _domain_ontology(*locals_: str) -> RDFGraph:
+    """A snapshot declaring only the given properties in the domain namespace."""
+    graph = RDFGraph()
+    declarations = "\n".join(f"dom:{local} a owl:ObjectProperty ." for local in locals_)
+    graph.parse(
+        data=f"""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix dom: <{DOM}> .
+        {declarations}
+        """,
+        format="turtle",
+    )
+    return graph
+
+
+def _alias_findings(findings) -> dict[str, FactsUnitFinding]:
+    return {
+        finding.predicate: finding
+        for finding in findings
+        if finding.kind is FactsUnitFindingKind.PROPERTY_ALIAS
+    }
+
+
+def test_alias_repair_refuses_token_substitution() -> None:
+    """A name that differs by one token is a different property, not a typo.
+
+    The snapshot retrieved one member of a family of look-alike properties;
+    the render used its siblings. Rewriting them to the retrieved one would
+    silently substitute one property for another, so however high the string
+    similarity they stay untouched and are reported instead.
+    """
+    graph = _facts(
+        f"""
+        @prefix dom: <{DOM}> .
+        cd:m dom:hasASiteComponent cd:cs ;
+            dom:hasXSiteComponent cd:br ;
+            dom:hasPurity cd:p .
+        """
+    )
+    ontology = _domain_ontology("hasBSiteComponent", "hasImpurity")
+
+    # A permissive floor makes the point: the ratio is never sufficient.
+    rewritten, findings, applied = repair_property_aliases(
+        graph, ontology, min_ratio=0.5
+    )
+
+    assert rewritten == 0
+    assert applied == []
+    for local in ("hasASiteComponent", "hasXSiteComponent", "hasPurity"):
+        assert (URIRef(f"{FACTS}m"), URIRef(f"{DOM}{local}"), None) in graph
+    assert (None, URIRef(f"{DOM}hasBSiteComponent"), None) not in graph
+    assert (None, URIRef(f"{DOM}hasImpurity"), None) not in graph
+    flagged = _alias_findings(findings)
+    assert set(flagged) == {
+        f"{DOM}hasASiteComponent",
+        f"{DOM}hasXSiteComponent",
+        f"{DOM}hasPurity",
+    }
+    assert all(finding.mandatory for finding in flagged.values())
+    assert f"{DOM}hasBSiteComponent" in flagged[f"{DOM}hasASiteComponent"].suggestions
+    assert f"{DOM}hasImpurity" in flagged[f"{DOM}hasPurity"].suggestions
+
+
+def test_alias_repair_skips_terms_declared_elsewhere_in_catalog() -> None:
+    """A term the full catalog declares is real even if the snapshot lacks it."""
+    graph = _facts(
+        f"""
+        @prefix dom: <{DOM}> .
+        cd:m dom:hasASiteComponent cd:cs .
+        """
+    )
+    ontology = _domain_ontology("hasBSiteComponent")
+
+    rewritten, findings, applied = repair_property_aliases(
+        graph,
+        ontology,
+        full_catalog_terms={f"{DOM}hasASiteComponent", f"{DOM}hasBSiteComponent"},
+    )
+
+    assert rewritten == 0
+    assert applied == []
+    assert _alias_findings(findings) == {}
+    assert (
+        URIRef(f"{FACTS}m"),
+        URIRef(f"{DOM}hasASiteComponent"),
+        URIRef(f"{FACTS}cs"),
+    ) in graph
+
+
+def test_alias_repair_full_catalog_membership_outranks_containment() -> None:
+    """Even a candidate that qualifies by containment loses to catalog membership."""
+    graph = _facts(
+        """
+        cd:a qudt:numericValue "1"^^xsd:decimal .
+        cd:b qudt:numericValue "2"^^xsd:decimal .
+        cd:c qudt:value "375"^^xsd:decimal .
+        """
+    )
+
+    rewritten, findings, _applied = repair_property_aliases(
+        graph, _ontology(), full_catalog_terms={f"{QUDT}value"}
+    )
+
+    assert rewritten == 0
+    assert not findings
+    assert (URIRef(f"{FACTS}c"), URIRef(f"{QUDT}value"), None) in graph
+
+
+def test_alias_repair_ratio_breaks_ties_only_among_qualifying_candidates() -> None:
+    """Two candidates qualify; the ratio picks the one that spells the same."""
+    graph = _facts(
+        f"""
+        @prefix dom: <{DOM}> .
+        cd:r dom:lowerBound "10"^^xsd:decimal .
+        """
+    )
+    # ``lowerbound`` qualifies by folded spelling, ``hasLowerBound`` by token
+    # containment; only the former is a near-perfect string match.
+    ontology = _domain_ontology("hasLowerBound", "lowerbound")
+
+    rewritten, findings, applied = repair_property_aliases(graph, ontology)
+
+    assert rewritten == 1
+    assert not findings
+    assert (URIRef(f"{FACTS}r"), URIRef(f"{DOM}lowerbound"), None) in graph
+    assert [record.target for record in applied] == [f"{DOM}lowerbound"]
+
+
+def test_alias_repair_ambiguous_containment_is_a_finding_under_the_floor() -> None:
+    """Several containing candidates with no clear string winner are reported.
+
+    Lowering the floor is the knob that lets the ratio settle such a tie.
+    """
+    body = f"""
+        @prefix dom: <{DOM}> .
+        cd:r dom:lowerBound "10"^^xsd:decimal .
+        """
+    ontology = _domain_ontology("hasLowerBound", "hasLowerBoundInclusive")
+
+    graph = _facts(body)
+    rewritten, findings, _applied = repair_property_aliases(graph, ontology)
+    assert rewritten == 0
+    flagged = _alias_findings(findings)
+    assert set(flagged) == {f"{DOM}lowerBound"}
+    assert set(flagged[f"{DOM}lowerBound"].suggestions) >= {
+        f"{DOM}hasLowerBound",
+        f"{DOM}hasLowerBoundInclusive",
+    }
+
+    graph = _facts(body)
+    rewritten, findings, _applied = repair_property_aliases(
+        graph, ontology, min_ratio=0.8
+    )
+    assert rewritten == 1
+    assert not findings
+    assert (URIRef(f"{FACTS}r"), URIRef(f"{DOM}hasLowerBound"), None) in graph
 
 
 def test_repair_literal_type_objects_coerces_compact_and_absolute() -> None:

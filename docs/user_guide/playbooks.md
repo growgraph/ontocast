@@ -129,7 +129,7 @@ Why these:
 - **`fixed_single_ontology`** removes the per-unit selection call, which is both
   cheaper and more consistent than letting the model re-pick a schema for every
   chunk.
-- **`FACTS_CONTEXT_FROM_UNITS=true`** matters specifically in this mode: with
+- **`FACTS_CONTEXT_FROM_UNITS=true`** (the default) matters specifically in this mode: with
   no ontology stage there are no reduced artifacts to merge, so without it the
   aggregator's merge guards and the SHACL gate run against an *empty*
   vocabulary — the gate then overstates class violations and records

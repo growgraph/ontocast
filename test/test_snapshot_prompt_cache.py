@@ -11,10 +11,17 @@ from __future__ import annotations
 import pytest
 from rdflib import OWL, RDF, RDFS, Literal, Namespace
 
-from ontocast.onto.enum import LLMGraphFormat, OntologyAssemblyMode
+from ontocast.onto.enum import (
+    LLMGraphFormat,
+    OntologyAssemblyMode,
+    OntologyChapterFormat,
+)
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.prompt.graph_format import get_graph_format_profile
+from ontocast.prompt.graph_format import (
+    GraphFormatProfile,
+    get_graph_format_profile,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -39,15 +46,15 @@ def _snapshot(graph: RDFGraph) -> OntologySnapshot:
     )
 
 
-def _counting_profile(monkeypatch) -> tuple[object, list[int]]:
-    """Graph-format profile whose serialisation is counted."""
+def _counting_profile(monkeypatch) -> tuple[GraphFormatProfile, list[int]]:
+    """Graph-format profile whose serialisation is counted (on every profile)."""
     profile = get_graph_format_profile(LLMGraphFormat.TURTLE)
     calls: list[int] = []
     original = type(profile).serialize_graph_for_prompt
 
-    def counted(self, graph):
+    def counted(self, graph, **kwargs):
         calls.append(1)
-        return original(self, graph)
+        return original(self, graph, **kwargs)
 
     monkeypatch.setattr(type(profile), "serialize_graph_for_prompt", counted)
     return profile, calls
@@ -142,3 +149,30 @@ def test_memo_does_not_grow_without_bound() -> None:
         snapshot.prompt_chapter(profile)
 
     assert len(snapshot._prompt_cache) == 1
+
+
+def test_chapter_format_is_part_of_the_memo_key(monkeypatch) -> None:
+    """ONTOLOGY_CHAPTER_FORMAT changes the chapter text, so it must miss the memo.
+
+    The key is the syntax the chapter is written in, not the profile that
+    asked: a JSON-LD profile carrying the Turtle override and a plain Turtle
+    profile produce the same chapter, and share the entry.
+    """
+    _, calls = _counting_profile(monkeypatch)
+    snapshot = _snapshot(_graph())
+    inherit = get_graph_format_profile(LLMGraphFormat.JSONLD)
+    overridden = get_graph_format_profile(
+        LLMGraphFormat.JSONLD, ontology_chapter_format=OntologyChapterFormat.TURTLE
+    )
+
+    jsonld = snapshot.prompt_chapter(inherit)
+    turtle = snapshot.prompt_chapter(overridden)
+
+    assert len(calls) == 2, "a different chapter syntax must miss the memo"
+    assert jsonld != turtle
+    assert "```json" in jsonld
+    assert "```ttl" in turtle
+
+    same_syntax = get_graph_format_profile(LLMGraphFormat.TURTLE)
+    assert snapshot.prompt_chapter(same_syntax) == turtle
+    assert len(calls) == 2, "the same chapter syntax must hit the memo"

@@ -159,6 +159,11 @@ class ValidationPolicy(BaseModel):
     #: Floor on the share of schema terms a render must take from the
     #: catalog before DOMAIN_ADHERENCE fires. 0 disables the check.
     domain_adherence_min_share: float = 0.15
+    #: Fewest distinct schema terms a render must use before its catalog
+    #: share is judged at all. A share over a handful of terms is noise: a
+    #: front-matter unit typing an identifier and an author with generic
+    #: vocabulary is not a render that abandoned the catalog.
+    domain_adherence_min_terms: int = 4
 
     def standard_namespaces(self) -> tuple[str, ...]:
         """Built-in meta-vocabulary namespaces plus the configured ones."""

@@ -14,7 +14,10 @@ single provider token.
 | Documents | `MAX_CONCURRENT_PROCESSES` | unset | Concurrent `/process` and `/process_unit` handlers |
 
 A unit never issues two LLM calls at once, so within a *single* document the
-effective provider concurrency is `PARALLEL_WORKERS`. Across `K` concurrent
+effective provider concurrency is `min(PARALLEL_WORKERS, LLM_MAX_INFLIGHT)`;
+workers above the in-flight cap only queue on the semaphore, which shows up as
+`llm/inflight_wait` in the node durations, and startup now warns when the
+worker count exceeds the cap. Across `K` concurrent
 documents it is `min(K x PARALLEL_WORKERS, LLM_MAX_INFLIGHT)` — which is why a
 busy server can stop scaling with `PARALLEL_WORKERS` alone.
 
@@ -114,7 +117,7 @@ at zero, which is not the same as a run that used no tokens.
 |---|---|
 | `input_tokens` / `output_tokens` | **Billed**: live provider calls only. |
 | `cached_input_tokens` / `cached_output_tokens` | Replayed from the OntoCast disk cache. Deliberately *not* added to the billed totals — a replay pays nothing — so these are what the workload would cost cold. |
-| `reasoning_tokens` | Thinking tokens, counted **inside** the output totals. Dominates output cost for reasoning models (`LLM_THINK`). |
+| `reasoning_tokens` | Thinking tokens, counted **inside** the output totals. Dominates output cost for reasoning models; bounded by `LLM_THINK` (Ollama), `LLM_REASONING_EFFORT` (OpenAI) or `LLM_THINKING_BUDGET` (Google). When `reasoning_share_of_output` is large that knob is the first cost lever, not the prompt. |
 | `cache_read_input_tokens` | Served from the **provider's** prompt cache, counted inside the input totals and billed at a reduced rate. Unrelated to OntoCast's disk cache. |
 | `cache_creation_input_tokens` | Written to the provider's prompt cache. |
 
@@ -138,6 +141,12 @@ and mind the denominator: `reasoning_tokens` and `cache_read_input_tokens`
 accumulate on billed *and* replayed calls, while `input_tokens` counts billed
 only, so dividing by `input_tokens` alone can exceed 100% on a partly replayed
 run.
+
+The two calls a facts unit makes — render, then critic — carry the same
+ontology chapter, and both prompts now open with the constant chapters
+(preamble, conformance requirements) followed by that chapter, byte-identical,
+before anything unit-specific. The critic's call can therefore be served the
+prefix the render populated; `prefix_cache_hit_rate` is where that shows.
 
 **A low `prefix_cache_hit_rate` on a wide fan-out is expected, not a bug — and
 it is money.** A provider cache entry only becomes readable once the first
@@ -163,7 +172,9 @@ reintroduced O(N) full rdflib merges into the fan-out.
 
 The `llm/*` counters in the same map are about *spend* rather than concurrency —
 `llm/parse_retry` is a re-issued render, `llm/parse_abandoned` is a unit that
-contributed nothing. They are tabulated in
+contributed nothing, `llm/calls_failed` is every call that raised (timeouts and
+rate limits are its subsets), and a timed-out call is charged its prompt
+characters so `calls_count = llm/calls_timed + llm/timeouts` holds. They are tabulated in
 [Observability](observability.md#2-the-run-manifest), and the mechanism behind
 them in [Configuration](configuration.md#what-happens-to-a-response-that-will-not-parse).
 
@@ -269,6 +280,12 @@ structured output, and it buys that with context. If you are context-bound
 rather than parse-bound, switching to `turtle` is the largest single lever
 available — larger than any retrieval knob — and it changes no extraction
 semantics, only the encoding. It does invalidate the LLM cache.
+
+`ONTOLOGY_CHAPTER_FORMAT=turtle` takes that density for the ontology chapter
+alone — the part of a facts prompt that carries most of its characters — while
+the output wire stays JSON-LD, so the parse-reliability argument for the
+default is untouched. It is the first thing to try when facts prompts are
+context-bound.
 
 See [Configuration](configuration.md) for the full list and
 [LLM Caching](llm_caching.md) for cache behavior.

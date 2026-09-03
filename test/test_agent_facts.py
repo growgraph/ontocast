@@ -68,6 +68,7 @@ def _build_tools() -> AtomicToolBox:
             # duplicated literal default, so a rename fails loudly here
             # instead of silently reverting the configured ratio.
             property_alias_min_ratio=0.85,
+            catalog_terms=lambda: set(),
             code_predicates=(),
             citation_vocabulary={},
             quantity_fallback_vocabulary=None,
@@ -366,3 +367,50 @@ async def test_criticise_facts_adds_no_index_for_a_readable_ontology(
     await criticise_facts_module.criticise_facts(state, tools=_build_tools())
 
     assert "TERM INDEX" not in str(captured.get("ontology_chapter", ""))
+
+
+@pytest.mark.anyio
+async def test_criticise_facts_records_an_unavailable_critic(monkeypatch) -> None:
+    """A critic call that fails is a billed call that produced no critique.
+
+    It used to leave the unit as the render left it -- SUCCESS -- so a timed
+    out critic was indistinguishable from one that accepted.
+    """
+
+    async def failing_call(**kwargs):
+        raise TimeoutError("provider did not answer")
+
+    monkeypatch.setattr(criticise_facts_module, "call_llm_with_retry", failing_call)
+
+    state = UnitFactsState(
+        content_unit=_build_content_unit(with_graph=True),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
+    )
+    result = await criticise_facts_module.criticise_facts(state, tools=_build_tools())
+
+    assert result.critic_outcome == "unavailable"
+    assert result.status == Status.FAILED
+    assert result.failure_stage == FailureStage.FACTS_CRITIQUE
+    attempt = result.attempt_log[-1]
+    assert attempt.kind == "critic"
+    assert attempt.success is False
+    assert attempt.accept_reason == "critic_unavailable"
+    assert "did not answer" in (attempt.failure_reason or "")
+
+
+@pytest.mark.anyio
+async def test_criticise_facts_marks_a_reviewed_unit(monkeypatch) -> None:
+    async def fake_call_llm_with_retry(**kwargs):
+        return FactsCritiqueReport(success=True, score=90)
+
+    monkeypatch.setattr(
+        criticise_facts_module, "call_llm_with_retry", fake_call_llm_with_retry
+    )
+
+    state = UnitFactsState(
+        content_unit=_build_content_unit(with_graph=True),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
+    )
+    result = await criticise_facts_module.criticise_facts(state, tools=_build_tools())
+
+    assert result.critic_outcome == "reviewed"

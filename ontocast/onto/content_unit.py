@@ -77,6 +77,15 @@ class SourceUnit(BaseModel):
             "rendering extracts citation metadata only, never domain facts."
         ),
     )
+    is_non_content: bool = Field(
+        default=False,
+        description=(
+            "Unit detected as front/back matter with no domain facts (author "
+            "block, notes, ORCID, data availability, licence) and kept under "
+            "CHUNK_NON_CONTENT_MODE=extract; checks that presume domain prose "
+            "should stand down on it."
+        ),
+    )
     _hid: str = PrivateAttr(default="")
 
     @field_validator("doc_iri", mode="before")

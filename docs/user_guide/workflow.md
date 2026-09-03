@@ -115,6 +115,7 @@ every unit wait for the slowest summary before any extraction could start.
 - Section LLM tagging during Chunk uses **parallel** workers up to `PARALLEL_WORKERS`
 - Use `--head-chunks N` on the CLI to process only the first N units (testing)
 - Without section parameters, Chunk uses layout/simple sizing only (no tag/filter)
+- Routing before the fan-out runs `CHUNK_MIN_UNIT_CHARS` → bibliography (`CHUNK_BIBLIOGRAPHY_MODE`) → non-content (`CHUNK_NON_CONTENT_MODE`); in `extract` mode a non-content unit carries `is_non_content` instead of being dropped. `CHUNK_MAX_MEASUREMENTS_PER_UNIT` then splits units dense in unit-adjacent numbers at sentence boundaries.
 
 ### 3. Per-Unit Ontology Loop
 
@@ -149,7 +150,7 @@ Provenance triples (`prov:`, reification, chunk metadata) are kept in `ontology_
 
 When facts rendering is enabled, each unit runs a **facts loop** (render once, then bounded review-and-patch passes, with optional web evidence), then **merge facts** applies cross-chunk entity disambiguation and aggregation, and **validate facts** checks post-merge invariants (functional violations, suspect multi-values, degenerate coreference, optional SHACL). Merge-signature error findings (functional violation, suspect multi-value, degenerate coreference — never SHACL) on merged subjects trigger a deterministic un-merge: the offending cluster's pairs are vetoed and the retained facts units are re-aggregated (`FACTS_MERGE_REPAIR_PASSES`). Residual findings land in `facts_validation_findings` and the retrieval metrics.
 
-Chunks detected as bibliography/reference lists are routed by `CHUNK_BIBLIOGRAPHY_MODE`: by default they are dropped before extraction (`skip`); `citations_only` yields citation metadata only (`schema:ScholarlyArticle` + `schema:citation`), never domain facts mined from citation titles.
+Chunks detected as bibliography/reference lists are routed by `CHUNK_BIBLIOGRAPHY_MODE`: by default they are dropped before extraction (`skip`); `citations_only` yields citation metadata only (`schema:ScholarlyArticle` + `schema:citation`), never domain facts mined from citation titles. Front and back matter (author information, notes, licence, data availability, …) is routed the same way by `CHUNK_NON_CONTENT_MODE`.
 
 ![Facts loop](../assets/facts_loop.png)
 
@@ -168,6 +169,15 @@ A pass ends the loop early when it changed nothing or was rolled back, and is
 undone whole if it deleted without writing, shrank the unit's product without
 resolving anything, or created new mandatory findings. See
 [Validation](validation.md#how-a-critique-reaches-the-graph).
+
+When `FACTS_COMPLETION_PASSES` is set above its default of `0`, an
+insert-only **completion pass** runs once the critic loop above is done,
+while the numeric-coverage inventory still lists a measurement — a number
+with its unit — the render missed. Each pass proposes new subjects to add,
+never a removal or a rewrite, and its inserts go through the same
+per-subject regression check a critic fix goes through: an insert that
+leaves the unit worse is rolled back on its own. See
+[Validation](validation.md#completion-pass-insert-only-recovery).
 
 Facts output uses the **`cd:` namespace** for text-derived instances; domain ontology IRIs are read-only schema and pre-declared reference individuals (see [Facts extraction model](concepts.md#facts-extraction-model)). Optional `facts_user_instruction` adds focus on top of these built-in guidelines.
 

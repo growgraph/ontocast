@@ -218,6 +218,69 @@ async def test_timeout_frees_the_inflight_slot() -> None:
         await asyncio.wait_for(tool("hello again"), timeout=2.0)
 
 
+async def test_timeout_is_charged_to_the_budget() -> None:
+    """A timed-out call must reach calls_count, not only llm/timeouts.
+
+    The provider received and worked on the prompt; only the answer was
+    abandoned. Recorded as nothing, a run of timeouts read as a run of few,
+    cheap calls: the prompt characters it paid for were missing from
+    chars_sent and calls_count did not cover the attempt.
+    """
+    from ontocast.config import LLMConfig
+    from ontocast.onto.state import BudgetTracker
+    from ontocast.tool.cache import Cacher
+    from ontocast.tool.llm import LLMRequestTimeoutError, LLMTool
+
+    class _HangingModel:
+        async def ainvoke(self, *args, **kwds):
+            await asyncio.Event().wait()
+
+    tracker = BudgetTracker()
+    tool = LLMTool(
+        config=LLMConfig(cache_enabled=False, request_timeout_seconds=0.05),
+        cache=Cacher(),
+        budget_tracker=tracker,
+    )
+    tool._llm = _HangingModel()
+
+    with pytest.raises(LLMRequestTimeoutError):
+        await tool("hello")
+
+    assert tracker.calls_count == 1
+    assert tracker.chars_sent == len("hello")
+    assert tracker.chars_received == 0
+    assert tracker.counters["llm/timeouts"] == 1
+    assert tracker.counters["llm/calls_failed"] == 1
+    assert "llm/calls_timed" not in tracker.counters
+
+
+async def test_a_provider_error_is_a_failed_call_but_not_usage() -> None:
+    """A rejected or dropped request cost nothing: counted, not charged."""
+    from ontocast.config import LLMConfig
+    from ontocast.onto.state import BudgetTracker
+    from ontocast.tool.cache import Cacher
+    from ontocast.tool.llm import LLMTool
+
+    class _FailingModel:
+        async def ainvoke(self, *args, **kwds):
+            raise RuntimeError("connection reset")
+
+    tracker = BudgetTracker()
+    tool = LLMTool(
+        config=LLMConfig(cache_enabled=False),
+        cache=Cacher(),
+        budget_tracker=tracker,
+    )
+    tool._llm = _FailingModel()
+
+    with pytest.raises(RuntimeError):
+        await tool("hello")
+
+    assert tracker.calls_count == 0
+    assert tracker.counters["llm/calls_failed"] == 1
+    assert "llm/timeouts" not in tracker.counters
+
+
 def test_unescape_json_delimiters_repairs_escaped_string_delimiters() -> None:
     """The model escapes the quotes that should *delimit* a JSON string.
 

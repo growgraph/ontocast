@@ -2,6 +2,7 @@
 
 from typing import Literal as TypingLiteral
 
+import pytest
 from rdflib import Literal, URIRef
 
 from ontocast.onto.model import TripleFix
@@ -416,6 +417,179 @@ def test_an_iri_inside_a_quoted_literal_is_left_alone() -> None:
     ) in graph
 
 
+# --- prefixes in JSON-LD payloads -------------------------------------------
+#
+# A Turtle fragment gets the unit's @prefix lines prepended; a JSON-LD payload
+# used to get nothing, so `cd:sample_1` parsed as an IRI with scheme `cd` and
+# the compiled patch inserted a ghost the graph never matched.
+
+
+def test_a_jsonld_payload_in_the_units_prefixes_compiles() -> None:
+    graph = _graph()
+    fix = _fix("ADD", correct='{"@id": "cd:sample_1", "matsci:note": "extra"}')
+
+    compiled = compile_critic_fixes([fix], graph)
+
+    assert compiled.unresolved_prefix == 0
+    assert compiled.update is not None
+    apply_compiled_patch(graph, compiled.update)
+    assert (
+        URIRef(f"{CD}sample_1"),
+        URIRef(f"{MATSCI}note"),
+        Literal("extra"),
+    ) in graph
+
+
+def test_a_jsonld_payload_with_an_unbound_prefix_is_refused() -> None:
+    """Nothing declares `zz:`, so the statement names nothing in the graph."""
+    graph = _graph()
+    fix = _fix(
+        "ADD",
+        correct='{"@id": "zz:sample_9", "@type": "zz:Thing", "rdfs:label": "nine"}',
+    )
+
+    compiled = compile_critic_fixes([fix], graph)
+
+    assert compiled.update is None
+    assert compiled.residual == [fix]
+    assert compiled.unresolved_prefix == 1
+    assert len(graph) == len(_graph()), "no ghost subject may be inserted"
+
+
+def test_a_declared_context_wins_over_the_units_binding() -> None:
+    graph = _graph()
+    fix = _fix(
+        "ADD",
+        correct=(
+            '{"@context": {"cd": "https://other.example/"}, '
+            '"@id": "cd:s", "@type": "matsci:Thing", "rdfs:label": "elsewhere"}'
+        ),
+    )
+
+    compiled = compile_critic_fixes([fix], graph)
+
+    assert compiled.update is not None
+    apply_compiled_patch(graph, compiled.update)
+    assert (
+        URIRef("https://other.example/s"),
+        URIRef(f"{RDFS_NS}label"),
+        Literal("elsewhere"),
+    ) in graph
+
+
+def test_a_turtle_payload_with_a_bracketed_curie_is_refused() -> None:
+    """`<cd:x>` is a syntactically valid IRI that names nothing; same rule."""
+    graph = _graph()
+    fix = _fix("ADD", correct='<cd:sample_1> <matsci:note> "extra" .')
+
+    compiled = compile_critic_fixes([fix], graph)
+
+    assert compiled.update is None
+    assert compiled.unresolved_prefix == 1
+
+
+def test_a_removal_by_id_ignores_an_unbound_prefix_in_correct_value() -> None:
+    """The id is what the fix acts on; an unused payload cannot veto it."""
+    graph = _graph()
+    index = build_triple_index(graph)
+    label_id = _id_of(index, "label")
+    fix = _fix("REMOVE", correct='{"@id": "zz:x", "zz:p": "y"}', triple_ids=[label_id])
+
+    compiled = compile_critic_fixes([fix], graph, index=index)
+
+    assert compiled.update is not None
+    assert compiled.unresolved_prefix == 0
+
+
+# --- placeholders are not fixes ----------------------------------------------
+#
+# A coverage finding names a number the critic cannot place, and the critic
+# answers with a node for the number itself. That node then carries the number
+# in its label, which used to satisfy the very finding that provoked it.
+
+
+@pytest.mark.parametrize(
+    "subject",
+    ["ignored_token_12", "typography_artifact_3", "placeholder_1", "token_4"],
+)
+def test_an_insert_minting_a_placeholder_subject_is_refused(subject: str) -> None:
+    graph = _graph()
+    fix = _fix(
+        "ADD",
+        correct=(
+            f'<{CD}{subject}> a <{MATSCI}Token> ; <{RDFS_NS}label> "12" ; '
+            f'<{RDFS_NS}comment> "ignored citation marker" .'
+        ),
+    )
+
+    compiled = compile_critic_fixes([fix], graph)
+
+    assert compiled.update is None
+    assert compiled.residual == [fix]
+    assert compiled.junk_refused == 1
+
+
+def test_a_new_node_carrying_only_annotations_is_refused() -> None:
+    """A subject the graph knows nothing about, typed with nothing, labelled
+    with the missing number: a fact in name only."""
+    graph = _graph()
+    fix = _fix(
+        "ADD",
+        correct=f'<{CD}value_96> <{RDFS_NS}label> "96 meV" ; <{RDFS_NS}comment> "x" .',
+    )
+
+    compiled = compile_critic_fixes([fix], graph)
+
+    assert compiled.update is None
+    assert compiled.junk_refused == 1
+
+
+def test_annotations_on_an_existing_subject_still_compile() -> None:
+    """Adding a comment to a described node is a correction, not a placeholder."""
+    graph = _graph()
+    fix = _fix("ADD", correct=f'<{CD}sample_1> <{RDFS_NS}comment> "grown in hexane" .')
+
+    compiled = compile_critic_fixes([fix], graph)
+
+    assert compiled.update is not None
+    assert compiled.junk_refused == 0
+
+
+def test_a_typed_new_node_is_not_junk() -> None:
+    graph = _graph()
+    fix = _fix(
+        "ADD",
+        correct=(
+            f"<{CD}value_96> a <{MATSCI}QuantityValue> ; "
+            f'<{MATSCI}numericValue> "96" ; <{RDFS_NS}label> "96 meV" .'
+        ),
+    )
+
+    compiled = compile_critic_fixes([fix], graph)
+
+    assert compiled.update is not None
+    assert compiled.junk_refused == 0
+
+
+def test_a_replace_whose_insert_is_junk_goes_back_whole() -> None:
+    """Carrying out its delete half alone would be the delete-only edit the
+    rollback exists to undo."""
+    graph = _graph()
+    index = build_triple_index(graph)
+    label_id = _id_of(index, "label")
+    fix = _fix(
+        "REPLACE",
+        correct=f'<{CD}ignored_token_1> <{RDFS_NS}label> "1" .',
+        triple_ids=[label_id],
+    )
+
+    compiled = compile_critic_fixes([fix], graph, index=index)
+
+    assert compiled.update is None
+    assert compiled.junk_refused == 1
+    assert len(graph) == len(_graph())
+
+
 def test_a_json_payload_carrying_no_statement_stays_residual() -> None:
     """A bare literal or a node reference is not a patch, whatever it meant."""
     graph = _graph()
@@ -426,3 +600,26 @@ def test_a_json_payload_carrying_no_statement_stays_residual() -> None:
         compiled = compile_critic_fixes([_fix("ADD", correct=payload)], graph)
         assert compiled.update is None, payload
         assert len(compiled.residual) == 1
+
+
+# --- one patch per fix ---------------------------------------------------------
+
+
+def test_each_kept_fix_is_its_own_patch() -> None:
+    """The combined update and the per-fix patches carry the same content."""
+    graph = _graph()
+    fixes = [
+        _fix("ADD", correct=f'<{CD}sample_1> <{MATSCI}note> "one" .'),
+        _fix("ADD", correct=f'<{CD}sample_1> <{MATSCI}note> "two" .'),
+    ]
+
+    compiled = compile_critic_fixes(fixes, graph)
+
+    assert [patch.fix for patch in compiled.patches] == fixes
+    assert [patch.inserts for patch in compiled.patches] == [1, 1]
+    one_at_a_time = _graph()
+    for patch in compiled.patches:
+        apply_compiled_patch(one_at_a_time, patch.update)
+    assert compiled.update is not None
+    apply_compiled_patch(graph, compiled.update)
+    assert set(one_at_a_time) == set(graph)

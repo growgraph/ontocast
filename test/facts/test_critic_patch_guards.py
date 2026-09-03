@@ -108,7 +108,10 @@ def test_a_replace_that_writes_about_a_different_subject_keeps_only_its_insert()
             _fix(
                 "REPLACE",
                 triple_ids=label_id,
-                correct=f'<{CD}sample_2> <{RDFS.label}> "sample two" .',
+                correct=(
+                    f"<{CD}sample_2> <{RDF.type}> <{MS}NanocrystalSample> ; "
+                    f'<{RDFS.label}> "sample two" .'
+                ),
             )
         ],
         graph,
@@ -135,7 +138,10 @@ def test_a_rename_is_allowed_when_the_deployment_says_so() -> None:
             _fix(
                 "REPLACE",
                 triple_ids=label_id,
-                correct=f'<{CD}sample_2> <{RDFS.label}> "sample two" .',
+                correct=(
+                    f"<{CD}sample_2> <{RDF.type}> <{MS}NanocrystalSample> ; "
+                    f'<{RDFS.label}> "sample two" .'
+                ),
             )
         ],
         graph,
@@ -177,8 +183,16 @@ def test_deleting_part_of_a_blank_node_takes_the_whole_node() -> None:
     assert (CD.sample_1, RDFS.subClassOf, restriction) in deleted
 
 
-def test_a_pass_that_wants_to_remove_most_of_the_graph_keeps_only_its_inserts() -> None:
-    """Past the cap the critique has stopped correcting and started rewriting."""
+def test_a_pass_that_wants_to_remove_most_of_the_graph_sends_its_removals_back() -> (
+    None
+):
+    """Past the cap the critique has stopped correcting and started rewriting.
+
+    The removals go back whole rather than being stripped to their insert
+    halves: a REPLACE without its delete is an ADD of the new value beside
+    the old one, which is not the edit that was proposed. Pure additions
+    still land.
+    """
     graph = _graph(extra=20)
     index = build_triple_index(graph)
     doomed = [
@@ -186,18 +200,27 @@ def test_a_pass_that_wants_to_remove_most_of_the_graph_keeps_only_its_inserts() 
         for tid, (s, p, _) in index.by_id.items()
         if s == CD.sample_1 and p != RDF.type
     ]
+    removals = [_fix("REMOVE", triple_ids=[tid]) for tid in doomed]
+    replacement = _fix(
+        "REPLACE",
+        triple_ids=[doomed[0]],
+        correct=f'<{CD}sample_1> <{RDFS.label}> "renamed" .',
+    )
+    addition = _fix("ADD", correct=f'<{CD}sample_1> <{MS}note> "kept" .')
 
     compiled = compile_critic_fixes(
-        [_fix("REMOVE", triple_ids=[tid]) for tid in doomed]
-        + [_fix("ADD", correct=f'<{CD}sample_1> <{MS}note> "kept" .')],
+        [*removals, replacement, addition],
         graph,
         index=index,
         policy=CriticPatchPolicy(max_delete_share=0.25, min_deletes=2),
     )
 
     assert compiled.delete_capped is True
+    assert compiled.applied == [addition]
+    assert set(map(id, compiled.residual)) == set(map(id, [*removals, replacement]))
     assert compiled.update is not None
     assert all(op.type == "insert" for op in compiled.update.triple_operations)
+    assert [patch.fix for patch in compiled.patches] == [addition]
 
 
 def test_the_cap_has_a_floor_so_a_short_unit_stays_correctable() -> None:

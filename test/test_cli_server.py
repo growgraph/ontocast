@@ -739,6 +739,61 @@ def test_dump_run_manifest_records_cost_and_configuration(tmp_path) -> None:
     assert payload["ontology_triples"] == len(state.reduced_ontology_artifacts[0].graph)
 
 
+def test_dump_run_manifest_populates_completion_from_facts_loop_telemetry(
+    tmp_path,
+) -> None:
+    """``RunManifest.completion`` reads the same telemetry ``critic`` does.
+
+    All-zero when the completion pass never ran (the library default), and
+    reflecting the attempt log once it has -- ``summarize_completion``'s own
+    contract, wired into the manifest that ships beside the facts dump.
+    """
+    import json
+
+    from ontocast.api.process_helpers import dump_run_manifest
+    from ontocast.config import Config
+    from ontocast.onto.model import LoopAttempt
+
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"x")
+
+    state = _batch_state()
+    out_off = dump_run_manifest(
+        state, src, config=Config(), output_dir=tmp_path / "off"
+    )
+    assert out_off is not None
+    payload_off = json.loads(out_off.read_text(encoding="utf-8"))
+    assert payload_off["completion"] == {
+        "calls": 0,
+        "units": 0,
+        "subjects_inserted": 0,
+        "subjects_rolled_back": 0,
+        "triples_inserted": 0,
+        "measurements_recovered": 0,
+    }
+
+    state.facts_loop_telemetry[0] = [
+        LoopAttempt(
+            kind="completion",
+            n_fixes_applied=1,
+            n_fixes_rolled_back=1,
+            n_triples_inserted=3,
+            n_measurements_recovered=2,
+        )
+    ]
+    out_on = dump_run_manifest(state, src, config=Config(), output_dir=tmp_path / "on")
+    assert out_on is not None
+    payload_on = json.loads(out_on.read_text(encoding="utf-8"))
+    assert payload_on["completion"] == {
+        "calls": 1,
+        "units": 1,
+        "subjects_inserted": 1,
+        "subjects_rolled_back": 1,
+        "triples_inserted": 3,
+        "measurements_recovered": 2,
+    }
+
+
 def test_dump_run_manifest_uses_the_line_number_for_jsonl_inputs(tmp_path) -> None:
     from ontocast.api.process_helpers import dump_run_manifest
     from ontocast.config import Config
@@ -747,6 +802,60 @@ def test_dump_run_manifest_uses_the_line_number_for_jsonl_inputs(tmp_path) -> No
     src.write_bytes(b"x")
     out = dump_run_manifest(_batch_state(), src, config=Config(), line_number=3)
     assert out == tmp_path / "corpus.L3.run.json"
+
+
+def test_dump_validation_report_carries_unit_repairs_and_failures(tmp_path) -> None:
+    """A predicate the machine substituted is invisible in the TTL; name it.
+
+    ``gate_repairs`` covered the document-level gate only. The per-unit
+    passes (alias rewrites, literal coercions) were logged and dropped, so an
+    audit of what the machine changed in a render had to be mined from logs
+    -- and a unit that failed looked like a unit that found nothing.
+    """
+    import json
+
+    from ontocast.api.process_helpers import dump_validation_report
+    from ontocast.onto.model import (
+        FactsUnitFindingKind,
+        GraphRepairRecord,
+        UnitFailure,
+    )
+
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"x")
+    state = _batch_state()
+    state.facts_repairs_applied = {
+        3: [
+            GraphRepairRecord(
+                kind=FactsUnitFindingKind.PROPERTY_ALIAS,
+                source="ex:hasASiteComponent",
+                target="ex:hasBSiteComponent",
+                triple_count=2,
+            )
+        ]
+    }
+    state.unit_failures = [UnitFailure(unit_index=5, phase="facts", stage="render")]
+
+    out = dump_validation_report(state, src, output_dir=tmp_path / "out")
+    assert out is not None
+    assert out == tmp_path / "out" / "paper.facts.validation.json"
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["unit_repairs"] == {
+        "3": [
+            {
+                "kind": "property_alias",
+                "source": "ex:hasASiteComponent",
+                "target": "ex:hasBSiteComponent",
+                "triple_count": 2,
+            }
+        ]
+    }
+    assert payload["unit_failures"] == [
+        {"unit_index": 5, "phase": "facts", "stage": "render", "reason": None}
+    ]
+    # Additive: readers of the previous shape find every key they knew.
+    assert set(payload) >= {"source", "conformance", "gate_repairs", "findings"}
 
 
 def test_dump_ontology_ttls_names_files_per_ontology(tmp_path) -> None:

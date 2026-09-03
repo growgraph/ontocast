@@ -36,12 +36,15 @@ recorded as asking for nothing rather than counted as a fix that landed.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
-from rdflib import BNode, Graph
+from rdflib import RDF, RDFS, SKOS, BNode, Graph, URIRef
+from rdflib.namespace import DCTERMS
 from rdflib.term import Node
 
 from ontocast.onto.model import TripleFix
@@ -53,11 +56,31 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class FixPatch:
+    """One kept fix as its own delete-then-insert patch.
+
+    The loop applies these one at a time and judges each on its own, so a fix
+    that leaves the unit worse is undone alone instead of taking the whole
+    pass with it -- which is how a critique used to lose its good corrections
+    to one bad one.
+    """
+
+    fix: TripleFix
+    update: GraphUpdate
+    deletes: int = 0
+    inserts: int = 0
+
+
+@dataclass(frozen=True)
 class CompiledFixes:
     """The mechanical half of a critique, split from the half needing a render."""
 
-    #: Delete-then-insert patch, or ``None`` when nothing compiled.
+    #: Delete-then-insert patch over every fix in ``applied``, or ``None``
+    #: when nothing compiled. The whole-pass view; ``patches`` is the same
+    #: content one fix at a time.
     update: GraphUpdate | None = None
+    #: One patch per fix in ``applied``, in the order proposed.
+    patches: list[FixPatch] = field(default_factory=list)
     #: Fixes folded into ``update``.
     applied: list[TripleFix] = field(default_factory=list)
     #: Fixes that need a scoped repair render.
@@ -69,10 +92,21 @@ class CompiledFixes:
     noop: list[TripleFix] = field(default_factory=list)
     #: Ids cited that the index never issued. Counted, never guessed at.
     bad_index_refs: int = 0
-    #: True when the delete-share cap fired and the patch kept only its inserts.
+    #: True when the delete-share cap fired: every fix that removes something
+    #: went back as residual and only the pure additions were kept.
     delete_capped: bool = False
     #: Delete halves withheld by screening, in fixes.
     deletes_refused: int = 0
+    #: Fixes whose payload named a prefix nothing declares -- neither the
+    #: payload's own ``@context`` nor the unit graph's bindings -- so the
+    #: statement it meant could not be identified. Sent back as residual and
+    #: counted here rather than applied with ``prefix:local`` as the IRI.
+    unresolved_prefix: int = 0
+    #: Fixes whose inserts would mint a placeholder: a subject named for an
+    #: ignored token or artifact, or a new node carrying only annotations
+    #: and no type. The critic's way of "resolving" a coverage finding for a
+    #: number it could not place; refused and sent back rather than applied.
+    junk_refused: int = 0
 
 
 @dataclass(frozen=True)
@@ -88,6 +122,10 @@ class CriticPatchPolicy:
     #: Largest share of the target graph one pass may remove. A critique that
     #: wants to delete more than this has stopped correcting and started
     #: rewriting, which is the operation the loop deliberately does not offer.
+    #: Over the cap the fixes that remove anything go back whole -- a REPLACE
+    #: stripped of its delete half is an ADD of the new value beside the old
+    #: one, a different edit from the one proposed -- and only pure additions
+    #: are kept.
     max_delete_share: float = 0.25
     #: Deletions always permitted regardless of share. Without a floor the cap
     #: is strictest exactly where it should be loosest: on a short unit a single
@@ -169,7 +207,137 @@ def _terminator_candidates(body: str) -> list[str]:
     return candidates
 
 
-def _parse_fragment(text: str | None, graph: Graph) -> Graph | None:
+#: ``prefix:`` head of a compact IRI. ``(?!//)`` keeps ``http://`` and
+#: ``https://`` out, the same way the prompt serializer draws the line.
+_COMPACT_HEAD = re.compile(r"^([A-Za-z][A-Za-z0-9_.-]*):(?!//)")
+#: Schemes that are legitimately written without ``//``. Anything else in the
+#: ``scheme:rest`` shape after parsing is a prefix that was never expanded.
+_OPAQUE_SCHEMES = ("urn:", "mailto:", "tag:", "doi:", "did:", "tel:", "data:")
+_SCHEME_WITH_AUTHORITY = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+
+
+def _compact_heads(value: object, found: set[str]) -> None:
+    """Collect prefix heads from every position a compact IRI can occupy.
+
+    Keys that are not keywords, and the ``@id`` / ``@type`` / ``@value``
+    strings. ``@value`` is a literal and gains nothing from a binding, but a
+    model that wrote a CURIE there meant an IRI, and listing the prefix costs
+    nothing.
+    """
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key.startswith("@"):
+                if key in ("@id", "@type", "@value") and isinstance(item, str):
+                    match = _COMPACT_HEAD.match(item)
+                    if match:
+                        found.add(match.group(1))
+                elif key == "@type" and isinstance(item, list):
+                    _compact_heads(item, found)
+                continue
+            match = _COMPACT_HEAD.match(key)
+            if match:
+                found.add(match.group(1))
+            _compact_heads(item, found)
+    elif isinstance(value, list):
+        for item in value:
+            _compact_heads(item, found)
+    elif isinstance(value, str):
+        match = _COMPACT_HEAD.match(value)
+        if match:
+            found.add(match.group(1))
+
+
+def _declared_in_context(context: object) -> set[str]:
+    declared: set[str] = set()
+    if isinstance(context, dict):
+        declared.update(key for key in context if not key.startswith("@"))
+    elif isinstance(context, list):
+        for item in context:
+            declared |= _declared_in_context(item)
+    return declared
+
+
+def _with_unit_bindings(body: str, graph: Graph) -> str | None:
+    """Add the unit graph's bindings for the prefixes a JSON-LD payload uses.
+
+    The mirror of :func:`_prefix_header` for the other syntax. A JSON-LD fix
+    written in the prompt's vocabulary usually arrives with no ``@context``,
+    and the JSON-LD processor then reads ``cd:sample_1`` as an absolute IRI
+    with scheme ``cd`` -- which parses, and is wrong. Only prefixes the
+    payload uses and does not itself declare are added, so an author-supplied
+    context is never overridden.
+
+    Returns:
+        The payload with bindings merged in, or ``None`` when it is not JSON.
+    """
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return None
+    used: set[str] = set()
+    _compact_heads(payload, used)
+    document: dict[str, Any]
+    if isinstance(payload, list):
+        document = {"@graph": payload}
+    elif isinstance(payload, dict):
+        document = payload
+    else:
+        return None
+    context = document.get("@context")
+    used -= _declared_in_context(context)
+    bindings = {prefix: str(uri) for prefix, uri in graph.namespaces() if prefix}
+    missing = {
+        prefix: bindings[prefix] for prefix in sorted(used) if prefix in bindings
+    }
+    if not missing:
+        return body
+    if context is None:
+        document["@context"] = missing
+    elif isinstance(context, dict):
+        for prefix, namespace in missing.items():
+            context.setdefault(prefix, namespace)
+    elif isinstance(context, list):
+        context.append(missing)
+    else:
+        document["@context"] = [context, missing]
+    return json.dumps(document)
+
+
+def _is_absolute_iri(term: Node) -> bool:
+    if not isinstance(term, URIRef):
+        return True
+    text = str(term)
+    return bool(_SCHEME_WITH_AUTHORITY.match(text)) or text.lower().startswith(
+        _OPAQUE_SCHEMES
+    )
+
+
+def _has_unexpanded_terms(parsed: Graph) -> bool:
+    """Whether any subject, predicate or ``rdf:type`` object is still a CURIE.
+
+    Checked after parsing in both syntaxes: a JSON-LD processor accepts
+    ``prefix:local`` as an IRI, and Turtle accepts ``<prefix:local>``. Either
+    way the statement names nothing in the graph, and a patch built from it
+    would insert a ghost or delete nothing while reporting success.
+    """
+    for subject, predicate, obj in parsed:
+        if not _is_absolute_iri(subject) or not _is_absolute_iri(predicate):
+            return True
+        if predicate == RDF.type and not _is_absolute_iri(obj):
+            return True
+    return False
+
+
+@dataclass(frozen=True)
+class _ParsedPayload:
+    """A payload's triples, or the reason there are none."""
+
+    graph: Graph | None = None
+    #: The payload parsed but named a prefix nothing declared.
+    unresolved_prefix: bool = False
+
+
+def _parse_payload(text: str | None, graph: Graph) -> _ParsedPayload:
     """Parse one fix payload, tolerating what models actually emit.
 
     Deliberately format-tolerant rather than format-dispatched: the payload's
@@ -180,20 +348,29 @@ def _parse_fragment(text: str | None, graph: Graph) -> Graph | None:
         graph: The unit graph, for prefix bindings.
 
     Returns:
-        Graph | None: The parsed triples, or ``None`` if unparseable/empty.
+        The parsed triples, or why there are none: an empty result for an
+        unparseable or statement-less payload, ``unresolved_prefix`` for one
+        whose terms could not be expanded to IRIs.
     """
     body = (text or "").strip()
     if not body:
-        return None
+        return _ParsedPayload()
     if body[0] in "{[":
+        bound = _with_unit_bindings(body, graph)
+        if bound is None:
+            return _ParsedPayload()
         try:
             parsed = Graph()
-            parsed.parse(data=body, format="json-ld")
+            parsed.parse(data=bound, format="json-ld")
         except Exception:
-            return None
+            return _ParsedPayload()
         # A JSON body that yields no statement -- a bare literal, or a node
         # reference with no predicates -- is not a patch, whatever it meant.
-        return parsed if len(parsed) else None
+        if not len(parsed):
+            return _ParsedPayload()
+        if _has_unexpanded_terms(parsed):
+            return _ParsedPayload(unresolved_prefix=True)
+        return _ParsedPayload(graph=parsed)
 
     header = _prefix_header(graph)
     for candidate in [
@@ -206,8 +383,15 @@ def _parse_fragment(text: str | None, graph: Graph) -> Graph | None:
         except Exception:
             continue
         if len(parsed):
-            return parsed
-    return None
+            if _has_unexpanded_terms(parsed):
+                return _ParsedPayload(unresolved_prefix=True)
+            return _ParsedPayload(graph=parsed)
+    return _ParsedPayload()
+
+
+def _parse_fragment(text: str | None, graph: Graph) -> Graph | None:
+    """The triples of one fix payload, or ``None``; see :func:`_parse_payload`."""
+    return _parse_payload(text, graph).graph
 
 
 def _deletes_by_id(
@@ -237,6 +421,54 @@ def _deletes_by_id(
     if bad:
         return None, bad
     return resolved, 0
+
+
+#: Local names a critic gives the placeholder it mints for a number it could
+#: not place: ``ignored_token_3``, ``typography_artifact_2``, ``token_12``.
+_JUNK_LOCAL_NAME = re.compile(
+    r"(ignored|typograph|artifact|placeholder|_token\b|token_)", re.IGNORECASE
+)
+_ANNOTATION_PREDICATES = frozenset({RDFS.label, RDFS.comment, DCTERMS.description})
+_SKOS_NAMESPACE = str(SKOS)
+
+
+def _local_name(iri: str) -> str:
+    for separator in ("#", "/"):
+        head, sep, local = iri.rpartition(separator)
+        if sep and local:
+            return local
+    return iri
+
+
+def _is_annotation(predicate: Node) -> bool:
+    return predicate in _ANNOTATION_PREDICATES or str(predicate).startswith(
+        _SKOS_NAMESPACE
+    )
+
+
+def _junk_reason(inserts: list[Triple], graph: Graph) -> str | None:
+    """Why the inserted statements mint a placeholder rather than a fact.
+
+    Two shapes, both learned from what a critic writes when a coverage
+    finding names a number it cannot place: a subject whose local name says
+    it is an ignored token or artifact, and a *new* subject (nothing in the
+    graph says anything about it) carrying only labels, comments or notes and
+    no ``rdf:type``. Annotations added to a subject the graph already
+    describes are a legitimate correction and pass.
+    """
+    subjects = {subject for subject, _, _ in inserts if isinstance(subject, URIRef)}
+    for subject in subjects:
+        if _JUNK_LOCAL_NAME.search(_local_name(str(subject))):
+            return "placeholder_name"
+    for subject in subjects:
+        if (subject, None, None) in graph:
+            continue
+        predicates = {predicate for s, predicate, _ in inserts if s == subject}
+        if RDF.type in predicates:
+            continue
+        if predicates and all(_is_annotation(p) for p in predicates):
+            return "annotation_only"
+    return None
 
 
 @dataclass
@@ -361,11 +593,19 @@ def _screen(
     capped = False
     allowance = max(policy.min_deletes, policy.max_delete_share * len(graph))
     if len(total_deletes) > allowance:
-        # Over the cap the inserts are still worth having -- they add rather
-        # than destroy -- so only the delete side is dropped.
+        # Over the cap every fix that removes something goes back whole. The
+        # previous rule kept the insert halves, which turned a REPLACE into an
+        # ADD: the new value landed beside the old one instead of in its
+        # place, and a REMOVE simply vanished. Pure additions are still worth
+        # having -- they add rather than destroy -- so those stay.
         capped = True
+        survivors: list[_Candidate] = []
         for candidate in kept:
-            candidate.deletes = []
+            if candidate.deletes:
+                residual.append(candidate.fix)
+            else:
+                survivors.append(candidate)
+        kept = survivors
 
     return kept, residual, refused, capped
 
@@ -398,12 +638,29 @@ def compile_critic_fixes(
     residual: list[TripleFix] = []
     noop: list[TripleFix] = []
     bad_index_refs = 0
+    unresolved_prefix = 0
+    junk_refused = 0
 
     for fix in fixes:
-        correct = _parse_fragment(fix.correct_value, graph)
+        parsed_correct = _parse_payload(fix.correct_value, graph)
+        correct = parsed_correct.graph
+        # A payload that named an unexpandable prefix is counted once per fix,
+        # and only when the fix needed that payload: a REMOVE cited by id is
+        # carried out whatever its unused correct_value says.
+        unresolved = parsed_correct.unresolved_prefix and fix.action != "REMOVE"
         insert_triples = (
             [triple for triple in correct if triple not in graph] if correct else []
         )
+        if fix.action in ("ADD", "REPLACE") and insert_triples:
+            junk = _junk_reason(insert_triples, graph)
+            if junk is not None:
+                # Whole fix back, delete half included: carrying out the
+                # removal alone would be the delete-only edit the rollback
+                # exists to undo.
+                logger.info("Critic fix refused (%s): %s", junk, fix.correct_value)
+                junk_refused += 1
+                residual.append(fix)
+                continue
 
         matched: list[Triple] = []
         if fix.action in ("REMOVE", "REPLACE"):
@@ -411,6 +668,7 @@ def compile_critic_fixes(
                 by_id, bad = _deletes_by_id(fix, graph, index)
                 bad_index_refs += bad
                 if by_id is None:
+                    unresolved_prefix += int(unresolved)
                     residual.append(fix)
                     continue
                 matched = by_id
@@ -418,13 +676,16 @@ def compile_critic_fixes(
                 # Fallback for a fix that cites no id. The quoted statements must
                 # all be present: a misquote has misunderstood the graph, and
                 # acting on it would delete something the critic never looked at.
-                incorrect = _parse_fragment(fix.incorrect_value, graph)
+                parsed_incorrect = _parse_payload(fix.incorrect_value, graph)
+                incorrect = parsed_incorrect.graph
+                unresolved = unresolved or parsed_incorrect.unresolved_prefix
                 quoted = (
                     [triple for triple in incorrect if triple in graph]
                     if incorrect
                     else []
                 )
                 if not quoted or len(quoted) != len(incorrect or []):
+                    unresolved_prefix += int(unresolved)
                     residual.append(fix)
                     continue
                 matched = quoted
@@ -443,11 +704,13 @@ def compile_critic_fixes(
             candidates.append(_Candidate(fix=fix, deletes=matched))
         elif fix.action == "ADD":
             if not insert_triples:
+                unresolved_prefix += int(unresolved)
                 residual.append(fix)
                 continue
             candidates.append(_Candidate(fix=fix, inserts=insert_triples))
         elif fix.action == "REPLACE":
             if not matched or not correct:
+                unresolved_prefix += int(unresolved)
                 residual.append(fix)
                 continue
             candidates.append(
@@ -462,55 +725,88 @@ def compile_critic_fixes(
     deletes = RDFGraph()
     inserts = RDFGraph()
     applied: list[TripleFix] = []
+    patches: list[FixPatch] = []
     for candidate in kept:
         if not candidate.deletes and not candidate.inserts:
             residual.append(candidate.fix)
             continue
+        fix_deletes = RDFGraph()
+        fix_inserts = RDFGraph()
         for triple in candidate.deletes:
-            deletes.add(triple)
+            fix_deletes.add(triple)
         for triple in candidate.inserts:
-            inserts.add(triple)
+            fix_inserts.add(triple)
+        # Delete-then-insert leaves a triple on both sides present either way,
+        # so dropping it from the delete side changes nothing and keeps the
+        # patch honest about what it removes.
+        for triple in fix_inserts:
+            fix_deletes.remove(triple)
+        operations: list[TripleOp] = []
+        if len(fix_deletes):
+            operations.append(TripleOp(type="delete", graph=fix_deletes))
+        if len(fix_inserts):
+            operations.append(TripleOp(type="insert", graph=fix_inserts))
+        if not operations:
+            noop.append(candidate.fix)
+            continue
+        patches.append(
+            FixPatch(
+                fix=candidate.fix,
+                update=GraphUpdate(triple_operations=operations),
+                deletes=len(fix_deletes),
+                inserts=len(fix_inserts),
+            )
+        )
         applied.append(candidate.fix)
+        for triple in fix_deletes:
+            deletes.add(triple)
+        for triple in fix_inserts:
+            inserts.add(triple)
 
-    # Delete-then-insert leaves a triple on both sides present either way, so
-    # dropping it from the delete side changes nothing and keeps the patch
-    # honest about what it removes.
     for triple in inserts:
         deletes.remove(triple)
 
-    if not len(deletes) and not len(inserts):
+    if not patches:
         return CompiledFixes(
-            residual=residual + applied,
+            residual=residual,
             noop=noop,
             bad_index_refs=bad_index_refs,
             delete_capped=capped,
             deletes_refused=refused,
+            unresolved_prefix=unresolved_prefix,
+            junk_refused=junk_refused,
         )
 
-    operations: list[TripleOp] = []
+    combined: list[TripleOp] = []
     if len(deletes):
-        operations.append(TripleOp(type="delete", graph=deletes))
+        combined.append(TripleOp(type="delete", graph=deletes))
     if len(inserts):
-        operations.append(TripleOp(type="insert", graph=inserts))
+        combined.append(TripleOp(type="insert", graph=inserts))
     logger.info(
-        "Critic fixes: %d compiled to a patch (-%d/+%d triples), "
-        "%d need a render, %d asked for no change, %d delete half(s) refused%s",
+        "Critic fixes: %d compiled to patches (-%d/+%d triples), "
+        "%d need a render, %d asked for no change, %d delete half(s) refused, "
+        "%d refused as placeholders, %d with an unresolved prefix%s",
         len(applied),
         len(deletes),
         len(inserts),
         len(residual),
         len(noop),
         refused,
+        junk_refused,
+        unresolved_prefix,
         " (delete-share cap fired)" if capped else "",
     )
     return CompiledFixes(
-        update=GraphUpdate(triple_operations=operations),
+        update=GraphUpdate(triple_operations=combined),
+        patches=patches,
         applied=applied,
         residual=residual,
         noop=noop,
         bad_index_refs=bad_index_refs,
         delete_capped=capped,
         deletes_refused=refused,
+        unresolved_prefix=unresolved_prefix,
+        junk_refused=junk_refused,
     )
 
 

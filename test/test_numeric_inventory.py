@@ -31,7 +31,7 @@ def test_extract_numeric_tokens_canonicalizes() -> None:
     assert extract_numeric_tokens("value 230.0 and 230") == {"230"}
 
 
-def test_numeric_literals_in_graph_covers_typed_and_label_numbers() -> None:
+def _typed_and_labelled() -> RDFGraph:
     graph = RDFGraph()
     subject = URIRef("http://x/s")
     graph.add(
@@ -48,7 +48,22 @@ def test_numeric_literals_in_graph_covers_typed_and_label_numbers() -> None:
             Literal("range 50 - 300 nm"),
         )
     )
-    values = numeric_literals_in_graph(graph)
+    return graph
+
+
+def test_numeric_literals_in_graph_ignores_label_numbers_by_default() -> None:
+    """A number that exists only inside a label has not been extracted.
+
+    Counting it let a placeholder labelled with the missing number silence
+    the coverage finding that asked for it.
+    """
+    values = numeric_literals_in_graph(_typed_and_labelled())
+    assert "12.5" in values
+    assert not {"50", "300"} & values
+
+
+def test_numeric_literals_in_graph_can_include_annotations() -> None:
+    values = numeric_literals_in_graph(_typed_and_labelled(), include_annotations=True)
     assert {"12.5", "50", "300"} <= values
 
 
@@ -145,3 +160,112 @@ def test_missing_numeric_mentions_threads_the_guard() -> None:
     )
     assert "600" in unguarded
     assert guarded == []
+
+
+# ---------------------------------------------------------------------------
+# Unit-aware inventory: measurements vs bare numbers
+# ---------------------------------------------------------------------------
+
+
+def test_inventory_splits_measurements_from_bare_numbers() -> None:
+    from ontocast.util.numeric_inventory import inventory_numeric_mentions
+
+    inventory = inventory_numeric_mentions(
+        "a red shift of 10-15 meV in sample 7, stored 30 days; see ref 42"
+    )
+
+    assert [(m.value, m.unit) for m in inventory.measurements] == [
+        ("10", "meV"),
+        ("15", "meV"),
+        ("30", "days"),
+    ]
+    assert inventory.unclassified == ["7", "42"]
+    assert "a red shift of 10-15 meV" in inventory.measurements[0].context
+
+
+def test_inventory_keeps_one_mention_per_value_in_text_order() -> None:
+    from ontocast.util.numeric_inventory import inventory_numeric_mentions
+
+    inventory = inventory_numeric_mentions("96 meV here, and 96 meV again, 5 nm")
+
+    assert [m.value for m in inventory.measurements] == ["96", "5"]
+
+
+def test_snapshot_unit_surfaces_widen_the_measurement_lane() -> None:
+    from ontocast.util.numeric_inventory import inventory_numeric_mentions
+
+    without = inventory_numeric_mentions("irradiated at 1 sun and 3 suns for 2 cycles")
+    with_units = inventory_numeric_mentions(
+        "aged for 12 pulses at 2 cycles", unit_surfaces={"pulse"}
+    )
+
+    assert [m.unit for m in without.measurements] == ["sun", "suns", "cycles"]
+    assert [(m.value, m.unit) for m in with_units.measurements] == [
+        ("12", "pulses"),
+        ("2", "cycles"),
+    ]
+
+
+def test_missing_inventory_lists_measurements_first_then_bare_numbers() -> None:
+    from ontocast.util.numeric_inventory import missing_numeric_inventory
+
+    graph = RDFGraph()
+    graph.add(
+        (
+            URIRef("http://x/s"),
+            URIRef("http://qudt.org/schema/qudt/numericValue"),
+            Literal("96", datatype=XSD.decimal),
+        )
+    )
+    inventory = missing_numeric_inventory(
+        "shifts of 96 meV and 12.5 meV over 3 samples at 250 K", graph
+    )
+
+    assert [m.value for m in inventory.measurements] == ["12.5", "250"]
+    assert inventory.unclassified == ["3"]
+    assert missing_numeric_mentions(
+        "shifts of 96 meV and 12.5 meV over 3 samples at 250 K", graph
+    ) == ["12.5", "250", "3"]
+
+
+def test_the_cap_drops_bare_numbers_before_measurements() -> None:
+    from ontocast.util.numeric_inventory import missing_numeric_inventory
+
+    inventory = missing_numeric_inventory(
+        "1 and 2 and 3 and 4 then 5 nm and 6 nm", RDFGraph(), limit=3
+    )
+
+    assert [m.value for m in inventory.measurements] == ["5", "6"]
+    assert inventory.unclassified == ["1"]
+
+
+def test_unit_surface_index_reads_unit_individuals_and_is_memoised() -> None:
+    from rdflib import OWL, RDF, RDFS, SKOS
+
+    from ontocast.util.numeric_inventory import (
+        unit_surface_index,
+        unit_surfaces_in_ontology,
+    )
+
+    QUDT = "http://qudt.org/schema/qudt/"
+    UNIT = "http://qudt.org/vocab/unit/"
+    onto = RDFGraph()
+    onto.add((URIRef(f"{QUDT}unit"), RDFS.range, URIRef(f"{QUDT}Unit")))
+    onto.add((URIRef(f"{UNIT}SUN"), RDF.type, URIRef(f"{QUDT}Unit")))
+    onto.add((URIRef(f"{UNIT}SUN"), RDFS.label, Literal("sun equivalent")))
+    onto.add((URIRef(f"{UNIT}SUN"), URIRef(f"{QUDT}symbol"), Literal("sun")))
+    onto.add((URIRef(f"{UNIT}CYCLE"), RDF.type, URIRef(f"{QUDT}Unit")))
+    onto.add((URIRef(f"{UNIT}CYCLE"), SKOS.altLabel, Literal("cycles")))
+    onto.add((URIRef(f"{UNIT}CYCLE"), SKOS.notation, Literal("12")))
+    onto.add((URIRef("http://x/Thing"), RDF.type, OWL.Class))
+    onto.add((URIRef("http://x/t1"), RDF.type, URIRef("http://x/Thing")))
+    onto.add((URIRef("http://x/t1"), RDFS.label, Literal("nope")))
+
+    index = unit_surface_index(onto, {f"{QUDT}unit"})
+
+    assert index == {"sun": (f"{UNIT}SUN",), "cycles": (f"{UNIT}CYCLE",)}, (
+        "a spaced label, a numeric notation and a non-unit individual stay out"
+    )
+    assert unit_surface_index(onto, {f"{QUDT}unit"}) is index, "memoised per graph"
+    assert unit_surfaces_in_ontology(onto, {f"{QUDT}unit"}) == {"sun", "cycles"}
+    assert unit_surface_index(None) == {}

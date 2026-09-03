@@ -136,6 +136,57 @@ def test_domain_adherence_can_be_disabled() -> None:
     assert _domain_adherence_findings(_g(_UNGROUNDED), catalog, [CD], 0.0) == []
 
 
+_FRONT_MATTER = f"""
+@prefix cd: <{CD}> .
+@prefix schema: <https://schema.org/> .
+cd:doi_1 a schema:PropertyValue ; schema:value "10.1000/xyz" .
+cd:author_1 a schema:Person .
+"""
+
+
+def test_domain_adherence_needs_a_minimum_denominator() -> None:
+    """Two generic terms are not a render that abandoned the catalog.
+
+    A front-matter unit (an identifier, an author) types a couple of nodes
+    with generic vocabulary and has nothing to say in the catalog's terms.
+    Judging a share over that denominator raised a mandatory finding the
+    critic answered by retyping the identifier as a quantity value.
+    """
+    catalog = collect_catalog_terms(_g(_ONTOLOGY))
+    graph = _g(_FRONT_MATTER)
+    _, total = domain_vocabulary_share(graph, catalog, [CD])
+    assert total < 4
+
+    assert _domain_adherence_findings(graph, catalog, [CD], 0.15) == []
+    assert _domain_adherence_findings(graph, catalog, [CD], 0.15, min_terms=1), (
+        "the floor, not the share, is what silenced it"
+    )
+
+
+def test_domain_adherence_is_not_judged_on_citation_metadata() -> None:
+    """A reference list is rendered with the bibliographic vocabulary by
+    instruction, so its catalog share is zero by design."""
+    from ontocast.tool.facts_validation import collect_unit_findings
+
+    def findings(is_citation_metadata: bool):
+        return [
+            finding
+            for finding in collect_unit_findings(
+                graph=_g(_UNGROUNDED),
+                ontology_graph=_g(_ONTOLOGY),
+                quarantined=[],
+                extraction_text="",
+                fact_namespaces=[CD],
+                coverage_limit=0,
+                is_citation_metadata=is_citation_metadata,
+            )
+            if finding.kind == "domain_adherence"
+        ]
+
+    assert findings(False), "the same graph is flagged as a content unit"
+    assert findings(True) == []
+
+
 def test_share_excludes_plumbing_and_minted_instances() -> None:
     """rdf:type and rdfs:label are in every graph and in most catalogs.
 

@@ -12,6 +12,7 @@ from rdflib import URIRef
 from ontocast.tool.sentence_transformer import SharedEncoder, get_shared_encoder
 
 from .normalizer import EntityRepresentation
+from .unit_scope import strip_unit_scope
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +207,9 @@ class ClusterRepresentativeSelector:
     def compute_simplicity_score(self, entity: URIRef) -> float:
         """Compute simplicity score for an entity URI.
 
-        Lower score = simpler = better
+        Lower score = simpler = better. A unit-scope suffix is ignored: it
+        adds underscores and digits in proportion to the unit index, which
+        would otherwise bias representative choice toward earlier units.
 
         Args:
             entity: Entity URI
@@ -214,7 +217,7 @@ class ClusterRepresentativeSelector:
         Returns:
             Simplicity score (lower is better)
         """
-        uri_str = str(entity)
+        uri_str = strip_unit_scope(str(entity))
 
         # Factors that increase complexity (decrease simplicity)
         score = 0.0

@@ -47,6 +47,16 @@ EXPECTED_WIRE_NAMES = {
     "ONTOLOGY_CRITIC_FIXES_RESIDUAL": "ontology_critic_fixes_residual",
     "ONTOLOGY_CRITIC_FIXES_NOOP": "ontology_critic_fixes_noop",
     "ONTOLOGY_CRITIC_PATCHES_ROLLED_BACK": "ontology_critic_patches_rolled_back",
+    "FACTS_CRITIC_UNITS_UNREVIEWED": "facts_critic_units_unreviewed",
+    "FACTS_CRITIC_UNITS_SKIPPED": "facts_critic_units_skipped",
+    "FACTS_CRITIC_FIXES_ROLLED_BACK": "facts_critic_fixes_rolled_back",
+    "FACTS_CRITIC_FIXES_JUNK_REFUSED": "facts_critic_fixes_junk_refused",
+    "FACTS_CRITIC_FIXES_UNRESOLVED_PREFIX": "facts_critic_fixes_unresolved_prefix",
+    "FACTS_COMPLETION_CALLS": "facts_completion_calls",
+    "FACTS_COMPLETION_TRIPLES_INSERTED": "facts_completion_triples_inserted",
+    "FACTS_COMPLETION_MEASUREMENTS_RECOVERED": (
+        "facts_completion_measurements_recovered"
+    ),
     "FACTS_FINDINGS_RESIDUAL": "facts_findings_residual",
     "FACTS_REJECTED_MERGES": "facts_rejected_merges",
     "FACTS_MERGE_REPAIR_PASSES": "facts_merge_repair_passes",

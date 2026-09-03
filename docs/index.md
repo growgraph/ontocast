@@ -84,7 +84,7 @@ OntoCast can guide extraction with seed ontologies (in Turtle `.ttl` format), an
 
 ## Configuration
 
-Start from `.env.example.minimal` — 47 variables instead of 202, grouped by the
+Start from `.env.example.minimal` — 47 variables instead of 253, grouped by the
 decision they belong to. Then pick a [playbook](user_guide/playbooks.md) for what
 you are actually doing: evaluating, building an ontology, populating facts,
 scaling to a large catalog, or serving it.
