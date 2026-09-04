@@ -11,7 +11,7 @@ from rdflib import URIRef
 
 from ontocast.agent.chunk_text import chunk_text
 from ontocast.agent.summarize_chunks import should_summarize_unit
-from ontocast.api.parse import parse_sections_list_param
+from ontocast.api.parse import RequestParamError, parse_sections_list_param
 from ontocast.api.process_helpers import expand_input_to_states
 from ontocast.config import Config
 from ontocast.config.section_labels import (
@@ -35,6 +35,8 @@ from ontocast.tool.chunk.sections import (
 )
 from ontocast.toolbox import ToolBox
 from test.docling_test_helpers import doc_from_markdown_lines
+
+pytestmark = pytest.mark.unit
 
 _SAMPLE_DOC = """# Introduction
 We survey prior work.
@@ -191,6 +193,44 @@ def test_parse_sections_list_param_normalizes() -> None:
     assert parsed == ["related_work", "methods", "results"]
 
 
+def test_parse_sections_list_param_keeps_recognised_half() -> None:
+    """A partial match still expresses an intent, so unknown tokens drop."""
+    parsed = parse_sections_list_param("Methods,zzz-not-a-section")
+    assert parsed == ["methods"]
+
+
+def test_parse_sections_list_param_rejects_all_unrecognised() -> None:
+    """An all-unknown list must fail rather than read as "no sections".
+
+    An empty result replaces the resolved schema's defaults instead of adding
+    to them, so failing open would silently disable section handling the caller
+    never touched.
+    """
+    with pytest.raises(RequestParamError) as excinfo:
+        parse_sections_list_param(
+            "zzz-not-a-section,also-not-one", param="exclude_sections"
+        )
+    assert excinfo.value.param == "exclude_sections"
+    assert "zzz-not-a-section" in str(excinfo.value)
+
+
+def test_parse_sections_list_param_rejects_all_unrecognised_json() -> None:
+    with pytest.raises(RequestParamError):
+        parse_sections_list_param('["zzz-not-a-section"]')
+
+
+def test_parse_sections_list_param_rejects_all_unrecognised_list() -> None:
+    with pytest.raises(RequestParamError):
+        parse_sections_list_param(["zzz-not-a-section"])
+
+
+def test_parse_sections_list_param_absent_stays_empty() -> None:
+    """None/empty mean "not supplied", which is not a caller mistake."""
+    assert parse_sections_list_param(None) == []
+    assert parse_sections_list_param("") == []
+    assert parse_sections_list_param([]) == []
+
+
 def _chunk_tools() -> ToolBox:
     from ontocast.config import ChunkConfig
     from ontocast.tool.chunk.chunker import ChunkerTool
@@ -265,6 +305,33 @@ async def test_chunk_text_max_chunks_after_prepare() -> None:
     assert result.status == Status.SUCCESS
     assert len(result.content_units) <= 2
     assert all(unit.section_label == "results" for unit in result.content_units)
+
+
+@pytest.mark.anyio
+async def test_chunk_text_min_unit_chars_disabled_by_default() -> None:
+    """The floor is opt-in; 0 must keep every unit chunking produced."""
+    doc = doc_from_markdown_lines(_SAMPLE_DOC)
+    tools = _chunk_tools()
+    assert tools.chunker.config.min_unit_chars == 0
+    result = await chunk_text(AgentState(docling_doc=doc), tools)
+    assert result.status == Status.SUCCESS
+    baseline = len(result.content_units)
+    assert baseline > 0
+
+
+@pytest.mark.anyio
+async def test_chunk_text_min_unit_chars_drops_undersized_units(caplog) -> None:
+    """Sub-floor units are dropped, and each drop is logged rather than silent."""
+    doc = doc_from_markdown_lines(_SAMPLE_DOC)
+    tools = _chunk_tools()
+    baseline = len((await chunk_text(AgentState(docling_doc=doc), tools)).content_units)
+
+    tools.chunker.config.min_unit_chars = 10_000
+    with caplog.at_level(logging.INFO):
+        result = await chunk_text(AgentState(docling_doc=doc), tools)
+    assert result.content_units == []
+    assert baseline > 0
+    assert any("undersized" in record.message for record in caplog.records)
 
 
 @pytest.mark.anyio

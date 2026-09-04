@@ -11,12 +11,16 @@ import json
 from types import SimpleNamespace
 from typing import cast
 
+import pytest
+
 from ontocast.config import ChunkConfig
 from ontocast.onto.enum import SectionLabelSource
 from ontocast.tool.chunk.chunker import ChunkerTool
 from ontocast.tool.chunk.section_llm import llm_backfill_section_labels
 from ontocast.tool.chunk.segment import PrepareSegment
 from ontocast.toolbox import ToolBox
+
+pytestmark = pytest.mark.unit
 
 
 class _RecordingLLM:

@@ -24,11 +24,18 @@ from rdflib import RDFS, Literal, URIRef
 
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import Status
-from ontocast.onto.model import OntologyCritiqueReport, Suggestions, TripleFix
+from ontocast.onto.model import (
+    OntologyCritiqueReport,
+    OntologyUnitFinding,
+    OntologyUnitFindingKind,
+    Suggestions,
+    TripleFix,
+)
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.unit_states import UnitOntologyState
 from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.facts_validation import FactsAcceptancePolicy
 from test.snapshot_helpers import empty_snapshot
 
 criticise_ontology_module = importlib.import_module("ontocast.agent.criticise_ontology")
@@ -74,6 +81,16 @@ def _tools() -> AtomicToolBox:
         SimpleNamespace(
             get_llm_tool=_llm_tool,
             web_grounding_enabled_for_node=lambda _node: False,
+            ontology_acceptance_policy=FactsAcceptancePolicy(
+                blocking_finding_kinds=frozenset(
+                    {
+                        "foreign_delete",
+                        "foreign_namespace",
+                        "subclass_cycle",
+                        "role_confusion",
+                    }
+                )
+            ),
         ),
     )
 
@@ -104,37 +121,64 @@ def _stub(monkeypatch: pytest.MonkeyPatch, critique: OntologyCritiqueReport) -> 
 
 
 @pytest.mark.anyio
-async def test_a_rejecting_critic_still_hands_over_its_fixes(
+async def test_a_low_score_alone_no_longer_rejects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The mechanism must keep working: a rejection reaches the next render."""
+    """The gate is the deterministic findings, not the model's self-assessment.
+
+    The incumbent rule rejected anything scoring 90 or below, while the prompt's
+    own rubric calls 70-89 "Good" -- so it rejected ontologies its instructions
+    considered good, and did it on a number the model was never shown a scale
+    for. The verdict is still recorded for comparison.
+    """
     _stub(monkeypatch, _critique(success=False, score=40))
     state = await criticise_ontology_module.criticise_ontology(_unit_state(), _tools())
 
-    assert state.status == Status.FAILED
-    assert state.suggestions.actionable_fixes
+    assert state.status == Status.SUCCESS
+    assert state.attempt_log[-1].incumbent_accepted is False
+    assert state.attempt_log[-1].score == 40
 
 
 @pytest.mark.anyio
-async def test_an_accepting_critic_leaves_no_stale_suggestions(
+async def test_a_blocking_finding_rejects_whatever_the_score(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Accepting after an evidence search must not carry the rejection forward."""
+    """A destructive delta is a defect the critic's optimism cannot override."""
     state = _unit_state()
+    state.deterministic_findings = [
+        OntologyUnitFinding(
+            kind=OntologyUnitFindingKind.FOREIGN_DELETE,
+            mandatory=True,
+            message="deletes catalog statements",
+        )
+    ]
 
-    _stub(monkeypatch, _critique(success=False, score=40))
+    _stub(monkeypatch, _critique(success=True, score=95))
     state = await criticise_ontology_module.criticise_ontology(state, _tools())
-    assert state.suggestions.actionable_fixes
+
+    assert state.status == Status.FAILED
+    assert state.attempt_log[-1].accept_reason == "mandatory_findings"
+    assert state.attempt_log[-1].incumbent_accepted is True
+
+
+@pytest.mark.anyio
+async def test_an_accepting_critic_keeps_its_own_fixes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Acceptance says the unit may leave, not that the critique is worthless.
+
+    Clearing here discarded every fix attached to an accepted render -- which,
+    since a REMOVE can never by itself cause a rejection, was most of them. The
+    patch pass reads exactly this field.
+    """
+    state = _unit_state()
 
     _stub(monkeypatch, _critique(success=True, score=95))
     state = await criticise_ontology_module.criticise_ontology(state, _tools())
 
     assert state.status == Status.SUCCESS
-    assert not state.suggestions.actionable_fixes, (
-        "an accepting critic has no outstanding requests; a later render must "
-        "not inherit the rejected attempt's suggestions"
-    )
-    assert not state.suggestions.systemic_critique_summary
+    assert state.suggestions.actionable_fixes
+    assert state.suggestions.systemic_critique_summary == "labels are thin"
 
 
 def test_update_ontology_reports_that_it_applied() -> None:

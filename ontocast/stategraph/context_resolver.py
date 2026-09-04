@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 from collections import Counter
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -15,7 +16,10 @@ from ontocast.onto.enum import (
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.retrieval_capabilities import require_vector_retrieval
+from ontocast.onto.retrieval_capabilities import (
+    EmptyOntologyContextError,
+    require_vector_retrieval,
+)
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.chunk.proposition import split_proposition_windows
 from ontocast.tool.llm import use_budget_tracker
@@ -191,6 +195,83 @@ async def _resolve_fixed_single_ontology_context(
     )
 
 
+async def _diagnose_empty_snapshot(
+    tools: ToolBox, metrics: dict[str, Any] | None
+) -> str:
+    """Name the subsystem that produced an empty ontology snapshot.
+
+    Catalog-first, because retrieval can select exactly the right atoms and
+    still yield nothing when the triple store lists no graphs to expand them
+    against -- the index and the store disagreeing is a deployment fault, not a
+    tuning one, and reporting it as a threshold problem sends an operator to
+    lower thresholds that were never involved.
+
+    Two things this has to get right that reading the metrics alone cannot:
+
+    - **A missing key is not a zero.** When retrieval short-circuits on zero
+      atoms it never reaches the catalog, so ``catalog_context_triples`` is
+      absent rather than ``0``. Testing it with ``== 0`` therefore skipped both
+      catalog branches on exactly the run where the catalog was the cause, and
+      reported the empty index instead -- true, but the symptom rather than the
+      fault. The catalog is asked directly when the metrics cannot answer.
+    - **``atoms_after_dedupe`` is counted after the score gate**, so a
+      threshold rejection records zero of them. "Scored below the retrieval
+      thresholds" was thus unreachable for the case it names; ``candidate_hits``
+      and ``threshold_rejected``, taken before the gate, are what separate
+      "search found nothing" from "a threshold ate everything".
+
+    Args:
+        tools: Toolbox, for inspecting the catalog and index as a last resort.
+        metrics: ``last_retrieval_metrics`` from the patch retriever.
+
+    Returns:
+        str: A one-line cause, stored under ``empty_snapshot_reason``.
+    """
+    metrics = metrics or {}
+    catalog_triples = metrics.get("catalog_context_triples")
+    if catalog_triples is None:
+        # Retrieval never consulted the catalog, so ask it.
+        if not tools.ontology_manager.has_ontologies:
+            return "the ontology catalog is empty (no ontologies stored)"
+    else:
+        graph_reads = (metrics.get("catalog_graph_cache_hits") or 0) + (
+            metrics.get("catalog_graph_cache_misses") or 0
+        )
+        if catalog_triples == 0 and graph_reads == 0:
+            return (
+                "the ontology catalog resolved to zero graphs -- the vector "
+                "index and the triple store disagree about which ontologies "
+                "exist"
+            )
+        if catalog_triples == 0:
+            return "the ontology catalog is empty (no ontologies stored)"
+        if metrics.get("atoms_final"):
+            return (
+                "the catalog is populated but the induced subgraph over the "
+                "selected atoms came back empty"
+            )
+
+    indexed_iris: set[str] = set()
+    if tools.vector_store is not None:
+        try:
+            indexed_iris = await asyncio.to_thread(
+                tools.vector_store.list_indexed_ontology_iris
+            )
+        except Exception as exc:
+            logger.warning("Could not inspect the vector index: %s", exc)
+    if not indexed_iris:
+        return (
+            "the vector index is empty or unreadable, though the catalog holds "
+            "ontologies -- they were never indexed, or the index was wiped "
+            "without a reindex"
+        )
+    if metrics.get("threshold_rejected"):
+        return "all candidate atoms scored below the retrieval thresholds"
+    if metrics.get("candidate_hits"):
+        return "candidate atoms were filtered out after retrieval"
+    return "no candidate atoms matched the unit's queries"
+
+
 async def _resolve_ensemble_context(
     context: UnitLoopContext,
     tools: ToolBox,
@@ -241,29 +322,11 @@ async def _resolve_ensemble_context(
         )
     if not len(patch_graph):
         # An empty snapshot reaching the renderer means it will extract with no
-        # vocabulary at all. Distinguish the causes: an empty index is a
-        # deployment problem, everything-below-threshold is a tuning problem,
-        # and neither should read as "this passage had no relevant terms".
-        indexed_iris: set[str] = set()
-        if tools.vector_store is not None:
-            try:
-                indexed_iris = await asyncio.to_thread(
-                    tools.vector_store.list_indexed_ontology_iris
-                )
-            except Exception as exc:
-                logger.warning("Could not inspect the vector index: %s", exc)
-        if not indexed_iris:
-            reason = "vector index is empty or unreadable"
-        elif metrics and metrics.get("atoms_after_dedupe"):
-            reason = "all candidate atoms scored below the retrieval thresholds"
-        else:
-            reason = "no candidate atoms matched the unit's queries"
+        # vocabulary at all, so name the subsystem at fault before deciding
+        # whether to continue.
+        reason = await _diagnose_empty_snapshot(tools, metrics)
         context.retrieval_metrics[RetrievalMetric.EMPTY_SNAPSHOT_REASON] = reason
-        logger.warning(
-            "Ontology context for this unit is empty (%s); extraction will "
-            "proceed with no catalog vocabulary.",
-            reason,
-        )
+        logger.warning("Ontology context for this unit is empty (%s)", reason)
 
     preferred = tools.ontology_manager.preferred_namespace_prefixes or None
     patch_graph.sanitize_prefixes_namespaces(preferred_namespace_prefixes=preferred)
@@ -288,7 +351,27 @@ async def resolve_unit_ontology_context(
     context: UnitLoopContext,
     tools: ToolBox,
     unit: SourceUnit,
+    *,
+    can_create_vocabulary: bool = False,
 ) -> UnitOntologyContext:
+    """Assemble the ontology context one content unit is rendered against.
+
+    Args:
+        context: Document-level loop inputs.
+        tools: Toolbox holding the catalog and retrieval.
+        unit: The content unit being rendered.
+        can_create_vocabulary: Whether the caller can act on an empty context
+            by inventing vocabulary. True for the ontology loop, which answers
+            an empty seed with ``render_ontology_fresh``; false for the facts
+            loop, which can only fall back on generic terms.
+
+    Returns:
+        The resolved context, possibly empty.
+
+    Raises:
+        EmptyOntologyContextError: The context is empty, the caller cannot
+            create vocabulary, and this deployment requires a context.
+    """
     mode = context.ontology_context_mode
     context.retrieval_metrics[RetrievalMetric.ONTOLOGY_CONTEXT_MODE] = mode.value
     if mode == OntologyContextMode.SELECTED_SINGLE_ONTOLOGY:
@@ -305,6 +388,42 @@ async def resolve_unit_ontology_context(
     context.retrieval_metrics[RetrievalMetric.ONTOLOGY_SNAPSHOT_TRIPLES] = len(
         resolved.snapshot.graph
     )
+    # Checked here, not per mode, for the same reason the size is recorded here:
+    # every mode can return an empty context, and the two that bound nothing
+    # were also the two that reported nothing.
+    #
+    # Two exemptions, both because an empty context is not a fault for them:
+    #
+    # * A unit with no retrievable text has nothing to extract either way.
+    # * A caller that can create vocabulary. The ontology renderer branches on
+    #   exactly this condition -- an empty seed sends it to
+    #   ``render_ontology_fresh``, which mints a new catalog ontology from the
+    #   text -- so raising here made the one path designed for an empty catalog
+    #   unreachable, and turned "this corpus has no ontology yet" into a
+    #   deployment error. It also stopped a populated-catalog run whenever the
+    #   selector honestly reported that no catalog ontology fits.
+    if (
+        not len(resolved.snapshot.graph)
+        and unit.text.strip()
+        and not can_create_vocabulary
+        and tools.config.server.ontology_context_required
+    ):
+        reason = context.retrieval_metrics.get(
+            RetrievalMetric.EMPTY_SNAPSHOT_REASON, "no ontology context was assembled"
+        )
+        raise EmptyOntologyContextError(
+            f"Ontology context for this content unit is empty: {reason}. "
+            "Extraction would fall back on generic vocabulary and the "
+            "conformance gate would then have no node to constrain, reporting "
+            "a vacuous pass. Fix the catalog, or set "
+            "ONTOLOGY_CONTEXT_REQUIRED=false to extract without one "
+            "deliberately."
+        )
+    if not len(resolved.snapshot.graph) and can_create_vocabulary:
+        logger.info(
+            "No ontology context for this unit; rendering a fresh ontology from "
+            "its text"
+        )
     return resolved
 
 

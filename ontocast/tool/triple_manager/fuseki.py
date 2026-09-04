@@ -8,6 +8,7 @@ and facts, with proper authentication and dataset management.
 import asyncio
 import logging
 from collections.abc import Sequence
+from typing import Any
 from urllib.parse import quote, urlparse, urlunparse
 
 import httpx
@@ -114,12 +115,12 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
     def __init__(
         self,
-        uri=None,
-        auth=None,
-        dataset=None,
-        ontologies_dataset=None,
-        shapes_dataset=None,
-        **kwargs,
+        uri: str | None = None,
+        auth: tuple[str, str] | str | None = None,
+        dataset: str | None = None,
+        ontologies_dataset: str | None = None,
+        shapes_dataset: str | None = None,
+        **kwargs: Any,
     ):
         """Initialize the Fuseki triple store manager.
 
@@ -187,8 +188,12 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
     async def _initialize_datasets(self) -> None:
         """Create the configured facts/ontologies/shapes datasets when missing."""
-        await self.init_dataset(self.dataset)
-        seen = {self.dataset}
+        # The constructor always resolves a facts dataset name; the field is
+        # optional only because the constructor parameter is. Falling back here
+        # keeps a None from reaching Fuseki as a dataset literally named "None".
+        dataset = self.dataset or DEFAULT_DATASET
+        await self.init_dataset(dataset)
+        seen = {dataset}
         for name in (self.ontologies_dataset, self.shapes_dataset):
             if name not in seen:
                 seen.add(name)
@@ -409,7 +414,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                 logger.error(f"Failed to clean dataset '{dataset_name}': {e}")
                 raise
 
-    async def init_dataset(self, dataset_name):
+    async def init_dataset(self, dataset_name: str) -> None:
         """Initialize a Fuseki dataset.
 
         This method creates a new dataset in Fuseki if it doesn't already exist.
@@ -781,7 +786,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         )
         return ontologies
 
-    def serialize_graph(self, graph: Graph, **kwargs) -> bool:
+    def serialize_graph(self, graph: Graph, **kwargs: Any) -> bool:
         """Synchronous wrapper for serialize_graph.
 
         For async usage, use aserialize_graph() instead.
@@ -796,14 +801,14 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         )
         return asyncio.run(self._serialize_graph_with_cleanup(graph, **kwargs))
 
-    async def aserialize_graph(self, graph: Graph, **kwargs) -> bool:
+    async def aserialize_graph(self, graph: Graph, **kwargs: Any) -> bool:
         """Async version of serialize_graph.
 
         This is the preferred method when running in an async context.
         """
         return await self._serialize_graph_async(graph, **kwargs)
 
-    async def _serialize_graph_with_cleanup(self, graph: Graph, **kwargs) -> bool:
+    async def _serialize_graph_with_cleanup(self, graph: Graph, **kwargs: Any) -> bool:
         """Wrapper that ensures proper cleanup when using asyncio.run().
 
         This method creates a temporary client and ensures it's properly closed
@@ -821,7 +826,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                 # Restore original client
                 self._client = original_client
 
-    async def _serialize_graph_async(self, graph: Graph, **kwargs) -> bool:
+    async def _serialize_graph_async(self, graph: Graph, **kwargs: Any) -> bool:
         """Store an RDF graph as a named graph in a specific Fuseki dataset.
 
         This is a private helper method that handles the common logic for storing
@@ -870,7 +875,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             logger.error(f"Response: {response.text}")
             return False
 
-    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> bool:
+    def serialize(self, o: Ontology | RDFGraph, **kwargs: Any) -> bool:
         """Synchronous wrapper for serialize.
 
         For async usage, use aserialize() instead.
@@ -885,14 +890,16 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         )
         return asyncio.run(self._serialize_with_cleanup(o, **kwargs))
 
-    async def aserialize(self, o: Ontology | RDFGraph, **kwargs) -> bool:
+    async def aserialize(self, o: Ontology | RDFGraph, **kwargs: Any) -> bool:
         """Async version of serialize.
 
         This is the preferred method when running in an async context.
         """
         return await self._serialize_async(o, **kwargs)
 
-    async def _serialize_with_cleanup(self, o: Ontology | RDFGraph, **kwargs) -> bool:
+    async def _serialize_with_cleanup(
+        self, o: Ontology | RDFGraph, **kwargs: Any
+    ) -> bool:
         """Wrapper that ensures proper cleanup when using asyncio.run().
 
         This method creates a temporary client and ensures it's properly closed
@@ -910,7 +917,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                 # Restore original client
                 self._client = original_client
 
-    async def _serialize_async(self, o: Ontology | RDFGraph, **kwargs) -> bool:
+    async def _serialize_async(self, o: Ontology | RDFGraph, **kwargs: Any) -> bool:
         """Store an RDF graph as a named graph in Fuseki.
 
         This method stores the given RDF graph as a named graph in Fuseki.

@@ -15,44 +15,91 @@ graph, and does not yet gate — is
 | # | Layer | Where | LLM calls |
 |---|-------|-------|-----------|
 | 1 | **Machine repair, at parse time** | `agent/render_facts.py::_normalize_and_repair_graph`, per unit, on every rendered graph | **none** |
-| 2 | **Finding-driven repair render** | `stategraph/atomic.py::_run_finding_driven_repair`, per unit — fed by deterministic findings *and* the critic's blocking fixes | **up to `FACTS_LLM_REPAIR_VISITS`** |
+| 2 | **Critic pass** | `stategraph/atomic.py::run_unit_loop`, per unit — the critique itself costs a call; compiling and applying it costs none | **one per `FACTS_CRITIC_PASSES`** |
 | 3 | **Post-merge gate** | `VALIDATE_FACTS` node, once per document | **none** |
 
 ### How many LLM calls a facts unit really costs
 
-At the default `MAX_VISITS=1` the critic never runs, but extraction is **not**
-one call per unit:
-
-```
-render_facts                      1 provider call
-  ↓  critic skipped (MAX_VISITS reached)
-finding-driven repair render      1 more, if mandatory findings remain
-                                  (up to FACTS_LLM_REPAIR_VISITS, default 1)
-```
-
-The *trigger* is deterministic — quarantined literals, unknown terms, alias
-leftovers — but the *fix* is bought from the model. Set
-`FACTS_LLM_REPAIR_VISITS=0` to pin extraction at exactly one call per unit and
-leave the residue to layers 1 and 3.
-
-The ontology loop has no repair stage, so at `MAX_VISITS=1` it is genuinely one
-call per unit. It does run its own deterministic validator — see
-[Ontology delta validation](#ontology-delta-validation-shadow-mode) — but in
-shadow mode: findings are recorded and shown to the critic, and cost nothing.
-
-Above `MAX_VISITS=1` the facts critic runs, and a **rejection costs one repair
-render, not another full render**. So the ceiling is:
+At the defaults, two:
 
 ```
 render_facts                      1 provider call
   ↓
-criticise_facts                   1 more (MAX_VISITS > 1 only)
-  ↓  rejected -> its blocking fixes become findings
-finding-driven repair render      1 more, up to FACTS_LLM_REPAIR_VISITS
+deterministic checks              free — re-run before every critique
+  ↓
+criticise_facts                   1 per pass (FACTS_CRITIC_PASSES, default 1)
+  ↓  the critique is compiled and applied here, no LLM call
 ```
 
-That total does not grow with `MAX_VISITS`; the bound now governs render
-*failure* retries only.
+The two budgets are independent and mean different things:
+
+- **`MAX_VISITS`** retries a render that *failed*. A render that succeeded is
+  never repeated — re-extracting a whole unit to fix a local defect is the
+  expensive answer to a cheap question, and reliably introduces new defects of
+  its own. Raise it only if renders are failing outright.
+- **`FACTS_CRITIC_PASSES`** buys review-and-patch passes. Each one re-runs the
+  deterministic checks for free, sends the graph and its findings to the critic,
+  and applies what comes back.
+
+Set `FACTS_CRITIC_PASSES=0` to pin extraction at exactly one call per unit and
+leave the residue to layers 1 and 3.
+
+A pass ends the loop early when it changed nothing, or when it was rolled back:
+a second critique of an unchanged graph is the same answer billed twice.
+
+The ontology loop is the same loop. It defaults to `ONTOLOGY_CRITIC_PASSES=0`,
+so it is one call per unit unless you turn its critic on. It does run its own
+deterministic validator — see
+[Ontology delta validation](#ontology-delta-validation-shadow-mode) — which
+costs nothing.
+
+### How a critique reaches the graph
+
+The critic does not describe the statement it wants changed; it **cites the
+statement's id**. Every graph chapter in a critic prompt carries a number per
+statement — inline in Turtle, in a `TRIPLE INDEX` table under JSON-LD — and a
+fix names those numbers in `triple_ids`.
+
+That is the difference between a critique that lands and one that does not. The
+previous contract asked the critic to retype the offending statement into
+`incorrect_value`, and to be applied it had to reproduce the stored triple
+exactly: same prefix form, same predicate, same literal shape. Models reproduce
+graph content from memory poorly, and a single wrong predicate in a node-shaped
+quote discarded the whole fix. Authoring *new* content has no such problem,
+because nothing has to match — so `correct_value` is still free-hand.
+
+The payload is parsed **format-tolerantly**, not by dispatch. `LLM_GRAPH_FORMAT`
+names one syntax for fix payloads and models do not reliably use it — under a
+JSON-LD deployment a large share of authored payloads come back as Turtle, often
+as a Turtle body with a JSON-LD term object where the object belongs
+(`rdfs:label {"@value": "x", "@language": "en"}`). Those are mapped onto the
+equivalent Turtle literal forms, `@id` is unwrapped, and bare absolute IRIs are
+bracketed. Nothing guesses at meaning: a payload that is still not a statement
+afterwards — a bare literal, a predicate with no subject — stays unparseable and
+is reported as residual.
+
+On the ontology side the ids are scoped to the unit's own delta. The retrieved
+catalog is still shown, because a term choice cannot be judged without it, but
+those statements carry no id — so a delete that would propagate onto a shared,
+versioned terminal is not expressible rather than merely reported afterwards.
+
+### What a pass may not destroy
+
+Both halves of a compiled patch are known before anything is touched, so the
+limits are enforced by withholding, not by inspecting the damage:
+
+| Rule | Why |
+|------|-----|
+| Deletes are by cited id only | A statement the critic was never shown cannot be removed |
+| `FACTS_CRITIC_MAX_DELETE_SHARE`, with a `FACTS_CRITIC_MIN_DELETES` floor | Past the share a critique has stopped correcting and started rewriting. The floor keeps short units correctable, where one legitimate fix is already a large fraction of the graph |
+| A `REMOVE` may not empty a subject | Removing the last statement about a node deletes the node, which is not a correction |
+| A `REPLACE` may not write about a different subject than it deletes | That is a rename: it orphans the old node and leaves the new one bare. `FACTS_CRITIC_ALLOW_SUBJECT_RENAME` opts in |
+| A blank node goes whole or not at all | A partial delete leaves the degenerate stub the validator exists to flag |
+| A fix that re-adds exactly what it removes is dropped and counted | It asks for no change; counting it as applied overstates what the critique bought |
+
+After the patch, a pass is rolled back whole if it deleted without writing,
+shrank the unit's product without resolving anything, or *created* mandatory
+findings.
 
 ### What makes a render acceptable
 
@@ -74,6 +121,40 @@ computed played no part at all. Set
 Per-document critic telemetry — call count, accept count, score histogram, fix
 severity histogram — is written to the run manifest under `critic`.
 
+### Completion pass: insert-only recovery
+
+The critic answers *conformance* — is what was rendered correct? — not
+*completeness*. `NUMERIC_COVERAGE` findings tell it about measurements the
+render missed, but the critic's own guideline is to describe them in
+`systemic_critique_summary` rather than mint a fix for each one: a fix
+compiled from a bare number with no place to attach it is exactly the
+placeholder-subject failure mode the compiler's junk check exists to refuse.
+
+`FACTS_COMPLETION_PASSES` (default `0`, off) adds a second, narrower pass for
+this gap. Once the critic loop above is done, and only while the unit's
+numeric-coverage inventory still lists a *measurement* — a number with its
+unit — absent from the graph, up to this many completion passes run. Each
+one:
+
+- is shown a compact **term sheet** (the unit's quantity/observation/condition
+  classes and unit individuals) instead of the full ontology chapter, plus the
+  unit's existing catalog-typed subjects, so a recovered measurement attaches
+  to what is already there instead of minting a duplicate;
+- proposes **insert-only** fixes — `action=ADD` only, never `REMOVE` or
+  `REPLACE` — one per new subject closure; anything else the model returns is
+  dropped rather than trusted;
+- applies each proposed subject through the **same per-subject regression
+  check** a critic fix goes through (see
+  [What a pass may not destroy](#what-a-pass-may-not-destroy)): an insert that
+  leaves the unit worse — creates a mandatory finding, for instance — is
+  rolled back on its own, the rest of the pass stands.
+
+The loop stops early once the inventory is empty, so a unit missing nothing
+never pays for a pass it does not need. Per-document telemetry — calls,
+subjects inserted and rolled back, triples inserted, measurements recovered —
+is written to the run manifest under `completion`
+(see [Observability](observability.md)).
+
 ## Layer 1 — machine repair at parse time
 
 Applied to every rendered graph before it is accepted. Each repair is recorded
@@ -84,13 +165,13 @@ can always tell machine-altered triples from what the model asserted.
 |--------|--------------|
 | Numeric literal retyping | `qudt:numericValue 230` → `"230"^^xsd:decimal` when the schema declares a numeric range |
 | `rdf:type` literal coercion | A type emitted as a string becomes an IRI when it resolves unambiguously |
-| Near-miss predicate rewrite | `qudt:value` → `qudt:numericValue` when exactly one catalog term is a near match (`FACTS_PROPERTY_ALIAS_MIN_RATIO`) |
+| Near-miss predicate rewrite | `qudt:value` → `qudt:numericValue` when exactly one catalog term **contains** the written name's tokens (or equals it once case and separators are folded). String similarity never licenses a rewrite on its own — a site letter or a negating prefix is one character and an opposite meaning — it only breaks ties among containing candidates above `FACTS_PROPERTY_ALIAS_MIN_RATIO`. A predicate declared anywhere in the full catalog is never treated as a near-miss, even when this unit's snapshot did not retrieve it |
 | **Code resolution** | A node carrying `qudt:ucumCode "d"` but no unit link gains `qudt:unit unit:DAY` when exactly one catalog individual declares that code (`FACTS_CODE_PREDICATES`) |
 | Degenerate-bound promotion | Equal lower/upper bounds collapse to a single scalar on the configured numeric-value property — active only when the quantity fallback vocabulary names `numeric_value`, `lower_bound` **and** `upper_bound` roles |
 
 ### Which terms count as unknown
 
-`UNKNOWN_TERM` findings drive mandatory repair renders, so the closure rule
+`UNKNOWN_TERM` findings are mandatory, so the closure rule
 behind them matters. A namespace is *closed* — members the catalog does not
 list get flagged — only when the catalog **declares** terms in it
 (subject-position statements). A namespace the catalog merely *references*
@@ -236,6 +317,79 @@ reported violations.
 and reports a statement that is present as missing. Turning inference off
 therefore raises the violation count rather than lowering it.
 
+!!! warning "In facts-only runs, the mixed-in context can be empty"
+    With `RENDER_MODE=facts` there is no ontology stage, so the document-level
+    context the gate mixes in is empty unless `FACTS_CONTEXT_FROM_UNITS` (on by default)
+    seeds it from the units' retrieved snapshots. An empty context means no
+    `rdfs:subClassOf` axioms, so `sh:class` constraints fire on every node
+    typed with a subclass of what a shape names — the gate then overstates
+    violations and misattributes them to typing. The run records this as
+    `validated_without_ontology_context` in the retrieval metrics; treat the
+    conformance figure of such a run as an upper bound, not a measurement.
+
+### The shapes-driven prompt contract
+
+The shapes judge every extracted graph — and, with
+`FACTS_SHAPES_PROMPT_CONTRACT=auto` (the default), they also *inform* it: the
+loaded shapes are rendered once per tenancy into a `# CONFORMANCE
+REQUIREMENTS` chapter that both the facts renderer and the facts critic see.
+Without it the model is graded against a rulebook it is never shown, and the
+dominant violation classes are reliably the rules no prompt states.
+
+The chapter is derived from the shapes at run time, so the library prompt
+stays domain-neutral — domain knowledge enters only through the deployment's
+artifacts:
+
+- Each constraint renders its **`sh:message` verbatim** when the shape author
+  wrote one (SPARQL constraints included — a message states the rule in
+  prose). Message-less property constraints get one synthesized structural
+  line (`path: at least 1, of type C`); a message-less SPARQL constraint
+  cannot be summarized and is omitted with a startup warning.
+- The chapter is **capped** (`FACTS_SHAPES_PROMPT_MAX_LINES`, default 60) and
+  notes in-text when rules were truncated.
+- With no shapes loaded, or `FACTS_SHAPES_PROMPT_CONTRACT=off`, the prompt is
+  byte-identical to before.
+- **Terms the shapes require are exempt from `UNKNOWN_TERM`**, for the same
+  reason the quantity fallback vocabulary is: the unit's retrieved ontology
+  context is a subset, and flagging a term the contract instructed the
+  renderer to emit would have the repair lane delete exactly what the
+  contract required. The exemption is always the **full catalog's** terms,
+  whatever chapter selection (below) does — they are catalog IRIs either
+  way, and the gate validates against every shape.
+
+**How the chapter scales — selection by context join.** A small catalog is
+rendered whole: run-constant, memoized once per tenancy, shared by every
+unit. A large catalog must not be blind-truncated in document order, so above
+the line cap the chapter is **selected per unit**: a shape is included iff
+its own terms (its `sh:targetClass`, target predicates, `sh:path`,
+`sh:class`) intersect the IRIs of the unit's *resolved ontology snapshot*.
+Shape relevance is derivative of ontology-term relevance — a unit can only
+instantiate the classes its context carries — so the snapshot the retrieval
+already produced is the join key, and no second retrieval decision exists to
+get wrong. The join reads every IRI of the snapshot (subjects, predicates
+and objects: the schema closure carries superclass IRIs as objects, which is
+how a shape targeting a superclass reaches a unit typed with the subclass).
+A unit with an empty context gets no chapter — it has no classes to hold to
+their rules.
+
+`FACTS_SHAPES_PROMPT_CONTRACT` modes: `full` (whole catalog always),
+`context` (per-unit join always), `auto` (default — `full` while the catalog
+fits `FACTS_SHAPES_PROMPT_MAX_LINES`, `context` once it outgrows it), `off`.
+The run manifest records the resolved behavior as
+`validation_config.shapes_prompt_selection`.
+
+Shapes are deliberately **not** indexed in the vector store: the whole index
+lifecycle (tenancy collections, wipe, orphan pruning, the startup
+index↔catalog consistency checks) is keyed on ontology identity, and shape
+relevance needs no similarity search — the context join answers it exactly,
+from a retrieval that already happened. This extends the standing rule that
+shapes live in their own partition precisely so they are never mistaken for
+catalog schema.
+
+Write `sh:message` for every constraint you author: it is simultaneously the
+validation report's diagnostic and the renderer's instruction, one string
+maintained in one place.
+
 ### LLM-free autofix
 
 `FACTS_SHACL_AUTOFIX` repairs violations in code, in a bounded
@@ -311,7 +465,12 @@ Grouping by constraint component is what makes a residue diagnosable: 36
 36 problems to triage.
 
 Batch runs (`ontocast process --output-dir …`) write the same payload beside the
-facts Turtle as `<name>.facts.validation.json`.
+facts Turtle as `<name>.facts.validation.json`, plus two blocks the HTTP response
+splits out elsewhere: `unit_repairs` (the layer-1 `GraphRepairRecord`s per unit —
+kind, source, target, triple count — so a machine rewrite of a model's statement
+is auditable from the dump alone) and `unit_failures` (unit index, phase, stage,
+reason). The file is written whenever any of its blocks is non-empty, so a run
+whose units all failed still leaves a record.
 
 ## Ontology delta validation (shadow mode)
 
@@ -366,8 +525,7 @@ Under `ONTOLOGY_CONTEXT_MODE=selected_vector_search_ontology` the per-unit
 snapshot is a **retrieved subset** of the catalog, so judgments that require
 knowing what the catalog contains cannot be made inside the unit. Three
 policies therefore run at the reduce step, where the full catalog terminals
-are already in hand (design note:
-`planning/ontology-update-semantics.md` at the workspace root):
+are already in hand:
 
 | Policy | Behavior | Metric |
 |---|---|---|
@@ -399,7 +557,7 @@ simply be unretrieved rather than missing.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FACTS_SHAPES_DIR` | — | **Seed** directory of SHACL shape files (recursive), materialized into the shapes partition at startup; inline `sh:NodeShape` in the ontology context is picked up automatically |
+| `FACTS_SHAPES_DIR` | — | **Seed** directory of SHACL shape files (recursive), materialized into the shapes partition at startup; inline `sh:NodeShape` in the ontology context is picked up automatically. `--shapes-dir` overrides it per run |
 | `FUSEKI_SHAPES_DATASET` | derived from tenant/project | Fuseki dataset backing the shapes partition |
 | `FACTS_SHACL_INFERENCE` | `rdfs` | `none`, `rdfs` or `owlrl` pre-inference |
 | `FACTS_SHACL_ADVANCED` | `true` | Enable SHACL Advanced Features |
@@ -407,13 +565,48 @@ simply be unretrieved rather than missing.
 | `FACTS_SHACL_AUTOFIX` | `prune` | `off`, `rewrite`, or `prune` |
 | `FACTS_SHACL_AUTOFIX_PASSES` | `1` | Bounded validate → repair → revalidate rounds |
 | `FACTS_CODE_PREDICATES` | `qudt:ucumCode`, `qudt:symbol`, `skos:notation` | Predicates whose literals are machine-resolvable codes |
-| `FACTS_LLM_REPAIR_VISITS` | `1` | Finding-driven repair renders per unit — **each one is a provider call** |
+| `FACTS_CRITIC_PASSES` | `1` | Review-and-patch passes per unit — **each one is a provider call** |
 | `FACTS_MERGE_REPAIR_PASSES` | `1` | Un-merge passes at the gate |
 | `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | `error` | Severity of `SUSPECT_MULTI_VALUE` findings |
+| `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT` | `false` | Report an IRI-branch `SUSPECT_MULTI_VALUE` as an error only when its objects came from different units |
+| `FACTS_NUMERIC_IDENTIFIER_GUARD` | `true` | Keep identifier digit groups out of the numeric-coverage inventory |
+| `FACTS_CONTEXT_FROM_UNITS` | `true` | In facts-only runs, seed the merge/validate ontology context from the snapshots the units resolved |
 | `FACTS_FUNCTIONAL_MIN_SINGLE_SUPPORT` | `3` | Subjects needed before a predicate counts as empirically functional |
 | `FACTS_ACCEPT_BLOCKING_SEVERITY` | `critical` | Which critic-proposed fix severities block a unit from leaving the loop; `never` lets deterministic findings gate alone. A `REMOVE` fix never blocks at any setting |
 | `FACTS_LITERAL_VARIANT_DEDUPE` | `true` | Collapse duplicate literals differing only in language tag or datatype before the gate validates |
 | `ONTOLOGY_RECONCILE_MINTED_TERMS` | `detect` | Reduce-time minted-duplicate scan: `off`, `detect` (count only), `rewrite` (substitute the catalog IRI) |
+
+The last three default to off because each changes what the pipeline extracts or
+reports, and the right setting depends on the corpus:
+
+- **`FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT`.** The IRI branch of
+  `SUSPECT_MULTI_VALUE` flags any subject carrying two objects on a predicate
+  that is single-valued elsewhere in the graph, and error findings drive the
+  un-merge repair. Frequency alone is weak evidence: a genuinely multi-valued
+  statement is rare by construction, so a correct one — two agents named in one
+  sentence — looks exactly like a bad merge and gets repaired away. Provenance
+  separates them, because only objects arriving from *different* units could
+  have been brought together by an identity decision. With this set, a pair
+  asserted within a single unit is reported as a warning and never vetoes a
+  cluster. The numeric and string branches are unaffected: two distinct
+  quantities on one node are a defect whatever their provenance.
+- **`FACTS_NUMERIC_IDENTIFIER_GUARD`.** The numeric-coverage finding lists
+  numbers present in the source text but absent from the graph, and the repair
+  render acts on it. Digit groups sitting against an identifier separator
+  (`600/92`, `10.1234/example`) are parts of one identifier, not quantities;
+  offering them invites the repair to structure a file number into numeric
+  properties, which the post-merge multi-value check then flags. A digit group
+  standing alone as its own token is deliberately *not* covered — nothing around
+  it distinguishes a file-number component from a small quantity — and a value
+  with its unit (`8.5 nm`) or a range (`10-15 meV`) is untouched.
+- **`FACTS_CONTEXT_FROM_UNITS`** (on by default). With `RENDER_MODE=facts` no ontology stage
+  runs, so there are no reduced artifacts to merge and the document-level
+  ontology context is empty unless it is seeded from the units' snapshots — even though every unit resolved and rendered
+  against a real one. Turned off, both consumers see that: the aggregator loses the type and
+  functionality declarations its guards read, and the gate skips every check
+  that needs a vocabulary. Watch `validated_without_ontology_context` and
+  `ontology_snapshot_triples` in the retrieval metrics to see which side you are
+  on.
 
 See [Configuration System](configuration.md) for the full surface and
 [Entity Disambiguation](aggregation.md) for the merge stage this gate sits behind.

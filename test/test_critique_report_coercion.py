@@ -16,6 +16,8 @@ from ontocast.onto.model import (
     TripleFix,
 )
 
+pytestmark = pytest.mark.unit
+
 REPORT_CLASSES = [OntologyCritiqueReport, FactsCritiqueReport]
 
 

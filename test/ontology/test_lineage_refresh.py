@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import cast
 
+import pytest
 from rdflib import DCTERMS, OWL, RDF, XSD, Literal, URIRef
 
 from ontocast.agent.normalize_ontology import normalize_ontology_units
@@ -9,6 +10,8 @@ from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.toolbox import ToolBox
+
+pytestmark = pytest.mark.unit
 
 
 def _make_base_ontology() -> Ontology:

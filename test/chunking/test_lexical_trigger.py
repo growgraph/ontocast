@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from rdflib import OWL, RDFS, SKOS, Namespace
 
 from ontocast.config import LexicalTriggerFusion
@@ -15,6 +16,8 @@ from ontocast.tool.vector_store.lexical_trigger import (
     tokenize_for_lexical_match,
 )
 from ontocast.tool.vector_store.patch_retriever import _merge_lexical_trigger_atoms
+
+pytestmark = pytest.mark.unit
 
 QUDT = Namespace("http://qudt.org/schema/qudt/")
 UNIT = Namespace("http://qudt.org/vocab/unit/")

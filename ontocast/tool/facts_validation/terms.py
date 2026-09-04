@@ -146,15 +146,35 @@ class ValidationPolicy(BaseModel):
     additional_standard_namespaces: tuple[str, ...] = ()
     quantity_fallback_vocabulary: dict[str, str] | None = None
     code_predicates: tuple[str, ...] = ()
+    #: IRIs the shapes-derived conformance chapter instructs the renderer to
+    #: emit. Same class of exemption as the fallback vocabulary: the prompt
+    #: recommends these terms, so flagging them UNKNOWN_TERM would have the
+    #: repair lane delete exactly what the prompt required. Threaded per unit
+    #: from the tenancy's shapes catalog.
+    contract_exempt_terms: tuple[str, ...] = ()
+    #: Keep identifier digit groups out of the numeric-coverage inventory.
+    #: Same class as the exemptions above -- something configuration says the
+    #: deterministic checks must not put in front of the renderer.
+    numeric_identifier_guard: bool = False
+    #: Floor on the share of schema terms a render must take from the
+    #: catalog before DOMAIN_ADHERENCE fires. 0 disables the check.
+    domain_adherence_min_share: float = 0.15
+    #: Fewest distinct schema terms a render must use before its catalog
+    #: share is judged at all. A share over a handful of terms is noise: a
+    #: front-matter unit typing an identifier and an author with generic
+    #: vocabulary is not a render that abandoned the catalog.
+    domain_adherence_min_terms: int = 4
 
     def standard_namespaces(self) -> tuple[str, ...]:
         """Built-in meta-vocabulary namespaces plus the configured ones."""
         return (*_STANDARD_NAMESPACES, *self.additional_standard_namespaces)
 
     def exempt_terms(self, *graphs: RDFGraph | None) -> set[str]:
-        """Exact IRIs configuration blessed: fallback vocabulary + code predicates."""
+        """Exact IRIs configuration blessed: fallback vocabulary, code
+        predicates, and the shapes-contract terms."""
         terms = expand_vocabulary_terms(self.quantity_fallback_vocabulary, *graphs)
         terms.update(self.code_predicates)
+        terms.update(self.contract_exempt_terms)
         return terms
 
 

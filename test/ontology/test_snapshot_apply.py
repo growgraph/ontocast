@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from rdflib import OWL, RDF, URIRef
 
 from ontocast.agent.normalize_ontology import normalize_ontology_units
@@ -15,6 +16,8 @@ from ontocast.onto.ontology_apply import (
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool import OntologyManager
+
+pytestmark = pytest.mark.unit
 
 
 def _onto_graph(iri: str, local: str, prefix: str) -> RDFGraph:

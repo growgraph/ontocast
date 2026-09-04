@@ -23,6 +23,83 @@ Context is assembled **per unit** inside the ontology loop, not at document leve
     [`ONTOLOGY_CONTEXT_MAX_TRIPLES`](#how-large-is-the-context), like every
     other prompt.
 
+## What if the context is empty?
+
+**It depends on who is asking.** An empty context means opposite things to the
+two loops, and treating them alike is what makes an empty catalog either a
+silent disaster or a spurious failure.
+
+### For an ontology unit: this is the starting point
+
+Nothing stops. An ontology unit with no context is handed to
+`render_ontology_fresh`, which invents a new catalog ontology from the text and
+mints its IRI under `current_domain`. That is the whole bootstrap journey — a
+corpus with no ontology yet is the *input* to an ontology-building run, not a
+fault — and it is also what happens mid-run when the selector honestly reports
+that no catalog ontology fits a particular unit.
+
+`ONTOLOGY_CONTEXT_REQUIRED` never applies here, whatever it is set to.
+
+### For a facts unit: the run stops, if you asked it to
+
+A facts unit cannot answer an empty context. The renderer is instructed to
+extract "based on provided domain ontology"; handed nothing, it does not fail —
+it falls back on whatever standard vocabulary the prompt names. What comes out
+is well-formed triple by triple, exempt from `UNKNOWN_TERM` (standard
+namespaces are exempt by default), and matched by no shape, since none of its
+subjects are in any shape's target class. So the conformance gate reports
+**zero violations** on it. A run with no vocabulary at all can therefore look,
+at every checkpoint, like the cleanest run in a series.
+
+`ONTOLOGY_CONTEXT_REQUIRED` (default `false`) raises
+`EmptyOntologyContextError` on that, and the error is *not* caught as a
+per-unit failure: it describes the deployment, so every sibling unit has it
+too, and recording it per unit let the run finish, write a zero-triple manifest
+and exit successfully — the outcome the setting exists to prevent, with one
+traceback per unit burying the cause.
+
+It is **off by default** because the default render mode builds ontologies as
+well as facts, so a catalog that starts empty is ordinary. Turn it on for a
+deployment that extracts against a curated catalog, where an empty context can
+only mean the catalog failed to load. With it off, the run continues and
+records `retrieval_metrics.empty_snapshot_reason`, which names the subsystem at
+fault — catalog-side causes first, because a catalog that resolved to no graphs
+and a retrieval threshold that matched nothing are different problems with
+different fixes.
+
+!!! tip "Facts-only runs stop at startup instead"
+
+    `ontocast process` under `RENDER_MODE=facts` refuses to start when the
+    catalog resolves to zero ontologies — before a document is converted or a
+    provider call is billed. Under a render mode that creates ontologies it
+    starts and says so. `ontocast serve` never refuses on this: it is filled
+    through `POST /ontologies`.
+
+### Regardless of either: the two halves must agree
+
+Two startup checks are about *integrity*, not preference, so they do not
+consult `ONTOLOGY_CONTEXT_REQUIRED` and are not waived by any render mode. They
+fail in opposite directions, and each hides the other:
+
+- A populated vector index beside an **empty catalog** gives *healthy-looking*
+  retrieval metrics — the expected seeds, the expected atom count — and an
+  empty graph.
+- An **empty index** beside a populated catalog is what `--wipe-vector-store`
+  leaves behind when materialization put nothing back; the wipe is
+  unconditional, the refill is not.
+
+Neither fires during a legitimate bootstrap, where catalog and index are both
+empty.
+
+Two companion signals for a context that arrived and was wasted, both on by
+default:
+
+- **`DOMAIN_ADHERENCE`** (`FACTS_DOMAIN_ADHERENCE_MIN_SHARE`, default `0.15`) —
+  a mandatory finding when a render used almost none of the catalog it *did*
+  get. Covers the case where the context arrived but was ignored.
+- **`shacl_vacuous` / `shacl_focus_nodes`** in the conformance summary —
+  `conforms` is `null`, never `true`, when the shapes matched no node.
+
 ## How large is the context?
 
 Only vector mode bounds retrieval itself; every mode is bounded at
@@ -150,9 +227,15 @@ treat sub-percentage-point differences as run-to-run noise.
 in-repo.
 
 Per-run metrics are available in production on
-`state.retrieval_metrics["patch_retrieval"]`: `atoms_after_dedupe`, `atoms_final`,
-`seed_iris`, `seeds_by_ontology`, `snapshot_triple_count`, `snapshot_pruned_uri_count`,
-`snapshot_uri_components`.
+`state.retrieval_metrics["patch_retrieval"]`: `candidate_hits`, `threshold_rejected`,
+`atoms_after_dedupe`, `atoms_final`, `seed_iris`, `seeds_by_ontology`,
+`snapshot_triple_count`, `snapshot_pruned_uri_count`, `snapshot_uri_components`.
+
+`candidate_hits` and `threshold_rejected` are counted *before* the score gate;
+`atoms_after_dedupe` is counted after it. Only the first pair can distinguish
+"search returned nothing" from "a threshold rejected everything" — a threshold
+rejection records zero atoms after dedupe, so reading that number alone reports
+the wrong cause.
 
 #### Catalog I/O
 
@@ -373,8 +456,7 @@ catalog terminals. The prompts say so explicitly (a PARTIAL CONTEXT notice in
 the render intro and critic criteria), and three reduce-time policies close
 the gap that partiality opens: minted-duplicate reconciliation against the
 full terminals, a redeclare-only delete policy, and fresh-path union merging.
-See [Validation → Reduce-time policies](validation.md#reduce-time-policies-the-terminal-is-the-authority)
-and the workspace design note `planning/ontology-update-semantics.md`.
+See [Validation → Reduce-time policies](validation.md#reduce-time-policies-the-terminal-is-the-authority).
 
 ## Per-Request Overrides
 

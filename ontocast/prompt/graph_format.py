@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from contextvars import Token
 from dataclasses import dataclass
@@ -10,14 +11,35 @@ from typing import TypeVar
 from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel
 
-from ontocast.onto.enum import LLMGraphFormat
+from ontocast.onto.enum import LLMGraphFormat, OntologyChapterFormat
 from ontocast.onto.llm_graph_payload import llm_graph_format_ctx
-from ontocast.onto.ontology_condense import condense_graph_for_prompt
+from ontocast.onto.ontology_condense import (
+    CondenseReport,
+    TextCaps,
+    condense_graph_for_prompt,
+)
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.triple_index import TripleIndex, build_triple_index
 from ontocast.prompt.facts_guidelines import format_facts_operational_guidelines
+from ontocast.prompt.graph_index import render_index_table, render_indexed_turtle
 from ontocast.prompt.llm_json_schema import format_instructions_for_model
+from ontocast.prompt.term_sheet import build_ontology_term_sheet
 
 T = TypeVar("T", bound=BaseModel)
+
+
+@dataclass(frozen=True)
+class IndexedChapter:
+    """A prompt chapter and the triple ids it hands the model.
+
+    The two travel together because they must not drift: the index is only
+    meaningful for the exact graph state the text was rendered from, and the
+    resolver checks that before it will delete anything.
+    """
+
+    text: str
+    index: TripleIndex
+
 
 # --- Output instructions (single-format per profile; graph-update = base + suffix) ---
 
@@ -128,26 +150,56 @@ closed with `}` before the response's final `}`:
 ```
 """
 
-_OUTPUT_INSTRUCTION_CRITIQUE_TURTLE = """\n\n
+_CRITIQUE_ADDRESSING_INSTRUCTION = """\n\n
+# HOW TO ADDRESS A STATEMENT
+
+Every statement in the graph chapters above carries an id -- the bracketed number
+before it, or its row in the TRIPLE INDEX table.
+
+1. To REMOVE a statement, put its id in `triple_ids`. Leave `correct_value` empty.
+2. To REPLACE a statement, put the id(s) you are replacing in `triple_ids` and put
+   the replacement in `correct_value`.
+3. To ADD, leave `triple_ids` empty and put the new statement in `correct_value`.
+
+Cite the id. Do NOT retype an existing statement into `incorrect_value`: a retyped
+statement has to match the stored one exactly, and a single differing predicate,
+prefix, or literal form silently discards the whole fix. The id cannot be wrong.
+
+Cite several ids in one fix when a change affects several statements about the same
+subject. Cite only ids you can see; never guess a number.
+"""
+
+_OUTPUT_INSTRUCTION_CRITIQUE_TURTLE = (
+    _CRITIQUE_ADDRESSING_INSTRUCTION
+    + """\n\n
 # GRAPH FORMAT INSTRUCTION (LLM_GRAPH_FORMAT=turtle)
 
 The deployment emits RDF graph fixes in Turtle syntax.
-For each `incorrect_value` and `correct_value` in actionable fixes, provide a **string**
-containing valid Turtle: `@prefix` declarations when needed, then one or more triples.
+Provide `correct_value` as a **string** containing valid Turtle: `@prefix` declarations
+when needed, then one or more triples.
 Example: "@prefix schema: <https://schema.org/> . cd:alice schema:worksFor cd:acme ."
 """
+)
 
-_OUTPUT_INSTRUCTION_CRITIQUE_JSONLD = """\n\n
+_OUTPUT_INSTRUCTION_CRITIQUE_JSONLD = (
+    _CRITIQUE_ADDRESSING_INSTRUCTION
+    + """\n\n
 # GRAPH FORMAT INSTRUCTION (LLM_GRAPH_FORMAT=jsonld)
 
-Render output uses embedded JSON-LD objects for graph fields, but critique fixes use **strings**
-containing JSON for one subject node each.
-For each `incorrect_value` and `correct_value`, provide a **string** with valid JSON for one
-subject node (inline `@context` or compact IRIs only):
+Render output uses embedded JSON-LD objects for graph fields, but critique fixes use a **string**
+containing JSON for one subject node.
+Provide `correct_value` as a **string** with valid JSON for one subject node
+(inline `@context` or compact IRIs only):
 Example: "{\\"@context\\": {\\"schema\\": \\"https://schema.org/\\"}, \\"@id\\": \\"cd:alice\\", \\"schema:worksFor\\": {\\"@id\\": \\"cd:acme\\"}}"
 Use `{"@value": "...", "@type": "xsd:date"}` for typed literals and `{"@value": "...", "@language": "en"}`
 for language-tagged literals. Never use Turtle ^^ syntax inside these JSON strings.
 """
+)
+
+
+def _fence_lang(fmt: LLMGraphFormat) -> str:
+    """Code-fence language tag for a graph serialized in ``fmt``."""
+    return "ttl" if fmt == LLMGraphFormat.TURTLE else "json"
 
 
 @dataclass(frozen=True)
@@ -155,12 +207,62 @@ class GraphFormatProfile:
     """Prompt, context serialization, and parser configuration for one LLM graph format."""
 
     format: LLMGraphFormat
+    #: Syntax of the ``# ONTOLOGY`` chapter built by :meth:`format_ontology_chapter`.
+    #: ``INHERIT`` follows :attr:`format`; ``TURTLE`` decouples the read-only
+    #: context from the wire the model writes on. Nothing else on the profile
+    #: -- output instructions, the facts chapter, parsing -- reads it.
+    ontology_chapter_format: OntologyChapterFormat = OntologyChapterFormat.INHERIT
+
+    @property
+    def renders_term_sheet(self) -> bool:
+        """Whether the ontology chapter is a term sheet rather than a graph."""
+        return self.ontology_chapter_format == OntologyChapterFormat.TERM_SHEET
+
+    @property
+    def ontology_chapter_discriminator(self) -> str:
+        """What actually determines the chapter text, for a memo key.
+
+        Two profiles that render the same chapter must share a memo entry -- a
+        JSON-LD profile pinned to Turtle and a plain Turtle profile produce the
+        same bytes -- so the wire, not the setting, is the discriminator for a
+        graph chapter. A term sheet is not a serialization of the graph at all,
+        and reports a Turtle wire only because that is the cheaper of the two it
+        is not, so it needs its own name here or it would be served the Turtle
+        chapter.
+        """
+        if self.renders_term_sheet:
+            return str(OntologyChapterFormat.TERM_SHEET)
+        return str(self.ontology_chapter_wire)
+
+    @property
+    def ontology_chapter_wire(self) -> LLMGraphFormat:
+        """The syntax :meth:`format_ontology_chapter` serializes in.
+
+        Meaningless when :attr:`renders_term_sheet` -- a term sheet is not a
+        serialization of the graph -- and reported as Turtle there so a caller
+        that only wants the cheaper-of-the-two answer is not misled.
+        """
+        if self.ontology_chapter_format in (
+            OntologyChapterFormat.TURTLE,
+            OntologyChapterFormat.TERM_SHEET,
+        ):
+            return LLMGraphFormat.TURTLE
+        return self.format
 
     def context_fence_lang(self) -> str:
-        return "ttl" if self.format == LLMGraphFormat.TURTLE else "json"
+        return _fence_lang(self.format)
 
-    def serialize_graph_for_prompt(self, graph: RDFGraph) -> str:
-        if self.format == LLMGraphFormat.TURTLE:
+    def serialize_graph_for_prompt(
+        self, graph: RDFGraph, *, wire: LLMGraphFormat | None = None
+    ) -> str:
+        """Serialize ``graph`` for a prompt chapter.
+
+        Args:
+            graph: The graph to serialize.
+            wire: Syntax to use; defaults to the profile's own format.
+        """
+        fmt = self.format if wire is None else wire
+        if fmt == LLMGraphFormat.TURTLE:
             return graph.serialize_canonical_turtle()
         return graph.serialize_compact_jsonld_for_prompt()
 
@@ -170,6 +272,8 @@ class GraphFormatProfile:
         *,
         suffix: str = "",
         max_triples: int | None = None,
+        text_caps: TextCaps | None = None,
+        on_report: Callable[[CondenseReport], None] | None = None,
     ) -> str:
         """Serialize the ontology chapter, condensing it toward ``max_triples``.
 
@@ -177,22 +281,147 @@ class GraphFormatProfile:
         loops, render and critique, the shared snapshot and the ontology loop's
         mutable working graph -- so it is where the prompt budget is enforced.
 
+        The chapter is written in :attr:`ontology_chapter_wire`, which the
+        deployment may pin to Turtle independently of the wire format: here the
+        ontology is context the model reads, not a graph it patches, so its
+        syntax is free to be the denser one. The indexed variant the ontology
+        critic uses stays on the wire format -- its output is a patch against
+        the very statements it reads.
+
         ``suffix`` is built by the caller from the uncondensed graph, which stays
         correct: the index only names terms by ``rdfs:label`` and their
         domain/range, none of which condensing drops.
+
+        ``text_caps`` bounds the individual literals before either rendering.
+        The triple budget is a count and says nothing about how long one
+        ``rdfs:comment`` may be, so a chapter well inside it can still be
+        unbounded; capping here covers every chapter the pipeline builds.
+
+        ``on_report`` is handed what condensing and capping actually did. A cap
+        whose effect cannot be read back is a cap nobody can size: whether a
+        catalog reaches one at all is a property of that catalog, not something
+        a default can be chosen for in advance.
         """
-        condensed, _ = condense_graph_for_prompt(graph, max_triples)
-        body = self.serialize_graph_for_prompt(condensed)
-        chapter = f"\n\n# ONTOLOGY\n\n```{self.context_fence_lang()}\n{body}\n```\n"
+        condensed, report = condense_graph_for_prompt(graph, max_triples, text_caps)
+        if on_report is not None:
+            on_report(report)
+        if self.renders_term_sheet:
+            body = build_ontology_term_sheet(condensed)
+            return f"\n\n# ONTOLOGY\n\n{body}\n" + suffix
+        wire = self.ontology_chapter_wire
+        body = self.serialize_graph_for_prompt(condensed, wire=wire)
+        chapter = f"\n\n# ONTOLOGY\n\n```{_fence_lang(wire)}\n{body}\n```\n"
         return chapter + suffix
 
-    def format_facts_chapter(self, graph: RDFGraph) -> str:
-        body = self.serialize_graph_for_prompt(graph)
-        return (
-            "\n\n# SEMANTIC GRAPH OF FACTS\n"
-            "The following facts were extracted\n\n"
-            f"```{self.context_fence_lang()}\n{body}\n```\n"
+    def _indexed_body(self, graph: RDFGraph, index: TripleIndex) -> str:
+        """Body plus ids, in whichever way this format can carry them.
+
+        Turtle takes the ids inline, where the critic is already reading. JSON-LD
+        cannot: rule 7 of its output instruction demands strictly valid JSON, and
+        an ``[12]`` marker inside a node object would contradict it -- so the ids
+        ride in a table after the fenced block instead. One resolver serves both.
+        """
+        if self.format == LLMGraphFormat.TURTLE:
+            return render_indexed_turtle(graph, index)
+        return self.serialize_graph_for_prompt(graph)
+
+    def _index_appendix(self, graph: RDFGraph, index: TripleIndex) -> str:
+        if self.format == LLMGraphFormat.TURTLE or index.is_empty:
+            return ""
+        return "\n" + render_index_table(graph, index) + "\n"
+
+    def format_facts_chapter_indexed(self, graph: RDFGraph) -> IndexedChapter:
+        """The facts chapter with a citable id on every triple.
+
+        Scope is the whole unit graph: for facts the graph *is* the unit's
+        product, so every triple in it is the critic's to change.
+        """
+        graph.sanitize_prefixes_namespaces()
+        index = build_triple_index(graph)
+        body = self._indexed_body(graph, index)
+        return IndexedChapter(
+            text=(
+                "\n\n# SEMANTIC GRAPH OF FACTS\n"
+                "The following facts were extracted. "
+                f"{self._addressing_note(index, len(graph))}\n\n"
+                f"```{self.context_fence_lang()}\n{body}\n```\n"
+                f"{self._index_appendix(graph, index)}"
+            ),
+            index=index,
         )
+
+    def format_ontology_chapter_indexed(
+        self,
+        graph: RDFGraph,
+        *,
+        scope: RDFGraph | None = None,
+        suffix: str = "",
+        max_triples: int | None = None,
+    ) -> IndexedChapter:
+        """The ontology chapter with ids, assigned **after** condensing.
+
+        Condensing drops triples to fit the prompt budget. Numbering before it
+        would hand out ids for statements the critic never sees, and a delete
+        cited against one of those is ordered blind.
+
+        ``scope`` narrows which statements are addressable. The ontology critic
+        is shown the retrieved snapshot *plus* this unit's delta but owns only
+        the delta, so passing the delta here leaves catalog statements visible
+        and unciteable -- a delete that would propagate to every document
+        sharing the terminal simply cannot be expressed.
+
+        Text caps deliberately do not reach here. The critic cites statements by
+        index and may order a delete against one; a clipped literal would not
+        match the statement it names, so the delete would silently miss. The
+        indexed chapter shows the statements exactly as they are stored.
+        """
+        condensed, _ = condense_graph_for_prompt(graph, max_triples)
+        condensed.sanitize_prefixes_namespaces()
+        index = build_triple_index(condensed, scope=scope)
+        body = self._indexed_body(condensed, index)
+        return IndexedChapter(
+            text=(
+                "\n\n# ONTOLOGY\n"
+                f"{self._addressing_note(index, len(condensed))}\n\n"
+                f"```{self.context_fence_lang()}\n{body}\n```\n"
+                f"{self._index_appendix(condensed, index)}"
+                f"{suffix}"
+            ),
+            index=index,
+        )
+
+    def _addressing_note(self, index: TripleIndex, shown: int) -> str:
+        """Explain the ids, and the absence of an id, in one sentence each."""
+        if shown == 0:
+            # Nothing to address, so nothing to explain. A note naming the index
+            # for an empty chapter invites a citation there is no statement for.
+            return ""
+        if len(index) == 0:
+            return (
+                "Every statement below is existing context: read it, but none "
+                "of it can be cited or removed."
+            )
+        if self.format == LLMGraphFormat.TURTLE:
+            note = (
+                "The bracketed number before each statement is its id; cite ids "
+                "in `triple_ids` to change or remove a statement."
+            )
+            if len(index) < shown:
+                note += (
+                    " Statements marked `[-]` are existing context: read them, "
+                    "but they cannot be cited or removed."
+                )
+            return note
+        note = (
+            "The TRIPLE INDEX below lists the id of each addressable statement; "
+            "cite ids in `triple_ids` to change or remove one."
+        )
+        if len(index) < shown:
+            note += (
+                " Statements absent from the table are existing context: read "
+                "them, but they cannot be cited or removed."
+            )
+        return note
 
     def render_fresh_output_instruction(self, *, target: str = "facts") -> str:
         if self.format == LLMGraphFormat.JSONLD:
@@ -266,11 +495,25 @@ class _LLMGraphFormatContext(AbstractContextManager[LLMGraphFormat]):
             llm_graph_format_ctx.reset(self._token)
 
 
-_PROFILES: dict[LLMGraphFormat, GraphFormatProfile] = {
-    LLMGraphFormat.TURTLE: GraphFormatProfile(format=LLMGraphFormat.TURTLE),
-    LLMGraphFormat.JSONLD: GraphFormatProfile(format=LLMGraphFormat.JSONLD),
+_PROFILES: dict[tuple[LLMGraphFormat, OntologyChapterFormat], GraphFormatProfile] = {
+    (fmt, chapter): GraphFormatProfile(format=fmt, ontology_chapter_format=chapter)
+    for fmt in LLMGraphFormat
+    for chapter in OntologyChapterFormat
 }
 
 
-def get_graph_format_profile(fmt: LLMGraphFormat) -> GraphFormatProfile:
-    return _PROFILES[fmt]
+def get_graph_format_profile(
+    fmt: LLMGraphFormat,
+    *,
+    ontology_chapter_format: OntologyChapterFormat = OntologyChapterFormat.INHERIT,
+) -> GraphFormatProfile:
+    """The profile for a wire format.
+
+    Args:
+        fmt: Syntax the model emits graph payloads in.
+        ontology_chapter_format: Syntax of the ``# ONTOLOGY`` chapter in the
+            prompts built from this profile. The facts loop passes the
+            deployment's ``ONTOLOGY_CHAPTER_FORMAT``; callers that leave it at
+            ``INHERIT`` get a chapter in ``fmt``.
+    """
+    return _PROFILES[(fmt, ontology_chapter_format)]

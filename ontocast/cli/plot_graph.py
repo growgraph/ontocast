@@ -124,152 +124,128 @@ def flow_graph_to_mermaid(flow: FlowGraph) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _atomic_loop_core_edges(
+def _unit_loop_core_edges(
     *, render_node: str, critic_node: str
 ) -> tuple[FlowEdge, ...]:
-    """Render/critic retry loop without optional web-evidence branches."""
+    """The unit loop without the optional web-evidence branches.
+
+    Two things this shape says that the previous one did not. The render loop
+    retries a *failed* render only -- a successful one is never repeated, so the
+    critique cannot cost a re-extraction. And the critique ends in an applied
+    patch rather than in a request: accepting and rejecting differ only in
+    whether the unit may leave, not in whether the fixes are acted on.
+    """
     return (
         FlowEdge("render_loop", render_node),
-        FlowEdge(render_node, "final_render", "success", conditional=True),
+        FlowEdge(render_node, "pass_loop", "success", conditional=True),
         FlowEdge(render_node, "render_loop", "fail", conditional=True),
-        FlowEdge("final_render", critic_node, "no", conditional=True),
-        FlowEdge(critic_node, "done", "success", conditional=True),
-        FlowEdge(critic_node, "render_loop", "fail", conditional=True),
         FlowEdge("render_loop", "exhausted", "exhausted", conditional=True),
+        FlowEdge("pass_loop", "findings", "pass", conditional=True),
+        FlowEdge("findings", critic_node),
+        FlowEdge(critic_node, "patch", "accept or reject", conditional=True),
     )
 
 
-def _atomic_loop_evidence_edges(
+def _unit_loop_evidence_edges(
     *, render_node: str, critic_node: str
 ) -> tuple[FlowEdge, ...]:
-    """Full loop including optional plan/fetch web-evidence on render and critic failure."""
+    """The unit loop including optional plan/fetch web evidence."""
     return (
         FlowEdge("render_loop", render_node),
-        FlowEdge(render_node, "final_render", "success", conditional=True),
+        FlowEdge(render_node, "pass_loop", "success", conditional=True),
         FlowEdge(render_node, "render_fail_search", "fail", conditional=True),
         FlowEdge("render_fail_search", "evid_r", "yes", conditional=True),
         FlowEdge("evid_r", "rerender"),
-        FlowEdge("rerender", "final_render", "success", conditional=True),
+        FlowEdge("rerender", "pass_loop", "success", conditional=True),
         FlowEdge("rerender", "render_loop", "fail", conditional=True),
         FlowEdge("render_fail_search", "render_loop", "no", conditional=True),
-        FlowEdge("final_render", "critic_loop", "no", conditional=True),
-        FlowEdge("critic_loop", critic_node),
-        FlowEdge(critic_node, "done", "success", conditional=True),
-        FlowEdge(critic_node, "critic_fail_search", "fail", conditional=True),
+        FlowEdge("render_loop", "exhausted", "exhausted", conditional=True),
+        FlowEdge("pass_loop", "findings", "pass", conditional=True),
+        FlowEdge("findings", critic_node),
+        FlowEdge(critic_node, "patch", "accept", conditional=True),
+        FlowEdge(critic_node, "critic_fail_search", "reject", conditional=True),
         FlowEdge("critic_fail_search", "evid_c", "yes", conditional=True),
         FlowEdge("evid_c", "recritic"),
-        FlowEdge("recritic", "done", "success", conditional=True),
-        FlowEdge("recritic", "critic_loop", "fail", conditional=True),
-        FlowEdge("critic_fail_search", "render_loop", "no", conditional=True),
-        FlowEdge("critic_loop", "render_loop", "exhausted", conditional=True),
-        FlowEdge("render_loop", "exhausted", "exhausted", conditional=True),
+        FlowEdge("recritic", "patch", "accept or reject", conditional=True),
+        FlowEdge("critic_fail_search", "patch", "no", conditional=True),
+    )
+
+
+def unit_loop_flow(
+    phase: str, *, include_evidence: bool = False, passes_var: str
+) -> FlowGraph:
+    """The per-unit loop, which is now one shape for both phases.
+
+    Args:
+        phase: ``"facts"`` or ``"ontology"`` -- only the node captions differ.
+        include_evidence: Draw the optional web-evidence branches.
+        passes_var: The setting that bounds the critic passes, named on the
+            diagram so the picture and the configuration agree.
+    """
+    render_node = f"render_{phase}"
+    critic_node = f"criticise_{phase}"
+    noun = "facts" if phase == "facts" else "ontology"
+    common = (
+        FlowNode("start", "Unit start", "terminal"),
+        FlowNode("ctx", "Resolve / apply<br/>ontology context"),
+        FlowNode("render_loop", "failed render<br/>1 … MAX_VISITS", "decision"),
+        FlowNode(render_node, f"Render {noun}"),
+        FlowNode("pass_loop", f"critic pass<br/>1 … {passes_var}", "decision"),
+        FlowNode("findings", "Deterministic checks<br/>(no LLM call)"),
+        FlowNode(critic_node, f"Criticise {noun}<br/>(cites statement ids)"),
+        FlowNode("patch", "Compile, screen, apply<br/>patch (no LLM call)"),
+        FlowNode("converged", "changed nothing, or<br/>rolled back?", "decision"),
+        FlowNode("done", "Return unit state", "terminal"),
+        FlowNode("exhausted", "Return (retries exhausted)", "terminal"),
+    )
+    if include_evidence:
+        nodes = (
+            *common,
+            FlowNode("render_fail_search", "initiate_search?", "decision"),
+            FlowNode("evid_r", "Plan + fetch<br/>web evidence"),
+            FlowNode("rerender", f"Re-render {noun}"),
+            FlowNode("critic_fail_search", "initiate_search?", "decision"),
+            FlowNode("evid_c", "Plan + fetch<br/>web evidence"),
+            FlowNode("recritic", f"Re-criticise {noun}"),
+        )
+        loop_edges = _unit_loop_evidence_edges(
+            render_node=render_node, critic_node=critic_node
+        )
+    else:
+        nodes = common
+        loop_edges = _unit_loop_core_edges(
+            render_node=render_node, critic_node=critic_node
+        )
+    edges = (
+        FlowEdge("start", "ctx"),
+        FlowEdge("ctx", "render_loop"),
+        *loop_edges,
+        FlowEdge("patch", "converged"),
+        FlowEdge("converged", "done", "yes", conditional=True),
+        FlowEdge("converged", "pass_loop", "no", conditional=True),
+        FlowEdge("pass_loop", "done", "budget spent", conditional=True),
+    )
+    return FlowGraph(
+        nodes=nodes,
+        edges=edges,
+        start_node="start",
+        end_node="done",
     )
 
 
 def facts_loop_flow(*, include_evidence: bool = False) -> FlowGraph:
-    render_node = "render_facts"
-    critic_node = "criticise_facts"
-    if include_evidence:
-        nodes = (
-            FlowNode("start", "Unit start", "terminal"),
-            FlowNode("ctx", "Resolve / apply<br/>ontology context"),
-            FlowNode("render_loop", "render attempt<br/>1 … max_visits", "decision"),
-            FlowNode(render_node, "Render facts"),
-            FlowNode("render_fail_search", "initiate_search?", "decision"),
-            FlowNode("evid_r", "Plan + fetch<br/>web evidence"),
-            FlowNode("rerender", "Re-render facts"),
-            FlowNode("final_render", "final render<br/>attempt?", "decision"),
-            FlowNode("quarantine", "Surface unresolved<br/>quarantine"),
-            FlowNode("done", "Return unit state", "terminal"),
-            FlowNode("critic_loop", "critic attempt<br/>1 … max_visits", "decision"),
-            FlowNode(critic_node, "Criticise facts"),
-            FlowNode("critic_fail_search", "initiate_search?", "decision"),
-            FlowNode("evid_c", "Plan + fetch<br/>web evidence"),
-            FlowNode("recritic", "Re-criticise facts"),
-            FlowNode("exhausted", "Return (retries exhausted)", "terminal"),
-        )
-        loop_edges = _atomic_loop_evidence_edges(
-            render_node=render_node, critic_node=critic_node
-        )
-    else:
-        nodes = (
-            FlowNode("start", "Unit start", "terminal"),
-            FlowNode("ctx", "Resolve / apply<br/>ontology context"),
-            FlowNode("render_loop", "render attempt<br/>1 … max_visits", "decision"),
-            FlowNode(render_node, "Render facts"),
-            FlowNode("final_render", "final render<br/>attempt?", "decision"),
-            FlowNode("quarantine", "Surface unresolved<br/>quarantine"),
-            FlowNode("done", "Return unit state", "terminal"),
-            FlowNode(critic_node, "Criticise facts"),
-            FlowNode("exhausted", "Return (retries exhausted)", "terminal"),
-        )
-        loop_edges = _atomic_loop_core_edges(
-            render_node=render_node, critic_node=critic_node
-        )
-    edges = (
-        FlowEdge("start", "ctx"),
-        FlowEdge("ctx", "render_loop"),
-        *loop_edges,
-        FlowEdge("final_render", "quarantine", "yes", conditional=True),
-        FlowEdge("quarantine", "done"),
-    )
-    return FlowGraph(
-        nodes=nodes,
-        edges=edges,
-        start_node="start",
-        end_node="done",
+    return unit_loop_flow(
+        "facts",
+        include_evidence=include_evidence,
+        passes_var="FACTS_CRITIC_PASSES",
     )
 
 
 def ontology_loop_flow(*, include_evidence: bool = False) -> FlowGraph:
-    render_node = "render_ontology"
-    critic_node = "criticise_ontology"
-    if include_evidence:
-        nodes = (
-            FlowNode("start", "Unit start", "terminal"),
-            FlowNode("ctx", "Resolve unit<br/>ontology context"),
-            FlowNode("render_loop", "render attempt<br/>1 … max_visits", "decision"),
-            FlowNode(render_node, "Render ontology"),
-            FlowNode("render_fail_search", "initiate_search?", "decision"),
-            FlowNode("evid_r", "Plan + fetch<br/>web evidence"),
-            FlowNode("rerender", "Re-render ontology"),
-            FlowNode("final_render", "final render<br/>attempt?", "decision"),
-            FlowNode("done", "Return unit state", "terminal"),
-            FlowNode("critic_loop", "critic attempt<br/>1 … max_visits", "decision"),
-            FlowNode(critic_node, "Criticise ontology"),
-            FlowNode("critic_fail_search", "initiate_search?", "decision"),
-            FlowNode("evid_c", "Plan + fetch<br/>web evidence"),
-            FlowNode("recritic", "Re-criticise ontology"),
-            FlowNode("exhausted", "Return (retries exhausted)", "terminal"),
-        )
-        loop_edges = _atomic_loop_evidence_edges(
-            render_node=render_node, critic_node=critic_node
-        )
-    else:
-        nodes = (
-            FlowNode("start", "Unit start", "terminal"),
-            FlowNode("ctx", "Resolve unit<br/>ontology context"),
-            FlowNode("render_loop", "render attempt<br/>1 … max_visits", "decision"),
-            FlowNode(render_node, "Render ontology"),
-            FlowNode("final_render", "final render<br/>attempt?", "decision"),
-            FlowNode("done", "Return unit state", "terminal"),
-            FlowNode(critic_node, "Criticise ontology"),
-            FlowNode("exhausted", "Return (retries exhausted)", "terminal"),
-        )
-        loop_edges = _atomic_loop_core_edges(
-            render_node=render_node, critic_node=critic_node
-        )
-    edges = (
-        FlowEdge("start", "ctx"),
-        FlowEdge("ctx", "render_loop"),
-        *loop_edges,
-        FlowEdge("final_render", "done", "yes", conditional=True),
-    )
-    return FlowGraph(
-        nodes=nodes,
-        edges=edges,
-        start_node="start",
-        end_node="done",
+    return unit_loop_flow(
+        "ontology",
+        include_evidence=include_evidence,
+        passes_var="ONTOLOGY_CRITIC_PASSES",
     )
 
 

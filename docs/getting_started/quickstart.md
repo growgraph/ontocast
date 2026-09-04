@@ -63,7 +63,7 @@ PORT=8999
 # LLM Configuration
 LLM_PROVIDER=openai
 LLM_API_KEY=your-api-key-here
-LLM_MODEL_NAME=gpt-4o-mini
+LLM_MODEL_NAME=gpt-5.4
 LLM_TEMPERATURE=0.0
 
 # Server Configuration
@@ -134,13 +134,26 @@ ontocast process --input-path /path/to/document.pdf --max-visits 2
 # Drop and recreate the vector partition before reindex
 ontocast serve --wipe-vector-store
 
+# Point this run at a seed catalog, whatever the environment says
+ontocast process --input-path ./docs --ontology-dir ./my-ontologies
+
+# Run with no seed catalog at all: an ontology-rendering run builds the first
+# ontology from the corpus. The empty string overrides a configured directory.
+ontocast process --input-path ./docs --ontology-dir ''
+
 # Separate facts vs ontology dump folders
 ontocast process --input-path ./docs \
   --facts-output-dir ./out/facts \
   --ontology-output-dir ./out/ontologies
 ```
 
-**Note:** Paths and directories are configured via the `.env` file.
+`--ontology-dir` is the **input** catalog; `--ontology-output-dir` is where
+results are written. `--shapes-dir` overrides `FACTS_SHAPES_DIR` the same way.
+
+**Note:** Other paths and directories are configured via the `.env` file.
+`ontocast process` refuses to start when `--ontology-dir` names something that
+is not a directory — a mistyped path is indistinguishable downstream from
+"deliberately none", and surfaces much later as an unexplained empty catalog.
 
 ### Receive Results
 
@@ -173,7 +186,7 @@ OntoCast uses a hierarchical configuration system:
 |----------|-------------|---------|
 | `LLM_API_KEY` | API key for LLM provider | Required for openai / anthropic / google |
 | `LLM_PROVIDER` | `openai`, `ollama`, `anthropic`, or `google` | openai |
-| `LLM_MODEL_NAME` | Model name | gpt-4o-mini |
+| `LLM_MODEL_NAME` | Model name | gpt-5.4 |
 | `FUSEKI_URI` + `FUSEKI_AUTH` | Persistent triple store | Omit for in-memory (default) |
 | `ONTOCAST_ONTOLOGY_DIRECTORY` | Seed ontology TTL files | Optional bootstrap |
 | `MAX_VISITS` | Maximum visits per node | 1 |

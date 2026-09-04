@@ -20,6 +20,8 @@ import pytest
 
 from ontocast.agent.common import parse_json_object, repair_bracket_kinds
 
+pytestmark = pytest.mark.unit
+
 FIXTURE = Path(__file__).parent / "data" / "llm_malformed_graph_updates.json"
 
 

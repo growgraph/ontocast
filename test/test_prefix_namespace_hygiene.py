@@ -9,6 +9,8 @@ from ontocast.onto.util import RDFLIB_DEFAULT_NAMESPACE_URIS
 from ontocast.prompt.facts_guidelines import format_facts_operational_guidelines
 from ontocast.prompt.ontology_context import extract_domain_prefix_pairs
 
+pytestmark = pytest.mark.unit
+
 
 def _matsci_turtle(*, prefix: str = "matsci") -> str:
     return f"""
@@ -107,7 +109,15 @@ def test_facts_guidelines_domain_clause_appears_once() -> None:
         jsonld=False,
     )
     assert guidelines.count(clause) == 1
-    assert "domain ontology namespace(s) above" in guidelines
+    # The guidelines block is emitted *before* the ONTOLOGY chapter, so it must
+    # point the model forwards. It used to say "above", at nothing.
+    assert "ONTOLOGY section below" in guidelines
+    assert "above" not in guidelines
+    # Catalog terms outrank generic vocabulary; the two used to be offered as
+    # equals ("either ... or standard core vocabularies"), which is what an
+    # empty ontology chapter turned into a wholly generic extraction.
+    assert "VOCABULARY PRECEDENCE" in guidelines
+    assert "LAST RESORT" in guidelines
     # `ex:` is a MANDATORY repair finding, so the prompt must never advertise it:
     # every occurrence used to cost a repair render. This is the one behavioural
     # guard worth keeping from the old prompt-wording smoke tests; the rest

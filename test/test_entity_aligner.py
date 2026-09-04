@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from rdflib import RDF, RDFS, Literal, URIRef
 
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.agg.entity_aligner import EntityAligner
 from ontocast.tool.agg.match_models import MatchRegime, TaggedGraph
 from test.embedding_test_helpers import install_fake_encoder
+
+pytestmark = pytest.mark.unit
 
 
 def _graph(subject_ns: str, type_ns: str, predicate_ns: str) -> RDFGraph:

@@ -1,12 +1,21 @@
 """Minimal tool contracts for atomic render/critic loops."""
 
+import copy
 from typing import Protocol
 
 from pydantic import BaseModel
 
-from ontocast.config import FactsValidationConfig, WebSearchConfig
+from ontocast.config import (
+    FactsValidationConfig,
+    OntologyValidationConfig,
+    WebSearchConfig,
+)
 from ontocast.onto.enum import WorkflowNode
-from ontocast.tool.facts_validation import FactsAcceptancePolicy, ValidationPolicy
+from ontocast.tool.facts_validation import (
+    CriticPatchPolicy,
+    FactsAcceptancePolicy,
+    ValidationPolicy,
+)
 from ontocast.tool.llm import LLMTool
 
 
@@ -34,6 +43,19 @@ class AtomicSearchProvider(Protocol):
         ...
 
 
+class AtomicOntologyCatalog(Protocol):
+    """The slice of an ontology catalog the per-unit repairs read.
+
+    A unit sees a retrieved *snapshot* of the catalog; the repairs that decide
+    whether a term is real need the *whole* catalog, since a term the snapshot
+    did not retrieve is still a term.
+    """
+
+    def catalog_terms(self) -> set[str]:
+        """Every IRI any served ontology declares or references."""
+        ...
+
+
 def _domain_set(values: list[str]) -> set[str]:
     """Normalize a configured domain list to a lowercase lookup set."""
     return {value.strip().lower() for value in values if value.strip()}
@@ -57,7 +79,9 @@ class AtomicToolBox:
         search_provider: AtomicSearchProvider | None = None,
         web_search_config: WebSearchConfig | None = None,
         facts_validation_config: FactsValidationConfig | None = None,
+        ontology_validation_config: OntologyValidationConfig | None = None,
         citation_vocabulary: dict[str, str] | None = None,
+        ontology_catalog: AtomicOntologyCatalog | None = None,
     ):
         """Build the atomic tool surface.
 
@@ -68,23 +92,59 @@ class AtomicToolBox:
             web_search_config: Web-grounding settings. Defaults to
                 :class:`WebSearchConfig`, which is disabled unless configured.
             facts_validation_config: Facts-gate settings consumed by the render
-                and repair paths. Defaults to :class:`FactsValidationConfig`.
+                and critic paths. Defaults to :class:`FactsValidationConfig`.
+            ontology_validation_config: Ontology-delta settings, including the
+                ontology critic's pass budget and patch limits. Defaults to
+                :class:`OntologyValidationConfig`.
             citation_vocabulary: Bibliographic terms for citation-metadata
                 units. Configuration rather than retrieval: a reference list is
                 not domain content, so its vocabulary never reaches the catalog.
+            ontology_catalog: The scope's full ontology catalog, read by the
+                per-unit repairs for term membership. The shared surface is
+                built without one; :meth:`scoped_to_catalog` binds it per
+                scope.
         """
         web_search = web_search_config or WebSearchConfig()
         facts_validation = facts_validation_config or FactsValidationConfig()
+        ontology_validation = ontology_validation_config or OntologyValidationConfig()
 
         self.llm_provider = llm_provider
         self.search_provider = search_provider
         self.web_search_config = web_search
+        self.ontology_catalog: AtomicOntologyCatalog | None = ontology_catalog
 
         self.object_property_literal_check = (
             facts_validation.object_property_literal_check
         )
-        # Finding-driven repair renders: each one is a provider call.
-        self.facts_llm_repair_visits = facts_validation.llm_repair_visits
+        # Review-and-patch passes: each one is a provider call. The deprecated
+        # FACTS_LLM_REPAIR_VISITS named the same budget for the separate repair
+        # render that the critic pass replaced, so it is honoured as an alias
+        # rather than silently ignored on an existing deployment.
+        self.facts_critic_passes = (
+            facts_validation.llm_repair_visits
+            if facts_validation.llm_repair_visits is not None
+            else facts_validation.critic_passes
+        )
+        self.ontology_critic_passes = ontology_validation.critic_passes
+        # Below this many rendered triples the facts critic is skipped: a
+        # review of an empty graph is a billed call that changes nothing.
+        self.facts_critic_min_triples = facts_validation.critic_min_triples
+        # Insert-only completion passes after the critic loop, each a provider
+        # call, taken only while measurements are still missing.
+        self.facts_completion_passes = facts_validation.completion_passes
+        self.facts_patch_policy = CriticPatchPolicy(
+            max_delete_share=facts_validation.critic_max_delete_share,
+            min_deletes=facts_validation.critic_min_deletes,
+            allow_subject_rename=facts_validation.critic_allow_subject_rename,
+        )
+        self.ontology_patch_policy = CriticPatchPolicy(
+            max_delete_share=ontology_validation.critic_max_delete_share,
+            min_deletes=ontology_validation.critic_min_deletes,
+            allow_subject_rename=False,
+        )
+        # Numeric-coverage knobs for the deterministic per-unit validator.
+        self.numeric_coverage_limit = facts_validation.numeric_coverage_limit
+        self.numeric_coverage_mandatory = facts_validation.numeric_coverage_mandatory
         # Code predicates for the LLM-free code -> catalog IRI repair.
         self.code_predicates: tuple[str, ...] = tuple(facts_validation.code_predicates)
         self.property_alias_min_ratio = facts_validation.property_alias_min_ratio
@@ -106,6 +166,9 @@ class AtomicToolBox:
             additional_standard_namespaces=self.additional_standard_namespaces,
             quantity_fallback_vocabulary=self.quantity_fallback_vocabulary,
             code_predicates=self.code_predicates,
+            numeric_identifier_guard=facts_validation.numeric_identifier_guard,
+            domain_adherence_min_share=facts_validation.domain_adherence_min_share,
+            domain_adherence_min_terms=facts_validation.domain_adherence_min_terms,
         )
         # A sibling of ValidationPolicy, deliberately not a field on it.
         # ValidationPolicy answers "what must never be flagged"; this answers
@@ -113,6 +176,12 @@ class AtomicToolBox:
         # loop, but the term checks and the catalog lint have no business
         # knowing about acceptance.
         self.acceptance_policy = FactsAcceptancePolicy(
+            blocking_fix_severity=facts_validation.accept_blocking_severity,
+        )
+        self.ontology_acceptance_policy = FactsAcceptancePolicy(
+            blocking_finding_kinds=frozenset(
+                ontology_validation.accept_blocking_finding_kinds
+            ),
             blocking_fix_severity=facts_validation.accept_blocking_severity,
         )
 
@@ -134,6 +203,32 @@ class AtomicToolBox:
         self.web_search_allowed_domains = _domain_set(web_search.allowed_domains)
         self.web_search_blocked_domains = _domain_set(web_search.blocked_domains)
         self.web_search_min_snippet_chars = web_search.min_snippet_chars
+
+    def scoped_to_catalog(self, catalog: AtomicOntologyCatalog) -> "AtomicToolBox":
+        """A shallow copy of this surface bound to ``catalog``.
+
+        The surface is tenancy-independent and shared by every scope; a
+        catalog is not. Binding on a copy rather than on ``self`` keeps one
+        scope's catalog from being read by a unit of another scope that runs on
+        the same shared instance.
+        """
+        scoped = copy.copy(self)
+        scoped.ontology_catalog = catalog
+        return scoped
+
+    def catalog_terms(self) -> set[str]:
+        """Every IRI the bound catalog declares or references, across all of it.
+
+        Membership set for the per-unit repairs: a predicate present here is a
+        real catalog term even when the unit's retrieved snapshot omits it, and
+        must never be rewritten toward a look-alike the snapshot does carry.
+        Empty when no catalog is bound. The catalog memoises the set on its
+        served versions, so calling this per unit is cheap; treat the result
+        as read-only.
+        """
+        if self.ontology_catalog is None:
+            return set()
+        return self.ontology_catalog.catalog_terms()
 
     async def get_llm_tool(self, budget_tracker) -> LLMTool:
         """Return a budget-aware LLM tool instance."""

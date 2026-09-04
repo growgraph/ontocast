@@ -6,7 +6,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -37,7 +37,8 @@ from ontocast.tool.chunk.segment import (
     merge_doc_item_refs,
     starts_with_section_heading,
 )
-from ontocast.tool.chunk.sizing import merge_small_parts
+from ontocast.tool.chunk.sizing import merge_small_parts, split_by_measurement_density
+from ontocast.util.measurement_lexicon import unit_adjacent_numbers
 from ontocast.util.optional import require
 
 if TYPE_CHECKING:
@@ -703,6 +704,39 @@ def _merge_prepared_chunks(
     return merged
 
 
+def _split_dense_chunks(
+    chunks: list[PreparedChunk],
+    config: ChunkConfig,
+) -> list[PreparedChunk]:
+    """Split sized chunks that pack more measurements than the configured cap.
+
+    Runs after merging, on final units, so it is the last word on unit
+    boundaries: a piece inherits its parent's headings, refs and label. A
+    split changes what each render is shown, so each one is logged.
+    """
+    cap = config.max_measurements_per_unit
+    if cap <= 0:
+        return chunks
+    split: list[PreparedChunk] = []
+    for chunk in chunks:
+        pieces = split_by_measurement_density(
+            chunk.text, max_measurements=cap, min_size=config.min_size
+        )
+        if len(pieces) > 1:
+            logger.info(
+                "Split chunk (%d chars, %d measurements, section_label=%r) into "
+                "%d pieces of %s chars (CHUNK_MAX_MEASUREMENTS_PER_UNIT=%d)",
+                len(chunk.text),
+                len(unit_adjacent_numbers(chunk.text)),
+                chunk.section_label,
+                len(pieces),
+                [len(piece) for piece in pieces],
+                cap,
+            )
+        split.extend(replace(chunk, text=piece) for piece in pieces)
+    return split
+
+
 def _size_segments(
     segments: list[PrepareSegment],
     splitter: ChunkerTool,
@@ -711,7 +745,8 @@ def _size_segments(
     expanded: list[PreparedChunk] = []
     for segment in segments:
         expanded.extend(_expand_segment(segment, splitter, config))
-    return _merge_prepared_chunks(expanded, config.min_size, config.max_size)
+    merged = _merge_prepared_chunks(expanded, config.min_size, config.max_size)
+    return _split_dense_chunks(merged, config)
 
 
 def _build_hybrid_chunker(config: ChunkConfig) -> HybridChunker:

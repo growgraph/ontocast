@@ -12,6 +12,8 @@ from ontocast.config.section_labels import (
     resolve_section_schema_id,
 )
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture(autouse=True)
 def _clear_caches():

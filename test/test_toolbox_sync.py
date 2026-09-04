@@ -1,6 +1,7 @@
 """Tests for ToolBox ontology synchronization helpers."""
 
 import asyncio
+import logging
 import tempfile
 from pathlib import Path
 from typing import cast
@@ -16,11 +17,13 @@ from ontocast.config import (
     QdrantConfig,
     ToolConfig,
 )
-from ontocast.onto.enum import OntologyContextMode
+from ontocast.onto.enum import OntologyContextMode, RenderMode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.toolbox import ToolBox
+
+pytestmark = pytest.mark.unit
 
 
 def test_materialize_ontology_calls_vector_reindex(test_ontology):
@@ -88,6 +91,21 @@ def test_initialize_materializes_then_adds_with_skip_vector(monkeypatch, test_on
         added.append((ontology, skip_vector_index))
 
     class Stub:
+        # Bound to the real implementation so the catalog/index agreement
+        # check runs in these tests rather than being stubbed away.
+        async def _check_catalog_index_agreement(self, ontologies):
+            await ToolBox._check_catalog_index_agreement(
+                cast(ToolBox, self), ontologies
+            )
+
+        async def _check_catalog_ready(self, ontologies, *, required):
+            await ToolBox._check_catalog_ready(
+                cast(ToolBox, self), ontologies, required=required
+            )
+
+        def _catalog_sources_description(self):
+            return ToolBox._catalog_sources_description(cast(ToolBox, self))
+
         vector_store = None
         triple_store_manager = None
         llm = MagicMock()
@@ -164,6 +182,21 @@ def test_initialize_skips_vector_store_in_full_ttl_mode(monkeypatch) -> None:
     synchronized: list = []
 
     class Stub:
+        # Bound to the real implementation so the catalog/index agreement
+        # check runs in these tests rather than being stubbed away.
+        async def _check_catalog_index_agreement(self, ontologies):
+            await ToolBox._check_catalog_index_agreement(
+                cast(ToolBox, self), ontologies
+            )
+
+        async def _check_catalog_ready(self, ontologies, *, required):
+            await ToolBox._check_catalog_ready(
+                cast(ToolBox, self), ontologies, required=required
+            )
+
+        def _catalog_sources_description(self):
+            return ToolBox._catalog_sources_description(cast(ToolBox, self))
+
         triple_store_manager = None
         llm = MagicMock()
         ontology_manager: MagicMock
@@ -212,6 +245,21 @@ def test_initialize_vector_store_failure_is_non_fatal_when_configured(
     )
 
     class Stub:
+        # Bound to the real implementation so the catalog/index agreement
+        # check runs in these tests rather than being stubbed away.
+        async def _check_catalog_index_agreement(self, ontologies):
+            await ToolBox._check_catalog_index_agreement(
+                cast(ToolBox, self), ontologies
+            )
+
+        async def _check_catalog_ready(self, ontologies, *, required):
+            await ToolBox._check_catalog_ready(
+                cast(ToolBox, self), ontologies, required=required
+            )
+
+        def _catalog_sources_description(self):
+            return ToolBox._catalog_sources_description(cast(ToolBox, self))
+
         triple_store_manager = None
         llm = MagicMock()
         ontology_manager: MagicMock
@@ -276,6 +324,21 @@ def test_ingest_ontology_ttl_rejects_identity_conflict_before_persisting() -> No
         ontology_manager.add_ontology(existing)
 
         class Stub:
+            # Bound to the real implementation so the catalog/index agreement
+            # check runs in these tests rather than being stubbed away.
+            async def _check_catalog_index_agreement(self, ontologies):
+                await ToolBox._check_catalog_index_agreement(
+                    cast(ToolBox, self), ontologies
+                )
+
+            async def _check_catalog_ready(self, ontologies, *, required):
+                await ToolBox._check_catalog_ready(
+                    cast(ToolBox, self), ontologies, required=required
+                )
+
+            def _catalog_sources_description(self):
+                return ToolBox._catalog_sources_description(cast(ToolBox, self))
+
             def __init__(self) -> None:
                 self.config = config
                 self.ontology_manager = ontology_manager
@@ -327,6 +390,21 @@ def test_initialize_materializes_with_bounded_concurrency(
             active -= 1
 
     class Stub:
+        # Bound to the real implementation so the catalog/index agreement
+        # check runs in these tests rather than being stubbed away.
+        async def _check_catalog_index_agreement(self, ontologies):
+            await ToolBox._check_catalog_index_agreement(
+                cast(ToolBox, self), ontologies
+            )
+
+        async def _check_catalog_ready(self, ontologies, *, required):
+            await ToolBox._check_catalog_ready(
+                cast(ToolBox, self), ontologies, required=required
+            )
+
+        def _catalog_sources_description(self):
+            return ToolBox._catalog_sources_description(cast(ToolBox, self))
+
         vector_store = None
         triple_store_manager = None
         llm = MagicMock()
@@ -381,6 +459,21 @@ def test_initialize_wipe_and_prune_follow_their_flags(
     orphans = ["https://example.org/legacy"] if prune else []
 
     class Stub:
+        # Bound to the real implementation so the catalog/index agreement
+        # check runs in these tests rather than being stubbed away.
+        async def _check_catalog_index_agreement(self, ontologies):
+            await ToolBox._check_catalog_index_agreement(
+                cast(ToolBox, self), ontologies
+            )
+
+        async def _check_catalog_ready(self, ontologies, *, required):
+            await ToolBox._check_catalog_ready(
+                cast(ToolBox, self), ontologies, required=required
+            )
+
+        def _catalog_sources_description(self):
+            return ToolBox._catalog_sources_description(cast(ToolBox, self))
+
         triple_store_manager = None
         llm = MagicMock()
         ontology_manager: MagicMock
@@ -550,3 +643,199 @@ def test_repeated_tenancy_call_does_not_drop_the_catalog() -> None:
             assert toolbox.ontology_manager.get_ontology_iris() == [onto.iri]
 
         asyncio.run(main())
+
+
+# --- Catalog/vector-index agreement at startup ---------------------------
+
+
+def _agreement_toolbox(indexed: list[str], *, required: bool):
+    """A ToolBox stub whose only live parts are the two halves of retrieval."""
+    config = Config()
+    config.server.ontology_context_required = required
+
+    class Stub:
+        triple_store_manager = None
+        llm = MagicMock()
+
+        def __init__(self) -> None:
+            self.config = config
+            self.vector_store = MagicMock()
+            self.vector_store.list_indexed_ontology_iris = MagicMock(
+                return_value=set(indexed)
+            )
+
+        def is_vector_store_ready(self):
+            return True
+
+    return Stub()
+
+
+def test_an_empty_catalog_beside_a_populated_index_stops_startup() -> None:
+    """The confirmed failure: ontologies never reached the triple store.
+
+    Retrieval still selects atoms from the index and reports healthy metrics --
+    the expected seeds, the expected atom count -- while the induced subgraph
+    built over the empty catalog comes back with nothing. Every unit then
+    renders against an empty ontology chapter and the conformance gate passes
+    over zero nodes, so nothing downstream can tell this from a good run.
+    """
+    from ontocast.onto.retrieval_capabilities import EmptyOntologyContextError
+
+    stub = _agreement_toolbox(["https://example.org/o1"], required=True)
+
+    with pytest.raises(EmptyOntologyContextError) as excinfo:
+        asyncio.run(ToolBox._check_catalog_index_agreement(cast(ToolBox, stub), []))
+
+    assert "https://example.org/o1" in str(excinfo.value), (
+        "the error must name what the index still holds, or the operator has "
+        "nothing to act on"
+    )
+
+
+def test_the_agreement_check_is_not_opted_out_of_by_wanting_no_catalog() -> None:
+    """``ONTOLOGY_CONTEXT_REQUIRED`` answers a different question.
+
+    It says whether a run wants a catalog. This says the index and the triple
+    store disagree about which ontologies exist, which nobody configures on
+    purpose -- and a run that deliberately extracts without a catalog has not
+    thereby asked for a stale index to select atoms nothing can expand.
+    """
+    from ontocast.onto.retrieval_capabilities import EmptyOntologyContextError
+
+    stub = _agreement_toolbox(["https://example.org/o1"], required=False)
+
+    with pytest.raises(EmptyOntologyContextError):
+        asyncio.run(ToolBox._check_catalog_index_agreement(cast(ToolBox, stub), []))
+
+
+def test_stale_index_entries_beside_a_real_catalog_only_warn(caplog) -> None:
+    """Ordinary staleness is what orphan pruning is for, not a startup failure."""
+    stub = _agreement_toolbox(
+        ["https://example.org/o1", "https://example.org/gone"], required=True
+    )
+    served = [Ontology(iri="https://example.org/o1", ontology_id="o1")]
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(ToolBox._check_catalog_index_agreement(cast(ToolBox, stub), served))
+
+    assert "https://example.org/gone" in caplog.text
+
+
+def test_agreement_check_is_silent_when_both_sides_match() -> None:
+    stub = _agreement_toolbox(["https://example.org/o1"], required=True)
+    served = [Ontology(iri="https://example.org/o1", ontology_id="o1")]
+
+    asyncio.run(ToolBox._check_catalog_index_agreement(cast(ToolBox, stub), served))
+
+
+# --- Catalog readiness after materialization ------------------------------
+
+
+def _readiness_toolbox(
+    indexed: list[str],
+    *,
+    ready: bool = True,
+    render_mode: RenderMode = RenderMode.FACTS,
+):
+    """A ToolBox stub with a live vector index and nothing else."""
+    config = Config()
+    config.server.ontology_context_required = True
+    config.server.render_mode = render_mode
+
+    class Stub:
+        triple_store_manager = None
+        llm = MagicMock()
+
+        def __init__(self) -> None:
+            self.config = config
+            self.vector_store = MagicMock()
+            self.vector_store.list_indexed_ontology_iris = MagicMock(
+                return_value=set(indexed)
+            )
+
+        def is_vector_store_ready(self):
+            return ready
+
+        def _catalog_sources_description(self):
+            return ToolBox._catalog_sources_description(cast(ToolBox, self))
+
+    return Stub()
+
+
+def test_a_wiped_index_with_no_catalog_to_refill_it_stops_a_facts_run() -> None:
+    """The case ``--wipe-vector-store`` hides from the agreement check.
+
+    That check requires a populated index to compare against, and a wipe
+    guarantees an empty one, so it returns early on exactly the run where the
+    wipe destroyed the last copy of the vocabulary. The sync then found nothing
+    to reindex and startup succeeded, leaving every content unit to fail on its
+    own several minutes and several provider calls later.
+    """
+    from ontocast.onto.retrieval_capabilities import EmptyOntologyContextError
+
+    stub = _readiness_toolbox([], render_mode=RenderMode.FACTS)
+
+    with pytest.raises(EmptyOntologyContextError) as excinfo:
+        asyncio.run(
+            ToolBox._check_catalog_ready(cast(ToolBox, stub), [], required=True)
+        )
+
+    assert "ontology_directory" in str(excinfo.value), (
+        "the error must name where a catalog was looked for, or it says only "
+        "that something is missing"
+    )
+
+
+def test_an_empty_catalog_starts_when_the_run_will_create_ontologies(caplog) -> None:
+    """The corpus with no ontology yet is this render mode's starting point.
+
+    Refusing here made ``render_ontology_fresh`` -- the branch written for an
+    empty seed -- unreachable, and turned the documented first run into a
+    startup error.
+    """
+    stub = _readiness_toolbox([], render_mode=RenderMode.ONTOLOGY_AND_FACTS)
+
+    with caplog.at_level(logging.INFO):
+        asyncio.run(
+            ToolBox._check_catalog_ready(cast(ToolBox, stub), [], required=True)
+        )
+
+    assert "create ontologies from the corpus" in caplog.text
+
+
+def test_an_empty_catalog_only_warns_when_the_entry_point_allows_one() -> None:
+    """A server may legitimately start empty and be filled over HTTP."""
+    stub = _readiness_toolbox([])
+
+    asyncio.run(ToolBox._check_catalog_ready(cast(ToolBox, stub), [], required=False))
+
+
+def test_a_catalog_that_indexed_to_nothing_always_stops(test_ontology) -> None:
+    """Retrieval has graphs it could expand and no atoms to select them with.
+
+    Unlike an empty catalog, this is never what anyone meant: materialization
+    ran over a populated catalog and produced nothing. So it does not consult
+    ``required`` -- ``serve`` and an ontology-rendering run stop on it too.
+    """
+    from ontocast.onto.retrieval_capabilities import EmptyOntologyContextError
+
+    stub = _readiness_toolbox([], render_mode=RenderMode.ONTOLOGY_AND_FACTS)
+
+    with pytest.raises(EmptyOntologyContextError) as excinfo:
+        asyncio.run(
+            ToolBox._check_catalog_ready(
+                cast(ToolBox, stub), [test_ontology], required=False
+            )
+        )
+
+    assert "vector index is empty" in str(excinfo.value)
+
+
+def test_a_populated_catalog_and_index_starts(test_ontology) -> None:
+    stub = _readiness_toolbox(["https://example.org/o1"])
+
+    asyncio.run(
+        ToolBox._check_catalog_ready(
+            cast(ToolBox, stub), [test_ontology], required=True
+        )
+    )

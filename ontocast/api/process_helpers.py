@@ -14,7 +14,7 @@ from ontocast._version import __version__
 from ontocast.agent.serialize import serialize as serialize_agent_state
 from ontocast.config import Config, ServerConfig
 from ontocast.onto.constants import DEFAULT_IRI
-from ontocast.onto.enum import OntologyContextMode
+from ontocast.onto.enum import OntologyContextMode, Status
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.run_manifest import (
@@ -22,12 +22,15 @@ from ontocast.onto.run_manifest import (
     RunManifestLLM,
     RunManifestLoops,
     RunManifestSelection,
+    RunManifestValidationConfig,
+    summarize_completion,
     summarize_loop,
 )
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.facts_gate import run_facts_gate
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
 from ontocast.tool.chunk.prepare import SectionSelectionEmptyError
+from ontocast.tool.llm import LLMConfigurationError
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.toolbox import ToolBox
 from ontocast.util.graph_metrics import facts_graph_shape_metrics
@@ -129,11 +132,29 @@ def dump_facts_ttl(
     *,
     line_number: int | None = None,
     output_dir: pathlib.Path | None = None,
+    strip_provenance: bool = True,
 ) -> pathlib.Path | None:
-    """Write chunk-stripped facts Turtle when facts exist."""
+    """Write the facts Turtle when facts exist.
+
+    Args:
+        state: Document state carrying ``aggregated_facts``.
+        file_path: Source file the facts were extracted from.
+        line_number: Record number for JSONL inputs.
+        output_dir: Destination directory; defaults to the source's directory.
+        strip_provenance: Drop chunk-level provenance from the dump. Keeping it
+            is what lets a statement be traced back to its source span and
+            re-verified against the document; stripping it stays the default so
+            existing outputs are unchanged. Same meaning as the HTTP
+            ``strip_provenance`` parameter.
+
+    Returns:
+        The path written, or None when there are no facts.
+    """
     if state.aggregated_facts is None or len(state.aggregated_facts) == 0:
         return None
-    ttl_content = turtle_from_graph(state.aggregated_facts, strip_provenance=True)
+    ttl_content = turtle_from_graph(
+        state.aggregated_facts, strip_provenance=strip_provenance
+    )
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
     output_path = facts_ttl_output_path(
@@ -141,7 +162,8 @@ def dump_facts_ttl(
     )
     output_path.write_text(ttl_content, encoding="utf-8")
     logger.info(
-        "Dumped facts graph with chunk-level provenance stripped to %s",
+        "Dumped facts graph with chunk-level provenance %s to %s",
+        "stripped" if strip_provenance else "retained",
         output_path,
     )
     return output_path
@@ -159,8 +181,19 @@ def dump_validation_report(
     A batch run otherwise leaves no record of *why* a graph is non-conformant:
     the findings live on the state and are logged, and every downstream reader
     ends up re-running a validator to rebuild what the gate already computed.
+
+    ``unit_repairs`` and ``unit_failures`` are the per-unit counterparts of
+    ``gate_repairs``: what the deterministic passes rewrote in each render
+    before aggregation, and which units produced nothing. A predicate the
+    machine substituted is otherwise indistinguishable in the TTL from one the
+    model asserted, and a unit that failed from one that found nothing.
     """
-    if not state.facts_conformance and not state.facts_validation_findings:
+    if not (
+        state.facts_conformance
+        or state.facts_validation_findings
+        or state.facts_repairs_applied
+        or state.unit_failures
+    ):
         return None
     payload = {
         "source": file_path.name,
@@ -171,6 +204,14 @@ def dump_validation_report(
         "findings": [
             finding.model_dump(mode="json")
             for finding in state.facts_validation_findings
+        ],
+        # Keyed by unit index, as facts_repairs is in the HTTP response.
+        "unit_repairs": {
+            str(unit_index): [record.model_dump(mode="json") for record in records]
+            for unit_index, records in sorted(state.facts_repairs_applied.items())
+        },
+        "unit_failures": [
+            failure.model_dump(mode="json") for failure in state.unit_failures
         ],
     }
     if output_dir is not None:
@@ -186,6 +227,33 @@ def dump_validation_report(
     return output_path
 
 
+def _selection_manifest(state: AgentState, config: Config) -> RunManifestSelection:
+    """Selection settings plus the label census that says whether they acted."""
+    histogram: dict[str, int] = {}
+    for unit in state.content_units or []:
+        label = unit.section_label or "(unlabeled)"
+        histogram[label] = histogram.get(label, 0) + 1
+    unlabeled = histogram.get("(unlabeled)", 0)
+    return RunManifestSelection(
+        target_sections=state.target_sections,
+        exclude_sections=state.exclude_sections,
+        summarize_sections=state.summarize_sections,
+        # The cap only acts when summarization runs; recording its default
+        # beside an empty summarize_sections reads as a setting that was on.
+        summary_max_sentences=(
+            state.summary_max_sentences if state.summarize_sections else None
+        ),
+        bibliography_mode=str(config.get_tool_config().chunk_config.bibliography_mode),
+        non_content_mode=str(config.get_tool_config().chunk_config.non_content_mode),
+        labeled_units=(sum(histogram.values()) - unlabeled) if histogram else None,
+        unlabeled_units=unlabeled if histogram else None,
+        section_label_histogram=histogram or None,
+        bibliography_units_skipped=state.bibliography_units_skipped,
+        undersized_units_skipped=state.undersized_units_skipped,
+        non_content_units_skipped=state.non_content_units_skipped,
+    )
+
+
 def dump_run_manifest(
     state: AgentState,
     file_path: pathlib.Path,
@@ -193,6 +261,8 @@ def dump_run_manifest(
     config: Config,
     line_number: int | None = None,
     output_dir: pathlib.Path | None = None,
+    shapes_triples: int | None = None,
+    shapes_prompt_selection: bool | None = None,
 ) -> pathlib.Path | None:
     """Write the run's cost and configuration beside the facts TTL.
 
@@ -202,7 +272,15 @@ def dump_run_manifest(
     them. One small JSON per document closes that.
     """
     llm_config = config.tool_config.llm_config
-    facts_validation = config.get_tool_config().facts_validation
+    tool_config = config.get_tool_config()
+    facts_validation = tool_config.facts_validation
+    # The deprecated FACTS_LLM_REPAIR_VISITS names the same budget, so a run
+    # configured the old way must not be recorded as having run no passes.
+    facts_critic_passes = (
+        facts_validation.llm_repair_visits
+        if facts_validation.llm_repair_visits is not None
+        else facts_validation.critic_passes
+    )
     # The .facts.ttl dump strips provenance; count what the file will actually
     # hold, or the manifest is not comparable to its own TTL (1711 vs 557 on
     # observed runs).
@@ -219,19 +297,23 @@ def dump_run_manifest(
         loops=RunManifestLoops(
             max_visits=state.max_visits,
             max_critic_visits=config.server.max_critic_visits_per_node,
-            llm_repair_visits=facts_validation.llm_repair_visits,
+            facts_critic_passes=facts_critic_passes,
+            ontology_critic_passes=tool_config.ontology_validation.critic_passes,
         ),
         critic=summarize_loop(state.facts_loop_telemetry),
         ontology_critic=summarize_loop(state.ontology_loop_telemetry),
+        completion=summarize_completion(state.facts_loop_telemetry),
         ontology_reduce_metrics=dict(state.ontology_reduce_metrics),
-        selection=RunManifestSelection(
-            target_sections=state.target_sections,
-            exclude_sections=state.exclude_sections,
-            summarize_sections=state.summarize_sections,
-            summary_max_sentences=state.summary_max_sentences,
-            bibliography_mode=str(
-                config.get_tool_config().chunk_config.bibliography_mode
-            ),
+        selection=_selection_manifest(state, config),
+        validation_config=RunManifestValidationConfig(
+            context_from_units=facts_validation.context_from_units,
+            json_mode=llm_config.json_mode,
+            shapes_prompt_contract=facts_validation.shapes_prompt_contract,
+            shapes_prompt_selection=shapes_prompt_selection,
+            shapes_triples=shapes_triples,
+            shacl_inference=str(facts_validation.shacl_inference),
+            numeric_coverage_mandatory=facts_validation.numeric_coverage_mandatory,
+            facts_user_instruction_chars=len(state.facts_user_instruction or ""),
         ),
         graph_metrics=(
             facts_graph_shape_metrics(
@@ -252,6 +334,10 @@ def dump_run_manifest(
             think=llm_config.think,
             num_ctx=llm_config.num_ctx,
             num_predict=llm_config.num_predict,
+            reasoning_effort=llm_config.reasoning_effort,
+            thinking_budget=llm_config.thinking_budget,
+            requests_per_second=llm_config.requests_per_second,
+            max_retries=llm_config.max_retries,
         ),
         budget=state.budget_tracker,
         ontology_triples=sum(
@@ -386,6 +472,7 @@ def expand_input_to_states(
     section_schema_id: str | None = None,
     max_visits: int | None = None,
     document_metadata: dict[str, object] | None = None,
+    facts_user_instruction: str = "",
 ) -> list[AgentState]:
     """Expand a local input file into one ``AgentState`` per logical record."""
     file_bytes = file_path.read_bytes()
@@ -412,6 +499,7 @@ def expand_input_to_states(
         "summary_max_sentences": summary_max_sentences,
         "document_type_hint": document_type_hint,
         "section_schema_id": section_schema_id,
+        "facts_user_instruction": facts_user_instruction,
     }
 
     if file_path.suffix.lower() != ".jsonl":
@@ -531,6 +619,12 @@ def _merge_workflow_state_into_agent_state(
         return workflow_state
     if not isinstance(workflow_state, dict):
         return state
+    # The map nodes set FAILED when *every* unit failed (_map_stage_status),
+    # and merge_facts preserves it. Off this copy list the batch path could not
+    # see it, which is how a document that produced nothing still exited 0.
+    status = workflow_state.get("status")
+    if status is not None:
+        state.status = status
     facts = workflow_state.get("aggregated_facts")
     if facts is not None:
         state.aggregated_facts = facts
@@ -563,6 +657,17 @@ def _merge_workflow_state_into_agent_state(
     metrics = workflow_state.get("retrieval_metrics")
     if metrics:
         state.retrieval_metrics = dict(metrics)
+    # The chunk node is the only writer of the routing counters; without this
+    # the manifest's selection block reports every run as having skipped
+    # nothing.
+    for counter in (
+        "bibliography_units_skipped",
+        "undersized_units_skipped",
+        "non_content_units_skipped",
+    ):
+        value = workflow_state.get(counter)
+        if value:
+            setattr(state, counter, int(value))
     # The manifest's critic blocks read these; leaving them off this copy list
     # is why case10's manifests reported `critic: {calls: 0}` while their own
     # retrieval_metrics recorded 20 facts-critic and 26 ontology-critic calls.
@@ -575,6 +680,30 @@ def _merge_workflow_state_into_agent_state(
     reduce_metrics = workflow_state.get("ontology_reduce_metrics")
     if reduce_metrics:
         state.ontology_reduce_metrics = dict(reduce_metrics)
+    # The manifest's selection census reads content_units and the validation
+    # dump reads the per-unit repairs and failures. Off this copy list, the
+    # census was always empty on the batch path (labeled_units absent, so a
+    # section filter that never acted was unrecordable) and the repairs were
+    # logged and dropped -- while the HTTP path returned both.
+    content_units = workflow_state.get("content_units")
+    if content_units is not None:
+        state.content_units = list(content_units)
+    unit_failures = workflow_state.get("unit_failures")
+    if unit_failures is not None:
+        state.unit_failures = list(unit_failures)
+    unit_repairs = workflow_state.get("facts_repairs_applied")
+    if unit_repairs:
+        state.facts_repairs_applied = {
+            unit_index: list(records) for unit_index, records in unit_repairs.items()
+        }
+    clusters = workflow_state.get("aggregation_clusters")
+    if clusters:
+        state.aggregation_clusters = {
+            final_iri: list(members) for final_iri, members in clusters.items()
+        }
+    key_clusters = workflow_state.get("aggregation_key_clusters")
+    if key_clusters is not None:
+        state.aggregation_key_clusters = list(key_clusters)
     return state
 
 
@@ -597,9 +726,11 @@ async def process_files_input(
     section_schema_id: str | None = None,
     max_visits: int | None = None,
     document_metadata: dict[str, object] | None = None,
+    facts_user_instruction: str = "",
     output_dir: pathlib.Path | None = None,
     facts_output_dir: pathlib.Path | None = None,
     ontology_output_dir: pathlib.Path | None = None,
+    strip_provenance: bool = True,
 ) -> list[pathlib.Path]:
     """Process each input file, isolating per-file failures.
 
@@ -638,6 +769,7 @@ async def process_files_input(
                 section_schema_id=section_schema_id,
                 max_visits=resolved_max_visits,
                 document_metadata=document_metadata,
+                facts_user_instruction=facts_user_instruction,
             )
             for state_index, state in enumerate(states):
                 if use_unit_pipeline:
@@ -675,6 +807,18 @@ async def process_files_input(
                         state = _merge_workflow_state_into_agent_state(
                             state, workflow_state
                         )
+                if state.status == Status.FAILED:
+                    # Every unit failed. The dumps below still run -- an empty
+                    # facts graph next to its manifest is the diagnostic -- but
+                    # the file is on the record as failed, which cli/server.py
+                    # turns into a non-zero exit. Without this a run that
+                    # extracted nothing was indistinguishable from a clean one.
+                    logger.error(
+                        "No unit of %s produced output; recording it as failed",
+                        file_path,
+                    )
+                    if file_path not in failed_files:
+                        failed_files.append(file_path)
                 line_number: int | None = None
                 if file_path.suffix.lower() == ".jsonl" and len(states) > 1:
                     # Recover line from virtual raw_input key "...:N.json"
@@ -692,6 +836,7 @@ async def process_files_input(
                     file_path,
                     line_number=line_number,
                     output_dir=facts_dir,
+                    strip_provenance=strip_provenance,
                 )
                 dump_ontology_ttls(
                     state,
@@ -705,13 +850,30 @@ async def process_files_input(
                     line_number=line_number,
                     output_dir=facts_dir,
                 )
+                shapes_graph = tools.shapes_catalog.graph()
+                _, _, selection_pending = tools.shapes_prompt_contract()
                 dump_run_manifest(
                     state,
                     file_path,
                     config=config,
                     line_number=line_number,
                     output_dir=facts_dir,
+                    shapes_triples=(
+                        len(shapes_graph) if shapes_graph is not None else 0
+                    ),
+                    shapes_prompt_selection=selection_pending,
                 )
+        except LLMConfigurationError:
+            # Batch semantics stop here: the provider refuses the request as
+            # configured, so every remaining file would burn its conversion and
+            # ontology sync to reach the same rejection. Files already finished
+            # keep their dumps; this one gets none, and that absence is the
+            # signal.
+            logger.error(
+                "Aborting the batch at %s: the provider rejects every request",
+                file_path,
+            )
+            raise
         except Exception:
             logger.exception("Error processing %s", file_path)
             if file_path not in failed_files:

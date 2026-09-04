@@ -1,5 +1,6 @@
 """Tests for induced-subgraph and schema-centric snapshot assembly."""
 
+import pytest
 from rdflib import BNode, Literal, Namespace, URIRef
 from rdflib.namespace import DCTERMS, OWL, RDF, RDFS
 
@@ -21,6 +22,8 @@ from ontocast.tool.sparql import (
 )
 from ontocast.tool.vector_store.core import GraphAtom
 from ontocast.tool.vector_store.patch_retriever import _ranked_entity_weights
+
+pytestmark = pytest.mark.unit
 
 BASE = "https://growgraph.dev/ontologies/"
 QQVAL = Namespace(f"{BASE}qqval#")

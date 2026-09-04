@@ -11,6 +11,8 @@ from click.testing import CliRunner
 
 from ontocast.util.files import crawl_directories
 
+pytestmark = pytest.mark.unit
+
 
 def test_single_file_is_accepted(tmp_path: pathlib.Path) -> None:
     paper = tmp_path / "paper.pdf"

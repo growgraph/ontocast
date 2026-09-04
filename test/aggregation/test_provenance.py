@@ -15,6 +15,8 @@ from ontocast.tool.agg.aggregate import (
 from ontocast.tool.agg.rewriter import GraphRewriter
 from ontocast.tool.triple_manager.core import TripleStoreManager
 
+pytestmark = pytest.mark.unit
+
 
 def test_merge_graphs_with_provenance_adds_chunk_metadata(
     graph_rewriter: GraphRewriter,

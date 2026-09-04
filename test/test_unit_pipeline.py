@@ -5,8 +5,14 @@ import pytest
 from rdflib import URIRef
 
 from ontocast.onto.docling_helpers import plain_text_to_docling_doc
-from ontocast.onto.enum import OntologyAssemblyMode, RenderMode, Status
+from ontocast.onto.enum import (
+    OntologyAssemblyMode,
+    OntologyChapterFormat,
+    RenderMode,
+    Status,
+)
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_condense import TextCaps
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
@@ -14,6 +20,8 @@ from ontocast.stategraph import unit_pipeline
 from ontocast.stategraph.context_resolver import UnitOntologyContext
 from ontocast.toolbox import ToolBox
 from test.snapshot_helpers import snapshot_from_ontology
+
+pytestmark = pytest.mark.unit
 
 
 def _build_ontology(iri: str = "https://example.com/onto") -> Ontology:
@@ -89,8 +97,11 @@ async def test_run_unit_pipeline_feeds_ontology_loop_output_to_facts(
                     max_critic_visits_per_node=None,
                     ontology_max_triples=50_000,
                     ontology_context_max_triples=4000,
+                    ontology_chapter_format=OntologyChapterFormat.INHERIT,
+                    ontology_text_caps=TextCaps(),
                 )
-            )
+            ),
+            shapes_prompt_contract=lambda: ("", (), False),
         ),
     )
 
@@ -148,8 +159,11 @@ async def test_run_unit_pipeline_uses_agent_state_max_visits(monkeypatch) -> Non
                     max_critic_visits_per_node=None,
                     ontology_max_triples=50_000,
                     ontology_context_max_triples=4000,
+                    ontology_chapter_format=OntologyChapterFormat.INHERIT,
+                    ontology_text_caps=TextCaps(),
                 )
-            )
+            ),
+            shapes_prompt_contract=lambda: ("", (), False),
         ),
     )
 

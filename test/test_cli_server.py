@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from langgraph.graph.state import CompiledStateGraph
 from rdflib import RDF, URIRef
 from starlette.testclient import TestClient
 
@@ -39,6 +40,8 @@ from ontocast.onto.state import AgentState
 from ontocast.tool.agg.aggregate import AggregationResult
 from ontocast.tool.converter import ConverterTool
 from ontocast.toolbox import ToolBox
+
+pytestmark = pytest.mark.unit
 
 
 def test_parse_ontology_context_mode_param_accepts_request_override() -> None:
@@ -660,6 +663,34 @@ def test_dump_facts_ttl_writes_the_graph(tmp_path) -> None:
     assert dump_facts_ttl(state, src, output_dir=out_dir) == out_dir / "paper.facts.ttl"
 
 
+def test_dump_facts_ttl_can_keep_provenance(tmp_path) -> None:
+    """The batch dump must be able to emit a traceable graph.
+
+    Stripping stays the default; without the option a batch output carries no
+    chunk references at all, so nothing in it can be traced back to a source
+    span or re-verified against the document.
+    """
+    from rdflib import Literal
+
+    from ontocast.api.process_helpers import dump_facts_ttl
+    from ontocast.onto.constants import PROV
+
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"x")
+    state = _batch_state()
+    state.aggregated_facts.add((state.doc_iri, PROV.wasDerivedFrom, Literal("chunk-3")))
+
+    stripped = dump_facts_ttl(state, src, output_dir=tmp_path / "stripped")
+    assert stripped is not None
+    assert "wasDerivedFrom" not in stripped.read_text(encoding="utf-8")
+
+    kept = dump_facts_ttl(
+        state, src, output_dir=tmp_path / "kept", strip_provenance=False
+    )
+    assert kept is not None
+    assert "wasDerivedFrom" in kept.read_text(encoding="utf-8")
+
+
 def test_dump_run_manifest_records_cost_and_configuration(tmp_path) -> None:
     import json
 
@@ -709,6 +740,61 @@ def test_dump_run_manifest_records_cost_and_configuration(tmp_path) -> None:
     assert payload["ontology_triples"] == len(state.reduced_ontology_artifacts[0].graph)
 
 
+def test_dump_run_manifest_populates_completion_from_facts_loop_telemetry(
+    tmp_path,
+) -> None:
+    """``RunManifest.completion`` reads the same telemetry ``critic`` does.
+
+    All-zero when the completion pass never ran (the library default), and
+    reflecting the attempt log once it has -- ``summarize_completion``'s own
+    contract, wired into the manifest that ships beside the facts dump.
+    """
+    import json
+
+    from ontocast.api.process_helpers import dump_run_manifest
+    from ontocast.config import Config
+    from ontocast.onto.model import LoopAttempt
+
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"x")
+
+    state = _batch_state()
+    out_off = dump_run_manifest(
+        state, src, config=Config(), output_dir=tmp_path / "off"
+    )
+    assert out_off is not None
+    payload_off = json.loads(out_off.read_text(encoding="utf-8"))
+    assert payload_off["completion"] == {
+        "calls": 0,
+        "units": 0,
+        "subjects_inserted": 0,
+        "subjects_rolled_back": 0,
+        "triples_inserted": 0,
+        "measurements_recovered": 0,
+    }
+
+    state.facts_loop_telemetry[0] = [
+        LoopAttempt(
+            kind="completion",
+            n_fixes_applied=1,
+            n_fixes_rolled_back=1,
+            n_triples_inserted=3,
+            n_measurements_recovered=2,
+        )
+    ]
+    out_on = dump_run_manifest(state, src, config=Config(), output_dir=tmp_path / "on")
+    assert out_on is not None
+    payload_on = json.loads(out_on.read_text(encoding="utf-8"))
+    assert payload_on["completion"] == {
+        "calls": 1,
+        "units": 1,
+        "subjects_inserted": 1,
+        "subjects_rolled_back": 1,
+        "triples_inserted": 3,
+        "measurements_recovered": 2,
+    }
+
+
 def test_dump_run_manifest_uses_the_line_number_for_jsonl_inputs(tmp_path) -> None:
     from ontocast.api.process_helpers import dump_run_manifest
     from ontocast.config import Config
@@ -717,6 +803,60 @@ def test_dump_run_manifest_uses_the_line_number_for_jsonl_inputs(tmp_path) -> No
     src.write_bytes(b"x")
     out = dump_run_manifest(_batch_state(), src, config=Config(), line_number=3)
     assert out == tmp_path / "corpus.L3.run.json"
+
+
+def test_dump_validation_report_carries_unit_repairs_and_failures(tmp_path) -> None:
+    """A predicate the machine substituted is invisible in the TTL; name it.
+
+    ``gate_repairs`` covered the document-level gate only. The per-unit
+    passes (alias rewrites, literal coercions) were logged and dropped, so an
+    audit of what the machine changed in a render had to be mined from logs
+    -- and a unit that failed looked like a unit that found nothing.
+    """
+    import json
+
+    from ontocast.api.process_helpers import dump_validation_report
+    from ontocast.onto.model import (
+        FactsUnitFindingKind,
+        GraphRepairRecord,
+        UnitFailure,
+    )
+
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"x")
+    state = _batch_state()
+    state.facts_repairs_applied = {
+        3: [
+            GraphRepairRecord(
+                kind=FactsUnitFindingKind.PROPERTY_ALIAS,
+                source="ex:hasASiteComponent",
+                target="ex:hasBSiteComponent",
+                triple_count=2,
+            )
+        ]
+    }
+    state.unit_failures = [UnitFailure(unit_index=5, phase="facts", stage="render")]
+
+    out = dump_validation_report(state, src, output_dir=tmp_path / "out")
+    assert out is not None
+    assert out == tmp_path / "out" / "paper.facts.validation.json"
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["unit_repairs"] == {
+        "3": [
+            {
+                "kind": "property_alias",
+                "source": "ex:hasASiteComponent",
+                "target": "ex:hasBSiteComponent",
+                "triple_count": 2,
+            }
+        ]
+    }
+    assert payload["unit_failures"] == [
+        {"unit_index": 5, "phase": "facts", "stage": "render", "reason": None}
+    ]
+    # Additive: readers of the previous shape find every key they knew.
+    assert set(payload) >= {"source", "conformance", "gate_repairs", "findings"}
 
 
 def test_dump_ontology_ttls_names_files_per_ontology(tmp_path) -> None:
@@ -906,3 +1046,120 @@ def test_process_unit_route_runs_the_validation_gate(
         str(XSD.decimal) in payload["data"]["facts"]
         or "xsd:decimal" in (payload["data"]["facts"])
     )
+
+
+def _batch_toolbox() -> ToolBox:
+    """A ToolBox light enough for a batch-loop test: no external services."""
+    from ontocast.config import LLMConfig, LLMProvider, PathConfig, ToolConfig
+    from ontocast.config.settings import OllamaModel
+
+    return ToolBox(
+        Config(
+            tool_config=ToolConfig(
+                path_config=PathConfig(),
+                llm_config=LLMConfig(
+                    provider=LLMProvider.OLLAMA,
+                    model_name=OllamaModel.LLAMA3_1,
+                    base_url="http://localhost:11434",
+                ),
+            ),
+        )
+    )
+
+
+class _RejectingWorkflow:
+    """A workflow whose every call is refused by the provider."""
+
+    def astream(self, *args, **kwds):
+        from ontocast.tool.llm import LLMConfigurationError
+
+        async def _stream():
+            raise LLMConfigurationError("openai/gpt-x rejected the request")
+            yield  # pragma: no cover - makes this an async generator
+
+        return _stream()
+
+
+def test_a_rejected_request_aborts_the_batch_and_writes_nothing(tmp_path) -> None:
+    """The failure this exists for: every call refused, run still "succeeded".
+
+    Observed: the batch swallowed the rejection per unit, serialized an empty
+    graph, dumped a run manifest and a validation report next to no facts, and
+    exited 0 -- artifacts a downstream aggregator cannot tell from real ones.
+    Every remaining file would have paid for its own conversion to reach the
+    same rejection.
+    """
+    from ontocast.api.process_helpers import process_files_input
+    from ontocast.tool.llm import LLMConfigurationError
+
+    tools = _batch_toolbox()
+    first = tmp_path / "a.txt"
+    first.write_text("some text", encoding="utf-8")
+    second = tmp_path / "b.txt"
+    second.write_text("more text", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    with pytest.raises(LLMConfigurationError):
+        asyncio.run(
+            process_files_input(
+                [first, second],
+                config=tools.config,
+                head_chunks=None,
+                use_unit_pipeline=False,
+                tools=tools,
+                workflow=cast(CompiledStateGraph, _RejectingWorkflow()),
+                ontology_context_mode_value=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
+                tenant=None,
+                project=None,
+                output_dir=out_dir,
+            )
+        )
+
+    assert list(out_dir.iterdir()) == []
+
+
+class _AllUnitsFailedWorkflow:
+    """A workflow that ran to the end with every unit dead."""
+
+    def astream(self, *args, **kwds):
+        from ontocast.onto.enum import Status
+
+        async def _stream():
+            yield {"status": Status.FAILED, "aggregated_facts": RDFGraph()}
+
+        return _stream()
+
+
+def test_a_document_whose_every_unit_failed_is_recorded_as_failed(tmp_path) -> None:
+    """The generic backstop, for causes the rejection classifier does not catch.
+
+    The map nodes already computed FAILED for a document that produced nothing
+    and merge_facts preserved it -- the batch path just never read it, so the
+    run exited 0. cli/server.py turns a non-empty failed_files into a non-zero
+    exit, so nothing else is needed to make it scriptable.
+    """
+    from ontocast.api.process_helpers import process_files_input
+
+    tools = _batch_toolbox()
+    src = tmp_path / "a.txt"
+    src.write_text("some text", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    failed = asyncio.run(
+        process_files_input(
+            [src],
+            config=tools.config,
+            head_chunks=None,
+            use_unit_pipeline=False,
+            tools=tools,
+            workflow=cast(CompiledStateGraph, _AllUnitsFailedWorkflow()),
+            ontology_context_mode_value=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
+            tenant=None,
+            project=None,
+            output_dir=out_dir,
+        )
+    )
+
+    assert failed == [src]

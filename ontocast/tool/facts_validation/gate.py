@@ -12,7 +12,7 @@ from itertools import combinations
 
 from pydantic import BaseModel, Field
 from rdflib import OWL, RDF, RDFS, Literal, URIRef
-from rdflib.namespace import PROV, XSD
+from rdflib.namespace import PROV, SH, XSD
 
 from ontocast.onto.constants import PROVENANCE_METADATA_TERMS
 from ontocast.onto.enum import RetrievalMetric
@@ -78,11 +78,58 @@ class FactsValidationReport(BaseModel):
         return [finding for finding in self.findings if finding.severity == "error"]
 
 
+def count_shacl_focus_nodes(
+    data_graph: RDFGraph, shapes_graph: RDFGraph | None
+) -> int | None:
+    """Count data-graph nodes any shape actually targets.
+
+    This is the denominator ``conforms`` is silent about. A validation run over
+    zero focus nodes reports no violations for the same reason an empty query
+    returns no rows -- nothing was examined. Reported alongside ``conforms`` so
+    a clean result cannot be read as a passing one when the shapes and the data
+    never met.
+
+    Class targeting follows ``rdfs:subClassOf`` because SHACL's
+    ``sh:targetClass`` is subclass-aware.
+
+    Args:
+        data_graph: The graph that was validated.
+        shapes_graph: The shapes it was validated against; ``None`` when SHACL
+            did not run.
+
+    Returns:
+        int | None: Number of distinct focus nodes, or ``None`` if no shapes.
+    """
+    if shapes_graph is None or not len(shapes_graph):
+        return None
+    focus: set = set()
+    for target_class in shapes_graph.objects(None, SH.targetClass):
+        classes = {target_class}
+        # Walk down the hierarchy: a shape on a superclass targets instances
+        # of every subclass too.
+        pending = [target_class]
+        while pending:
+            current = pending.pop()
+            for sub in data_graph.subjects(RDFS.subClassOf, current):
+                if sub not in classes:
+                    classes.add(sub)
+                    pending.append(sub)
+        for klass in classes:
+            focus.update(data_graph.subjects(RDF.type, klass))
+    focus.update(shapes_graph.objects(None, SH.targetNode))
+    for predicate in shapes_graph.objects(None, SH.targetSubjectsOf):
+        focus.update(data_graph.subjects(predicate, None))
+    for predicate in shapes_graph.objects(None, SH.targetObjectsOf):
+        focus.update(data_graph.objects(None, predicate))
+    return len(focus)
+
+
 def summarize_conformance(
     findings: Sequence[FactsValidationFinding],
     *,
     shacl_evaluated: bool | None = None,
     repairs: Sequence[GraphRepairRecord] = (),
+    focus_nodes: int | None = None,
 ) -> dict:
     """Roll findings up into the shape a report or a client can read.
 
@@ -95,11 +142,16 @@ def summarize_conformance(
         shacl_evaluated: Whether SHACL actually ran (see
             :class:`FactsValidationReport`).
         repairs: LLM-free repairs the gate applied.
+        focus_nodes: Data-graph nodes the shapes actually target, from
+            :func:`count_shacl_focus_nodes`. Zero means the shapes examined
+            nothing, so a violation-free result says nothing about the data.
 
     Returns:
-        ``conforms`` (None when SHACL did not run), counts by severity, by
-        finding kind, by SHACL constraint component and shape, and the applied
-        repair counts by kind.
+        ``conforms`` (None when SHACL did not run **or** when it ran over an
+        empty focus set), counts by severity, by finding kind, by SHACL
+        constraint component and shape, and the applied repair counts by kind.
+        ``shacl_vacuous`` flags the empty-focus-set case, which is a
+        measurement failure rather than a passing grade.
     """
     shacl_findings = [
         finding
@@ -121,9 +173,12 @@ def summarize_conformance(
     for record in repairs:
         repairs_by_kind[str(record.kind)] = repairs_by_kind.get(str(record.kind), 0) + 1
 
+    vacuous = bool(shacl_evaluated) and focus_nodes == 0
     return {
         "shacl_evaluated": shacl_evaluated,
-        "conforms": None if not shacl_evaluated else not shacl_findings,
+        "conforms": (None if not shacl_evaluated or vacuous else not shacl_findings),
+        "shacl_focus_nodes": focus_nodes,
+        "shacl_vacuous": vacuous,
         "findings": len(findings),
         "errors": sum(1 for finding in findings if finding.severity == "error"),
         "warnings": sum(1 for finding in findings if finding.severity == "warning"),
@@ -390,6 +445,7 @@ def validate_aggregated_facts(
     shacl_advanced: bool = True,
     shacl_max_triples: int = 0,
     key_supported_subjects: Sequence[str] | None = None,
+    cross_unit_pairs: Sequence[tuple[str, str]] | None = None,
 ) -> FactsValidationReport:
     """Check post-merge invariants over the aggregated facts graph.
 
@@ -410,7 +466,9 @@ def validate_aggregated_facts(
           majority (distinct names collapsed into one node); or >= 2 IRI
           objects on a predicate that is single-valued for a dominant
           majority of other subjects. Severity is configurable — legitimate
-          multi-value modeling exists, bad merges are far more common.
+          multi-value modeling exists, bad merges are far more common. The
+          IRI branch additionally accepts ``cross_unit_pairs``, which
+          separates the two by provenance rather than by frequency.
         - ``DEGENERATE_COREFERENCE``: one IRI object shared by >= 2 distinct
           functional-ish predicates of one subject (collapsed range bounds).
         - ``SHACL``: optional, when ``pyshacl`` is installed and shapes exist.
@@ -433,6 +491,13 @@ def validate_aggregated_facts(
         shacl_inference: pyshacl pre-inference mode (see :func:`run_shacl`).
         shacl_advanced: Enable SHACL Advanced Features.
         shacl_max_triples: Skip SHACL above this graph size; 0 disables.
+        cross_unit_pairs: Canonical (subject, predicate) pairs whose IRI
+            objects came from more than one unit. When supplied, an
+            IRI-branch SUSPECT_MULTI_VALUE finding on a pair *not* listed
+            here is reported as a warning and never vetoes a cluster: a
+            single unit asserting two objects on one predicate is reading
+            one sentence, not the residue of a bad identity decision.
+            None disables the distinction.
         key_supported_subjects: Final URIs of merge clusters backed by
             natural-key evidence. Irreconcilable *string* values on these
             subjects are reported as warnings, not errors: "Application no.
@@ -500,6 +565,9 @@ def validate_aggregated_facts(
 
     findings: list[FactsValidationFinding] = []
     flagged_pairs: set[tuple[URIRef, URIRef]] = set()
+    cross_unit_object_keys = (
+        set(cross_unit_pairs) if cross_unit_pairs is not None else None
+    )
 
     for (subject, predicate), objects in sorted(
         object_groups.items(), key=lambda item: (str(item[0][0]), str(item[0][1]))
@@ -598,13 +666,23 @@ def validate_aggregated_facts(
             and predicate not in functional
             and predicate in dominant_single
         ):
-            flagged_pairs.add((subject, predicate))
+            # Frequency says this predicate is usually single-valued, which on
+            # its own is evidence of nothing: a genuinely multi-valued
+            # statement is rare by construction. Provenance is what separates
+            # the two cases -- only objects arriving from different units could
+            # have been brought together by an identity decision.
+            merge_created = (
+                cross_unit_object_keys is None
+                or (str(subject), str(predicate)) in cross_unit_object_keys
+            )
+            if merge_created:
+                flagged_pairs.add((subject, predicate))
             findings.append(
                 FactsValidationFinding(
                     kind=FactsValidationFindingKind.SUSPECT_MULTI_VALUE,
                     severity=(
                         "error"
-                        if suspect_multi_value_severity == "error"
+                        if suspect_multi_value_severity == "error" and merge_created
                         else "warning"
                     ),
                     message=(

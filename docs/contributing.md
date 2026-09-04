@@ -101,8 +101,8 @@ So:
   numbers for theirs.
 - **Do not** name a corpus, a benchmark, or an individual evaluation run —
   in prose, in a changelog entry, in a test name, or in a docstring. A reader
-  outside this workspace cannot resolve those names, and a reader inside it
-  should be reading the measurement system instead.
+  outside this repository cannot resolve those names, and a reader inside the
+  project should be reading the measurement system instead.
 - Justify a default by its **mechanism** ("saturates quickly", "gates
   everything below it"), not by the run that chose it.
 

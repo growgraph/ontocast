@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import pytest
 from rdflib import URIRef
 
 from ontocast.tool.agg.match_derivation import derive_pair_matches
 from ontocast.tool.agg.match_models import EntityCluster, GraphEntityMember
+
+pytestmark = pytest.mark.unit
 
 
 def test_derive_single_member_per_side() -> None:

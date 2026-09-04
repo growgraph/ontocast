@@ -10,7 +10,7 @@ import logging
 from collections import OrderedDict
 from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import Field
 from rdflib import URIRef
@@ -20,6 +20,7 @@ from ..onto.ontology import Ontology
 from ..onto.ontology_header import OntologyHeader
 from ..onto.rdfgraph import RDFGraph
 from ..onto.util import normalize_ontology_iri
+from .facts_validation.terms import collect_catalog_terms
 from .onto import Tool
 from .triple_manager.core import TripleStoreManager
 from .triple_manager.util import dedupe_terminal_ontologies
@@ -37,6 +38,8 @@ _MERGED_CACHE_MAX_ENTRIES = 8
 _GRAPH_CACHE_MAX_ENTRIES = 64
 
 if TYPE_CHECKING:
+    import networkx as nx
+
     from ontocast.tool.vector_store.patch_retriever import OntologyPatchRetriever
 
 
@@ -55,7 +58,7 @@ class OntologyManager(Tool):
 
     ontology_versions: dict[str, list[Ontology]] = Field(default_factory=dict)
 
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: Any):
         """Initialize the ontology manager.
 
         Args:
@@ -91,6 +94,10 @@ class OntologyManager(Tool):
         self._graph_cache_misses = 0
         self._merged_cache_hits = 0
         self._merged_cache_misses = 0
+        # Union of every served ontology's IRIs, keyed by the served version
+        # set so it is rebuilt exactly when the catalog changes. Read per unit
+        # by the deterministic repairs; see :meth:`catalog_terms`.
+        self._catalog_terms_memo: tuple[frozenset[str], set[str]] | None = None
 
     @staticmethod
     def _primary_ontology_id(ontology: Ontology) -> str:
@@ -220,7 +227,7 @@ class OntologyManager(Tool):
         """Namespace URI → author prefix for sanitize preference."""
         return dict(self._namespace_to_author_prefix)
 
-    def __contains__(self, item):
+    def __contains__(self, item: object) -> bool:
         """Check if an item (IRI or alias) is in the ontology manager.
 
         Args:
@@ -497,6 +504,39 @@ class OntologyManager(Tool):
             "catalog_merge_cache_hits": self._merged_cache_hits,
             "catalog_merge_cache_misses": self._merged_cache_misses,
         }
+
+    def catalog_terms(self) -> set[str]:
+        """Every IRI the held ontologies declare or reference, as one set.
+
+        The union of :func:`collect_catalog_terms` over every ontology this
+        manager holds -- the terminal versions registered in memory and the
+        graphs read through the triple store and resident in the graph cache.
+        Built lazily and memoised on the content-addressed identifiers of that
+        set, so it is recomputed only when an ontology is added, superseded,
+        removed, or newly read from the store.
+
+        The per-unit repairs read it for membership: a term present here is a
+        real catalog term even when a unit's retrieved snapshot omits it, and
+        must never be rewritten toward a look-alike the snapshot does carry.
+
+        Returns:
+            set[str]: Shared across units -- treat as read-only.
+        """
+        held: dict[str, Ontology] = {
+            ontology.versioned_iri: ontology
+            for ontology in self.get_terminal_ontologies_by_iri(None)
+        }
+        for graph_uri, ontology in self._graph_cache.items():
+            held.setdefault(graph_uri, ontology)
+        key = frozenset(held)
+        memo = self._catalog_terms_memo
+        if memo is not None and memo[0] == key:
+            return memo[1]
+        terms: set[str] = set()
+        for ontology in held.values():
+            terms |= collect_catalog_terms(ontology.graph)
+        self._catalog_terms_memo = (key, terms)
+        return terms
 
     def _cache_graph(self, ontology: Ontology, graph_uri: str | None = None) -> None:
         """Register a store-read ``ontology`` under the graph URI it was read from.
@@ -832,7 +872,7 @@ class OntologyManager(Tool):
             return []
         return self.get_ontology_versions_by_iri(iri)
 
-    def get_lineage_graph_by_iri(self, iri: str):
+    def get_lineage_graph_by_iri(self, iri: str) -> "nx.DiGraph | None":
         """Get the lineage graph for a specific IRI.
 
         Args:
@@ -846,7 +886,7 @@ class OntologyManager(Tool):
 
         return Ontology.build_lineage_graph(self.ontology_versions[iri])
 
-    def get_lineage_graph(self, ontology_id: str):
+    def get_lineage_graph(self, ontology_id: str) -> "nx.DiGraph | None":
         """Get the lineage graph for a specific ontology_id, alias, or IRI.
 
         Args:

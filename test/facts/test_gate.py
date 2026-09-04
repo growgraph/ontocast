@@ -9,6 +9,7 @@ the offending cluster's pairs and re-aggregating.
 from types import SimpleNamespace
 from typing import cast
 
+import pytest
 from rdflib import OWL, RDF, RDFS, Literal, URIRef
 from rdflib.namespace import XSD
 
@@ -26,9 +27,14 @@ from ontocast.stategraph.node_factories import (
     make_validate_facts_node,
 )
 from ontocast.tool import EmbeddingBasedAggregator
-from ontocast.tool.agg.aggregate import build_merged_clusters
+from ontocast.tool.agg.aggregate import (
+    build_cross_unit_object_pairs,
+    build_merged_clusters,
+)
 from ontocast.tool.facts_validation import validate_aggregated_facts
 from ontocast.toolbox import ToolBox
+
+pytestmark = pytest.mark.unit
 
 CD = f"{DEFAULT_IRI}/"
 Q = "https://x.org/schema#"
@@ -501,3 +507,150 @@ cd:condition_1 rdfs:label "77 K"@en .
         finding.kind is FactsValidationFindingKind.DANGLING_REFERENCE
         for finding in report.findings
     )
+
+
+# ---------------------------------------------------------------------------
+# Cross-unit evidence for the IRI branch of SUSPECT_MULTI_VALUE
+# ---------------------------------------------------------------------------
+
+
+def _joint_agents_graph() -> tuple[RDFGraph, URIRef, URIRef]:
+    """One application with two agents, plus single-agent subjects around it.
+
+    The neighbours are what make the predicate "dominantly single-valued", so
+    the IRI branch fires on the two-object subject.
+    """
+    graph = RDFGraph()
+    subject = URIRef(CD + "application1")
+    predicate = URIRef("https://schema.org/agent")
+    graph.add((subject, predicate, URIRef(CD + "personBeer")))
+    graph.add((subject, predicate, URIRef(CD + "personRegan")))
+    for index in range(3):
+        graph.add(
+            (
+                URIRef(f"{CD}other{index}"),
+                predicate,
+                URIRef(f"{CD}soleAgent{index}"),
+            )
+        )
+    return graph, subject, predicate
+
+
+def test_iri_multi_value_is_an_error_without_provenance() -> None:
+    """Unchanged default: no evidence supplied means the old behaviour."""
+    graph, subject, predicate = _joint_agents_graph()
+
+    report = validate_aggregated_facts(graph, None, fact_namespaces=[CD])
+
+    errors = [
+        finding
+        for finding in report.error_findings
+        if finding.kind == FactsValidationFindingKind.SUSPECT_MULTI_VALUE
+        and finding.subject == str(subject)
+    ]
+    assert len(errors) == 1
+
+
+def test_single_unit_multi_value_is_only_a_warning() -> None:
+    """Two objects one unit asserted cannot be the residue of a merge.
+
+    Reporting it as an error drives the un-merge repair, which dissolves a
+    correct joint statement.
+    """
+    graph, subject, predicate = _joint_agents_graph()
+
+    report = validate_aggregated_facts(
+        graph, None, fact_namespaces=[CD], cross_unit_pairs=[]
+    )
+
+    suspects = [
+        finding
+        for finding in report.findings
+        if finding.kind == FactsValidationFindingKind.SUSPECT_MULTI_VALUE
+        and finding.subject == str(subject)
+    ]
+    assert len(suspects) == 1
+    assert suspects[0].severity == "warning"
+    assert not report.error_findings
+
+
+def test_cross_unit_multi_value_stays_an_error() -> None:
+    """Objects from different units could have been brought together."""
+    graph, subject, predicate = _joint_agents_graph()
+
+    report = validate_aggregated_facts(
+        graph,
+        None,
+        fact_namespaces=[CD],
+        cross_unit_pairs=[(str(subject), str(predicate))],
+    )
+
+    errors = [
+        finding
+        for finding in report.error_findings
+        if finding.kind == FactsValidationFindingKind.SUSPECT_MULTI_VALUE
+        and finding.subject == str(subject)
+    ]
+    assert len(errors) == 1
+
+
+def test_numeric_branch_ignores_cross_unit_evidence() -> None:
+    """Two quantities on one node are a defect whatever their provenance."""
+    graph = RDFGraph()
+    subject = URIRef(CD + "q1")
+    predicate = URIRef(Q + "numericValue")
+    graph.add((subject, predicate, Literal("12.5", datatype=XSD.double)))
+    graph.add((subject, predicate, Literal("96", datatype=XSD.double)))
+
+    report = validate_aggregated_facts(
+        graph, None, fact_namespaces=[CD], cross_unit_pairs=[]
+    )
+    assert [f.kind for f in report.error_findings] == [
+        FactsValidationFindingKind.SUSPECT_MULTI_VALUE
+    ]
+
+
+def test_build_cross_unit_object_pairs_separates_the_two_cases() -> None:
+    subject = URIRef(CD + "application1")
+    predicate = "https://schema.org/agent"
+    shared = URIRef(CD + "sharedSubject")
+
+    joint_unit = _fact_unit(
+        0,
+        f"""
+        <{subject}> <{predicate}> <{CD}personBeer> , <{CD}personRegan> .
+        """,
+    )
+    first = _fact_unit(1, f"<{shared}> <{predicate}> <{CD}alpha> .")
+    second = _fact_unit(2, f"<{shared}> <{predicate}> <{CD}beta> .")
+
+    pairs = build_cross_unit_object_pairs([joint_unit, first, second], {})
+
+    # Two objects from one unit: not merge-created.
+    assert (str(subject), predicate) not in pairs
+    # One object each from two units: a merge could have produced this.
+    assert (str(shared), predicate) in pairs
+
+
+def test_build_cross_unit_object_pairs_canonicalizes_subjects() -> None:
+    """Keys must match the post-merge graph the gate actually validates."""
+    predicate = "https://schema.org/agent"
+    raw_left = URIRef(CD + "app_a")
+    raw_right = URIRef(CD + "app_b")
+    canonical = URIRef(CD + "application")
+
+    left = _fact_unit(0, f"<{raw_left}> <{predicate}> <{CD}alpha> .")
+    right = _fact_unit(1, f"<{raw_right}> <{predicate}> <{CD}beta> .")
+
+    pairs = build_cross_unit_object_pairs(
+        [left, right], {raw_left: canonical, raw_right: canonical}
+    )
+    assert (str(canonical), predicate) in pairs
+
+
+def test_build_cross_unit_object_pairs_ignores_literals() -> None:
+    unit = _fact_unit(
+        0,
+        f'<{CD}s> <https://schema.org/name> "a" , "b" .',
+    )
+    assert build_cross_unit_object_pairs([unit], {}) == []

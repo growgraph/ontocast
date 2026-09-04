@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import weakref
 from contextlib import contextmanager
@@ -100,6 +101,21 @@ class LLMRequestTimeoutError(RuntimeError):
     Deliberately not an :class:`asyncio.TimeoutError`: the unit loops catch
     ``Exception`` to fail a single unit gracefully, and a cancellation-flavoured
     error escaping ``asyncio.gather`` would take the whole fan-out down with it.
+    """
+
+
+class LLMConfigurationError(RuntimeError):
+    """The provider rejected the request itself, not this attempt at it.
+
+    A bad key, a model the account cannot reach, or a parameter value the model
+    does not accept is a property of the deployment: identical for every content
+    unit and every retry. Isolating it the way a bad render is isolated turns
+    one configuration fault into N unit failures and a run that finishes,
+    reports success, and writes nothing.
+
+    Deliberately not a sibling of :class:`LLMRequestTimeoutError` under a shared
+    base: an ``except (timeout, configuration)`` clause would re-issue a request
+    the provider has already said it will never accept.
     """
 
 
@@ -177,8 +193,37 @@ def llm_cache_config(
         "num_predict": config.num_predict,
         "num_ctx": config.num_ctx,
     }
+    # The reasoning knobs join the key only when set. The key is a hash of
+    # this whole mapping, so an unconditional ``None`` entry would evict every
+    # entry written before the knobs existed -- and those were produced under
+    # the provider default, which is exactly what ``None`` still means.
+    if config.reasoning_effort is not None:
+        config_dict["reasoning_effort"] = config.reasoning_effort
+    if config.thinking_budget is not None:
+        config_dict["thinking_budget"] = config.thinking_budget
     config_dict.update(extra)
     return config_dict
+
+
+# The gpt-5 series (gpt-5, gpt-5-mini, gpt-5-nano) is provider-pinned to
+# temperature 1.0 and rejects any other value, so the configured temperature has
+# to be overridden rather than passed through. Anchored on a following hyphen or
+# end-of-string so it does not also swallow later families whose names merely
+# start the same way -- gpt-5.4 takes a temperature like any other model, and
+# silently forcing it to 1.0 would make every benchmark arm undecodable.
+_TEMPERATURE_PINNED_TO_ONE = re.compile(r"^gpt-5(-|$)")
+
+
+def _reads_thinking_level(model_name: str) -> bool:
+    """Whether ``model_name`` is a Gemini generation that reads thinking_level.
+
+    Google replaced the integer ``thinking_budget`` with the discrete
+    ``thinking_level`` in Gemini 3, and the two are mutually exclusive with the
+    level winning. Read from the major version rather than matched against a
+    fixed list, so a generation newer than this package is classified too.
+    """
+    match = re.match(r"gemini-(\d+)", str(model_name).strip().lower())
+    return match is not None and int(match.group(1)) >= 3
 
 
 def _inflight_semaphore(max_inflight: int) -> asyncio.Semaphore:
@@ -188,6 +233,111 @@ def _inflight_semaphore(max_inflight: int) -> asyncio.Semaphore:
     if max_inflight not in per_loop:
         per_loop[max_inflight] = asyncio.Semaphore(max_inflight)
     return per_loop[max_inflight]
+
+
+#: Exception class names the providers raise on throttling. Matched by name
+#: so no provider SDK is imported here: openai.RateLimitError, anthropic's
+#: RateLimitError, and Google's ResourceExhausted all identify themselves.
+_RATE_LIMIT_ERROR_NAMES = ("RateLimitError", "ResourceExhausted")
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """Whether an exception (or its cause chain) is a provider throttle."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if type(current).__name__ in _RATE_LIMIT_ERROR_NAMES:
+            return True
+        if "429" in str(current) and "rate" in str(current).lower():
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+#: Exception class names that are always the deployment rather than the
+#: request: a missing or wrong key, or a model the account cannot reach.
+#: Matched by name for the same reason as the throttle names above -- no
+#: provider SDK is imported here.
+_CONFIG_ERROR_NAMES = (
+    # openai / anthropic
+    "AuthenticationError",
+    "PermissionDeniedError",
+    "NotFoundError",
+    # google
+    "Unauthenticated",
+    "PermissionDenied",
+    "NotFound",
+)
+
+#: Class names for a rejected request. A 400 is only a deployment fault when it
+#: names a *parameter*, so these gate on the markers below rather than on their
+#: own.
+_BAD_REQUEST_ERROR_NAMES = (
+    "BadRequestError",
+    "UnprocessableEntityError",
+    "InvalidArgument",
+)
+
+#: Message markers that identify a rejected request as naming the *request*
+#: rather than the document -- an unsupported value, an unknown argument, a
+#: model that does not exist, a key that is not valid. Every one of these is
+#: identical on the next call and on every other unit.
+#:
+#: Deliberately specific: the ``invalid_request_error`` type appears on every
+#: OpenAI 400, so matching it would make this "any 400 that is not on the unit
+#: list" -- and the unit list can only ever name the failure modes already seen.
+_CONFIG_MESSAGE_MARKERS = (
+    "does not support",
+    "unsupported parameter",
+    "unsupported value",
+    "unsupported_value",
+    "unrecognized request argument",
+    "unknown_parameter",
+    "unknown field",
+    "model_not_found",
+    "does not exist or you do not have access",
+    "invalid_api_key",
+    "incorrect api key",
+)
+
+#: Markers that keep a rejected request a *unit* fault: they name the input,
+#: not the configuration. This chunk was too long; its siblings may be fine, and
+#: aborting the run over one oversized unit would be a regression.
+_UNIT_FAULT_MARKERS = (
+    "context_length_exceeded",
+    "maximum context length",
+    "string too long",
+    "too many tokens",
+)
+
+
+def _is_llm_configuration_error(exc: BaseException) -> bool:
+    """Whether an exception (or its cause chain) is a deployment fault.
+
+    A deployment fault is one that every subsequent call will hit identically:
+    the request as configured is not one the provider will ever accept. Detected
+    by exception shape rather than type, like :func:`_is_rate_limit_error`.
+    Callers must check the throttle first -- a 429 is retryable and must never
+    reclassify as this.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        name = type(current).__name__
+        text = str(current).lower()
+        if name in _CONFIG_ERROR_NAMES:
+            return True
+        looks_rejected = name in _BAD_REQUEST_ERROR_NAMES or "400" in text
+        if (
+            looks_rejected
+            and any(marker in text for marker in _CONFIG_MESSAGE_MARKERS)
+            and not any(marker in text for marker in _UNIT_FAULT_MARKERS)
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _opt_int(source: Any, key: str) -> int | None:
@@ -285,8 +435,15 @@ def _usage_metadata_from(usage: TokenUsage) -> dict[str, Any] | None:
 
 
 def _chars_received_from_result(result: Any) -> int:
-    if isinstance(result, AIMessage) and result.content:
-        return len(result.content)
+    """Response length in characters, whatever shape the content arrived in.
+
+    Providers that answer with a list of typed content blocks would otherwise
+    be measured in *blocks*: ``len`` of a two-block reply is 2, and
+    ``chars_received`` for such a run under-reports by orders of magnitude.
+    Measured on the same normalised text every parser reads.
+    """
+    if isinstance(result, AIMessage):
+        return len(_content_to_str(result.content)) if result.content else 0
     return len(str(result))
 
 
@@ -368,7 +525,7 @@ class LLMTool(Tool):
         self,
         cache: Cacher | None = None,
         budget_tracker: Any = None,
-        **kwargs,
+        **kwargs: Any,
     ):
         """Initialize the LLM tool.
 
@@ -396,8 +553,8 @@ class LLMTool(Tool):
         config: LLMConfig,
         cache: Cacher | None = None,
         budget_tracker: Any = None,
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> "LLMTool":
         """Create a new LLM tool instance synchronously.
 
         Args:
@@ -426,8 +583,8 @@ class LLMTool(Tool):
         config: LLMConfig,
         cache: Cacher | None = None,
         budget_tracker: Any = None,
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> "LLMTool":
         """Create a new LLM tool instance asynchronously.
 
         Args:
@@ -450,8 +607,30 @@ class LLMTool(Tool):
         Raises:
             ValueError: If the provider is not supported.
         """
+        # Cross-provider pacing and retry kwargs. The rate limiter is a
+        # per-process token bucket on request *starts* (langchain-core
+        # InMemoryRateLimiter): the inflight semaphore caps concurrency, this
+        # paces the sustained rate underneath it -- set it from the provider
+        # tier. `max_retries` tunes the provider SDK's own 429/backoff
+        # retries; there is deliberately no retry loop at this layer (see
+        # agent/common.py -- retrying here multiplies request rate exactly
+        # when the provider asks for less).
+        pacing_kwargs: dict[str, Any] = {}
+        if self.config.requests_per_second is not None:
+            from langchain_core.rate_limiters import InMemoryRateLimiter
+
+            pacing_kwargs["rate_limiter"] = InMemoryRateLimiter(
+                requests_per_second=self.config.requests_per_second,
+                check_every_n_seconds=0.1,
+                max_bucket_size=max(1.0, self.config.requests_per_second),
+            )
+        retry_kwargs: dict[str, Any] = {}
+        if self.config.max_retries is not None:
+            retry_kwargs["max_retries"] = self.config.max_retries
+        self._warn_ignored_reasoning_knobs()
+
         if self.config.provider == LLMProvider.OPENAI:
-            if self.config.model_name.startswith("gpt-5"):
+            if _TEMPERATURE_PINNED_TO_ONE.match(str(self.config.model_name)):
                 self.config.temperature = 1.0
                 logger.warning(
                     f"Setting temperature to {self.config.temperature} for gpt-5 class "
@@ -460,6 +639,19 @@ class LLMTool(Tool):
             ChatOpenAI = require(
                 "langchain_openai", feature="The OpenAI LLM provider"
             ).ChatOpenAI
+            openai_kwargs: dict[str, Any] = {}
+            if self.config.json_mode:
+                # Constrains decoding to valid JSON at the provider, so a
+                # truncated or bracket-swapped envelope cannot be produced in
+                # the first place. Requires the word "JSON" in the prompt --
+                # test_prompt_json_mode_precondition holds the prompt set to
+                # that.
+                openai_kwargs["response_format"] = {"type": "json_object"}
+            reasoning_kwargs: dict[str, Any] = {}
+            if self.config.reasoning_effort is not None:
+                # A client field rather than a model_kwargs entry: the client
+                # routes it to whichever API parameter the model expects.
+                reasoning_kwargs["reasoning_effort"] = self.config.reasoning_effort
             self._llm = ChatOpenAI(
                 model=self.config.model_name,
                 temperature=self.config.temperature,
@@ -467,6 +659,10 @@ class LLMTool(Tool):
                 api_key=(
                     SecretStr(self.config.api_key) if self.config.api_key else None
                 ),
+                model_kwargs=openai_kwargs,
+                **reasoning_kwargs,
+                **pacing_kwargs,
+                **retry_kwargs,
             )
         elif self.config.provider == LLMProvider.OLLAMA:
             ollama_kwargs: dict[str, Any] = {
@@ -483,7 +679,7 @@ class LLMTool(Tool):
             ChatOllama = require(
                 "langchain_ollama", feature="The Ollama LLM provider"
             ).ChatOllama
-            self._llm = ChatOllama(**ollama_kwargs)
+            self._llm = ChatOllama(**ollama_kwargs, **pacing_kwargs)
         elif self.config.provider == LLMProvider.ANTHROPIC:
             anthropic_kwargs: dict[str, Any] = {
                 "model": self.config.model_name,
@@ -496,18 +692,81 @@ class LLMTool(Tool):
             ChatAnthropic = require(
                 "langchain_anthropic", feature="The Anthropic LLM provider"
             ).ChatAnthropic
-            self._llm = ChatAnthropic(**anthropic_kwargs)
+            self._llm = ChatAnthropic(
+                **anthropic_kwargs, **pacing_kwargs, **retry_kwargs
+            )
         elif self.config.provider == LLMProvider.GOOGLE:
             ChatGoogleGenerativeAI = require(
                 "langchain_google_genai", feature="The Google LLM provider"
             ).ChatGoogleGenerativeAI
+            google_kwargs: dict[str, Any] = {}
+            if self.config.reasoning_effort is not None:
+                # Gemini 3+ spells the lever as a discrete ``thinking_level``
+                # over the same minimal|low|medium|high vocabulary OpenAI uses.
+                # The client exposes it as ``reasoning_effort`` (aliased to
+                # ``thinking_level``) and routes it into ThinkingConfig, so it
+                # is a client field here too rather than a model_kwargs entry.
+                google_kwargs["reasoning_effort"] = self.config.reasoning_effort
+            if self.config.thinking_budget is not None and not _reads_thinking_level(
+                self.config.model_name
+            ):
+                # Dropped rather than forwarded on Gemini 3+: the generation
+                # does not read it, and _warn_ignored_reasoning_knobs has
+                # already said so. Sending it anyway would make that warning a
+                # lie and hand the API a parameter of the wrong generation.
+                google_kwargs["thinking_budget"] = self.config.thinking_budget
             self._llm = ChatGoogleGenerativeAI(
                 model=self.config.model_name,
                 temperature=self.config.temperature,
                 google_api_key=self.config.api_key,
+                **google_kwargs,
+                **pacing_kwargs,
+                **retry_kwargs,
             )
         else:
             raise ValueError(f"Unsupported provider: {self.config.provider}")
+
+    def _warn_ignored_reasoning_knobs(self) -> None:
+        """Warn about a reasoning knob the configured model does not read.
+
+        ``LLM_REASONING_EFFORT`` is the shared vocabulary: OpenAI reasoning
+        models read it as ``reasoning_effort`` and Gemini 3+ as
+        ``thinking_level``. ``LLM_THINKING_BUDGET`` is the Gemini 2.5 spelling
+        and is superseded from Gemini 3 on. A knob the model does not read is a
+        silent no-op: the run bills full reasoning while the manifest records a
+        budget that never applied.
+        """
+        provider = self.config.provider
+        ignored: list[tuple[str, str]] = []
+        if self.config.reasoning_effort is not None and provider not in (
+            LLMProvider.OPENAI,
+            LLMProvider.GOOGLE,
+        ):
+            ignored.append(
+                (
+                    f"LLM_REASONING_EFFORT={self.config.reasoning_effort}",
+                    f"the {provider} provider reads neither reasoning knob",
+                )
+            )
+        if self.config.thinking_budget is not None:
+            if provider != LLMProvider.GOOGLE:
+                ignored.append(
+                    (
+                        f"LLM_THINKING_BUDGET={self.config.thinking_budget}",
+                        f"the {provider} provider reads LLM_REASONING_EFFORT",
+                    )
+                )
+            elif _reads_thinking_level(self.config.model_name):
+                ignored.append(
+                    (
+                        f"LLM_THINKING_BUDGET={self.config.thinking_budget}",
+                        f"{self.config.model_name} is a Gemini 3+ model, where "
+                        "the thinking budget is superseded by the thinking "
+                        "level -- set LLM_REASONING_EFFORT instead",
+                    )
+                )
+        for knob, reason in ignored:
+            logger.warning("%s is ignored: %s", knob, reason)
 
     def _cache_config_dict(self, **extra: Any) -> dict[str, Any]:
         """Cache-key config for this tool's settings; see :func:`llm_cache_config`."""
@@ -666,6 +925,14 @@ class LLMTool(Tool):
                 bt = self._current_budget_tracker()
                 if bt is not None:
                     bt.incr("llm/timeouts")
+                    bt.incr("llm/calls_failed")
+                    # The provider received and worked on the prompt; only the
+                    # answer was abandoned. Charged as a call that received
+                    # nothing, so calls_count and chars_sent cover every
+                    # request the provider processed rather than only those
+                    # that returned -- otherwise a run of timeouts reads as a
+                    # run of few, cheap calls.
+                    bt.add_usage(len(prompt_str), 0)
                 # Re-raised as a plain error so the unit loop's handler treats
                 # it as a failed render rather than a cancellation: letting a
                 # bare TimeoutError escape asyncio.gather would abort the whole
@@ -674,6 +941,56 @@ class LLMTool(Tool):
                     f"LLM request exceeded {timeout}s "
                     f"({self.config.provider}/{self.config.model_name})"
                 ) from exc
+            except Exception as exc:
+                # A provider throttle that survived the SDK's own retries
+                # surfaces as a failed render; without a counter it is
+                # indistinguishable from a model failure in the telemetry,
+                # which is how a throttled arm once read as a quality
+                # regression. Detected by exception shape rather than type so
+                # no provider SDK is imported here. Re-raised unchanged --
+                # this layer deliberately does not retry (see
+                # agent/common.py): raise LLM_MAX_RETRIES or lower
+                # LLM_REQUESTS_PER_SECOND instead.
+                bt = self._current_budget_tracker()
+                if bt is not None:
+                    # Every raised call, whatever the cause; llm/timeouts and
+                    # llm/rate_limited are its attributed subsets. Not charged
+                    # as usage: a rejected or dropped request cost nothing.
+                    bt.incr("llm/calls_failed")
+                if _is_rate_limit_error(exc):
+                    if bt is not None:
+                        bt.incr("llm/rate_limited")
+                    logger.warning(
+                        "Provider rate limit hit (%s/%s): %s -- pace with "
+                        "LLM_REQUESTS_PER_SECOND / LLM_MAX_INFLIGHT, or raise "
+                        "LLM_MAX_RETRIES",
+                        self.config.provider,
+                        self.config.model_name,
+                        exc,
+                    )
+                    raise
+                if _is_llm_configuration_error(exc):
+                    # Not isolated as a unit failure: every other unit is about
+                    # to make the same rejected call. Re-typed here, at the one
+                    # funnel every provider call passes through, so the unit
+                    # loops can let exactly this class through their
+                    # ``except Exception``. Raised before the cache write, so
+                    # nothing about the rejection is persisted.
+                    if bt is not None:
+                        bt.incr("llm/calls_rejected")
+                    logger.error(
+                        "Provider rejected the request (%s/%s): %s -- this is "
+                        "the configuration, not the document: every call will "
+                        "be rejected the same way",
+                        self.config.provider,
+                        self.config.model_name,
+                        exc,
+                    )
+                    raise LLMConfigurationError(
+                        f"{self.config.provider}/{self.config.model_name} "
+                        f"rejected the request: {exc}"
+                    ) from exc
+                raise
             finally:
                 self.record_span("llm/provider", time.perf_counter() - provider_start)
 
@@ -749,7 +1066,7 @@ class LLMTool(Tool):
             return str(content_attr)
         return str(prompt)
 
-    async def complete(self, prompt: str, **kwargs) -> str:
+    async def complete(self, prompt: str, **kwargs: Any) -> str:
         """Generate a completion for the given prompt.
 
         Args:
@@ -762,7 +1079,7 @@ class LLMTool(Tool):
         response = await self._invoke_cached(prompt, **kwargs)
         return _content_to_str(response.content)
 
-    async def extract(self, prompt: str, output_schema: Type[T], **kwargs) -> T:
+    async def extract(self, prompt: str, output_schema: Type[T], **kwargs: Any) -> T:
         """Extract structured data from the prompt according to a schema.
 
         Args:

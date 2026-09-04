@@ -82,7 +82,7 @@ Notes:
 
 - Core diagrams show the default path: render/critic retries without web search. When a node sets `initiate_search`, plan/fetch/retry branches apply — see `*_evidence.mmd` (and matching PNG/SVG).
 - First render/critic pass always runs **without** web search; search runs only when the node sets `initiate_search`.
-- On the **last allowed render attempt**, the critic is skipped (no further extract to critique). The facts loop also surfaces unresolved quarantined literals on that path.
+- `MAX_VISITS` retries a **failed** render only. A successful render is never repeated: improving it is what the critic passes are for.
 - In the **facts** loop a rejecting critic does not escalate to another render. Its blocking fixes are converted to findings and applied by the bounded rewrite-in-place repair pass, so the outer loop retries only on render *failure* and a unit's worst-case call count is flat in `MAX_VISITS`. Acceptance is decided by `material_defects()` — mandatory deterministic findings plus critic fixes at `FACTS_ACCEPT_BLOCKING_SEVERITY` — not by the critic's score. The ontology loop still gates on the critic's score. It now has a deterministic finding lane of its own (`tool/ontology_validation/unit_findings.py`), but that lane runs in **shadow mode**: findings are collected, injected into the critic prompt as MANDATORY items and reported as `ontology_findings_residual` / `ontology_mandatory_residual`, and the gate itself is unchanged until a sampling run yields the incumbent's distribution — the same order the facts gate change followed. See [Validation](validation.md#ontology-delta-validation-shadow-mode).
 - `/process_unit` runs this loop on a single unit via `unit_pipeline.py` (no chunking or document-level reduce).
 
@@ -115,6 +115,7 @@ every unit wait for the slowest summary before any extraction could start.
 - Section LLM tagging during Chunk uses **parallel** workers up to `PARALLEL_WORKERS`
 - Use `--head-chunks N` on the CLI to process only the first N units (testing)
 - Without section parameters, Chunk uses layout/simple sizing only (no tag/filter)
+- Routing before the fan-out runs `CHUNK_MIN_UNIT_CHARS` → bibliography (`CHUNK_BIBLIOGRAPHY_MODE`) → non-content (`CHUNK_NON_CONTENT_MODE`); in `extract` mode a non-content unit carries `is_non_content` instead of being dropped. `CHUNK_MAX_MEASUREMENTS_PER_UNIT` then splits units dense in unit-adjacent numbers at sentence boundaries.
 
 ### 3. Per-Unit Ontology Loop
 
@@ -147,11 +148,36 @@ Provenance triples (`prov:`, reification, chunk metadata) are kept in `ontology_
 
 ### 5. Per-Unit Facts Loop
 
-When facts rendering is enabled, each unit runs a **facts loop** (render → critic, with optional web evidence), then **merge facts** applies cross-chunk entity disambiguation and aggregation, and **validate facts** checks post-merge invariants (functional violations, suspect multi-values, degenerate coreference, optional SHACL). Merge-signature error findings (functional violation, suspect multi-value, degenerate coreference — never SHACL) on merged subjects trigger a deterministic un-merge: the offending cluster's pairs are vetoed and the retained facts units are re-aggregated (`FACTS_MERGE_REPAIR_PASSES`). Residual findings land in `facts_validation_findings` and the retrieval metrics.
+When facts rendering is enabled, each unit runs a **facts loop** (render once, then bounded review-and-patch passes, with optional web evidence), then **merge facts** applies cross-chunk entity disambiguation and aggregation, and **validate facts** checks post-merge invariants (functional violations, suspect multi-values, degenerate coreference, optional SHACL). Merge-signature error findings (functional violation, suspect multi-value, degenerate coreference — never SHACL) on merged subjects trigger a deterministic un-merge: the offending cluster's pairs are vetoed and the retained facts units are re-aggregated (`FACTS_MERGE_REPAIR_PASSES`). Residual findings land in `facts_validation_findings` and the retrieval metrics.
 
-Chunks detected as bibliography/reference lists are routed by `CHUNK_BIBLIOGRAPHY_MODE`: by default they are dropped before extraction (`skip`); `citations_only` yields citation metadata only (`schema:ScholarlyArticle` + `schema:citation`), never domain facts mined from citation titles.
+Chunks detected as bibliography/reference lists are routed by `CHUNK_BIBLIOGRAPHY_MODE`: by default they are dropped before extraction (`skip`); `citations_only` yields citation metadata only (`schema:ScholarlyArticle` + `schema:citation`), never domain facts mined from citation titles. Front and back matter (author information, notes, licence, data availability, …) is routed the same way by `CHUNK_NON_CONTENT_MODE`.
 
 ![Facts loop](../assets/facts_loop.png)
+
+The critique is **applied**, not described to a second call. The critic is
+shown a numbered graph and cites statement ids; the loop resolves them by
+lookup, screens what the deployment allows a pass to destroy, and applies the
+result as a validated `GraphUpdate` with **no LLM call**. Both outcomes of the
+critique go there — an accepted render's fixes are applied too, rather than
+discarded — so accept/reject governs whether the unit may *leave*, not whether
+the critique is worth acting on.
+
+Every mutation is still a compiled, validated `GraphUpdate`, exactly as a render
+produces. What changed is that producing one no longer requires an LLM.
+
+A pass ends the loop early when it changed nothing or was rolled back, and is
+undone whole if it deleted without writing, shrank the unit's product without
+resolving anything, or created new mandatory findings. See
+[Validation](validation.md#how-a-critique-reaches-the-graph).
+
+When `FACTS_COMPLETION_PASSES` is set above its default of `0`, an
+insert-only **completion pass** runs once the critic loop above is done,
+while the numeric-coverage inventory still lists a measurement — a number
+with its unit — the render missed. Each pass proposes new subjects to add,
+never a removal or a rewrite, and its inserts go through the same
+per-subject regression check a critic fix goes through: an insert that
+leaves the unit worse is rolled back on its own. See
+[Validation](validation.md#completion-pass-insert-only-recovery).
 
 Facts output uses the **`cd:` namespace** for text-derived instances; domain ontology IRIs are read-only schema and pre-declared reference individuals (see [Facts extraction model](concepts.md#facts-extraction-model)). Optional `facts_user_instruction` adds focus on top of these built-in guidelines.
 
@@ -169,10 +195,12 @@ Facts output uses the **`cd:` namespace** for text-derived instances; domain ont
 | `PARALLEL_WORKERS` | Max concurrent unit workers |
 | `LLM_MAX_INFLIGHT` | Max concurrent provider LLM requests (shared across units) |
 | `MAX_CONCURRENT_PROCESSES` | Optional cap on simultaneous `/process` pipelines |
-| `MAX_VISITS` / `max_visits` | Render/critic retry budget per loop (at `1`, the default, the LLM critic never runs — the critic is skipped after the final render). In the facts loop it bounds render-*failure* retries: a rejecting critic no longer consumes an attempt |
+| `MAX_VISITS` / `max_visits` | Retries of a **failed** fresh extraction, and nothing else. A render that succeeded is never repeated, and a rejecting critic does not consume an attempt |
 | `FACTS_ACCEPT_BLOCKING_SEVERITY` | Which critic fix severities block a facts unit from leaving the loop (`critical` default, or `important` / `never`). Mandatory deterministic findings always block — see [Validation](validation.md) |
-| `MAX_CRITIC_VISITS_PER_NODE` | Critic attempts per render attempt. Unset couples it to `MAX_VISITS`; set to `1` for one critique per render. Only bites when the critic keeps requesting external evidence — see [Configuration](configuration.md) |
-| `FACTS_LLM_REPAIR_VISITS` | Finding-driven repair budget per facts unit, **in provider calls**: bounded update renders driven by machine-found violations; fires even at `MAX_VISITS=1`, so the default costs up to two calls per unit. See [Validation](validation.md#how-many-llm-calls-a-facts-unit-really-costs) |
+| `MAX_CRITIC_VISITS_PER_NODE` | Deprecated and inert. It capped critic retries *within* one render attempt, a path the loop no longer has. Still recorded in the run manifest so an existing setting stays auditable |
+| `FACTS_CRITIC_PASSES` | Review-and-patch passes per facts unit, **in provider calls**. Each pass re-runs the deterministic checks for free, then buys one critique and applies it. `0` is extraction only. `FACTS_LLM_REPAIR_VISITS` is a deprecated alias. See [Validation](validation.md#how-many-llm-calls-a-facts-unit-really-costs) |
+| `ONTOLOGY_CRITIC_PASSES` | The same for ontology units. Defaults to `0`: the ontology critic was previously unreachable at default settings, so enabling it is a real cost increase and is opt-in |
+| `FACTS_CRITIC_MAX_DELETE_SHARE` / `_MIN_DELETES` / `_ALLOW_SUBJECT_RENAME` | Limits on what one pass may destroy — see [Validation](validation.md#what-a-pass-may-not-destroy) |
 | `FACTS_MERGE_REPAIR_PASSES` | Un-merge budget at the post-aggregation validation gate (merge-signature error findings → cluster pair vetoes → re-aggregation) |
 | `FACTS_SHACL_AUTOFIX` | LLM-free repair of SHACL violations at the gate: `off`, `rewrite`, or `prune` (default). See [Validation](validation.md#llm-free-autofix) |
 | `CHUNK_SEGMENTER` | `semantic` (sections-first, default) or `docling` structural segments |
@@ -189,6 +217,8 @@ Facts output uses the **`cd:` namespace** for text-derived instances; domain ont
 | `ONTOLOGY_CONTEXT_MODE` | How per-unit ontology context is sourced; also gates the consistency critic — see [Configuration](configuration.md#ontology-context-mode-ontology_context_mode) |
 | `LLM_GRAPH_FORMAT` | LLM wire encoding: `jsonld` (default) or `turtle` (legacy) |
 | `--max-visits` | CLI override for `MAX_VISITS` (batch mode and server default) |
+| `--ontology-dir` | CLI override for `ONTOCAST_ONTOLOGY_DIRECTORY`; empty string means "no seed ontologies" |
+| `--shapes-dir` | CLI override for `FACTS_SHAPES_DIR`; empty string means "no seed shapes" |
 | `--wipe-vector-store` | Drop the current vector partition before recreate+reindex |
 | `--head-chunks` | CLI limit on units processed |
 | `target_sections` / `summarize_sections` / `summary_max_sentences` | Per-request structured-document preprocessing (not env vars) |
@@ -200,7 +230,7 @@ Full reference: [Configuration System](configuration.md).
 1. **Start with defaults** — `MAX_VISITS=1`, `ontology_and_facts`, consolidation off; tune after inspecting output.
 2. **Use `--head-chunks`** for large documents during development.
 3. **Monitor budget summaries** to estimate LLM cost at scale.
-4. **Provide seed ontologies** in `ONTOCAST_ONTOLOGY_DIRECTORY` for catalog selection modes.
+4. **Provide seed ontologies** in `ONTOCAST_ONTOLOGY_DIRECTORY` (or `--ontology-dir`) for catalog selection modes — or start with none and let an ontology-rendering run build the first one.
 5. **Enable vector mode** only when Qdrant or LanceDB and embeddings are configured.
 
 ## Next Steps

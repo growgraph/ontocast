@@ -15,6 +15,8 @@ from ontocast.onto.state import BudgetTracker
 from ontocast.tool.cache import Cacher
 from ontocast.tool.llm import LLMTool
 
+pytestmark = pytest.mark.unit
+
 
 async def _tool(config: LLMConfig, cache_dir, response, tracker=None) -> LLMTool:
     """An LLMTool whose provider returns ``response`` (or raises, if given one)."""

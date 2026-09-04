@@ -42,9 +42,10 @@ three modules, where a typo used to mean a silently missing metric.
 | `ontology_writable_count` / `ontology_primary_units` | Writable anchors, and units assigned a primary anchor |
 | `ontology_snapshot_triples` | Size of the ontology snapshot a unit was actually shown, written in **every** context mode. Previously only the vector resolver recorded a size, nested under `patch_retrieval` — so the two modes that bound nothing also reported nothing. Read it against `ONTOLOGY_CONTEXT_MAX_TRIPLES` to tell a condensed snapshot from an unbounded one |
 | `facts_anchor_count` / `facts_anchor_units` | Same for the facts fan-out |
-| `facts_llm_repair_renders_total` / `_failed` | Finding-driven repair renders attempted, and those that crashed (a failed repair leaves the pre-repair graph and the unit still reports success) |
+| `facts_critic_fixes_applied` / `_residual` / `_noop` | Proposed fixes that reached the graph, that still need judgement, and that removed exactly what they re-added. A critique dominated by the last is a critic producing motion rather than corrections |
+| `facts_critic_patches_rolled_back` | Passes undone for leaving the unit worse. Non-zero means the critique is provoking data-destroying edits |
 | `facts_repair_delete_only` | Repair renders rolled back for answering the findings prompt with deletions instead of an in-place rewrite. Non-zero means the findings prompt or the validator is provoking data-destroying responses — treat it as a release blocker, not a curiosity |
-| `facts_findings_residual` / `facts_mandatory_residual` | Deterministic findings still open after the last repair render, over every unit; the mandatory subset is the number that tracks defects |
+| `facts_findings_residual` / `facts_mandatory_residual` | Deterministic findings still open after the last critic pass, over every unit; the mandatory subset is the number that tracks defects |
 | `facts_critic_calls` / `facts_critic_accepted` | The facts critic's ledger: calls billed, and calls whose verdict let the unit exit the loop |
 | `ontology_findings_residual` / `ontology_mandatory_residual` | Same residuals for the ontology loop's delta validator (shadow mode — recorded, not yet gating) |
 | `ontology_critic_calls` / `ontology_critic_accepted` | The ontology critic's ledger under its incumbent `success or score > 90` gate |
@@ -74,7 +75,8 @@ pass actually ran — absent means "did not run", which is not the same as zero.
   "render_mode": "ontology_and_facts",
   "loops": {"max_visits": 1, "max_critic_visits": null, "llm_repair_visits": 1},
   "graph_metrics": {"nodes": 130, "edges": 112, "components": 24, "largest_component": 61, "isolated_nodes": 18},
-  "llm": {"provider": "ollama", "model_name": "qwen3.6", "temperature": 0.0, "think": true},
+  "llm": {"provider": "ollama", "model_name": "qwen3.6", "temperature": 0.0, "think": true,
+          "reasoning_effort": null, "thinking_budget": null},
   "budget": {
     "calls_count": 42, "cache_hits": 0,
     "input_tokens": 380174, "output_tokens": 51203, "reasoning_tokens": 39880,
@@ -83,7 +85,11 @@ pass actually ran — absent means "did not run", which is not the same as zero.
     "counters": {"llm/parse_retry": 3, "llm/json_bracket_repair": 1, "llm/parse_abandoned": 0}
   },
   "selection": {"target_sections": null, "exclude_sections": ["references"],
-                "summarize_sections": null, "summary_max_sentences": null,
+                "summarize_sections": null,
+                "labeled_units": 9, "unlabeled_units": 4,
+                "section_label_histogram": {"results": 5, "methods": 4, "(unlabeled)": 4},
+                "non_content_mode": "extract", "undersized_units_skipped": 0,
+                "bibliography_units_skipped": 1, "non_content_units_skipped": 0,
                 "bibliography_mode": "exclude"},
   "critic": {"calls": 34, "accepted": 6, "score_min": 55, "score_median": 79,
              "score_max": 98,
@@ -92,6 +98,9 @@ pass actually ran — absent means "did not run", which is not the same as zero.
   "ontology_critic": {"calls": 0, "accepted": 0, "score_min": null,
                       "score_median": null, "score_max": null,
                       "score_histogram": {}, "fix_severity_histogram": {}},
+  "completion": {"calls": 0, "units": 0, "subjects_inserted": 0,
+                 "subjects_rolled_back": 0, "triples_inserted": 0,
+                 "measurements_recovered": 0},
   "facts_triples": 1204, "facts_triples_serialized": 557, "ontology_triples": 318,
   "retrieval_metrics": {
     "ontology_context_mode": "selected_vector_search_ontology",
@@ -111,9 +120,38 @@ any run against a new model:
 | `llm/parse_retry` | Renders re-issued because the previous response would not parse or validate. Each is a full re-extraction, so a non-trivial count is a real share of the bill. |
 | `llm/json_bracket_repair` | Responses recovered by rewriting mismatched closing brackets. Non-zero means the model is emitting structurally broken JSON that the deterministic repair caught — the run is correct, but the prompt or the schema shape is provoking it. |
 | `llm/parse_abandoned` | Calls given up on: retries exhausted, or the same JSON syntax error recurred and further attempts were judged pure spend. Every one of these is a content unit that contributed nothing. |
+| `llm/calls_failed` | Every provider call that raised; `llm/timeouts`, `llm/rate_limited` and `llm/calls_rejected` are its subsets. A timed-out call is charged its prompt characters, so `calls_count = llm/calls_timed + llm/timeouts` — a run whose timeouts cost tokens no longer hides them. |
+| `llm/calls_rejected` | Calls the provider refused as configured — an unsupported parameter value, a model the account cannot reach, a bad key. Non-zero at all means the run was aborted: the request is one no retry and no other unit would change (see below). |
 
 A silent `llm/parse_abandoned` used to be visible only as a `failed without
 usable output` warning scrolling past in the logs; it is now in the manifest.
+
+Five more describe the ontology chapter, which is the bulk of a facts prompt.
+They are recorded once per chapter actually built — the snapshot is shared
+across the unit fan-out and the chapter is memoised on it — so they describe the
+context, not the traffic that reads it.
+
+| Counter | Meaning |
+|---|---|
+| `chapter/text_chars_before` | Summed length of the chapter's text literals as the catalog authored them. Reported whether or not a cap is set: this is the number that says what an uncapped chapter costs. |
+| `chapter/text_chars_after` | The same sum after the [text caps](configuration.md#ontology-chapter-text-caps). Equal to `before` when the caps are unset or inert — the common case on a tersely authored catalog, and worth confirming rather than assuming. |
+| `chapter/literals_clipped` | Literals shortened to a per-role cap. Each keeps its statement and its leading text; only the tail is gone. |
+| `chapter/literals_dropped` | Literals removed outright to meet `ONTOLOGY_TEXT_TOTAL_BUDGET`. Non-zero means the per-role caps alone did not fit the chapter and the backstop engaged. |
+| `chapter/text_over_budget` | Chapters that still exceeded the total budget after every tightening stage. These are passed through oversized rather than having their labels removed, so a non-zero count is a budget to raise or a catalog to narrow, not a correctness problem. |
+
+!!! warning "A rejected request stops the run rather than emptying it"
+    A request the provider refuses — an unsupported parameter value, a model
+    the account cannot reach, a missing key — describes the deployment, not the
+    unit: every sibling unit and every retry would be refused identically.
+    Isolating it the way a bad render is isolated let the fan-out finish, write
+    a zero-triple manifest and a validation report next to no facts, and exit
+    successfully. It now propagates out of the fan-out, aborts the batch, and
+    exits `78` with a message naming the provider, the model and the rejected
+    parameter — and writes no dumps at all, so the absence of output is the
+    signal rather than a plausible-looking empty one. Throttling (`429`) and an
+    over-long chunk stay per-unit faults. Separately, a document whose *every*
+    unit failed for any other reason is now recorded as a failed file, so the
+    CLI exits non-zero there too.
 
 This is the offline option: no service, no account, and it survives the process.
 Two runs are comparable by diffing their manifests — which model, which
@@ -126,7 +164,10 @@ histogram, fix-severity histogram — the evidence a gate recalibration reads),
 `selection` records which
 sections the run was actually given — a `--target-sections` typo that matched
 nothing is otherwise indistinguishable from a document that genuinely had no
-such section — and `graph_metrics` summarizes the connectivity of the
+such section — and its `labeled_units` / `unlabeled_units` /
+`section_label_histogram` census says whether a section filter had anything to
+act on at all (a body the classifier could not label passes every denylist
+untouched; `summary_max_sentences` appears only when summarization ran) — and `graph_metrics` summarizes the connectivity of the
 serialized facts graph so fragmentation regressions surface per document. It is
 also what makes a sweep of runs auditable after the fact, rather than something
 to be re-run.
@@ -140,7 +181,7 @@ to be re-run.
     volume — mixing them silently compares a graph with its own subset.
 
     Read `critic.calls` before `critic.accepted`. At the default
-    `MAX_VISITS=1` the critic never runs and `summarize_loop` returns an
+    `FACTS_CRITIC_PASSES=0` the critic never runs and `summarize_loop` returns an
     all-zero record, so `accepted: 0` there means *nothing was judged*, not
     *everything was rejected*. Score buckets are decade ranges keyed
     `"70-79"`, so an empty `score_histogram` alongside `calls > 0` means the
@@ -150,6 +191,43 @@ to be re-run.
 batch run is no longer the blind path: before this, retrieval telemetry existed
 only over HTTP, which left `ONTOLOGY_PATCH_DUMP_ONTOLOGY_RANKS` with no reader
 for anyone running `ontocast process`.
+
+Two blocks make an arm self-describing, so a sweep of output directories can be
+compared without reconstructing each run's environment:
+
+- **`validation_config`** records the validation-facing knobs the run actually
+  used — `context_from_units`, `json_mode`, `shapes_prompt_contract`,
+  `shapes_triples` (size of the merged shapes partition; 0 means neither the
+  gate nor the prompt contract had shapes), `shacl_inference`,
+  `numeric_coverage_mandatory`, and `facts_user_instruction_chars` (length
+  only; the text can carry deployment secrets and the dump is shareable).
+- **`selection.labeled_units` / `unlabeled_units` /
+  `section_label_histogram`** record whether section filters could act at
+  all: `--exclude-sections` is a denylist over *labels*, so against mostly
+  unlabeled units it is a no-op that the arm's name — and previously its
+  manifest — would never reveal.
+- **`selection.non_content_mode` and the `*_units_skipped` counters**
+  (`undersized`, `bibliography`, `non_content`) say what the pre-fan-out
+  routing dropped, in rule order; a document that lost half its units to a
+  routing rule otherwise reads as one that extracted little.
+- **`completion`** summarizes the insert-only completion pass (see
+  [Validation](validation.md#completion-pass-insert-only-recovery)), read off
+  the same per-unit attempt log `critic` is: all-zero at the default
+  `FACTS_COMPLETION_PASSES=0`, which is what a zero pass budget buys.
+  `measurements_recovered` is missed measurements the numeric inventory
+  stopped listing after the inserts that stayed — read it against
+  `retrieval_metrics.facts_mandatory_residual` and the `NUMERIC_COVERAGE`
+  finding count to see how much of the coverage gap the pass closed;
+  `subjects_rolled_back` non-zero means some proposed subjects made the unit
+  worse and were undone, the same as a rolled-back critic fix.
+
+!!! note "Salvaged-unit counts reflect the post-patch verdict"
+    The reduce warning `Parallel facts map salvaged output from non-converged
+    loop(s)` counts units that exited their loop `FAILED`. Unit status is
+    re-evaluated after the critic's patch is applied (and after a rollback),
+    so a unit whose patch resolved every material defect exits `SUCCESS` and
+    is not counted. Earlier builds set the status from the critic's
+    *pre-patch* verdict, which overstated non-convergence.
 
 The HTTP path already returns the same `budget` in its response, so no manifest
 is written there.

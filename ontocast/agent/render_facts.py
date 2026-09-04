@@ -12,16 +12,12 @@ from collections.abc import Sequence
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
-from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
-from ontocast.agent.update_common import finalize_update_report, log_quarantine
+from ontocast.agent.common import call_llm_with_retry
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import (
     FactsRenderReport,
     GraphRepairRecord,
-    GraphUpdateRenderReport,
-    Suggestions,
-    format_findings_for_prompt,
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import (
@@ -29,9 +25,9 @@ from ontocast.onto.ontology_access import (
     build_llm_prefix_map,
     ontology_access_for_unit_facts,
 )
+from ontocast.onto.ontology_condense import CondenseReport
 from ontocast.onto.rdfgraph import (
     RDFGraph,
-    RejectedLiteralTriple,
     finalize_llm_graph,
 )
 from ontocast.onto.state import BudgetTracker
@@ -57,6 +53,7 @@ from ontocast.tool.facts_validation import (
     repair_property_aliases,
     resolve_code_literals,
 )
+from ontocast.tool.llm import LLMConfigurationError
 from ontocast.tool.validate import partition_object_property_literal_triples
 
 logger = logging.getLogger(__name__)
@@ -77,14 +74,17 @@ def _normalize_and_repair_graph(
     ``qudt:numericValue``), and links nodes to the catalog individual whose
     code they carry (``qudt:ucumCode "d"`` -> ``qudt:unit unit:DAY``).
     Ambiguous near-misses and unresolvable type literals are left for findings
-    collection.
+    collection. The alias rewrite checks membership against the scope's *full*
+    catalog, not only the unit's snapshot: a predicate the catalog declares
+    but retrieval did not bring into this unit's context is a real term and
+    is never rewritten toward a look-alike the snapshot happens to carry.
 
     Args:
         graph: Rendered facts graph, repaired in place.
         ontology_context_graph: Read-only schema the repairs are checked against.
-        tools: Supplies the alias-rewrite similarity floor, code predicates,
-            and the quantity fallback vocabulary (alias exemptions and the
-            degenerate-bound promotion roles).
+        tools: Supplies the alias tie-break floor, the full-catalog term set,
+            code predicates, and the quantity fallback vocabulary (alias
+            exemptions and the degenerate-bound promotion roles).
         budget_tracker: Charged ``"repair/deterministic"``. Both scans here walk
             the whole ontology graph per call, so this is timed to show how much
             of it is per-unit-invariant work.
@@ -102,6 +102,7 @@ def _normalize_and_repair_graph(
         exempt_terms=expand_vocabulary_terms(
             tools.quantity_fallback_vocabulary, graph, ontology_context_graph
         ),
+        full_catalog_terms=tools.catalog_terms(),
     )
     resolved, code_records = resolve_code_literals(
         graph, ontology_context_graph, tools.code_predicates
@@ -125,43 +126,62 @@ def _normalize_and_repair_graph(
     return graph, [*type_records, *alias_records, *code_records]
 
 
-def _findings_instruction(state: UnitFactsState) -> str:
-    """Render pending deterministic findings as a prompt block, if any."""
-    if not state.deterministic_findings:
-        return ""
-    return "\n\n" + format_findings_for_prompt(state.deterministic_findings)
-
-
 async def render_facts(
     state: UnitFactsState,
     tools: AtomicToolBox,
     supplemental_ontologies: Sequence[Ontology] | None = None,
 ) -> UnitFactsState:
-    """Structured hybrid facts renderer: fresh Turtle or structured graph updates.
+    """Extract a unit's facts from its text.
 
-    This function decides between generating bare Turtle for fresh facts
-    and structured TripleOp graph patches for updates based on whether facts exist.
+    There is one renderer because there is one render. The loop retries this
+    only when it *fails*; a unit that rendered successfully is improved by the
+    critic passes, which apply a compiled patch rather than asking for the graph
+    to be written again. The update-mode renderer this used to dispatch to had
+    become unreachable: it keyed on the unit graph being non-empty, and nothing
+    populates that except a successful render, after which the render loop is
+    already done.
+
+    The ontology renderer still has both modes, and for a reason that does not
+    apply here: it keys on the retrieved *snapshot*, a different field from the
+    one it writes, so its update mode is the normal path whenever a catalog
+    exists.
 
     Args:
-        state: The current unit facts state
-        tools: The toolbox containing necessary tools
+        state: The current unit facts state.
+        tools: The toolbox containing necessary tools.
+        supplemental_ontologies: Extra ontologies for prefix resolution.
 
     Returns:
-        UnitFactsState: Updated state with rendered facts
+        UnitFactsState: Updated state with rendered facts.
     """
+    logger.info(f"Render facts for {state.get_content_unit_progress_string()}")
+    return await render_facts_fresh(
+        state, tools, supplemental_ontologies=list(supplemental_ontologies or ())
+    )
 
-    is_fresh_facts_graph = len(state.content_unit.graph) == 0
 
-    progress_info = state.get_content_unit_progress_string()
-    logger.info(f"Render facts for {progress_info}")
+def _record_chapter_report(
+    report: CondenseReport, budget_tracker: BudgetTracker | None
+) -> None:
+    """Publish what condensing and capping did to the ontology chapter.
 
-    extras = list(supplemental_ontologies or ())
-    if is_fresh_facts_graph:
-        logger.info("Generating fresh facts as Turtle")
-        return await render_facts_fresh(state, tools, supplemental_ontologies=extras)
-    else:
-        logger.info("Generating facts update")
-        return await render_facts_update(state, tools, supplemental_ontologies=extras)
+    Fires once per chapter actually built, not once per call that reads it: the
+    snapshot is shared across the fan-out and the chapter is memoised on it, so
+    these describe the chapter, not the traffic.
+
+    Sizing a text cap is not something a default can do in advance -- whether a
+    catalog reaches one is a property of that catalog. So the counters carry the
+    before/after even when nothing was clipped, which is the case that tells a
+    deployment its caps are inert.
+    """
+    if budget_tracker is None or not report.text_chars_before:
+        return
+    budget_tracker.incr("chapter/text_chars_before", report.text_chars_before)
+    budget_tracker.incr("chapter/text_chars_after", report.text_chars_after)
+    budget_tracker.incr("chapter/literals_clipped", report.literals_clipped)
+    budget_tracker.incr("chapter/literals_dropped", report.literals_dropped)
+    if report.text_over_budget:
+        budget_tracker.incr("chapter/text_over_budget")
 
 
 def _prepare_prompt_data(
@@ -201,13 +221,26 @@ def _prepare_prompt_data(
         # Memoised on the snapshot, which the whole fan-out shares: serialising
         # the same ontology once per unit dominated facts prompt construction.
         ontology_chapter = ctx.prompt_chapter(
-            profile, max_triples=state.ontology_context_max_triples
+            profile,
+            max_triples=state.ontology_context_max_triples,
+            text_caps=state.ontology_text_caps,
+            on_report=lambda report: _record_chapter_report(
+                report, state.budget_tracker
+            ),
         )
     else:
         ontology_chapter = profile.format_ontology_chapter(
             ontology_graph,
-            suffix=build_ontology_index(ontology_graph),
+            suffix=(
+                ""
+                if profile.renders_term_sheet
+                else build_ontology_index(ontology_graph)
+            ),
             max_triples=state.ontology_context_max_triples,
+            text_caps=state.ontology_text_caps,
+            on_report=lambda report: _record_chapter_report(
+                report, state.budget_tracker
+            ),
         )
     state.budget_tracker.add_duration(
         "prompt/ontology_chapter", time.perf_counter() - chapter_start
@@ -237,6 +270,9 @@ def _prepare_prompt_data(
 
     return {
         "ontology_chapter": ontology_chapter,
+        # Rendered once per tenancy from the shapes partition; "" for
+        # shape-less deployments, keeping their prompt byte-identical.
+        "conformance_chapter": state.conformance_chapter,
         "user_instruction": user_instruction,
         "facts_instruction": facts_instruction_str,
         "text_chapter": text_chapter,
@@ -257,6 +293,7 @@ def _create_prompt_template() -> PromptTemplate:
             "facts_instruction",
             "user_instruction",
             "ontology_chapter",
+            "conformance_chapter",
             "text_chapter",
             "improvement_instruction",
             "output_instruction",
@@ -301,7 +338,10 @@ async def render_facts_fresh(
     logger.info("Rendering fresh facts")
     state.quarantined_literal_triples = []
     llm_tool = await tools.get_llm_tool(state.budget_tracker)
-    profile = get_graph_format_profile(state.llm_graph_format)
+    profile = get_graph_format_profile(
+        state.llm_graph_format,
+        ontology_chapter_format=state.ontology_chapter_format,
+    )
     parser = PydanticOutputParser(pydantic_object=FactsRenderReport)
 
     access = ontology_access_for_unit_facts(state)
@@ -388,140 +428,14 @@ async def render_facts_fresh(
         state.set_node_status(WorkflowNode.TEXT_TO_FACTS, Status.SUCCESS)
         return state
 
+    except LLMConfigurationError:
+        # The provider rejects the request itself, not this attempt at
+        # it: every other unit is about to be rejected identically.
+        # Failing one unit here turns a configuration fault into an
+        # empty run that reports success.
+        raise
     except Exception as e:
         return _handle_rendering_error(state, e, FailureStage.GENERATE_TTL_FOR_FACTS)
-    finally:
-        # Clear the context after parsing
-        RDFGraph.set_known_prefixes(None)
-
-
-async def render_facts_update(
-    state: UnitFactsState,
-    tools: AtomicToolBox,
-    supplemental_ontologies: Sequence[Ontology] | None = None,
-) -> UnitFactsState:
-    """Render facts updates using structured graph patch operations.
-
-    Args:
-        state: The current unit facts state containing the chunk to render.
-        tools: The toolbox instance providing utility functions.
-
-    Returns:
-        UnitFactsState: Updated state with rendered facts.
-    """
-    logger.info("Rendering updates for facts")
-    state.quarantined_literal_triples = []
-    llm_tool = await tools.get_llm_tool(state.budget_tracker)
-    profile = get_graph_format_profile(state.llm_graph_format)
-    parser = PydanticOutputParser(pydantic_object=GraphUpdateRenderReport)
-
-    access = ontology_access_for_unit_facts(state)
-    web_search_enabled = tools.web_grounding_enabled_for_node(
-        WorkflowNode.TEXT_TO_FACTS
-    )
-    prompt_data = _prepare_prompt_data(
-        state,
-        access,
-        profile,
-        citation_vocabulary=tools.citation_vocabulary,
-        quantity_fallback_vocabulary=tools.quantity_fallback_vocabulary,
-        search_guidelines=search_guidelines_for(
-            WorkflowNode.TEXT_TO_FACTS, web_search_enabled
-        ),
-    )
-    prompt_data_update = {
-        "preamble": preamble,
-        "improvement_instruction": render_suggestions_prompt(
-            state.suggestions, WorkflowNode.TEXT_TO_FACTS
-        )
-        + _findings_instruction(state),
-        "output_instruction": profile.render_update_output_instruction(),
-        "fact_chapter": profile.format_facts_chapter(state.content_unit.graph),
-    }
-    prompt_data.update(prompt_data_update)
-    prompt = _create_prompt_template()
-    known_prefixes = build_llm_prefix_map(
-        access.ontology_for_prefixes(),
-        supplemental_ontologies or (),
-    )
-
-    try:
-        # Set known prefixes in context before parsing
-        RDFGraph.set_known_prefixes(known_prefixes if known_prefixes else None)
-
-        render_report: GraphUpdateRenderReport = await call_llm_with_retry(
-            llm_tool=llm_tool,
-            prompt=prompt,
-            parser=parser,
-            prompt_kwargs={
-                "format_instructions": profile.format_instructions(
-                    GraphUpdateRenderReport,
-                    web_search_enabled=web_search_enabled,
-                ),
-                **prompt_data,
-            },
-            llm_graph_format=state.llm_graph_format,
-        )
-        persist_search_request(
-            state,
-            WorkflowNode.TEXT_TO_FACTS,
-            render_report.external_evidence_request,
-            web_search_enabled,
-        )
-        ontology_context_graph = access.effective_ontology_for_prompt().graph
-
-        def repair_inserts(
-            graph: RDFGraph,
-        ) -> tuple[RDFGraph, list[RejectedLiteralTriple]]:
-            graph, repair_records = _normalize_and_repair_graph(
-                graph,
-                ontology_context_graph,
-                tools,
-                budget_tracker=state.budget_tracker,
-            )
-            state.applied_repairs.extend(repair_records)
-            if not tools.object_property_literal_check:
-                return graph, []
-            return partition_object_property_literal_triples(
-                graph, ontology_context_graph
-            )
-
-        graph_update, rejected = finalize_update_report(
-            render_report, insert_hook=repair_inserts
-        )
-        state.quarantined_literal_triples = rejected
-        log_quarantine("Facts", rejected)
-        state.facts_updates.append(graph_update)
-        state.update_facts()
-        # Findings were consumed by this render; the loop re-collects fresh.
-        state.deterministic_findings = []
-        # Critic suggestions are consumed by exactly the render they were
-        # raised against. Leaving them set carried them into every later render
-        # of the unit -- including the finding-driven repair, which then ran
-        # under two contradictory contracts at once: the improvement template's
-        # "think independently, proactively fix additional problems" and the
-        # findings block's "apply every item, rewrite in place, never delete".
-        # Reachable only at MAX_VISITS >= 2, which is where the observed loss
-        # of graph connectivity and gain in validation errors came from.
-        state.suggestions = Suggestions()
-
-        num_operations, num_triples = graph_update.count_total_triples()
-        logger.info(
-            f"Facts update has {num_operations} operation(s) "
-            f"with {num_triples} total triple(s)."
-        )
-
-        # Track triples in budget tracker
-        state.budget_tracker.add_facts_update(num_operations, num_triples)
-
-        state.set_node_status(WorkflowNode.TEXT_TO_FACTS, Status.SUCCESS)
-        state.clear_failure()
-        return state
-
-    except Exception as e:
-        return _handle_rendering_error(
-            state, e, FailureStage.GENERATE_GRAPH_UPDATE_FOR_FACTS
-        )
     finally:
         # Clear the context after parsing
         RDFGraph.set_known_prefixes(None)

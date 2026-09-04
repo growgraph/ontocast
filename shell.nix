@@ -61,16 +61,25 @@ pkgs.mkShell {
       echo "Creating uv virtualenv $UV_PROJECT_ENVIRONMENT..."
       uv venv --python "$UV_PYTHON" "$UV_PROJECT_ENVIRONMENT"
     fi
+    # A venv built on some other interpreter needs no handling here: UV_PYTHON
+    # is exported above, so the sync below rebuilds the environment on the Nix
+    # python by itself.
 
     # "Activate" without sourcing: just put the venv first in PATH
     export VIRTUAL_ENV="$UV_PROJECT_ENVIRONMENT"
     export PATH="$VIRTUAL_ENV/bin:$PATH"
 
-    # Sync project deps
+    # Sync project deps. `dev` is an extra in pyproject.toml, not a dependency
+    # group, and --all-extras already covers it; `--group dev` aborts the sync
+    # outright, which left every shell with an unsynced venv.
     echo "Syncing dependencies with uv..."
-    uv sync --group dev --all-extras
+    if ! uv sync --all-extras; then
+      # A failed sync scrolls past between the other banners, and the shell
+      # still opens, so the next command fails somewhere unrelated.
+      echo "warning: uv sync failed -- the venv is incomplete." >&2
+    fi
 
-    echo "🐍 ontocast_api uv dev environment ready"
+    echo "🐍 ontocast uv dev environment ready"
     echo "Python: $(python --version)"
     echo "uv: $(uv --version)"
   '';

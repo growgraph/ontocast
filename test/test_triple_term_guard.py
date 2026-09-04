@@ -20,6 +20,8 @@ from ontocast.onto.rdfgraph import (
 )
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 
+pytestmark = pytest.mark.unit
+
 EX = "http://example.org/"
 S = URIRef(f"{EX}subject")
 P = URIRef(f"{EX}predicate")

@@ -81,7 +81,31 @@ class RetrievalMetric(StrEnum):
     FACTS_FINDINGS_RESIDUAL = "facts_findings_residual"
     FACTS_MANDATORY_RESIDUAL = "facts_mandatory_residual"
     FACTS_CRITIC_CALLS = "facts_critic_calls"
+    FACTS_CRITIC_FIXES_APPLIED = "facts_critic_fixes_applied"
+    FACTS_CRITIC_FIXES_RESIDUAL = "facts_critic_fixes_residual"
+    FACTS_CRITIC_FIXES_NOOP = "facts_critic_fixes_noop"
+    FACTS_CRITIC_PATCHES_ROLLED_BACK = "facts_critic_patches_rolled_back"
+    ONTOLOGY_CRITIC_FIXES_APPLIED = "ontology_critic_fixes_applied"
+    ONTOLOGY_CRITIC_FIXES_RESIDUAL = "ontology_critic_fixes_residual"
+    ONTOLOGY_CRITIC_FIXES_NOOP = "ontology_critic_fixes_noop"
+    ONTOLOGY_CRITIC_PATCHES_ROLLED_BACK = "ontology_critic_patches_rolled_back"
     FACTS_CRITIC_ACCEPTED = "facts_critic_accepted"
+    #: Units whose critic call failed (timeout, unparseable response) and
+    #: left the loop unreviewed, and units the loop did not send to the
+    #: critic at all (empty render, citation metadata).
+    FACTS_CRITIC_UNITS_UNREVIEWED = "facts_critic_units_unreviewed"
+    FACTS_CRITIC_UNITS_SKIPPED = "facts_critic_units_skipped"
+    #: Per-fix outcomes of the compiled critique: fixes undone for leaving
+    #: the unit worse, inserts refused for minting a placeholder or an
+    #: annotation-only node, and payloads naming a prefix nothing declared.
+    FACTS_CRITIC_FIXES_ROLLED_BACK = "facts_critic_fixes_rolled_back"
+    FACTS_CRITIC_FIXES_JUNK_REFUSED = "facts_critic_fixes_junk_refused"
+    FACTS_CRITIC_FIXES_UNRESOLVED_PREFIX = "facts_critic_fixes_unresolved_prefix"
+    #: The insert-only completion pass: calls billed, triples that stayed
+    #: in, and missed measurements the inventory no longer lists afterwards.
+    FACTS_COMPLETION_CALLS = "facts_completion_calls"
+    FACTS_COMPLETION_TRIPLES_INSERTED = "facts_completion_triples_inserted"
+    FACTS_COMPLETION_MEASUREMENTS_RECOVERED = "facts_completion_measurements_recovered"
 
     # Aggregation and the un-merge repair.
     FACTS_REJECTED_MERGES = "facts_rejected_merges"
@@ -124,6 +148,30 @@ class LLMGraphFormat(StrEnum):
 
     TURTLE = "turtle"
     JSONLD = "jsonld"
+
+
+class OntologyChapterFormat(StrEnum):
+    """Syntax of the ``# ONTOLOGY`` chapter in the facts prompts.
+
+    - ``inherit`` (default): the chapter follows :class:`LLMGraphFormat`, so
+      the model reads the ontology in the syntax it is asked to write.
+    - ``turtle``: the chapter is Turtle whatever the wire format is. In a
+      facts prompt the ontology is read-only context -- nothing the model
+      emits has to match its syntax -- and Turtle spends fewer characters per
+      triple than pretty-printed JSON-LD, so this trades the read/write
+      symmetry for a shorter prompt. The graph payloads the model emits stay
+      in the wire format.
+    - ``term_sheet``: the chapter is a line-per-term listing rather than a
+      serialized graph -- name, surface forms, type, hierarchy, domain/range
+      and usage contract, without the per-statement RDF scaffolding or the
+      prose written for a human reader. Legal on the facts path only: the
+      ontology loop emits a patch against the statements it reads, so its
+      chapter has to remain a graph.
+    """
+
+    INHERIT = "inherit"
+    TURTLE = "turtle"
+    TERM_SHEET = "term_sheet"
 
 
 class OntologyContextMode(StrEnum):

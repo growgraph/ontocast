@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import pytest
 from rdflib import RDF, RDFS, XSD, Literal, URIRef
 
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.agg.match_models import EntityMatch
 from ontocast.tool.agg.triple_evaluator import TripleSetEvaluator
+
+pytestmark = pytest.mark.unit
 
 
 def test_evaluate_perfect_alignment() -> None:

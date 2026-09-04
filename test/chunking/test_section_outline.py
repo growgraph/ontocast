@@ -6,6 +6,8 @@ smeared across the rest of the document -- and because the label was stamped on
 segments at split time, no later tier could correct it.
 """
 
+import pytest
+
 from ontocast.config.section_labels import load_section_label_schema
 from ontocast.onto.enum import SectionLabelSource
 from ontocast.tool.chunk.outline import (
@@ -16,6 +18,8 @@ from ontocast.tool.chunk.outline import (
     text_headings,
 )
 from ontocast.tool.chunk.sections import detect_section_spans
+
+pytestmark = pytest.mark.unit
 
 SCHEMA = load_section_label_schema("academic")
 
