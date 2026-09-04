@@ -8,6 +8,7 @@ from ontocast.onto.enum import WorkflowNode
 from ontocast.onto.retrieval_capabilities import EmptyOntologyContextError
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.node_factories import _gather_units
+from ontocast.tool.llm import LLMConfigurationError
 
 pytestmark = pytest.mark.unit
 
@@ -49,4 +50,29 @@ async def test_an_ontology_context_fault_is_not_isolated() -> None:
             WorkflowNode.RENDER_FACTS,
             state,
             [_ok(1), _boom(EmptyOntologyContextError("catalog is empty")), _ok(3)],
+        )
+
+
+@pytest.mark.anyio
+async def test_a_rejected_request_is_not_isolated() -> None:
+    """The provider refuses the request as configured, not this unit's prompt.
+
+    Isolating it is how a run whose every call was rejected still finished,
+    uploaded an empty graph, dumped a manifest and exited 0.
+
+    Note that making the error a ``BaseException`` would not achieve this:
+    ``asyncio.gather(..., return_exceptions=True)`` captures those as values
+    too, so the re-raise has to be explicit.
+    """
+    state = AgentState()
+
+    with pytest.raises(LLMConfigurationError):
+        await _gather_units(
+            WorkflowNode.RENDER_FACTS,
+            state,
+            [
+                _ok(1),
+                _boom(LLMConfigurationError("openai/gpt-x rejected the request")),
+                _ok(3),
+            ],
         )

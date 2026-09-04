@@ -14,7 +14,7 @@ from ontocast._version import __version__
 from ontocast.agent.serialize import serialize as serialize_agent_state
 from ontocast.config import Config, ServerConfig
 from ontocast.onto.constants import DEFAULT_IRI
-from ontocast.onto.enum import OntologyContextMode
+from ontocast.onto.enum import OntologyContextMode, Status
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.run_manifest import (
@@ -30,6 +30,7 @@ from ontocast.onto.state import AgentState
 from ontocast.stategraph.facts_gate import run_facts_gate
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
 from ontocast.tool.chunk.prepare import SectionSelectionEmptyError
+from ontocast.tool.llm import LLMConfigurationError
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.toolbox import ToolBox
 from ontocast.util.graph_metrics import facts_graph_shape_metrics
@@ -618,6 +619,12 @@ def _merge_workflow_state_into_agent_state(
         return workflow_state
     if not isinstance(workflow_state, dict):
         return state
+    # The map nodes set FAILED when *every* unit failed (_map_stage_status),
+    # and merge_facts preserves it. Off this copy list the batch path could not
+    # see it, which is how a document that produced nothing still exited 0.
+    status = workflow_state.get("status")
+    if status is not None:
+        state.status = status
     facts = workflow_state.get("aggregated_facts")
     if facts is not None:
         state.aggregated_facts = facts
@@ -800,6 +807,18 @@ async def process_files_input(
                         state = _merge_workflow_state_into_agent_state(
                             state, workflow_state
                         )
+                if state.status == Status.FAILED:
+                    # Every unit failed. The dumps below still run -- an empty
+                    # facts graph next to its manifest is the diagnostic -- but
+                    # the file is on the record as failed, which cli/server.py
+                    # turns into a non-zero exit. Without this a run that
+                    # extracted nothing was indistinguishable from a clean one.
+                    logger.error(
+                        "No unit of %s produced output; recording it as failed",
+                        file_path,
+                    )
+                    if file_path not in failed_files:
+                        failed_files.append(file_path)
                 line_number: int | None = None
                 if file_path.suffix.lower() == ".jsonl" and len(states) > 1:
                     # Recover line from virtual raw_input key "...:N.json"
@@ -844,6 +863,17 @@ async def process_files_input(
                     ),
                     shapes_prompt_selection=selection_pending,
                 )
+        except LLMConfigurationError:
+            # Batch semantics stop here: the provider refuses the request as
+            # configured, so every remaining file would burn its conversion and
+            # ontology sync to reach the same rejection. Files already finished
+            # keep their dumps; this one gets none, and that absence is the
+            # signal.
+            logger.error(
+                "Aborting the batch at %s: the provider rejects every request",
+                file_path,
+            )
+            raise
         except Exception:
             logger.exception("Error processing %s", file_path)
             if file_path not in failed_files:

@@ -48,6 +48,7 @@ from ontocast.stategraph.helpers import (
     reconcile_fresh_ontologies,
 )
 from ontocast.stategraph.unit_context import UnitLoopContext
+from ontocast.tool.llm import LLMConfigurationError
 from ontocast.tool.ontology_validation import (
     apply_minted_duplicate_rewrites,
     detect_minted_duplicates,
@@ -59,6 +60,12 @@ from ontocast.util.loop_lag import loop_lag
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+#: Failures that describe the deployment rather than the content unit: an
+#: ontology context the run cannot resolve, and a request the provider refuses
+#: outright. Both are identical for every sibling unit, so _gather_units
+#: re-raises them instead of counting N of them as unit errors.
+_DEPLOYMENT_FAULTS = (OntologyContextConfigError, LLMConfigurationError)
 
 
 @asynccontextmanager
@@ -96,12 +103,15 @@ async def _gather_units(
     the node while its siblings kept running as orphans -- their provider spend
     billed and then discarded.
 
-    One class of failure is deliberately not isolated:
+    Two classes of failure are deliberately not isolated -- ``_DEPLOYMENT_FAULTS``.
     :class:`~ontocast.onto.retrieval_capabilities.OntologyContextConfigError`
-    describes the deployment, not the unit, so it is identical for every sibling
-    and isolating it turns a configuration fault into N unit failures and a
-    successful, empty run. It is re-raised once the gather has drained, which
-    orphans nothing -- every sibling has already been awaited.
+    and :class:`~ontocast.tool.llm.LLMConfigurationError` both describe the
+    deployment, not the unit, so they are identical for every sibling and
+    isolating them turns a configuration fault into N unit failures and a
+    successful, empty run. They are re-raised once the gather has drained, which
+    orphans nothing -- every sibling has already been awaited. Note that
+    subclassing ``BaseException`` would not achieve this: ``return_exceptions``
+    captures those as values too.
 
     Args:
         node: Fan-out node the tasks belong to; namespaces the metric keys.
@@ -118,7 +128,7 @@ async def _gather_units(
     state.budget_tracker.add_duration(f"{node}/loop_lag_max", lag.peak)
 
     for item in raw:
-        if isinstance(item, OntologyContextConfigError):
+        if isinstance(item, _DEPLOYMENT_FAULTS):
             raise item
 
     results: list[T] = []
@@ -668,6 +678,7 @@ def make_render_facts_node(tools: ToolBox):
                     llm_graph_format=state.llm_graph_format,
                     ontology_context_max_triples=tools.config.server.ontology_context_max_triples,
                     ontology_chapter_format=tools.config.server.ontology_chapter_format,
+                    ontology_text_caps=tools.config.server.ontology_text_caps,
                 )
                 loop_start = time.perf_counter()
                 result = await facts_loop(

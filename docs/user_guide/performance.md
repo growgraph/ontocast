@@ -117,7 +117,7 @@ at zero, which is not the same as a run that used no tokens.
 |---|---|
 | `input_tokens` / `output_tokens` | **Billed**: live provider calls only. |
 | `cached_input_tokens` / `cached_output_tokens` | Replayed from the OntoCast disk cache. Deliberately *not* added to the billed totals — a replay pays nothing — so these are what the workload would cost cold. |
-| `reasoning_tokens` | Thinking tokens, counted **inside** the output totals. Dominates output cost for reasoning models; bounded by `LLM_THINK` (Ollama), `LLM_REASONING_EFFORT` (OpenAI) or `LLM_THINKING_BUDGET` (Google). When `reasoning_share_of_output` is large that knob is the first cost lever, not the prompt. |
+| `reasoning_tokens` | Thinking tokens, counted **inside** the output totals. Dominates output cost for reasoning models; bounded by `LLM_THINK` (Ollama), `LLM_REASONING_EFFORT` (OpenAI and Gemini 3+) or `LLM_THINKING_BUDGET` (Gemini 2.5). When `reasoning_share_of_output` is large that knob is the first cost lever, not the prompt. |
 | `cache_read_input_tokens` | Served from the **provider's** prompt cache, counted inside the input totals and billed at a reduced rate. Unrelated to OntoCast's disk cache. |
 | `cache_creation_input_tokens` | Written to the provider's prompt cache. |
 
@@ -286,6 +286,78 @@ alone — the part of a facts prompt that carries most of its characters — whi
 the output wire stays JSON-LD, so the parse-reliability argument for the
 default is untouched. It is the first thing to try when facts prompts are
 context-bound.
+
+### The ontology chapter as a term sheet
+
+`ONTOLOGY_CHAPTER_FORMAT=term_sheet` goes further than a denser serialization
+by not serializing the graph at all. The chapter becomes one line per term —
+its name, the surface forms a document might spell it with, what it is, where
+it sits in the hierarchy, what it connects, and the scope note saying when it
+applies:
+
+```
+## Classes
+  ex:PowderSample  "Powder sample"  < ex:Sample
+## Properties  (domain -> range)
+  ex:hasThickness  "has thickness"  ex:Sample -> ex:QuantityValue
+## Individuals  (units, vocabulary values)
+  ex:Approximate  "approximately"  : ex:EpistemicQualifier  ~ ~; ∼; ≈; ca.; about
+```
+
+The `~` list is why a term sheet can be cheaper without being poorer: those
+surface forms are what a document match actually has to work with, they cost a
+couple of dozen characters each, and a serialized chapter buries them under a
+`skos:altLabel` predicate IRI per entry.
+
+What that drops is the per-statement RDF scaffolding — a node wrapper or
+subject block per term, a repeated predicate IRI per statement — and
+`rdfs:comment`, which is written for someone browsing the ontology rather than
+for an extractor. What it keeps is everything that lets a model pick a term.
+
+This is admissible only because a facts prompt reads its ontology and writes an
+unrelated graph. The ontology loop writes a *patch against the statements in
+its chapter*, which a listing cannot express, so `term_sheet` requires
+`RENDER_MODE=facts` and is rejected outright otherwise rather than falling back
+to a graph.
+
+### Bounding the chapter's text
+
+Nothing else in the pipeline caps a single literal, so without a cap the
+chapter costs what a catalog's authors chose to write rather than what it
+declares — one rambling `rdfs:comment` is paid for on every call of every unit,
+and a catalog with kilobyte-long definitions has no ceiling at all. Four
+settings put one in place:
+
+| setting | governs |
+|---|---|
+| `ONTOLOGY_TEXT_MAX_CHARS_NAMING` | `rdfs:label`, `skos:prefLabel`, `skos:altLabel` |
+| `ONTOLOGY_TEXT_MAX_CHARS_CONTRACT` | `skos:scopeNote`, `skos:definition` |
+| `ONTOLOGY_TEXT_MAX_CHARS_PROSE` | `rdfs:comment` and the remaining SKOS notes |
+| `ONTOLOGY_TEXT_TOTAL_BUDGET` | the summed length of all of them |
+
+They apply to every chapter the facts loop builds, term sheet and serialized
+graph alike, and are unset by default: on a tersely authored catalog they are a
+no-op, which is the intended shape. These are bounds, not reductions. Clipping
+happens on a word boundary and leaves a visible marker, so the model can tell a
+clipped definition from a complete one — worth preferring to dropping the
+statement, because a scope note's first sentence usually carries the contract
+and the rest elaborates.
+
+Over the total budget, prose is tightened and then dropped, then contracts, and
+only then are names clipped to a floor. Names are never dropped: a term the
+model cannot name is not context, it is an invitation to invent one. A chapter
+that still does not fit is passed through with a warning, the same way the
+triple budget refuses to cut into load-bearing structure.
+
+Read the effect back from the run manifest's `budget.counters`:
+`chapter/text_chars_before` and `chapter/text_chars_after`,
+`chapter/literals_clipped`, `chapter/literals_dropped`, and
+`chapter/text_over_budget` when a chapter could not be made to fit. They are
+recorded once per chapter built rather than per call that reads it, and the
+before/after is reported even when nothing was clipped — which is the case that
+tells you your caps are inert on this catalog. Sizing a cap is not something a
+default can do for you: whether a catalog reaches one is a property of that
+catalog.
 
 See [Configuration](configuration.md) for the full list and
 [LLM Caching](llm_caching.md) for cache behavior.

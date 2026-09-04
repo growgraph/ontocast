@@ -41,6 +41,7 @@ from ontocast.prompt.web_grounding import persist_search_request, search_guideli
 from ontocast.tool import LLMTool
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import accept_reason, material_defects
+from ontocast.tool.llm import LLMConfigurationError
 from ontocast.tool.ontology_validation import count_fixes_targeting_snapshot
 
 logger = logging.getLogger(__name__)
@@ -252,6 +253,10 @@ async def criticise_ontology(
             )
         return state
 
+    except LLMConfigurationError:
+        # A rejected request is the deployment, not this critique: every
+        # other unit is about to be rejected identically.
+        raise
     except Exception as e:
         logger.error(f"Failed to critique ontology: {str(e)}")
         state.set_failure(FailureStage.ONTOLOGY_CRITIQUE, str(e))

@@ -36,16 +36,18 @@ class RunManifestLLM(BaseModel):
     reasoning_effort: str | None = Field(
         default=None,
         description=(
-            "OpenAI reasoning effort the run asked for; None = provider "
-            "default. Two dumps that differ here differ in reasoning_tokens "
-            "before they differ in anything else."
+            "Reasoning effort the run asked for; None = provider default. "
+            "OpenAI reads it as reasoning_effort, Gemini 3+ as "
+            "thinking_level. Two dumps that differ here differ in "
+            "reasoning_tokens before they differ in anything else."
         ),
     )
     thinking_budget: int | None = Field(
         default=None,
         description=(
-            "Google thinking-token budget the run asked for; None = provider "
-            "default. The other provider's spelling of reasoning_effort."
+            "Gemini 2.5 thinking-token budget the run asked for; None = "
+            "provider default. The integer spelling of reasoning_effort, "
+            "superseded by thinking_level from Gemini 3 on."
         ),
     )
     requests_per_second: float | None = Field(

@@ -33,6 +33,7 @@ from ontocast.tool.facts_validation import (
     accept_reason,
     material_defects,
 )
+from ontocast.tool.llm import LLMConfigurationError
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,9 @@ async def criticise_facts(
     # judged term choices it could not read. Also memoised on the shared
     # snapshot, so this stops re-serialising the ontology on every visit.
     ontology_chapter = ctx.prompt_chapter(
-        profile, max_triples=state.ontology_context_max_triples
+        profile,
+        max_triples=state.ontology_context_max_triples,
+        text_caps=state.ontology_text_caps,
     )
     # Every statement gets a citable id, and the index is kept on the state so
     # the fixes that come back can be resolved by lookup. The critic used to be
@@ -244,6 +247,10 @@ async def criticise_facts(
 
         return state
 
+    except LLMConfigurationError:
+        # A rejected request is not a critic that failed to answer: the
+        # next unit's critic will be rejected the same way.
+        raise
     except Exception as e:
         # A critic that did not answer -- timeout, transport error, a response
         # that never parsed -- is not a critic that accepted. The unit leaves

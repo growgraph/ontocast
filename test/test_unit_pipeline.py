@@ -12,6 +12,7 @@ from ontocast.onto.enum import (
     Status,
 )
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_condense import TextCaps
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
@@ -97,6 +98,7 @@ async def test_run_unit_pipeline_feeds_ontology_loop_output_to_facts(
                     ontology_max_triples=50_000,
                     ontology_context_max_triples=4000,
                     ontology_chapter_format=OntologyChapterFormat.INHERIT,
+                    ontology_text_caps=TextCaps(),
                 )
             ),
             shapes_prompt_contract=lambda: ("", (), False),
@@ -158,6 +160,7 @@ async def test_run_unit_pipeline_uses_agent_state_max_visits(monkeypatch) -> Non
                     ontology_max_triples=50_000,
                     ontology_context_max_triples=4000,
                     ontology_chapter_format=OntologyChapterFormat.INHERIT,
+                    ontology_text_caps=TextCaps(),
                 )
             ),
             shapes_prompt_contract=lambda: ("", (), False),

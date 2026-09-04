@@ -123,10 +123,15 @@ def _default_model_for(provider: LLMProvider):
     return GeminiModel.GEMINI_2_0_FLASH
 
 
-@pytest.mark.parametrize("effort", ["minimal", "low", "medium", "high"])
+@pytest.mark.parametrize(
+    "effort", ["none", "minimal", "low", "medium", "high", "xhigh"]
+)
 def test_llm_config_accepts_each_reasoning_effort(
-    effort: Literal["minimal", "low", "medium", "high"],
+    effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"],
 ) -> None:
+    # The union across providers and across model generations of one provider:
+    # the floor is spelled `minimal` on some models and `none` on others. Which
+    # of them a given model takes is the provider's business, not this type's.
     config = LLMConfig(provider=LLMProvider.OPENAI, reasoning_effort=effort)
     assert config.reasoning_effort == effort
 
@@ -155,6 +160,34 @@ def test_reasoning_knobs_are_read_from_the_environment(monkeypatch) -> None:
     config = LLMConfig()
     assert config.reasoning_effort == "low"
     assert config.thinking_budget == 1024
+
+
+def test_google_rejects_both_reasoning_spellings_at_once() -> None:
+    """The Gemini API treats the two as mutually exclusive.
+
+    The client resolves the clash by dropping the budget with a warning, which
+    would leave the run billing one setting while the manifest recorded the
+    other -- so it is rejected here instead.
+    """
+    with pytest.raises(ValidationError):
+        LLMConfig(
+            provider=LLMProvider.GOOGLE,
+            model_name=GeminiModel.GEMINI_3_5_FLASH,
+            reasoning_effort="minimal",
+            thinking_budget=0,
+        )
+
+
+def test_both_reasoning_spellings_are_allowed_off_google() -> None:
+    # Only Google reads both; elsewhere one of them is already an ignored
+    # no-op and warned about at setup, not a configuration error.
+    config = LLMConfig(
+        provider=LLMProvider.OPENAI,
+        model_name=OpenAIModel.GPT4_O_MINI,
+        reasoning_effort="minimal",
+        thinking_budget=0,
+    )
+    assert config.reasoning_effort == "minimal"
 
 
 def test_workers_above_inflight_warn_at_construction(caplog) -> None:

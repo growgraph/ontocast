@@ -27,6 +27,7 @@ from ontocast.onto.enum import (
     VectorDistance,
     VectorStoreBackend,
 )
+from ontocast.onto.ontology_condense import TextCaps
 from ontocast.onto.tenancy import (
     DEFAULT_PROJECT,
     DEFAULT_TENANT,
@@ -266,7 +267,7 @@ class LLMConfig(BaseSettings):
         default=LLMProvider.OPENAI, description="LLM provider"
     )
     model_name: LLMModelName = Field(
-        default=OpenAIModel.GPT4_O_MINI, description="LLM model name"
+        default=OpenAIModel.GPT5_4, description="LLM model name"
     )
     temperature: float = Field(default=0.0, description="LLM temperature setting")
     base_url: str | None = Field(
@@ -379,31 +380,41 @@ class LLMConfig(BaseSettings):
             "only; other providers ignore it."
         ),
     )
-    reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = Field(
+    reasoning_effort: (
+        Literal["none", "minimal", "low", "medium", "high", "xhigh"] | None
+    ) = Field(
         default=None,
         description=(
-            "How much reasoning an OpenAI reasoning model spends before it "
-            "answers (minimal | low | medium | high). Reasoning tokens are "
-            "billed inside the output total, so this bounds the part of the "
-            "bill that reasoning_share_of_output in the budget attributes to "
-            "thinking; lower effort trades that for latency and cost. None "
-            "keeps the provider default. Joins the LLM cache key, so changing "
-            "it re-issues every prompt. OpenAI only; other providers warn and "
-            "ignore it. Set via LLM_REASONING_EFFORT."
+            "How much reasoning the model spends before it answers "
+            "(none | minimal | low | medium | high | xhigh). Reasoning tokens "
+            "are billed inside the output total, so this bounds the part of "
+            "the bill that reasoning_share_of_output in the budget attributes "
+            "to thinking; lower effort trades that for latency and cost. Read "
+            "by OpenAI reasoning models as reasoning_effort and by Gemini 3+ "
+            "as thinking_level. The vocabulary is the union across providers "
+            "and across model generations of one provider -- the floor is "
+            "spelled minimal by some models and none by others, and xhigh is "
+            "newer than both -- so which levels a given model accepts stays "
+            "the provider's business, reported as a rejected request rather "
+            "than guessed at here. None keeps the provider default. Joins the "
+            "LLM cache key, so changing it re-issues every prompt. Ollama and "
+            "Anthropic warn and ignore it. Set via LLM_REASONING_EFFORT."
         ),
     )
     thinking_budget: int | None = Field(
         default=None,
         ge=-1,
         description=(
-            "Thinking-token budget for Google Gemini thinking models: 0 "
+            "Thinking-token budget for Gemini 2.5 thinking models: 0 "
             "disables thinking on models that allow it, -1 lets the model "
-            "choose, a positive value caps it. The same lever as "
-            "LLM_REASONING_EFFORT spelled for the other provider, and read "
-            "the same way (reasoning_share_of_output). None keeps the "
-            "provider default. Joins the LLM cache key, so changing it "
-            "re-issues every prompt. Google only; other providers warn and "
-            "ignore it. Set via LLM_THINKING_BUDGET."
+            "choose, a positive value caps it. The integer spelling of "
+            "LLM_REASONING_EFFORT, read the same way "
+            "(reasoning_share_of_output). Superseded from Gemini 3 on, where "
+            "the discrete thinking_level replaces it and the two are mutually "
+            "exclusive -- set LLM_REASONING_EFFORT for those models instead. "
+            "None keeps the provider default. Joins the LLM cache key, so "
+            "changing it re-issues every prompt. Non-Google providers warn "
+            "and ignore it. Set via LLM_THINKING_BUDGET."
         ),
     )
 
@@ -449,6 +460,30 @@ class LLMConfig(BaseSettings):
             expected.__name__,
         )
         return v
+
+    @model_validator(mode="after")
+    def validate_reasoning_knobs(self) -> "LLMConfig":
+        """Reject the two Gemini reasoning spellings being set together.
+
+        The Gemini API treats ``thinking_level`` and ``thinking_budget`` as
+        mutually exclusive and the client resolves the clash by dropping the
+        budget with a warning. Absorbing that silently is worse here than
+        failing: the run would bill one reasoning setting while the manifest
+        recorded the other, and every arm read off that manifest afterwards
+        would be attributing cost to a budget that never applied.
+        """
+        if (
+            self.provider == LLMProvider.GOOGLE
+            and self.reasoning_effort is not None
+            and self.thinking_budget is not None
+        ):
+            raise ValueError(
+                "LLM_REASONING_EFFORT and LLM_THINKING_BUDGET are mutually "
+                "exclusive on Google: Gemini 3+ reads the first as "
+                "thinking_level, Gemini 2.5 reads the second. Set whichever "
+                "matches the model generation, not both."
+            )
+        return self
 
 
 class ChunkConfig(BaseSettings):
@@ -830,11 +865,66 @@ class ServerConfig(BaseSettings):
             "Syntax of the ontology chapter in the facts render and critic "
             "prompts: 'inherit' (default) follows llm_graph_format; 'turtle' "
             "serializes the chapter as Turtle regardless, which spends fewer "
-            "characters per triple than pretty-printed JSON-LD. Context only: "
-            "the graph payloads the model emits stay in llm_graph_format, and "
-            "the ontology loop is unaffected because its output is a patch "
-            "against the chapter it reads. Changing it invalidates the LLM "
-            "cache for facts calls."
+            "characters per triple than pretty-printed JSON-LD; 'term_sheet' "
+            "replaces the serialized graph with a line-per-term listing -- "
+            "name, surface forms, type, hierarchy, domain/range and usage "
+            "contract -- dropping the per-statement RDF scaffolding and the "
+            "prose written for human readers, and is the cheapest of the "
+            "three by a wide margin. Context only: the graph payloads the "
+            "model emits stay in llm_graph_format. 'term_sheet' requires a "
+            "facts-only render mode, because the ontology loop emits a patch "
+            "against the statements in its chapter and so needs a graph. "
+            "Changing it invalidates the LLM cache for facts calls."
+        ),
+    )
+    ontology_text_max_chars_naming: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Character cap on rdfs:label / skos:prefLabel / skos:altLabel in "
+            "the ontology chapter. Nothing else bounds a single literal, so "
+            "without a cap the chapter costs what a catalog's authors chose to "
+            "write rather than what it declares. A tersely authored catalog is "
+            "unaffected -- these are bounds, not reductions. Clipping is on a "
+            "word boundary and leaves a visible marker, so the model can tell "
+            "a clipped name from a complete one. Joins the LLM cache key. Set "
+            "via ONTOLOGY_TEXT_MAX_CHARS_NAMING. None disables the cap."
+        ),
+    )
+    ontology_text_max_chars_contract: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Character cap on skos:scopeNote / skos:definition, the statements "
+            "saying when a term applies. Worth clipping rather than dropping: "
+            "a scope note's first sentence usually carries the contract and "
+            "the rest elaborates. Joins the LLM cache key. Set via "
+            "ONTOLOGY_TEXT_MAX_CHARS_CONTRACT. None disables the cap."
+        ),
+    )
+    ontology_text_max_chars_prose: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Character cap on rdfs:comment and the remaining SKOS notes -- "
+            "description aimed at someone browsing the ontology rather than at "
+            "an extractor. Joins the LLM cache key. Set via "
+            "ONTOLOGY_TEXT_MAX_CHARS_PROSE. None disables the cap."
+        ),
+    )
+    ontology_text_total_budget: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Ceiling on the summed length of all text literals in one ontology "
+            "chapter -- the backstop for a catalog that stays inside the "
+            "per-role caps by holding very many short terms. Over budget, "
+            "prose is tightened then dropped, then contracts, and only then "
+            "are names clipped to a floor; names are never dropped, so a "
+            "chapter that still does not fit is passed through with a warning "
+            "rather than made unusable. Read back via the retrieval metrics "
+            "(text_chars_before/after, literals_clipped, literals_dropped). "
+            "Joins the LLM cache key. Set via ONTOLOGY_TEXT_TOTAL_BUDGET."
         ),
     )
     ontology_context_mode: OntologyContextMode = Field(
@@ -876,6 +966,23 @@ class ServerConfig(BaseSettings):
         "than a fault. It never applies to an ONTOLOGY unit, whose empty "
         "context is the signal to create a new ontology.",
     )
+
+    @property
+    def ontology_text_caps(self) -> TextCaps:
+        """The four text-cap knobs as one value, for the chapter builders.
+
+        Returns a :class:`TextCaps` whose ``active`` is False when nothing is
+        set, which the chapter path treats as "leave every literal as authored"
+        -- byte-for-byte, so a deployment that sets none of these cannot see its
+        prompts or its cache keys move.
+        """
+        return TextCaps(
+            naming=self.ontology_text_max_chars_naming,
+            contract=self.ontology_text_max_chars_contract,
+            prose=self.ontology_text_max_chars_prose,
+            total_budget=self.ontology_text_total_budget,
+        )
+
     ontology_context_max_triples: int | None = Field(
         default=4000,
         ge=1,
@@ -929,6 +1036,34 @@ class ServerConfig(BaseSettings):
     model_config = SettingsConfigDict(
         case_sensitive=False,
     )
+
+    @model_validator(mode="after")
+    def validate_ontology_chapter_format(self) -> "ServerConfig":
+        """Reject a term-sheet chapter on a render mode that builds ontologies.
+
+        The facts renderer reads its chapter and writes an unrelated graph, so
+        the chapter is free to be any representation that names the terms. The
+        ontology renderer and its critic write a *patch against the statements
+        in the chapter*, which a line-per-term listing cannot express -- there
+        is nothing to insert into or delete from.
+
+        Failing here rather than falling back to a graph is deliberate: the
+        fallback would be silent, and the run would spend an ontology pass
+        producing patches nobody could apply while the manifest recorded a
+        setting that never took effect.
+        """
+        if (
+            self.ontology_chapter_format == OntologyChapterFormat.TERM_SHEET
+            and self.render_mode != RenderMode.FACTS
+        ):
+            raise ValueError(
+                "ONTOLOGY_CHAPTER_FORMAT=term_sheet requires RENDER_MODE=facts: "
+                f"got render_mode={self.render_mode.value}. The ontology loop "
+                "emits a patch against the statements in its chapter, so that "
+                "chapter has to be a graph. Use 'turtle' for a cheaper chapter "
+                "that stays one."
+            )
+        return self
 
 
 class FusekiConfig(BaseSettings):

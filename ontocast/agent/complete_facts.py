@@ -38,6 +38,7 @@ from ontocast.tool.facts_validation import (
     collect_catalog_terms,
     expand_vocabulary_terms,
 )
+from ontocast.tool.llm import LLMConfigurationError
 from ontocast.util.numeric_inventory import NumericInventory
 
 logger = logging.getLogger(__name__)
@@ -147,6 +148,12 @@ async def complete_facts(
             prompt_kwargs=prompt_data,
             llm_graph_format=state.llm_graph_format,
         )
+    except LLMConfigurationError:
+        # Best-effort is the right call for a failed completion pass, but
+        # not for a request the provider will never accept: swallowing it
+        # here hides the fault behind a pass that is allowed to add
+        # nothing.
+        raise
     except Exception as exc:
         # A failed completion call costs nothing beyond itself: the render
         # and critic loop already stand, accepted or not, and this pass only

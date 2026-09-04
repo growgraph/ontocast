@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from langgraph.graph.state import CompiledStateGraph
 from rdflib import RDF, URIRef
 from starlette.testclient import TestClient
 
@@ -1045,3 +1046,120 @@ def test_process_unit_route_runs_the_validation_gate(
         str(XSD.decimal) in payload["data"]["facts"]
         or "xsd:decimal" in (payload["data"]["facts"])
     )
+
+
+def _batch_toolbox() -> ToolBox:
+    """A ToolBox light enough for a batch-loop test: no external services."""
+    from ontocast.config import LLMConfig, LLMProvider, PathConfig, ToolConfig
+    from ontocast.config.settings import OllamaModel
+
+    return ToolBox(
+        Config(
+            tool_config=ToolConfig(
+                path_config=PathConfig(),
+                llm_config=LLMConfig(
+                    provider=LLMProvider.OLLAMA,
+                    model_name=OllamaModel.LLAMA3_1,
+                    base_url="http://localhost:11434",
+                ),
+            ),
+        )
+    )
+
+
+class _RejectingWorkflow:
+    """A workflow whose every call is refused by the provider."""
+
+    def astream(self, *args, **kwds):
+        from ontocast.tool.llm import LLMConfigurationError
+
+        async def _stream():
+            raise LLMConfigurationError("openai/gpt-x rejected the request")
+            yield  # pragma: no cover - makes this an async generator
+
+        return _stream()
+
+
+def test_a_rejected_request_aborts_the_batch_and_writes_nothing(tmp_path) -> None:
+    """The failure this exists for: every call refused, run still "succeeded".
+
+    Observed: the batch swallowed the rejection per unit, serialized an empty
+    graph, dumped a run manifest and a validation report next to no facts, and
+    exited 0 -- artifacts a downstream aggregator cannot tell from real ones.
+    Every remaining file would have paid for its own conversion to reach the
+    same rejection.
+    """
+    from ontocast.api.process_helpers import process_files_input
+    from ontocast.tool.llm import LLMConfigurationError
+
+    tools = _batch_toolbox()
+    first = tmp_path / "a.txt"
+    first.write_text("some text", encoding="utf-8")
+    second = tmp_path / "b.txt"
+    second.write_text("more text", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    with pytest.raises(LLMConfigurationError):
+        asyncio.run(
+            process_files_input(
+                [first, second],
+                config=tools.config,
+                head_chunks=None,
+                use_unit_pipeline=False,
+                tools=tools,
+                workflow=cast(CompiledStateGraph, _RejectingWorkflow()),
+                ontology_context_mode_value=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
+                tenant=None,
+                project=None,
+                output_dir=out_dir,
+            )
+        )
+
+    assert list(out_dir.iterdir()) == []
+
+
+class _AllUnitsFailedWorkflow:
+    """A workflow that ran to the end with every unit dead."""
+
+    def astream(self, *args, **kwds):
+        from ontocast.onto.enum import Status
+
+        async def _stream():
+            yield {"status": Status.FAILED, "aggregated_facts": RDFGraph()}
+
+        return _stream()
+
+
+def test_a_document_whose_every_unit_failed_is_recorded_as_failed(tmp_path) -> None:
+    """The generic backstop, for causes the rejection classifier does not catch.
+
+    The map nodes already computed FAILED for a document that produced nothing
+    and merge_facts preserved it -- the batch path just never read it, so the
+    run exited 0. cli/server.py turns a non-empty failed_files into a non-zero
+    exit, so nothing else is needed to make it scriptable.
+    """
+    from ontocast.api.process_helpers import process_files_input
+
+    tools = _batch_toolbox()
+    src = tmp_path / "a.txt"
+    src.write_text("some text", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    failed = asyncio.run(
+        process_files_input(
+            [src],
+            config=tools.config,
+            head_chunks=None,
+            use_unit_pipeline=False,
+            tools=tools,
+            workflow=cast(CompiledStateGraph, _AllUnitsFailedWorkflow()),
+            ontology_context_mode_value=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
+            tenant=None,
+            project=None,
+            output_dir=out_dir,
+        )
+    )
+
+    assert failed == [src]

@@ -25,6 +25,7 @@ from ontocast.onto.ontology_access import (
     build_llm_prefix_map,
     ontology_access_for_unit_facts,
 )
+from ontocast.onto.ontology_condense import CondenseReport
 from ontocast.onto.rdfgraph import (
     RDFGraph,
     finalize_llm_graph,
@@ -52,6 +53,7 @@ from ontocast.tool.facts_validation import (
     repair_property_aliases,
     resolve_code_literals,
 )
+from ontocast.tool.llm import LLMConfigurationError
 from ontocast.tool.validate import partition_object_property_literal_triples
 
 logger = logging.getLogger(__name__)
@@ -158,6 +160,30 @@ async def render_facts(
     )
 
 
+def _record_chapter_report(
+    report: CondenseReport, budget_tracker: BudgetTracker | None
+) -> None:
+    """Publish what condensing and capping did to the ontology chapter.
+
+    Fires once per chapter actually built, not once per call that reads it: the
+    snapshot is shared across the fan-out and the chapter is memoised on it, so
+    these describe the chapter, not the traffic.
+
+    Sizing a text cap is not something a default can do in advance -- whether a
+    catalog reaches one is a property of that catalog. So the counters carry the
+    before/after even when nothing was clipped, which is the case that tells a
+    deployment its caps are inert.
+    """
+    if budget_tracker is None or not report.text_chars_before:
+        return
+    budget_tracker.incr("chapter/text_chars_before", report.text_chars_before)
+    budget_tracker.incr("chapter/text_chars_after", report.text_chars_after)
+    budget_tracker.incr("chapter/literals_clipped", report.literals_clipped)
+    budget_tracker.incr("chapter/literals_dropped", report.literals_dropped)
+    if report.text_over_budget:
+        budget_tracker.incr("chapter/text_over_budget")
+
+
 def _prepare_prompt_data(
     state: UnitFactsState,
     access: UnitFactsOntologyAccess,
@@ -195,13 +221,26 @@ def _prepare_prompt_data(
         # Memoised on the snapshot, which the whole fan-out shares: serialising
         # the same ontology once per unit dominated facts prompt construction.
         ontology_chapter = ctx.prompt_chapter(
-            profile, max_triples=state.ontology_context_max_triples
+            profile,
+            max_triples=state.ontology_context_max_triples,
+            text_caps=state.ontology_text_caps,
+            on_report=lambda report: _record_chapter_report(
+                report, state.budget_tracker
+            ),
         )
     else:
         ontology_chapter = profile.format_ontology_chapter(
             ontology_graph,
-            suffix=build_ontology_index(ontology_graph),
+            suffix=(
+                ""
+                if profile.renders_term_sheet
+                else build_ontology_index(ontology_graph)
+            ),
             max_triples=state.ontology_context_max_triples,
+            text_caps=state.ontology_text_caps,
+            on_report=lambda report: _record_chapter_report(
+                report, state.budget_tracker
+            ),
         )
     state.budget_tracker.add_duration(
         "prompt/ontology_chapter", time.perf_counter() - chapter_start
@@ -389,6 +428,12 @@ async def render_facts_fresh(
         state.set_node_status(WorkflowNode.TEXT_TO_FACTS, Status.SUCCESS)
         return state
 
+    except LLMConfigurationError:
+        # The provider rejects the request itself, not this attempt at
+        # it: every other unit is about to be rejected identically.
+        # Failing one unit here turns a configuration fault into an
+        # empty run that reports success.
+        raise
     except Exception as e:
         return _handle_rendering_error(state, e, FailureStage.GENERATE_TTL_FOR_FACTS)
     finally:

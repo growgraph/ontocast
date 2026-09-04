@@ -63,6 +63,7 @@ from ontocast.tool.facts_validation.critic_patch import (
     FixPatch,
     compile_critic_fixes,
 )
+from ontocast.tool.llm import LLMConfigurationError
 from ontocast.tool.ontology_validation import collect_ontology_unit_findings
 from ontocast.toolbox import ToolBox
 
@@ -1128,16 +1129,17 @@ async def run_unit_loop(
                 "%d mandatory deterministic finding(s) remain unresolved", mandatory
             )
         return unit_state
-    except OntologyContextConfigError:
-        # Not a unit failure. An unresolvable ontology context is a property of
-        # the deployment, identical for every other unit in the document, and
-        # the whole point of ONTOLOGY_CONTEXT_REQUIRED is that the run stops
-        # rather than emitting an ungrounded graph. Recording it per unit
+    except (OntologyContextConfigError, LLMConfigurationError):
+        # Not a unit failure. Both describe the deployment, not the unit, and
+        # are identical for every other unit in the document: an unresolvable
+        # ontology context (the whole point of ONTOLOGY_CONTEXT_REQUIRED is
+        # that the run stops rather than emitting an ungrounded graph), or a
+        # request the provider refuses outright. Recording either per unit
         # instead let the fan-out finish, write a zero-triple manifest and exit
-        # successfully -- the vacuous pass this error exists to prevent, now
+        # successfully -- the vacuous pass these errors exist to prevent, now
         # with a traceback per unit to bury the cause.
         logger.error(
-            "Ontology context is unusable for %s units; stopping the run",
+            "Deployment fault while running %s units; stopping the run",
             phase.name,
         )
         raise

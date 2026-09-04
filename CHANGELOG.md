@@ -9,15 +9,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ONTOLOGY_CHAPTER_FORMAT=term_sheet`** renders the `# ONTOLOGY` chapter as
+  a line-per-term listing instead of a serialized graph: each term's name, the
+  alternative surface forms a document may spell it with, its type, its place in
+  the hierarchy, a property's domain and range, and the scope note saying when it
+  applies. Dropped are the per-statement RDF scaffolding — a node wrapper or
+  subject block per term and a repeated predicate IRI per statement — and
+  `rdfs:comment`, which is written for someone browsing the ontology rather than
+  for an extractor. The ontology chapter is the bulk of a facts prompt, so this
+  is the largest context lever available, well beyond what `turtle` gives.
+  Admissible because a facts prompt reads its ontology and writes an unrelated
+  graph; the ontology loop writes a patch against the statements *in* its
+  chapter, which a listing cannot express, so `term_sheet` requires
+  `RENDER_MODE=facts` and a configuration asking for both is rejected at startup
+  rather than silently falling back to a graph. Changes the LLM cache key for
+  facts calls.
+
+- **Character caps on the ontology chapter's text literals** —
+  `ONTOLOGY_TEXT_MAX_CHARS_NAMING` (labels, preferred and alternative),
+  `ONTOLOGY_TEXT_MAX_CHARS_CONTRACT` (scope notes, definitions),
+  `ONTOLOGY_TEXT_MAX_CHARS_PROSE` (`rdfs:comment` and the remaining notes), and
+  `ONTOLOGY_TEXT_TOTAL_BUDGET` across all of them. `ONTOLOGY_CONTEXT_MAX_TRIPLES`
+  is a count and bounds no individual literal, so a chapter well inside it could
+  still be arbitrarily long: chapter size tracked how much prose a catalog's
+  authors wrote rather than how many terms it declares, and was paid on every
+  call of every unit. These apply to every chapter the facts loop builds, term
+  sheet and serialized graph alike, and are unset by default — inert when unset,
+  byte-for-byte, so prompts and cache keys do not move for a deployment that
+  sets none of them. Clipping is on a word boundary and leaves a visible marker,
+  so a clipped definition reads as clipped; it is preferred to dropping the
+  statement because a scope note's first sentence usually carries the contract.
+  Over the total budget, prose is tightened then dropped, then contracts, and
+  only then are names clipped to a floor — names are never dropped, and a
+  chapter that still does not fit is passed through with a warning, matching how
+  the triple budget refuses to cut into load-bearing structure. Reported in the
+  run manifest as `text_chars_before`, `text_chars_after`, `literals_clipped`
+  and `literals_dropped`.
+
+- **`gpt-5.4` is the default OpenAI model** (`LLM_MODEL_NAME`), replacing
+  `gpt-4o-mini`. Runs that do not set the variable move to it.
+
 - **Reasoning controls for cloud providers.** `LLM_REASONING_EFFORT`
-  (`minimal|low|medium|high`, OpenAI `reasoning_effort`) and
-  `LLM_THINKING_BUDGET` (Google `thinking_budget`; `0` disables where the
-  model allows it, `-1` is model-chosen, a positive value is a cap). Cloud
-  equivalents of `LLM_THINK` for Ollama: reasoning tokens count toward the
-  output total. Each knob joins the LLM disk-cache key only when set, so an
-  unset knob leaves existing cache entries valid. Setting the other
-  provider's knob logs a warning and is ignored. Both are recorded in the
-  run manifest `llm` block.
+  (`none|minimal|low|medium|high|xhigh`) is the discrete depth knob, read by
+  OpenAI reasoning models as `reasoning_effort` and by Gemini 3+ as
+  `thinking_level`. The vocabulary is the union across providers and across
+  model generations of one provider — the floor of the scale is spelled
+  `minimal` by some models and `none` by others — so which levels a given model
+  accepts stays the provider's business; an unsupported one is reported as a
+  rejected request rather than guessed at or silently downgraded.
+  `LLM_THINKING_BUDGET` is the Gemini 2.5 integer spelling (`0` disables where
+  the model allows it, `-1` is model-chosen, a positive value is a cap),
+  superseded from Gemini 3 on. Cloud equivalents of `LLM_THINK` for Ollama:
+  reasoning tokens count toward the output total. Each knob joins the LLM
+  disk-cache key only when set, so an unset knob leaves existing cache entries
+  valid. A knob the configured model does not read logs a warning and is
+  ignored — including `LLM_THINKING_BUDGET` on a Gemini 3+ model, where the
+  thinking level supersedes it. On Google the two are mutually exclusive (the
+  API's own rule) and setting both is rejected at startup rather than silently
+  resolved, which would bill one setting while the run manifest recorded the
+  other. Both are recorded in the run manifest `llm` block.
 
 - **Unit-scoped fact IRIs before aggregation** (`AGG_UNIT_SCOPED_FACT_IRIS`,
   default `true`). After sanitization, instance IRIs under the fact
@@ -151,6 +201,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`validated_without_ontology_context`). The second keeps identifier digit
   groups out of the numeric-coverage inventory. Set either to `false` to
   restore previous behaviour. `LLM_JSON_MODE` remains off.
+
+### Fixed
+
+- **A request the provider refuses now stops the run instead of emptying it.**
+  A rejected request — an unsupported parameter value, a model the account
+  cannot reach, a missing or wrong key — is a property of the deployment:
+  identical for every content unit and every retry. The unit loops isolated it
+  the way they isolate a bad render, so every unit failed the same way, the
+  document serialized an empty graph, and the run wrote a manifest and a
+  validation report next to no facts and exited 0 — output a downstream
+  aggregator cannot tell from a clean run. Such a rejection is now re-typed at
+  the single call funnel as `LLMConfigurationError`, propagates through the
+  unit loops and the parallel fan-out (once the gather has drained, so no
+  sibling is orphaned), aborts the batch, and exits `78` (`EX_CONFIG`) with a
+  message naming the provider, the model and the rejected parameter — no
+  dumps, so the absence of output is the signal. It is never retried and never
+  spends the timeout re-issue. Deliberately narrow: throttling (`429`) and a
+  `400` that names the *input* rather than a parameter — an over-long chunk —
+  stay per-unit faults. Counted as `llm/calls_rejected` alongside
+  `llm/calls_failed`.
+
+- **A document whose every unit failed is reported as a failed file.** The map
+  stages already computed `FAILED` for one that produced nothing, and
+  `merge_facts` preserved it, but the batch path never read the status — so a
+  run that extracted nothing still exited 0. It now lands in the failed-file
+  list, which the CLI already turns into a non-zero exit. The dumps still
+  happen: an empty graph beside its manifest is the diagnostic.
+
+- **The gpt-5 temperature pin no longer catches later families.** The
+  series is provider-pinned to temperature 1.0, and the override matched any
+  name starting `gpt-5` — which swallowed `gpt-5.4*` as well, forcing 1.0 on
+  models that accept a temperature. The match is now anchored to the series
+  itself (`gpt-5`, `gpt-5-mini`, `gpt-5-nano`). The override mutates the
+  config in place, so it also reached the cache key and the run manifest: an
+  affected run recorded the substituted temperature, not the one it asked
+  for.
+
 
 ## [0.6.3] - unreleased
 

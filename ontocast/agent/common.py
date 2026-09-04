@@ -412,6 +412,14 @@ async def call_llm_with_retry(
     visits — so a single identical re-issue (per outer call) is allowed before
     the timeout propagates.
 
+    :class:`~ontocast.tool.llm.LLMConfigurationError` propagates on the first
+    occurrence and consumes nothing: it is deliberately not a subclass of
+    ``LLMRequestTimeoutError``, and the provider call sits outside the parse
+    ``try`` below, so a request the provider refuses is never re-sent with
+    parse-error feedback attached and never spends the timeout re-issue. Both
+    properties come from statement placement rather than an explicit clause;
+    test_llm_resilience.py pins them.
+
     Retries back off exponentially with jitter, so N units failing to parse
     simultaneously do not re-issue in lockstep.
 

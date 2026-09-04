@@ -120,10 +120,38 @@ any run against a new model:
 | `llm/parse_retry` | Renders re-issued because the previous response would not parse or validate. Each is a full re-extraction, so a non-trivial count is a real share of the bill. |
 | `llm/json_bracket_repair` | Responses recovered by rewriting mismatched closing brackets. Non-zero means the model is emitting structurally broken JSON that the deterministic repair caught — the run is correct, but the prompt or the schema shape is provoking it. |
 | `llm/parse_abandoned` | Calls given up on: retries exhausted, or the same JSON syntax error recurred and further attempts were judged pure spend. Every one of these is a content unit that contributed nothing. |
-| `llm/calls_failed` | Every provider call that raised; `llm/timeouts` and `llm/rate_limited` are its subsets. A timed-out call is charged its prompt characters, so `calls_count = llm/calls_timed + llm/timeouts` — a run whose timeouts cost tokens no longer hides them. |
+| `llm/calls_failed` | Every provider call that raised; `llm/timeouts`, `llm/rate_limited` and `llm/calls_rejected` are its subsets. A timed-out call is charged its prompt characters, so `calls_count = llm/calls_timed + llm/timeouts` — a run whose timeouts cost tokens no longer hides them. |
+| `llm/calls_rejected` | Calls the provider refused as configured — an unsupported parameter value, a model the account cannot reach, a bad key. Non-zero at all means the run was aborted: the request is one no retry and no other unit would change (see below). |
 
 A silent `llm/parse_abandoned` used to be visible only as a `failed without
 usable output` warning scrolling past in the logs; it is now in the manifest.
+
+Five more describe the ontology chapter, which is the bulk of a facts prompt.
+They are recorded once per chapter actually built — the snapshot is shared
+across the unit fan-out and the chapter is memoised on it — so they describe the
+context, not the traffic that reads it.
+
+| Counter | Meaning |
+|---|---|
+| `chapter/text_chars_before` | Summed length of the chapter's text literals as the catalog authored them. Reported whether or not a cap is set: this is the number that says what an uncapped chapter costs. |
+| `chapter/text_chars_after` | The same sum after the [text caps](configuration.md#ontology-chapter-text-caps). Equal to `before` when the caps are unset or inert — the common case on a tersely authored catalog, and worth confirming rather than assuming. |
+| `chapter/literals_clipped` | Literals shortened to a per-role cap. Each keeps its statement and its leading text; only the tail is gone. |
+| `chapter/literals_dropped` | Literals removed outright to meet `ONTOLOGY_TEXT_TOTAL_BUDGET`. Non-zero means the per-role caps alone did not fit the chapter and the backstop engaged. |
+| `chapter/text_over_budget` | Chapters that still exceeded the total budget after every tightening stage. These are passed through oversized rather than having their labels removed, so a non-zero count is a budget to raise or a catalog to narrow, not a correctness problem. |
+
+!!! warning "A rejected request stops the run rather than emptying it"
+    A request the provider refuses — an unsupported parameter value, a model
+    the account cannot reach, a missing key — describes the deployment, not the
+    unit: every sibling unit and every retry would be refused identically.
+    Isolating it the way a bad render is isolated let the fan-out finish, write
+    a zero-triple manifest and a validation report next to no facts, and exit
+    successfully. It now propagates out of the fan-out, aborts the batch, and
+    exits `78` with a message naming the provider, the model and the rejected
+    parameter — and writes no dumps at all, so the absence of output is the
+    signal rather than a plausible-looking empty one. Throttling (`429`) and an
+    over-long chunk stay per-unit faults. Separately, a document whose *every*
+    unit failed for any other reason is now recorded as a failed file, so the
+    CLI exits non-zero there too.
 
 This is the offline option: no service, no account, and it survives the process.
 Two runs are comparable by diffing their manifests — which model, which

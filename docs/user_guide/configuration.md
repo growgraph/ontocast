@@ -51,7 +51,7 @@ Config
 
 ```bash
 LLM_PROVIDER=openai                     # openai | ollama | anthropic | google
-LLM_MODEL_NAME=gpt-4o-mini
+LLM_MODEL_NAME=gpt-5.4
 LLM_TEMPERATURE=0.0
 LLM_API_KEY=your_api_key_here           # required for openai, anthropic, google
 LLM_BASE_URL=http://localhost:11434     # optional (ollama; anthropic proxy URL)
@@ -59,7 +59,7 @@ LLM_BASE_URL=http://localhost:11434     # optional (ollama; anthropic proxy URL)
 
 | Provider | Example `LLM_MODEL_NAME` | `LLM_API_KEY` |
 |----------|--------------------------|---------------|
-| `openai` | `gpt-4o-mini` | Required |
+| `openai` | `gpt-5.4` | Required |
 | `ollama` | `llama3.1` | Not used (`LLM_BASE_URL` required) |
 | `anthropic` | `claude-sonnet-4-20250514` | Required |
 | `google` | `gemini-2.0-flash` | Required |
@@ -118,24 +118,40 @@ A hung provider call holds both a unit-worker slot and an `LLM_MAX_INFLIGHT`
 slot, so without `LLM_REQUEST_TIMEOUT_SECONDS` a couple of them permanently
 shrink the pipeline's effective width. A timed-out call fails only its own unit.
 
+**Cloud reasoning controls:**
+
+```bash
+LLM_REASONING_EFFORT=           # none|minimal|low|medium|high|xhigh: OpenAI
+                                # reasoning_effort, Gemini 3+ thinking_level;
+                                # unset = provider default
+LLM_THINKING_BUDGET=            # Gemini 2.5 thinking_budget: 0 off, -1 model-chosen,
+                                # N caps it; unset uses the model default
+```
+
 **Ollama-specific generation controls** (ignored by other providers):
 
 ```bash
 LLM_THINK=                      # true/false: thinking mode for qwen3, deepseek-r1, ... (Ollama)
-LLM_REASONING_EFFORT=           # minimal|low|medium|high: OpenAI reasoning_effort
-LLM_THINKING_BUDGET=            # Google thinking_budget: 0 off, -1 model-chosen, N caps it
-                                # unset uses the model default
 LLM_NUM_PREDICT=                # max tokens to generate; unset = Ollama default
 LLM_NUM_CTX=                    # context window (prompt + output). Ollama defaults to
                                 # 2048-4096; raise to 16384+ for large prompts
 ```
 
-`LLM_REASONING_EFFORT` and `LLM_THINKING_BUDGET` are the cloud spellings of
-the same lever: reasoning tokens are counted inside the output total and can
-dominate it (`reasoning_share_of_output` in the run manifest says by how
-much). Each knob joins the LLM cache key only when it is set — leaving it
-unset keeps existing cache entries valid, setting it re-issues every prompt —
-and setting the other provider's spelling logs a warning and is ignored.
+`LLM_REASONING_EFFORT` and `LLM_THINKING_BUDGET` are two spellings of one
+lever: reasoning tokens are counted inside the output total and can dominate
+it (`reasoning_share_of_output` in the run manifest says by how much).
+`LLM_REASONING_EFFORT` is the discrete one, read by OpenAI reasoning models
+and by Gemini 3+; `LLM_THINKING_BUDGET` is the Gemini 2.5 integer spelling,
+superseded from Gemini 3 on. Its vocabulary is the union across providers and
+across model generations of one provider: the floor of the scale is spelled
+`minimal` by some models and `none` by others, and `xhigh` is newer than both.
+Which levels a given model accepts is the provider's business — nothing here
+maps model names to levels, so a level the model does not take comes back as a
+rejected request and aborts the run rather than being silently downgraded. On Google the two are mutually exclusive and
+setting both is rejected at startup; setting the budget on a Gemini 3+ model
+logs a warning and is ignored. Each knob joins the LLM cache key only when it
+is set — leaving it unset keeps existing cache entries valid, setting it
+re-issues every prompt.
 
 `LLM_THINK=false` guarantees a non-empty `content` response; `true` captures
 reasoning separately. Leaving it unset can yield an empty response when a
@@ -213,7 +229,11 @@ MAX_VISITS_PER_NODE=1                    # canonical name; MAX_VISITS is an acce
 FACTS_CRITIC_PASSES=1                    # review-and-patch passes per facts unit
 RENDER_MODE=ontology_and_facts           # which pipeline blocks run — see below
 LLM_GRAPH_FORMAT=jsonld                  # jsonld | turtle (legacy) — see below
-ONTOLOGY_CHAPTER_FORMAT=inherit          # inherit | turtle: the facts prompts' ontology chapter only — see below
+ONTOLOGY_CHAPTER_FORMAT=inherit          # inherit | turtle | term_sheet: the facts prompts' ontology chapter only — see below
+# ONTOLOGY_TEXT_MAX_CHARS_NAMING=80      # cap on labels / alt labels in that chapter (unset = as authored)
+# ONTOLOGY_TEXT_MAX_CHARS_CONTRACT=240   # cap on scope notes / definitions
+# ONTOLOGY_TEXT_MAX_CHARS_PROSE=160      # cap on rdfs:comment and other notes
+# ONTOLOGY_TEXT_TOTAL_BUDGET=40000       # ceiling on all chapter text together
 ONTOLOGY_CONTEXT_MODE=selected_single_ontology   # where per-unit schema comes from — see below
 #ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID=catalog_iri_or_id_or_prefix
 ONTOLOGY_CONTEXT_MAX_TRIPLES=4000        # prompt budget for the ontology chapter — see below
@@ -920,14 +940,39 @@ LOGGING_LEVEL=info                       # debug | info | warning | error
 Overridable per request as `llm_graph_format`, with the same precedence and the
 same 400-on-typo contract as [`RENDER_MODE`](#render-mode-render_mode).
 
-`ONTOLOGY_CHAPTER_FORMAT` (`inherit` default, or `turtle`) narrows the choice
-to one chapter: with `turtle` the `# ONTOLOGY` chapter of the facts render and
-critic prompts is serialized as canonical Turtle while everything else keeps
-the wire format above. That chapter is the bulk of a facts prompt and JSON-LD
-spends about twice the characters per triple, so this is the context lever
-that leaves parsing untouched. It applies to the facts loop only (the ontology
-loop's chapters are unaffected), is not overridable per request, and changes
-the LLM cache key for facts calls.
+`ONTOLOGY_CHAPTER_FORMAT` (`inherit` default, `turtle`, or `term_sheet`)
+narrows the choice to one chapter. With `turtle` the `# ONTOLOGY` chapter of the
+facts render and critic prompts is serialized as canonical Turtle while
+everything else keeps the wire format above; that chapter is the bulk of a facts
+prompt and JSON-LD spends about twice the characters per triple, so this is the
+context lever that leaves parsing untouched. With `term_sheet` the chapter stops
+being a serialized graph and becomes a line-per-term listing — name, surface
+forms, type, hierarchy, domain/range and scope note, without the per-statement
+RDF scaffolding or `rdfs:comment` — which is by a wide margin the cheapest of
+the three. See [Performance](performance.md) for what each keeps and drops.
+
+All three apply to the facts loop only, are not overridable per request, and
+change the LLM cache key for facts calls. `term_sheet` additionally requires
+`RENDER_MODE=facts`: the ontology loop emits a patch against the statements in
+its chapter, so that chapter has to be a graph, and a configuration that asks
+for both is rejected at startup rather than silently falling back.
+
+### Ontology chapter text caps
+
+`ONTOLOGY_TEXT_MAX_CHARS_NAMING`, `ONTOLOGY_TEXT_MAX_CHARS_CONTRACT`,
+`ONTOLOGY_TEXT_MAX_CHARS_PROSE` and `ONTOLOGY_TEXT_TOTAL_BUDGET` bound the text
+literals in the ontology chapter, in whichever of the three formats it is built.
+`ONTOLOGY_CONTEXT_MAX_TRIPLES` below is a *count* and says nothing about how
+long any one literal may be, so a chapter well inside it can still be unbounded.
+
+All four are unset by default and are inert when unset — a catalog whose labels
+and comments are already short sees byte-identical prompts and cache keys.
+Clipping is on a word boundary with a visible marker. Over the total budget,
+prose is tightened then dropped, then contracts, and only then are names clipped
+to a floor; names are never dropped. The run manifest's `budget.counters`
+reports `chapter/text_chars_before`, `chapter/text_chars_after`,
+`chapter/literals_clipped`, `chapter/literals_dropped` and
+`chapter/text_over_budget`.
 
 ## Ontology Context Size (`ONTOLOGY_CONTEXT_MAX_TRIPLES`)
 

@@ -45,6 +45,7 @@ from ontocast.prompt.render_ontology import (
 )
 from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
 from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.llm import LLMConfigurationError
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +225,12 @@ async def render_ontology_fresh(
         state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.SUCCESS)
         return state
 
+    except LLMConfigurationError:
+        # The provider rejects the request itself, not this attempt at
+        # it: every other unit is about to be rejected identically.
+        # Failing one unit here turns a configuration fault into an
+        # empty run that reports success.
+        raise
     except Exception as e:
         return _handle_ontology_render_error(
             state, e, FailureStage.GENERATE_TTL_FOR_ONTOLOGY
@@ -349,6 +356,12 @@ async def render_ontology_update(
         state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.SUCCESS)
         return state
 
+    except LLMConfigurationError:
+        # The provider rejects the request itself, not this attempt at
+        # it: every other unit is about to be rejected identically.
+        # Failing one unit here turns a configuration fault into an
+        # empty run that reports success.
+        raise
     except Exception as e:
         return _handle_ontology_render_error(
             state, e, FailureStage.GENERATE_GRAPH_UPDATE_FOR_ONTOLOGY

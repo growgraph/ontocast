@@ -63,7 +63,7 @@ PORT=8999
 # LLM Configuration
 LLM_PROVIDER=openai
 LLM_API_KEY=your-api-key-here
-LLM_MODEL_NAME=gpt-4o-mini
+LLM_MODEL_NAME=gpt-5.4
 LLM_TEMPERATURE=0.0
 
 # Server Configuration
@@ -186,7 +186,7 @@ OntoCast uses a hierarchical configuration system:
 |----------|-------------|---------|
 | `LLM_API_KEY` | API key for LLM provider | Required for openai / anthropic / google |
 | `LLM_PROVIDER` | `openai`, `ollama`, `anthropic`, or `google` | openai |
-| `LLM_MODEL_NAME` | Model name | gpt-4o-mini |
+| `LLM_MODEL_NAME` | Model name | gpt-5.4 |
 | `FUSEKI_URI` + `FUSEKI_AUTH` | Persistent triple store | Omit for in-memory (default) |
 | `ONTOCAST_ONTOLOGY_DIRECTORY` | Seed ontology TTL files | Optional bootstrap |
 | `MAX_VISITS` | Maximum visits per node | 1 |

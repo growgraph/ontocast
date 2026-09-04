@@ -30,6 +30,7 @@ from ontocast.onto.model import (
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_apply import OntologyDelta
+from ontocast.onto.ontology_condense import TextCaps
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
 from ontocast.onto.sparql_models import GraphUpdate
@@ -114,6 +115,17 @@ class UnitState(BasePydanticModel):
             "Threaded from ServerConfig like ontology_context_max_triples. "
             "Read by the facts loop only; the ontology loop keeps its chapter "
             "in the wire format because its output patches what it reads."
+        ),
+    )
+    ontology_text_caps: TextCaps = Field(
+        default_factory=TextCaps,
+        description=(
+            "Per-role character caps on the text literals of this unit's "
+            "ontology chapter. Threaded from ServerConfig like "
+            "ontology_context_max_triples. All-unset is the default and leaves "
+            "every literal exactly as the catalog authored it. Facts loop only, "
+            "for the reason the chapter format is: a clipped literal is not the "
+            "statement an ontology patch would cite."
         ),
     )
 

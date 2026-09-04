@@ -46,8 +46,21 @@ from ontocast.onto.enum import OntologyContextMode, RenderMode
 from ontocast.onto.retrieval_capabilities import validate_ontology_context_mode
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.stategraph import create_agent_graph
+from ontocast.tool.llm import LLMConfigurationError
 from ontocast.toolbox import ToolBox
 from ontocast.util.files import crawl_directories
+
+
+class LLMConfigAbort(click.ClickException):
+    """A provider rejected the request as configured; the run stopped.
+
+    Exits ``EX_CONFIG`` (78) rather than the generic 1, so a driver looping
+    over benchmark arms can tell a broken configuration from documents that
+    merely failed to extract.
+    """
+
+    exit_code = 78
+
 
 logger = logging.getLogger(__name__)
 
@@ -622,32 +635,41 @@ def process(
             f"No supported input files under {input_path} "
             f"(looking for {', '.join(supported_suffixes)})."
         )
-    failed_files = asyncio.run(
-        process_files_input(
-            files,
-            config=runtime.config,
-            head_chunks=head_chunks,
-            use_unit_pipeline=use_unit_pipeline,
-            tools=runtime.tools,
-            workflow=workflow,
-            ontology_context_mode_value=runtime.ontology_context_mode,
-            tenant=runtime.tenant,
-            project=runtime.project,
-            target_sections=parsed_target_sections,
-            exclude_sections=parsed_exclude_sections,
-            summarize_sections=parsed_summarize_sections,
-            summary_max_sentences=parsed_summary_max_sentences,
-            document_type_hint=parsed_document_type_hint,
-            section_schema_id=parsed_section_schema_id,
-            max_visits=parsed_max_visits,
-            document_metadata=parsed_document_metadata,
-            facts_user_instruction=facts_user_instruction,
-            output_dir=out_dir,
-            facts_output_dir=facts_dir,
-            ontology_output_dir=ontology_out_dir,
-            strip_provenance=not keep_provenance,
+    try:
+        failed_files = asyncio.run(
+            process_files_input(
+                files,
+                config=runtime.config,
+                head_chunks=head_chunks,
+                use_unit_pipeline=use_unit_pipeline,
+                tools=runtime.tools,
+                workflow=workflow,
+                ontology_context_mode_value=runtime.ontology_context_mode,
+                tenant=runtime.tenant,
+                project=runtime.project,
+                target_sections=parsed_target_sections,
+                exclude_sections=parsed_exclude_sections,
+                summarize_sections=parsed_summarize_sections,
+                summary_max_sentences=parsed_summary_max_sentences,
+                document_type_hint=parsed_document_type_hint,
+                section_schema_id=parsed_section_schema_id,
+                max_visits=parsed_max_visits,
+                document_metadata=parsed_document_metadata,
+                facts_user_instruction=facts_user_instruction,
+                output_dir=out_dir,
+                facts_output_dir=facts_dir,
+                ontology_output_dir=ontology_out_dir,
+                strip_provenance=not keep_provenance,
+            )
         )
-    )
+    except LLMConfigurationError as exc:
+        # Not one failed file among many: the request as configured is one the
+        # provider will never accept, so the batch stopped where it stood. A
+        # dedicated exit code lets a benchmark driver tell "fix your LLM_*
+        # settings" from "some documents did not extract".
+        raise LLMConfigAbort(
+            f"{exc} -- fix the LLM_* configuration and re-run."
+        ) from exc
     if failed_files:
         # Exit non-zero so a scripted pipeline can tell a partial or total
         # failure from a clean run.

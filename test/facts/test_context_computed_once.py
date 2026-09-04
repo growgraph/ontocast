@@ -23,6 +23,7 @@ from ontocast.onto.enum import (
     Status,
 )
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_condense import TextCaps
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
@@ -84,6 +85,7 @@ def _tools(*, context_from_units: bool = False) -> ToolBox:
                     max_critic_visits_per_node=None,
                     ontology_context_max_triples=4000,
                     ontology_chapter_format=OntologyChapterFormat.INHERIT,
+                    ontology_text_caps=TextCaps(),
                 ),
                 get_tool_config=lambda: tool_config,
             ),

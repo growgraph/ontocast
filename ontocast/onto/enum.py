@@ -161,10 +161,17 @@ class OntologyChapterFormat(StrEnum):
       triple than pretty-printed JSON-LD, so this trades the read/write
       symmetry for a shorter prompt. The graph payloads the model emits stay
       in the wire format.
+    - ``term_sheet``: the chapter is a line-per-term listing rather than a
+      serialized graph -- name, surface forms, type, hierarchy, domain/range
+      and usage contract, without the per-statement RDF scaffolding or the
+      prose written for a human reader. Legal on the facts path only: the
+      ontology loop emits a patch against the statements it reads, so its
+      chapter has to remain a graph.
     """
 
     INHERIT = "inherit"
     TURTLE = "turtle"
+    TERM_SHEET = "term_sheet"
 
 
 class OntologyContextMode(StrEnum):

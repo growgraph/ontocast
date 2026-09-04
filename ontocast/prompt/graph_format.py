@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from contextvars import Token
 from dataclasses import dataclass
@@ -12,12 +13,17 @@ from pydantic import BaseModel
 
 from ontocast.onto.enum import LLMGraphFormat, OntologyChapterFormat
 from ontocast.onto.llm_graph_payload import llm_graph_format_ctx
-from ontocast.onto.ontology_condense import condense_graph_for_prompt
+from ontocast.onto.ontology_condense import (
+    CondenseReport,
+    TextCaps,
+    condense_graph_for_prompt,
+)
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.triple_index import TripleIndex, build_triple_index
 from ontocast.prompt.facts_guidelines import format_facts_operational_guidelines
 from ontocast.prompt.graph_index import render_index_table, render_indexed_turtle
 from ontocast.prompt.llm_json_schema import format_instructions_for_model
+from ontocast.prompt.term_sheet import build_ontology_term_sheet
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -208,9 +214,38 @@ class GraphFormatProfile:
     ontology_chapter_format: OntologyChapterFormat = OntologyChapterFormat.INHERIT
 
     @property
+    def renders_term_sheet(self) -> bool:
+        """Whether the ontology chapter is a term sheet rather than a graph."""
+        return self.ontology_chapter_format == OntologyChapterFormat.TERM_SHEET
+
+    @property
+    def ontology_chapter_discriminator(self) -> str:
+        """What actually determines the chapter text, for a memo key.
+
+        Two profiles that render the same chapter must share a memo entry -- a
+        JSON-LD profile pinned to Turtle and a plain Turtle profile produce the
+        same bytes -- so the wire, not the setting, is the discriminator for a
+        graph chapter. A term sheet is not a serialization of the graph at all,
+        and reports a Turtle wire only because that is the cheaper of the two it
+        is not, so it needs its own name here or it would be served the Turtle
+        chapter.
+        """
+        if self.renders_term_sheet:
+            return str(OntologyChapterFormat.TERM_SHEET)
+        return str(self.ontology_chapter_wire)
+
+    @property
     def ontology_chapter_wire(self) -> LLMGraphFormat:
-        """The syntax :meth:`format_ontology_chapter` serializes in."""
-        if self.ontology_chapter_format == OntologyChapterFormat.TURTLE:
+        """The syntax :meth:`format_ontology_chapter` serializes in.
+
+        Meaningless when :attr:`renders_term_sheet` -- a term sheet is not a
+        serialization of the graph -- and reported as Turtle there so a caller
+        that only wants the cheaper-of-the-two answer is not misled.
+        """
+        if self.ontology_chapter_format in (
+            OntologyChapterFormat.TURTLE,
+            OntologyChapterFormat.TERM_SHEET,
+        ):
             return LLMGraphFormat.TURTLE
         return self.format
 
@@ -237,6 +272,8 @@ class GraphFormatProfile:
         *,
         suffix: str = "",
         max_triples: int | None = None,
+        text_caps: TextCaps | None = None,
+        on_report: Callable[[CondenseReport], None] | None = None,
     ) -> str:
         """Serialize the ontology chapter, condensing it toward ``max_triples``.
 
@@ -254,9 +291,24 @@ class GraphFormatProfile:
         ``suffix`` is built by the caller from the uncondensed graph, which stays
         correct: the index only names terms by ``rdfs:label`` and their
         domain/range, none of which condensing drops.
+
+        ``text_caps`` bounds the individual literals before either rendering.
+        The triple budget is a count and says nothing about how long one
+        ``rdfs:comment`` may be, so a chapter well inside it can still be
+        unbounded; capping here covers every chapter the pipeline builds.
+
+        ``on_report`` is handed what condensing and capping actually did. A cap
+        whose effect cannot be read back is a cap nobody can size: whether a
+        catalog reaches one at all is a property of that catalog, not something
+        a default can be chosen for in advance.
         """
+        condensed, report = condense_graph_for_prompt(graph, max_triples, text_caps)
+        if on_report is not None:
+            on_report(report)
+        if self.renders_term_sheet:
+            body = build_ontology_term_sheet(condensed)
+            return f"\n\n# ONTOLOGY\n\n{body}\n" + suffix
         wire = self.ontology_chapter_wire
-        condensed, _ = condense_graph_for_prompt(graph, max_triples)
         body = self.serialize_graph_for_prompt(condensed, wire=wire)
         chapter = f"\n\n# ONTOLOGY\n\n```{_fence_lang(wire)}\n{body}\n```\n"
         return chapter + suffix
@@ -317,6 +369,11 @@ class GraphFormatProfile:
         the delta, so passing the delta here leaves catalog statements visible
         and unciteable -- a delete that would propagate to every document
         sharing the terminal simply cannot be expressed.
+
+        Text caps deliberately do not reach here. The critic cites statements by
+        index and may order a delete against one; a clipped literal would not
+        match the statement it names, so the delete would silently miss. The
+        indexed chapter shows the statements exactly as they are stored.
         """
         condensed, _ = condense_graph_for_prompt(graph, max_triples)
         condensed.sanitize_prefixes_namespaces()

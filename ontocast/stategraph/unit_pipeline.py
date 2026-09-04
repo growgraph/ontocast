@@ -184,6 +184,7 @@ async def run_unit_pipeline(
             llm_graph_format=agent_state.llm_graph_format,
             ontology_context_max_triples=tools.config.server.ontology_context_max_triples,
             ontology_chapter_format=tools.config.server.ontology_chapter_format,
+            ontology_text_caps=tools.config.server.ontology_text_caps,
         )
         logger.info("run_unit_pipeline: starting facts loop")
         facts_context = UnitLoopContext.from_agent_state(agent_state)
