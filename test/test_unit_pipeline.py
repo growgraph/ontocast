@@ -8,6 +8,7 @@ from ontocast.onto.docling_helpers import plain_text_to_docling_doc
 from ontocast.onto.enum import (
     OntologyAssemblyMode,
     OntologyChapterFormat,
+    OntologyContextScope,
     RenderMode,
     Status,
 )
@@ -99,6 +100,8 @@ async def test_run_unit_pipeline_feeds_ontology_loop_output_to_facts(
                     ontology_context_max_triples=4000,
                     ontology_chapter_format=OntologyChapterFormat.INHERIT,
                     ontology_text_caps=TextCaps(),
+                    ontology_context_scope=OntologyContextScope.UNIT,
+                    fanout_warmup_units=0,
                 )
             ),
             shapes_prompt_contract=lambda: ("", (), False),
@@ -161,6 +164,8 @@ async def test_run_unit_pipeline_uses_agent_state_max_visits(monkeypatch) -> Non
                     ontology_context_max_triples=4000,
                     ontology_chapter_format=OntologyChapterFormat.INHERIT,
                     ontology_text_caps=TextCaps(),
+                    ontology_context_scope=OntologyContextScope.UNIT,
+                    fanout_warmup_units=0,
                 )
             ),
             shapes_prompt_contract=lambda: ("", (), False),

@@ -59,6 +59,23 @@ class RunManifestLLM(BaseModel):
         ),
     )
     max_retries: int | None = None
+    prompt_cache_key: str | None = Field(
+        default=None,
+        description=(
+            "OpenAI prompt_cache_key routing hint; None = unset. Two runs that "
+            "differ here can differ in prefix_cache_hit_rate for no reason "
+            "visible in either dump."
+        ),
+    )
+    max_inflight: int | None = Field(
+        default=None,
+        description=(
+            "Provider requests allowed in flight at once. A prefix cache entry "
+            "is only readable once a request has completed, so a wider fan-out "
+            "lowers the hit rate at identical configuration -- which makes this "
+            "a cost setting, not just a pacing one."
+        ),
+    )
 
 
 class RunManifestLoops(BaseModel):
@@ -441,6 +458,60 @@ def summarize_loop(
     )
 
 
+class RunManifestPrompting(BaseModel):
+    """Settings that decide the shape and reuse of the prompts a run sent.
+
+    Every field here moves cost without moving any of the generation settings
+    beside it, so two runs could previously differ several-fold in tokens with
+    nothing in either manifest to say why. They are recorded together because
+    they are read together: the wire format and the chapter format set what a
+    triple costs, the context scope and the warm-up decide whether the prefix
+    can be cached at all, and the worker count decides how much of the fan-out
+    arrives before the first response has populated it.
+    """
+
+    llm_graph_format: str | None = Field(
+        default=None,
+        description="Wire format the model emitted graphs in.",
+    )
+    ontology_chapter_format: str | None = Field(
+        default=None,
+        description=(
+            "Encoding of the ontology chapter. 'inherit' follows "
+            "llm_graph_format, so the two fields are not independent -- a run "
+            "that changed the wire changed the chapter too unless it pinned "
+            "this."
+        ),
+    )
+    ontology_context_scope: str | None = Field(
+        default=None,
+        description=(
+            "'unit' retrieves a chapter per content unit, so no two calls share "
+            "a prompt prefix; 'document' shows every unit the union."
+        ),
+    )
+    fanout_warmup_units: int | None = Field(
+        default=None,
+        description=(
+            "Units run to completion before the fan-out. Zero means every call "
+            "of the fan-out issues before any of them has populated the prefix "
+            "cache they share."
+        ),
+    )
+    parallel_workers: int | None = Field(
+        default=None,
+        description="Units processed concurrently within one document.",
+    )
+    embedding_model_name: str | None = Field(
+        default=None,
+        description=(
+            "Retrieval embedding checkpoint. It decides which terms reach the "
+            "chapter, and a change to it invalidates the vector index rather "
+            "than degrading quietly."
+        ),
+    )
+
+
 class RunManifest(BaseModel):
     """What produced one document's dump, and what it cost."""
 
@@ -485,6 +556,10 @@ class RunManifest(BaseModel):
     tenant: str | None = None
     project: str | None = None
     llm: RunManifestLLM
+    prompting: RunManifestPrompting = Field(
+        default_factory=lambda: RunManifestPrompting(),
+        description="What the run put in front of the model, and how widely.",
+    )
     budget: BudgetTracker
     ontology_triples: int = 0
     facts_triples: int = 0

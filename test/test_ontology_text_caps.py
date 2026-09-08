@@ -80,7 +80,6 @@ def test_caps_clip_the_roles_they_govern_and_nothing_else() -> None:
     assert all(len(c) <= 80 + len(CLIP_MARKER) for c in comments)
     assert all(len(n) <= 120 + len(CLIP_MARKER) for n in notes)
     assert report.literals_clipped == len(comments) + len(notes)
-    assert report.literals_dropped == 0
     assert len(condensed) == len(graph), "clipping must not remove statements"
 
 
@@ -114,19 +113,42 @@ def test_total_budget_holds_however_verbose_the_catalog(prose: int) -> None:
     assert report.text_chars_before > budget
 
 
-def test_total_budget_never_removes_the_names() -> None:
-    """A term the model cannot name is an invitation to invent one.
+def test_total_budget_never_removes_anything() -> None:
+    """The budget shortens text; it does not delete statements.
 
-    So an impossible budget is reported and passed through, the same way the
-    triple budget refuses to cut into load-bearing structure.
+    A clipped definition still says the term has one and still carries the words
+    that say when it applies; a removed one says nothing. Shedding statements is
+    the triple budget's job, on the axis where statements are what is over
+    budget.
     """
     graph = _catalog(terms=60, prose=400, note=400)
+    before = len(graph)
 
     condensed, report = condense_graph_for_prompt(graph, 4000, TextCaps(total_budget=1))
 
-    assert report.text_over_budget
-    labels = list(condensed.objects(None, RDFS.label))
-    assert len(labels) == 60, "every term must still have a name"
+    assert report.text_over_budget, "an impossible budget is reported, not met"
+    assert len(condensed) == before, "no statement may be removed to meet a budget"
+    assert len(list(condensed.objects(None, RDFS.label))) == 60
+    assert all(str(o) for o in condensed.objects(None, RDFS.comment)), (
+        "even prose keeps a stub rather than vanishing"
+    )
+
+
+def test_budget_is_fitted_rather_than_stepped_down_to() -> None:
+    """Every character under the budget is context it never asked to lose.
+
+    A ladder of preset caps overshoots by however much the next rung happens to
+    cut; bisecting for the largest admissible cap lands near the target.
+    """
+    budget = 4_000
+    graph = _catalog(terms=40, prose=600, note=600)
+
+    _, report = condense_graph_for_prompt(graph, 4000, TextCaps(total_budget=budget))
+
+    assert report.text_chars_after <= budget
+    assert budget - report.text_chars_after < budget * 0.1, (
+        "fitted to the budget, not far under it"
+    )
 
 
 def test_caps_apply_to_the_turtle_chapter_too() -> None:

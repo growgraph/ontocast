@@ -261,10 +261,14 @@ class GraphFormatProfile:
             graph: The graph to serialize.
             wire: Syntax to use; defaults to the profile's own format.
         """
+        # Canonical blank-node labels here and not in the serializers
+        # themselves: this is the path whose output is a cache key, and the
+        # store and API paths have no reason to pay for the refinement.
+        canonical = graph.canonicalize_bnodes()
         fmt = self.format if wire is None else wire
         if fmt == LLMGraphFormat.TURTLE:
-            return graph.serialize_canonical_turtle()
-        return graph.serialize_compact_jsonld_for_prompt()
+            return canonical.serialize_canonical_turtle()
+        return canonical.serialize_compact_jsonld_for_prompt()
 
     def format_ontology_chapter(
         self,
@@ -495,10 +499,16 @@ class _LLMGraphFormatContext(AbstractContextManager[LLMGraphFormat]):
             llm_graph_format_ctx.reset(self._token)
 
 
+#: ``AUTO`` is deliberately absent: it names a *choice between* the members
+#: below rather than a chapter, and the configuration resolves it against the
+#: render mode before anything reaches here. A profile for it would silently
+#: serve whichever chapter its fallback happened to be, on a run whose manifest
+#: recorded the unresolved name.
 _PROFILES: dict[tuple[LLMGraphFormat, OntologyChapterFormat], GraphFormatProfile] = {
     (fmt, chapter): GraphFormatProfile(format=fmt, ontology_chapter_format=chapter)
     for fmt in LLMGraphFormat
     for chapter in OntologyChapterFormat
+    if chapter is not OntologyChapterFormat.AUTO
 }
 
 
@@ -514,6 +524,16 @@ def get_graph_format_profile(
         ontology_chapter_format: Syntax of the ``# ONTOLOGY`` chapter in the
             prompts built from this profile. The facts loop passes the
             deployment's ``ONTOLOGY_CHAPTER_FORMAT``; callers that leave it at
-            ``INHERIT`` get a chapter in ``fmt``.
+            ``INHERIT`` get a chapter in ``fmt``. ``AUTO`` is rejected -- it is
+            resolved against the render mode when the configuration is built.
+
+    Raises:
+        ValueError: If ``ontology_chapter_format`` is ``AUTO``.
     """
+    if ontology_chapter_format is OntologyChapterFormat.AUTO:
+        raise ValueError(
+            "ONTOLOGY_CHAPTER_FORMAT=auto is resolved against the render mode "
+            "when the configuration is built and must not reach a prompt "
+            "profile; pass the resolved value."
+        )
     return _PROFILES[(fmt, ontology_chapter_format)]

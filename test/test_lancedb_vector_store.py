@@ -140,3 +140,60 @@ def test_lancedb_default_tables_use_default_tenant_project(tmp_path: Path) -> No
     expected = tenant_project_ontologies_name(DEFAULT_TENANT, DEFAULT_PROJECT)
     assert store._ontology_table_name() == expected
     assert store._data_dir() == tmp_path.resolve()
+
+
+def _ontology_without_optional_text(iri: str) -> Ontology:
+    """An ontology whose atoms populate none of the optional payload columns."""
+    ttl = f"""
+    @prefix ex: <{iri}#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    ex:Plain a ex:Concept ;
+        rdfs:label "Plain concept" .
+    """
+    return Ontology(iri=iri, graph=RDFGraph._from_turtle_str(ttl))
+
+
+def _ontology_with_symbols(iri: str) -> Ontology:
+    """An ontology whose atoms do populate them (symbols, notation, versions)."""
+    ttl = f"""
+    @prefix ex: <{iri}#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix owl: <http://www.w3.org/2002/07/owl#> .
+    @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+    @prefix qudt: <http://qudt.org/schema/qudt/> .
+    <{iri}> a owl:Ontology ; owl:versionInfo "1.2.3" .
+    ex:Millivolt a ex:Unit ;
+        rdfs:label "millivolt" ;
+        skos:altLabel "mV" ;
+        skos:notation "mV" ;
+        qudt:symbol "mV" ;
+        rdfs:comment "A unit carrying symbol surfaces." .
+    """
+    return Ontology(iri=iri, graph=RDFGraph._from_turtle_str(ttl))
+
+
+@pytest.mark.anyio
+async def test_lancedb_indexes_a_second_ontology_that_fills_new_columns(
+    tmp_path: Path,
+) -> None:
+    """Indexing order must not decide which ontologies a catalog can hold.
+
+    The table schema used to be inferred from the first batch written, so a column
+    empty throughout the first ontology was typed ``null`` and every later ontology
+    that populated it failed to merge. A catalog silently capped at its first
+    ontology is indistinguishable from one where retrieval simply found nothing.
+    """
+    store = _build_store(tmp_path)
+    await store.initialize()
+
+    plain = _ontology_without_optional_text("https://example.org/plain")
+    symbols = _ontology_with_symbols("https://example.org/symbols")
+
+    assert store.index_ontology(plain) > 0
+    # Same table, and this one carries versions, notations and symbol surfaces.
+    assert store.index_ontology(symbols) > 0
+
+    # Retrievable, not merely written: a row whose optional columns were dropped
+    # on the way in would still count as indexed.
+    hits = store.search_patches(query="millivolt", top_k=5)
+    assert any(hit.ontology_iri == symbols.iri for hit in hits)

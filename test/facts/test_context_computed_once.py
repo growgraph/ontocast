@@ -19,6 +19,7 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import (
     OntologyChapterFormat,
     OntologyContextMode,
+    OntologyContextScope,
     RetrievalMetric,
     Status,
 )
@@ -86,6 +87,8 @@ def _tools(*, context_from_units: bool = False) -> ToolBox:
                     ontology_context_max_triples=4000,
                     ontology_chapter_format=OntologyChapterFormat.INHERIT,
                     ontology_text_caps=TextCaps(),
+                    ontology_context_scope=OntologyContextScope.UNIT,
+                    fanout_warmup_units=0,
                 ),
                 get_tool_config=lambda: tool_config,
             ),

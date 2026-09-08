@@ -730,6 +730,20 @@ def test_dump_run_manifest_records_cost_and_configuration(tmp_path) -> None:
         "model_name": "kimi-k3",
         "temperature": 0.0,
         "think": True,
+        "max_inflight": 16,
+    }
+    # The settings that move cost without moving any generation setting beside
+    # them. Two runs used to be able to differ several-fold in tokens with
+    # nothing in either manifest to say why.
+    assert payload["prompting"] == {
+        "llm_graph_format": "jsonld",
+        "ontology_chapter_format": "inherit",
+        "ontology_context_scope": "unit",
+        "fanout_warmup_units": 0,
+        "parallel_workers": 16,
+        "embedding_model_name": (
+            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+        ),
     }
     # Billed and replayed stay distinct all the way to disk -- the whole point
     # of persisting this is comparing runs, and a replay is not a cost.

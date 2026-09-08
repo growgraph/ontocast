@@ -14,6 +14,7 @@ from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
 from ontocast.onto.enum import (
     OntologyAssemblyMode,
     OntologyContextMode,
+    OntologyContextScope,
     RetrievalMetric,
     Status,
     WorkflowNode,
@@ -38,6 +39,7 @@ from ontocast.stategraph.atomic import facts_loop, ontology_loop
 from ontocast.stategraph.context_resolver import (
     aggregate_writable_metrics,
     build_merged_document_ontology_context,
+    build_unioned_document_ontology_context,
 )
 from ontocast.stategraph.facts_gate import run_facts_gate
 from ontocast.stategraph.helpers import (
@@ -89,6 +91,8 @@ async def _gather_units(
     node: WorkflowNode,
     state: AgentState,
     tasks: Sequence[Coroutine[Any, Any, T]],
+    *,
+    index_offset: int = 0,
 ) -> tuple[list[T], int]:
     """Run per-unit tasks concurrently, recording the stage's event-loop stall.
 
@@ -117,6 +121,10 @@ async def _gather_units(
         node: Fan-out node the tasks belong to; namespaces the metric keys.
         state: Document state whose tracker the stage metrics land on.
         tasks: Per-unit coroutines to run concurrently.
+        index_offset: Index of ``tasks[0]`` among the document's units. A
+            warm-up splits the fan-out into two gathers, and without this the
+            second batch would name its failures by position within the batch --
+            reporting unit 0 for a unit that is not unit 0.
 
     Returns:
         tuple: Successful results in submission order, and the number of units
@@ -138,7 +146,11 @@ async def _gather_units(
             failures += 1
             state.budget_tracker.incr(f"{node}/unit_errors")
             logger.exception(
-                "Unit %s raised during %s: %s", index, node, item, exc_info=item
+                "Unit %s raised during %s: %s",
+                index + index_offset,
+                node,
+                item,
+                exc_info=item,
             )
             continue
         results.append(item)
@@ -648,6 +660,18 @@ def make_render_facts_node(tools: ToolBox):
         merged_context = build_merged_document_ontology_context(
             UnitLoopContext.from_agent_state(state)
         )
+        if (
+            merged_context is None
+            and tools.config.server.ontology_context_scope
+            == OntologyContextScope.DOCUMENT
+        ):
+            # No ontology stage ran, so there is nothing to merge -- but the
+            # deployment has asked for one chapter per document rather than one
+            # per unit. Resolve every unit's context up front and union it, so
+            # the fan-out shares a prompt prefix instead of N distinct ones.
+            merged_context = await build_unioned_document_ontology_context(
+                UnitLoopContext.from_agent_state(state), tools, state.content_units
+            )
         if merged_context is not None:
             # Hand the same graph to merge/validate downstream instead of
             # letting each rebuild it.
@@ -705,10 +729,32 @@ def make_render_facts_node(tools: ToolBox):
                     result.assembly_mode_used,
                 )
 
-        tasks = [process_unit(i) for i, _ in enumerate(state.content_units)]
-        raw_results, unit_errors = await _gather_units(
-            WorkflowNode.RENDER_FACTS, state, tasks
+        # A provider's prefix cache is populated by a request that has already
+        # completed, so a fan-out that issues every call at once has all of them
+        # miss a prefix they all share. Running the first unit alone turns the
+        # rest into hits -- but only where the chapter is shared, which is why
+        # this is a separate knob rather than an implication of the scope.
+        warmup = min(
+            tools.config.server.fanout_warmup_units,
+            len(state.content_units),
         )
+        raw_results: list = []
+        unit_errors = 0
+        if warmup:
+            warm_results, warm_errors = await _gather_units(
+                WorkflowNode.RENDER_FACTS,
+                state,
+                [process_unit(i) for i in range(warmup)],
+            )
+            raw_results.extend(warm_results)
+            unit_errors += warm_errors
+        rest = [process_unit(i) for i in range(warmup, len(state.content_units))]
+        if rest:
+            more_results, more_errors = await _gather_units(
+                WorkflowNode.RENDER_FACTS, state, rest, index_offset=warmup
+            )
+            raw_results.extend(more_results)
+            unit_errors += more_errors
         ordered_results = sorted(raw_results, key=lambda item: item[0])
 
         facts_units: list[ContentUnit] = []

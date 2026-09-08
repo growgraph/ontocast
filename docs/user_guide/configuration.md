@@ -229,16 +229,18 @@ MAX_VISITS_PER_NODE=1                    # canonical name; MAX_VISITS is an acce
 FACTS_CRITIC_PASSES=1                    # review-and-patch passes per facts unit
 RENDER_MODE=ontology_and_facts           # which pipeline blocks run — see below
 LLM_GRAPH_FORMAT=jsonld                  # jsonld | turtle (legacy) — see below
-ONTOLOGY_CHAPTER_FORMAT=inherit          # inherit | turtle | term_sheet: the facts prompts' ontology chapter only — see below
+ONTOLOGY_CHAPTER_FORMAT=auto             # auto | inherit | turtle | term_sheet: the facts prompts' ontology chapter only — see below
 # ONTOLOGY_TEXT_MAX_CHARS_NAMING=80      # cap on labels / alt labels in that chapter (unset = as authored)
 # ONTOLOGY_TEXT_MAX_CHARS_CONTRACT=240   # cap on scope notes / definitions
 # ONTOLOGY_TEXT_MAX_CHARS_PROSE=160      # cap on rdfs:comment and other notes
 # ONTOLOGY_TEXT_TOTAL_BUDGET=40000       # ceiling on all chapter text together
 ONTOLOGY_CONTEXT_MODE=selected_single_ontology   # where per-unit schema comes from — see below
+ONTOLOGY_CONTEXT_SCOPE=unit              # unit | document: one chapter per unit, or one shared per document
 #ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID=catalog_iri_or_id_or_prefix
 ONTOLOGY_CONTEXT_MAX_TRIPLES=4000        # prompt budget for the ontology chapter — see below
 #ONTOLOGY_MAX_TRIPLES=                   # write-path growth backstop, NOT a context cap; unset = unlimited
 PARALLEL_WORKERS=16                      # concurrent content-unit workers; startup warns when above LLM_MAX_INFLIGHT
+FANOUT_WARMUP_UNITS=0                    # units to finish before fanning out the rest (prefix-cache warm-up)
 ENABLE_ONTOLOGY_CONSOLIDATION=false      # optional post-normalization merge pass; inert for multi-ontology documents
 # MAX_CONCURRENT_PROCESSES=4      # optional cap on simultaneous /process handlers
 # MAX_TENANCY_SCOPES=16           # resident per-tenant/project ToolBoxes (LRU)
@@ -606,6 +608,7 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 # VECTOR_STORE_INDUCED_SUBGRAPH_TYPE_PROMOTION_SCORE_FACTOR=1.0
 # VECTOR_STORE_INDUCED_SUBGRAPH_SEED_ORDER=score
 # VECTOR_STORE_PROPOSITION_WINDOW_SENTENCES=2
+# VECTOR_STORE_PROPOSITION_WINDOW_MAX_CHARS=   # length bound; replaces the sentence one
 # VECTOR_STORE_PROPOSITION_MAX_WINDOWS=16
 # VECTOR_STORE_PROPOSITION_RETRIEVAL_ENABLED=true
 # VECTOR_STORE_CONSISTENCY_CRITIC_MIN_FUSED_SCORE=0.5
@@ -637,6 +640,7 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `VECTOR_STORE_LABEL_PREDICATES` | `rdfs:label`, `skos:prefLabel`, `dcterms:title`, `skos:altLabel`, `dcterms:alternative` | Predicates whose literals are **indexed** as declared labels, in descending priority. Changing this requires a reindex |
 | `VECTOR_STORE_SYMBOL_PREDICATES` | `skos:notation`, `qudt:symbol`, `qudt:ucumCode` | Predicates whose literals are **indexed** as symbols, collected against their own budget so multilingual labels cannot crowd them out. The indexing half of the pair above; configuring only the retrieval half changes what surfaces without changing what is stored. Changing this requires a reindex |
 | `VECTOR_STORE_PROPOSITION_WINDOW_SENTENCES` | `2` | Sentences per proposition window for multi-query retrieval |
+| `VECTOR_STORE_PROPOSITION_WINDOW_MAX_CHARS` | unset | Characters per window; **replaces** the sentence bound when set. Caps windows the encoder would truncate, and coalesces the fragments the period-splitter creates (`J. Phys. Chem. Lett.` is four "sentences") |
 | `VECTOR_STORE_PROPOSITION_MAX_WINDOWS` | `16` | Cap on windows per excerpt; when a chunk has more, windows are sampled at an even stride spanning both endpoints (not “first N only”) |
 | `VECTOR_STORE_PROPOSITION_RETRIEVAL_ENABLED` | `true` | Multi-query proposition retrieval for induced-graph mode |
 | `VECTOR_STORE_CONSISTENCY_CRITIC_MIN_FUSED_SCORE` | `0.5` | Min weighted reciprocal-rank score for the consistency critic to flag a cross-ontology conflict (not cosine). Renamed from `VECTOR_STORE_CONSISTENCY_CRITIC_SIMILARITY_THRESHOLD` (old default `0.7`) |
@@ -659,7 +663,7 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `VECTOR_STORE_LEXICAL_TRIGGER_MAX_ATOMS` | `16` | Additive cap on trigger seeds per retrieval call (outside semantic budget) |
 | `VECTOR_STORE_LEXICAL_TRIGGER_SCORE` | `0.35` | Score assigned to trigger hits (calibrated against fused rank scores: rank-1 core = 0.583, merged floor = 0.18) |
 | `VECTOR_STORE_LEXICAL_TRIGGER_FUSION` | `max_merge` | `max_merge` promotes an already-retrieved atom to `max(semantic, trigger)` score; `append` (legacy) only adds unseen atoms |
-| `VECTOR_STORE_QUERY_UNIT_SIGNALS_ENABLED` | `false` | Match number-adjacent tokens ("4-15 days", "200 kV", "0.5 %") case-insensitively and plural-tolerantly against catalog labels/symbols/UCUM codes; matched entities join the snapshot seeds at trigger score, outside the semantic budget |
+| `VECTOR_STORE_QUERY_UNIT_SIGNALS_ENABLED` | `true` | Match number-adjacent tokens ("4-15 days", "200 kV", "0.5 %") case-insensitively and plural-tolerantly against catalog labels/symbols/UCUM codes; matched entities join the snapshot seeds at trigger score, outside the semantic budget. Query-time only, so switching it needs no reindex |
 | `VECTOR_STORE_SYMBOL_CASE_MISMATCH_POLICY` | `demote` | Merge-time treatment of atoms whose declared symbol surfaces (`skos:notation`, `qudt:symbol`, `qudt:ucumCode`) match a query token only case-insensitively with no exact-case match anywhere — the BM25/dense text is case-folded, so prose "meV" also retrieves `unit:MegaEV` (symbol "MeV"). `demote` multiplies the atom score, `drop` removes it, `off` keeps legacy behavior; exact-case and label-only matches are never touched |
 | `VECTOR_STORE_SYMBOL_CASE_MISMATCH_DEMOTE_FACTOR` | `0.5` | Score multiplier applied under the `demote` policy |
 | `FACTS_OBJECT_PROPERTY_LITERAL_CHECK` | `true` | Quarantine string literals on predicates whose schema range is a class (e.g. `qudt:unit`); surfaced to the facts critic and the deterministic repair loop |
@@ -763,7 +767,7 @@ See [Ontology Context](ontology_context.md) for vector-search mode requirements.
 
 Post-vector scoring and capping (backend-agnostic; prefix `ONTOLOGY_PATCH_`). Applied after hybrid dense + BM25 retrieval, before induced-subgraph expansion.
 
-**Default path** (simple): max-score IRI dedupe → global score order → window-scaled hard cap. A non-zero `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` inserts per-ontology round-robin (best-scoring ontologies first) instead of plain score order. Relative floors, hybrid tier merge, merged-score ratio, and MMR are advanced opt-in.
+**The path** (simple): max-score IRI dedupe → global score order → window-scaled hard cap. A non-zero `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` inserts per-ontology round-robin (best-scoring ontologies first) instead of plain score order. Merged-score ratio and MMR are advanced opt-in.
 
 ```bash
 ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE=max_score
@@ -774,33 +778,20 @@ ONTOLOGY_PATCH_MAX_ATOMS=96
 ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE=0.18
 ONTOLOGY_PATCH_MMR_LAMBDA=1.0
 # Advanced (off by default):
-# ONTOLOGY_PATCH_PER_QUERY_CORE_SCORE_RATIO=0.0
-# ONTOLOGY_PATCH_PER_QUERY_NEIGHBORHOOD_SCORE_RATIO=0.0
-# ONTOLOGY_PATCH_PER_QUERY_BM25_SCORE_RATIO=0.0
 # ONTOLOGY_PATCH_MERGED_SCORE_RATIO=0.0
-# ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE=hybrid
-# ONTOLOGY_PATCH_MAX_ATOMS_TIER1=12
-# ONTOLOGY_PATCH_MIN_ENTITY_SCORE=0.3
+# ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE=sum_score
 ```
 
 | Variable | Default | Role |
 |----------|---------|------|
-| `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `max_score` | Default merge; `sum_score` sums per-window scores; `hybrid` is tier-1 + tier-2 |
+| `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `max_score` | Default merge; `sum_score` sums per-window scores, so a term several windows agree on outranks one window's top hit |
 | `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | `0` | Max seeds per ontology in round-robin fill; `0` (default) means global score order, which measured better on both recall and precision |
 | `ONTOLOGY_PATCH_SEEDS_PER_WINDOW` | `4` | Scales effective cap with proposition window count |
 | `ONTOLOGY_PATCH_MAX_ATOMS_BASE` | `96` | Floor for effective atom cap; below the candidate pool it silently clips seeds on multi-ontology catalogs |
 | `ONTOLOGY_PATCH_MAX_ATOMS` | `96` | Hard cap: `min(max_atoms, max(base, seeds_per_window × n_queries))` (`0` = unlimited) |
-| `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` | `0.18` | Empty patch when the best **per-window** fused score is below this (`0` disables); evaluated before cross-window merge |
+| `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` | `0.18` | Empty patch when the best **per-window** fused score falls below this **fraction of the best attainable** fused score (`0` disables); evaluated before cross-window merge |
 | `ONTOLOGY_PATCH_MMR_LAMBDA` | `1.0` | `1.0` skips MMR; lower values enable diversity rerank |
-| `ONTOLOGY_PATCH_PER_QUERY_CORE_SCORE_RATIO` | `0.0` | Advanced: per-window core relative floor (`0` disables) |
-| `ONTOLOGY_PATCH_PER_QUERY_NEIGHBORHOOD_SCORE_RATIO` | `0.0` | Advanced: per-window neighborhood relative floor |
-| `ONTOLOGY_PATCH_PER_QUERY_BM25_SCORE_RATIO` | `0.0` | Advanced: per-window BM25 relative floor |
-| `ONTOLOGY_PATCH_MIN_CORE_QUERY_BEST_SCORE` | `0.0` | If `> 0`, windows whose top core score is below this contribute no core hits |
-| `ONTOLOGY_PATCH_MIN_NEIGHBORHOOD_QUERY_BEST_SCORE` | `0.0` | If `> 0`, windows whose top neighborhood score is below this contribute no neighborhood hits |
-| `ONTOLOGY_PATCH_MIN_BM25_QUERY_BEST_SCORE` | `0.0` | If `> 0`, windows whose top BM25 score is below this contribute no BM25 hits |
 | `ONTOLOGY_PATCH_MERGED_SCORE_RATIO` | `0.0` | Advanced: drop seeds below `top_score × ratio` (`0` disables) |
-| `ONTOLOGY_PATCH_MAX_ATOMS_TIER1` | `12` | Hybrid only: global tier-1 cap (`0` = no cap) |
-| `ONTOLOGY_PATCH_MIN_ENTITY_SCORE` | `0.3` | Hybrid only: tier-2 minimum fused score |
 | `ONTOLOGY_PATCH_PER_ONTOLOGY_ATOM_FLOOR` | `2` | Reserve pass before the global fill: every contributing ontology is guaranteed `min(floor, its candidates)` seed slots (round-robin). Unlike the quota (a ceiling), the floor protects small modules from starvation at the atom cap. `0` disables |
 | `ONTOLOGY_PATCH_SMALL_MODULE_CLOSURE_MAX_TRIPLES` | `300` | Include a source ontology's whole header-stripped graph in the snapshot when it has ≥ 1 admitted atom and at most this many triples (prevents near-miss property improvisation on tiny vocabularies). `0` disables |
 | `ONTOLOGY_PATCH_PER_ROLE_ATOM_FLOOR` | `12` | Reserve pass for predicate-role atoms before the global fill. Prose reads as noun phrases, so classes out-score the properties that link them in a shared ranking. `0` disables |
@@ -821,9 +812,9 @@ what to read while doing so.
 | `ONTOLOGY_PATCH_PER_ONTOLOGY_ATOM_FLOOR` | `2` | 2–4 | Saturates quickly. **The closure above is inert without this** — a module must win at least one seed before its graph is considered |
 | `ONTOLOGY_PATCH_SCHEMA_CLOSURE_MAX_ENTITIES` | `32` | 16–48 | Admits properties whose domain/range names an admitted class. Saturates well before the top of the range |
 | `ONTOLOGY_PATCH_PER_ROLE_ATOM_FLOOR` | `12` | 8–16 | Weak on its own; contributes once the schema closure is on |
-| `ONTOLOGY_PATCH_MAX_ATOMS` / `_BASE` | `96` | 96–192 | Trades directly against context size once the triple budget is not binding |
-| `VECTOR_STORE_TOP_K` | `20` | — | **Insensitive** (10–40 all within 1 point). Effectively capped by `MAX_ATOMS_BASE`; leave alone |
-| `ONTOLOGY_PATCH_MMR_LAMBDA` | `1.0` | — | **Insensitive** (0.5–1.0 identical on this corpus). Leave alone unless you see near-duplicate terms crowding the snapshot |
+| `ONTOLOGY_PATCH_MAX_ATOMS` / `_BASE` | `96` | 96–192 | Trades directly against context size once the triple budget is not binding. **Raise `_BASE`, not `MAX_ATOMS`:** the effective cap is `min(MAX_ATOMS, max(MAX_ATOMS_BASE, SEEDS_PER_WINDOW × windows))` and `windows` is capped by `VECTOR_STORE_PROPOSITION_MAX_WINDOWS`, so at the defaults nothing above 96 can bind and every larger value is the same run. A warning at startup names the ceiling |
+| `VECTOR_STORE_TOP_K` | `40` | 20–40 | How many candidates each window **offers** selection — not how many survive it. `MAX_ATOMS_BASE` caps the retained set, so raising this fills the same budget from a wider field rather than enlarging the snapshot; it buys the terms a shallower list ranked just out of reach, most of all the scaffolding vocabulary that arrives through expansion rather than as a seed. Costs vector-search time, not prompt budget |
+| `ONTOLOGY_PATCH_MMR_LAMBDA` | `1.0` | — | **Insensitive** (0.5–1.0 identical on this corpus). Leave alone unless you see near-duplicate terms crowding the snapshot. Below 1.0 it selects the whole budget itself and cannot honour the two atom floors, so the combination is **rejected at startup**: zero the floors to choose MMR, or leave this at 1.0 to keep them |
 
 Combined at the defaults: needed-term recall 11/11, declared-property coverage
 82%, at roughly 2.7× the snapshot size of the old settings. That size increase is
@@ -940,22 +931,56 @@ LOGGING_LEVEL=info                       # debug | info | warning | error
 Overridable per request as `llm_graph_format`, with the same precedence and the
 same 400-on-typo contract as [`RENDER_MODE`](#render-mode-render_mode).
 
-`ONTOLOGY_CHAPTER_FORMAT` (`inherit` default, `turtle`, or `term_sheet`)
-narrows the choice to one chapter. With `turtle` the `# ONTOLOGY` chapter of the
-facts render and critic prompts is serialized as canonical Turtle while
-everything else keeps the wire format above; that chapter is the bulk of a facts
-prompt and JSON-LD spends about twice the characters per triple, so this is the
-context lever that leaves parsing untouched. With `term_sheet` the chapter stops
-being a serialized graph and becomes a line-per-term listing — name, surface
-forms, type, hierarchy, domain/range and scope note, without the per-statement
-RDF scaffolding or `rdfs:comment` — which is by a wide margin the cheapest of
-the three. See [Performance](performance.md) for what each keeps and drops.
+`ONTOLOGY_CHAPTER_FORMAT` (`auto` default, or `inherit`, `turtle`,
+`term_sheet`) narrows the choice to one chapter. With `turtle` the `# ONTOLOGY`
+chapter of the facts render and critic prompts is serialized as canonical
+Turtle while everything else keeps the wire format above; that chapter is the
+bulk of a facts prompt and JSON-LD spends materially more characters per
+triple, so this is a context lever that leaves parsing untouched. With
+`term_sheet` the chapter stops being a serialized graph and becomes a
+line-per-term listing — name, surface forms, type, hierarchy, domain/range and
+one prose field (the scope note where a term has one, `rdfs:comment`
+otherwise), without the per-statement RDF scaffolding — which is by a wide
+margin the cheapest of the four. See [Performance](performance.md) for what
+each keeps and drops.
 
-All three apply to the facts loop only, are not overridable per request, and
-change the LLM cache key for facts calls. `term_sheet` additionally requires
-`RENDER_MODE=facts`: the ontology loop emits a patch against the statements in
-its chapter, so that chapter has to be a graph, and a configuration that asks
-for both is rejected at startup rather than silently falling back.
+`auto` picks the cheapest chapter the render mode can legally read:
+`term_sheet` under `RENDER_MODE=facts`, `inherit` otherwise. It is resolved
+when the configuration is built, so the run manifest and the LLM cache key
+carry the chapter actually sent, never the word `auto`.
+
+Because it is resolved against the *deployment's* `RENDER_MODE`, a per-request
+`render_mode` override does not re-resolve it: a request that switches an
+ontology-mode deployment to facts gets a graph chapter rather than a term sheet
+— cheaper was available and not taken, which costs tokens and nothing else. The
+converse cannot go wrong: the chapter format reaches the facts loop only, so an
+ontology pass never receives a listing whatever a request asks for.
+
+All of them apply to the facts loop only, are not overridable per request, and
+change the LLM cache key for facts calls when the resolved chapter changes.
+An **explicit** `term_sheet` additionally requires `RENDER_MODE=facts`: the
+ontology loop emits a patch against the statements in its chapter, so that
+chapter has to be a graph, and a configuration that asks for both is rejected
+at startup rather than silently falling back. `auto` never fails that way —
+where a listing is illegal it simply yields a graph.
+
+### Ontology context scope (`ONTOLOGY_CONTEXT_SCOPE`)
+
+`unit` (default) has each content unit retrieve its own context: the smallest
+chapter per unit, and a different one for each, so no two calls in a document
+share a prompt prefix. `document` resolves each unit's context as before and
+shows every unit the union — larger per call, identical across the fan-out, and
+therefore chargeable at a provider's cached rate on every call after the first.
+Recall-safe by construction: the union contains every atom each unit's own
+retrieval selected. What it costs is precision, since a unit also sees its
+siblings' terms.
+
+Pair it with `FANOUT_WARMUP_UNITS=1`. A prefix cache is populated by a request
+that has already *completed*, and the fan-out issues every unit's call at once,
+so without a warm-up all of them miss a prefix they all share. The two settings
+are worth nothing apart. On OpenAI, `LLM_PROMPT_CACHE_KEY` additionally keeps
+those requests routed to one cache shard; any stable string works, and it must
+not vary per request. See [Performance](performance.md).
 
 ### Ontology chapter text caps
 
@@ -967,12 +992,12 @@ long any one literal may be, so a chapter well inside it can still be unbounded.
 
 All four are unset by default and are inert when unset — a catalog whose labels
 and comments are already short sees byte-identical prompts and cache keys.
-Clipping is on a word boundary with a visible marker. Over the total budget,
-prose is tightened then dropped, then contracts, and only then are names clipped
-to a floor; names are never dropped. The run manifest's `budget.counters`
-reports `chapter/text_chars_before`, `chapter/text_chars_after`,
-`chapter/literals_clipped`, `chapter/literals_dropped` and
-`chapter/text_over_budget`.
+Clipping is on a word boundary with a visible marker, and **only ever
+shortens** — no statement is removed to meet a budget. Over the total budget,
+prose is fitted first, then contracts, then names, each to the largest cap that
+still meets it. The run manifest's `budget.counters` reports
+`chapter/text_chars_before`, `chapter/text_chars_after`,
+`chapter/literals_clipped` and `chapter/text_over_budget`.
 
 ## Ontology Context Size (`ONTOLOGY_CONTEXT_MAX_TRIPLES`)
 

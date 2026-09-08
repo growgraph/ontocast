@@ -182,15 +182,19 @@ Default path: per-window channel fusion → max-score IRI dedupe → global scor
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | `24` | Per-entity BFS quota hint |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_CANDIDATE_PUSHDOWN` | `false` | Opt-in SPARQL neighborhood CONSTRUCT (see below) |
 | `VECTOR_STORE_PROPOSITION_MAX_WINDOWS` | `16` | Window cap; long chunks sample evenly across the text |
-| `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `max_score` | Default merge; `sum_score` (rewards multi-window agreement) and `hybrid` are opt-in |
+| `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `max_score` | Default merge; `sum_score` (rewards multi-window agreement) is opt-in |
 | `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | `0` | Max seeds per ontology; `0` (default) uses global score order |
 | `ONTOLOGY_PATCH_SEEDS_PER_WINDOW` | `4` | Scales effective atom cap with proposition windows |
 | `ONTOLOGY_PATCH_MAX_ATOMS_BASE` | `96` | Floor for the effective atom cap |
 | `ONTOLOGY_PATCH_MAX_ATOMS` | `96` | Hard cap: `min(max_atoms, max(base, seeds_per_window × n_queries))` |
-| `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` | `0.18` | Empty patch when the best per-window fused score is below this |
-| `ONTOLOGY_PATCH_MMR_LAMBDA` | `1.0` | `1.0` skips MMR (default); lower enables diversity rerank |
+| `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` | `0.18` | Empty patch when the best per-window fused score is below this **fraction of the best attainable** fused score |
+| `ONTOLOGY_PATCH_MMR_LAMBDA` | `1.0` | `1.0` skips MMR (default); lower enables diversity rerank. Below 1.0 it is quadratic in the candidate set, so it is costly at a wide `TOP_K` |
+| `VECTOR_STORE_BM25_TOP_K` | unset | Sparse-lane depth when it should differ from `TOP_K`; unset means both are the same |
+| `VECTOR_STORE_FUSION_RANK_CONSTANT` | `0.0` | Smoothing in `weight / (constant + rank)`. See the warning below before raising it |
+| `VECTOR_STORE_PROPOSITION_WINDOW_MAX_CHARS` | unset | Characters per window; replaces the sentence bound when set |
+| `VECTOR_STORE_PROPOSITION_WINDOW_STRIDE` | unset | Sentences advanced between windows; unset strides by the window size, so windows are disjoint |
 
-Advanced (off by default): `ONTOLOGY_PATCH_PER_QUERY_*_SCORE_RATIO`, `ONTOLOGY_PATCH_MERGED_SCORE_RATIO`, hybrid tier-1/tier-2 (`MAX_ATOMS_TIER1`, `MIN_ENTITY_SCORE`).
+Advanced (off by default): `ONTOLOGY_PATCH_MERGED_SCORE_RATIO`.
 
 ### Recommended preset for dense scientific text
 
@@ -390,6 +394,93 @@ This is what makes a **small** vocabulary findable by symbol in the sparse lane.
 thousands of near-identical unit embeddings cluster together and displace domain
 terms under the global atom cap.
 
+### Lane depth, and the fusion scale
+
+Lanes are combined by weighted reciprocal rank, so a lane's **depth is a weight in
+disguise**: a list of length N contributes ranks 1..N at full lane weight however weak
+its tail is. `VECTOR_STORE_BM25_TOP_K` exists because the lanes fail differently —
+dense retrieval degrades into topical near-misses, lexical retrieval into unrelated text
+sharing a token — so the depth at which each stops paying is not the same number.
+
+!!! note "Why the relevance gate is a fraction, not a score"
+    `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` is a fraction of the best score a window
+    could possibly achieve — an atom ranked first in every lane. It has to be,
+    because the lane weights and the rank constant both **rescale the fused
+    score**: a rank-1 hit worth `w` unsmoothed is worth `w / (1 + constant)`
+    smoothed. Read as an absolute number, a gate calibrated without smoothing
+    rejected *every* candidate once smoothing was on, and the symptom — an empty
+    ontology context — reads as a retrieval failure rather than a miscalibration.
+    Expressed as a fraction it means one thing at every constant, which is what
+    lets smoothing be evaluated on its own merits.
+
+### Query windows
+
+Retrieval queries are proposition windows over the content unit, not the whole unit.
+Two properties are easy to be caught by:
+
+- **A sentence count is not a bound on how much text a query carries.** Two
+  sentences of technical prose span an order of magnitude in length, and the
+  splitter breaks on every period with no abbreviation handling — so
+  `J. Phys. Chem. Lett.` is four "sentences", and a two-sentence window over a
+  citation is a fragment with nothing to retrieve.
+  `VECTOR_STORE_PROPOSITION_WINDOW_MAX_CHARS` bounds by length instead: it caps
+  the long windows that the encoder would truncate *and* coalesces the short
+  fragments, because it keeps taking sentences until the budget is met. It
+  replaces the sentence bound rather than joining it. Set it below the encoder's
+  sequence limit and truncation becomes impossible by construction; read the
+  limit and the observed characters-per-token from the retrieval metrics rather
+  than assuming a ratio.
+- **A sentence count is not a bound on how much text a query carries.** Two
+  sentences of technical prose span an order of magnitude in length, and the
+  splitter breaks on every period with no abbreviation handling — so
+  `J. Phys. Chem. Lett.` is four "sentences", and a two-sentence window over a
+  citation is a fragment with nothing to retrieve.
+  `VECTOR_STORE_PROPOSITION_WINDOW_MAX_CHARS` bounds by length instead: it caps
+  the long windows that the encoder would truncate *and* coalesces the short
+  fragments, because it keeps taking sentences until the budget is met. It
+  replaces the sentence bound rather than joining it. Set it below the encoder's
+  sequence limit and truncation becomes impossible by construction; read the
+  limit and the observed characters-per-token from the retrieval metrics rather
+  than assuming a ratio.
+- **A sentence count is not a bound on how much text a query carries.** Two
+  sentences of technical prose span an order of magnitude in length, and the
+  splitter breaks on every period with no abbreviation handling — so
+  `J. Phys. Chem. Lett.` is four "sentences", and a two-sentence window over a
+  citation is a fragment with nothing to retrieve.
+  `VECTOR_STORE_PROPOSITION_WINDOW_MAX_CHARS` bounds by length instead: it caps
+  the long windows that the encoder would truncate *and* coalesces the short
+  fragments, because it keeps taking sentences until the budget is met. It
+  replaces the sentence bound rather than joining it. Set it below the encoder's
+  sequence limit and truncation becomes impossible by construction; read the
+  limit and the observed characters-per-token from the retrieval metrics rather
+  than assuming a ratio.
+- **Windows are disjoint by default.** A statement whose subject and value straddle a
+  window boundary appears in no window at all, and neither half retrieves what the pair
+  together names. `VECTOR_STORE_PROPOSITION_WINDOW_STRIDE` overlaps them, at the cost of
+  more queries — and, once `PROPOSITION_MAX_WINDOWS` binds, of coverage elsewhere.
+- **`PROPOSITION_MAX_WINDOWS` drops text when it binds.** Over the cap, windows
+  are subsampled evenly across the unit — so coverage is preserved but *density*
+  is not, and the text in a dropped window reaches no dense or sparse lane at
+  all. Whether it binds is a property of how long your content units are, which
+  is why it can be inert on short units and lossy on long ones.
+- **`PROPOSITION_MAX_WINDOWS` drops text when it binds.** Over the cap, windows
+  are subsampled evenly across the unit — so coverage is preserved but *density*
+  is not, and the text in a dropped window reaches no dense or sparse lane at
+  all. Whether it binds is a property of how long your content units are, which
+  is why it can be inert on short units and lossy on long ones.
+- **`PROPOSITION_MAX_WINDOWS` drops text when it binds.** Over the cap, windows
+  are subsampled evenly across the unit — so coverage is preserved but *density*
+  is not, and the text in a dropped window reaches no dense or sparse lane at
+  all. Whether it binds is a property of how long your content units are, which
+  is why it can be inert on short units and lossy on long ones.
+- **The embedding model truncates, silently.** A window longer than the checkpoint's
+  sequence limit is cut by the encoder before the model sees it; the vector comes back
+  the right shape for a prefix of the text and nothing downstream can tell. Widening the
+  window past that limit discards query text rather than matching more of it. Read
+  `queries_truncated` and `query_sequence_limit` from `retrieval_metrics` before
+  reaching for a wider window — several widely used checkpoints stop at 128 word pieces,
+  well below what a two-sentence window of technical prose costs.
+
 ### Lexical-trigger lane (exact-match codes)
 
 Some catalog terms are identified by a **literal token** in source text — unit symbols
@@ -412,6 +503,21 @@ paraphrase similarity. Those are handled by a separate **lexical-trigger** lane:
   [Configuration](configuration.md).
 
 Requires a **reindex** after upgrading: the embedding contract fingerprint bumps to `sf3`.
+
+### Number-adjacent query signals
+
+`VECTOR_STORE_QUERY_UNIT_SIGNALS_ENABLED` (default **on**) adds a query-time lane that
+takes the tokens sitting immediately after a number — the `days` in "4-15 days", the
+`kV` in "200 kV" — and matches them case-insensitively, with a singular/plural variant,
+against catalog surface forms. Matched entities join the seeds outside the semantic
+budget.
+
+The mechanism fits quantitative extraction exactly: that shape of text is what it
+keys on, and the terms it recovers are the units and qualifiers a value node needs.
+It is narrow by construction and Latin-script/English-centric, so turn it off for a
+catalog whose surface forms are neither, or one whose facts are not quantities.
+Costs no reindex either way — it is query-time only, so it can be A/B'd against an
+index already built.
 
 ### `fixed_single_ontology`
 

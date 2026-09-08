@@ -25,6 +25,12 @@ problem lives in the prompt or in the model's thinking budget.
 
 ### Retrieval metrics
 
+The ontology snapshot's whole-module closures are reported in
+`retrieval_metrics.patch_retrieval`: `module_closure_iris` (admitted whole),
+`module_closure_triples` (what they cost), and `module_closure_declined_iris`
+(kept out by `ONTOLOGY_PATCH_SMALL_MODULE_CLOSURE_MAX_TOTAL_TRIPLES`, named
+rather than merely counted so a missing-term question is answerable).
+
 Alongside the budget, a run accumulates `retrieval_metrics`: counters covering
 how ontology context was assembled, what the facts fan-out produced, and what
 the validation gate found. It is returned as `metadata.retrieval_metrics` on
@@ -76,7 +82,12 @@ pass actually ran — absent means "did not run", which is not the same as zero.
   "loops": {"max_visits": 1, "max_critic_visits": null, "llm_repair_visits": 1},
   "graph_metrics": {"nodes": 130, "edges": 112, "components": 24, "largest_component": 61, "isolated_nodes": 18},
   "llm": {"provider": "ollama", "model_name": "qwen3.6", "temperature": 0.0, "think": true,
-          "reasoning_effort": null, "thinking_budget": null},
+          "reasoning_effort": null, "thinking_budget": null,
+          "prompt_cache_key": null, "max_inflight": 16},
+  "prompting": {"llm_graph_format": "jsonld", "ontology_chapter_format": "inherit",
+                "ontology_context_scope": "unit", "fanout_warmup_units": 0,
+                "parallel_workers": 16,
+                "embedding_model_name": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"},
   "budget": {
     "calls_count": 42, "cache_hits": 0,
     "input_tokens": 380174, "output_tokens": 51203, "reasoning_tokens": 39880,
@@ -111,6 +122,17 @@ pass actually ran — absent means "did not run", which is not the same as zero.
 }
 ```
 
+`prompting` records the settings that change what a run costs without changing
+any of the generation settings beside them. Two runs that agree on `llm` and
+disagree here can differ several-fold in tokens, and before these were recorded
+nothing in either manifest said why. `ontology_chapter_format: "inherit"` follows
+`llm_graph_format`, so the two are not independent — a run that changed the wire
+changed the chapter too unless it pinned the chapter. `ontology_context_scope`
+and `fanout_warmup_units` together decide whether a prompt prefix can be cached
+at all, and `parallel_workers` decides how much of the fan-out issues before the
+first response has populated it, which is why a low `prefix_cache_hit_rate` on a
+wide fan-out is call sequencing rather than configuration.
+
 `budget.counters` holds named event counts, summed across unit workers. Three
 of them cover how the LLM's JSON survived parsing, and they are worth reading on
 any run against a new model:
@@ -136,8 +158,7 @@ context, not the traffic that reads it.
 | `chapter/text_chars_before` | Summed length of the chapter's text literals as the catalog authored them. Reported whether or not a cap is set: this is the number that says what an uncapped chapter costs. |
 | `chapter/text_chars_after` | The same sum after the [text caps](configuration.md#ontology-chapter-text-caps). Equal to `before` when the caps are unset or inert — the common case on a tersely authored catalog, and worth confirming rather than assuming. |
 | `chapter/literals_clipped` | Literals shortened to a per-role cap. Each keeps its statement and its leading text; only the tail is gone. |
-| `chapter/literals_dropped` | Literals removed outright to meet `ONTOLOGY_TEXT_TOTAL_BUDGET`. Non-zero means the per-role caps alone did not fit the chapter and the backstop engaged. |
-| `chapter/text_over_budget` | Chapters that still exceeded the total budget after every tightening stage. These are passed through oversized rather than having their labels removed, so a non-zero count is a budget to raise or a catalog to narrow, not a correctness problem. |
+| `chapter/text_over_budget` | Chapters that still exceeded `ONTOLOGY_TEXT_TOTAL_BUDGET` with every role at its shortest cap. Passed through oversized rather than having statements removed, so a non-zero count is a budget to raise or a catalog to narrow — and specifically a signal to send *fewer terms*, since what remains at that point is the vocabulary itself. |
 
 !!! warning "A rejected request stops the run rather than emptying it"
     A request the provider refuses — an unsupported parameter value, a model

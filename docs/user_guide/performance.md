@@ -271,26 +271,34 @@ Other knobs that change cost rather than concurrency:
 
 ## How much a triple costs
 
-A triple's cost in the prompt is set by the wire format, and the two differ by
-about a factor of two:
+A triple's cost is set by the wire format. `LLM_GRAPH_FORMAT=turtle` spends
+meaningfully fewer characters per triple than the `jsonld` default — it changes
+no extraction semantics, only the encoding — and it invalidates the LLM cache.
 
-**`LLM_GRAPH_FORMAT=jsonld` roughly doubles chars per triple against `turtle`.**
-That is the cost of the default: JSON-LD is more reliably parsed out of
-structured output, and it buys that with context. If you are context-bound
-rather than parse-bound, switching to `turtle` is the largest single lever
-available — larger than any retrieval knob — and it changes no extraction
-semantics, only the encoding. It does invalidate the LLM cache.
+Two things bound that saving, and both matter more than the ratio:
 
-`ONTOLOGY_CHAPTER_FORMAT=turtle` takes that density for the ontology chapter
-alone — the part of a facts prompt that carries most of its characters — while
-the output wire stays JSON-LD, so the parse-reliability argument for the
-default is untouched. It is the first thing to try when facts prompts are
-context-bound.
+- **The encodings do not fail the same way.** JSON-LD is the default because it
+  is parsed more reliably out of structured output; a nested payload that
+  arrives with mismatched brackets is a lost render. Turtle removes that failure
+  mode and introduces another — an IRI a model mints from a phrase containing a
+  delimiter is a legal JSON string and not a legal Turtle IRI. Which one costs
+  you more is a property of your model and your text, and the only way to know
+  is to run both and compare `llm/parse_retry` and `llm/parse_abandoned`.
+- **On a reasoning model, most of the output is not the graph.** Read
+  `reasoning_share_of_output` first. Where it is high the encoding governs a
+  minority of the output tokens, and the thinking budget is the larger lever.
+
+`ONTOLOGY_CHAPTER_FORMAT=turtle` takes the density for the ontology chapter
+alone, leaving the output wire as JSON-LD. Prefer `term_sheet` below: it is
+cheaper still, and unlike the Turtle chapter it does not trade quality for the
+saving.
 
 ### The ontology chapter as a term sheet
 
 `ONTOLOGY_CHAPTER_FORMAT=term_sheet` goes further than a denser serialization
-by not serializing the graph at all. The chapter becomes one line per term —
+by not serializing the graph at all. **A facts-only run gets it by default** —
+that is what the shipped `auto` resolves to; the rest of this section is what
+that default buys, and how to opt out of it. The chapter becomes one line per term —
 its name, the surface forms a document might spell it with, what it is, where
 it sits in the hierarchy, what it connects, and the scope note saying when it
 applies:
@@ -310,15 +318,100 @@ couple of dozen characters each, and a serialized chapter buries them under a
 `skos:altLabel` predicate IRI per entry.
 
 What that drops is the per-statement RDF scaffolding — a node wrapper or
-subject block per term, a repeated predicate IRI per statement — and
-`rdfs:comment`, which is written for someone browsing the ontology rather than
-for an extractor. What it keeps is everything that lets a model pick a term.
+subject block per term, a repeated predicate IRI per statement — which carries
+nothing a reader of the sheet loses. What it keeps is everything that lets a
+model pick a term, including one prose field each: the usage contract
+(`skos:scopeNote`, `skos:definition`) where a term has one, and `rdfs:comment`
+otherwise.
+
+That fallback is deliberate and is not free — it is the difference between a
+listing that re-encodes the chapter and one that cuts it. On a catalog where
+most terms carry a comment and few carry a scope note, dropping comments would
+reduce those terms to a name and a parent, and nothing downstream can recover a
+description that was never shown. The caps below bound how long that prose may
+be; nothing bounds it to zero.
 
 This is admissible only because a facts prompt reads its ontology and writes an
 unrelated graph. The ontology loop writes a *patch against the statements in
-its chapter*, which a listing cannot express, so `term_sheet` requires
-`RENDER_MODE=facts` and is rejected outright otherwise rather than falling back
-to a graph.
+its chapter*, which a listing cannot express, so an explicit `term_sheet`
+requires `RENDER_MODE=facts` and is rejected outright otherwise rather than
+falling back to a graph. That restriction is also why the default is `auto`
+rather than `term_sheet`: a mode-aware default can be the cheapest legal
+chapter everywhere, where a fixed one would either fail on the ontology path or
+overpay on the facts path. Set `ONTOLOGY_CHAPTER_FORMAT=inherit` to go back to
+a chapter in the wire format.
+
+### One chapter per document, and warming the cache that serves it
+
+Even a cheap chapter is paid once per LLM call, and the facts pipeline makes
+`units + critic passes + completion passes` of them per document. A provider's
+prefix cache is the mechanism for paying for a repeated prefix once — but it can
+only serve a prefix that actually repeats, and by default no two calls in a
+document share one: with `ONTOLOGY_CONTEXT_MODE=selected_vector_search_ontology`
+every unit retrieves its *own* context, so every unit gets a different chapter.
+
+`ONTOLOGY_CONTEXT_SCOPE=document` resolves each unit's context as before and
+then shows every unit the union. It is **recall-safe by construction** — the
+union contains every atom each unit's own retrieval selected, so no unit is
+shown less than it would have been. What it costs is precision, because a unit
+also sees its siblings' terms, and per-call tokens, because the union is larger
+than any one unit's slice. What it buys is that the chapter repeats.
+
+That alone is not enough. A prefix cache is populated by a request that has
+already *completed*, and the unit fan-out issues every call at once — so N calls
+sharing a prefix all miss it, having each arrived before any of them wrote the
+entry. `FANOUT_WARMUP_UNITS=1` runs the first unit to completion before fanning
+out the rest, turning the other N−1 misses into hits at the cost of one
+serialized call's wall-clock. The two settings are worth nothing apart and
+should be set together.
+
+`LLM_PROMPT_CACHE_KEY` completes the picture on OpenAI. The provider caches by
+prefix regardless, but without a routing hint a wide simultaneous fan-out can be
+spread across machines that each build their own entry. Any stable string works;
+it must **not** vary per request, or it defeats itself.
+
+Read the result from `budget.prefix_cache_hit_rate`. Note that a run with the
+critic on already shows a non-trivial rate for an unrelated reason — the critic
+re-reads the chapter its own render just built — so compare arms of the same
+shape, and expect the change here to show up on the *render* fan-out.
+
+### Capping what whole-module inclusion costs
+
+`ONTOLOGY_PATCH_SMALL_MODULE_CLOSURE_MAX_TRIPLES` pulls a module's *whole* graph
+into the snapshot once any of its atoms is admitted, because a
+qualified-quantity or observation vocabulary is only useful whole: showing a
+model `hasLowerBound` but not `hasUpperBound` is what makes it invent near-miss
+property names. Whole-module inclusion can be most of the chapter, and the
+chapter is paid on every call of every unit.
+
+`ONTOLOGY_PATCH_SMALL_MODULE_CLOSURE_MAX_TOTAL_TRIPLES` caps what all closures
+together may contribute. It is unset by default (unlimited, the historical
+behaviour). When set, candidate modules are admitted **in order of retrieval
+relevance** — the best score any of their atoms achieved — until the budget is
+spent; a module too large for what remains is skipped rather than ending the
+pass, so a smaller one behind it still gets in.
+
+The ordering is relevance and deliberately **not** how many atoms a module won.
+A module can win at most as many seeds as it has terms, so counting them ranks
+modules by size, and would exclude precisely the case this closure exists for: a
+small, sharply relevant vocabulary that is the document's actual subject can
+never out-count a large peripheral one. Nothing is excluded for being small or
+for being unpopular — a budget filled best-first also keeps the ordinary
+situation working, which is a *combination* of modules rather than a single
+winner.
+
+Read it back from `module_closure_iris`, `module_closure_declined_iris` and
+`module_closure_triples` in the run manifest: a question about a missing term is
+answered by knowing which module the budget kept out.
+
+!!! note "`ONTOLOGY_CONTEXT_MAX_TRIPLES` is not the lever it looks like here"
+    Lowering the triple budget to force condensing is counterproductive on a
+    term-sheet chapter. The condenser's noise and structural passes remove
+    `owl:imports`, `dcterms:*` and stub restriction nodes — none of which a term
+    sheet renders in the first place, so they save nothing. Its next pass drops
+    `GLOSS_PREDICATES`, which includes `skos:altLabel` and `skos:scopeNote`:
+    the surface forms and usage contracts the sheet deliberately keeps. Bound
+    those with the text caps below, which shorten rather than remove them.
 
 ### Bounding the chapter's text
 
@@ -343,11 +436,20 @@ clipped definition from a complete one — worth preferring to dropping the
 statement, because a scope note's first sentence usually carries the contract
 and the rest elaborates.
 
-Over the total budget, prose is tightened and then dropped, then contracts, and
-only then are names clipped to a floor. Names are never dropped: a term the
-model cannot name is not context, it is an invitation to invent one. A chapter
-that still does not fit is passed through with a warning, the same way the
-triple budget refuses to cut into load-bearing structure.
+Over the total budget, prose is tightened first, then contracts, then names —
+each fitted to the *largest* cap that still meets the budget rather than stepped
+down through preset tiers, because every character under the budget is context
+it never asked to lose. Nothing is ever removed: a clipped definition still says
+the term has one and still carries the words that say when it applies, while a
+removed one says nothing at all. Shedding whole statements is
+`ONTOLOGY_CONTEXT_MAX_TRIPLES`'s job, on the axis where statements are what is
+over budget.
+
+Names have the highest floor of the three, and on a catalog whose labels are
+already shorter than it that role is reached and does nothing. A chapter that
+still does not fit is then passed through with a warning — correctly, because
+what remains at that point is the vocabulary itself, and the fix is to send
+fewer terms, not shorter names.
 
 Read the effect back from the run manifest's `budget.counters`:
 `chapter/text_chars_before` and `chapter/text_chars_after`,

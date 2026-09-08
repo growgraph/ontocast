@@ -153,7 +153,12 @@ class LLMGraphFormat(StrEnum):
 class OntologyChapterFormat(StrEnum):
     """Syntax of the ``# ONTOLOGY`` chapter in the facts prompts.
 
-    - ``inherit`` (default): the chapter follows :class:`LLMGraphFormat`, so
+    - ``auto`` (default): ``term_sheet`` where the render mode is facts-only,
+      ``inherit`` otherwise. The cheapest chapter each mode can legally read,
+      chosen without asking an operator to know which those are. Resolved once
+      when the configuration is built, so nothing downstream -- profile lookup,
+      cache key, run manifest -- ever sees this member.
+    - ``inherit``: the chapter follows :class:`LLMGraphFormat`, so
       the model reads the ontology in the syntax it is asked to write.
     - ``turtle``: the chapter is Turtle whatever the wire format is. In a
       facts prompt the ontology is read-only context -- nothing the model
@@ -169,9 +174,27 @@ class OntologyChapterFormat(StrEnum):
       chapter has to remain a graph.
     """
 
+    AUTO = "auto"
     INHERIT = "inherit"
     TURTLE = "turtle"
     TERM_SHEET = "term_sheet"
+
+
+class OntologyContextScope(StrEnum):
+    """Whether the ontology chapter is resolved per unit or once per document.
+
+    - ``unit`` (default): each content unit retrieves its own context. The
+      smallest chapter per unit, and a different chapter for every one of them,
+      so a provider's prefix cache can serve none of them.
+    - ``document``: every unit's context is resolved once and unioned, and the
+      union is shown to all of them. Larger per call and recall-safe by
+      construction -- the union contains everything each unit's own retrieval
+      selected -- but identical across the fan-out, which is what makes the
+      chapter cacheable after the first call.
+    """
+
+    UNIT = "unit"
+    DOCUMENT = "document"
 
 
 class OntologyContextMode(StrEnum):

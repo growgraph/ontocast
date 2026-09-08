@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 from collections import Counter
+from collections.abc import Sequence
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -62,6 +63,8 @@ def _unit_queries(unit: SourceUnit, tools: ToolBox) -> list[str]:
         text,
         max_sentences=vcfg.proposition_window_sentences,
         max_windows=vcfg.proposition_max_windows,
+        stride=vcfg.proposition_window_stride,
+        max_chars=vcfg.proposition_window_max_chars,
     )
 
 
@@ -115,6 +118,110 @@ def build_merged_document_ontology_context(
     return UnitOntologyContext(
         snapshot=snapshot,
         writable_iris=list(patch_sources),
+        confidence=1.0,
+    )
+
+
+async def build_unioned_document_ontology_context(
+    context: UnitLoopContext,
+    tools: ToolBox,
+    units: Sequence[SourceUnit],
+) -> UnitOntologyContext | None:
+    """Resolve every unit's context once and union them into one shared context.
+
+    Per-unit retrieval gives each unit a smaller chapter than the union would
+    be, and that is a real saving on the *first* call for a unit. It is a loss
+    on every call after it: the chapter is the bulk of a facts prompt, no two
+    units get the same one, and a provider's prefix cache can therefore serve
+    none of them -- so a document pays the chapter once per unit at full price
+    instead of once at full price and N-1 times at the cached rate.
+
+    Unioning is the trade that makes the second arrangement available. It is
+    recall-safe by construction: the union contains every atom each unit's own
+    retrieval selected, so no unit is shown less than it would have been. What
+    it costs is precision -- a unit also sees its siblings' terms -- and the
+    per-call token count, which is why it is a setting and not the default.
+
+    Retrieval runs concurrently, bounded the same way the unit fan-out is. In
+    the vector modes this is embedding and graph work with no LLM call; the
+    LLM-selection mode does spend one call per unit here, exactly as it would
+    have spent inside the fan-out.
+
+    Args:
+        context: Document-level loop inputs.
+        tools: Toolbox holding the catalog and retrieval.
+        units: The document's content units.
+
+    Returns:
+        The unioned context, or None when no unit resolved anything -- which
+        leaves the caller on the per-unit path rather than handing every unit an
+        empty snapshot.
+    """
+    if not units:
+        return None
+    started = time.perf_counter()
+    context.budget_tracker.incr("ctx/union_document_ontology.calls")
+
+    limit = max(1, tools.config.server.parallel_workers)
+    semaphore = asyncio.Semaphore(limit)
+
+    async def resolve(unit: SourceUnit) -> UnitOntologyContext | None:
+        async with semaphore:
+            try:
+                return await resolve_unit_ontology_context(context, tools, unit)
+            except EmptyOntologyContextError:
+                # A unit whose own context is empty must not void the document's:
+                # the guard exists to catch a catalog that did not load, and the
+                # union is exactly the evidence that it did.
+                return None
+
+    resolved = await asyncio.gather(*(resolve(unit) for unit in units))
+
+    merged_graph = RDFGraph()
+    writable: list[str] = []
+    sources: list[str] = []
+    for ctx in resolved:
+        if ctx is None or not len(ctx.snapshot.graph):
+            continue
+        merged_graph += ctx.snapshot.graph
+        writable.extend(ctx.writable_iris)
+        sources.extend(ctx.snapshot.source_iris)
+    if not len(merged_graph):
+        context.budget_tracker.add_duration(
+            "ctx/union_document_ontology", time.perf_counter() - started
+        )
+        return None
+
+    merged_graph.sanitize_prefixes_namespaces()
+    snapshot = OntologySnapshot.from_graph(
+        merged_graph,
+        # Sorted and de-duplicated so the same document renders the same
+        # chapter twice: an unstable source order is an unstable prompt, and an
+        # unstable prompt is the thing this whole path exists to avoid.
+        source_iris=sorted(set(sources)),
+        assembly_mode=OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED,
+        title="Unioned document ontology context",
+        description=(
+            "Union of the per-unit retrieved contexts, shared by every unit so "
+            "the ontology chapter is identical across the fan-out."
+        ),
+        strip_headers=True,
+    )
+    context.budget_tracker.add_duration(
+        "ctx/union_document_ontology", time.perf_counter() - started
+    )
+    context.retrieval_metrics[RetrievalMetric.ONTOLOGY_SNAPSHOT_TRIPLES] = len(
+        snapshot.graph
+    )
+    logger.info(
+        "Unioned ontology context over %d unit(s): %d triples, %d source(s).",
+        len(units),
+        len(snapshot.graph),
+        len(snapshot.source_iris),
+    )
+    return UnitOntologyContext(
+        snapshot=snapshot,
+        writable_iris=sorted(set(writable)),
         confidence=1.0,
     )
 

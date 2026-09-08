@@ -179,7 +179,6 @@ def _record_chapter_report(
     budget_tracker.incr("chapter/text_chars_before", report.text_chars_before)
     budget_tracker.incr("chapter/text_chars_after", report.text_chars_after)
     budget_tracker.incr("chapter/literals_clipped", report.literals_clipped)
-    budget_tracker.incr("chapter/literals_dropped", report.literals_dropped)
     if report.text_over_budget:
         budget_tracker.incr("chapter/text_over_budget")
 

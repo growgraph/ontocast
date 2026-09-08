@@ -6,7 +6,7 @@ import asyncio
 import logging
 import math
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from pydantic import Field, PrivateAttr
@@ -263,34 +263,6 @@ def _drop_module_contribution(graph: RDFGraph, module_graph: RDFGraph) -> None:
         graph.remove((subject, None, None))
 
 
-def _filter_hits_by_relative_floor(
-    hits: list[OntologySearchHit],
-    *,
-    score_ratio: float,
-    min_query_best_score: float,
-) -> list[OntologySearchHit]:
-    """Relative score gating within one channel/query hit list.
-
-    The floor is expressed as a distance below the best score rather than as
-    ``best * score_ratio``. The multiplicative form is equivalent for positive scores but
-    inverts once ``best`` is negative, which Qdrant cosine can return: at ``best = -0.2``
-    it puts the floor at ``-0.16``, *above* the best hit, so the channel returns nothing.
-    A ratio of 0 also has to short-circuit — otherwise the documented "0 disables" default
-    computes a floor of exactly 0.0 and silently drops every negative-scoring hit.
-    """
-    if score_ratio < 0.0 or score_ratio > 1.0:
-        raise ValueError("score_ratio must be in [0, 1]")
-    if not hits:
-        return []
-    best = max(h.score for h in hits)
-    if min_query_best_score > 0.0 and best < min_query_best_score:
-        return []
-    if score_ratio <= 0.0:
-        return list(hits)
-    floor = best - ((1.0 - score_ratio) * abs(best))
-    return [hit for hit in hits if hit.score >= floor]
-
-
 def _normalize_relevance_scores(atoms: list[GraphAtom]) -> list[GraphAtom]:
     """Scale atom scores to [0, 1] for MMR relevance term."""
     if not atoms:
@@ -389,6 +361,10 @@ def _select_hits_round_robin_by_ontology(
     score order. ``<= 0`` disables each mechanism; ``max_atoms <= 0`` means
     no total cap.
 
+    Order is taken from *ranked_hits*, which is the caller's preference order
+    rather than necessarily a score order: the first hit of an ontology decides
+    where that ontology sits in the round-robin.
+
     Ontologies are visited best-scoring first. Visiting them in IRI order instead made
     allocation alphabetical whenever the cap bound before every ontology was served —
     which is the common case, since the cap does not grow with catalog size.
@@ -472,90 +448,25 @@ def _select_hits_round_robin_by_ontology(
     return selected
 
 
-def _merge_hits_across_queries_hybrid(
-    collected: list[OntologySearchHit],
-    *,
-    max_atoms_tier1: int,
-    per_ontology_seed_quota: int,
-    min_entity_score: float,
-    max_atoms_total: int,
-) -> list[OntologySearchHit]:
-    """Tier-1 strong global seeds, tier-2 per-ontology coverage."""
-    best_by_iri = _best_hit_by_entity_iri(collected)
-    if not best_by_iri:
-        return []
-
-    tier1_candidates = sorted(
-        best_by_iri.values(),
-        key=lambda hit: (hit.score, hit.atom.iri or ""),
-        reverse=True,
-    )
-    tier1_limit = len(tier1_candidates) if max_atoms_tier1 <= 0 else max_atoms_tier1
-    tier1 = tier1_candidates[:tier1_limit]
-    selected_iris = {hit.atom.iri for hit in tier1 if hit.atom.iri}
-
-    by_ontology: dict[str, list[OntologySearchHit]] = defaultdict(list)
-    for hit in best_by_iri.values():
-        onto_iri = hit.atom.ontology_iri
-        entity_iri = hit.atom.iri
-        if not onto_iri or not entity_iri or entity_iri in selected_iris:
-            continue
-        if hit.score >= min_entity_score:
-            by_ontology[onto_iri].append(hit)
-
-    tier2: list[OntologySearchHit] = []
-    quota = per_ontology_seed_quota if per_ontology_seed_quota > 0 else 9999
-    for onto_iri in sorted(by_ontology.keys()):
-        candidates = sorted(
-            by_ontology[onto_iri],
-            key=lambda hit: (hit.score, hit.atom.iri or ""),
-            reverse=True,
-        )
-        added = 0
-        for hit in candidates:
-            if hit.atom.iri in selected_iris:
-                continue
-            tier2.append(hit)
-            selected_iris.add(hit.atom.iri)
-            added += 1
-            if added >= quota:
-                break
-
-    merged = tier1 + tier2
-    if max_atoms_total > 0:
-        merged = merged[:max_atoms_total]
-    return merged
-
-
 def _merge_hits_across_queries(
     collected: list[OntologySearchHit],
     *,
     merge_mode: CrossQueryMergeMode,
-    max_atoms_tier1: int,
     per_ontology_seed_quota: int,
-    min_entity_score: float,
     max_atoms_total: int,
 ) -> list[OntologySearchHit]:
-    if merge_mode in (CrossQueryMergeMode.MAX_SCORE, CrossQueryMergeMode.SUM_SCORE):
-        merged = (
-            _merge_hits_across_queries_max_score(collected)
-            if merge_mode == CrossQueryMergeMode.MAX_SCORE
-            else _merge_hits_across_queries_sum_score(collected)
-        )
-        if max_atoms_total > 0:
-            return _select_hits_round_robin_by_ontology(
-                merged,
-                per_ontology_seed_quota=per_ontology_seed_quota,
-                max_atoms=max_atoms_total,
-            )
-        return merged
-    return _merge_hits_across_queries_hybrid(
-        collected,
-        max_atoms_tier1=max_atoms_tier1,
-        per_ontology_seed_quota=per_ontology_seed_quota,
-        min_entity_score=min_entity_score,
-        max_atoms_total=max_atoms_total,
+    merged = (
+        _merge_hits_across_queries_max_score(collected)
+        if merge_mode == CrossQueryMergeMode.MAX_SCORE
+        else _merge_hits_across_queries_sum_score(collected)
     )
+    if max_atoms_total > 0:
+        return _select_hits_round_robin_by_ontology(
+            merged,
+            per_ontology_seed_quota=per_ontology_seed_quota,
+            max_atoms=max_atoms_total,
+        )
+    return merged
 
 
 def _select_atoms_round_robin_by_ontology(
@@ -586,17 +497,11 @@ def _filter_and_merge_patch_hits(
     *,
     store_config: VectorStoreConfig,
     patch_config: PatchRetrievalConfig,
-    per_query_core_score_ratio: float,
-    per_query_neighborhood_score_ratio: float,
-    per_query_bm25_score_ratio: float,
-    min_core_query_best_score: float,
-    min_neighborhood_query_best_score: float,
-    min_bm25_query_best_score: float,
     min_merged_max_score: float,
     max_atoms_total: int = 0,
     stats: dict[str, int] | None = None,
 ) -> list[GraphAtom]:
-    """Filter each channel per query, then merge across queries.
+    """Fuse the three channels per query, then merge across queries.
 
     Args:
         stats: Optional sink for counts taken *before* the score gates, which
@@ -608,33 +513,19 @@ def _filter_and_merge_patch_hits(
     cw, nw, bw = normalized_fusion_weights(store_config)
     collected: list[OntologySearchHit] = []
     for query_hits in hits_by_query:
-        filtered_core = _filter_hits_by_relative_floor(
-            query_hits.core_hits,
-            score_ratio=per_query_core_score_ratio,
-            min_query_best_score=min_core_query_best_score,
-        )
-        filtered_neighborhood = _filter_hits_by_relative_floor(
-            query_hits.neighborhood_hits,
-            score_ratio=per_query_neighborhood_score_ratio,
-            min_query_best_score=min_neighborhood_query_best_score,
-        )
-        filtered_bm25 = _filter_hits_by_relative_floor(
-            query_hits.bm25_hits,
-            score_ratio=per_query_bm25_score_ratio,
-            min_query_best_score=min_bm25_query_best_score,
-        )
         collected.extend(
             rank_fuse_channel_hits(
-                filtered_core,
-                filtered_neighborhood,
-                filtered_bm25,
+                query_hits.core_hits,
+                query_hits.neighborhood_hits,
+                query_hits.bm25_hits,
                 core_weight=cw,
                 neighborhood_weight=nw,
                 bm25_weight=bw,
+                rank_constant=store_config.fusion_rank_constant,
                 limit=max(
-                    len(filtered_core)
-                    + len(filtered_neighborhood)
-                    + len(filtered_bm25),
+                    len(query_hits.core_hits)
+                    + len(query_hits.neighborhood_hits)
+                    + len(query_hits.bm25_hits),
                     1,
                 ),
             )
@@ -650,8 +541,21 @@ def _filter_and_merge_patch_hits(
     # max-score merging the merged top score is that same number, so this is unchanged;
     # under sum-score merging the merged total grows with window count and an absolute
     # threshold against it would be meaningless.
+    #
+    # The threshold is a fraction of the best score a window could possibly
+    # achieve, not an absolute number on the fused scale. The lane weights are
+    # normalized to sum to 1, so an atom ranked first in every lane scores
+    # `1 / (1 + rank_constant)` -- which means the constant rescales the whole
+    # scale an absolute threshold would be read against, and a threshold
+    # calibrated without smoothing rejected every candidate once smoothing was
+    # on. The symptom of that was an empty ontology context, which reads as a
+    # retrieval failure rather than a miscalibration. Scaling the gate by the
+    # same factor makes the setting mean one thing at every constant; at the
+    # default constant of 0 the factor is 1 and this is the previous behaviour
+    # exactly.
     best_window_score = max(hit.score for hit in collected)
-    if min_merged_max_score > 0.0 and best_window_score < min_merged_max_score:
+    gate = min_merged_max_score / (1.0 + store_config.fusion_rank_constant)
+    if min_merged_max_score > 0.0 and best_window_score < gate:
         if stats is not None:
             stats["threshold_rejected"] = len(collected)
         return []
@@ -659,9 +563,7 @@ def _filter_and_merge_patch_hits(
     merged_hits = _merge_hits_across_queries(
         collected,
         merge_mode=patch_config.cross_query_merge_mode,
-        max_atoms_tier1=patch_config.max_atoms_tier1,
         per_ontology_seed_quota=patch_config.per_ontology_seed_quota,
-        min_entity_score=patch_config.min_entity_score,
         max_atoms_total=max_atoms_total,
     )
     if not merged_hits:
@@ -1243,22 +1145,60 @@ class OntologyPatchRetriever(Tool):
         return None
 
     async def _apply_small_module_closure(
-        self, graph: RDFGraph, hit_ontology_iris: list[str]
+        self,
+        graph: RDFGraph,
+        hit_ontology_iris: list[str],
+        relevance_by_ontology: Mapping[str, float] | None = None,
     ) -> None:
         """Merge whole small modules into the snapshot (header-stripped).
 
         A vocabulary small enough to fit entirely (e.g. a qualified-quantity
-        module of ~20 terms) is included wholesale once any of its atoms is
-        admitted: partial inclusion of a tiny module is what pushes the
-        renderer to improvise near-miss property names.
+        module of ~20 terms) is included wholesale once its atoms are admitted:
+        partial inclusion of a tiny module is what pushes the renderer to
+        improvise near-miss property names.
+
+        Whole-module inclusion can be most of a facts prompt, and the prompt is
+        paid on every call of every unit, so
+        ``small_module_closure_max_total_triples`` can cap what it contributes.
+        The cap is spent in order of **relevance** -- the best score any of a
+        module's admitted atoms achieved -- and a module too large for what is
+        left is skipped rather than ending the pass, so a smaller one behind it
+        still gets in.
+
+        Relevance and not seed count, deliberately. A module can win at most as
+        many seeds as it has terms, so ranking by count ranks by size, and would
+        exclude exactly the small, sharply relevant vocabulary this closure
+        exists to admit whole -- a seventeen-triple module that is precisely the
+        document's subject can never out-count a large peripheral one. Ordering
+        by best score is scale-free, and filling a budget best-first keeps the
+        ordinary case working, which is a *combination* of modules rather than
+        a single winner.
         """
         closure_max = self.patch.small_module_closure_max_triples
         if closure_max <= 0:
             return
         modules = await self._asmall_module_candidates(hit_ontology_iris)
+        relevance = relevance_by_ontology or {}
+        # Best-first, ties broken by IRI so the same retrieval closes the same
+        # modules on every run -- the snapshot is a prompt, and an unstable
+        # prompt is uncacheable.
+        candidates = sorted(
+            (
+                (onto_iri, ontology)
+                for onto_iri, ontology in modules
+                if len(ontology.graph) <= closure_max
+            ),
+            key=lambda item: (-relevance.get(item[0], 0.0), item[0]),
+        )
+        budget = self.patch.small_module_closure_max_total_triples
+        remaining = float("inf") if budget is None else budget
         closed: list[str] = []
-        for onto_iri, ontology in modules:
-            if len(ontology.graph) > closure_max:
+        declined: list[str] = []
+        spent = 0
+        for onto_iri, ontology in candidates:
+            size = len(ontology.graph)
+            if size > remaining:
+                declined.append(onto_iri)
                 continue
             module_graph = Ontology.strip_ontology_header_triples(ontology.graph.copy())
             _drop_module_contribution(graph, module_graph)
@@ -1266,8 +1206,15 @@ class OntologyPatchRetriever(Tool):
             for prefix, namespace_uri in ontology.graph.namespaces():
                 graph.bind(prefix, namespace_uri)
             closed.append(onto_iri)
+            remaining -= size
+            spent += size
         if closed:
             self._last_retrieval_metrics["module_closure_iris"] = closed
+            self._last_retrieval_metrics["module_closure_triples"] = spent
+        if declined:
+            # Named, not merely counted: a question about a missing term is
+            # answered by knowing which module the budget kept out.
+            self._last_retrieval_metrics["module_closure_declined_iris"] = declined
 
     async def _asmall_module_candidates(
         self, hit_ontology_iris: list[str]
@@ -1624,12 +1571,6 @@ class OntologyPatchRetriever(Tool):
             hits_by_query,
             store_config=sc,
             patch_config=pc,
-            per_query_core_score_ratio=pc.per_query_core_score_ratio,
-            per_query_neighborhood_score_ratio=pc.per_query_neighborhood_score_ratio,
-            per_query_bm25_score_ratio=pc.per_query_bm25_score_ratio,
-            min_core_query_best_score=pc.min_core_query_best_score,
-            min_neighborhood_query_best_score=pc.min_neighborhood_query_best_score,
-            min_bm25_query_best_score=pc.min_bm25_query_best_score,
             min_merged_max_score=pc.min_merged_max_score,
             stats=merge_stats,
             max_atoms_total=0,
@@ -1646,6 +1587,14 @@ class OntologyPatchRetriever(Tool):
 
         ranked_before_cut = list(merged)
 
+        # The atom floors are guarantees -- a small module and the predicate
+        # role each keep a minimum of the cap. They used to hold only under the
+        # max_score/sum_score merge modes: `hybrid` fell through to a bare slice
+        # and silently dropped a guarantee nothing had turned off. MMR replaces
+        # the selection wholesale and is incompatible with them by construction,
+        # which ToolConfig now rejects rather than resolving here -- a reserve
+        # taken in score order would leave MMR nothing to choose whenever one
+        # ontology supplies the candidates, which is the common case.
         if merged and pc.mmr_lambda < 1.0:
             merged = _normalize_relevance_scores(merged)
             vectors = await self.vector_store.afetch_vectors(
@@ -1660,10 +1609,10 @@ class OntologyPatchRetriever(Tool):
                 core_weight=core_w,
                 neighborhood_weight=neigh_w,
             )
-        elif pc.cross_query_merge_mode in (
-            CrossQueryMergeMode.MAX_SCORE,
-            CrossQueryMergeMode.SUM_SCORE,
-        ):
+        else:
+            # With both floors and the quota at 0 this is `merged[:cap]`, and
+            # with no cap it is the identity -- so the previously separate
+            # hybrid branch is this one, now with the floors applied.
             merged = _select_atoms_round_robin_by_ontology(
                 merged,
                 per_ontology_seed_quota=pc.per_ontology_seed_quota,
@@ -1671,8 +1620,6 @@ class OntologyPatchRetriever(Tool):
                 per_ontology_atom_floor=pc.per_ontology_atom_floor,
                 per_role_atom_floor=pc.per_role_atom_floor,
             )
-        elif eff_max_atoms > 0:
-            merged = merged[:eff_max_atoms]
 
         trigger_source = trigger_source or " ".join(queries)
         trigger_atoms = await asyncio.to_thread(
@@ -1717,9 +1664,21 @@ class OntologyPatchRetriever(Tool):
 
         source_iris = _source_iris_from_atoms(merged)
         seeds_by_ontology: dict[str, int] = defaultdict(int)
+        # Best score any of a module's admitted atoms achieved. Unlike the seed
+        # count -- which a module cannot exceed the size of, so it ranks modules
+        # by how many terms they have -- this says how well the module's best
+        # term matched, which is what "relevant to this unit" means.
+        relevance_by_ontology: dict[str, float] = {}
         for atom in merged:
-            if atom.ontology_iri:
-                seeds_by_ontology[atom.ontology_iri] += 1
+            if not atom.ontology_iri:
+                continue
+            seeds_by_ontology[atom.ontology_iri] += 1
+            score = atom.score
+            if score is not None:
+                relevance_by_ontology[atom.ontology_iri] = max(
+                    relevance_by_ontology.get(atom.ontology_iri, float("-inf")),
+                    float(score),
+                )
 
         self._last_retrieval_metrics = {
             "query_count": len(queries),
@@ -1733,6 +1692,7 @@ class OntologyPatchRetriever(Tool):
             "seed_iris": [atom.iri for atom in merged if atom.iri],
             "source_ontology_iris": source_iris,
             "seeds_by_ontology": dict(seeds_by_ontology),
+            "relevance_by_ontology": dict(relevance_by_ontology),
             "lexical_trigger_hits": len(trigger_atoms),
             "lexical_trigger_atom_ids": [a.atom_id for a in trigger_atoms],
             "lexical_trigger_iris": [a.iri for a in trigger_atoms if a.iri],
@@ -1740,6 +1700,18 @@ class OntologyPatchRetriever(Tool):
             "lexical_trigger_appended": trigger_appended,
             "symbol_case_penalized": symbol_case_penalized,
         }
+        # Truncation has no symptom of its own: the encoder returns a correctly
+        # shaped vector for a prefix of the query and nothing downstream can tell
+        # the tail was dropped. Counting it here is what turns a silent recall loss
+        # into a number a deployment can see before it tunes anything else.
+        embedding_tool = getattr(self.vector_store, "embedding", None)
+        if embedding_tool is not None:
+            limit = embedding_tool.sequence_limit
+            if limit is not None:
+                self._last_retrieval_metrics["query_sequence_limit"] = limit
+                over = embedding_tool.count_over_limit(queries)
+                if over is not None:
+                    self._last_retrieval_metrics["queries_truncated"] = over
         if pc.dump_ontology_ranks:
             self._last_retrieval_metrics["ontology_rank_diagnostics"] = (
                 build_ontology_rank_diagnostics(
@@ -1851,7 +1823,11 @@ class OntologyPatchRetriever(Tool):
             entity_groups=entity_groups,
             extra_description_predicates=symbol_predicates,
         )
-        await self._apply_small_module_closure(graph, hit_ontology_iris)
+        await self._apply_small_module_closure(
+            graph,
+            hit_ontology_iris,
+            self._last_retrieval_metrics.get("relevance_by_ontology"),
+        )
 
         self._last_retrieval_metrics["snapshot_triple_count"] = len(graph)
         self._last_retrieval_metrics["ontology_iris_for_expansion"] = ontology_iris

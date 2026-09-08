@@ -95,9 +95,19 @@ def test_surface_forms_and_usage_contracts_survive(catalog: RDFGraph) -> None:
     assert "note: Only for a milled sample." in sheet
 
 
-def test_prose_is_dropped(catalog: RDFGraph) -> None:
-    """rdfs:comment is written for a human browsing the ontology."""
-    assert "A portion of material." not in build_ontology_term_sheet(catalog)
+def test_one_prose_field_per_term_the_contract_winning(catalog: RDFGraph) -> None:
+    """Each term gets exactly one note, and a scope note outranks a comment.
+
+    ``ex:Sample`` has only a comment, so the comment is its note -- dropping it
+    would leave the term a name and a parent. ``ex:Powder`` has both, and there
+    the comment restates for a human what the scope note states as a contract,
+    so only the contract is rendered.
+    """
+    sheet = build_ontology_term_sheet(catalog)
+    assert "note: A portion of material." in sheet
+    assert "note: Only for a milled sample." in sheet
+    # The indented form: the legend in the header also spells "note:".
+    assert sheet.count("      note:") == 2
 
 
 def test_rendering_is_deterministic(catalog: RDFGraph) -> None:
@@ -200,3 +210,160 @@ def test_term_sheet_is_allowed_on_a_facts_run() -> None:
 
 def test_text_caps_property_is_inactive_by_default() -> None:
     assert not ServerConfig(render_mode=RenderMode.FACTS).ontology_text_caps.active
+
+
+def test_a_term_with_several_names_keeps_all_of_them() -> None:
+    """Catalogs spell terms more than one way; the sheet must not pick one.
+
+    QUDT names its units in both British and American English, and the spelling
+    a source document used is exactly the one a match needs. Choosing a display
+    name and discarding the rest throws that away silently.
+    """
+    graph = RDFGraph()
+    graph.bind("ex", EX)
+    graph.add((EX.Metre, RDF.type, EX.Unit))
+    graph.add((EX.Metre, RDFS.label, Literal("Metre")))
+    graph.add((EX.Metre, RDFS.label, Literal("Meter")))
+    graph.add((EX.Metre, SKOS.altLabel, Literal("m")))
+
+    sheet = build_ontology_term_sheet(graph)
+
+    assert "Metre" in sheet and "Meter" in sheet and "~ m" in sheet
+
+
+def test_the_display_name_does_not_depend_on_iteration_order() -> None:
+    """rdflib yields objects in hash order, randomised per process.
+
+    Reading "the first label" from that picks a different name for the same
+    term on a different run, drifting the chapter with no visible cause and
+    defeating every cache keyed on it.
+    """
+    graph = RDFGraph()
+    graph.bind("ex", EX)
+    graph.add((EX.T, RDF.type, OWL.Class))
+    for name in ("Zeta", "Alpha", "Mu", "Beta"):
+        graph.add((EX.T, RDFS.label, Literal(name)))
+
+    line = next(
+        row for row in build_ontology_term_sheet(graph).splitlines() if "ex:T" in row
+    )
+
+    # Shortest, then alphabetical -- a total order, not an arrival order.
+    assert line.split('"')[1] == "Mu"
+    assert all(name in line for name in ("Zeta", "Alpha", "Beta"))
+
+
+def test_the_display_name_is_never_repeated_as_a_surface_form() -> None:
+    graph = RDFGraph()
+    graph.bind("ex", EX)
+    graph.add((EX.T, RDF.type, OWL.Class))
+    graph.add((EX.T, RDFS.label, Literal("Sample")))
+    graph.add((EX.T, SKOS.altLabel, Literal("Sample")))
+
+    line = next(
+        row for row in build_ontology_term_sheet(graph).splitlines() if "ex:T" in row
+    )
+
+    assert line.count("Sample") == 1
+
+
+def test_comment_is_the_note_when_a_term_has_no_scope_note() -> None:
+    """A term's only description must survive the change of representation.
+
+    Most catalog terms carry an ``rdfs:comment`` and no ``skos:scopeNote``.
+    Dropping the comment as "prose the extractor does not read" would leave
+    those terms as a name and a parent -- a loss of content, not a cheaper
+    encoding of it, and nothing downstream can recover it.
+    """
+    graph = RDFGraph()
+    graph.parse(
+        data="""
+        @prefix ex: <https://example.org/o#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        ex:Anneal a owl:Class ;
+            rdfs:label "Anneal" ;
+            rdfs:comment "Heating held below the melting point." .
+        """,
+        format="turtle",
+    )
+    sheet = build_ontology_term_sheet(graph)
+    assert "note: Heating held below the melting point." in sheet
+
+
+def test_scope_note_outranks_comment() -> None:
+    """Where both exist the contract wins: the comment restates it for a human."""
+    graph = RDFGraph()
+    graph.parse(
+        data="""
+        @prefix ex: <https://example.org/o#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+        ex:Anneal a owl:Class ;
+            rdfs:label "Anneal" ;
+            skos:scopeNote "Use for a stated hold; not for a ramp." ;
+            rdfs:comment "Heating held below the melting point." .
+        """,
+        format="turtle",
+    )
+    sheet = build_ontology_term_sheet(graph)
+    assert "note: Use for a stated hold; not for a ramp." in sheet
+    assert "Heating held below the melting point" not in sheet
+
+
+def test_auto_is_the_shipped_default() -> None:
+    """The default must be the mode-aware member, not a chapter.
+
+    Pinning it here is what makes the two resolution tests below a statement
+    about what a deployment gets rather than about a value they set themselves.
+    """
+    assert (
+        ServerConfig.model_fields["ontology_chapter_format"].default
+        == OntologyChapterFormat.AUTO
+    )
+
+
+def test_auto_takes_the_term_sheet_on_a_facts_run() -> None:
+    """The cheapest chapter a facts run can legally read."""
+    config = ServerConfig(
+        render_mode=RenderMode.FACTS,
+        ontology_chapter_format=OntologyChapterFormat.AUTO,
+    )
+    assert config.ontology_chapter_format == OntologyChapterFormat.TERM_SHEET
+
+
+@pytest.mark.parametrize("mode", [RenderMode.ONTOLOGY, RenderMode.ONTOLOGY_AND_FACTS])
+def test_auto_falls_back_to_a_graph_where_a_listing_is_illegal(
+    mode: RenderMode,
+) -> None:
+    """`auto` never fails: where a listing cannot be patched, it yields a graph.
+
+    That is the whole difference from an explicit `term_sheet`, which is
+    rejected on these modes -- asking for something impossible is an error,
+    while asking for the best available is not.
+    """
+    config = ServerConfig(
+        render_mode=mode, ontology_chapter_format=OntologyChapterFormat.AUTO
+    )
+    assert config.ontology_chapter_format == OntologyChapterFormat.INHERIT
+
+
+def test_auto_is_resolved_before_anything_downstream_sees_it() -> None:
+    """Resolution happens once, in the config -- not at each point of use.
+
+    Every consumer reads this field, so a value still meaning "decide later"
+    would reach the prompt profile, the LLM cache key and the run manifest as a
+    name for no chapter in particular. The profile lookup refuses it, which is
+    the backstop for that.
+    """
+    for mode in RenderMode:
+        assert (
+            ServerConfig(render_mode=mode).ontology_chapter_format
+            != OntologyChapterFormat.AUTO
+        )
+    with pytest.raises(ValueError, match="resolved against the render mode"):
+        get_graph_format_profile(
+            LLMGraphFormat.JSONLD,
+            ontology_chapter_format=OntologyChapterFormat.AUTO,
+        )

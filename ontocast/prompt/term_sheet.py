@@ -11,7 +11,14 @@ that no extractor reads: a JSON node wrapper or a Turtle subject block per term,
 a repeated predicate IRI per statement, and prose written for a human browsing
 the ontology. What is left is what lets a model use a term -- its name, the
 surface forms a document might spell it with, what it is, where it sits in the
-hierarchy, what it connects, and the contract saying when it applies.
+hierarchy, what it connects, and the prose saying when it applies.
+
+The prose is where the line between re-encoding and cutting sits. Per-statement
+RDF scaffolding carries no information a reader of the sheet loses, so removing
+it is free. A term's only description is not: dropping it leaves a name and a
+parent. So the sheet keeps one prose field per term -- the usage contract where
+there is one, the comment otherwise -- and bounds its length rather than its
+presence.
 
 The completion pass established the format (:mod:`ontocast.prompt.complete_facts`)
 on a narrower vocabulary; this renders the whole snapshot in it.
@@ -64,16 +71,50 @@ def qname_for(graph: RDFGraph, term: URIRef) -> str:
 
 
 def _texts(graph: RDFGraph, subject: URIRef, predicate: URIRef) -> list[str]:
-    """Literal objects of ``predicate`` on ``subject``, whitespace-normalised."""
-    return [
-        " ".join(str(obj).split())
-        for obj in graph.objects(subject, predicate)
-        if isinstance(obj, Literal)
-    ]
+    """Literal objects of ``predicate`` on ``subject``, whitespace-normalised.
+
+    Sorted shortest-first, then alphabetically. rdflib yields objects in its
+    internal hash order, which Python randomises per process, so an unsorted
+    read here would pick a different label for the same term on a different run
+    -- drifting the chapter with no visible cause, and defeating both the
+    prompt-keyed disk cache and a provider's prefix cache.
+    """
+    return sorted(
+        {
+            " ".join(str(obj).split())
+            for obj in graph.objects(subject, predicate)
+            if isinstance(obj, Literal)
+        },
+        key=lambda text: (len(text), text),
+    )
+
+
+def _naming(graph: RDFGraph, subject: URIRef) -> tuple[str, list[str]]:
+    """The term's display name and every other surface form it is known by.
+
+    A term may carry several names -- QUDT spells its units in both British and
+    American English, for instance -- and picking one and discarding the rest
+    loses exactly the spelling a source document might have used. So the
+    shortest becomes the display name and the remainder join the alternative
+    labels, where they cost a couple of dozen characters each and can be matched
+    against.
+
+    Returns:
+        Tuple of (display name, other surface forms), both deterministic.
+    """
+    names = _texts(graph, subject, RDFS.label) + _texts(graph, subject, SKOS.prefLabel)
+    seen: list[str] = []
+    for name in names:
+        if name not in seen:
+            seen.append(name)
+    label = seen[0] if seen else ""
+    others = set(seen[1:]) | set(_texts(graph, subject, SKOS.altLabel))
+    others.discard(label)
+    return label, sorted(others, key=lambda text: (len(text), text))
 
 
 def _first_text(graph: RDFGraph, subject: URIRef, *predicates: URIRef) -> str:
-    """First literal found across ``predicates``, in the order given."""
+    """First literal across ``predicates``, in the order given, deterministically."""
     for predicate in predicates:
         for text in _texts(graph, subject, predicate):
             return text
@@ -134,7 +175,7 @@ def _term_line(graph: RDFGraph, subject: URIRef, *, kind: str) -> list[str]:
         The term's line, plus an indented ``note:`` line when it carries a
         usage contract.
     """
-    label = _first_text(graph, subject, RDFS.label, SKOS.prefLabel)
+    label, alt = _naming(graph, subject)
     parts = [f"  {qname_for(graph, subject)}"]
     if label:
         parts.append(f'"{label}"')
@@ -164,15 +205,20 @@ def _term_line(graph: RDFGraph, subject: URIRef, *, kind: str) -> list[str]:
     # Every surface form, shortest first. There is deliberately no count cap
     # here: alternative labels are the cheapest content in the sheet (a couple
     # of dozen characters each) and the most direct thing a document match has
-    # to work with -- an alphabetical top-N on qqval:Approximate cuts exactly
-    # the "~", "\u223c" and "\u2248" a paper actually prints. TextCaps.total_budget
-    # is the one mechanism that bounds them, and only on a catalog that needs it.
-    alt = sorted(set(_texts(graph, subject, SKOS.altLabel)), key=lambda a: (len(a), a))
+    # to work with -- an alphabetical top-N on a qualifier term cuts exactly the
+    # "~", "\u223c" and "\u2248" a paper actually prints. TextCaps.total_budget is
+    # the one mechanism that bounds them, and only on a catalog that needs it.
     if alt:
         parts.append(f"~ {'; '.join(alt)}")
 
     lines = ["  ".join(parts)]
-    note = _first_text(graph, subject, SKOS.scopeNote, SKOS.definition)
+    # rdfs:comment is the last resort, not a peer: where a term states a scope
+    # note it is the usage contract and the comment restates it for a human
+    # browsing the ontology. But most terms carry no scope note, and for those
+    # the comment is the ONLY prose they have -- dropping it would leave the
+    # term as a name and a parent, which is a loss of content rather than a
+    # re-encoding of it, and no cheaper representation can recover it.
+    note = _first_text(graph, subject, SKOS.scopeNote, SKOS.definition, RDFS.comment)
     if note:
         lines.append(f"      note: {note}")
     return lines
@@ -181,7 +227,8 @@ def _term_line(graph: RDFGraph, subject: URIRef, *, kind: str) -> list[str]:
 _HEADER = """Every term available to you, one per line:
   `qname "label"` names it; `< ...` is its parent; `A -> B` is a property's
   domain and range; `: T` is an individual's type; `~ ...` are alternative
-  surface forms the source text may use; `note:` is a usage contract.
+  surface forms the source text may use; `note:` is a usage contract or a
+  description of when the term applies.
 Use these terms and only these. A term absent from this sheet does not exist."""
 
 

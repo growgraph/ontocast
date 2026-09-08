@@ -23,6 +23,7 @@ from ontocast.onto.enum import (
     LLMGraphFormat,
     OntologyChapterFormat,
     OntologyContextMode,
+    OntologyContextScope,
     RenderMode,
     VectorDistance,
     VectorStoreBackend,
@@ -226,7 +227,6 @@ class EmbeddingProvider(StrEnum):
 class CrossQueryMergeMode(StrEnum):
     """How per-query fused hits are merged across proposition windows."""
 
-    HYBRID = "hybrid"
     MAX_SCORE = "max_score"
     SUM_SCORE = "sum_score"
 
@@ -274,6 +274,21 @@ class LLMConfig(BaseSettings):
         default=None, description="LLM base URL (for ollama, etc.)"
     )
     api_key: str | None = Field(default=None, description="API key for LLM provider")
+    prompt_cache_key: str | None = Field(
+        default=None,
+        description=(
+            "OpenAI prompt_cache_key: a routing hint that steers requests "
+            "sharing a prompt prefix to the same cache shard. The provider "
+            "caches by prefix either way, but without a key a wide simultaneous "
+            "fan-out can be spread across machines that each build their own "
+            "entry, so calls that do share a prefix still miss. Any stable "
+            "string works; one per deployment or per corpus is the useful "
+            "granularity, and it must NOT be per-request or it defeats itself. "
+            "Not a secret and not part of the LLM disk-cache key -- it changes "
+            "routing, never the response. OpenAI only. Set via "
+            "LLM_PROMPT_CACHE_KEY."
+        ),
+    )
     cache_enabled: bool = Field(
         default=True,
         description="When true, read and write LLM response disk cache entries.",
@@ -860,21 +875,28 @@ class ServerConfig(BaseSettings):
         ),
     )
     ontology_chapter_format: OntologyChapterFormat = Field(
-        default=OntologyChapterFormat.INHERIT,
+        default=OntologyChapterFormat.AUTO,
         description=(
             "Syntax of the ontology chapter in the facts render and critic "
-            "prompts: 'inherit' (default) follows llm_graph_format; 'turtle' "
-            "serializes the chapter as Turtle regardless, which spends fewer "
-            "characters per triple than pretty-printed JSON-LD; 'term_sheet' "
-            "replaces the serialized graph with a line-per-term listing -- "
-            "name, surface forms, type, hierarchy, domain/range and usage "
-            "contract -- dropping the per-statement RDF scaffolding and the "
-            "prose written for human readers, and is the cheapest of the "
-            "three by a wide margin. Context only: the graph payloads the "
-            "model emits stay in llm_graph_format. 'term_sheet' requires a "
-            "facts-only render mode, because the ontology loop emits a patch "
-            "against the statements in its chapter and so needs a graph. "
-            "Changing it invalidates the LLM cache for facts calls."
+            "prompts. 'auto' (default) resolves to 'term_sheet' when "
+            "render_mode is facts and 'inherit' otherwise -- the cheapest "
+            "chapter each mode can legally read. 'inherit' follows "
+            "llm_graph_format; 'turtle' serializes the chapter as Turtle "
+            "regardless, which spends fewer characters per triple than "
+            "pretty-printed JSON-LD; 'term_sheet' replaces the serialized "
+            "graph with a line-per-term listing -- name, surface forms, type, "
+            "hierarchy, domain/range and usage contract -- dropping the "
+            "per-statement RDF scaffolding and the prose written for human "
+            "readers, and is the cheapest of the three by a wide margin. "
+            "Context only: the graph payloads the model emits stay in "
+            "llm_graph_format. 'term_sheet' requires a facts-only render "
+            "mode, because the ontology loop emits a patch against the "
+            "statements in its chapter and so needs a graph; asking for it "
+            "explicitly on another mode is rejected, where 'auto' simply "
+            "yields a graph chapter. 'auto' is resolved here, so the run "
+            "manifest and the LLM cache key carry the chapter actually built. "
+            "Changing the resolved value invalidates the LLM cache for facts "
+            "calls."
         ),
     )
     ontology_text_max_chars_naming: int | None = Field(
@@ -983,6 +1005,38 @@ class ServerConfig(BaseSettings):
             total_budget=self.ontology_text_total_budget,
         )
 
+    ontology_context_scope: OntologyContextScope = Field(
+        default=OntologyContextScope.UNIT,
+        description=(
+            "Whether the ontology chapter is resolved per content unit ('unit', "
+            "the default) or once per document and shared ('document'). Per-unit "
+            "retrieval gives each unit a smaller chapter, but a different one, so "
+            "no two calls share a prompt prefix and a provider's prefix cache can "
+            "serve none of them -- a document then pays the chapter at full price "
+            "once per unit. 'document' unions the per-unit contexts and shows the "
+            "union to every unit: larger per call, identical across the fan-out, "
+            "and so charged at the cached rate on every call after the first. It "
+            "is recall-safe by construction -- the union contains every atom each "
+            "unit's own retrieval selected -- and costs precision, since a unit "
+            "also sees its siblings' terms. Pair with FANOUT_WARMUP_UNITS, "
+            "without which the fan-out issues every call before any of them has "
+            "populated the cache. Set via ONTOLOGY_CONTEXT_SCOPE."
+        ),
+    )
+    fanout_warmup_units: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "How many content units to run to completion before fanning the rest "
+            "out concurrently. 0 (default) fans out everything at once. A "
+            "provider's prefix cache is populated by a *completed* request, so a "
+            "fan-out that issues N calls sharing a prefix simultaneously has all "
+            "N miss it; running one unit first turns the other N-1 misses into "
+            "hits. Only worth setting where the calls actually share a prefix -- "
+            "that is, with ONTOLOGY_CONTEXT_SCOPE=document -- and it costs the "
+            "wall-clock of one serialized call. Set via FANOUT_WARMUP_UNITS."
+        ),
+    )
     ontology_context_max_triples: int | None = Field(
         default=4000,
         ge=1,
@@ -1039,7 +1093,7 @@ class ServerConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_ontology_chapter_format(self) -> "ServerConfig":
-        """Reject a term-sheet chapter on a render mode that builds ontologies.
+        """Resolve 'auto' against the render mode, and reject an illegal ask.
 
         The facts renderer reads its chapter and writes an unrelated graph, so
         the chapter is free to be any representation that names the terms. The
@@ -1047,11 +1101,26 @@ class ServerConfig(BaseSettings):
         in the chapter*, which a line-per-term listing cannot express -- there
         is nothing to insert into or delete from.
 
-        Failing here rather than falling back to a graph is deliberate: the
-        fallback would be silent, and the run would spend an ontology pass
-        producing patches nobody could apply while the manifest recorded a
-        setting that never took effect.
+        So the cheapest legal chapter differs by mode, and ``auto`` picks it
+        rather than asking an operator to know which. It is resolved **here**,
+        not at the point of use: every consumer reads this field, and a value
+        that still meant "decide later" would reach the prompt profile, the
+        LLM cache key and the run manifest as a name for no chapter in
+        particular.
+
+        An *explicit* ``term_sheet`` on a mode that cannot read one still
+        fails. Falling back would be silent, and the run would spend an
+        ontology pass producing patches nobody could apply while the manifest
+        recorded a setting that never took effect -- which is exactly what
+        ``auto`` exists to make unnecessary.
         """
+        if self.ontology_chapter_format == OntologyChapterFormat.AUTO:
+            self.ontology_chapter_format = (
+                OntologyChapterFormat.TERM_SHEET
+                if self.render_mode == RenderMode.FACTS
+                else OntologyChapterFormat.INHERIT
+            )
+            return self
         if (
             self.ontology_chapter_format == OntologyChapterFormat.TERM_SHEET
             and self.render_mode != RenderMode.FACTS
@@ -1061,7 +1130,7 @@ class ServerConfig(BaseSettings):
                 f"got render_mode={self.render_mode.value}. The ontology loop "
                 "emits a patch against the statements in its chapter, so that "
                 "chapter has to be a graph. Use 'turtle' for a cheaper chapter "
-                "that stays one."
+                "that stays one, or 'auto' to take whichever the mode allows."
             )
         return self
 
@@ -1517,68 +1586,24 @@ class EmbeddingConfig(BaseSettings):
 class PatchRetrievalConfig(BaseSettings):
     """Scoring, filtering, and capping of ontology atoms after vector search (backend-agnostic).
 
-    Default path is intentionally simple: per-window channel fusion → max-score IRI
-    dedupe → per-ontology round-robin → window-scaled hard cap. Relative floors,
-    hybrid tier merge, merged-score ratio, and MMR remain available as advanced
-    opt-in (non-default) controls.
+    The path is intentionally simple: per-window channel fusion → max-score IRI
+    dedupe → per-ontology round-robin → window-scaled hard cap. Merged-score
+    ratio and MMR remain available as advanced opt-in (non-default) controls.
     """
 
-    per_query_core_score_ratio: float = Field(
-        default=0.0,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Advanced: within each query, keep core hits whose score is at least this "
-            "fraction of that query's best core score. 0 disables (default)."
-        ),
-    )
-    per_query_neighborhood_score_ratio: float = Field(
-        default=0.0,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Advanced: within each query, keep neighborhood hits whose score is at least "
-            "this fraction of that query's best neighborhood score. 0 disables (default)."
-        ),
-    )
-    min_core_query_best_score: float = Field(
-        default=0.0,
-        ge=0.0,
-        description=(
-            "If > 0, queries whose top core score is below this contribute no core hits."
-        ),
-    )
-    min_neighborhood_query_best_score: float = Field(
-        default=0.0,
-        ge=0.0,
-        description=(
-            "If > 0, queries whose top neighborhood score is below this contribute no "
-            "neighborhood hits."
-        ),
-    )
-    per_query_bm25_score_ratio: float = Field(
-        default=0.0,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Advanced: within each query, keep BM25 hits whose score is at least this "
-            "fraction of that query's best BM25 score. 0 disables (default)."
-        ),
-    )
-    min_bm25_query_best_score: float = Field(
-        default=0.0,
-        ge=0.0,
-        description=(
-            "If > 0, queries whose top BM25 score is below this contribute no BM25 hits."
-        ),
-    )
     min_merged_max_score: float = Field(
         default=0.18,
         ge=0.0,
         description=(
-            "After merging hits across queries, if the highest retained score is below this, "
-            "return an empty patch (no relevant ontology). Set to 0 to disable. Scores are "
-            "per-window fused rank scores (RRF-style), not raw cosine."
+            "Relevance floor below which a unit is treated as having no "
+            "relevant ontology and gets an empty patch. Expressed as a "
+            "fraction of the best score a window could achieve -- an atom "
+            "ranked first in every lane -- rather than as an absolute number "
+            "on the fused scale, because the lane weights and "
+            "VECTOR_STORE_FUSION_RANK_CONSTANT both rescale that scale, and a "
+            "threshold calibrated at one setting then rejects everything at "
+            "another. Scores are per-window fused rank scores (RRF-style), not "
+            "raw cosine. Set to 0 to disable."
         ),
     )
     merged_score_ratio: float = Field(
@@ -1593,19 +1618,11 @@ class PatchRetrievalConfig(BaseSettings):
     cross_query_merge_mode: CrossQueryMergeMode = Field(
         default=CrossQueryMergeMode.MAX_SCORE,
         description=(
-            "Cross-window merge: max_score (default; entity best score across windows), "
-            "sum_score (sum of per-window scores, so a term several windows agree on "
-            "outranks one window's top hit), or hybrid (tier-1 global seeds + "
-            "per-ontology tier-2 coverage). All three are followed by the same "
-            "round-robin / cap stage. Single-window retrieval makes max and sum identical."
-        ),
-    )
-    max_atoms_tier1: int = Field(
-        default=12,
-        ge=0,
-        description=(
-            "Hybrid merge only: global cap on strong tier-1 seeds (max score per entity "
-            "IRI). 0 means no tier-1 cap. Unused in the default max_score path."
+            "Cross-window merge: max_score (default; entity best score across "
+            "windows) or sum_score (sum of per-window scores, so a term several "
+            "windows agree on outranks one window's top hit). Both are followed "
+            "by the same round-robin / cap stage, and single-window retrieval "
+            "makes them identical."
         ),
     )
     per_ontology_seed_quota: int = Field(
@@ -1613,18 +1630,10 @@ class PatchRetrievalConfig(BaseSettings):
         ge=0,
         description=(
             "Max seeds retained per ontology IRI when filling the final seed list "
-            "(round-robin under max_score; tier-2 under hybrid). 0 means no per-ontology "
+            "(round-robin). 0 means no per-ontology "
             "cap (global score order only), which is the default: a quota spreads the "
             "seed budget across ontologies that merely scored something, and measured "
             "worse on both recall and precision than plain global score order."
-        ),
-    )
-    min_entity_score: float = Field(
-        default=0.3,
-        ge=0.0,
-        description=(
-            "Hybrid merge tier-2 only: minimum per-entity max fused score to qualify. "
-            "Unused in the default max_score path."
         ),
     )
     per_ontology_atom_floor: int = Field(
@@ -1651,6 +1660,30 @@ class PatchRetrievalConfig(BaseSettings):
             "quality, because a qualified-quantity or observation module is "
             "only useful whole. Set it above the largest module you need "
             "entire; past that it adds triples for little gain. 0 disables."
+        ),
+    )
+    small_module_closure_max_total_triples: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Ceiling on the triples all whole-module closures may contribute to "
+            "one snapshot. None (default) is unlimited: every module that fits "
+            "SMALL_MODULE_CLOSURE_MAX_TRIPLES and won a seed is included, which "
+            "is the historical behaviour. When set, candidate modules are "
+            "admitted in order of retrieval relevance -- the best score any of "
+            "their atoms achieved -- until the budget is spent, and a module too "
+            "large for the remaining budget is skipped rather than ending the "
+            "pass, so a smaller one behind it can still get in. "
+            "\n\n"
+            "Relevance, not seed count, is the right ordering here: a module can "
+            "only win as many seeds as it has terms, so counting them ranks "
+            "modules by size and excludes precisely the small, sharply relevant "
+            "vocabulary the closure exists to admit whole. A budget filled "
+            "best-first also keeps the usual case working, which is a "
+            "*combination* of modules rather than one winner. Read back from "
+            "module_closure_iris, module_closure_declined_iris and "
+            "module_closure_triples in the run manifest. Set via "
+            "ONTOLOGY_PATCH_SMALL_MODULE_CLOSURE_MAX_TOTAL_TRIPLES."
         ),
     )
     per_role_atom_floor: int = Field(
@@ -1762,15 +1795,40 @@ class VectorStoreConfig(BaseSettings):
         ),
     )
     top_k: int = Field(
-        default=20,
+        default=40,
         ge=1,
         description=(
-            "Default number of fused vector hits per query for ontology-patch retrieval. "
-            "Call sites may pass an explicit ``top_k`` to override this for a single "
-            "retrieval; when omitted, patch search uses this value. Raising it past 20 "
-            "measured no further seed-recall gain: the retained-atom cap "
-            "(ONTOLOGY_PATCH_MAX_ATOMS_BASE) binds first, so the extra candidates are "
-            "fetched and then discarded."
+            "Default number of fused vector hits per query for ontology-patch "
+            "retrieval. Call sites may pass an explicit ``top_k`` to override "
+            "this for a single retrieval; when omitted, patch search uses this "
+            "value. "
+            "\n\n"
+            "This is how many candidates each window *offers*, which is not the "
+            "same knob as how many atoms survive: ONTOLOGY_PATCH_MAX_ATOMS_BASE "
+            "caps the retained set, so a deeper list does not enlarge the "
+            "snapshot -- it fills the same budget from a wider field, and the "
+            "terms it recovers are the ones a shallower list ranked just out of "
+            "reach. Conflating the two caps is what made this read as inert. "
+            "Deeper costs vector-search time and nothing in the prompt."
+        ),
+    )
+    bm25_top_k: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Depth of the sparse (BM25) lane, when it should differ from TOP_K. "
+            "None (default) uses TOP_K for every lane, which is the historical "
+            "behaviour. "
+            "\n\n"
+            "Depth is a weight in disguise here, because lanes are fused by "
+            "reciprocal rank: a sparse list of length N contributes ranks 1..N at "
+            "full lane weight however weak its tail is. Dense and lexical retrieval "
+            "also fail differently -- dense degrades into topical near-misses, "
+            "lexical into unrelated text sharing a token -- so the depth at which "
+            "each stops paying is not the same number, and one knob for both means "
+            "tuning either mis-tunes the other. Lower it to keep the sparse lane as "
+            "evidence for the terms it is uniquely good at (symbols, notations, "
+            "formulae) without letting its tail vote. Set via VECTOR_STORE_BM25_TOP_K."
         ),
     )
     induced_subgraph_depth: int = Field(
@@ -1860,13 +1918,70 @@ class VectorStoreConfig(BaseSettings):
     proposition_window_sentences: int = Field(
         default=2,
         ge=1,
-        le=4,
-        description="Sentence window size used for proposition-level retrieval slicing.",
+        description=(
+            "Sentence window size used for proposition-level retrieval slicing. "
+            "Bounded in practice by the embedding model's sequence limit, not by this "
+            "setting: a window longer than the encoder accepts is truncated by the "
+            "encoder, silently, so widening past that point discards query text rather "
+            "than matching more of it. Watch chapter/query truncation in the retrieval "
+            "metrics when raising it."
+        ),
+    )
+    proposition_window_stride: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Sentences advanced between consecutive windows. None (default) strides by "
+            "the full window size, so windows are contiguous and disjoint -- the "
+            "historical behaviour. "
+            "\n\n"
+            "A smaller stride overlaps them, which matters because a statement whose "
+            "subject and value straddle a window boundary is otherwise in no window at "
+            "all: neither half is a query that can retrieve the term the whole "
+            "sentence pair names. Overlap costs queries -- and therefore embedding "
+            "time and, once PROPOSITION_MAX_WINDOWS binds, coverage elsewhere in the "
+            "unit. Set via VECTOR_STORE_PROPOSITION_WINDOW_STRIDE."
+        ),
+    )
+    proposition_window_max_chars: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Characters per retrieval query window. None (default) bounds windows "
+            "by PROPOSITION_WINDOW_SENTENCES instead, which is the historical "
+            "behaviour and is reproduced exactly. When set, this replaces the "
+            "sentence bound rather than joining it: the two are alternative ways "
+            "of saying how much text one query carries, and honouring both means "
+            "the tighter one silently wins."
+            "\n\n"
+            "A sentence count bounds the wrong quantity. What decides whether a "
+            "query works is its length: how many distinct terms one embedding "
+            "vector must carry, and whether the encoder truncates it -- which it "
+            "does on tokens, silently, returning a correctly shaped vector for a "
+            "prefix of the text. Two sentences of technical prose span an order of "
+            "magnitude in length, so a single sentence setting is simultaneously "
+            "too loose for some windows and too tight for others. The splitter "
+            "also has no abbreviation handling and breaks on every period, so a "
+            "citation like 'J. Phys. Chem. Lett.' reads as four sentences and a "
+            "two-sentence window over it carries nothing retrievable."
+            "\n\n"
+            "A budget fixes both ends: it caps windows that would truncate, and it "
+            "coalesces short fragments, since it keeps taking sentences until the "
+            "budget is met. Set it below the encoder's sequence limit to make "
+            "truncation impossible; read EMBEDDING_MODEL_NAME's limit and the "
+            "observed characters-per-token off the retrieval metrics rather than "
+            "assuming a ratio. Query-side only: changing it needs no reindex."
+        ),
     )
     proposition_max_windows: int = Field(
         default=16,
         ge=1,
-        description="Upper bound on proposition windows generated per document excerpt.",
+        description=(
+            "Upper bound on proposition windows generated per document excerpt. Over "
+            "the bound windows are subsampled evenly rather than truncated, so the "
+            "excerpt stays covered end to end -- but the text in the dropped windows "
+            "reaches no dense or sparse lane at all."
+        ),
     )
     proposition_retrieval_enabled: bool = Field(
         default=True,
@@ -1953,6 +2068,24 @@ class VectorStoreConfig(BaseSettings):
             "absent from every dense lane -- still lost its slot. This does not "
             "weaken the dense lanes; it stops the sparse lane from being a "
             "tie-breaker."
+        ),
+    )
+    fusion_rank_constant: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "Smoothing term added to each rank before the reciprocal in lane fusion: "
+            "a lane contributes weight / (constant + rank). 0.0 (default) is the "
+            "historical behaviour. "
+            "\n\n"
+            "At 0 the decay is brutal -- a rank-2 hit is worth half a rank-1 hit and "
+            "rank 3 a third -- so the fused order is decided almost entirely by which "
+            "lane put what first, and a lane's deep tail still votes at full weight. "
+            "Raising it flattens the curve so that agreement *across* lanes outweighs "
+            "position *within* one, which is the property reciprocal-rank fusion is "
+            "normally chosen for. The useful range is bounded by the lane depth: a "
+            "constant far above TOP_K makes every rank nearly equal, which discards "
+            "the ranking. Set via VECTOR_STORE_FUSION_RANK_CONSTANT."
         ),
     )
     minimal_label_limit: int = Field(
@@ -2143,14 +2276,19 @@ class VectorStoreConfig(BaseSettings):
         ),
     )
     query_unit_signals_enabled: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Match number-adjacent tokens in the unit text ('4-15 days', "
             "'200 kV', '0.5 %') case-insensitively and plural-tolerantly "
             "against catalog surface forms (labels, symbols, UCUM codes) and "
             "inject the matched entities as additional snapshot seeds at "
-            "lexical_trigger_score, outside the semantic atom budget. Off by "
-            "default until the recall-corpus sweep validates it."
+            "lexical_trigger_score, outside the semantic atom budget. The "
+            "mechanism fits quantitative extraction exactly -- a stated "
+            "measurement is a number followed by a unit, and the terms this "
+            "recovers are the units and qualifiers a value node needs. Query "
+            "time only, so enabling or disabling it needs no reindex. Turn it "
+            "off for a catalog whose surface forms are not Latin-script, or "
+            "one where the facts being extracted are not quantities."
         ),
     )
     symbol_case_mismatch_policy: SymbolCaseMismatchPolicy = Field(
@@ -2855,6 +2993,72 @@ class ToolConfig(BaseSettings):
                 "Configure only one vector store backend: set QDRANT_URI or "
                 "LANCEDB_ENABLED=true, not both."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_mmr_with_atom_floors(self) -> ToolConfig:
+        """MMR and the atom floors are two selection policies for one budget.
+
+        MMR replaces the selection outright, so a non-zero floor is not
+        enforced under it -- and the failure is silent, because a guarantee
+        that stops holding produces no error and no metric. Reserving the floor
+        slots first is not a fix either: the reserve is taken in score order and
+        would leave MMR nothing to choose whenever one ontology supplies the
+        candidates, which is the common case.
+
+        So the combination is rejected rather than resolved. Both remedies are
+        one setting away, and which one is wanted is the operator's decision,
+        not a default this can guess.
+        """
+        pc = self.patch_retrieval
+        if pc.mmr_lambda >= 1.0:
+            return self
+        floors = {
+            "ONTOLOGY_PATCH_PER_ONTOLOGY_ATOM_FLOOR": pc.per_ontology_atom_floor,
+            "ONTOLOGY_PATCH_PER_ROLE_ATOM_FLOOR": pc.per_role_atom_floor,
+        }
+        engaged = {name: value for name, value in floors.items() if value > 0}
+        if not engaged:
+            return self
+        named = ", ".join(f"{name}={value}" for name, value in engaged.items())
+        raise ValueError(
+            f"ONTOLOGY_PATCH_MMR_LAMBDA={pc.mmr_lambda} enables MMR reranking, "
+            f"which selects the whole atom budget itself and therefore cannot "
+            f"honour the atom floors ({named}). Set the floors to 0 to choose "
+            f"MMR, or MMR_LAMBDA=1.0 to keep the floors."
+        )
+
+    @model_validator(mode="after")
+    def _warn_on_unreachable_retrieval_settings(self) -> ToolConfig:
+        """Warn where a retrieval setting cannot bind, before a run pays for it.
+
+        Not an error -- the configuration runs and produces a result. It is
+        reported because the result is not the one the setting asks for, and
+        nothing downstream says so: a sweep spends points on an axis that moves
+        nothing, and an operator reads a number back as evidence about a knob
+        that never applied.
+        """
+        pc, sc = self.patch_retrieval, self.vector_store
+
+        # The window count is capped, so the scaled budget has a ceiling; above
+        # it the hard cap is unreachable and every value is the same run.
+        max_scaled = max(
+            pc.max_atoms_base, pc.seeds_per_window * sc.proposition_max_windows
+        )
+        if pc.max_atoms > max_scaled:
+            logger.warning(
+                "ONTOLOGY_PATCH_MAX_ATOMS=%d cannot bind: the effective cap is "
+                "min(max_atoms, max(MAX_ATOMS_BASE=%d, SEEDS_PER_WINDOW=%d * "
+                "windows)), and windows is capped by "
+                "VECTOR_STORE_PROPOSITION_MAX_WINDOWS=%d, so the cap never "
+                "exceeds %d. Raise MAX_ATOMS_BASE to raise the budget.",
+                pc.max_atoms,
+                pc.max_atoms_base,
+                pc.seeds_per_window,
+                sc.proposition_max_windows,
+                max_scaled,
+            )
+
         return self
 
 

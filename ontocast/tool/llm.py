@@ -647,6 +647,13 @@ class LLMTool(Tool):
                 # test_prompt_json_mode_precondition holds the prompt set to
                 # that.
                 openai_kwargs["response_format"] = {"type": "json_object"}
+            if self.config.prompt_cache_key:
+                # Routing only. The provider caches on the prefix regardless;
+                # this keeps requests that share one from being spread over
+                # shards that each have to build the entry themselves -- which
+                # is exactly what a unit fan-out issuing N calls with the same
+                # ontology chapter would otherwise do.
+                openai_kwargs["prompt_cache_key"] = self.config.prompt_cache_key
             reasoning_kwargs: dict[str, Any] = {}
             if self.config.reasoning_effort is not None:
                 # A client field rather than a model_kwargs entry: the client
@@ -727,7 +734,7 @@ class LLMTool(Tool):
             raise ValueError(f"Unsupported provider: {self.config.provider}")
 
     def _warn_ignored_reasoning_knobs(self) -> None:
-        """Warn about a reasoning knob the configured model does not read.
+        """Warn about a provider knob the configured model does not read.
 
         ``LLM_REASONING_EFFORT`` is the shared vocabulary: OpenAI reasoning
         models read it as ``reasoning_effort`` and Gemini 3+ as
@@ -765,6 +772,13 @@ class LLMTool(Tool):
                         "level -- set LLM_REASONING_EFFORT instead",
                     )
                 )
+        if self.config.prompt_cache_key is not None and provider != LLMProvider.OPENAI:
+            ignored.append(
+                (
+                    "LLM_PROMPT_CACHE_KEY",
+                    f"the {provider} provider has no prompt-cache routing hint",
+                )
+            )
         for knob, reason in ignored:
             logger.warning("%s is ignored: %s", knob, reason)
 
