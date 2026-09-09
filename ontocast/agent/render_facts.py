@@ -254,8 +254,6 @@ def _prepare_prompt_data(
 
     text_chapter = text_template.format(text=state.content_unit.extraction_text)
 
-    fact_chapter = ""
-
     user_instruction = (
         user_template.format(user_instruction=state.facts_user_instruction)
         if state.facts_user_instruction
@@ -275,7 +273,6 @@ def _prepare_prompt_data(
         "user_instruction": user_instruction,
         "facts_instruction": facts_instruction_str,
         "text_chapter": text_chapter,
-        "fact_chapter": fact_chapter,
     }
 
 
@@ -294,7 +291,6 @@ def _create_prompt_template() -> PromptTemplate:
             "ontology_chapter",
             "conformance_chapter",
             "text_chapter",
-            "improvement_instruction",
             "output_instruction",
             "format_instructions",
         ],
@@ -365,7 +361,6 @@ async def render_facts_fresh(
     )
     prompt_data_fresh = {
         "preamble": preamble,
-        "improvement_instruction": "",
         "output_instruction": profile.render_fresh_output_instruction(target="facts"),
     }
     prompt_data.update(prompt_data_fresh)

@@ -16,7 +16,7 @@ graph connectivity and gained validation errors while the one-visit arm did not.
 Two writers had to be fixed, because the loop can reach the repair with stale
 suggestions by two different routes:
 
-* a render consumes them (``render_facts_update``), and
+* a render consumes them (the facts render), and
 * the critic *accepts* on a later attempt of the same render, after an
   external-evidence search, with no render in between to consume them.
 """
@@ -175,16 +175,17 @@ async def test_an_accepting_critic_keeps_its_own_fixes(
     ), "the accepted attempt's fixes must replace the rejected attempt's"
 
 
-def test_empty_suggestions_render_no_improvement_instruction() -> None:
-    """The reset must actually silence the improvement block, not just empty it.
+def test_facts_stage_has_no_suggestions_template() -> None:
+    """The facts render has no improvement slot, so the stage must be refused.
 
-    ``render_suggestions_prompt`` returns the whole "advisory ... think
-    independently ... proactively fix additional problems" template whenever
-    either field is non-empty, so a reset that left one populated would keep
-    the contradiction alive.
+    The facts prompt template carried ``{improvement_instruction}`` and
+    ``{fact_chapter}`` slots that only ever received ``""`` -- the facts
+    correction pass was removed when the critic gained its own compiled patch.
+    Refusing the stage keeps a caller from re-introducing a template that
+    nothing renders.
     """
     from ontocast.agent.common import render_suggestions_prompt
     from ontocast.onto.enum import WorkflowNode
 
-    rendered = render_suggestions_prompt(Suggestions(), WorkflowNode.TEXT_TO_FACTS)
-    assert rendered == ""
+    with pytest.raises(ValueError, match="not supported"):
+        render_suggestions_prompt(Suggestions(), WorkflowNode.TEXT_TO_FACTS)

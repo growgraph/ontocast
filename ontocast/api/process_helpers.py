@@ -264,6 +264,7 @@ def dump_run_manifest(
     output_dir: pathlib.Path | None = None,
     shapes_triples: int | None = None,
     shapes_prompt_selection: bool | None = None,
+    fanout_settings_apply: bool = True,
 ) -> pathlib.Path | None:
     """Write the run's cost and configuration beside the facts TTL.
 
@@ -275,13 +276,7 @@ def dump_run_manifest(
     llm_config = config.tool_config.llm_config
     tool_config = config.get_tool_config()
     facts_validation = tool_config.facts_validation
-    # The deprecated FACTS_LLM_REPAIR_VISITS names the same budget, so a run
-    # configured the old way must not be recorded as having run no passes.
-    facts_critic_passes = (
-        facts_validation.llm_repair_visits
-        if facts_validation.llm_repair_visits is not None
-        else facts_validation.critic_passes
-    )
+    facts_critic_passes = facts_validation.critic_passes
     # The .facts.ttl dump strips provenance; count what the file will actually
     # hold, or the manifest is not comparable to its own TTL (1711 vs 557 on
     # observed runs).
@@ -297,7 +292,6 @@ def dump_run_manifest(
         render_mode=str(state.render_mode),
         loops=RunManifestLoops(
             max_visits=state.max_visits,
-            max_critic_visits=config.server.max_critic_visits_per_node,
             facts_critic_passes=facts_critic_passes,
             ontology_critic_passes=tool_config.ontology_validation.critic_passes,
         ),
@@ -345,8 +339,18 @@ def dump_run_manifest(
         prompting=RunManifestPrompting(
             llm_graph_format=str(config.server.llm_graph_format),
             ontology_chapter_format=str(config.server.ontology_chapter_format),
-            ontology_context_scope=str(config.server.ontology_context_scope),
-            fanout_warmup_units=config.server.fanout_warmup_units,
+            # Null on the single-unit path rather than echoed back: both
+            # settings are read only by the document fan-out node, so recording
+            # a scope that never applied would make a unit-path manifest assert
+            # a prompt-sharing regime it did not run under.
+            ontology_context_scope=(
+                str(config.server.ontology_context_scope)
+                if fanout_settings_apply
+                else None
+            ),
+            fanout_warmup_units=(
+                config.server.fanout_warmup_units if fanout_settings_apply else None
+            ),
             parallel_workers=config.server.parallel_workers,
             embedding_model_name=tool_config.embedding.model_name,
         ),
@@ -429,27 +433,33 @@ async def flush_triple_configured_scope(tools: ToolBox) -> None:
         await tools.triple_store_manager.clean()
 
 
+#: LangGraph's ceiling on super-steps for one document run.
+#:
+#: The document graph is a DAG with no back edge (``stategraph/create.py``):
+#: convert, chunk, one of the two render blocks, merge, validate, serialize.
+#: Its longest path is a dozen super-steps and does not grow with the document,
+#: because unit fan-out happens *inside* a node via ``asyncio.gather`` rather
+#: than as graph edges. So the limit does not need to scale with chunk count or
+#: visit budget -- it never did, and the formula that scaled it by both
+#: resolved to this same floor in every shipped configuration. Retry budgets are
+#: enforced inside ``run_unit_loop``, not by this number. It stays generous so a
+#: future topology change fails loudly on its own merits rather than here.
+GRAPH_RECURSION_LIMIT = 1000
+
+
 def calculate_recursion_limit(
     head_chunks: int | None,
     server_config: ServerConfig,
     *,
     max_visits_per_node: int | None = None,
 ) -> int:
-    """Calculate the recursion limit based on max visits and head chunks."""
-    visits = (
-        max_visits_per_node
-        if max_visits_per_node is not None
-        else server_config.max_visits_per_node
-    )
-    if head_chunks is not None:
-        return max(
-            server_config.base_recursion_limit,
-            visits * head_chunks * 10,
-        )
-    return max(
-        server_config.base_recursion_limit,
-        visits * server_config.estimated_chunks * 10,
-    )
+    """Recursion limit for one document run.
+
+    Arguments are accepted and ignored: the graph's depth is a property of its
+    topology, not of the document or the visit budget. See
+    :data:`GRAPH_RECURSION_LIMIT`.
+    """
+    return GRAPH_RECURSION_LIMIT
 
 
 def _resolve_document_metadata(
@@ -873,6 +883,7 @@ async def process_files_input(
                         len(shapes_graph) if shapes_graph is not None else 0
                     ),
                     shapes_prompt_selection=selection_pending,
+                    fanout_settings_apply=not use_unit_pipeline,
                 )
         except LLMConfigurationError:
             # Batch semantics stop here: the provider refuses the request as

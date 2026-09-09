@@ -68,8 +68,6 @@ LLM_TEMPERATURE=0.0
 
 # Server Configuration
 MAX_VISITS=1
-BASE_RECURSION_LIMIT=1000
-ESTIMATED_CHUNKS=30
 RENDER_MODE=ontology_and_facts    # ontology | facts | ontology_and_facts
 ONTOLOGY_CONTEXT_MAX_TRIPLES=4000 # prompt budget for the ontology chapter
 PARALLEL_WORKERS=16
@@ -190,7 +188,6 @@ OntoCast uses a hierarchical configuration system:
 | `FUSEKI_URI` + `FUSEKI_AUTH` | Persistent triple store | Omit for in-memory (default) |
 | `ONTOCAST_ONTOLOGY_DIRECTORY` | Seed ontology TTL files | Optional bootstrap |
 | `MAX_VISITS` | Maximum visits per node | 1 |
-| `BASE_RECURSION_LIMIT` | Base recursion limit for workflow | 1000 |
 | `ONTOLOGY_CONTEXT_MAX_TRIPLES` | Triple budget for the ontology sent to the LLM | 4000 |
 | `ONTOLOGY_MAX_TRIPLES` | Growth backstop on the ontology working graph (not a context cap) | unset |
 | `ENABLE_ONTOLOGY_CONSOLIDATION` | Run ontology consolidation pass | false |

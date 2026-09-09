@@ -79,7 +79,7 @@ pass actually ran — absent means "did not run", which is not the same as zero.
   "source": "paper.pdf",
   "ontocast_version": "0.6.0",
   "render_mode": "ontology_and_facts",
-  "loops": {"max_visits": 1, "max_critic_visits": null, "llm_repair_visits": 1},
+  "loops": {"max_visits": 1, "facts_critic_passes": 1, "ontology_critic_passes": 0},
   "graph_metrics": {"nodes": 130, "edges": 112, "components": 24, "largest_component": 61, "isolated_nodes": 18},
   "llm": {"provider": "ollama", "model_name": "qwen3.6", "temperature": 0.0, "think": true,
           "reasoning_effort": null, "thinking_budget": null,

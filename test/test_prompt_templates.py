@@ -183,8 +183,6 @@ def test_facts_prompt_chapter_order_puts_the_shared_prefix_first() -> None:
         "facts_instruction",
         "user_instruction",
         "text_chapter",
-        "fact_chapter",
-        "improvement_instruction",
         "output_instruction",
         "format_instructions",
     ]

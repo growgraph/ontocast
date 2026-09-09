@@ -14,9 +14,8 @@ from ontocast.api.schemas import (
     ShapesListResponse,
     ShapesMutationResponse,
 )
-from ontocast.api.tenancy_resolution import apply_request_tenancy
+from ontocast.api.tenancy_resolution import make_scoped_toolbox_resolver
 from ontocast.config import ServerConfig
-from ontocast.onto.enum import OntologyContextMode
 from ontocast.toolbox import ToolBox
 
 
@@ -30,26 +29,12 @@ def build_shapes_router(
     """Build the ``/shapes`` router bound to ``tools``' tenancy registry."""
     router = APIRouter(prefix="/shapes", tags=["shapes"])
 
-    init_vec = (
-        server_config.ontology_context_mode
-        == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+    apply_shapes_tenancy = make_scoped_toolbox_resolver(
+        tools,
+        active_tenant=active_tenant,
+        active_project=active_project,
+        server_config=server_config,
     )
-
-    async def apply_shapes_tenancy(request: Request) -> ToolBox:
-        """Return the ToolBox serving this request's tenant/project partition.
-
-        Handlers must use the returned ToolBox rather than the enclosing
-        ``tools``: with per-scope ToolBoxes, the two differ whenever the client
-        passes ``?tenant=`` / ``?project=``.
-        """
-        scoped, _, _ = await apply_request_tenancy(
-            request,
-            tools,
-            active_tenant=active_tenant,
-            active_project=active_project,
-            initialize_vector_store=init_vec,
-        )
-        return scoped
 
     @router.get(
         "",

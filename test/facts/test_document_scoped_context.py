@@ -82,7 +82,6 @@ def _tools(*, scope: OntologyContextScope, warmup: int = 0) -> ToolBox:
             config=SimpleNamespace(
                 server=SimpleNamespace(
                     parallel_workers=4,
-                    max_critic_visits_per_node=None,
                     ontology_context_max_triples=4000,
                     ontology_chapter_format=OntologyChapterFormat.INHERIT,
                     ontology_text_caps=TextCaps(),

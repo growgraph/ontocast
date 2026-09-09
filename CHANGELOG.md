@@ -11,6 +11,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 below, so a reader of the released notes sees one list rather than a
 version that exists only in this file.*
 
+**What a facts prompt costs is the theme of this release.** The individual
+entries are spread across *Added*, *Changed* and *Removed*, so read them as
+four questions about one thing. **What the ontology chapter carries:** it now
+defaults to a term sheet on a facts run — a line per term rather than a
+serialized graph — with per-literal and chapter-wide text budgets available on
+top. **How often it is re-sent:** `ONTOLOGY_CONTEXT_SCOPE=document` resolves one
+chapter for a whole document instead of one per content unit. **Whether a
+provider can replay it:** the render and critic prompts are byte-identical
+through the end of the ontology chapter and a test pins them that way, so a
+prefix cache has something to hit; `FANOUT_WARMUP_UNITS` gives it a populated
+entry to hit before the fan-out issues, and `LLM_PROMPT_CACHE_KEY` keeps those
+requests on one shard. **What bounds its size:** a total budget on whole-module
+closure, and a startup warning for the caps that cannot bind. The run manifest
+gained a `prompting` block because every one of these moves token counts
+without moving any generation setting recorded beside it, so two runs could
+differ several-fold with nothing in either dump to say why.
+
+Which of them a deployment should set, and which telemetry to read first, is in
+`docs/user_guide/performance.md`. Note that the defaults changed: a facts
+deployment that set nothing gets a cheaper chapter and a one-time cache-key
+change.
+
 ### Added
 
 - **Two selection policies for one budget are now rejected rather than resolved
@@ -641,6 +663,46 @@ version that exists only in this file.*
 
 ### Removed
 
+- **A pre-release deletion pass over code nothing reaches.** Each item below
+  was confirmed by tracing callers, not by reading names, and none changes what
+  a run does. The package had grown by more than a quarter since the last
+  release, most of it in the weeks just before it, which is the cheapest moment
+  to delete rather than deprecate.
+  - **`SPARQLTool`'s operation surface** — `execute_operations`,
+    `execute_operation`, `validate_operation`, `get_operation_history`,
+    `clear_history`, `create_insert_operation`, `create_delete_operation`,
+    `create_update_operation` and their triple-parsing helpers, plus the
+    `SPARQLOperationModel` and `SPARQLOperationType` they carried. Nothing in
+    the package or the tests called any of them; graph mutation goes through
+    `GraphUpdate` / `TripleOp`, which is a different and live path. The tool
+    keeps the induced-subgraph work that retrieval actually uses.
+  - **`SPARQLTool` is no longer built when nothing consumes it.** Its only
+    consumer is the ontology patch retriever, which exists only alongside a
+    vector store, so a default deployment constructed a tool it never called.
+    `ToolBox.sparql_tool` is now `None` in that case, and the dependency graph
+    says "needed with vector retrieval" rather than "always needed".
+  - **`MAX_CRITIC_VISITS_PER_NODE`**, deprecated and inert since the critic
+    stopped retrying inside a pass. Its last reader copied it into the run
+    manifest, so the manifest's `loops.max_critic_visits` goes with it;
+    `FACTS_CRITIC_PASSES` is the budget.
+  - **`FACTS_LLM_REPAIR_VISITS`**, the alias kept for one release after the
+    separate repair render was replaced by the critic's own compiled patch.
+    That release was this one. Set `FACTS_CRITIC_PASSES`.
+  - **`BASE_RECURSION_LIMIT` and `ESTIMATED_CHUNKS`.** The document graph is a
+    DAG with no back edge — unit fan-out happens inside a node, not as graph
+    edges — so its depth is a property of the topology and does not grow with
+    the document or the visit budget. The formula that scaled the limit by both
+    resolved to the same floor in every shipped configuration, which is now a
+    named constant with the topology argument written next to it.
+  - **The facts render's `{fact_chapter}` and `{improvement_instruction}`
+    slots**, together with the improvement template and the facts branch of the
+    suggestion renderer. Both slots only ever received `""` on the only
+    production path: the facts correction pass they belonged to was replaced by
+    the critic applying its own patch. Asking for a facts-stage suggestion
+    prompt is now an error rather than a template nothing renders.
+  - **`OntologyManager.update_ontology()`**, deprecated in favour of
+    `add_ontology()` with version tracking, and called by nothing.
+
 - **Eight retrieval knobs that never ran in any configuration**, and the merge
   mode two of them belonged to. A knob that has never bound is not free: it
   widens the space every sweep has to cover, and it invites tuning that cannot
@@ -673,6 +735,55 @@ version that exists only in this file.*
   critic uses `format_facts_chapter_indexed`.
 
 ### Fixed
+
+- **`/flush` validated its tenancy differently from every other route.** The
+  one destructive, unauthenticated route carried an inline copy of the shared
+  tenant/project resolver that had lost the non-empty guard, so a blank or
+  whitespace `?tenant=` was accepted there and refused everywhere else. It now
+  goes through `resolve_tenant_project` and answers `400`.
+
+- **A per-unit conformance chapter silently cancelled a document-scoped
+  ontology chapter.** `ONTOLOGY_CONTEXT_SCOPE=document` exists so every unit in
+  a fan-out shares one prompt prefix; that prefix runs through the end of the
+  ontology chapter, and the conformance chapter sits inside it. With
+  `FACTS_SHAPES_PROMPT_CONTRACT=context` the conformance chapter differs per
+  unit, so no two calls share a prefix and the scope setting buys nothing —
+  with nothing anywhere saying so. Configuration now warns, and says which
+  setting to change. It stays a warning rather than an error because `auto`
+  reaches `context` on its own once a shapes catalog outgrows the line budget,
+  so a deployment can arrive here by adding shapes rather than by setting
+  anything. The two settings live on different config objects; the check is on
+  the object that can see both.
+
+- **A single-unit run's manifest claimed a fan-out prompt regime it never ran
+  under.** `ontology_context_scope` and `fanout_warmup_units` are read only by
+  the document fan-out node, so on the unit path they are inert — but both were
+  recorded anyway, which made a unit-path dump assert prefix sharing that never
+  happened. They are now omitted there.
+
+- **The set of namespaces that are "not a domain vocabulary" was defined
+  twice.** The delta partitioner and the prompt's domain-ontologies clause ask
+  the same question — is this namespace the author's, or is it RDF, OWL,
+  schema.org, one of rdflib's built-in bindings, or ours — and each built its
+  own copy of the answer, differing only in whether it compared full namespaces
+  or normalized stems. Membership is now defined once and the shape conversion
+  stays with the caller. Deliberately left separate: the facts-vocabulary
+  standard set, which answers a different question and is operator-extensible
+  through `FACTS_ADDITIONAL_STANDARD_NAMESPACES`, and the aggregator's narrower
+  type-comparison set.
+
+- **Two API routers carried byte-identical tenancy closures.** `/ontologies`
+  and `/shapes` each defined the same per-request scoped-ToolBox resolver, and
+  each recomputed the vector-store initialization flag ahead of it. Both now
+  come from one factory.
+
+- **`ty check` in pre-commit CI no longer needs the lancedb or openai extras.**
+  `pyarrow` (transitive of the LanceDB backend) was missing from
+  `allowed-unresolved-imports`, and the document-graph abort test constructed a
+  real `openai.BadRequestError` via `httpx2`. Classification already matches
+  class name and message markers, so the test now uses the same local stand-in
+  as `test_llm_resilience`, and `pyarrow.**` joins the allowlist beside
+  `lancedb.**`.
 
 - **The atom floors are guarantees again on every selection path.**
   `ONTOLOGY_PATCH_PER_ONTOLOGY_ATOM_FLOOR` and `_PER_ROLE_ATOM_FLOOR` exist so

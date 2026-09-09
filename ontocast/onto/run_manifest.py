@@ -90,10 +90,6 @@ class RunManifestLoops(BaseModel):
     max_visits: int = Field(
         description="Retries of a *failed* fresh extraction; not a critic switch."
     )
-    max_critic_visits: int | None = Field(
-        default=None,
-        description="Deprecated alias for the facts pass count; None when unset.",
-    )
     facts_critic_passes: int = Field(
         default=0, description="Review-and-patch passes allowed per facts unit."
     )

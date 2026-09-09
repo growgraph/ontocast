@@ -242,10 +242,12 @@ class ToolBox:
         # Set by attach_registry() when this ToolBox fronts a multi-tenant host.
         self._registry: "ToolBoxRegistry | None" = None
 
-        # Graph algorithms over graphs it is handed; it does not fetch.
-        self.sparql_tool: SPARQLTool = SPARQLTool(
-            triple_store_manager=self.triple_store_manager
-        )
+        # Graph algorithms over graphs it is handed; it does not fetch. Built
+        # only when something consumes it: its sole consumer is
+        # OntologyPatchRetriever, which exists only alongside a vector store,
+        # so constructing it unconditionally made the dependency graph claim
+        # "always needed" where the truth is "needed with vector retrieval".
+        self.sparql_tool: SPARQLTool | None = None
 
         self.vector_store: VectorStoreManager | None = None
         self.patch_retriever: OntologyPatchRetriever | None = None
@@ -273,6 +275,9 @@ class ToolBox:
         )
         if vector_store is not None:
             self.vector_store = vector_store
+            self.sparql_tool = SPARQLTool(
+                triple_store_manager=self.triple_store_manager
+            )
             self.patch_retriever = OntologyPatchRetriever(
                 vector_store=vector_store,
                 sparql_tool=self.sparql_tool,

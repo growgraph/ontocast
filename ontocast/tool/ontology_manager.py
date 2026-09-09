@@ -1024,25 +1024,3 @@ class OntologyManager(Tool):
                         break
 
         return result
-
-    def update_ontology(self, ontology_id: str, ontology_addendum: RDFGraph):
-        """Update an existing ontology with additional triples.
-
-        Note: This method is deprecated. Use add_ontology() with a new version
-        that has the current hash in parent_hashes instead.
-
-        Args:
-            ontology_id: The short name of the ontology to update.
-            ontology_addendum: The RDF graph containing additional triples to add.
-        """
-        logger.warning(
-            "update_ontology() is deprecated. Use add_ontology() with version tracking instead."
-        )
-        terminals = self.get_terminal_ontologies(ontology_id)
-        if terminals:
-            terminals[0] += ontology_addendum
-            # Update cache for the IRI (though this method is deprecated)
-            iri = terminals[0].iri
-            freshest = self.get_freshest_terminal_ontology_by_iri(iri)
-            if freshest and freshest.hash:
-                self._cached_ontologies[iri] = freshest.hash

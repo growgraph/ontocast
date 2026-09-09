@@ -1,7 +1,10 @@
 """Shared HTTP request tenancy resolution for API routes."""
 
+from collections.abc import Awaitable, Callable
+
 from starlette.requests import Request
 
+from ontocast.config import ServerConfig
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.toolbox import ToolBox
@@ -81,3 +84,41 @@ async def apply_request_tenancy(
         fail_on_vector_store_error=False,
     )
     return scoped, resolved_tenant, resolved_project
+
+
+def make_scoped_toolbox_resolver(
+    tools: ToolBox,
+    *,
+    active_tenant: str,
+    active_project: str,
+    server_config: ServerConfig,
+) -> Callable[[Request], Awaitable[ToolBox]]:
+    """Build the per-request ToolBox resolver a sub-router depends on.
+
+    Every router that serves tenant-scoped data needs the same dependency:
+    resolve this request's tenant/project partition and hand the handler the
+    ToolBox that serves it, because with per-scope ToolBoxes the enclosing
+    ``tools`` is the wrong one whenever the client passes ``?tenant=`` or
+    ``?project=``. The ``/ontologies`` and ``/shapes`` routers each carried a
+    byte-identical copy of that closure, differing only in its name.
+
+    Vector-store initialization is decided once here, from the configured
+    ontology context mode, for the same reason: both copies computed it and a
+    third router would have computed it again.
+    """
+    initialize_vector_store = (
+        server_config.ontology_context_mode
+        == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+    )
+
+    async def resolve(request: Request) -> ToolBox:
+        scoped, _, _ = await apply_request_tenancy(
+            request,
+            tools,
+            active_tenant=active_tenant,
+            active_project=active_project,
+            initialize_vector_store=initialize_vector_store,
+        )
+        return scoped
+
+    return resolve

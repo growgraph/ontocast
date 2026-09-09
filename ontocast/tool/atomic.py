@@ -116,15 +116,8 @@ class AtomicToolBox:
         self.object_property_literal_check = (
             facts_validation.object_property_literal_check
         )
-        # Review-and-patch passes: each one is a provider call. The deprecated
-        # FACTS_LLM_REPAIR_VISITS named the same budget for the separate repair
-        # render that the critic pass replaced, so it is honoured as an alias
-        # rather than silently ignored on an existing deployment.
-        self.facts_critic_passes = (
-            facts_validation.llm_repair_visits
-            if facts_validation.llm_repair_visits is not None
-            else facts_validation.critic_passes
-        )
+        # Review-and-patch passes: each one is a provider call.
+        self.facts_critic_passes = facts_validation.critic_passes
         self.ontology_critic_passes = ontology_validation.critic_passes
         # Below this many rendered triples the facts critic is skipped: a
         # review of an empty graph is a billed call that changes nothing.

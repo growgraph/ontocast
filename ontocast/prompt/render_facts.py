@@ -25,10 +25,6 @@ Generate semantic triples representing facts (not abstract entities) based on pr
 
 {text_chapter}
 
-{fact_chapter}
-
-{improvement_instruction}
-
 {output_instruction}
 
 {format_instructions}
@@ -90,33 +86,3 @@ def build_citation_metadata_instruction(vocabulary: dict[str, str]) -> str:
         "cites": vocabulary.get("cites", "the citation property"),
     }
     return _CITATION_METADATA_HEADER + _CITATION_VOCABULARY_TEMPLATE.format(**filled)
-
-
-improvement_instruction_template = """\n\n
-# IMPROVEMENT INSTRUCTION
-
-The current graph of factual triples has been reviewed. The items below are the corrections to apply.
-
-This is a CORRECTION PASS, not a re-extraction. Apply the items and nothing else.
-
-1. Fix each item by rewriting the offending term or value IN PLACE.
-   - Do not delete the statement and do not drop extracted data. A response
-     that only removes triples has resolved nothing: the item is gone because
-     the data is gone, which is the failure this pass exists to avoid.
-   - Every corrected statement must survive with its subject and its value intact.
-
-2. Do NOT add statements that no item asks for. Leaving correct triples exactly
-   as they are is the expected outcome for every part of the graph no item
-   mentions.
-
-3. If an item is contradicted by the source text, do not apply it, and say why
-   in `explanation`. Never delete or alter other statements as a consequence -
-   a wrong item licenses skipping that item, nothing more.
-
-4. Before finalizing, check that:
-   - Each triple still accurately represents information from the source text
-   - Existing ontology entities are used instead of new cd: entities
-   - No ontology-prefixed entity was invented or renamed
-   - The graph holds at least as much correct data as it did before
-{suggestions_instruction}
-"""

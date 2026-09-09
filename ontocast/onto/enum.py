@@ -250,17 +250,6 @@ class WorkflowNode(StrEnum):
     CONSISTENCY_CRITIC = "Consistency Critic"
 
 
-class SPARQLOperationType(StrEnum):
-    """Enumeration of SPARQL operation types.
-
-    This enum is used across the system for type-safe SPARQL operations.
-    """
-
-    INSERT = "INSERT"
-    UPDATE = "UPDATE"
-    DELETE = "DELETE"
-
-
 class VectorStoreBackend(StrEnum):
     """Which vector store implementation backs ontology patch retrieval.
 

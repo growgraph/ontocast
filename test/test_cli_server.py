@@ -15,6 +15,7 @@ from ontocast.api.parse import (
     resolve_ontology_context_mode,
 )
 from ontocast.api.process_helpers import (
+    GRAPH_RECURSION_LIMIT,
     calculate_recursion_limit,
     persist_unit_pipeline_outputs,
     select_unit_facts_ontology_graph,
@@ -88,16 +89,26 @@ def test_parse_max_visits_param_rejects_non_numeric_values() -> None:
         parse_max_visits_param("abc", default=1)
 
 
-def test_calculate_recursion_limit_uses_per_request_max_visits() -> None:
-    server_config = ServerConfig(
-        max_visits_per_node=1,
-        base_recursion_limit=10,
-        estimated_chunks=10,
+def test_recursion_limit_does_not_vary_with_document_or_visit_budget() -> None:
+    """The document graph is a DAG, so its depth is a topology constant.
+
+    Unit fan-out happens inside a node, not as graph edges, and retry budgets
+    are enforced in ``run_unit_loop`` -- so neither the chunk count nor the
+    visit budget can lengthen the graph. The formula that scaled the limit by
+    both resolved to the same floor in every shipped configuration.
+    """
+    server_config = ServerConfig(max_visits_per_node=1)
+
+    limits = {
+        calculate_recursion_limit(head_chunks, server_config, max_visits_per_node=v)
+        for head_chunks in (None, 1, 5, 500)
+        for v in (None, 1, 4)
+    }
+    assert limits == {GRAPH_RECURSION_LIMIT}
+    assert GRAPH_RECURSION_LIMIT > 12, (
+        "must comfortably exceed the graph's longest path so a topology change "
+        "fails on its own merits rather than as a recursion error"
     )
-    default_limit = calculate_recursion_limit(5, server_config)
-    override_limit = calculate_recursion_limit(5, server_config, max_visits_per_node=4)
-    assert default_limit == 50
-    assert override_limit == 200
 
 
 def test_build_agent_state_from_parsed_sets_max_visits() -> None:

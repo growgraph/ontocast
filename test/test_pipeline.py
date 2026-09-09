@@ -1328,32 +1328,24 @@ def test_a_rejected_request_stops_the_document_graph(monkeypatch) -> None:
     chain is pinned separately (test_llm_resilience, test_unit_fanout_failures,
     test_cli_server); this pins the chain.
     """
-    # The response type the installed openai client actually annotates.
-    import httpx2
-    import openai
+    # Classification matches class name + message markers, not the SDK type —
+    # same stand-in as test_llm_resilience, so this test stays offline without
+    # the openai extra.
     from langchain_core.runnables import RunnableConfig
 
     from ontocast.tool.llm import LLMConfigurationError, LLMTool
 
-    body = {
-        "error": {
-            "message": (
-                "Unsupported value: 'reasoning_effort' does not support "
-                "'minimal' with this model."
-            ),
-            "type": "invalid_request_error",
-            "param": "reasoning_effort",
-            "code": "unsupported_value",
-        }
-    }
-    request = httpx2.Request("POST", "https://api.openai.com/v1/chat/completions")
+    class BadRequestError(Exception):
+        """Stand-in for the provider SDK's own 400, matched by class name."""
 
     class _RejectingModel:
         async def ainvoke(self, *args, **kwds):
-            raise openai.BadRequestError(
-                f"Error code: 400 - {body}",
-                response=httpx2.Response(400, request=request, json=body),
-                body=body["error"],
+            raise BadRequestError(
+                "Error code: 400 - {'error': {'message': \"Unsupported value: "
+                "'reasoning_effort' does not support 'minimal' with this model. "
+                "Supported values are: 'none', 'low', 'medium', 'high', and "
+                "'xhigh'.\", 'type': 'invalid_request_error', "
+                "'param': 'reasoning_effort', 'code': 'unsupported_value'}}"
             )
 
     # setup() rebuilds the client on first use, so the substitution has to

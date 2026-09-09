@@ -11,7 +11,7 @@ OntoCast configuration is powered by Pydantic `BaseSettings` and is loaded from 
 
     If you are configuring OntoCast for the first time, start from
     [Configuration Playbooks](playbooks.md) and `.env.example.minimal` instead:
-    47 variables, grouped by decision, with a playbook per task. Come back here
+    46 variables, grouped by decision, with a playbook per task. Come back here
     for the full surface once you know which knob you need.
 
 ## Overview
@@ -223,8 +223,6 @@ failing together do not re-issue in lockstep. Two rules bound them:
 ```bash
 HOST=127.0.0.1                           # loopback by default; see note below
 PORT=8999
-BASE_RECURSION_LIMIT=1000                # LangGraph step ceiling, scaled by ESTIMATED_CHUNKS
-ESTIMATED_CHUNKS=30                      # expected units per document; only sizes the limit above
 MAX_VISITS_PER_NODE=1                    # canonical name; MAX_VISITS is an accepted alias
 FACTS_CRITIC_PASSES=1                    # review-and-patch passes per facts unit
 RENDER_MODE=ontology_and_facts           # which pipeline blocks run — see below
@@ -668,7 +666,6 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `VECTOR_STORE_SYMBOL_CASE_MISMATCH_DEMOTE_FACTOR` | `0.5` | Score multiplier applied under the `demote` policy |
 | `FACTS_OBJECT_PROPERTY_LITERAL_CHECK` | `true` | Quarantine string literals on predicates whose schema range is a class (e.g. `qudt:unit`); surfaced to the facts critic and the deterministic repair loop |
 | `FACTS_CRITIC_PASSES` | `1` | Review-and-patch passes per unit, **in provider calls**. Each pass re-runs the deterministic checks for free, sends the graph and its findings to the critic, and applies what comes back as a compiled patch. `0` leaves the residue to the LLM-free repairs and the gate |
-| `FACTS_LLM_REPAIR_VISITS` | unset | Deprecated alias for `FACTS_CRITIC_PASSES`, honoured for one release |
 | `FACTS_CRITIC_MAX_DELETE_SHARE` | `0.25` | Largest share of a unit graph one pass may remove; past it the pass keeps its inserts and drops its deletes |
 | `FACTS_CRITIC_MIN_DELETES` | `5` | Deletions always permitted regardless of share, so short units stay correctable |
 | `FACTS_CRITIC_ALLOW_SUBJECT_RENAME` | `false` | Whether a `REPLACE` may delete about one subject while writing about another |
@@ -1151,7 +1148,7 @@ Entity alignment and evaluation endpoints are documented in [API Endpoints](api.
   through — the provider validates it, not OntoCast.
 - `MAX_VISITS_PER_NODE` is the canonical name; `MAX_VISITS` is an accepted alias for it. Set one, not both.
 - `RENDER_MODE`, `ONTOLOGY_CONTEXT_MODE` and `LLM_GRAPH_FORMAT` reject an unrecognised per-request value with `400` rather than falling back to the environment default.
-- `RECURSION_LIMIT` was renamed to `BASE_RECURSION_LIMIT`.
+- `RECURSION_LIMIT`, later `BASE_RECURSION_LIMIT`, and `ESTIMATED_CHUNKS` are removed: the document graph is a DAG whose depth does not vary with the document, so neither knob ever changed a run.
 - `WEB_SEARCH_ALLOWED_DOMAINS` and `WEB_SEARCH_BLOCKED_DOMAINS` accept comma-separated values.
 - `LLM_CACHE_ENABLED` and `LLM_CACHE_READ_ONLY` control disk cache read/write behavior.
 - `LLM_MAX_INFLIGHT` must be ≥ 1; `MAX_CONCURRENT_PROCESSES` must be ≥ 1 when set.

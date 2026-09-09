@@ -285,6 +285,7 @@ allowed-unresolved-imports = [
   "duckduckgo_search.**",
   "hdbscan.**",
   "lancedb.**",
+  "pyarrow.**",
   "pyshacl.**",
   "umap.**"
 ]

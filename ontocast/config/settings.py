@@ -831,12 +831,6 @@ class ServerConfig(BaseSettings):
         ),
     )
     port: int = Field(default=8999, ge=1, le=65535, description="Server port")
-    base_recursion_limit: int = Field(
-        default=1000, ge=1, description="Recursion limit for workflow"
-    )
-    estimated_chunks: int = Field(
-        default=30, ge=1, description="Estimated number of chunks"
-    )
     max_visits_per_node: int = Field(
         default=1,
         ge=1,
@@ -849,18 +843,6 @@ class ServerConfig(BaseSettings):
             "provider errors)."
         ),
         validation_alias=AliasChoices("max_visits_per_node", "max_visits"),
-    )
-    max_critic_visits_per_node: int | None = Field(
-        default=None,
-        ge=1,
-        description=(
-            "Deprecated and inert. It capped critic *retries within one render "
-            "attempt*, a path reachable only through external evidence, and the "
-            "loop no longer retries a critic inside a pass. It is still recorded "
-            "in the run manifest so an existing deployment's setting stays "
-            "auditable, and will be removed in the next minor release. The "
-            "budget you now want is FACTS_CRITIC_PASSES."
-        ),
     )
     render_mode: RenderMode = Field(
         default=RenderMode.ONTOLOGY_AND_FACTS,
@@ -2465,16 +2447,6 @@ class FactsValidationConfig(BaseSettings):
             "leaving findings to the LLM-free repairs and the gate."
         ),
     )
-    llm_repair_visits: int | None = Field(
-        default=None,
-        ge=0,
-        description=(
-            "Deprecated alias for FACTS_CRITIC_PASSES. The separate "
-            "finding-driven repair render is gone: its trigger and its budget "
-            "both belong to the critic pass, which now applies fixes itself "
-            "instead of describing them to a second call."
-        ),
-    )
     critic_max_delete_share: float = Field(
         default=0.25,
         ge=0.0,
@@ -3089,6 +3061,50 @@ class Config(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def warn_when_a_per_unit_chapter_defeats_the_shared_prefix(self) -> "Config":
+        """Warn when a per-unit conformance chapter cancels a document-scoped one.
+
+        ``ONTOLOGY_CONTEXT_SCOPE=document`` exists to give every unit in the
+        fan-out one byte-identical prompt prefix, so a provider's prefix cache
+        can serve every call after the first. The prefix runs from the preamble
+        through the end of the ontology chapter -- and the *conformance* chapter
+        sits inside it. A shapes contract of ``context`` selects requirements per
+        unit, which makes that chapter differ per call and defeats the scope
+        setting entirely.
+
+        This is a warning rather than an error because ``auto`` reaches
+        ``context`` on its own once a catalog outgrows the line budget, so a
+        deployment can arrive here by adding shapes rather than by setting
+        anything -- and refusing to start would be the wrong answer to that.
+        The two settings live on different config objects, so this is the only
+        place that can see both.
+        """
+        if self.server.ontology_context_scope != OntologyContextScope.DOCUMENT:
+            return self
+        contract = self.tool_config.facts_validation.shapes_prompt_contract
+        if contract == "context":
+            logger.warning(
+                "FACTS_SHAPES_PROMPT_CONTRACT=context makes the conformance "
+                "chapter per-unit, and that chapter sits inside the prompt "
+                "prefix ONTOLOGY_CONTEXT_SCOPE=document is trying to share -- "
+                "so no two calls in a document will share a prefix and "
+                "prefix_cache_hit_rate will not improve. Use "
+                "FACTS_SHAPES_PROMPT_CONTRACT=full to keep the prefix stable, "
+                "or drop the document scope."
+            )
+        elif contract == "auto":
+            logger.info(
+                "ONTOLOGY_CONTEXT_SCOPE=document with "
+                "FACTS_SHAPES_PROMPT_CONTRACT=auto: if the shapes catalog "
+                "outgrows FACTS_SHAPES_PROMPT_MAX_LINES the contract resolves "
+                "to 'context', which makes the conformance chapter per-unit and "
+                "defeats the shared prompt prefix. Read "
+                "validation_config.shapes_prompt_selection in the run manifest "
+                "to see which way it resolved."
+            )
+        return self
 
     @classmethod
     def in_memory(cls, **overrides: Any) -> "Config":
