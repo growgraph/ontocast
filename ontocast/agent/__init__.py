@@ -12,6 +12,7 @@ their own module rather than from here.
 """
 
 from .chunk_text import chunk_text
+from .complete_facts import complete_facts
 from .convert_document import convert_document
 from .criticise_facts import criticise_facts
 from .criticise_ontology import criticise_ontology
@@ -24,6 +25,7 @@ from .summarize_chunks import ensure_unit_summary
 
 __all__ = [
     "chunk_text",
+    "complete_facts",
     "convert_document",
     "criticise_facts",
     "criticise_ontology",

@@ -68,7 +68,7 @@ what comes out, iterate on the seed catalog.
 
 ```bash
 RENDER_MODE=ontology              # writes NO facts — this is the point
-MAX_VISITS_PER_NODE=2             # enable the LLM critic; schema quality is the deliverable
+ONTOLOGY_CRITIC_PASSES=1          # enable the LLM critic; schema quality is the deliverable
 ONTOLOGY_CONTEXT_MODE=selected_single_ontology
 ```
 
@@ -77,16 +77,30 @@ Why these:
 - **`RENDER_MODE=ontology`** skips the entire facts block, so you are not paying
   to instantiate against a schema you are still changing. Nothing is written to
   the facts partition at all.
-- **`MAX_VISITS_PER_NODE=2`** turns on `criticise_ontology`, which is off at the
-  default of `1`. This is the one place the extra cost is usually justified —
-  a bad term propagates into every downstream fact. It costs roughly one extra
-  call per unit, not the squared worst case the nested loops suggest, because
-  the critic exits immediately when it fails without requesting external
-  evidence. See [Configuration](configuration.md#server).
+- **`ONTOLOGY_CRITIC_PASSES=1`** turns on `criticise_ontology`, which is off by
+  default. This is the one place the extra cost is usually justified — a bad
+  term propagates into every downstream fact. It costs exactly one extra call
+  per unit: the pass applies its own fixes rather than describing them to a
+  second call, and it stops early once a pass changes nothing. Deletes are
+  scoped to the unit's own delta, so a critique cannot remove retrieved catalog
+  content. See [Configuration](configuration.md#server).
 
-Iterate: run, inspect the emitted ontology, fold the good parts back into
-`ONTOCAST_ONTOLOGY_DIRECTORY`, run again. The catalog is the input that most
-improves the next run.
+Starting from **nothing** is a supported first step, not a misconfiguration.
+With no seed catalog, each unit's context resolves empty, and that is precisely
+the signal the renderer reads to mint a new ontology from the text under
+`current_domain`:
+
+```bash
+ontocast process --input-path ./docs --ontology-dir '' --ontology-output-dir ./out
+```
+
+The empty string is how a run declares "no seed ontologies" over a configured
+`ONTOCAST_ONTOLOGY_DIRECTORY`. (A path that does not *exist* is a different
+thing entirely, and `process` refuses to start on it.)
+
+Iterate: run, inspect the emitted ontology, fold the good parts back into your
+seed directory, run again. The catalog is the input that most improves the next
+run.
 
 **Next:** once the schema stops changing, switch to [Populate facts](#3-populate-facts).
 
@@ -101,8 +115,11 @@ you already have rather than inventing near-duplicates.
 RENDER_MODE=facts
 ONTOLOGY_CONTEXT_MODE=fixed_single_ontology
 ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID=my_schema   # IRI, ontology_id, or author prefix
+FACTS_CONTEXT_FROM_UNITS=true                  # gate + aggregator see the resolved
+                                               # context, not an empty graph
 FACTS_SHACL_AUTOFIX=prune
 AGG_CANDIDATE_SIMILARITY_THRESHOLD=0.70
+LLM_JSON_MODE=true                             # OpenAI: constrained decoding
 ```
 
 Why these:
@@ -112,6 +129,11 @@ Why these:
 - **`fixed_single_ontology`** removes the per-unit selection call, which is both
   cheaper and more consistent than letting the model re-pick a schema for every
   chunk.
+- **`FACTS_CONTEXT_FROM_UNITS=true`** (the default) matters specifically in this mode: with
+  no ontology stage there are no reduced artifacts to merge, so without it the
+  aggregator's merge guards and the SHACL gate run against an *empty*
+  vocabulary — the gate then overstates class violations and records
+  `validated_without_ontology_context`.
 
 !!! warning "Two failure modes that look identical to bad extraction"
 

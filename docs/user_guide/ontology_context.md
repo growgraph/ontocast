@@ -23,6 +23,83 @@ Context is assembled **per unit** inside the ontology loop, not at document leve
     [`ONTOLOGY_CONTEXT_MAX_TRIPLES`](#how-large-is-the-context), like every
     other prompt.
 
+## What if the context is empty?
+
+**It depends on who is asking.** An empty context means opposite things to the
+two loops, and treating them alike is what makes an empty catalog either a
+silent disaster or a spurious failure.
+
+### For an ontology unit: this is the starting point
+
+Nothing stops. An ontology unit with no context is handed to
+`render_ontology_fresh`, which invents a new catalog ontology from the text and
+mints its IRI under `current_domain`. That is the whole bootstrap journey — a
+corpus with no ontology yet is the *input* to an ontology-building run, not a
+fault — and it is also what happens mid-run when the selector honestly reports
+that no catalog ontology fits a particular unit.
+
+`ONTOLOGY_CONTEXT_REQUIRED` never applies here, whatever it is set to.
+
+### For a facts unit: the run stops, if you asked it to
+
+A facts unit cannot answer an empty context. The renderer is instructed to
+extract "based on provided domain ontology"; handed nothing, it does not fail —
+it falls back on whatever standard vocabulary the prompt names. What comes out
+is well-formed triple by triple, exempt from `UNKNOWN_TERM` (standard
+namespaces are exempt by default), and matched by no shape, since none of its
+subjects are in any shape's target class. So the conformance gate reports
+**zero violations** on it. A run with no vocabulary at all can therefore look,
+at every checkpoint, like the cleanest run in a series.
+
+`ONTOLOGY_CONTEXT_REQUIRED` (default `false`) raises
+`EmptyOntologyContextError` on that, and the error is *not* caught as a
+per-unit failure: it describes the deployment, so every sibling unit has it
+too, and recording it per unit let the run finish, write a zero-triple manifest
+and exit successfully — the outcome the setting exists to prevent, with one
+traceback per unit burying the cause.
+
+It is **off by default** because the default render mode builds ontologies as
+well as facts, so a catalog that starts empty is ordinary. Turn it on for a
+deployment that extracts against a curated catalog, where an empty context can
+only mean the catalog failed to load. With it off, the run continues and
+records `retrieval_metrics.empty_snapshot_reason`, which names the subsystem at
+fault — catalog-side causes first, because a catalog that resolved to no graphs
+and a retrieval threshold that matched nothing are different problems with
+different fixes.
+
+!!! tip "Facts-only runs stop at startup instead"
+
+    `ontocast process` under `RENDER_MODE=facts` refuses to start when the
+    catalog resolves to zero ontologies — before a document is converted or a
+    provider call is billed. Under a render mode that creates ontologies it
+    starts and says so. `ontocast serve` never refuses on this: it is filled
+    through `POST /ontologies`.
+
+### Regardless of either: the two halves must agree
+
+Two startup checks are about *integrity*, not preference, so they do not
+consult `ONTOLOGY_CONTEXT_REQUIRED` and are not waived by any render mode. They
+fail in opposite directions, and each hides the other:
+
+- A populated vector index beside an **empty catalog** gives *healthy-looking*
+  retrieval metrics — the expected seeds, the expected atom count — and an
+  empty graph.
+- An **empty index** beside a populated catalog is what `--wipe-vector-store`
+  leaves behind when materialization put nothing back; the wipe is
+  unconditional, the refill is not.
+
+Neither fires during a legitimate bootstrap, where catalog and index are both
+empty.
+
+Two companion signals for a context that arrived and was wasted, both on by
+default:
+
+- **`DOMAIN_ADHERENCE`** (`FACTS_DOMAIN_ADHERENCE_MIN_SHARE`, default `0.15`) —
+  a mandatory finding when a render used almost none of the catalog it *did*
+  get. Covers the case where the context arrived but was ignored.
+- **`shacl_vacuous` / `shacl_focus_nodes`** in the conformance summary —
+  `conforms` is `null`, never `true`, when the shapes matched no node.
+
 ## How large is the context?
 
 Only vector mode bounds retrieval itself; every mode is bounded at
@@ -105,15 +182,19 @@ Default path: per-window channel fusion → max-score IRI dedupe → global scor
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` | `24` | Per-entity BFS quota hint |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_CANDIDATE_PUSHDOWN` | `false` | Opt-in SPARQL neighborhood CONSTRUCT (see below) |
 | `VECTOR_STORE_PROPOSITION_MAX_WINDOWS` | `16` | Window cap; long chunks sample evenly across the text |
-| `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `max_score` | Default merge; `sum_score` (rewards multi-window agreement) and `hybrid` are opt-in |
+| `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `max_score` | Default merge; `sum_score` (rewards multi-window agreement) is opt-in |
 | `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | `0` | Max seeds per ontology; `0` (default) uses global score order |
 | `ONTOLOGY_PATCH_SEEDS_PER_WINDOW` | `4` | Scales effective atom cap with proposition windows |
 | `ONTOLOGY_PATCH_MAX_ATOMS_BASE` | `96` | Floor for the effective atom cap |
 | `ONTOLOGY_PATCH_MAX_ATOMS` | `96` | Hard cap: `min(max_atoms, max(base, seeds_per_window × n_queries))` |
-| `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` | `0.18` | Empty patch when the best per-window fused score is below this |
-| `ONTOLOGY_PATCH_MMR_LAMBDA` | `1.0` | `1.0` skips MMR (default); lower enables diversity rerank |
+| `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` | `0.18` | Empty patch when the best per-window fused score is below this **fraction of the best attainable** fused score |
+| `ONTOLOGY_PATCH_MMR_LAMBDA` | `1.0` | `1.0` skips MMR (default); lower enables diversity rerank. Below 1.0 it is quadratic in the candidate set, so it is costly at a wide `TOP_K` |
+| `VECTOR_STORE_BM25_TOP_K` | unset | Sparse-lane depth when it should differ from `TOP_K`; unset means both are the same |
+| `VECTOR_STORE_FUSION_RANK_CONSTANT` | `0.0` | Smoothing in `weight / (constant + rank)`. See the warning below before raising it |
+| `VECTOR_STORE_PROPOSITION_WINDOW_MAX_CHARS` | unset | Characters per window; replaces the sentence bound when set |
+| `VECTOR_STORE_PROPOSITION_WINDOW_STRIDE` | unset | Sentences advanced between windows; unset strides by the window size, so windows are disjoint |
 
-Advanced (off by default): `ONTOLOGY_PATCH_PER_QUERY_*_SCORE_RATIO`, `ONTOLOGY_PATCH_MERGED_SCORE_RATIO`, hybrid tier-1/tier-2 (`MAX_ATOMS_TIER1`, `MIN_ENTITY_SCORE`).
+Advanced (off by default): `ONTOLOGY_PATCH_MERGED_SCORE_RATIO`.
 
 ### Recommended preset for dense scientific text
 
@@ -150,9 +231,15 @@ treat sub-percentage-point differences as run-to-run noise.
 in-repo.
 
 Per-run metrics are available in production on
-`state.retrieval_metrics["patch_retrieval"]`: `atoms_after_dedupe`, `atoms_final`,
-`seed_iris`, `seeds_by_ontology`, `snapshot_triple_count`, `snapshot_pruned_uri_count`,
-`snapshot_uri_components`.
+`state.retrieval_metrics["patch_retrieval"]`: `candidate_hits`, `threshold_rejected`,
+`atoms_after_dedupe`, `atoms_final`, `seed_iris`, `seeds_by_ontology`,
+`snapshot_triple_count`, `snapshot_pruned_uri_count`, `snapshot_uri_components`.
+
+`candidate_hits` and `threshold_rejected` are counted *before* the score gate;
+`atoms_after_dedupe` is counted after it. Only the first pair can distinguish
+"search returned nothing" from "a threshold rejected everything" — a threshold
+rejection records zero atoms after dedupe, so reading that number alone reports
+the wrong cause.
 
 #### Catalog I/O
 
@@ -307,6 +394,93 @@ This is what makes a **small** vocabulary findable by symbol in the sparse lane.
 thousands of near-identical unit embeddings cluster together and displace domain
 terms under the global atom cap.
 
+### Lane depth, and the fusion scale
+
+Lanes are combined by weighted reciprocal rank, so a lane's **depth is a weight in
+disguise**: a list of length N contributes ranks 1..N at full lane weight however weak
+its tail is. `VECTOR_STORE_BM25_TOP_K` exists because the lanes fail differently —
+dense retrieval degrades into topical near-misses, lexical retrieval into unrelated text
+sharing a token — so the depth at which each stops paying is not the same number.
+
+!!! note "Why the relevance gate is a fraction, not a score"
+    `ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE` is a fraction of the best score a window
+    could possibly achieve — an atom ranked first in every lane. It has to be,
+    because the lane weights and the rank constant both **rescale the fused
+    score**: a rank-1 hit worth `w` unsmoothed is worth `w / (1 + constant)`
+    smoothed. Read as an absolute number, a gate calibrated without smoothing
+    rejected *every* candidate once smoothing was on, and the symptom — an empty
+    ontology context — reads as a retrieval failure rather than a miscalibration.
+    Expressed as a fraction it means one thing at every constant, which is what
+    lets smoothing be evaluated on its own merits.
+
+### Query windows
+
+Retrieval queries are proposition windows over the content unit, not the whole unit.
+Two properties are easy to be caught by:
+
+- **A sentence count is not a bound on how much text a query carries.** Two
+  sentences of technical prose span an order of magnitude in length, and the
+  splitter breaks on every period with no abbreviation handling — so
+  `J. Phys. Chem. Lett.` is four "sentences", and a two-sentence window over a
+  citation is a fragment with nothing to retrieve.
+  `VECTOR_STORE_PROPOSITION_WINDOW_MAX_CHARS` bounds by length instead: it caps
+  the long windows that the encoder would truncate *and* coalesces the short
+  fragments, because it keeps taking sentences until the budget is met. It
+  replaces the sentence bound rather than joining it. Set it below the encoder's
+  sequence limit and truncation becomes impossible by construction; read the
+  limit and the observed characters-per-token from the retrieval metrics rather
+  than assuming a ratio.
+- **A sentence count is not a bound on how much text a query carries.** Two
+  sentences of technical prose span an order of magnitude in length, and the
+  splitter breaks on every period with no abbreviation handling — so
+  `J. Phys. Chem. Lett.` is four "sentences", and a two-sentence window over a
+  citation is a fragment with nothing to retrieve.
+  `VECTOR_STORE_PROPOSITION_WINDOW_MAX_CHARS` bounds by length instead: it caps
+  the long windows that the encoder would truncate *and* coalesces the short
+  fragments, because it keeps taking sentences until the budget is met. It
+  replaces the sentence bound rather than joining it. Set it below the encoder's
+  sequence limit and truncation becomes impossible by construction; read the
+  limit and the observed characters-per-token from the retrieval metrics rather
+  than assuming a ratio.
+- **A sentence count is not a bound on how much text a query carries.** Two
+  sentences of technical prose span an order of magnitude in length, and the
+  splitter breaks on every period with no abbreviation handling — so
+  `J. Phys. Chem. Lett.` is four "sentences", and a two-sentence window over a
+  citation is a fragment with nothing to retrieve.
+  `VECTOR_STORE_PROPOSITION_WINDOW_MAX_CHARS` bounds by length instead: it caps
+  the long windows that the encoder would truncate *and* coalesces the short
+  fragments, because it keeps taking sentences until the budget is met. It
+  replaces the sentence bound rather than joining it. Set it below the encoder's
+  sequence limit and truncation becomes impossible by construction; read the
+  limit and the observed characters-per-token from the retrieval metrics rather
+  than assuming a ratio.
+- **Windows are disjoint by default.** A statement whose subject and value straddle a
+  window boundary appears in no window at all, and neither half retrieves what the pair
+  together names. `VECTOR_STORE_PROPOSITION_WINDOW_STRIDE` overlaps them, at the cost of
+  more queries — and, once `PROPOSITION_MAX_WINDOWS` binds, of coverage elsewhere.
+- **`PROPOSITION_MAX_WINDOWS` drops text when it binds.** Over the cap, windows
+  are subsampled evenly across the unit — so coverage is preserved but *density*
+  is not, and the text in a dropped window reaches no dense or sparse lane at
+  all. Whether it binds is a property of how long your content units are, which
+  is why it can be inert on short units and lossy on long ones.
+- **`PROPOSITION_MAX_WINDOWS` drops text when it binds.** Over the cap, windows
+  are subsampled evenly across the unit — so coverage is preserved but *density*
+  is not, and the text in a dropped window reaches no dense or sparse lane at
+  all. Whether it binds is a property of how long your content units are, which
+  is why it can be inert on short units and lossy on long ones.
+- **`PROPOSITION_MAX_WINDOWS` drops text when it binds.** Over the cap, windows
+  are subsampled evenly across the unit — so coverage is preserved but *density*
+  is not, and the text in a dropped window reaches no dense or sparse lane at
+  all. Whether it binds is a property of how long your content units are, which
+  is why it can be inert on short units and lossy on long ones.
+- **The embedding model truncates, silently.** A window longer than the checkpoint's
+  sequence limit is cut by the encoder before the model sees it; the vector comes back
+  the right shape for a prefix of the text and nothing downstream can tell. Widening the
+  window past that limit discards query text rather than matching more of it. Read
+  `queries_truncated` and `query_sequence_limit` from `retrieval_metrics` before
+  reaching for a wider window — several widely used checkpoints stop at 128 word pieces,
+  well below what a two-sentence window of technical prose costs.
+
 ### Lexical-trigger lane (exact-match codes)
 
 Some catalog terms are identified by a **literal token** in source text — unit symbols
@@ -329,6 +503,21 @@ paraphrase similarity. Those are handled by a separate **lexical-trigger** lane:
   [Configuration](configuration.md).
 
 Requires a **reindex** after upgrading: the embedding contract fingerprint bumps to `sf3`.
+
+### Number-adjacent query signals
+
+`VECTOR_STORE_QUERY_UNIT_SIGNALS_ENABLED` (default **on**) adds a query-time lane that
+takes the tokens sitting immediately after a number — the `days` in "4-15 days", the
+`kV` in "200 kV" — and matches them case-insensitively, with a singular/plural variant,
+against catalog surface forms. Matched entities join the seeds outside the semantic
+budget.
+
+The mechanism fits quantitative extraction exactly: that shape of text is what it
+keys on, and the terms it recovers are the units and qualifiers a value node needs.
+It is narrow by construction and Latin-script/English-centric, so turn it off for a
+catalog whose surface forms are neither, or one whose facts are not quantities.
+Costs no reindex either way — it is query-time only, so it can be A/B'd against an
+index already built.
 
 ### `fixed_single_ontology`
 
@@ -373,8 +562,7 @@ catalog terminals. The prompts say so explicitly (a PARTIAL CONTEXT notice in
 the render intro and critic criteria), and three reduce-time policies close
 the gap that partiality opens: minted-duplicate reconciliation against the
 full terminals, a redeclare-only delete policy, and fresh-path union merging.
-See [Validation → Reduce-time policies](validation.md#reduce-time-policies-the-terminal-is-the-authority)
-and the workspace design note `planning/ontology-update-semantics.md`.
+See [Validation → Reduce-time policies](validation.md#reduce-time-policies-the-terminal-is-the-authority).
 
 ## Per-Request Overrides
 

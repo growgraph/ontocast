@@ -29,6 +29,8 @@ from ontocast.tool.sentence_transformer import (
 )
 from ontocast.tool.vector_store.embedding import HuggingFaceEmbeddingTool
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def clean_encoder_cache():

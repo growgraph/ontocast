@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import re
@@ -657,6 +658,25 @@ def _referenced_jsonld_context(
     }
 
 
+def _term_sort_key(term: Node) -> tuple[str, str, str]:
+    """Total order over RDF terms, for deterministic serialization.
+
+    The lexical form alone is not a key: two literals can share it and differ
+    only in language tag or datatype, and sorting on the shared value leaves
+    their relative order to whatever the iteration happened to produce -- which
+    is the nondeterminism this exists to remove, surviving in exactly the places
+    hardest to notice.
+    """
+    if isinstance(term, Literal):
+        return (str(term), term.language or "", str(term.datatype or ""))
+    return (str(term), "", "")
+
+
+def _triple_sort_key(triple: tuple) -> tuple[tuple[str, str, str], ...]:
+    """Total order over triples, subject then predicate then object."""
+    return tuple(_term_sort_key(term) for term in triple)
+
+
 class RDFGraph(Graph):
     """Subclass of rdflib.Graph with Pydantic schema support.
 
@@ -665,7 +685,9 @@ class RDFGraph(Graph):
     """
 
     @classmethod
-    def __get_pydantic_core_schema__(cls, _source_type, handler: GetCoreSchemaHandler):
+    def __get_pydantic_core_schema__(
+        cls, _source_type: Any, handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
         """Get the Pydantic core schema for this class.
 
         Args:
@@ -1536,6 +1558,77 @@ class RDFGraph(Graph):
             raise RuntimeError("pyoxigraph dump returned no data")
         return raw.decode()
 
+    def canonicalize_bnodes(self) -> "RDFGraph":
+        """Return a copy whose blank nodes carry content-derived labels.
+
+        rdflib mints blank-node identifiers at random, and the Turtle writer
+        orders blank-node blocks by those identifiers, so parsing the same files
+        twice in two processes yields two different serializations of the same
+        graph. That is invisible inside one process -- the prompt is memoised on
+        one graph object -- and expensive across them: the LLM disk cache is
+        keyed on the prompt string, and a provider's prefix cache on the prompt
+        prefix, so an ontology chapter that differs only in random labels is a
+        chapter neither cache can ever serve.
+
+        Labels are assigned by iterative refinement: each blank node's signature
+        starts from the ground terms it is attached to, and each round folds in
+        its neighbours' signatures, so structure a round away becomes
+        distinguishing. Nodes are then labelled in signature order.
+
+        Blank nodes whose signatures never separate are automorphic -- they sit
+        in structurally identical positions -- so which of them takes which
+        label does not change the resulting triples, and the serialization is
+        byte-identical either way. That is what makes an arbitrary tie-break
+        safe here rather than a source of the very instability being removed.
+
+        Returns:
+            A new graph with the same triples, the same namespace bindings, and
+            blank nodes named ``_:b0``, ``_:b1``, ... in canonical order.
+        """
+        bnodes = {term for triple in self for term in triple if isinstance(term, BNode)}
+        if not bnodes:
+            return self
+
+        signatures: dict[BNode, str] = dict.fromkeys(bnodes, "")
+
+        def describe(term: Node) -> str:
+            return signatures[term] if isinstance(term, BNode) else f"<{term}>"
+
+        # Two rounds past the first spread structure far enough to separate the
+        # shapes an ontology actually holds (restrictions, list cells); further
+        # rounds only cost time on nodes that are genuinely automorphic.
+        for _ in range(3):
+            refined: dict[BNode, str] = {}
+            for node in bnodes:
+                out = sorted(
+                    f">{predicate}|{describe(obj)}"
+                    for _, predicate, obj in self.triples((node, None, None))
+                )
+                incoming = sorted(
+                    f"<{predicate}|{describe(subject)}"
+                    for subject, predicate, _ in self.triples((None, None, node))
+                )
+                refined[node] = hashlib.sha1(
+                    "\u0000".join((*out, *incoming)).encode("utf-8")
+                ).hexdigest()
+            signatures = refined
+
+        order = sorted(bnodes, key=lambda node: (signatures[node], str(node)))
+        renamed = {node: BNode(f"b{index}") for index, node in enumerate(order)}
+
+        canonical = RDFGraph()
+        for prefix, namespace in self.namespaces():
+            canonical.bind(prefix, namespace)
+        for subject, predicate, obj in self:
+            canonical.add(
+                (
+                    renamed.get(subject, subject),
+                    renamed.get(predicate, predicate),
+                    renamed.get(obj, obj),
+                )
+            )
+        return canonical
+
     def serialize_canonical_turtle(self) -> str:
         """Serialize to Turtle after canonical namespace/prefix sanitization.
 
@@ -1591,12 +1684,23 @@ class RDFGraph(Graph):
         """Serialize graph as compact JSON-LD text for LLM context prompts."""
         self.sanitize_prefixes_namespaces()
         context: dict[str, str] = {}
-        for prefix, namespace in self.namespaces():
+        for prefix, namespace in sorted(
+            self.namespaces(), key=lambda binding: str(binding[0])
+        ):
             if prefix:
                 context[prefix] = str(namespace)
 
         nodes: dict[str, dict[str, Any]] = defaultdict(dict)
-        for subject, predicate, obj in self:
+        # Sorted, not graph order. rdflib iterates its internal dicts, whose
+        # order depends on the hash of each term -- randomised per process for
+        # strings -- so the same graph serialised in two processes produced two
+        # different documents that differed only in node and value ordering.
+        # This text is a cache key: the LLM disk cache is keyed on the prompt
+        # and a provider's prefix cache on its prefix, so an unstable ordering
+        # meant neither could ever serve a chapter built in an earlier run.
+        # JSON-LD node order and multi-value order carry no meaning, so fixing
+        # the order costs nothing but a sort.
+        for subject, predicate, obj in sorted(self, key=_triple_sort_key):
             subj_key = str(subject)
             if "@id" not in nodes[subj_key]:
                 subj_compact = self._compact_iri_for_jsonld(subject)
@@ -1642,7 +1746,7 @@ class RDFGraph(Graph):
                 return fallback.decode("utf-8")
             return str(fallback)
 
-    def __new__(cls, *args, **kwargs):
+    def __new__(cls, *args, **kwargs: Any):
         """Create a new RDFGraph instance."""
         instance = super().__new__(cls)
         return instance
@@ -1718,7 +1822,7 @@ class RDFGraph(Graph):
     def sanitize_prefixes_namespaces(
         self,
         preferred_namespace_prefixes: dict[str, str] | None = None,
-    ):
+    ) -> "RDFGraph":
         """
         Rematches prefixes in an RDFLib graph to correct namespaces when a namespace
         with the same URI exists. Handles cases where prefixes might not be bound

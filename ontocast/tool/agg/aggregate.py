@@ -15,6 +15,7 @@ Pipeline:
 
 import logging
 import re
+from collections.abc import Sequence
 from difflib import SequenceMatcher
 from enum import StrEnum
 from itertools import combinations
@@ -59,6 +60,7 @@ from .signatures import (
     string_values_compatible,
     tokens_alias_compatible,
 )
+from .unit_scope import scope_fact_iris, unscoped_iri
 from .uri_builder import EntityRole, URIBuilder, to_lower_camel_case
 
 logger = logging.getLogger(__name__)
@@ -472,6 +474,55 @@ def build_merged_clusters(
     return merged_clusters
 
 
+def build_cross_unit_object_pairs(
+    units: Sequence[ContentUnit],
+    final_mapping: dict[URIRef, URIRef],
+) -> list[tuple[str, str]]:
+    """(subject, predicate) pairs whose IRI objects came from more than one unit.
+
+    A statement asserted with several objects *by a single unit* cannot be the
+    product of an identity merge -- two applicants who jointly lodged one
+    application are one unit's reading of one sentence. Only a pair whose
+    objects arrive from different units could have been created by merging, so
+    this is the evidence the validation gate needs before treating a
+    multi-valued IRI predicate as a merge signature.
+
+    Keys are canonicalized through ``final_mapping``, because the gate sees the
+    post-merge graph and a pre-merge subject IRI would never match.
+
+    Args:
+        units: The content units that contributed to the merged graph.
+        final_mapping: Source entity -> final URI, as used for the rewrite.
+
+    Returns:
+        Sorted (subject, predicate) IRI-string pairs, each with at least two
+        distinct objects spanning at least two units.
+    """
+    contributions: dict[tuple[str, str], dict[str, set[int]]] = {}
+    for index, unit in enumerate(units):
+        if unit.graph is None:
+            continue
+        for subject, predicate, obj in unit.graph:
+            if not isinstance(subject, URIRef) or not isinstance(obj, URIRef):
+                continue
+            if not isinstance(predicate, URIRef):
+                continue
+            key = (str(final_mapping.get(subject, subject)), str(predicate))
+            objects = contributions.setdefault(key, {})
+            objects.setdefault(str(final_mapping.get(obj, obj)), set()).add(index)
+
+    pairs: list[tuple[str, str]] = []
+    for key, objects in contributions.items():
+        if len(objects) < 2:
+            continue
+        contributing_units: set[int] = set()
+        for unit_indices in objects.values():
+            contributing_units |= unit_indices
+        if len(contributing_units) > 1:
+            pairs.append(key)
+    return sorted(pairs)
+
+
 class AggregationResult(BaseModel):
     """Outcome of one aggregation pass, including merge bookkeeping.
 
@@ -493,6 +544,10 @@ class AggregationResult(BaseModel):
             least one natural-key pair (a shared identifier value). The
             validation gate treats label disagreement inside these clusters
             as name variance rather than a merge signature.
+        cross_unit_object_pairs: Canonical (subject, predicate) pairs whose IRI
+            objects were contributed by more than one unit -- the only ones a
+            merge could have created. See
+            :func:`build_cross_unit_object_pairs`.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -502,6 +557,7 @@ class AggregationResult(BaseModel):
     merged_clusters: dict[str, list[str]] = Field(default_factory=dict)
     rejected_merge_count: int = 0
     key_supported_clusters: list[str] = Field(default_factory=list)
+    cross_unit_object_pairs: list[tuple[str, str]] = Field(default_factory=list)
 
 
 class _EntityCollectionState(BaseModel):
@@ -593,6 +649,9 @@ class EmbeddingBasedAggregator:
         self.initials_distinct_guard = cfg.initials_distinct_guard
         self.natural_key_merge = cfg.natural_key_merge
         self.type_guard_untyped = str(cfg.type_guard_untyped)
+        self.unit_scoped_fact_iris = cfg.unit_scoped_fact_iris
+        if candidate_similarity_threshold is None:
+            self._warn_inert_similarity_threshold(cfg)
 
         # Pipeline components (EntityClusterer imports sklearn/ST lazily).
         # The clusterer runs at the permissive candidate threshold: candidates
@@ -611,6 +670,32 @@ class EmbeddingBasedAggregator:
             add_sameas_links=add_sameas_links,
             blocked_sameas_namespaces=(self.base_iri,),
         )
+
+    @staticmethod
+    def _warn_inert_similarity_threshold(cfg: AggregationConfig) -> None:
+        """Warn when the aligner threshold is tuned but the pipeline one is not.
+
+        ``similarity_threshold`` drives only the cross-graph
+        :class:`~ontocast.tool.agg.entity_aligner.EntityAligner`; this
+        aggregator clusters and gates at ``candidate_similarity_threshold``.
+        Setting the former away from its default while the latter stays at its
+        default is the signature of someone tuning the wrong knob.
+        """
+        fields = AggregationConfig.model_fields
+        if (
+            cfg.similarity_threshold != fields["similarity_threshold"].default
+            and cfg.candidate_similarity_threshold
+            == fields["candidate_similarity_threshold"].default
+        ):
+            logger.warning(
+                "AGG_SIMILARITY_THRESHOLD=%s is set, but the in-pipeline "
+                "aggregator does not read it: it clusters and gates at "
+                "AGG_CANDIDATE_SIMILARITY_THRESHOLD (still at its default %s). "
+                "AGG_SIMILARITY_THRESHOLD only drives the cross-graph "
+                "EntityAligner (/align_entities, match-graphs).",
+                cfg.similarity_threshold,
+                cfg.candidate_similarity_threshold,
+            )
 
     @staticmethod
     def _entity_in_namespace(entity: URIRef, namespace: URIRef | str | None) -> bool:
@@ -679,7 +764,7 @@ class EmbeddingBasedAggregator:
     @staticmethod
     def _instance_like_local_name(entity: URIRef) -> str | None:
         """Return normalized local name when URI ends with numeric suffix."""
-        local_name = normalize_uri_local_name(entity).replace(" ", "")
+        local_name = normalize_uri_local_name(unscoped_iri(entity)).replace(" ", "")
         if not local_name:
             return None
         match = _INSTANCE_LOCAL_NAME_RE.match(local_name)
@@ -922,12 +1007,17 @@ class EmbeddingBasedAggregator:
         must not end up merged through a chain of intermediate aliases.
         """
         pair = frozenset((left, right))
-        if direct_relation_pairs is not None and pair in direct_relation_pairs:
+        # Direct relations and sibling pairs are recorded by name; the gate's
+        # merge vetoes name scoped source IRIs. Both spellings are checked.
+        name_pair = frozenset((unscoped_iri(left), unscoped_iri(right)))
+        if direct_relation_pairs is not None and (
+            pair in direct_relation_pairs or name_pair in direct_relation_pairs
+        ):
             return True
         left_rep = representations.get(left)
         right_rep = representations.get(right)
         if guard_context is not None:
-            if pair in guard_context.sibling_pairs:
+            if name_pair in guard_context.sibling_pairs:
                 return True
             if left_rep is not None and right_rep is not None:
                 if self.literal_conflict_guard and self._have_conflicting_literals(
@@ -1110,7 +1200,8 @@ class EmbeddingBasedAggregator:
     ) -> list[str]:
         failures: list[str] = []
         if guard_context is not None:
-            if frozenset((left, right)) in guard_context.sibling_pairs:
+            name_pair = frozenset((unscoped_iri(left), unscoped_iri(right)))
+            if name_pair in guard_context.sibling_pairs:
                 failures.append("sibling")
             left_rep = representations.get(left)
             right_rep = representations.get(right)
@@ -1448,9 +1539,17 @@ class EmbeddingBasedAggregator:
             # during rewrite, because unit.graph still contains the original terms.
             for s, p, o in unit.graph:
                 if isinstance(s, URIRef) and isinstance(o, URIRef):
-                    self._register_direct_relation(state=state, subject=s, obj=o)
+                    # Structural guards key on *names*, as they did before
+                    # unit scoping: a subject mentioned in two units points at
+                    # two scoped objects, and when those carry the same name
+                    # they must not read as siblings, nor make the predicate
+                    # look single-valued on twice the subjects.
+                    name_s, name_o = unscoped_iri(s), unscoped_iri(o)
+                    self._register_direct_relation(
+                        state=state, subject=name_s, obj=name_o
+                    )
                     if isinstance(p, URIRef) and p != RDF.type:
-                        state.object_groups.setdefault((s, p), set()).add(o)
+                        state.object_groups.setdefault((name_s, p), set()).add(name_o)
                 for term in (s, p, o):
                     if isinstance(term, URIRef):
                         self._register_entity(entity=term, unit=unit, state=state)
@@ -1791,6 +1890,9 @@ class EmbeddingBasedAggregator:
             merged_clusters=merged_clusters,
             rejected_merge_count=len(rejected_merges),
             key_supported_clusters=key_supported_clusters,
+            cross_unit_object_pairs=build_cross_unit_object_pairs(
+                active_units, final_mapping
+            ),
         )
 
     def postprocess_facts_units(
@@ -1814,6 +1916,13 @@ class EmbeddingBasedAggregator:
         facts graph. Business-oriented keys mint typed entities under
         ``doc_namespace`` (defaults to the document facts namespace).
 
+        With ``unit_scoped_fact_iris`` on, every minted fact IRI is suffixed
+        with its unit index *in place* on the unit graph before aggregation
+        (see :mod:`ontocast.tool.agg.unit_scope`), so a local name minted by
+        two units is a merge decision rather than an accidental fusion. The
+        rewrite is idempotent, which keeps the validation gate's
+        re-aggregation of the same units on identical input.
+
         Args:
             units: Facts content units to aggregate.
             ontology_graph: Merged ontology context for classification/guards.
@@ -1829,6 +1938,10 @@ class EmbeddingBasedAggregator:
         """
         for unit in units:
             unit.sanitize()
+            if self.unit_scoped_fact_iris and unit.type != OutputType.ONTOLOGIES:
+                scope_fact_iris(
+                    unit.graph, unit.index, (self.base_iri, str(unit.doc_iri))
+                )
         result = self.aggregate_graphs(
             units=units, ontology_graph=ontology_graph, merge_vetoes=merge_vetoes
         )

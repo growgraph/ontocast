@@ -96,3 +96,30 @@ RDFLIB_DEFAULT_NAMESPACE_URIS: frozenset[str] = frozenset(CONVENTIONAL_MAPPINGS)
 def is_rdflib_default_namespace(namespace: str) -> bool:
     """Return True when *namespace* is one of rdflib's built-in bindings."""
     return namespace in RDFLIB_DEFAULT_NAMESPACE_URIS
+
+
+def non_domain_namespaces() -> frozenset[str]:
+    """Namespaces that are never a document's *domain* vocabulary.
+
+    Every rdflib built-in binding (``brick``, ``csvw``, ``xml``, …), every
+    namespace in ``COMMON_PREFIXES``, both schema.org spellings, and the facts
+    namespace itself. Two callers ask the same question of this set and used to
+    each build their own copy: the delta partitioner, which must not treat a
+    standard namespace as writable, and the prompt's "domain ontologies" clause,
+    which must not list one. They diverge only in shape -- the partitioner
+    compares normalized stems -- so the shape conversion lives with each caller
+    and the *membership* is defined once, here.
+
+    This is deliberately **not** the facts-vocabulary standard set
+    (``tool/facts_validation/terms.py``), which answers a different question --
+    which terms a render may use without being flagged unknown -- and is
+    operator-extensible through ``FACTS_ADDITIONAL_STANDARD_NAMESPACES``.
+    Nor is it the aggregator's type-comparison set, which is narrower again.
+    """
+    from ontocast.onto.constants import COMMON_PREFIXES, DEFAULT_IRI
+
+    return (
+        RDFLIB_DEFAULT_NAMESPACE_URIS
+        | frozenset(uri.strip("<>") for uri in COMMON_PREFIXES.values())
+        | {"https://schema.org/", "http://schema.org/", DEFAULT_IRI}
+    )

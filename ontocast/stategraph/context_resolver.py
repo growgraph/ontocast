@@ -2,6 +2,8 @@ import asyncio
 import logging
 import time
 from collections import Counter
+from collections.abc import Sequence
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -15,7 +17,10 @@ from ontocast.onto.enum import (
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.retrieval_capabilities import require_vector_retrieval
+from ontocast.onto.retrieval_capabilities import (
+    EmptyOntologyContextError,
+    require_vector_retrieval,
+)
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.chunk.proposition import split_proposition_windows
 from ontocast.tool.llm import use_budget_tracker
@@ -58,6 +63,8 @@ def _unit_queries(unit: SourceUnit, tools: ToolBox) -> list[str]:
         text,
         max_sentences=vcfg.proposition_window_sentences,
         max_windows=vcfg.proposition_max_windows,
+        stride=vcfg.proposition_window_stride,
+        max_chars=vcfg.proposition_window_max_chars,
     )
 
 
@@ -111,6 +118,110 @@ def build_merged_document_ontology_context(
     return UnitOntologyContext(
         snapshot=snapshot,
         writable_iris=list(patch_sources),
+        confidence=1.0,
+    )
+
+
+async def build_unioned_document_ontology_context(
+    context: UnitLoopContext,
+    tools: ToolBox,
+    units: Sequence[SourceUnit],
+) -> UnitOntologyContext | None:
+    """Resolve every unit's context once and union them into one shared context.
+
+    Per-unit retrieval gives each unit a smaller chapter than the union would
+    be, and that is a real saving on the *first* call for a unit. It is a loss
+    on every call after it: the chapter is the bulk of a facts prompt, no two
+    units get the same one, and a provider's prefix cache can therefore serve
+    none of them -- so a document pays the chapter once per unit at full price
+    instead of once at full price and N-1 times at the cached rate.
+
+    Unioning is the trade that makes the second arrangement available. It is
+    recall-safe by construction: the union contains every atom each unit's own
+    retrieval selected, so no unit is shown less than it would have been. What
+    it costs is precision -- a unit also sees its siblings' terms -- and the
+    per-call token count, which is why it is a setting and not the default.
+
+    Retrieval runs concurrently, bounded the same way the unit fan-out is. In
+    the vector modes this is embedding and graph work with no LLM call; the
+    LLM-selection mode does spend one call per unit here, exactly as it would
+    have spent inside the fan-out.
+
+    Args:
+        context: Document-level loop inputs.
+        tools: Toolbox holding the catalog and retrieval.
+        units: The document's content units.
+
+    Returns:
+        The unioned context, or None when no unit resolved anything -- which
+        leaves the caller on the per-unit path rather than handing every unit an
+        empty snapshot.
+    """
+    if not units:
+        return None
+    started = time.perf_counter()
+    context.budget_tracker.incr("ctx/union_document_ontology.calls")
+
+    limit = max(1, tools.config.server.parallel_workers)
+    semaphore = asyncio.Semaphore(limit)
+
+    async def resolve(unit: SourceUnit) -> UnitOntologyContext | None:
+        async with semaphore:
+            try:
+                return await resolve_unit_ontology_context(context, tools, unit)
+            except EmptyOntologyContextError:
+                # A unit whose own context is empty must not void the document's:
+                # the guard exists to catch a catalog that did not load, and the
+                # union is exactly the evidence that it did.
+                return None
+
+    resolved = await asyncio.gather(*(resolve(unit) for unit in units))
+
+    merged_graph = RDFGraph()
+    writable: list[str] = []
+    sources: list[str] = []
+    for ctx in resolved:
+        if ctx is None or not len(ctx.snapshot.graph):
+            continue
+        merged_graph += ctx.snapshot.graph
+        writable.extend(ctx.writable_iris)
+        sources.extend(ctx.snapshot.source_iris)
+    if not len(merged_graph):
+        context.budget_tracker.add_duration(
+            "ctx/union_document_ontology", time.perf_counter() - started
+        )
+        return None
+
+    merged_graph.sanitize_prefixes_namespaces()
+    snapshot = OntologySnapshot.from_graph(
+        merged_graph,
+        # Sorted and de-duplicated so the same document renders the same
+        # chapter twice: an unstable source order is an unstable prompt, and an
+        # unstable prompt is the thing this whole path exists to avoid.
+        source_iris=sorted(set(sources)),
+        assembly_mode=OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED,
+        title="Unioned document ontology context",
+        description=(
+            "Union of the per-unit retrieved contexts, shared by every unit so "
+            "the ontology chapter is identical across the fan-out."
+        ),
+        strip_headers=True,
+    )
+    context.budget_tracker.add_duration(
+        "ctx/union_document_ontology", time.perf_counter() - started
+    )
+    context.retrieval_metrics[RetrievalMetric.ONTOLOGY_SNAPSHOT_TRIPLES] = len(
+        snapshot.graph
+    )
+    logger.info(
+        "Unioned ontology context over %d unit(s): %d triples, %d source(s).",
+        len(units),
+        len(snapshot.graph),
+        len(snapshot.source_iris),
+    )
+    return UnitOntologyContext(
+        snapshot=snapshot,
+        writable_iris=sorted(set(writable)),
         confidence=1.0,
     )
 
@@ -191,6 +302,83 @@ async def _resolve_fixed_single_ontology_context(
     )
 
 
+async def _diagnose_empty_snapshot(
+    tools: ToolBox, metrics: dict[str, Any] | None
+) -> str:
+    """Name the subsystem that produced an empty ontology snapshot.
+
+    Catalog-first, because retrieval can select exactly the right atoms and
+    still yield nothing when the triple store lists no graphs to expand them
+    against -- the index and the store disagreeing is a deployment fault, not a
+    tuning one, and reporting it as a threshold problem sends an operator to
+    lower thresholds that were never involved.
+
+    Two things this has to get right that reading the metrics alone cannot:
+
+    - **A missing key is not a zero.** When retrieval short-circuits on zero
+      atoms it never reaches the catalog, so ``catalog_context_triples`` is
+      absent rather than ``0``. Testing it with ``== 0`` therefore skipped both
+      catalog branches on exactly the run where the catalog was the cause, and
+      reported the empty index instead -- true, but the symptom rather than the
+      fault. The catalog is asked directly when the metrics cannot answer.
+    - **``atoms_after_dedupe`` is counted after the score gate**, so a
+      threshold rejection records zero of them. "Scored below the retrieval
+      thresholds" was thus unreachable for the case it names; ``candidate_hits``
+      and ``threshold_rejected``, taken before the gate, are what separate
+      "search found nothing" from "a threshold ate everything".
+
+    Args:
+        tools: Toolbox, for inspecting the catalog and index as a last resort.
+        metrics: ``last_retrieval_metrics`` from the patch retriever.
+
+    Returns:
+        str: A one-line cause, stored under ``empty_snapshot_reason``.
+    """
+    metrics = metrics or {}
+    catalog_triples = metrics.get("catalog_context_triples")
+    if catalog_triples is None:
+        # Retrieval never consulted the catalog, so ask it.
+        if not tools.ontology_manager.has_ontologies:
+            return "the ontology catalog is empty (no ontologies stored)"
+    else:
+        graph_reads = (metrics.get("catalog_graph_cache_hits") or 0) + (
+            metrics.get("catalog_graph_cache_misses") or 0
+        )
+        if catalog_triples == 0 and graph_reads == 0:
+            return (
+                "the ontology catalog resolved to zero graphs -- the vector "
+                "index and the triple store disagree about which ontologies "
+                "exist"
+            )
+        if catalog_triples == 0:
+            return "the ontology catalog is empty (no ontologies stored)"
+        if metrics.get("atoms_final"):
+            return (
+                "the catalog is populated but the induced subgraph over the "
+                "selected atoms came back empty"
+            )
+
+    indexed_iris: set[str] = set()
+    if tools.vector_store is not None:
+        try:
+            indexed_iris = await asyncio.to_thread(
+                tools.vector_store.list_indexed_ontology_iris
+            )
+        except Exception as exc:
+            logger.warning("Could not inspect the vector index: %s", exc)
+    if not indexed_iris:
+        return (
+            "the vector index is empty or unreadable, though the catalog holds "
+            "ontologies -- they were never indexed, or the index was wiped "
+            "without a reindex"
+        )
+    if metrics.get("threshold_rejected"):
+        return "all candidate atoms scored below the retrieval thresholds"
+    if metrics.get("candidate_hits"):
+        return "candidate atoms were filtered out after retrieval"
+    return "no candidate atoms matched the unit's queries"
+
+
 async def _resolve_ensemble_context(
     context: UnitLoopContext,
     tools: ToolBox,
@@ -241,29 +429,11 @@ async def _resolve_ensemble_context(
         )
     if not len(patch_graph):
         # An empty snapshot reaching the renderer means it will extract with no
-        # vocabulary at all. Distinguish the causes: an empty index is a
-        # deployment problem, everything-below-threshold is a tuning problem,
-        # and neither should read as "this passage had no relevant terms".
-        indexed_iris: set[str] = set()
-        if tools.vector_store is not None:
-            try:
-                indexed_iris = await asyncio.to_thread(
-                    tools.vector_store.list_indexed_ontology_iris
-                )
-            except Exception as exc:
-                logger.warning("Could not inspect the vector index: %s", exc)
-        if not indexed_iris:
-            reason = "vector index is empty or unreadable"
-        elif metrics and metrics.get("atoms_after_dedupe"):
-            reason = "all candidate atoms scored below the retrieval thresholds"
-        else:
-            reason = "no candidate atoms matched the unit's queries"
+        # vocabulary at all, so name the subsystem at fault before deciding
+        # whether to continue.
+        reason = await _diagnose_empty_snapshot(tools, metrics)
         context.retrieval_metrics[RetrievalMetric.EMPTY_SNAPSHOT_REASON] = reason
-        logger.warning(
-            "Ontology context for this unit is empty (%s); extraction will "
-            "proceed with no catalog vocabulary.",
-            reason,
-        )
+        logger.warning("Ontology context for this unit is empty (%s)", reason)
 
     preferred = tools.ontology_manager.preferred_namespace_prefixes or None
     patch_graph.sanitize_prefixes_namespaces(preferred_namespace_prefixes=preferred)
@@ -288,7 +458,27 @@ async def resolve_unit_ontology_context(
     context: UnitLoopContext,
     tools: ToolBox,
     unit: SourceUnit,
+    *,
+    can_create_vocabulary: bool = False,
 ) -> UnitOntologyContext:
+    """Assemble the ontology context one content unit is rendered against.
+
+    Args:
+        context: Document-level loop inputs.
+        tools: Toolbox holding the catalog and retrieval.
+        unit: The content unit being rendered.
+        can_create_vocabulary: Whether the caller can act on an empty context
+            by inventing vocabulary. True for the ontology loop, which answers
+            an empty seed with ``render_ontology_fresh``; false for the facts
+            loop, which can only fall back on generic terms.
+
+    Returns:
+        The resolved context, possibly empty.
+
+    Raises:
+        EmptyOntologyContextError: The context is empty, the caller cannot
+            create vocabulary, and this deployment requires a context.
+    """
     mode = context.ontology_context_mode
     context.retrieval_metrics[RetrievalMetric.ONTOLOGY_CONTEXT_MODE] = mode.value
     if mode == OntologyContextMode.SELECTED_SINGLE_ONTOLOGY:
@@ -305,6 +495,42 @@ async def resolve_unit_ontology_context(
     context.retrieval_metrics[RetrievalMetric.ONTOLOGY_SNAPSHOT_TRIPLES] = len(
         resolved.snapshot.graph
     )
+    # Checked here, not per mode, for the same reason the size is recorded here:
+    # every mode can return an empty context, and the two that bound nothing
+    # were also the two that reported nothing.
+    #
+    # Two exemptions, both because an empty context is not a fault for them:
+    #
+    # * A unit with no retrievable text has nothing to extract either way.
+    # * A caller that can create vocabulary. The ontology renderer branches on
+    #   exactly this condition -- an empty seed sends it to
+    #   ``render_ontology_fresh``, which mints a new catalog ontology from the
+    #   text -- so raising here made the one path designed for an empty catalog
+    #   unreachable, and turned "this corpus has no ontology yet" into a
+    #   deployment error. It also stopped a populated-catalog run whenever the
+    #   selector honestly reported that no catalog ontology fits.
+    if (
+        not len(resolved.snapshot.graph)
+        and unit.text.strip()
+        and not can_create_vocabulary
+        and tools.config.server.ontology_context_required
+    ):
+        reason = context.retrieval_metrics.get(
+            RetrievalMetric.EMPTY_SNAPSHOT_REASON, "no ontology context was assembled"
+        )
+        raise EmptyOntologyContextError(
+            f"Ontology context for this content unit is empty: {reason}. "
+            "Extraction would fall back on generic vocabulary and the "
+            "conformance gate would then have no node to constrain, reporting "
+            "a vacuous pass. Fix the catalog, or set "
+            "ONTOLOGY_CONTEXT_REQUIRED=false to extract without one "
+            "deliberately."
+        )
+    if not len(resolved.snapshot.graph) and can_create_vocabulary:
+        logger.info(
+            "No ontology context for this unit; rendering a fresh ontology from "
+            "its text"
+        )
     return resolved
 
 

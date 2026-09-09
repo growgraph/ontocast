@@ -18,6 +18,10 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.unit
+
 TEST_ROOT = Path(__file__).resolve().parent
 
 #: ``parents[N]``, counted from the file's own directory: a file at

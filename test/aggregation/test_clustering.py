@@ -1,6 +1,7 @@
 from typing import cast
 from unittest.mock import Mock
 
+import pytest
 from rdflib import URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI
@@ -8,6 +9,8 @@ from ontocast.tool.agg.clustering import (
     ClusterRepresentativeSelector,
 )
 from ontocast.tool.agg.normalizer import EntityRepresentation
+
+pytestmark = pytest.mark.unit
 
 # Model sharing and locking across subsystems live in test/test_shared_encoder.py;
 # this module covers clustering behaviour only.

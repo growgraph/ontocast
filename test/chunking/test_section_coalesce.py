@@ -1,5 +1,7 @@
 """Tests for pre-tag segment coalescing."""
 
+import pytest
+
 from ontocast.config.section_labels import load_section_label_schema
 from ontocast.tool.chunk.segment import (
     PrepareSegment,
@@ -7,6 +9,8 @@ from ontocast.tool.chunk.segment import (
     is_abstract_exempt,
     merge_into_right,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def _academic_schema():

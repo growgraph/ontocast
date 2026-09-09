@@ -1,4 +1,8 @@
+import pytest
+
 from ontocast.config import Config
+
+pytestmark = pytest.mark.unit
 
 
 def test_aggregation_config_reads_env(monkeypatch) -> None:

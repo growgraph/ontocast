@@ -1,5 +1,6 @@
 """Tests for the slim per-unit loop context (replaces per-unit AgentState deep copies)."""
 
+import pytest
 from rdflib import OWL, RDF, URIRef
 
 from ontocast.onto.enum import OntologyContextMode
@@ -7,6 +8,8 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState, BudgetTracker
 from ontocast.stategraph.unit_context import UnitLoopContext
+
+pytestmark = pytest.mark.unit
 
 
 def _ontology(iri: str) -> Ontology:

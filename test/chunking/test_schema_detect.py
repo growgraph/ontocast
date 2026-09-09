@@ -44,6 +44,8 @@ from ontocast.tool.chunk.schema_detect import (
 from ontocast.toolbox import ToolBox
 from test.docling_test_helpers import doc_from_markdown_lines
 
+pytestmark = pytest.mark.unit
+
 CORPUS_PATH = (
     pathlib.Path(__file__).resolve().parents[1] / "data" / "schema_corpus.json"
 )

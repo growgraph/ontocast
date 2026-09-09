@@ -51,7 +51,10 @@ from ontocast.api.schemas import (
     StatusErrorBody,
 )
 from ontocast.api.shapes import build_shapes_router
-from ontocast.api.tenancy_resolution import apply_request_tenancy
+from ontocast.api.tenancy_resolution import (
+    apply_request_tenancy,
+    resolve_tenant_project,
+)
 from ontocast.config import ServerConfig
 from ontocast.onto.enum import OntologyContextMode, RenderMode, Status
 from ontocast.onto.retrieval_capabilities import (
@@ -59,7 +62,6 @@ from ontocast.onto.retrieval_capabilities import (
     validate_ontology_context_mode,
 )
 from ontocast.onto.state import AgentState
-from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.stategraph import create_agent_graph
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
 from ontocast.tool.agg.match_derivation import derive_pair_matches
@@ -379,8 +381,20 @@ def create_app(
                 )
 
             if tenant is not None or project is not None:
-                t = (tenant or DEFAULT_TENANT).strip()
-                p = (project or DEFAULT_PROJECT).strip()
+                # Through the shared resolver, not an inline copy: this is the
+                # one destructive unauthenticated route, and the copy it used
+                # to carry omitted the non-empty guard, so `?tenant=%20` was
+                # accepted here and refused everywhere else.
+                try:
+                    t, p = resolve_tenant_project(tenant, project)
+                except ValueError as err:
+                    return JSONResponse(
+                        status_code=400,
+                        content=StatusErrorBody(
+                            error=str(err),
+                            error_type=type(err).__name__,
+                        ).model_dump(),
+                    )
                 try:
                     await tools.clean_tenancy_data(t, p, include_shapes=include_shapes)
                 except NotImplementedError as err:

@@ -2,18 +2,14 @@
 
 from rdflib import OWL, RDF, RDFS, Graph, URIRef
 
-from ontocast.onto.constants import COMMON_PREFIXES, DEFAULT_IRI
 from ontocast.onto.ontology import Ontology
-from ontocast.onto.util import RDFLIB_DEFAULT_NAMESPACE_URIS
+from ontocast.onto.util import non_domain_namespaces
 
 # Exclude every rdflib built-in binding (brick, csvw, xml, …) plus our COMMON
 # prefixes / DEFAULT_IRI so the prompt "domain ontologies" clause only lists
-# author-declared domain namespaces.
-_STANDARD_NAMESPACES: frozenset[str] = (
-    RDFLIB_DEFAULT_NAMESPACE_URIS
-    | frozenset(uri.strip("<>") for uri in COMMON_PREFIXES.values())
-    | {"https://schema.org/", "http://schema.org/", DEFAULT_IRI}
-)
+# author-declared domain namespaces. Shared with the delta partitioner, which
+# asks the same question in stem form -- see ``non_domain_namespaces``.
+_STANDARD_NAMESPACES: frozenset[str] = non_domain_namespaces()
 
 
 def extract_domain_prefix_pairs_from_graph(

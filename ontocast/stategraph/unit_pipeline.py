@@ -142,7 +142,6 @@ async def run_unit_pipeline(
             ontology_user_instruction=agent_state.ontology_user_instruction,
             budget_tracker=deepcopy(agent_state.budget_tracker),
             max_visits_per_node=max_visits,
-            max_critic_visits_per_node=(tools.config.server.max_critic_visits_per_node),
             current_domain=agent_state.current_domain,
             ontology_max_triples=tools.config.server.ontology_max_triples,
             llm_graph_format=agent_state.llm_graph_format,
@@ -169,16 +168,23 @@ async def run_unit_pipeline(
     )
 
     if agent_state.render_facts:
+        conformance_chapter, contract_terms, selection_pending = (
+            tools.shapes_prompt_contract()
+        )
         facts_state = UnitFactsState(
             content_unit=unit,
             ontology_snapshot=_empty_snapshot(),
             ontology_patch_sources=[],
             facts_user_instruction=agent_state.facts_user_instruction,
+            conformance_chapter=conformance_chapter,
+            shapes_contract_terms=contract_terms,
+            conformance_selection_pending=selection_pending,
             budget_tracker=deepcopy(agent_state.budget_tracker),
             max_visits_per_node=max_visits,
-            max_critic_visits_per_node=(tools.config.server.max_critic_visits_per_node),
             llm_graph_format=agent_state.llm_graph_format,
             ontology_context_max_triples=tools.config.server.ontology_context_max_triples,
+            ontology_chapter_format=tools.config.server.ontology_chapter_format,
+            ontology_text_caps=tools.config.server.ontology_text_caps,
         )
         logger.info("run_unit_pipeline: starting facts loop")
         facts_context = UnitLoopContext.from_agent_state(agent_state)

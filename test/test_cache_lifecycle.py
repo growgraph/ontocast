@@ -12,6 +12,8 @@ import pytest
 from ontocast.config import PathConfig
 from ontocast.tool.cache import Cacher, _get_default_cache_dir, _running_under_pytest
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def cacher(tmp_path) -> Cacher:

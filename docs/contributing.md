@@ -101,8 +101,8 @@ So:
   numbers for theirs.
 - **Do not** name a corpus, a benchmark, or an individual evaluation run —
   in prose, in a changelog entry, in a test name, or in a docstring. A reader
-  outside this workspace cannot resolve those names, and a reader inside it
-  should be reading the measurement system instead.
+  outside this repository cannot resolve those names, and a reader inside the
+  project should be reading the measurement system instead.
 - Justify a default by its **mechanism** ("saturates quickly", "gates
   everything below it"), not by the run that chose it.
 
@@ -113,12 +113,50 @@ This is about *claims*, not vocabulary. Fixture data is exempt: an example names
 
 ### Retrieval quality
 
-There is no in-repo recall harness. Retrieval quality is measured in
-`ontocast-validation`, not here — see [Measurement lives
-elsewhere](#measurement-lives-elsewhere). What remains in-repo:
-`test/test_retrieval_predicate_recall.py` for predicate-surface coverage, and
-the per-run `retrieval_metrics` reported by the API and batch dumps. See
-[Ontology Context — Diagnostics](user_guide/ontology_context.md#diagnostics).
+`test/test_retrieval_recall.py` measures whether a relevant catalog term
+actually survives to the prompt snapshot — the thing the plumbing tests, which
+assert ordering and parameter pass-through against fake vectors, cannot see. It
+reports two numbers per run:
+
+- **seed recall** — the expected term reached the final seed set, so it survived
+  vector search, the cross-window merge and the atom cap;
+- **snapshot recall** — the term is also *defined* in the returned graph, so it
+  survived induced-subgraph expansion, budget caps and component pruning.
+
+The gap between them attributes a loss to the graph stage rather than the vector
+stage, which is what makes a regression localisable without bisecting. Wiring
+and scoring live in `test/retrieval_runner.py`; `test/retrieval_sweep.py` reuses
+them to sweep retrieval parameters in one process.
+
+It makes **no LLM call** — retrieval is embeddings and graph work — so it needs
+no provider credentials, and the toolbox's eagerly constructed client is pinned
+to a provider that needs no API key. The backend may be an embedded LanceDB, so
+no service has to be running:
+
+```bash
+ONTOCAST_RECALL_CORPUS=<corpus dir> LANCEDB_ENABLED=true \
+  uv run pytest test/test_retrieval_recall.py -m "integration and slow" -s
+```
+
+A corpus is a directory holding `cases.jsonl` (`{"id", "text",
+"expected_iris", "ontology_iri"}`) and `ontologies/*.ttl`; the tests skip
+themselves when `ONTOCAST_RECALL_CORPUS` is unset, and the corpora themselves
+live in `ontocast-validation` rather than here. `ONTOCAST_RECALL_JSON` writes
+the funnel as JSON. One index serves a whole sweep — every retrieval knob is
+applied at merge or expansion time, so none of them joins the embedding
+fingerprint — which is what `ONTOCAST_RECALL_COLLECTION_SUFFIX` and
+`ONTOCAST_RECALL_SKIP_INDEX` are for.
+
+Two cautions. Real embeddings are not bit-reproducible run to run, so compare
+arms by rank and by which ontologies contributed no seed term at all, not by
+exact percentages; and the on-topic precision figure is a noise proxy that
+penalises legitimately retrieved parent terms from another module. This is an
+ablation instrument, not an equality assertion.
+
+Also in-repo: `test/test_retrieval_predicate_recall.py` for predicate-surface
+coverage, and the per-run `retrieval_metrics` reported by the API and batch
+dumps. See [Ontology Context —
+Diagnostics](user_guide/ontology_context.md#diagnostics).
 
 ## Documentation
 

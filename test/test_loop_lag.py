@@ -12,7 +12,7 @@ import pytest
 
 from ontocast.util.loop_lag import loop_lag
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.unit]
 
 
 @pytest.fixture

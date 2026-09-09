@@ -1,5 +1,7 @@
 """Tests for the per-source atom floor, query unit signals, and module closure."""
 
+from types import SimpleNamespace
+
 import pytest
 from rdflib import URIRef
 
@@ -13,6 +15,8 @@ from ontocast.tool.vector_store.query_signals import (
     CatalogSurfaceIndex,
     number_adjacent_tokens,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def _hit(iri: str, ontology_iri: str, score: float) -> OntologySearchHit:
@@ -188,7 +192,7 @@ def test_catalog_surface_index_caches_per_hash() -> None:
     assert index.match({"meV"}, [ontology]) == first
 
 
-def _closure_retriever(manager, closure_max: int):
+def _closure_retriever(manager, closure_max: int, max_total: int | None = None):
     from ontocast.config import PatchRetrievalConfig
     from ontocast.tool.vector_store.patch_retriever import OntologyPatchRetriever
 
@@ -197,7 +201,10 @@ def _closure_retriever(manager, closure_max: int):
         vector_store=None,
         sparql_tool=None,
         ontology_manager=manager,
-        patch=PatchRetrievalConfig(small_module_closure_max_triples=closure_max),
+        patch=PatchRetrievalConfig(
+            small_module_closure_max_triples=closure_max,
+            small_module_closure_max_total_triples=max_total,
+        ),
     )
     return retriever
 
@@ -259,3 +266,213 @@ def test_closure_floor_score_stays_below_weakest_seed() -> None:
     assert _closure_floor_score({"a": 0.8, "b": -0.4}) < -0.4
     # No seeds at all: still finite and non-positive.
     assert _closure_floor_score({}) <= 0.0
+
+
+def _qqval_manager():
+    """A small module with one class and one property, resolvable by IRI."""
+    from types import SimpleNamespace
+
+    module_graph = RDFGraph()
+    module_graph.parse(
+        data="""
+        @prefix qqval: <https://x.org/qqval#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        <https://x.org/qqval> a owl:Ontology ; rdfs:label "qqval" .
+        qqval:QuantityRange a owl:Class ; rdfs:label "Quantity range" .
+        qqval:hasLowerBound a owl:ObjectProperty ; rdfs:label "has lower bound" .
+        """,
+        format="turtle",
+    )
+    ontology = Ontology(graph=module_graph, iri="https://x.org/qqval")
+    return SimpleNamespace(
+        get_freshest_terminal_ontology_by_iri=lambda iri: (
+            ontology if iri == "https://x.org/qqval" else None
+        )
+    )
+
+
+def _module(iri: str, terms: int) -> "Ontology":
+    """A module of a given size, resolvable by IRI."""
+    lines = [
+        "@prefix owl: <http://www.w3.org/2002/07/owl#> .",
+        "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .",
+        f'<{iri}> a owl:Ontology ; rdfs:label "module" .',
+    ]
+    for index in range(terms):
+        lines.append(f'<{iri}#T{index}> a owl:Class ; rdfs:label "term {index}" .')
+    graph = RDFGraph()
+    graph.parse(data="\n".join(lines), format="turtle")
+    return Ontology(graph=graph, iri=iri)
+
+
+def _multi_module_manager(*modules):
+    from types import SimpleNamespace
+
+    by_iri = {module.iri: module for module in modules}
+    return SimpleNamespace(
+        get_freshest_terminal_ontology_by_iri=lambda iri: by_iri.get(iri)
+    )
+
+
+BIG = "https://x.org/big"
+SMALL = "https://x.org/small"
+
+
+@pytest.mark.anyio
+async def test_unlimited_budget_closes_every_candidate() -> None:
+    """The default. Nothing is excluded for being unpopular or small."""
+    retriever = _closure_retriever(
+        _multi_module_manager(_module(BIG, 40), _module(SMALL, 4)), closure_max=200
+    )
+    snapshot = RDFGraph()
+
+    await retriever._apply_small_module_closure(snapshot, [BIG, SMALL], {BIG: 0.9})
+
+    assert set(retriever.last_retrieval_metrics["module_closure_iris"]) == {BIG, SMALL}
+    assert "module_closure_declined_iris" not in retriever.last_retrieval_metrics
+
+
+@pytest.mark.anyio
+async def test_a_small_sharply_relevant_module_outranks_a_large_vague_one() -> None:
+    """The case that rules out ranking by seed count.
+
+    A module can win at most as many seeds as it has terms, so counting them
+    ranks modules by size -- and would drop a tiny vocabulary that is precisely
+    the document's subject in favour of a large peripheral one. Scores do not
+    have that bias.
+    """
+    retriever = _closure_retriever(
+        _multi_module_manager(_module(BIG, 40), _module(SMALL, 4)),
+        closure_max=200,
+        max_total=20,  # room for one of them
+    )
+    snapshot = RDFGraph()
+
+    await retriever._apply_small_module_closure(
+        snapshot, [BIG, SMALL], {BIG: 0.20, SMALL: 0.95}
+    )
+
+    assert retriever.last_retrieval_metrics["module_closure_iris"] == [SMALL]
+    assert retriever.last_retrieval_metrics["module_closure_declined_iris"] == [BIG]
+    assert (URIRef(f"{SMALL}#T0"), None, None) in snapshot
+
+
+@pytest.mark.anyio
+async def test_a_module_too_large_for_the_remainder_is_skipped_not_terminal() -> None:
+    """The usual need is a combination of modules, not a single winner.
+
+    Stopping at the first module that does not fit would spend the tail of the
+    budget on nothing and drop vocabularies that would have fitted.
+    """
+    retriever = _closure_retriever(
+        _multi_module_manager(_module(BIG, 40), _module(SMALL, 4)),
+        closure_max=200,
+        max_total=30,
+    )
+    snapshot = RDFGraph()
+
+    # BIG ranks first on relevance but does not fit; SMALL must still get in.
+    await retriever._apply_small_module_closure(
+        snapshot, [BIG, SMALL], {BIG: 0.95, SMALL: 0.20}
+    )
+
+    assert retriever.last_retrieval_metrics["module_closure_iris"] == [SMALL]
+    assert retriever.last_retrieval_metrics["module_closure_declined_iris"] == [BIG]
+
+
+@pytest.mark.anyio
+async def test_closure_order_is_stable_for_equal_relevance() -> None:
+    """The snapshot is a prompt; an unstable prompt is uncacheable."""
+    manager = _multi_module_manager(_module(BIG, 4), _module(SMALL, 4))
+    runs = []
+    for _ in range(3):
+        # Room for exactly one of the two, and nothing to separate them on
+        # relevance -- so only the tie-break decides, and it must not drift.
+        retriever = _closure_retriever(manager, closure_max=200, max_total=15)
+        await retriever._apply_small_module_closure(RDFGraph(), [BIG, SMALL], {})
+        runs.append(retriever.last_retrieval_metrics["module_closure_iris"])
+
+    assert len(set(map(tuple, runs))) == 1
+    assert len(runs[0]) == 1
+
+
+@pytest.mark.anyio
+async def test_budget_spend_is_reported() -> None:
+    retriever = _closure_retriever(
+        _multi_module_manager(_module(SMALL, 4)), closure_max=200, max_total=100
+    )
+    snapshot = RDFGraph()
+
+    await retriever._apply_small_module_closure(snapshot, [SMALL], {SMALL: 0.5})
+
+    assert retriever.last_retrieval_metrics["module_closure_triples"] > 0
+
+
+# ------------------------------------------------------- the signals flag
+
+
+def _signal_retriever(manager, *, enabled: bool):
+    """A retriever wired for the query-signals lane only.
+
+    `model_construct` bypasses validation because neither the vector store nor
+    the SPARQL tool is on this path; only the store config's flag is.
+    """
+    from ontocast.config import PatchRetrievalConfig, VectorStoreConfig
+    from ontocast.tool.vector_store.patch_retriever import OntologyPatchRetriever
+
+    store = SimpleNamespace(
+        store_config=VectorStoreConfig(query_unit_signals_enabled=enabled)
+    )
+    return OntologyPatchRetriever.model_construct(
+        vector_store=store,
+        sparql_tool=None,
+        ontology_manager=manager,
+        patch=PatchRetrievalConfig(),
+    )
+
+
+def _units_manager():
+    graph = RDFGraph()
+    graph.parse(
+        data="""
+        @prefix unit: <http://qudt.org/vocab/unit/> .
+        @prefix qudt: <http://qudt.org/schema/qudt/> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        <https://x.org/units> a owl:Ontology .
+        unit:DAY a qudt:Unit ; rdfs:label "Day"@en ; qudt:symbol "days" .
+        """,
+        format="turtle",
+    )
+    ontology = Ontology(graph=graph, iri="https://x.org/units")
+    return SimpleNamespace(ontologies=[ontology])
+
+
+def test_query_unit_signals_flag_gates_the_lane() -> None:
+    """The flag itself, not just the matcher underneath it.
+
+    The lane ships disabled, so nothing in a default deployment executes it;
+    without this the flag could be flipped -- or silently stop working -- with
+    no test noticing.
+    """
+    manager = _units_manager()
+    text = "aged for 4-15 days under illumination"
+
+    assert (
+        _signal_retriever(manager, enabled=False)._match_query_unit_signals(text) == {}
+    )
+    assert _signal_retriever(manager, enabled=True)._match_query_unit_signals(text) == {
+        "http://qudt.org/vocab/unit/DAY": "https://x.org/units"
+    }
+
+
+def test_query_unit_signals_need_a_number_to_key_on() -> None:
+    """The lane keys on the token *after* a number; prose alone matches nothing."""
+    retriever = _signal_retriever(_units_manager(), enabled=True)
+    assert retriever._match_query_unit_signals("aged for several days") == {}
+
+
+def test_query_unit_signals_are_inert_without_a_catalog() -> None:
+    retriever = _signal_retriever(None, enabled=True)
+    assert retriever._match_query_unit_signals("4-15 days") == {}

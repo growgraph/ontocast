@@ -77,6 +77,15 @@ class SourceUnit(BaseModel):
             "rendering extracts citation metadata only, never domain facts."
         ),
     )
+    is_non_content: bool = Field(
+        default=False,
+        description=(
+            "Unit detected as front/back matter with no domain facts (author "
+            "block, notes, ORCID, data availability, licence) and kept under "
+            "CHUNK_NON_CONTENT_MODE=extract; checks that presume domain prose "
+            "should stand down on it."
+        ),
+    )
     _hid: str = PrivateAttr(default="")
 
     @field_validator("doc_iri", mode="before")
@@ -96,7 +105,7 @@ class SourceUnit(BaseModel):
         return self._hid
 
     @property
-    def iri(self):
+    def iri(self) -> str:
         """Get the base IRI for this unit.
 
         Returns:
@@ -105,7 +114,7 @@ class SourceUnit(BaseModel):
         return DEFAULT_IRI
 
     @property
-    def iri_absolute(self):
+    def iri_absolute(self) -> str:
         """Get the absolute IRI for this unit.
 
         Returns:
@@ -114,7 +123,7 @@ class SourceUnit(BaseModel):
         return f"{self.doc_iri}/{self.hid}"
 
     @property
-    def namespace(self):
+    def namespace(self) -> str:
         """Get the namespace for this unit.
 
         Returns:
@@ -157,7 +166,7 @@ class ContentUnit(SourceUnit):
         return self._graph_absolute
 
     @property
-    def generated_at_iso(self):
+    def generated_at_iso(self) -> str:
         """Get generated timestamp in ISO format.
 
         Returns:

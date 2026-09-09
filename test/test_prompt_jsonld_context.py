@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from ontocast.onto.rdfgraph import RDFGraph
+
+pytestmark = pytest.mark.unit
 
 _TURTLE = """
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .

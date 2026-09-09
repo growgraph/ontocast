@@ -1,8 +1,11 @@
+import pytest
 from rdflib import RDF, RDFS, Literal, Namespace, URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.agg.normalizer import EntityNormalizer, EntityRepresentation
+
+pytestmark = pytest.mark.unit
 
 
 def test_normalize_string_camel_case(normalizer: EntityNormalizer) -> None:

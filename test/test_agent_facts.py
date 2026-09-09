@@ -10,7 +10,6 @@ from ontocast.onto.enum import FailureStage, LLMGraphFormat, Status
 from ontocast.onto.model import (
     FactsCritiqueReport,
     FactsRenderReport,
-    GraphUpdateRenderReport,
     TripleFix,
 )
 from ontocast.onto.ontology import Ontology
@@ -18,6 +17,8 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.tool.atomic import AtomicToolBox
 from test.snapshot_helpers import snapshot_from_ontology
+
+pytestmark = pytest.mark.unit
 
 criticise_facts_module = importlib.import_module("ontocast.agent.criticise_facts")
 render_facts_module = importlib.import_module("ontocast.agent.render_facts")
@@ -67,6 +68,7 @@ def _build_tools() -> AtomicToolBox:
             # duplicated literal default, so a rename fails loudly here
             # instead of silently reverting the configured ratio.
             property_alias_min_ratio=0.85,
+            catalog_terms=lambda: set(),
             code_predicates=(),
             citation_vocabulary={},
             quantity_fallback_vocabulary=None,
@@ -76,29 +78,31 @@ def _build_tools() -> AtomicToolBox:
 
 
 @pytest.mark.anyio
-async def test_render_facts_routes_to_fresh_when_graph_is_empty(monkeypatch) -> None:
-    calls = {"fresh": 0, "update": 0}
+@pytest.mark.parametrize("with_graph", [False, True])
+async def test_render_facts_has_exactly_one_mode(monkeypatch, with_graph: bool) -> None:
+    """Facts rendering does not branch on prior output any more.
+
+    It used to dispatch to an update renderer when the unit graph was non-empty.
+    Nothing populates that graph except a successful render, after which the
+    render loop is already finished -- so the branch was unreachable, and a
+    non-empty graph must not resurrect it.
+    """
+    calls = {"fresh": 0}
 
     async def fake_fresh(state: UnitFactsState, tools, **kwargs) -> UnitFactsState:
         calls["fresh"] += 1
         return state
 
-    async def fake_update(state: UnitFactsState, tools, **kwargs) -> UnitFactsState:
-        calls["update"] += 1
-        return state
-
     monkeypatch.setattr(render_facts_module, "render_facts_fresh", fake_fresh)
-    monkeypatch.setattr(render_facts_module, "render_facts_update", fake_update)
 
     state = UnitFactsState(
-        content_unit=_build_content_unit(with_graph=False),
+        content_unit=_build_content_unit(with_graph=with_graph),
         ontology_snapshot=snapshot_from_ontology(_build_ontology()),
     )
     result = await render_facts_module.render_facts(state, tools=_build_tools())
 
     assert result is state
     assert calls["fresh"] == 1
-    assert calls["update"] == 0
 
 
 @pytest.mark.anyio
@@ -212,44 +216,6 @@ async def test_render_facts_fresh_coerces_invalid_typed_literal_at_ingest(
     assert isinstance(obj, Literal)
     assert obj.datatype is None
     assert str(obj) == "10-15"
-
-
-@pytest.mark.anyio
-async def test_render_facts_update_coerces_invalid_literal_in_update_graph(
-    monkeypatch,
-) -> None:
-    async def fake_call_llm_with_retry(**kwargs):
-        bad_graph = RDFGraph._from_jsonld_obj(
-            {
-                "@context": {
-                    "ex": "https://example.com/ns#",
-                    "xsd": "http://www.w3.org/2001/XMLSchema#",
-                },
-                "@graph": [
-                    {
-                        "@id": "ex:item",
-                        "ex:value": {"@value": "10-15", "@type": "xsd:decimal"},
-                    }
-                ],
-            }
-        )
-        return GraphUpdateRenderReport(insert_graph=bad_graph)
-
-    monkeypatch.setattr(
-        render_facts_module, "call_llm_with_retry", fake_call_llm_with_retry
-    )
-
-    unit = _build_content_unit(with_graph=True)
-    state = UnitFactsState(
-        content_unit=unit,
-        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
-    )
-    initial_len = len(state.content_unit.graph)
-    result = await render_facts_module.render_facts_update(state, tools=_build_tools())
-
-    assert result.status == Status.SUCCESS
-    assert len(result.quarantined_literal_triples) == 0
-    assert len(result.content_unit.graph) == initial_len + 1
 
 
 @pytest.mark.anyio
@@ -401,3 +367,50 @@ async def test_criticise_facts_adds_no_index_for_a_readable_ontology(
     await criticise_facts_module.criticise_facts(state, tools=_build_tools())
 
     assert "TERM INDEX" not in str(captured.get("ontology_chapter", ""))
+
+
+@pytest.mark.anyio
+async def test_criticise_facts_records_an_unavailable_critic(monkeypatch) -> None:
+    """A critic call that fails is a billed call that produced no critique.
+
+    It used to leave the unit as the render left it -- SUCCESS -- so a timed
+    out critic was indistinguishable from one that accepted.
+    """
+
+    async def failing_call(**kwargs):
+        raise TimeoutError("provider did not answer")
+
+    monkeypatch.setattr(criticise_facts_module, "call_llm_with_retry", failing_call)
+
+    state = UnitFactsState(
+        content_unit=_build_content_unit(with_graph=True),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
+    )
+    result = await criticise_facts_module.criticise_facts(state, tools=_build_tools())
+
+    assert result.critic_outcome == "unavailable"
+    assert result.status == Status.FAILED
+    assert result.failure_stage == FailureStage.FACTS_CRITIQUE
+    attempt = result.attempt_log[-1]
+    assert attempt.kind == "critic"
+    assert attempt.success is False
+    assert attempt.accept_reason == "critic_unavailable"
+    assert "did not answer" in (attempt.failure_reason or "")
+
+
+@pytest.mark.anyio
+async def test_criticise_facts_marks_a_reviewed_unit(monkeypatch) -> None:
+    async def fake_call_llm_with_retry(**kwargs):
+        return FactsCritiqueReport(success=True, score=90)
+
+    monkeypatch.setattr(
+        criticise_facts_module, "call_llm_with_retry", fake_call_llm_with_retry
+    )
+
+    state = UnitFactsState(
+        content_unit=_build_content_unit(with_graph=True),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
+    )
+    result = await criticise_facts_module.criticise_facts(state, tools=_build_tools())
+
+    assert result.critic_outcome == "reviewed"

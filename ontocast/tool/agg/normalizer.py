@@ -24,6 +24,8 @@ from ontocast.tool.representation_text import (
     stable_sorted_triples,
 )
 
+from .unit_scope import unscoped_iri
+
 if TYPE_CHECKING:
     from ontocast.tool.agg.uri_builder import EntityRole
 
@@ -143,6 +145,10 @@ class EntityNormalizer:
     def normalize_uri(self, uri: URIRef) -> str:
         """Extract and normalize the local part of a URI.
 
+        A unit-scope suffix (``__u<index>``) is not part of the name: two
+        units minting the same local name must produce the same normal form,
+        or the exact-alias tier could never reunite them.
+
         Args:
             uri: URI to normalize
 
@@ -152,8 +158,9 @@ class EntityNormalizer:
         Examples:
             'http://example.org/PLRedShift' -> 'pl red shift'
             'http://example.org/PL_red_shift_value' -> 'pl red shift value'
+            'http://example.org/PL_red_shift__u3' -> 'pl red shift'
         """
-        return normalize_uri_local_name(uri)
+        return normalize_uri_local_name(unscoped_iri(uri))
 
     def is_ontology_entity(self, entity: URIRef) -> bool:
         """Check if an entity belongs to an ontology namespace.
@@ -212,7 +219,9 @@ class EntityNormalizer:
                 if p == RDF.type and isinstance(o, URIRef):
                     types.append(o)
                 elif isinstance(p, URIRef) and isinstance(o, URIRef):
-                    predicate_iri_objects.setdefault(p, set()).add(o)
+                    # Compared across units by the functional-object guard:
+                    # same-named objects of two mentions are one object there.
+                    predicate_iri_objects.setdefault(p, set()).add(unscoped_iri(o))
 
                 # Collect labels
                 if p == RDFS.label and isinstance(o, Literal):
@@ -272,6 +281,10 @@ class EntityNormalizer:
         )
 
     def _render_term(self, term: Node) -> str:
+        # Neighborhood text feeds the embedding; a unit-scope suffix would
+        # make otherwise identical neighborhoods differ by unit.
+        if isinstance(term, URIRef):
+            term = unscoped_iri(term)
         return render_term_for_text(term)
 
     def _build_neighborhood_representation(

@@ -14,6 +14,8 @@ catalog, which reads as a plausible result and is not one.
 
 from __future__ import annotations
 
+import pytest
+
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.representation_text import ROLE_PREDICATE, ROLE_RESOURCE
 from ontocast.tool.vector_store.core import GraphAtom, OntologySearchHit
@@ -21,6 +23,8 @@ from ontocast.tool.vector_store.patch_retriever import (
     _schema_closure_entities,
     _select_hits_round_robin_by_ontology,
 )
+
+pytestmark = pytest.mark.unit
 
 ONTO = "https://x.org/o"
 

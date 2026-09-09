@@ -2,7 +2,7 @@
 
 ``agent/common.py`` is about *calling* the LLM; this module is about what
 happens to the patch once it has been parsed. Facts updates
-(:func:`ontocast.agent.render_facts.render_facts_update`) and ontology updates
+and ontology updates
 (:func:`ontocast.agent.render_ontology.render_ontology_update`) consume the same
 :class:`GraphUpdateRenderReport`, so the hygiene between "the model answered"
 and "the update is applied" belongs in one place rather than being reimplemented

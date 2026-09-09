@@ -10,6 +10,8 @@ from ontocast.tool import EmbeddingBasedAggregator
 from ontocast.util.hash import render_text_hash
 from test.embedding_test_helpers import distinct_encoder, install_fake_encoder
 
+pytestmark = pytest.mark.unit
+
 
 def make_fact_unit(
     text: str,

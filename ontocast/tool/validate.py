@@ -428,7 +428,7 @@ class RDFGraphConnectivityValidator:
 
         return result
 
-    def make_graph_connected(self, chunk_iri) -> RDFGraph:
+    def make_graph_connected(self, chunk_iri: str) -> RDFGraph:
         """Make a disconnected graph connected by adding bridging relationships.
 
         Args:
@@ -460,7 +460,7 @@ class RDFGraphConnectivityValidator:
         return connected_graph
 
     def _connect_via_chunk_hub(
-        self, graph: RDFGraph, components: list[set[URIRef]], chunk_iri
+        self, graph: RDFGraph, components: list[set[URIRef]], chunk_iri: str
     ) -> RDFGraph:
         """Connect components by creating a chunk hub entity.
 

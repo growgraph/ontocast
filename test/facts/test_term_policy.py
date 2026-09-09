@@ -9,6 +9,7 @@ renders obeyed by deleting correct numeric values or re-encoding scalars as
 degenerate bound pairs.
 """
 
+import pytest
 from rdflib import URIRef
 
 from ontocast.onto.model import FactsUnitFindingKind, format_findings_for_prompt
@@ -23,6 +24,8 @@ from ontocast.tool.facts_validation import (
     shacl_catalog_contradictions,
 )
 from ontocast.util.graph_metrics import facts_graph_shape_metrics
+
+pytestmark = pytest.mark.unit
 
 QUDT = "http://qudt.org/schema/qudt/"
 QQ = "https://x.org/qqval#"

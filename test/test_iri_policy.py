@@ -1,3 +1,5 @@
+import pytest
+
 from ontocast.onto.iri_policy import (
     is_in_namespace,
     join_namespace_local,
@@ -5,6 +7,8 @@ from ontocast.onto.iri_policy import (
     sanitize_prefix_map,
     split_namespace_local,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def test_normalize_namespace_iri_uses_context_hints() -> None:

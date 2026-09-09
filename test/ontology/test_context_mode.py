@@ -22,6 +22,8 @@ from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.chunk.proposition import split_proposition_windows
 from ontocast.toolbox import ToolBox
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.mark.anyio
 async def test_full_ttl_does_not_invoke_ensemble_path(monkeypatch) -> None:

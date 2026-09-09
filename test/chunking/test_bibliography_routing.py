@@ -18,6 +18,8 @@ from ontocast.tool.chunk.bibliography import (
 )
 from ontocast.toolbox import ToolBox
 
+pytestmark = pytest.mark.unit
+
 _REFERENCE_LIST = """
 [1] J. Smith, A. Jones, Perovskite degradation under humidity, Nature Mater.
 14, 193-198 (2015). doi:10.1038/nmat4150

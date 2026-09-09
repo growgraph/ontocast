@@ -42,12 +42,25 @@ from ontocast.api.tenancy_resolution import (
 from ontocast.cli.cache import cache as cache_cli
 from ontocast.cli.inspect_sections import main as inspect_sections_cli
 from ontocast.config import Config
-from ontocast.onto.enum import OntologyContextMode
+from ontocast.onto.enum import OntologyContextMode, RenderMode
 from ontocast.onto.retrieval_capabilities import validate_ontology_context_mode
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
 from ontocast.stategraph import create_agent_graph
+from ontocast.tool.llm import LLMConfigurationError
 from ontocast.toolbox import ToolBox
 from ontocast.util.files import crawl_directories
+
+
+class LLMConfigAbort(click.ClickException):
+    """A provider rejected the request as configured; the run stopped.
+
+    Exits ``EX_CONFIG`` (78) rather than the generic 1, so a driver looping
+    over benchmark arms can tell a broken configuration from documents that
+    merely failed to extract.
+    """
+
+    exit_code = 78
+
 
 logger = logging.getLogger(__name__)
 
@@ -86,12 +99,112 @@ def _configure_logging(config: Config) -> None:
         logger.error("could set logging level correctly %s", e)
 
 
-def _prepare_path_config(config: Config) -> None:
-    """Expand configured directories."""
-    if config.tool_config.path_config.ontology_directory is not None:
-        config.tool_config.path_config.ontology_directory = pathlib.Path(
-            config.tool_config.path_config.ontology_directory
-        ).expanduser()
+def _resolve_seed_directory(
+    value: str | pathlib.Path | None,
+    *,
+    source: str,
+    kind: str,
+    missing_is_fatal: bool,
+) -> pathlib.Path | None:
+    """Expand a configured seed directory and report what it resolved to.
+
+    A directory the operator named is an assertion, and the three ways it can
+    fail are not the same fault:
+
+    * **Not named at all** -- no assertion, nothing to check. A run with no seed
+      directory is legitimate: ``serve`` is filled through ``POST /ontologies``,
+      and an ontology-rendering run creates its own vocabulary.
+    * **Named and empty** -- plausibly deliberate, so a warning naming the
+      resolved path, which is enough to spot a directory that is not the one
+      that was meant.
+    * **Named and absent** -- the assertion is false. Nothing downstream can
+      tell this from "deliberately none", so the catalog silently comes out
+      empty and every symptom appears several minutes later in retrieval. For a
+      batch run, which has no later chance to be given ontologies, this is
+      fatal here rather than mysterious there.
+
+    Args:
+        value: Configured directory, from the CLI flag or the environment.
+        source: What named it, for the error message (flag or environment var).
+        kind: Human name of what is seeded, e.g. ``"ontology"``.
+        missing_is_fatal: Raise rather than warn when the path does not
+            resolve. ``process`` sets this; ``serve`` does not, because a
+            long-lived server may have the directory appear under it later.
+
+    Returns:
+        The expanded directory, or ``None`` when nothing usable was named.
+
+    Raises:
+        click.UsageError: The path was named, does not resolve, and this entry
+            point cannot continue without it.
+    """
+    if value is None:
+        logger.info("No %s seed directory configured (%s)", kind, source)
+        return None
+    directory = pathlib.Path(value).expanduser()
+    if not directory.is_dir():
+        message = (
+            f"{source} points at {directory.absolute()}, which is not a "
+            f"directory. No {kind} files can be seeded from it."
+        )
+        if missing_is_fatal:
+            raise click.UsageError(message)
+        logger.warning("%s", message)
+        return directory
+    logger.info("Using %s seed directory %s (%s)", kind, directory.absolute(), source)
+    return directory
+
+
+def _prepare_path_config(
+    config: Config,
+    *,
+    ontology_dir: str | None = None,
+    shapes_dir: str | None = None,
+    missing_is_fatal: bool = False,
+) -> None:
+    """Apply seed-directory overrides and expand the configured directories.
+
+    Called before ``ToolBox(config)``: the toolbox reads both fields lazily in
+    ``initialize``, so an override applied any later would be ignored.
+
+    ``ontology_dir`` / ``shapes_dir`` carry three distinguishable states.
+    ``None`` means the flag was omitted and the environment stands. A path
+    overrides it. The empty string clears it -- which is how a run declares "no
+    seed ontologies, infer them" against an environment that sets one, and is
+    why these are plain strings rather than ``click.Path``: ``pathlib.Path("")``
+    is ``.``, so an empty flag would silently mean the working directory.
+    """
+    paths = config.tool_config.path_config
+    facts_validation = config.tool_config.facts_validation
+
+    if ontology_dir is not None:
+        paths.ontology_directory = pathlib.Path(ontology_dir) if ontology_dir else None
+        ontology_source = "--ontology-dir"
+    else:
+        ontology_source = "ONTOCAST_ONTOLOGY_DIRECTORY"
+
+    if shapes_dir is not None:
+        facts_validation.shapes_dir = shapes_dir or None
+        shapes_source = "--shapes-dir"
+    else:
+        shapes_source = "FACTS_SHAPES_DIR"
+
+    paths.ontology_directory = _resolve_seed_directory(
+        paths.ontology_directory,
+        source=ontology_source,
+        kind="ontology",
+        missing_is_fatal=missing_is_fatal,
+    )
+    resolved_shapes = _resolve_seed_directory(
+        facts_validation.shapes_dir,
+        source=shapes_source,
+        kind="SHACL shapes",
+        missing_is_fatal=missing_is_fatal,
+    )
+    # ``shapes_dir`` is typed ``str | None``, unlike ``ontology_directory``.
+    facts_validation.shapes_dir = (
+        str(resolved_shapes) if resolved_shapes is not None else None
+    )
 
 
 @dataclass
@@ -110,13 +223,32 @@ def _bootstrap_tools(
     tenant: str | None,
     project: str | None,
     wipe_vector_store: bool | None,
+    ontology_dir: str | None = None,
+    shapes_dir: str | None = None,
     flush_on_clean: bool = False,
+    batch: bool = False,
 ) -> BootstrappedRuntime:
-    """Load config, construct ToolBox, apply tenancy, and initialize tools."""
+    """Load config, construct ToolBox, apply tenancy, and initialize tools.
+
+    Args:
+        ontology_dir: ``--ontology-dir``. ``None`` leaves
+            ``ONTOCAST_ONTOLOGY_DIRECTORY`` in force; ``""`` clears it.
+        shapes_dir: ``--shapes-dir``, same three states over ``FACTS_SHAPES_DIR``.
+        batch: This is ``process``, not ``serve``. A batch run has no later
+            chance to be given ontologies, so a named-but-absent seed directory
+            is fatal, and an empty catalog is fatal for the one render mode that
+            cannot create vocabulary of its own. A server is filled through
+            ``POST /ontologies``, so neither is.
+    """
     config = Config()
     config.validate_llm_config()
     _configure_logging(config)
-    _prepare_path_config(config)
+    _prepare_path_config(
+        config,
+        ontology_dir=ontology_dir,
+        shapes_dir=shapes_dir,
+        missing_is_fatal=batch,
+    )
 
     if (
         config.server.ontology_context_mode == OntologyContextMode.FIXED_SINGLE_ONTOLOGY
@@ -153,6 +285,9 @@ def _bootstrap_tools(
             ontology_context_mode=ontology_context_mode_value,
             fail_on_vector_store_error=vector_mode_enabled,
             wipe_vector_store=wipe_vector_store,
+            require_populated_catalog=(
+                batch and config.server.render_mode == RenderMode.FACTS
+            ),
         )
     )
     validate_ontology_context_mode(ontology_context_mode_value, tools)
@@ -197,6 +332,27 @@ def _shared_runtime_options(fn: F) -> F:
             ),
         ),
         click.option(
+            "--ontology-dir",
+            type=str,
+            default=None,
+            help=(
+                "Input catalog: directory of seed ontology *.ttl files, "
+                "overriding ONTOCAST_ONTOLOGY_DIRECTORY. Pass an empty string "
+                "to declare no seed ontologies, which an ontology-rendering "
+                "run answers by creating them from the corpus."
+            ),
+        ),
+        click.option(
+            "--shapes-dir",
+            type=str,
+            default=None,
+            help=(
+                "Seed directory of SHACL shape files, overriding "
+                "FACTS_SHAPES_DIR. Pass an empty string to declare no seed "
+                "shapes."
+            ),
+        ),
+        click.option(
             "--wipe-vector-store/--no-wipe-vector-store",
             default=None,
             help=(
@@ -228,6 +384,8 @@ def serve(
     max_visits: int | None,
     tenant: str | None,
     project: str | None,
+    ontology_dir: str | None,
+    shapes_dir: str | None,
     wipe_vector_store: bool | None,
 ) -> None:
     """Start the OntoCast API server."""
@@ -235,6 +393,8 @@ def serve(
         tenant=tenant,
         project=project,
         wipe_vector_store=wipe_vector_store,
+        ontology_dir=ontology_dir,
+        shapes_dir=shapes_dir,
         flush_on_clean=False,
     )
     parsed_max_visits = parse_max_visits_param(
@@ -325,6 +485,17 @@ def serve(
     ),
 )
 @click.option(
+    "--facts-user-instruction",
+    type=str,
+    default="",
+    help=(
+        "Deployment-specific guidance appended to the facts render and "
+        "critic prompts (the same per-request slot the HTTP API exposes). "
+        "The library prompt stays domain-neutral; domain refinements belong "
+        "here or in the shapes."
+    ),
+)
+@click.option(
     "--summarize-sections",
     type=str,
     default=None,
@@ -359,6 +530,17 @@ def serve(
     ),
 )
 @click.option(
+    "--keep-provenance/--strip-provenance",
+    "keep_provenance",
+    default=False,
+    show_default=True,
+    help=(
+        "Keep chunk-level provenance in the dumped facts Turtle. Provenance is "
+        "what lets a statement be traced back to its source span and "
+        "re-verified against the document."
+    ),
+)
+@click.option(
     "--document-metadata",
     type=str,
     default=None,
@@ -374,6 +556,8 @@ def process(
     max_visits: int | None,
     tenant: str | None,
     project: str | None,
+    ontology_dir: str | None,
+    shapes_dir: str | None,
     wipe_vector_store: bool | None,
     input_path: pathlib.Path,
     output_dir: pathlib.Path | None,
@@ -382,10 +566,12 @@ def process(
     use_unit_pipeline: bool,
     target_sections: str | None,
     exclude_sections: str | None,
+    facts_user_instruction: str,
     summarize_sections: str | None,
     summary_max_sentences: int,
     document_type_hint: str | None,
     section_schema_id: str | None,
+    keep_provenance: bool,
     document_metadata: str | None,
 ) -> None:
     """Process local files through the extraction pipeline (no HTTP server)."""
@@ -393,7 +579,10 @@ def process(
         tenant=tenant,
         project=project,
         wipe_vector_store=wipe_vector_store,
+        ontology_dir=ontology_dir,
+        shapes_dir=shapes_dir,
         flush_on_clean=True,
+        batch=True,
     )
     # The parsers are shared with the HTTP layer and signal bad input by
     # raising; surface that as a click usage error rather than a traceback.
@@ -432,7 +621,7 @@ def process(
     input_path = input_path.expanduser()
     out_dir = output_dir.expanduser() if output_dir is not None else None
     facts_dir = facts_output_dir.expanduser() if facts_output_dir is not None else None
-    ontology_dir = (
+    ontology_out_dir = (
         ontology_output_dir.expanduser() if ontology_output_dir is not None else None
     )
     supported_suffixes = get_supported_input_extensions(runtime.tools)
@@ -446,30 +635,41 @@ def process(
             f"No supported input files under {input_path} "
             f"(looking for {', '.join(supported_suffixes)})."
         )
-    failed_files = asyncio.run(
-        process_files_input(
-            files,
-            config=runtime.config,
-            head_chunks=head_chunks,
-            use_unit_pipeline=use_unit_pipeline,
-            tools=runtime.tools,
-            workflow=workflow,
-            ontology_context_mode_value=runtime.ontology_context_mode,
-            tenant=runtime.tenant,
-            project=runtime.project,
-            target_sections=parsed_target_sections,
-            exclude_sections=parsed_exclude_sections,
-            summarize_sections=parsed_summarize_sections,
-            summary_max_sentences=parsed_summary_max_sentences,
-            document_type_hint=parsed_document_type_hint,
-            section_schema_id=parsed_section_schema_id,
-            max_visits=parsed_max_visits,
-            document_metadata=parsed_document_metadata,
-            output_dir=out_dir,
-            facts_output_dir=facts_dir,
-            ontology_output_dir=ontology_dir,
+    try:
+        failed_files = asyncio.run(
+            process_files_input(
+                files,
+                config=runtime.config,
+                head_chunks=head_chunks,
+                use_unit_pipeline=use_unit_pipeline,
+                tools=runtime.tools,
+                workflow=workflow,
+                ontology_context_mode_value=runtime.ontology_context_mode,
+                tenant=runtime.tenant,
+                project=runtime.project,
+                target_sections=parsed_target_sections,
+                exclude_sections=parsed_exclude_sections,
+                summarize_sections=parsed_summarize_sections,
+                summary_max_sentences=parsed_summary_max_sentences,
+                document_type_hint=parsed_document_type_hint,
+                section_schema_id=parsed_section_schema_id,
+                max_visits=parsed_max_visits,
+                document_metadata=parsed_document_metadata,
+                facts_user_instruction=facts_user_instruction,
+                output_dir=out_dir,
+                facts_output_dir=facts_dir,
+                ontology_output_dir=ontology_out_dir,
+                strip_provenance=not keep_provenance,
+            )
         )
-    )
+    except LLMConfigurationError as exc:
+        # Not one failed file among many: the request as configured is one the
+        # provider will never accept, so the batch stopped where it stood. A
+        # dedicated exit code lets a benchmark driver tell "fix your LLM_*
+        # settings" from "some documents did not extract".
+        raise LLMConfigAbort(
+            f"{exc} -- fix the LLM_* configuration and re-run."
+        ) from exc
     if failed_files:
         # Exit non-zero so a scripted pipeline can tell a partial or total
         # failure from a clean run.

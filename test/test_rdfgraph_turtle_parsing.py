@@ -1,5 +1,6 @@
 from copy import deepcopy
 
+import pytest
 from rdflib import Graph, Literal, URIRef
 
 from ontocast.onto.enum import LLMGraphFormat
@@ -8,6 +9,8 @@ from ontocast.onto.rdfgraph import (
     finalize_llm_graph,
     format_quarantine_for_prompt,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def test_from_turtle_coerces_invalid_integer_typed_literal() -> None:

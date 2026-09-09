@@ -489,6 +489,24 @@ class AgentState(BasePydanticModel):
         default_factory=list,
         description="Pending content units to process.",
     )
+    bibliography_units_skipped: int = Field(
+        default=0,
+        description=(
+            "Prepared chunks dropped by reference-list routing "
+            "(CHUNK_BIBLIOGRAPHY_MODE=skip)."
+        ),
+    )
+    undersized_units_skipped: int = Field(
+        default=0,
+        description="Prepared chunks dropped by the CHUNK_MIN_UNIT_CHARS floor.",
+    )
+    non_content_units_skipped: int = Field(
+        default=0,
+        description=(
+            "Prepared chunks dropped by front/back-matter routing "
+            "(CHUNK_NON_CONTENT_MODE=skip)."
+        ),
+    )
     ontology_artifacts: list[Ontology] = Field(
         default_factory=list,
         description="Final per-anchor ontology artifacts produced for this document.",
@@ -643,6 +661,17 @@ class AgentState(BasePydanticModel):
             "multi-value findings on these subjects to warnings: two label "
             "variants on a key-evidenced merge are two names for one thing, "
             "not two things."
+        ),
+    )
+
+    aggregation_cross_unit_pairs: list[tuple[str, str]] = Field(
+        default_factory=list,
+        description=(
+            "Canonical (subject, predicate) pairs whose IRI objects were "
+            "contributed by more than one unit. A multi-valued predicate "
+            "asserted by a single unit cannot be the product of an identity "
+            "merge, so the gate needs this to tell a merge signature from "
+            "legitimate multi-value modelling."
         ),
     )
 
@@ -975,7 +1004,7 @@ class AgentState(BasePydanticModel):
         return URIRef(f"{self.current_domain}/doc/{self.doc_hid}")
 
     @property
-    def doc_namespace(self):
+    def doc_namespace(self) -> str:
         """Get the document namespace.
 
         Returns:

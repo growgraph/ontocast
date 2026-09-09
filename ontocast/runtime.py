@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 
 from ontocast.config import Config, EmbeddingConfig, WebSearchProvider
+from ontocast.onto.state import BudgetTracker
 from ontocast.tool import AtomicToolBox, ChunkerTool, ConverterTool
 from ontocast.tool.agg.aggregate import EmbeddingBasedAggregator
 from ontocast.tool.agg.entity_aligner import EntityAligner
@@ -141,7 +142,7 @@ class ToolBoxRuntime:
         )
         return cls(config, llm=llm, cache=cache, prune_cache=False)
 
-    async def get_llm_tool(self, budget_tracker):
+    async def get_llm_tool(self, budget_tracker: BudgetTracker) -> LLMTool:
         """Return the shared LLM tool, charging usage to ``budget_tracker``.
 
         The tracker is bound to the *calling task* rather than to the shared tool

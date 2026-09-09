@@ -81,7 +81,31 @@ class RetrievalMetric(StrEnum):
     FACTS_FINDINGS_RESIDUAL = "facts_findings_residual"
     FACTS_MANDATORY_RESIDUAL = "facts_mandatory_residual"
     FACTS_CRITIC_CALLS = "facts_critic_calls"
+    FACTS_CRITIC_FIXES_APPLIED = "facts_critic_fixes_applied"
+    FACTS_CRITIC_FIXES_RESIDUAL = "facts_critic_fixes_residual"
+    FACTS_CRITIC_FIXES_NOOP = "facts_critic_fixes_noop"
+    FACTS_CRITIC_PATCHES_ROLLED_BACK = "facts_critic_patches_rolled_back"
+    ONTOLOGY_CRITIC_FIXES_APPLIED = "ontology_critic_fixes_applied"
+    ONTOLOGY_CRITIC_FIXES_RESIDUAL = "ontology_critic_fixes_residual"
+    ONTOLOGY_CRITIC_FIXES_NOOP = "ontology_critic_fixes_noop"
+    ONTOLOGY_CRITIC_PATCHES_ROLLED_BACK = "ontology_critic_patches_rolled_back"
     FACTS_CRITIC_ACCEPTED = "facts_critic_accepted"
+    #: Units whose critic call failed (timeout, unparseable response) and
+    #: left the loop unreviewed, and units the loop did not send to the
+    #: critic at all (empty render, citation metadata).
+    FACTS_CRITIC_UNITS_UNREVIEWED = "facts_critic_units_unreviewed"
+    FACTS_CRITIC_UNITS_SKIPPED = "facts_critic_units_skipped"
+    #: Per-fix outcomes of the compiled critique: fixes undone for leaving
+    #: the unit worse, inserts refused for minting a placeholder or an
+    #: annotation-only node, and payloads naming a prefix nothing declared.
+    FACTS_CRITIC_FIXES_ROLLED_BACK = "facts_critic_fixes_rolled_back"
+    FACTS_CRITIC_FIXES_JUNK_REFUSED = "facts_critic_fixes_junk_refused"
+    FACTS_CRITIC_FIXES_UNRESOLVED_PREFIX = "facts_critic_fixes_unresolved_prefix"
+    #: The insert-only completion pass: calls billed, triples that stayed
+    #: in, and missed measurements the inventory no longer lists afterwards.
+    FACTS_COMPLETION_CALLS = "facts_completion_calls"
+    FACTS_COMPLETION_TRIPLES_INSERTED = "facts_completion_triples_inserted"
+    FACTS_COMPLETION_MEASUREMENTS_RECOVERED = "facts_completion_measurements_recovered"
 
     # Aggregation and the un-merge repair.
     FACTS_REJECTED_MERGES = "facts_rejected_merges"
@@ -124,6 +148,53 @@ class LLMGraphFormat(StrEnum):
 
     TURTLE = "turtle"
     JSONLD = "jsonld"
+
+
+class OntologyChapterFormat(StrEnum):
+    """Syntax of the ``# ONTOLOGY`` chapter in the facts prompts.
+
+    - ``auto`` (default): ``term_sheet`` where the render mode is facts-only,
+      ``inherit`` otherwise. The cheapest chapter each mode can legally read,
+      chosen without asking an operator to know which those are. Resolved once
+      when the configuration is built, so nothing downstream -- profile lookup,
+      cache key, run manifest -- ever sees this member.
+    - ``inherit``: the chapter follows :class:`LLMGraphFormat`, so
+      the model reads the ontology in the syntax it is asked to write.
+    - ``turtle``: the chapter is Turtle whatever the wire format is. In a
+      facts prompt the ontology is read-only context -- nothing the model
+      emits has to match its syntax -- and Turtle spends fewer characters per
+      triple than pretty-printed JSON-LD, so this trades the read/write
+      symmetry for a shorter prompt. The graph payloads the model emits stay
+      in the wire format.
+    - ``term_sheet``: the chapter is a line-per-term listing rather than a
+      serialized graph -- name, surface forms, type, hierarchy, domain/range
+      and usage contract, without the per-statement RDF scaffolding or the
+      prose written for a human reader. Legal on the facts path only: the
+      ontology loop emits a patch against the statements it reads, so its
+      chapter has to remain a graph.
+    """
+
+    AUTO = "auto"
+    INHERIT = "inherit"
+    TURTLE = "turtle"
+    TERM_SHEET = "term_sheet"
+
+
+class OntologyContextScope(StrEnum):
+    """Whether the ontology chapter is resolved per unit or once per document.
+
+    - ``unit`` (default): each content unit retrieves its own context. The
+      smallest chapter per unit, and a different chapter for every one of them,
+      so a provider's prefix cache can serve none of them.
+    - ``document``: every unit's context is resolved once and unioned, and the
+      union is shown to all of them. Larger per call and recall-safe by
+      construction -- the union contains everything each unit's own retrieval
+      selected -- but identical across the fan-out, which is what makes the
+      chapter cacheable after the first call.
+    """
+
+    UNIT = "unit"
+    DOCUMENT = "document"
 
 
 class OntologyContextMode(StrEnum):
@@ -177,17 +248,6 @@ class WorkflowNode(StrEnum):
     FETCH_EXTERNAL_EVIDENCE = "Fetch External Evidence"
     STRUCTURAL_CHECK = "Structural Check"
     CONSISTENCY_CRITIC = "Consistency Critic"
-
-
-class SPARQLOperationType(StrEnum):
-    """Enumeration of SPARQL operation types.
-
-    This enum is used across the system for type-safe SPARQL operations.
-    """
-
-    INSERT = "INSERT"
-    UPDATE = "UPDATE"
-    DELETE = "DELETE"
 
 
 class VectorStoreBackend(StrEnum):

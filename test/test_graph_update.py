@@ -4,6 +4,7 @@ This test verifies that GraphUpdate.generate_sparql_queries() generates valid SP
 queries that can be executed on RDFGraph instances using rdflib's update() method.
 """
 
+import pytest
 from rdflib import Literal, URIRef
 
 from ontocast.onto.rdfgraph import RDFGraph
@@ -11,6 +12,8 @@ from ontocast.onto.sparql_models import (
     GraphUpdate,
     TripleOp,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def test_rdfgraph_recovers_dangling_semicolon_at_eof() -> None:

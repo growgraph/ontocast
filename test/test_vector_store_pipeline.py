@@ -43,8 +43,6 @@ from ontocast.tool.vector_store.patch_retriever import (
     _aexpand_ontology_iris,
     _aexpand_ontology_iris_by_reference,
     _expand_ontology_iris_by_reference,
-    _filter_hits_by_relative_floor,
-    _merge_hits_across_queries_hybrid,
     _merge_hits_across_queries_max_score,
     _merge_hits_across_queries_sum_score,
     _mmr_rerank,
@@ -56,6 +54,8 @@ from ontocast.tool.vector_store.util import (
     point_id_for_atom,
 )
 from ontocast.util.hash import render_text_hash
+
+pytestmark = pytest.mark.unit
 
 
 class CountingEmbeddingTool(EmbeddingTool):
@@ -802,60 +802,6 @@ def _channel_hits(
 
 
 @pytest.mark.anyio
-async def test_aretrieve_ensemble_per_query_ratio_keeps_weak_query_hits() -> None:
-    """Weak-query hits survive vs a strong query because the cutoff is per-query relative."""
-    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
-    vector_store = StubVectorStore(
-        store_config=VectorStoreConfig(embedding_batch_size=2),
-        qdrant_config=QdrantConfig(upsert_batch_size=2),
-        embedding=embedding,
-    )
-    vector_store.set_hits_by_query(
-        [
-            _channel_hits(
-                core_hits=[
-                    _scored_atom("s1", "StrongTop", 0.95),
-                    _scored_atom("s2", "StrongTail", 0.50),
-                ]
-            ),
-            _channel_hits(
-                core_hits=[
-                    _scored_atom("w1", "WeakTop", 0.40),
-                    _scored_atom("w2", "WeakMid", 0.35),
-                ]
-            ),
-        ]
-    )
-
-    sparql_tool = StubSPARQLTool(triple_store_manager=None)
-    retriever = OntologyPatchRetriever(
-        vector_store=vector_store,
-        sparql_tool=sparql_tool,
-        patch=PatchRetrievalConfig(
-            per_query_core_score_ratio=0.85,
-            per_query_neighborhood_score_ratio=0.85,
-            min_merged_max_score=0.0,
-            merged_score_ratio=0.0,
-            min_core_query_best_score=0.0,
-            min_neighborhood_query_best_score=0.0,
-        ),
-    )
-    await retriever.aretrieve_ensemble(
-        queries=["q1", "q2"],
-        top_k=4,
-        expand_sparql=True,
-    )
-
-    # 0.50 < 0.95 * 0.85 -> strong tail out; weak query keeps 0.40 and 0.35 (floor 0.34).
-    expected_iris = {
-        "https://example.org/smoke#StrongTop",
-        "https://example.org/smoke#WeakTop",
-        "https://example.org/smoke#WeakMid",
-    }
-    assert set(sparql_tool.last_entity_uris) == expected_iris
-
-
-@pytest.mark.anyio
 async def test_aretrieve_ensemble_empty_when_merged_scores_below_floor() -> None:
     embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
     vector_store = StubVectorStore(
@@ -874,12 +820,8 @@ async def test_aretrieve_ensemble_empty_when_merged_scores_below_floor() -> None
         vector_store=vector_store,
         sparql_tool=sparql_tool,
         patch=PatchRetrievalConfig(
-            per_query_core_score_ratio=1.0,
-            per_query_neighborhood_score_ratio=1.0,
             min_merged_max_score=2.0,
             merged_score_ratio=0.0,
-            min_core_query_best_score=0.0,
-            min_neighborhood_query_best_score=0.0,
         ),
     )
     graph, source_iris = await retriever.aretrieve_ensemble(
@@ -893,42 +835,6 @@ async def test_aretrieve_ensemble_empty_when_merged_scores_below_floor() -> None
 
 
 @pytest.mark.anyio
-async def test_aretrieve_ensemble_drops_subquery_when_top_below_min_query_best() -> (
-    None
-):
-    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
-    vector_store = StubVectorStore(
-        store_config=VectorStoreConfig(embedding_batch_size=2),
-        qdrant_config=QdrantConfig(upsert_batch_size=2),
-        embedding=embedding,
-    )
-    vector_store.set_hits_by_query(
-        [
-            _channel_hits(core_hits=[_scored_atom("low", "LowEnt", 0.05)]),
-            _channel_hits(core_hits=[_scored_atom("ok", "OkEnt", 0.80)]),
-        ]
-    )
-    sparql_tool = StubSPARQLTool(triple_store_manager=None)
-    retriever = OntologyPatchRetriever(
-        vector_store=vector_store,
-        sparql_tool=sparql_tool,
-        patch=PatchRetrievalConfig(
-            per_query_core_score_ratio=1.0,
-            per_query_neighborhood_score_ratio=1.0,
-            min_merged_max_score=0.0,
-            merged_score_ratio=0.0,
-            min_core_query_best_score=0.1,
-            min_neighborhood_query_best_score=0.1,
-        ),
-    )
-    await retriever.aretrieve_ensemble(
-        queries=["q1", "q2"],
-        top_k=2,
-        expand_sparql=True,
-    )
-    assert sparql_tool.last_entity_uris == ["https://example.org/smoke#OkEnt"]
-
-
 def test_canonicalize_entity_role_maps_synonyms() -> None:
     assert canonicalize_entity_role("predicate") == "predicate"
     assert canonicalize_entity_role("property") == "predicate"
@@ -1176,8 +1082,6 @@ async def test_aretrieve_ensemble_mmr_promotes_diverse_candidates() -> None:
         vector_store=vector_store,
         sparql_tool=sparql_tool,
         patch=PatchRetrievalConfig(
-            per_query_core_score_ratio=0.0,
-            per_query_neighborhood_score_ratio=0.0,
             min_merged_max_score=0.0,
             merged_score_ratio=0.0,
             mmr_lambda=0.5,
@@ -1227,8 +1131,6 @@ async def test_aretrieve_ensemble_rank_fusion_uses_rank_not_score() -> None:
         vector_store=vector_store,
         sparql_tool=sparql_tool,
         patch=PatchRetrievalConfig(
-            per_query_core_score_ratio=0.0,
-            per_query_neighborhood_score_ratio=0.0,
             min_merged_max_score=0.0,
             merged_score_ratio=0.0,
             mmr_lambda=1.0,
@@ -1269,8 +1171,6 @@ async def test_aretrieve_ensemble_lambda_one_skips_vector_fetch() -> None:
         vector_store=vector_store,
         sparql_tool=sparql_tool,
         patch=PatchRetrievalConfig(
-            per_query_core_score_ratio=0.0,
-            per_query_neighborhood_score_ratio=0.0,
             min_merged_max_score=0.0,
             merged_score_ratio=0.0,
             mmr_lambda=1.0,
@@ -1312,8 +1212,6 @@ async def test_aretrieve_ensemble_merged_score_ratio_trims_below_floor() -> None
         vector_store=vector_store,
         sparql_tool=sparql_tool,
         patch=PatchRetrievalConfig(
-            per_query_core_score_ratio=0.0,
-            per_query_neighborhood_score_ratio=0.0,
             min_merged_max_score=0.0,
             merged_score_ratio=0.9,
             mmr_lambda=1.0,
@@ -1350,8 +1248,6 @@ async def test_aretrieve_ensemble_forwards_ranking_and_budget_controls() -> None
         vector_store=vector_store,
         sparql_tool=sparql_tool,
         patch=PatchRetrievalConfig(
-            per_query_core_score_ratio=0.0,
-            per_query_neighborhood_score_ratio=0.0,
             min_merged_max_score=0.0,
             merged_score_ratio=0.0,
             mmr_lambda=1.0,
@@ -1405,8 +1301,6 @@ async def test_aretrieve_ensemble_patch_max_atoms_caps_output() -> None:
         vector_store=vector_store,
         sparql_tool=sparql_tool,
         patch=PatchRetrievalConfig(
-            per_query_core_score_ratio=0.0,
-            per_query_neighborhood_score_ratio=0.0,
             min_merged_max_score=0.0,
             merged_score_ratio=0.0,
             mmr_lambda=1.0,
@@ -1451,59 +1345,6 @@ def test_normalize_core_neighborhood_weights_renormalizes_dense_lanes() -> None:
     cw, nw = normalized_core_neighborhood_weights(sc)
     assert abs(cw + nw - 1.0) < 1e-9
     assert cw > nw
-
-
-def test_hybrid_merge_favors_dominant_single_window_hit() -> None:
-    collected = [
-        OntologySearchHit(atom=_scored_atom("dom", "Dominant", 1.2).atom, score=1.2),
-        OntologySearchHit(atom=_scored_atom("w1", "Weak", 0.34).atom, score=0.34),
-        OntologySearchHit(atom=_scored_atom("w2", "Weak", 0.33).atom, score=0.33),
-        OntologySearchHit(atom=_scored_atom("w3", "Weak", 0.32).atom, score=0.32),
-    ]
-    merged = _merge_hits_across_queries_hybrid(
-        collected,
-        max_atoms_tier1=2,
-        per_ontology_seed_quota=0,
-        min_entity_score=0.3,
-        max_atoms_total=2,
-    )
-    assert merged[0].atom.iri.endswith("#Dominant")
-    assert merged[0].score == 1.2
-
-
-def test_hybrid_merge_tier2_adds_per_ontology_coverage() -> None:
-    matsci = "https://example.org/matsci"
-    perov = "https://example.org/perov"
-
-    def _hit(entity: str, onto: str, score: float) -> OntologySearchHit:
-        atom = GraphAtom(
-            atom_id=entity,
-            ontology_iri=onto,
-            iri=f"{onto}#{entity}",
-            entity_role="resource",
-            core_representation=entity,
-            neighborhood_representation="",
-            score=score,
-        )
-        return OntologySearchHit(atom=atom, score=score)
-
-    collected = [
-        _hit("M1", matsci, 0.95),
-        _hit("M2", matsci, 0.90),
-        _hit("M3", matsci, 0.85),
-        _hit("P1", perov, 0.40),
-    ]
-    merged = _merge_hits_across_queries_hybrid(
-        collected,
-        max_atoms_tier1=2,
-        per_ontology_seed_quota=1,
-        min_entity_score=0.35,
-        max_atoms_total=4,
-    )
-    iris = {hit.atom.iri for hit in merged}
-    assert f"{matsci}#M1" in iris
-    assert f"{matsci}#M2" in iris
-    assert f"{perov}#P1" in iris
 
 
 def _weak_repeated(count: int) -> list[OntologySearchHit]:
@@ -2039,41 +1880,6 @@ def test_embedding_prefixes_default_to_symmetric_encoding() -> None:
     assert embedding.seen_texts == [["abc"], ["abc"]]
 
 
-def test_relative_floor_disabled_keeps_negative_scores() -> None:
-    """A ratio of 0 is documented as "disables"; it must not act as a floor of 0.0."""
-    hits = [_scored_atom("a", "A", 0.4), _scored_atom("b", "B", -0.1)]
-    assert (
-        _filter_hits_by_relative_floor(hits, score_ratio=0.0, min_query_best_score=0.0)
-        == hits
-    )
-
-
-def test_relative_floor_keeps_best_hit_when_scores_are_negative() -> None:
-    """Qdrant cosine can return negative scores; the best hit must always survive."""
-    hits = [_scored_atom("a", "A", -0.2), _scored_atom("b", "B", -0.9)]
-    kept = _filter_hits_by_relative_floor(
-        hits, score_ratio=0.8, min_query_best_score=0.0
-    )
-    assert [hit.atom.atom_id for hit in kept] == ["a"]
-
-
-def test_relative_floor_matches_multiplicative_form_when_positive() -> None:
-    """The sign-safe form must not change behaviour on the ordinary positive path.
-
-    Scores stay off the ``best * ratio`` boundary: both forms land there within a float
-    ulp of each other, so a test pinned to it would assert rounding, not semantics.
-    """
-    hits = [
-        _scored_atom("a", "A", 0.8),  # best
-        _scored_atom("b", "B", 0.70),  # above the 0.64 floor
-        _scored_atom("c", "C", 0.50),  # below it
-    ]
-    kept = _filter_hits_by_relative_floor(
-        hits, score_ratio=0.8, min_query_best_score=0.0
-    )
-    assert [hit.atom.atom_id for hit in kept] == ["a", "b"]
-
-
 @pytest.mark.anyio
 async def test_aretrieve_ensemble_round_robin_multi_ontology() -> None:
     matsci = "https://example.org/matsci"
@@ -2117,7 +1923,6 @@ async def test_aretrieve_ensemble_round_robin_multi_ontology() -> None:
         sparql_tool=sparql_tool,
         patch=PatchRetrievalConfig(
             cross_query_merge_mode=CrossQueryMergeMode.MAX_SCORE,
-            per_query_core_score_ratio=0.0,
             min_merged_max_score=0.0,
             merged_score_ratio=0.0,
             mmr_lambda=1.0,
@@ -2156,7 +1961,6 @@ async def test_aretrieve_ensemble_window_scaled_cap() -> None:
         sparql_tool=sparql_tool,
         patch=PatchRetrievalConfig(
             cross_query_merge_mode=CrossQueryMergeMode.MAX_SCORE,
-            per_query_core_score_ratio=0.0,
             min_merged_max_score=0.0,
             merged_score_ratio=0.0,
             mmr_lambda=1.0,
@@ -2172,3 +1976,96 @@ async def test_aretrieve_ensemble_window_scaled_cap() -> None:
     assert retriever.last_retrieval_metrics["effective_max_atoms"] == 28
     assert retriever.last_retrieval_metrics["atoms_final"] == 7
     assert len(sparql_tool.last_entity_uris) == 7
+
+
+def _scored_atom_in(
+    atom_id: str, iri_local: str, score: float, ontology_iri: str
+) -> OntologySearchHit:
+    atom = GraphAtom(
+        atom_id=atom_id,
+        ontology_iri=ontology_iri,
+        ontology_id=ontology_iri.rsplit("/", 1)[-1],
+        ontology_hash="hash1",
+        ontology_version="1.0.0",
+        iri=f"{ontology_iri}#{iri_local}",
+        entity_role="resource",
+        core_representation=f"core {atom_id}",
+        neighborhood_representation="neighbor",
+    )
+    return OntologySearchHit(atom=atom, score=score)
+
+
+_BIG = "https://example.org/big"
+_SMALL = "https://example.org/small"
+
+
+async def _selection_under(
+    merge_mode: CrossQueryMergeMode, per_ontology_atom_floor: int
+) -> set[str]:
+    """Run one retrieval in ``merge_mode`` and report which ontologies survived."""
+    embedding = CountingEmbeddingTool(config=EmbeddingConfig(dimension=8))
+    vector_store = StubVectorStore(
+        store_config=VectorStoreConfig(embedding_batch_size=2),
+        qdrant_config=QdrantConfig(upsert_batch_size=2),
+        embedding=embedding,
+    )
+    vector_store.set_hits_by_query(
+        [
+            _channel_hits(
+                core_hits=[
+                    _scored_atom_in("a", "A", 0.95, _BIG),
+                    _scored_atom_in("b", "B", 0.93, _BIG),
+                    _scored_atom_in("c", "C", 0.92, _BIG),
+                    _scored_atom_in("d", "D", 0.50, _SMALL),
+                ]
+            )
+        ]
+    )
+    sparql_tool = StubSPARQLTool(triple_store_manager=None)
+    retriever = OntologyPatchRetriever(
+        vector_store=vector_store,
+        sparql_tool=sparql_tool,
+        patch=PatchRetrievalConfig(
+            cross_query_merge_mode=merge_mode,
+            min_merged_max_score=0.0,
+            merged_score_ratio=0.0,
+            mmr_lambda=1.0,
+            max_atoms=3,
+            per_ontology_atom_floor=per_ontology_atom_floor,
+            per_role_atom_floor=0,
+        ),
+    )
+    await retriever.aretrieve_ensemble(queries=["q1"], top_k=4, expand_sparql=True)
+    return {uri.rsplit("#", 1)[0] for uri in sparql_tool.last_entity_uris}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "merge_mode", [CrossQueryMergeMode.MAX_SCORE, CrossQueryMergeMode.SUM_SCORE]
+)
+async def test_every_merge_mode_honours_the_per_ontology_atom_floor(
+    merge_mode: CrossQueryMergeMode,
+) -> None:
+    """The floor is a guarantee, so changing the cross-query mode must not drop it.
+
+    A third mode once fell through to a bare `merged[:cap]` slice, which
+    silently skipped both atom floors -- non-zero by default, and there
+    precisely so one dominant ontology cannot crowd out a small module. That
+    mode is gone; the selection path it bypassed is the one every remaining
+    mode now shares, and this asserts it for each of them.
+    """
+    assert await _selection_under(merge_mode, per_ontology_atom_floor=1) == {
+        _BIG,
+        _SMALL,
+    }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "merge_mode", [CrossQueryMergeMode.MAX_SCORE, CrossQueryMergeMode.SUM_SCORE]
+)
+async def test_without_a_floor_selection_is_score_order(
+    merge_mode: CrossQueryMergeMode,
+) -> None:
+    """With the floor off, the cap admits the dominant ontology alone."""
+    assert await _selection_under(merge_mode, per_ontology_atom_floor=0) == {_BIG}

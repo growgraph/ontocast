@@ -27,6 +27,7 @@ from ontocast.onto.iri_policy import (
 from ontocast.onto.rdfgraph import RDFGraph
 
 from .normalizer import EntityRepresentation
+from .unit_scope import strip_unit_scope, unit_scope_index
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,17 @@ def to_lower_camel_case(normalized: str) -> str:
     return words[0] + "".join(w.capitalize() for w in words[1:])
 
 
+def _source_local_name(entity: URIRef) -> str:
+    """Local name of a source entity without its unit-scope suffix.
+
+    The suffix is aggregation bookkeeping (digits and underscores), not part
+    of what the unit named; reading it here would turn every scoped instance
+    into a structured identifier and leak the suffix into final IRIs.
+    """
+    local = str(entity).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
+    return strip_unit_scope(local)
+
+
 def has_structured_id(entity: URIRef) -> bool:
     """Detect if an entity represents a structured/external identifier.
 
@@ -168,7 +180,7 @@ def has_structured_id(entity: URIRef) -> bool:
     Returns:
         True if the entity appears to have a structured ID.
     """
-    local = str(entity).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
+    local = _source_local_name(entity)
     return bool(re.search(r"\d", local) and "_" in local)
 
 
@@ -183,7 +195,7 @@ def format_structured_id(entity: URIRef) -> str:
     Returns:
         Cleaned identifier string.
     """
-    local = str(entity).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
+    local = _source_local_name(entity)
     cleaned = re.sub(r"[^\w]", "_", local)
     cleaned = re.sub(r"_+", "_", cleaned).strip("_")
     if not cleaned:
@@ -196,6 +208,10 @@ def normalize_local_name(
     role: EntityRole | str,
 ) -> str:
     """Produce a properly-cased local name following RDF conventions.
+
+    Both sources of the name -- the normal form and the structured-id
+    fallback on the source IRI -- are read without any unit-scope suffix,
+    so a minted local name never carries the unit that minted it.
 
     Args:
         representation: Entity representation with metadata.
@@ -337,6 +353,11 @@ class URIBuilder:
         Fact entities are always rendered in their source ``doc_iri`` namespace.
         Ontology entities are preserved as their canonical URI.
 
+        Entities are minted in a fixed order -- by unscoped IRI, then by unit
+        index -- so when two unmerged entities compete for one local name the
+        counter suffix lands on the same one every run, rather than on
+        whichever a set iteration happened to yield first.
+
         Args:
             identity_mapping: Mapping ``entity -> canonical_entity``.
             representations: All entity representations.
@@ -351,7 +372,12 @@ class URIBuilder:
         mapping: dict[URIRef, URIRef] = {}
         canonical_cache: dict[tuple[URIRef, str], URIRef] = {}
 
-        for entity, canonical in identity_mapping.items():
+        def mint_order(item: tuple[URIRef, URIRef]) -> tuple[str, int, str]:
+            text = str(item[0])
+            index = unit_scope_index(text)
+            return (strip_unit_scope(text), -1 if index is None else index, text)
+
+        for entity, canonical in sorted(identity_mapping.items(), key=mint_order):
             rep = representations.get(canonical)
             if rep is None:
                 mapping[entity] = entity

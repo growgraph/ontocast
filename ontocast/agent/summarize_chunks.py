@@ -6,7 +6,7 @@ from typing import Any
 from langchain_core.prompts import ChatPromptTemplate
 
 from ontocast.onto.content_unit import ContentUnit
-from ontocast.tool.llm import use_budget_tracker
+from ontocast.tool.llm import LLMConfigurationError, use_budget_tracker
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,10 @@ async def ensure_unit_summary(
             max_sentences=state.summary_max_sentences,
             budget_tracker=budget_tracker,
         )
+    except LLMConfigurationError:
+        # A unit without a summary is survivable; a run whose every call
+        # is rejected is not, and it would surface here first.
+        raise
     except Exception as exc:
         logger.warning("Summarization failed for unit %s: %s", unit_index, exc)
 

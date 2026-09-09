@@ -33,6 +33,7 @@ from ontocast.tool.facts_validation import (
     accept_reason,
     material_defects,
 )
+from ontocast.tool.llm import LLMConfigurationError
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,13 @@ async def criticise_facts(
     )
 
     llm_tool = await tools.get_llm_tool(state.budget_tracker)
-    profile = get_graph_format_profile(state.llm_graph_format)
+    # Same profile the renderer used, chapter override included: the memoised
+    # ontology chapter is only shared between the two calls when both ask for
+    # the same syntax.
+    profile = get_graph_format_profile(
+        state.llm_graph_format,
+        ontology_chapter_format=state.ontology_chapter_format,
+    )
     parser = PydanticOutputParser(pydantic_object=FactsCritiqueReport)
 
     ctx = ontology_access_for_unit_facts(state).effective_ontology_for_prompt()
@@ -91,11 +98,17 @@ async def criticise_facts(
     # judged term choices it could not read. Also memoised on the shared
     # snapshot, so this stops re-serialising the ontology on every visit.
     ontology_chapter = ctx.prompt_chapter(
-        profile, max_triples=state.ontology_context_max_triples
+        profile,
+        max_triples=state.ontology_context_max_triples,
+        text_caps=state.ontology_text_caps,
     )
-    facts_chapter = profile.format_facts_chapter(
-        state.content_unit.graph
-    ) + _build_quarantine_chapter(state)
+    # Every statement gets a citable id, and the index is kept on the state so
+    # the fixes that come back can be resolved by lookup. The critic used to be
+    # asked to requote the statements it wanted changed, which it reproduces
+    # correctly only a minority of the time -- for a bare removal, almost never.
+    indexed_facts = profile.format_facts_chapter_indexed(state.content_unit.graph)
+    state.prompt_triple_index = indexed_facts.index
+    facts_chapter = indexed_facts.text + _build_quarantine_chapter(state)
 
     text_chapter = text_template.format(text=state.content_unit.extraction_text)
 
@@ -112,6 +125,7 @@ async def criticise_facts(
             "evaluation_instruction",
             "user_instruction",
             "ontology_chapter",
+            "conformance_chapter",
             "facts_chapter",
             "text_chapter",
             "graph_format_instruction",
@@ -135,6 +149,9 @@ async def criticise_facts(
         "evaluation_instruction": evaluation_instruction_str,
         "user_instruction": user_instruction,
         "ontology_chapter": ontology_chapter,
+        # Same rulebook the gate validates against; critique and render
+        # share one contract.
+        "conformance_chapter": state.conformance_chapter,
         "facts_chapter": facts_chapter,
         "text_chapter": text_chapter,
         "graph_format_instruction": graph_format_instruction,
@@ -158,6 +175,7 @@ async def criticise_facts(
             critique.external_evidence_request,
             web_search_enabled,
         )
+        state.critic_outcome = "reviewed"
 
         logger.debug(
             f"Parsed critique report - success: {critique.success}, "
@@ -188,6 +206,10 @@ async def criticise_facts(
                 severity_counts=Counter(
                     fix.severity for fix in critique.actionable_triple_fixes
                 ),
+                action_severity_counts=Counter(
+                    f"{fix.action}:{fix.severity}"
+                    for fix in critique.actionable_triple_fixes
+                ),
                 n_deterministic_findings=len(state.deterministic_findings),
                 n_mandatory_findings=sum(
                     1 for finding in state.deterministic_findings if finding.mandatory
@@ -199,13 +221,13 @@ async def criticise_facts(
         if not defects:
             state.status = Status.SUCCESS
             state.set_node_status(WorkflowNode.CRITICISE_FACTS, Status.SUCCESS)
-            # An accepting critic has no outstanding requests. Clearing here is
-            # not redundant with the reset in render_facts_update: the loop can
-            # accept on a *later* critic attempt of the same render (after an
-            # external-evidence search), with no render in between to consume
-            # the suggestions the earlier, rejecting attempt left behind. The
-            # finding-driven repair then runs next, and must see only findings.
-            state.suggestions = Suggestions()
+            # Accepting means "no defect worth another render", NOT "the
+            # critique was empty". The fixes are kept: the repair lane compiles
+            # the mechanical ones for free and records the rest as residual.
+            # Clearing them here used to discard the entire critique of every
+            # accepted render -- the bulk of everything the critic produced,
+            # since a REMOVE fix can never make a render blocking.
+            state.suggestions = Suggestions.from_critique_report(critique)
             logger.info(
                 "Facts critique passed (score %s, no material defect)",
                 critique.score,
@@ -225,8 +247,34 @@ async def criticise_facts(
 
         return state
 
+    except LLMConfigurationError:
+        # A rejected request is not a critic that failed to answer: the
+        # next unit's critic will be rejected the same way.
+        raise
     except Exception as e:
+        # A critic that did not answer -- timeout, transport error, a response
+        # that never parsed -- is not a critic that accepted. The unit leaves
+        # the loop FAILED at the critique stage with its render intact, and
+        # the attempt is on the record as a billed call that produced no
+        # critique; the loop reads ``critic_outcome`` and applies no patch.
         logger.error(f"Failed to criticize facts: {str(e)}")
+        state.critic_outcome = "unavailable"
+        state.attempt_log.append(
+            LoopAttempt(
+                render_attempt=state.node_visits[WorkflowNode.TEXT_TO_FACTS],
+                critic_attempt=state.node_visits[WorkflowNode.CRITICISE_FACTS],
+                kind="critic",
+                success=False,
+                accept_reason="critic_unavailable",
+                failure_stage=str(FailureStage.FACTS_CRITIQUE),
+                failure_reason=str(e),
+                n_deterministic_findings=len(state.deterministic_findings),
+                n_mandatory_findings=sum(
+                    1 for finding in state.deterministic_findings if finding.mandatory
+                ),
+                triple_count=len(state.content_unit.graph),
+            )
+        )
         state.set_failure(FailureStage.FACTS_CRITIQUE, str(e))
         state.set_node_status(WorkflowNode.CRITICISE_FACTS, Status.FAILED)
         return state

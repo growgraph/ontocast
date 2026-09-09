@@ -67,7 +67,7 @@ class ChunkerTool(Tool):
         self,
         chunk_config: ChunkConfig | None = None,
         cache: Cacher | None = None,
-        **kwargs,
+        **kwargs: Any,
     ):
         """Initialize the ChunkerTool.
 

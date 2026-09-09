@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+import pyarrow as pa
 from pydantic import Field, PrivateAttr, model_validator
 
 from ontocast.config import EmbeddingConfig, LanceDBConfig, VectorStoreConfig
@@ -36,6 +37,7 @@ from ontocast.tool.vector_store.util import (
     atom_scope_fingerprint,
     collection_embedding_metadata,
     dedupe_hits_by_identity,
+    effective_bm25_top_k,
     effective_top_k,
     iter_batches,
     normalized_fusion_weights,
@@ -307,6 +309,46 @@ class LanceDBVectorStoreManager(VectorStoreManager):
         except Exception as exc:
             logger.debug("LanceDB FTS index not created: %s", exc)
 
+    def _atom_table_schema(self) -> pa.Schema:
+        """Arrow schema for the ontology atom table.
+
+        Declared rather than inferred. ``create_table(data=...)`` types each column
+        from the first batch written, so a field that happens to be empty
+        throughout the first ontology -- ``ontology_version`` and ``entity_role``
+        are optional, and an ontology may carry no lexical triggers at all -- is
+        typed ``null``. Every later ontology that *does* populate it then fails the
+        merge with "Unsupported cast from string to null", which makes indexing
+        order a correctness concern and silently caps a multi-ontology catalog at
+        whatever the first ontology happened to describe.
+
+        Returns:
+            pa.Schema: Column types for atom payloads plus both dense vectors.
+        """
+        dimension = self._dense_dimension()
+        return pa.schema(
+            [
+                pa.field("point_id", pa.string()),
+                pa.field("atom_id", pa.string()),
+                pa.field("ontology_iri", pa.string()),
+                pa.field("ontology_id", pa.string()),
+                pa.field("ontology_hash", pa.string()),
+                pa.field("ontology_version", pa.string()),
+                pa.field("iri", pa.string()),
+                pa.field("entity_role", pa.string()),
+                pa.field("core_representation", pa.string()),
+                pa.field("minimal_representation", pa.string()),
+                pa.field("neighborhood_representation", pa.string()),
+                pa.field("lexical_triggers", pa.list_(pa.string())),
+                pa.field("symbol_surfaces", pa.list_(pa.string())),
+                pa.field("created_at", pa.string()),
+                pa.field("core_vector", pa.list_(pa.float32(), list_size=dimension)),
+                pa.field(
+                    "neighborhood_vector",
+                    pa.list_(pa.float32(), list_size=dimension),
+                ),
+            ]
+        )
+
     def _record_from_atom(
         self,
         atom: GraphAtom,
@@ -345,7 +387,10 @@ class LanceDBVectorStoreManager(VectorStoreManager):
         table_name = self._ontology_table_name()
         tables = self._list_tables(db)
         if table_name not in tables:
-            db.create_table(table_name, data=records)
+            db.create_table(
+                table_name,
+                data=pa.Table.from_pylist(records, schema=self._atom_table_schema()),
+            )
             self._write_embedding_meta()
             table = db.open_table(table_name)
             self._ensure_indexes(table)
@@ -356,7 +401,7 @@ class LanceDBVectorStoreManager(VectorStoreManager):
         table.merge_insert(
             "point_id"
         ).when_matched_update_all().when_not_matched_insert_all().execute(  # type: ignore[attr-defined]
-            records
+            pa.Table.from_pylist(records, schema=self._atom_table_schema())
         )
         self._register_lexical_triggers(atoms)
         return len(records)
@@ -511,7 +556,9 @@ class LanceDBVectorStoreManager(VectorStoreManager):
         bm25_hits: list[OntologySearchHit] = []
         if bm25_query is not None:
             bm25_hits = self._search_bm25_channel(
-                bm25_query, limit=eff_top_k, where=where
+                bm25_query,
+                limit=effective_bm25_top_k(self.store_config, top_k),
+                where=where,
             )
         if self.store_config.dedup_query_hits_by_iri:
             core_hits = dedupe_hits_by_identity(
@@ -573,6 +620,7 @@ class LanceDBVectorStoreManager(VectorStoreManager):
             core_weight=cw,
             neighborhood_weight=nw,
             bm25_weight=bw,
+            rank_constant=self.store_config.fusion_rank_constant,
             limit=eff_top_k,
         )
 

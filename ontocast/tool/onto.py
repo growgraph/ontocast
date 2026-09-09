@@ -5,6 +5,8 @@ tools in the OntoCast system. It provides common functionality and interface
 for tool implementations.
 """
 
+from typing import Any
+
 from ontocast.onto.model import BasePydanticModel
 
 
@@ -13,13 +15,12 @@ class Tool(BasePydanticModel):
 
     This class serves as the foundation for all tools in the OntoCast system.
     It provides common functionality and interface that all tools must implement.
-    Tools should inherit from this class and implement their specific functionality.
-
-    Attributes:
-        Inherits all attributes from BasePydanticModel.
+    Tools should inherit from this class and implement their specific
+    functionality. All attributes are inherited from
+    :class:`~ontocast.onto.model.BasePydanticModel`; this class adds none.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: Any):
         """Initialize the tool.
 
         Args:

@@ -48,3 +48,17 @@ def validate_ontology_context_mode(
     """Raise if the requested ontology context mode cannot be satisfied."""
     if ontology_context_mode == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY:
         require_vector_retrieval(tools)
+
+
+class EmptyOntologyContextError(OntologyContextConfigError):
+    """Raised when a unit's ontology context resolves to zero triples.
+
+    An empty context is not a milder version of a good one. The renderer is
+    instructed to extract "based on provided domain ontology"; handed nothing,
+    it falls back on whatever standard vocabulary the prompt names, and the
+    SHACL gate then finds no node its shapes target -- so the run reports a
+    vacuous pass over an empty focus set. Continuing produces a finished,
+    plausible, ungrounded graph, which is worse than stopping.
+    """
+
+    error_code: str = "EMPTY_ONTOLOGY_CONTEXT"

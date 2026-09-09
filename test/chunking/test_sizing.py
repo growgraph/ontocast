@@ -10,6 +10,8 @@ from ontocast.tool.chunk.sizing import (
     size_text_parts,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def test_hard_cap_parts_splits_at_word_boundary() -> None:
     parts = ["word " * 100]

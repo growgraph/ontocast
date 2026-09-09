@@ -104,6 +104,7 @@ Cache keys hash **normalized prompt text** (LangChain prompt values use `to_stri
 
 - provider, model name, temperature, base URL
 - the Ollama generation knobs `think`, `num_predict`, `num_ctx` — these bound reasoning and output length, so the same prompt under a different `num_ctx` is a different response
+- the cloud reasoning knobs `reasoning_effort` and `thinking_budget`, **only when set** — an unset knob means "provider default", which is what every entry written before the knobs existed was produced under, so leaving it unset keeps those entries valid while setting it re-issues every prompt
 - the output schema name, for structured `extract` calls
 - a `cache_format_version` constant, bumped whenever the entry shape or the set of key inputs changes
 

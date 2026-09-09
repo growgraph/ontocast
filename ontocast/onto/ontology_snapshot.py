@@ -6,7 +6,7 @@ writeback (``U → O*``) targets real :class:`Ontology` instances by namespace o
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from pydantic import Field, PrivateAttr
 
@@ -15,6 +15,12 @@ from ontocast.onto.llm_graph_payload import LLMGraphWire
 from ontocast.onto.model import BasePydanticModel
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from ontocast.onto.ontology_condense import CondenseReport, TextCaps
+    from ontocast.prompt.graph_format import GraphFormatProfile
 
 
 class OntologySnapshot(BasePydanticModel):
@@ -52,8 +58,8 @@ class OntologySnapshot(BasePydanticModel):
 
     #: Derived prompt text, keyed by graph identity so a reassigned graph misses.
     #: Populated only through :meth:`prompt_chapter`.
-    _prompt_cache: dict[tuple[int, int, str, int | None], str] = PrivateAttr(
-        default_factory=dict
+    _prompt_cache: dict[tuple[int, int, str, int | None, str | None], str] = (
+        PrivateAttr(default_factory=dict)
     )
 
     def is_empty(self) -> bool:
@@ -72,7 +78,14 @@ class OntologySnapshot(BasePydanticModel):
         """
         self._prompt_cache.clear()
 
-    def prompt_chapter(self, profile: Any, *, max_triples: int | None = None) -> str:
+    def prompt_chapter(
+        self,
+        profile: GraphFormatProfile,
+        *,
+        max_triples: int | None = None,
+        text_caps: "TextCaps | None" = None,
+        on_report: "Callable[[CondenseReport], None] | None" = None,
+    ) -> str:
         """Serialised ontology chapter for prompts, memoised per graph.
 
         Serialising the ontology is the single most expensive step in building a
@@ -80,32 +93,55 @@ class OntologySnapshot(BasePydanticModel):
         every render attempt within a unit -- would otherwise redo it on an
         identical graph, synchronously, on the event loop.
 
-        The memo is keyed on the graph's identity, length and the profile's wire
-        format. It is therefore correct for a snapshot whose graph is replaced,
-        and *assumes* the graph is not mutated in place, which is the contract
-        this class already documents ("ephemeral" context, read-only in the unit
-        loops). Any code that does mutate it must call
-        :meth:`invalidate_prompt_cache`.
+        The memo is keyed on the graph's identity, length and the syntax the
+        chapter is serialised in. It is therefore correct for a snapshot whose
+        graph is replaced, and *assumes* the graph is not mutated in place,
+        which is the contract this class already documents ("ephemeral"
+        context, read-only in the unit loops). Any code that does mutate it
+        must call :meth:`invalidate_prompt_cache`.
 
         Args:
             profile: Graph format profile supplying the serialisation.
+            max_triples: Triple budget for the chapter.
+            text_caps: Per-role character caps on the chapter's text literals.
+            on_report: Handed what condensing and capping did, on a memo *miss*
+                only -- the chapter is built once for the whole fan-out, so
+                reporting it once is what the numbers describe.
 
         Returns:
-            str: The ``# ONTOLOGY`` chapter, including the index appendix.
+            str: The ``# ONTOLOGY`` chapter, including the index appendix. A
+            term-sheet chapter carries no appendix: the index names terms by
+            label and domain/range, which the sheet already states on the
+            term's own line.
         """
         from ontocast.prompt.ontology_context import build_ontology_index
 
         # max_triples is part of the key: the snapshot is shared by reference
         # across the whole fan-out, so without it the first budget seen would be
         # served to every later caller.
-        key = (id(self.graph), len(self.graph), str(profile.format), max_triples)
+        # The syntax key is the chapter's own discriminator, not the profile's
+        # wire format: ONTOLOGY_CHAPTER_FORMAT can decouple the two, two
+        # profiles that render identical bytes share the entry, and a term
+        # sheet -- which is not a serialization of the graph at all -- gets its
+        # own name rather than colliding with the Turtle chapter.
+        key = (
+            id(self.graph),
+            len(self.graph),
+            profile.ontology_chapter_discriminator,
+            max_triples,
+            text_caps.model_dump_json() if text_caps is not None else None,
+        )
         cached = self._prompt_cache.get(key)
         if cached is not None:
             return cached
         chapter = profile.format_ontology_chapter(
             self.graph,
-            suffix=build_ontology_index(self.graph),
+            suffix=(
+                "" if profile.renders_term_sheet else build_ontology_index(self.graph)
+            ),
             max_triples=max_triples,
+            text_caps=text_caps,
+            on_report=on_report,
         )
         # Bound the memo: a snapshot only ever holds one live graph, so stale
         # entries are strictly dead weight after a reassignment.

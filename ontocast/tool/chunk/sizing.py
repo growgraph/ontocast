@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 from ontocast.config import ChunkConfig
+from ontocast.tool.chunk.proposition import SENTENCE_SPLIT_REGEX
+from ontocast.util.measurement_lexicon import unit_adjacent_numbers
 
 DEFAULT_PART_SEPARATOR = "\n\n"
+
+_SENTENCE_BOUNDARY_RE = re.compile(SENTENCE_SPLIT_REGEX)
 
 
 def hard_cap_parts(parts: list[str], max_size: int) -> list[str]:
@@ -135,4 +140,66 @@ def size_bounded_text(
         config.min_size,
         config.max_size,
         separator=separator,
+    )
+
+
+def _midpoint_sentence_cut(text: str, min_size: int) -> tuple[int, int] | None:
+    """The sentence boundary nearest the midpoint leaving both halves ``>= min_size``.
+
+    Returns:
+        ``(start, end)`` of the boundary whitespace, so the left half is
+        ``text[:start]`` and the right half ``text[end:]``; ``None`` when no
+        boundary satisfies the floor.
+    """
+    midpoint = len(text) / 2
+    best: tuple[int, int] | None = None
+    best_distance = float("inf")
+    for match in _SENTENCE_BOUNDARY_RE.finditer(text):
+        start, end = match.span()
+        if start < min_size or len(text) - end < min_size:
+            continue
+        distance = abs(start - midpoint)
+        if distance < best_distance:
+            best, best_distance = (start, end), distance
+    return best
+
+
+def split_by_measurement_density(
+    text: str,
+    *,
+    max_measurements: int,
+    min_size: int,
+) -> list[str]:
+    """Split ``text`` while it states more measurements than ``max_measurements``.
+
+    Extraction loss tracks how many measurements a unit packs, not how long
+    it is, so the cut is by density rather than by size: the text is cut at
+    the sentence or paragraph boundary nearest its midpoint and each half is
+    re-checked, recursively. No piece is ever shorter than ``min_size``; a
+    dense unit that cannot be cut without producing one is returned whole.
+
+    Args:
+        text: Unit text.
+        max_measurements: Cap on unit-adjacent numbers per piece; ``<= 0``
+            disables splitting.
+        min_size: Floor on piece length in characters.
+
+    Returns:
+        The stripped text as one piece, or its pieces in text order.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return []
+    if max_measurements <= 0:
+        return [stripped]
+    if len(unit_adjacent_numbers(stripped)) <= max_measurements:
+        return [stripped]
+    cut = _midpoint_sentence_cut(stripped, min_size)
+    if cut is None:
+        return [stripped]
+    start, end = cut
+    return split_by_measurement_density(
+        stripped[:start], max_measurements=max_measurements, min_size=min_size
+    ) + split_by_measurement_density(
+        stripped[end:], max_measurements=max_measurements, min_size=min_size
     )

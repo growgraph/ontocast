@@ -33,6 +33,7 @@ from ontocast.tool.facts_validation import (
     ValidationPolicy,
     apply_shacl_repairs,
     collect_shacl_shapes,
+    count_shacl_focus_nodes,
     dedupe_literal_variants,
     record_facts_gate_metrics,
     shacl_catalog_contradictions,
@@ -175,6 +176,11 @@ def run_facts_gate(
             shacl_advanced=facts_validation.shacl_advanced,
             shacl_max_triples=facts_validation.shacl_max_triples,
             key_supported_subjects=state.aggregation_key_clusters,
+            cross_unit_pairs=(
+                state.aggregation_cross_unit_pairs
+                if facts_validation.suspect_multi_value_require_cross_unit
+                else None
+            ),
         )
 
     def merge_signature_errors(report: FactsValidationReport) -> int:
@@ -229,9 +235,13 @@ def run_facts_gate(
         previous_graph = state.aggregated_facts
         previous_clusters = state.aggregation_clusters
         previous_key_clusters = state.aggregation_key_clusters
+        previous_cross_unit_pairs = state.aggregation_cross_unit_pairs
         state.aggregated_facts = result.graph
         state.aggregation_clusters = result.merged_clusters
         state.aggregation_key_clusters = result.key_supported_clusters
+        # Re-aggregation rewrites subject IRIs, so the pairs the validator
+        # keys on have to come from the pass it is about to score.
+        state.aggregation_cross_unit_pairs = result.cross_unit_object_pairs
         candidate_report = run_validation()
         candidate_errors = merge_signature_errors(candidate_report)
         if candidate_errors >= previous_errors:
@@ -246,6 +256,7 @@ def run_facts_gate(
             state.aggregated_facts = previous_graph
             state.aggregation_clusters = previous_clusters
             state.aggregation_key_clusters = previous_key_clusters
+            state.aggregation_cross_unit_pairs = previous_cross_unit_pairs
             rejected_repairs += 1
             break
         repair_passes += 1
@@ -292,6 +303,7 @@ def run_facts_gate(
         report.findings,
         shacl_evaluated=report.shacl_evaluated,
         repairs=state.facts_gate_repairs,
+        focus_nodes=count_shacl_focus_nodes(state.aggregated_facts, shapes_graph),
     )
     record_facts_gate_metrics(
         state.retrieval_metrics,

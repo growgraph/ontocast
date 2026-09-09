@@ -18,6 +18,8 @@ from ontocast.tool.chunk.section_llm import ChunkSectionClassification
 from ontocast.toolbox import ToolBox
 from test.docling_test_helpers import doc_from_markdown_lines
 
+pytestmark = pytest.mark.unit
+
 _SAMPLE_DOC = """# Introduction
 We survey prior work.
 
@@ -133,6 +135,7 @@ async def test_chunk_prepare_regex_labels_without_llm() -> None:
     assert llm_calls == 0
 
 
+@pytest.mark.slow
 @pytest.mark.anyio
 async def test_chunk_prepare_keyword_tier_labels_non_regex_chunk() -> None:
     """A heading the anchored patterns miss is still resolved without an LLM."""

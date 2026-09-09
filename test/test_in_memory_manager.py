@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import asyncio
 
+import pyoxigraph as ox
 import pytest
 from rdflib import Literal, URIRef
+from rdflib.graph import DATASET_DEFAULT_GRAPH_ID
 from rdflib.namespace import RDFS
 
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.tool.triple_manager.in_memory import InMemoryTripleStoreManager
+from ontocast.tool.triple_manager.in_memory import (
+    InMemoryTripleStoreManager,
+    _rdflib_graph_to_quads,
+)
 from ontocast.tool.triple_manager.util import dedupe_terminal_ontologies
+
+pytestmark = pytest.mark.unit
 
 
 def _sample_ontology() -> Ontology:
@@ -335,3 +342,36 @@ def test_aconstruct_respects_tenancy() -> None:
         assert len(await manager.aconstruct(query)) == 0
 
     asyncio.run(main())
+
+
+def test_unserializable_object_names_term_position_and_graph() -> None:
+    """A bad term must be diagnosable, not a bare AssertionError.
+
+    ``to_ox`` maps ``urn:x-rdflib:default`` to a DefaultGraph, which is not a
+    term, so a graph carrying it in a triple position used to trip an
+    unmessaged assert far from the code that built the graph.
+    """
+    graph = RDFGraph()
+    graph.add((URIRef("urn:s"), URIRef("urn:p"), DATASET_DEFAULT_GRAPH_ID))
+    with pytest.raises(TypeError) as excinfo:
+        _rdflib_graph_to_quads(graph, ox.NamedNode("urn:g"))
+    message = str(excinfo.value)
+    assert "object" in message
+    assert "urn:x-rdflib:default" in message
+    assert "urn:g" in message
+
+
+def test_unserializable_subject_names_position() -> None:
+    graph = RDFGraph()
+    graph.add((Literal("a"), URIRef("urn:p"), Literal("b")))
+    with pytest.raises(TypeError) as excinfo:
+        _rdflib_graph_to_quads(graph, ox.NamedNode("urn:g"))
+    assert "subject" in str(excinfo.value)
+
+
+def test_valid_graph_still_converts() -> None:
+    graph = RDFGraph()
+    graph.add((URIRef("urn:s"), RDFS.label, Literal("x")))
+    quads = _rdflib_graph_to_quads(graph, ox.NamedNode("urn:g"))
+    assert len(quads) == 1
+    assert quads[0].graph_name == ox.NamedNode("urn:g")

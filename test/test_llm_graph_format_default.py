@@ -14,6 +14,7 @@ environment and would make the test pass or fail based on the developer's
 shell.
 """
 
+import pytest
 from pydantic import BaseModel
 
 from ontocast.config.settings import ServerConfig
@@ -21,6 +22,8 @@ from ontocast.onto.enum import LLMGraphFormat, OntologyContextMode, RenderMode
 from ontocast.onto.llm_graph_payload import llm_graph_format_ctx
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitState
+
+pytestmark = pytest.mark.unit
 
 
 def _declared_default(model: type[BaseModel], field: str) -> object:

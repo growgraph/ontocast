@@ -11,6 +11,8 @@ from ontocast.onto.tenancy import (
     tenant_project_store_name,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def test_default_names_use_double_dash() -> None:
     assert tenant_project_facts_name(DEFAULT_TENANT, DEFAULT_PROJECT) == (

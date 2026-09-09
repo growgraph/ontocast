@@ -21,7 +21,7 @@ from ontocast.agent.common import _retry_backoff_seconds, call_llm_with_retry
 from ontocast.onto.model import BasePydanticModel
 from ontocast.tool.llm import LLMTool
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.unit]
 
 
 @pytest.fixture
@@ -218,6 +218,69 @@ async def test_timeout_frees_the_inflight_slot() -> None:
         await asyncio.wait_for(tool("hello again"), timeout=2.0)
 
 
+async def test_timeout_is_charged_to_the_budget() -> None:
+    """A timed-out call must reach calls_count, not only llm/timeouts.
+
+    The provider received and worked on the prompt; only the answer was
+    abandoned. Recorded as nothing, a run of timeouts read as a run of few,
+    cheap calls: the prompt characters it paid for were missing from
+    chars_sent and calls_count did not cover the attempt.
+    """
+    from ontocast.config import LLMConfig
+    from ontocast.onto.state import BudgetTracker
+    from ontocast.tool.cache import Cacher
+    from ontocast.tool.llm import LLMRequestTimeoutError, LLMTool
+
+    class _HangingModel:
+        async def ainvoke(self, *args, **kwds):
+            await asyncio.Event().wait()
+
+    tracker = BudgetTracker()
+    tool = LLMTool(
+        config=LLMConfig(cache_enabled=False, request_timeout_seconds=0.05),
+        cache=Cacher(),
+        budget_tracker=tracker,
+    )
+    tool._llm = _HangingModel()
+
+    with pytest.raises(LLMRequestTimeoutError):
+        await tool("hello")
+
+    assert tracker.calls_count == 1
+    assert tracker.chars_sent == len("hello")
+    assert tracker.chars_received == 0
+    assert tracker.counters["llm/timeouts"] == 1
+    assert tracker.counters["llm/calls_failed"] == 1
+    assert "llm/calls_timed" not in tracker.counters
+
+
+async def test_a_provider_error_is_a_failed_call_but_not_usage() -> None:
+    """A rejected or dropped request cost nothing: counted, not charged."""
+    from ontocast.config import LLMConfig
+    from ontocast.onto.state import BudgetTracker
+    from ontocast.tool.cache import Cacher
+    from ontocast.tool.llm import LLMTool
+
+    class _FailingModel:
+        async def ainvoke(self, *args, **kwds):
+            raise RuntimeError("connection reset")
+
+    tracker = BudgetTracker()
+    tool = LLMTool(
+        config=LLMConfig(cache_enabled=False),
+        cache=Cacher(),
+        budget_tracker=tracker,
+    )
+    tool._llm = _FailingModel()
+
+    with pytest.raises(RuntimeError):
+        await tool("hello")
+
+    assert tracker.calls_count == 0
+    assert tracker.counters["llm/calls_failed"] == 1
+    assert "llm/timeouts" not in tracker.counters
+
+
 def test_unescape_json_delimiters_repairs_escaped_string_delimiters() -> None:
     """The model escapes the quotes that should *delimit* a JSON string.
 
@@ -387,3 +450,152 @@ def test_parse_json_object_raises_typed_error_with_position() -> None:
         common.parse_json_object('{"a": 1 "b": 2}')
     assert excinfo.value.pos > 0
     assert excinfo.value.msg
+
+
+class _BadRequestError(Exception):
+    """Stand-in for the provider SDK's own 400, matched by class name."""
+
+
+def _rejection() -> _BadRequestError:
+    # The message verbatim from a run against a model that had dropped the
+    # level the configuration pinned.
+    return _BadRequestError(
+        "Error code: 400 - {'error': {'message': \"Unsupported value: "
+        "'reasoning_effort' does not support 'minimal' with this model. "
+        "Supported values are: 'none', 'low', 'medium', 'high', and 'xhigh'.\", "
+        "'type': 'invalid_request_error', 'param': 'reasoning_effort', "
+        "'code': 'unsupported_value'}}"
+    )
+
+
+def test_a_rejected_parameter_is_a_configuration_error() -> None:
+    from ontocast.tool.llm import _is_llm_configuration_error
+
+    assert _is_llm_configuration_error(_rejection())
+
+    # Through a cause chain, the way langchain wraps provider errors.
+    wrapped = RuntimeError("call failed")
+    wrapped.__cause__ = _rejection()
+    assert _is_llm_configuration_error(wrapped)
+
+
+def test_a_missing_key_or_unreachable_model_is_a_configuration_error() -> None:
+    for name in ("AuthenticationError", "PermissionDeniedError", "NotFoundError"):
+        from ontocast.tool.llm import _is_llm_configuration_error
+
+        exc = type(name, (Exception,), {})("nope")
+        assert _is_llm_configuration_error(exc), name
+
+
+def test_a_retryable_or_document_shaped_failure_is_not_a_configuration_error() -> None:
+    """The classification must stay narrow, or one long chunk aborts a run."""
+    from ontocast.tool.llm import _is_llm_configuration_error
+
+    class _RateLimitError(Exception):
+        pass
+
+    assert not _is_llm_configuration_error(_RateLimitError("429 rate limit"))
+    assert not _is_llm_configuration_error(RuntimeError("500 internal server error"))
+    assert not _is_llm_configuration_error(ValueError("nothing to do with a provider"))
+    # A 400 that names the *input*: this chunk was too long, its siblings may
+    # be fine, and the unit loop must keep isolating it.
+    assert not _is_llm_configuration_error(
+        _BadRequestError(
+            "Error code: 400 - context_length_exceeded: this model's maximum "
+            "context length is 128000 tokens"
+        )
+    )
+    # Every OpenAI 400 carries the type `invalid_request_error`, so matching on
+    # that alone would classify any rejection this file has not thought to
+    # exclude as a run-ending fault.
+    assert not _is_llm_configuration_error(
+        _BadRequestError(
+            "Error code: 400 - {'error': {'message': \"Invalid "
+            "'messages[0].content': expected a string\", 'type': "
+            "'invalid_request_error', 'param': 'messages', 'code': None}}"
+        )
+    )
+
+
+async def test_a_rejected_request_is_re_typed_and_not_cached() -> None:
+    """The re-type happens at the one funnel every provider call passes."""
+    from ontocast.config import LLMConfig
+    from ontocast.onto.state import BudgetTracker
+    from ontocast.tool.cache import Cacher
+    from ontocast.tool.llm import LLMConfigurationError, LLMTool
+
+    class _RejectingModel:
+        async def ainvoke(self, *args, **kwds):
+            raise _rejection()
+
+    tracker = BudgetTracker()
+    tool = LLMTool(
+        config=LLMConfig(cache_enabled=False),
+        cache=Cacher(),
+        budget_tracker=tracker,
+    )
+    tool._llm = _RejectingModel()
+
+    with pytest.raises(LLMConfigurationError):
+        await tool("hello")
+
+    assert tracker.calls_count == 0
+    assert tracker.counters["llm/calls_failed"] == 1
+    # The attributed subset, so a rejected arm does not read as a quality
+    # regression in the telemetry that survived it.
+    assert tracker.counters["llm/calls_rejected"] == 1
+
+
+async def test_a_rejected_request_is_not_retried(monkeypatch) -> None:
+    """One call, no parse feedback: the provider will refuse the next one too."""
+    from ontocast.tool.llm import LLMConfigurationError
+
+    monkeypatch.setattr(common, "_retry_backoff_seconds", lambda attempt: 0.0)
+    calls = 0
+
+    async def rejecting_llm(prompt):
+        nonlocal calls
+        calls += 1
+        raise LLMConfigurationError("openai/gpt-x rejected the request")
+
+    with pytest.raises(LLMConfigurationError):
+        await call_llm_with_retry(
+            cast(LLMTool, rejecting_llm), _prompt(), _parser(), _kwargs(), max_retries=3
+        )
+    assert calls == 1
+
+
+async def test_a_rejected_request_does_not_spend_the_timeout_reissue(
+    monkeypatch,
+) -> None:
+    """A timeout followed by a rejection propagates the rejection immediately.
+
+    An ``except (timeout, configuration)`` clause would re-issue a request the
+    provider has already said it will never accept.
+    """
+    from ontocast.tool.llm import LLMConfigurationError, LLMRequestTimeoutError
+
+    monkeypatch.setattr(common, "_retry_backoff_seconds", lambda attempt: 0.0)
+    calls = 0
+
+    async def timeout_then_reject(prompt):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise LLMRequestTimeoutError("LLM request exceeded 180.0s")
+        raise LLMConfigurationError("openai/gpt-x rejected the request")
+
+    with pytest.raises(LLMConfigurationError):
+        await call_llm_with_retry(
+            cast(LLMTool, timeout_then_reject), _prompt(), _parser(), _kwargs()
+        )
+    assert calls == 2
+
+
+def test_a_rejected_request_is_not_a_timeout() -> None:
+    """No shared base: the two must never be caught by one clause."""
+    from ontocast.tool.llm import LLMConfigurationError, LLMRequestTimeoutError
+
+    assert issubclass(LLMConfigurationError, Exception)
+    assert not issubclass(LLMConfigurationError, LLMRequestTimeoutError)
+    assert not issubclass(LLMRequestTimeoutError, LLMConfigurationError)

@@ -5,6 +5,7 @@ The guards encode one asymmetry: a false merge silently corrupts data
 recoverable redundancy. Fixtures mirror observed failure shapes.
 """
 
+import pytest
 from rdflib import Literal, URIRef
 from rdflib.namespace import XSD
 
@@ -18,6 +19,8 @@ from ontocast.tool.agg.signatures import (
     empirically_functional_predicates,
     harvest_max_one_predicates,
 )
+
+pytestmark = pytest.mark.unit
 
 QUDT = "http://qudt.org/schema/qudt/"
 UNIT = "http://qudt.org/vocab/unit/"

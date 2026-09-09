@@ -14,6 +14,8 @@ import pytest
 from ontocast.onto.state import BudgetTracker
 from ontocast.tool.llm import _active_budget_tracker, use_budget_tracker
 
+pytestmark = pytest.mark.unit
+
 
 def test_scope_restores_previous_tracker() -> None:
     outer = BudgetTracker()

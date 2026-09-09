@@ -18,6 +18,8 @@ from ontocast.tool.vector_store.util import (
 )
 from test.qdrant_util import DeterministicEmbeddingTool, qdrant_reachable
 
+pytestmark = pytest.mark.unit
+
 
 def test_embedding_model_fingerprint_includes_dense_and_bm25() -> None:
     emb = DeterministicEmbeddingTool(

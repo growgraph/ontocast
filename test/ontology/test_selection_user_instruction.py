@@ -21,6 +21,8 @@ from ontocast.tool.llm import LLMTool
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.toolbox import ToolBox
 
+pytestmark = pytest.mark.unit
+
 
 class _FakeOntologyManager(OntologyManager):
     def __init__(self, ontologies: list[Ontology]) -> None:

@@ -14,6 +14,8 @@ from ontocast.config import ChunkConfig
 from ontocast.tool.chunk.proposition import SENTENCE_SPLIT_REGEX
 from ontocast.tool.chunk.util import SemanticChunker
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.mark.slow
 class TestSemanticChunker:

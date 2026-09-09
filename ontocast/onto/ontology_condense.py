@@ -20,7 +20,7 @@ bad model -- the most expensive failure mode this pipeline has.
 import logging
 
 from pydantic import BaseModel, Field
-from rdflib import URIRef
+from rdflib import RDFS, SKOS, Literal, URIRef
 
 from ontocast.onto.graph_prune import (
     BFS_PREDICATE_PRIORITY,
@@ -44,6 +44,223 @@ LOAD_BEARING_PREDICATES: frozenset[URIRef] = frozenset().union(
 )
 
 
+#: Marker left where a literal was cut, so the model can tell a clipped
+#: definition from a complete one.
+CLIP_MARKER = "\u2026"
+
+#: Text roles, by predicate. Naming carries the surface forms the model matches
+#: document text against; contract carries the usage rules a term is only safe
+#: to apply under; prose is description a reader wants and an extractor does not.
+NAMING_TEXT_PREDICATES: frozenset[URIRef] = frozenset(
+    {RDFS.label, SKOS.prefLabel, SKOS.altLabel}
+)
+CONTRACT_TEXT_PREDICATES: frozenset[URIRef] = frozenset(
+    {SKOS.scopeNote, SKOS.definition}
+)
+PROSE_TEXT_PREDICATES: frozenset[URIRef] = frozenset(
+    {RDFS.comment, SKOS.example, SKOS.note, SKOS.editorialNote, SKOS.historyNote}
+)
+
+
+class TextCaps(BaseModel):
+    """Per-role character caps on the text literals reaching a prompt.
+
+    Nothing else in the pipeline bounds a single literal, so chapter size is
+    otherwise proportional to how chatty a catalog's authors were rather than to
+    how many terms it offers. These caps make it proportional to the term count,
+    which the retrieval budget already controls. On a tersely authored catalog
+    they are a no-op; that is the intended shape -- a bound, not a reduction.
+
+    Clipping rather than dropping is what keeps a usage contract available at a
+    predictable price: the first sentence of a scope note is the part that says
+    when a term applies.
+    """
+
+    naming: int | None = Field(
+        default=None,
+        ge=1,
+        description="Cap on rdfs:label / skos:prefLabel / skos:altLabel.",
+    )
+    contract: int | None = Field(
+        default=None,
+        ge=1,
+        description="Cap on skos:scopeNote / skos:definition.",
+    )
+    prose: int | None = Field(
+        default=None, ge=1, description="Cap on rdfs:comment and other notes."
+    )
+    total_budget: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Ceiling on the summed length of all text literals in the chapter. "
+            "Backstop for a catalog that defeats the per-role caps by holding "
+            "very many short terms."
+        ),
+    )
+
+    @property
+    def active(self) -> bool:
+        """Whether any cap is set at all."""
+        return any(
+            cap is not None
+            for cap in (self.naming, self.contract, self.prose, self.total_budget)
+        )
+
+    def cap_for(self, predicate: URIRef) -> int | None:
+        """The cap governing ``predicate``, or None when it governs no role."""
+        if predicate in NAMING_TEXT_PREDICATES:
+            return self.naming
+        if predicate in CONTRACT_TEXT_PREDICATES:
+            return self.contract
+        if predicate in PROSE_TEXT_PREDICATES:
+            return self.prose
+        return None
+
+
+#: Roles the total budget tightens, in increasing order of harm, each with the
+#: shortest cap worth applying to it.
+#:
+#: The budget only ever *truncates*; it never removes a statement. Dropping a
+#: role wholesale is both coarser and less informative: coarser because it
+#: overshoots -- shedding a whole role to meet a budget a tighter clip would
+#: have met leaves the chapter well under it, having thrown away more than was
+#: asked -- and less informative because a clipped definition still says the
+#: term has one and still carries its opening words, which is the part that
+#: says when the term applies. A removed one says nothing at all.
+#:
+#: Shedding statements is the triple budget's job (see
+#: :data:`GLOSS_PREDICATES`), on the axis where statements are what is over
+#: budget. Here the overage is characters, so characters are what is cut.
+#: Naming's floor is the highest of the three on purpose: below roughly this
+#: length a name stops being one, and a term the model cannot name is not
+#: cheaper context but an invitation to invent a term. On a catalog whose names
+#: are already shorter than the floor -- the usual case -- this role is reached
+#: and does nothing, which is the correct outcome: the chapter is then reported
+#: over budget, because what remains is the vocabulary and the fix is to send
+#: fewer terms, not shorter names.
+_BUDGET_ROLES: tuple[tuple[frozenset[URIRef], int], ...] = (
+    (PROSE_TEXT_PREDICATES, 24),
+    (CONTRACT_TEXT_PREDICATES, 40),
+    (NAMING_TEXT_PREDICATES, 48),
+)
+
+#: Predicates whose literals the caps govern at all.
+_CAPPED_PREDICATES: frozenset[URIRef] = (
+    NAMING_TEXT_PREDICATES | CONTRACT_TEXT_PREDICATES | PROSE_TEXT_PREDICATES
+)
+
+
+def clip_text(text: str, cap: int | None) -> str:
+    """Clip ``text`` to ``cap`` characters on a word boundary, marking the cut.
+
+    The retained text is at most ``cap`` characters; :data:`CLIP_MARKER` is
+    appended on top of it, so a clipped literal reads as clipped. A ``cap`` of
+    None, or text already within it, is returned unchanged -- byte-identical, so
+    a disabled cap cannot perturb a prompt or its cache key.
+
+    Args:
+        text: Literal text to bound.
+        cap: Maximum retained characters, or None to leave ``text`` alone.
+
+    Returns:
+        Either ``text`` itself or a clipped copy ending in the marker.
+    """
+    if cap is None or len(text) <= cap:
+        return text
+    head = text[:cap].rsplit(" ", 1)[0].rstrip()
+    if not head:
+        head = text[:cap].rstrip()
+    return head + CLIP_MARKER
+
+
+def _text_triples(graph: RDFGraph) -> list[tuple]:
+    """Every triple whose object is a text literal a cap governs."""
+    return [
+        triple
+        for triple in graph
+        if triple[1] in _CAPPED_PREDICATES and isinstance(triple[2], Literal)
+    ]
+
+
+def _text_chars(graph: RDFGraph) -> int:
+    """Summed length of the capped text literals in ``graph``."""
+    return sum(len(str(triple[2])) for triple in _text_triples(graph))
+
+
+def _apply_cap(graph: RDFGraph, predicates: frozenset[URIRef], cap: int) -> int:
+    """Clip ``predicates``' literals in ``graph`` to ``cap``, in place.
+
+    Every statement survives; only its text is shortened. Language tag and
+    datatype are carried over, so a clipped literal stays the same kind of
+    literal it was.
+
+    Returns:
+        How many literals were actually shortened.
+    """
+    clipped = 0
+    for subject, predicate, obj in _text_triples(graph):
+        if predicate not in predicates:
+            continue
+        text = str(obj)
+        shortened = clip_text(text, cap)
+        if shortened == text:
+            continue
+        graph.remove((subject, predicate, obj))
+        graph.add(
+            (
+                subject,
+                predicate,
+                Literal(shortened, lang=obj.language)
+                if obj.language
+                else Literal(shortened, datatype=obj.datatype),
+            )
+        )
+        clipped += 1
+    return clipped
+
+
+def _fit_role_to_budget(
+    graph: RDFGraph, predicates: frozenset[URIRef], floor: int, budget: int
+) -> int:
+    """Clip one role to the *largest* cap that brings ``graph`` inside ``budget``.
+
+    Total text length is monotone non-increasing in the cap, so the largest
+    admissible cap is found by bisection. Searching for it rather than stepping
+    through fixed tiers is what keeps the chapter near the budget instead of far
+    under it: a ladder of preset caps overshoots by however much the next rung
+    happens to cut, and every character it overshoots by is context the budget
+    never asked to lose.
+
+    ``floor`` is the shortest cap worth applying to this role. If even that does
+    not fit, it is applied anyway and the caller moves on to the next role --
+    the budget is a target, and the roles after this one are the ones it is
+    less costly to cut.
+
+    Returns:
+        How many literals were shortened.
+    """
+    lengths = [
+        len(str(triple[2]))
+        for triple in _text_triples(graph)
+        if triple[1] in predicates
+    ]
+    if not lengths:
+        return 0
+    low, high = floor, max(lengths)
+    best: int | None = None
+    while low <= high:
+        mid = (low + high) // 2
+        probe = graph.copy()
+        _apply_cap(probe, predicates, mid)
+        if _text_chars(probe) <= budget:
+            best = mid
+            low = mid + 1
+        else:
+            high = mid - 1
+    return _apply_cap(graph, predicates, best if best is not None else floor)
+
+
 class CondenseReport(BaseModel):
     """What condensing did, for telemetry and for explaining a warning."""
 
@@ -63,11 +280,24 @@ class CondenseReport(BaseModel):
         default=False,
         description="Still above budget after condensing; passed through oversized",
     )
+    text_chars_before: int = Field(
+        default=0, description="Summed length of capped text literals on entry"
+    )
+    text_chars_after: int = Field(
+        default=0, description="Summed length of capped text literals after capping"
+    )
+    literals_clipped: int = Field(
+        default=0, description="Text literals shortened to a per-role cap"
+    )
+    text_over_budget: bool = Field(
+        default=False,
+        description="Still above the total text budget after every tightening stage",
+    )
 
     @property
     def changed(self) -> bool:
-        """Whether anything was removed at all."""
-        return self.triples_after != self.triples_before
+        """Whether anything was removed or shortened at all."""
+        return bool(self.triples_after != self.triples_before or self.literals_clipped)
 
     def as_metrics(self) -> dict[str, int | bool | None]:
         """Flat mapping for the retrieval-metrics payload."""
@@ -79,6 +309,10 @@ class CondenseReport(BaseModel):
             "dropped_structural": self.dropped_structural,
             "dropped_glosses": self.dropped_glosses,
             "over_budget": self.over_budget,
+            "text_chars_before": self.text_chars_before,
+            "text_chars_after": self.text_chars_after,
+            "literals_clipped": self.literals_clipped,
+            "text_over_budget": self.text_over_budget,
         }
 
 
@@ -91,9 +325,61 @@ def _drop_predicates(graph: RDFGraph, predicates: frozenset[URIRef]) -> int:
     return removed
 
 
+def _cap_text_literals(graph: RDFGraph, caps: TextCaps, report: CondenseReport) -> None:
+    """Apply ``caps`` to ``graph`` in place, recording what happened on ``report``.
+
+    Per-role caps first, then the total budget as a backstop: the budget
+    tightens prose before contracts and contracts before names, fitting each
+    role to the largest cap that still meets the budget, and stops as soon as
+    the chapter fits. Nothing is ever removed -- a clipped definition still says
+    the term has one and still carries the words that say when it applies. A
+    chapter that cannot be made to fit is passed through with a warning, the
+    same way the triple budget refuses to cut into load-bearing structure.
+    """
+    report.text_chars_before = _text_chars(graph)
+    for predicates, cap in (
+        (NAMING_TEXT_PREDICATES, caps.naming),
+        (CONTRACT_TEXT_PREDICATES, caps.contract),
+        (PROSE_TEXT_PREDICATES, caps.prose),
+    ):
+        if cap is not None:
+            report.literals_clipped += _apply_cap(graph, predicates, cap)
+
+    budget = caps.total_budget
+    if budget is not None:
+        for predicates, floor in _BUDGET_ROLES:
+            if _text_chars(graph) <= budget:
+                break
+            report.literals_clipped += _fit_role_to_budget(
+                graph, predicates, floor, budget
+            )
+        report.text_over_budget = _text_chars(graph) > budget
+
+    report.text_chars_after = _text_chars(graph)
+    if report.text_over_budget:
+        logger.warning(
+            "Ontology text still exceeds the literal budget with every role at "
+            "its shortest cap (%d > %d chars). Passing it through: the budget "
+            "shortens text, it does not delete statements, and what is left at "
+            "this point is the vocabulary itself. Reduce the number of terms "
+            "reaching the prompt (ONTOLOGY_CONTEXT_MAX_TRIPLES, or a narrower "
+            "retrieval) rather than the length of their names.",
+            report.text_chars_after,
+            budget,
+        )
+    elif report.changed:
+        logger.info(
+            "Capped ontology text %d -> %d chars (%d literals clipped, none removed).",
+            report.text_chars_before,
+            report.text_chars_after,
+            report.literals_clipped,
+        )
+
+
 def condense_graph_for_prompt(
     graph: RDFGraph,
     max_triples: int | None,
+    text_caps: TextCaps | None = None,
 ) -> tuple[RDFGraph, CondenseReport]:
     """Trim ``graph`` toward ``max_triples``, dropping the least useful triples first.
 
@@ -101,9 +387,16 @@ def condense_graph_for_prompt(
     fits: header/list noise, then structural scaffolding, then glosses. Structure
     that lets the model name and place a term is never dropped.
 
+    Text literals are bounded first and unconditionally: the triple budget is a
+    count and says nothing about how long a single ``rdfs:comment`` may be, so a
+    graph well under it can still carry an unbounded chapter. ``text_caps`` makes
+    chapter size a function of term count rather than of prose volume.
+
     Args:
         graph: Ontology graph destined for a prompt. Not mutated.
         max_triples: Triple budget, or ``None`` to disable condensing entirely.
+        text_caps: Per-role character caps on text literals, or ``None``/all-unset
+            to leave every literal as authored.
 
     Returns:
         The condensed graph (or ``graph`` itself when nothing was done) and a
@@ -113,10 +406,18 @@ def condense_graph_for_prompt(
     report = CondenseReport(
         triples_before=before, triples_after=before, max_triples=max_triples
     )
-    if max_triples is None or before <= max_triples:
+    capping = text_caps is not None and text_caps.active
+    fits = max_triples is None or before <= max_triples
+    if fits and not capping:
         return graph, report
 
     working = graph.copy()
+    if capping:
+        assert text_caps is not None
+        _cap_text_literals(working, text_caps, report)
+    if fits:
+        report.triples_after = len(working)
+        return working, report
 
     report.dropped_noise = _drop_predicates(working, NOISY_EXPANSION_PREDICATES)
     if len(working) > max_triples:

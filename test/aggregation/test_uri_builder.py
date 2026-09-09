@@ -1,3 +1,4 @@
+import pytest
 from rdflib import OWL, RDF, RDFS, URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI
@@ -13,6 +14,8 @@ from ontocast.tool.agg.uri_builder import (
     to_lower_camel_case,
     to_pascal_case,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def make_representation(uri: str, normal_form: str) -> EntityRepresentation:

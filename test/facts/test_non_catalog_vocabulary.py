@@ -11,9 +11,13 @@ query against this catalog will match. A fallback firing is evidence about
 
 from __future__ import annotations
 
+import pytest
+
 from ontocast.onto.model import FactsValidationFinding, FactsValidationFindingKind
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.facts_validation import validate_aggregated_facts
+
+pytestmark = pytest.mark.unit
 
 FACTS = "https://growgraph.dev/facts/"
 MATSCI = "https://growgraph.dev/ontologies/matsci#"

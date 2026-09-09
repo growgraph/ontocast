@@ -1,20 +1,17 @@
-"""Pydantic models for graph mutations and tool SPARQL operations.
+"""Pydantic models for graph mutations.
 
 ``GraphUpdate`` / ``TripleOp`` are the canonical LLM pipeline mutation abstraction
-(ordered insert/delete triple patches). ``SPARQLOperationModel`` is used by tooling
-(``tool/sparql.py``) — a separate path.
+(ordered insert/delete triple patches) used across the extraction pipeline.
 """
 
 import logging
 from collections.abc import Set
-from typing import Any
 from typing import Literal as TypingLiteral
 
 from pydantic import BaseModel, Field, field_validator
 from rdflib import BNode, Literal, Node, URIRef
 
 from ontocast.onto.constants import COMMON_PREFIXES
-from ontocast.onto.enum import SPARQLOperationType
 from ontocast.onto.llm_graph_payload import LLMGraphWire
 from ontocast.onto.rdfgraph import RDFGraph, copy_triples, is_rdflib_triple
 
@@ -38,31 +35,6 @@ _LITERAL_ESCAPES = str.maketrans(
         "\f": "\\f",
     }
 )
-
-
-class SPARQLOperationModel(BaseModel):
-    """Pydantic model for a single SPARQL operation.
-
-    Attributes:
-        operation_type: Type of SPARQL operation (INSERT, UPDATE, DELETE)
-        query: The SPARQL query string
-        description: Optional description of the operation
-        metadata: Optional metadata dictionary
-    """
-
-    operation_type: SPARQLOperationType = Field(
-        description="Type of SPARQL operation: INSERT, UPDATE, or DELETE"
-    )
-    query: str = Field(
-        description="The complete SPARQL query string with proper syntax"
-    )
-    description: str = Field(
-        default="", description="Optional description of the operation"
-    )
-    metadata: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Optional metadata dictionary for the operation",
-    )
 
 
 class TripleOp(BaseModel):
