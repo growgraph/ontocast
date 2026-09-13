@@ -343,6 +343,16 @@ a chapter in the wire format.
 
 ### One chapter per document, and warming the cache that serves it
 
+!!! warning "Opt-in and unverified end to end"
+    Everything in this section is off by default and should be treated as
+    unproven for your deployment until you have measured it. The prompt side is
+    pinned by test — with these settings the render calls of a document really
+    do share a byte-identical prefix — but that is only half the mechanism. The
+    saving exists only where the provider *reads* its cache and says so; a
+    provider that reports cache **writes** and zero reads gives you the extra
+    tokens of a union chapter and none of the discount. Turn it on, read
+    `budget.prefix_cache_hit_rate`, and keep it only if that number moves.
+
 Even a cheap chapter is paid once per LLM call, and the facts pipeline makes
 `units + critic passes + completion passes` of them per document. A provider's
 prefix cache is the mechanism for paying for a repeated prefix once — but it can
@@ -370,10 +380,14 @@ prefix regardless, but without a routing hint a wide simultaneous fan-out can be
 spread across machines that each build their own entry. Any stable string works;
 it must **not** vary per request, or it defeats itself.
 
-Read the result from `budget.prefix_cache_hit_rate`. Note that a run with the
-critic on already shows a non-trivial rate for an unrelated reason — the critic
-re-reads the chapter its own render just built — so compare arms of the same
-shape, and expect the change here to show up on the *render* fan-out.
+Read the result from `budget.prefix_cache_hit_rate` — and read it **before
+adopting any of this**, because on a provider that never reports a cache read
+the three settings cost input tokens and return nothing. Note that a run with
+the critic on already shows a non-trivial rate for an unrelated reason — the
+critic re-reads the chapter its own render just built — so compare arms of the
+same shape, and expect the change here to show up on the *render* fan-out. If
+the render fan-out's rate stays at zero, the provider is not serving the prefix
+and the union chapter is pure overhead: leave all three unset.
 
 ### Capping what whole-module inclusion costs
 

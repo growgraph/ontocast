@@ -443,6 +443,50 @@ def test_placeholder_node_is_pruned_with_its_incoming_edge() -> None:
     assert result.violations_after == 0
 
 
+def test_prune_cascades_to_the_referrer_it_empties() -> None:
+    """Pruning a placeholder must not leave its subject behind as a stub.
+
+    An observation whose only content is the edge onto a placeholder value is
+    itself a placeholder once that edge goes. Leaving it is the worst outcome
+    available: the record of an attempted extraction is gone and the subject's
+    own violation is still in the report, because the pass computed its
+    violations before it pruned anything.
+    """
+    graph = RDFGraph()
+    placeholder = URIRef(CD + "v_empty")
+    observation = URIRef(CD + "obs")
+    graph.add((placeholder, RDF.type, VALUE_CLASS))
+    graph.add((placeholder, RDFS.label, Literal("efficiency")))
+    graph.add((observation, RDF.type, URIRef(Q + "Observation")))
+    graph.add((observation, RDFS.label, Literal("efficiency observation")))
+    graph.add((observation, URIRef(Q + "hasValue"), placeholder))
+
+    result = _repair(graph)
+
+    assert len(result.graph) == 0, "the stub observation goes with its value"
+    assert [record.source for record in result.records] == [
+        str(placeholder),
+        str(observation),
+    ]
+
+
+def test_prune_stops_at_a_referrer_that_asserts_something() -> None:
+    """A subject with data of its own survives its placeholder value."""
+    graph = RDFGraph()
+    placeholder = URIRef(CD + "v_empty")
+    observation = URIRef(CD + "obs")
+    feature = URIRef(CD + "sample_1")
+    graph.add((placeholder, RDF.type, VALUE_CLASS))
+    graph.add((observation, RDF.type, URIRef(Q + "Observation")))
+    graph.add((observation, URIRef(Q + "featureOfInterest"), feature))
+    graph.add((observation, URIRef(Q + "hasValue"), placeholder))
+
+    result = _repair(graph)
+
+    assert [record.source for record in result.records] == [str(placeholder)]
+    assert (observation, URIRef(Q + "featureOfInterest"), feature) in result.graph
+
+
 def test_node_with_data_is_never_pruned_and_never_invented() -> None:
     """Missing a required property is reported, not filled in or deleted."""
     graph = RDFGraph()

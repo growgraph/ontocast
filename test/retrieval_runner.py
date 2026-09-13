@@ -132,6 +132,11 @@ async def score_cases(
             max_windows=store_config.proposition_max_windows,
             stride=store_config.proposition_window_stride,
             max_chars=store_config.proposition_window_max_chars,
+            max_tokens=store_config.proposition_window_max_tokens,
+            token_counter=tools.embedding_tool.token_lengths,
+            abbreviation_aware=store_config.proposition_abbreviation_aware,
+            measurement_aware=store_config.proposition_measurement_aware,
+            overlap=store_config.proposition_window_overlap,
         )
         graph, _sources = await retriever.aretrieve_ensemble(
             queries=queries,

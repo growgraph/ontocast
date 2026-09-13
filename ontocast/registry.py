@@ -106,6 +106,9 @@ class ToolBoxRegistry:
         existing = self._entries.get(key)
         if existing is not None:
             self._entries.move_to_end(key)
+            await self._ensure_vector_store(
+                existing, ontology_context_mode, fail_on_vector_store_error
+            )
             return existing
 
         async with self._lock_for(key):
@@ -113,6 +116,9 @@ class ToolBoxRegistry:
             existing = self._entries.get(key)
             if existing is not None:
                 self._entries.move_to_end(key)
+                await self._ensure_vector_store(
+                    existing, ontology_context_mode, fail_on_vector_store_error
+                )
                 return existing
 
             from ontocast.toolbox import ToolBox
@@ -132,6 +138,33 @@ class ToolBoxRegistry:
             self._entries[key] = tools
             await self._evict_if_needed()
             return tools
+
+    @staticmethod
+    async def _ensure_vector_store(
+        tools: "ToolBox",
+        ontology_context_mode: Any,
+        fail_on_vector_store_error: bool,
+    ) -> None:
+        """Prepare a cached scope's vector store when this request needs it.
+
+        A scope is built for the mode of whichever request first reached it,
+        and it is then cached for the process lifetime. Without this, one
+        non-vector request for a scope decided the question for every later
+        vector request in that process: the ontologies it wrote were indexed
+        nowhere and retrieval returned nothing, with no error anywhere.
+        """
+        if not tools.should_initialize_vector_store(ontology_context_mode):
+            return
+        if tools.is_vector_store_ready():
+            return
+        logger.info(
+            "Preparing the vector store for a cached tenancy scope built without one"
+        )
+        await tools.initialize(
+            ontology_context_mode=ontology_context_mode,
+            fail_on_vector_store_error=fail_on_vector_store_error,
+            wipe_vector_store=False,
+        )
 
     async def _evict_if_needed(self) -> None:
         while len(self._entries) > self.max_scopes:

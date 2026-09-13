@@ -65,6 +65,17 @@ def _unit_queries(unit: SourceUnit, tools: ToolBox) -> list[str]:
         max_windows=vcfg.proposition_max_windows,
         stride=vcfg.proposition_window_stride,
         max_chars=vcfg.proposition_window_max_chars,
+        max_tokens=vcfg.proposition_window_max_tokens,
+        # Only consulted by a token budget; resolving it lazily keeps the encoder
+        # out of the default path, where the splitter is regex alone.
+        token_counter=(
+            tools.embedding_tool.token_lengths
+            if vcfg.proposition_window_max_tokens is not None
+            else None
+        ),
+        abbreviation_aware=vcfg.proposition_abbreviation_aware,
+        measurement_aware=vcfg.proposition_measurement_aware,
+        overlap=vcfg.proposition_window_overlap,
     )
 
 

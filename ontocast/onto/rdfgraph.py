@@ -440,6 +440,16 @@ def strip_sparql_update_wrapper(turtle_str: str) -> str:
     return "\n\n".join(result_parts) + "\n"
 
 
+def _is_namespace_declaration(value: object) -> bool:
+    """True when a JSON-LD ``@context`` entry declares a namespace IRI.
+
+    Distinguishes ``"qqval": "https://…/qqval#"`` -- a prefix binding, which
+    an authoritative map may override -- from ``"label": "rdfs:label"`` or a
+    term-definition object, which it must not touch.
+    """
+    return isinstance(value, str) and "://" in value
+
+
 def _prefix_lookup_for_turtle_repair() -> dict[str, str]:
     """Merged ingest + context prefix map for Turtle repair (context overrides ingest)."""
     lookup = prefix_lookup_for_ingest()
@@ -1123,7 +1133,25 @@ class RDFGraph(Graph):
 
     @staticmethod
     def _merge_known_prefixes_into_jsonld(data: dict | list) -> dict | list:
-        """Shallow-merge known prefix URIs into JSON-LD ``@context`` before normalization."""
+        """Reconcile a payload's ``@context`` with the known prefix map.
+
+        Two rules, both applied before normalization:
+
+        * a prefix the payload uses but does not declare gets the known
+          binding, so a compact term is not read as an absolute IRI whose
+          scheme is the prefix;
+        * a prefix the payload *does* declare, to a namespace that differs
+          from the known one, is **overridden**. A model writing a patch is
+          re-transcribing a namespace it was shown in the prompt, so a
+          declaration that disagrees with the map is a transcription error,
+          not a request for a different vocabulary -- and the cost of
+          honouring it is total: every term under that prefix expands to an
+          IRI no catalog declares, the whole payload fails the term check,
+          and the fix is rolled back with whatever it carried.
+
+        Only absolute-IRI declarations are overridden; a context entry that
+        maps a term to a CURIE or to a term definition object is left alone.
+        """
         known = _known_prefixes_context.get()
         if not known:
             return data
@@ -1133,8 +1161,21 @@ class RDFGraph(Graph):
                 return context
             merged = dict(context)
             for prefix, uri in known.items():
-                if prefix.startswith("@") or prefix in merged:
+                if prefix.startswith("@"):
                     continue
+                declared = merged.get(prefix)
+                if declared is None:
+                    merged[prefix] = uri
+                    continue
+                if not _is_namespace_declaration(declared) or declared == uri:
+                    continue
+                logger.warning(
+                    "JSON-LD payload declares prefix %r as <%s>; the run binds "
+                    "it to <%s> -- overriding the payload",
+                    prefix,
+                    declared,
+                    uri,
+                )
                 merged[prefix] = uri
             return merged
 

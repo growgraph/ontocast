@@ -712,7 +712,31 @@ class ToolBox:
 
             vector = self.vector_store
             if vector is not None and vector.supports_tenancy_partition():
+                was_ready = self.vector_store_ready
+                # `clean_tenancy` drops the collections and their embedding
+                # metadata. Leaving the store marked ready would point every
+                # later search in this process at a collection that no longer
+                # exists, so readiness is dropped first and only restored by a
+                # successful recreate -- the same wipe/recreate order the
+                # startup path uses. Nothing is reindexed: the flush emptied
+                # the catalog this index would have been built from.
+                self.vector_store_ready = False
                 await vector.clean_tenancy(t, p)
+                if was_ready:
+                    try:
+                        await vector.initialize()
+                        self.vector_store_ready = True
+                        self.vector_store_last_error = None
+                    except Exception as exc:
+                        self.vector_store_last_error = exc
+                        logger.warning(
+                            "Vector store could not be recreated after flushing "
+                            "%s/%s; vector retrieval is off until it is "
+                            "reinitialized: %s",
+                            t,
+                            p,
+                            exc,
+                        )
 
         if include_shapes and (t, p) == self._active_tenancy:
             self.shapes_catalog.reset()
@@ -1049,8 +1073,34 @@ class ToolBox:
         if self.triple_store_manager is not None:
             await self.triple_store_manager.async_init()
 
+        # The wipe is honoured whatever the context mode is. It used to sit
+        # inside the mode-gated branch below, so under any non-vector mode a
+        # destructive flag was accepted, did nothing, and said nothing -- and a
+        # request that meant to clear a partition before reindexing left the
+        # old vectors in place.
+        vector_store = self.vector_store
+        if do_wipe:
+            if vector_store is None:
+                logger.warning(
+                    "A vector store wipe was requested but no vector store is "
+                    "configured; nothing to wipe"
+                )
+            else:
+                logger.warning(
+                    "Wiping vector store partition before initialize "
+                    "(wipe_vector_store=True)"
+                )
+                try:
+                    await vector_store.wipe_store()
+                except Exception as exc:
+                    self.vector_store_last_error = exc
+                    if fail_on_vector_store_error:
+                        raise
+                    logger.warning("Vector store wipe failed: %s", exc)
+                finally:
+                    self.vector_store_ready = False
+
         if self.should_initialize_vector_store(ontology_context_mode):
-            vector_store = self.vector_store
             if vector_store is None:
                 self.vector_store_ready = False
                 self.vector_store_last_error = RuntimeError(
@@ -1063,12 +1113,6 @@ class ToolBox:
                 )
             else:
                 try:
-                    if do_wipe:
-                        logger.warning(
-                            "Wiping vector store partition before initialize "
-                            "(wipe_vector_store=True)"
-                        )
-                        await vector_store.wipe_store()
                     await vector_store.initialize()
                     self.vector_store_ready = True
                     self.vector_store_last_error = None

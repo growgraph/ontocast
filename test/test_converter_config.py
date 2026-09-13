@@ -19,6 +19,7 @@ from ontocast.onto.docling_helpers import (
 from ontocast.tool.cache import Cacher
 from ontocast.tool.converter import (
     CONVERTER_CACHE_FORMAT_VERSION,
+    CONVERTER_REPAIR_RULES_VERSION,
     ConverterTool,
     build_document_converter,
 )
@@ -215,6 +216,12 @@ def test_flattened_exponents_are_rejoined(raw: str, repaired: str) -> None:
         "2 × 10 100",
         "2 × 10^6 cm-3",
         "10 cm × 10 cm",
+        # A dash between two numbers behind a bare cue is a range, not a
+        # negative exponent -- publishers typeset ranges with U+2212 too.
+        "∼10−15 meV",
+        "∼ 10−15 meV",
+        "~10–50 meV",
+        "on the order of 10-15 meV",
     ],
 )
 def test_exponent_rejoin_leaves_other_number_pairs_alone(text: str) -> None:
@@ -322,6 +329,46 @@ def test_numeric_repair_flag_joins_the_converter_cache_key(monkeypatch) -> None:
         # A fresh flag-off tool hits the first entry again.
         ConverterTool(cache=shared_cache, converter_config=ConverterConfig())(content)
         assert len(builds) == 2
+
+
+def test_repair_rules_version_joins_the_key_only_when_repair_is_on(
+    monkeypatch,
+) -> None:
+    """A rule fix must invalidate repaired entries and leave the rest alone."""
+    builds: list[ConverterConfig] = []
+    monkeypatch.setattr(
+        "ontocast.tool.converter.build_document_converter", _fake_build(builds)
+    )
+    content = b"%PDF-rules-version%"
+    with tempfile.TemporaryDirectory() as tmp:
+        shared_cache = Cacher(cache_dir=tmp)
+        repairing = ConverterConfig(repair_numeric_artifacts=True)
+
+        ConverterTool(cache=shared_cache, converter_config=repairing)(content)
+        assert len(builds) == 1
+        # Same rules version: the repaired conversion is still served.
+        ConverterTool(cache=shared_cache, converter_config=repairing)(content)
+        assert len(builds) == 1
+
+        # Bumping the rules version must re-convert rather than serve text
+        # repaired by the superseded rule.
+        monkeypatch.setattr(
+            "ontocast.tool.converter.CONVERTER_REPAIR_RULES_VERSION",
+            CONVERTER_REPAIR_RULES_VERSION + 1,
+        )
+        ConverterTool(cache=shared_cache, converter_config=repairing)(content)
+        assert len(builds) == 2
+
+        # With repair off no rule ran, so the version must stay out of the key.
+        off = ConverterConfig()
+        ConverterTool(cache=shared_cache, converter_config=off)(content)
+        assert len(builds) == 3
+        monkeypatch.setattr(
+            "ontocast.tool.converter.CONVERTER_REPAIR_RULES_VERSION",
+            CONVERTER_REPAIR_RULES_VERSION + 2,
+        )
+        ConverterTool(cache=shared_cache, converter_config=off)(content)
+        assert len(builds) == 3
 
 
 def test_flag_off_keeps_pre_flag_cache_entries_valid(monkeypatch) -> None:

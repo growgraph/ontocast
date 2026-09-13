@@ -70,6 +70,24 @@ class FixPatch:
     deletes: int = 0
     inserts: int = 0
 
+    @property
+    def insert_triples(self) -> list[Triple]:
+        """The statements this patch declares it writes.
+
+        Not the same as what applying it adds to the graph. A REPLACE
+        re-states the whole corrected node, so the parts that were already
+        right are written as no-ops and the graph diff shows only the delete.
+        The rollback test has to judge "wrote nothing" against what the fix
+        meant to write, or it undoes corrections whose replacement the graph
+        already held.
+        """
+        return [
+            triple
+            for operation in self.update.triple_operations
+            if operation.type == "insert"
+            for triple in operation.graph
+        ]
+
 
 @dataclass(frozen=True)
 class CompiledFixes:
@@ -107,6 +125,11 @@ class CompiledFixes:
     #: and no type. The critic's way of "resolving" a coverage finding for a
     #: number it could not place; refused and sent back rather than applied.
     junk_refused: int = 0
+    #: Fixes whose payload typed a literal its lexical form cannot hold --
+    #: the same defect the render path quarantines. Sent back as residual
+    #: rather than written into the unit graph, where every later
+    #: serialization and validation walk would re-derive the failed value.
+    quarantined_literal: int = 0
 
 
 @dataclass(frozen=True)
@@ -137,19 +160,69 @@ class CriticPatchPolicy:
     allow_subject_rename: bool = False
 
 
+def _bindings_for_payload(graph: Graph) -> dict[str, str]:
+    """Prefix bindings for parsing a critic fix: catalog map under the unit graph.
+
+    The unit graph's binding wins for any prefix both declare — a graph that
+    already uses ``qqval:`` is the authority for what that prefix means under
+    repair. Catalog-only prefixes (installed for the unit loop via
+    :meth:`RDFGraph.set_known_prefixes`) fill in so a fix can introduce a term
+    the unit has not used yet, rather than expanding it against nothing.
+    """
+    catalog = RDFGraph.get_known_prefixes() or {}
+    unit = {prefix: str(uri) for prefix, uri in graph.namespaces() if prefix}
+    return {**catalog, **unit}
+
+
 def _prefix_header(graph: Graph) -> str:
-    """Turtle ``@prefix`` lines for every binding the unit graph carries.
+    """Turtle ``@prefix`` lines for the bindings a critic fix may use.
 
     Critic fixes are written as fragments in the prompt's vocabulary and
     usually omit their prefix declarations, so a bare fragment will not parse
-    on its own. Supplying the unit's own bindings is what makes the common case
-    readable without inventing namespaces the graph never used.
+    on its own. The unit graph's bindings cover the common case; the catalog
+    map fills prefixes a fix introduces for the first time.
     """
-    lines = []
-    for prefix, uri in graph.namespaces():
-        if prefix:
-            lines.append(f"@prefix {prefix}: <{uri}> .")
-    return "\n".join(lines) + "\n"
+    lines = [
+        f"@prefix {prefix}: <{uri}> ."
+        for prefix, uri in sorted(_bindings_for_payload(graph).items())
+    ]
+    return "\n".join(lines) + "\n" if lines else ""
+
+
+#: A Turtle prefix declaration, in either syntax rdflib accepts.
+_TURTLE_PREFIX_DECL = re.compile(
+    r"^[ \t]*(?:@prefix|(?i:PREFIX))[ \t]+([A-Za-z][\w.-]*)?:[ \t]*<([^>]*)>[ \t]*\.?[ \t]*$",
+    re.M,
+)
+
+
+def _drop_conflicting_prefix_declarations(body: str, graph: Graph) -> str:
+    """Remove ``@prefix`` lines that rebind a prefix already bound for the unit.
+
+    The Turtle counterpart of the JSON-LD ``@context`` reconciliation in
+    :func:`_with_unit_bindings`, and it exists for the same reason: the header
+    from :func:`_prefix_header` is *prepended*, and in Turtle a later
+    declaration wins, so a payload that re-declares ``qqval:`` to a namespace
+    it half-remembered silently takes every term under that prefix out of the
+    catalog. Dropping the line leaves the header's binding in force.
+    """
+    bindings = _bindings_for_payload(graph)
+
+    def replace(match: re.Match) -> str:
+        prefix, declared = match.group(1) or "", match.group(2)
+        bound = bindings.get(prefix)
+        if bound is None or bound == declared:
+            return match.group(0)
+        logger.warning(
+            "Critic Turtle payload re-declares prefix %r as <%s>; the unit "
+            "graph binds it to <%s> -- dropping the re-declaration",
+            prefix,
+            declared,
+            bound,
+        )
+        return ""
+
+    return _TURTLE_PREFIX_DECL.sub(replace, body)
 
 
 #: A JSON-LD term object that turned up inside an otherwise-Turtle fragment.
@@ -258,17 +331,28 @@ def _declared_in_context(context: object) -> set[str]:
 
 
 def _with_unit_bindings(body: str, graph: Graph) -> str | None:
-    """Add the unit graph's bindings for the prefixes a JSON-LD payload uses.
+    """Reconcile a JSON-LD payload's ``@context`` with the unit's bindings.
 
-    The mirror of :func:`_prefix_header` for the other syntax. A JSON-LD fix
-    written in the prompt's vocabulary usually arrives with no ``@context``,
-    and the JSON-LD processor then reads ``cd:sample_1`` as an absolute IRI
-    with scheme ``cd`` -- which parses, and is wrong. Only prefixes the
-    payload uses and does not itself declare are added, so an author-supplied
-    context is never overridden.
+    The mirror of :func:`_prefix_header` for the other syntax, and it does two
+    things. A JSON-LD fix written in the prompt's vocabulary usually arrives
+    with no ``@context``, and the JSON-LD processor then reads ``cd:sample_1``
+    as an absolute IRI with scheme ``cd`` -- which parses, and is wrong; so
+    prefixes the payload uses and does not declare are filled in from the unit
+    graph, refined by the catalog map the unit loop installed.
+
+    A prefix the payload *declares* to a namespace the unit already binds
+    elsewhere is **overridden**. The critic is re-transcribing a namespace it
+    was shown alongside the statements it is correcting, so a declaration that
+    disagrees with the graph under repair is a transcription error rather than
+    a second vocabulary -- and honouring it costs the whole fix: every term
+    under that prefix becomes an IRI no catalog declares, the payload trips the
+    unknown-term check, and the patch is rolled back carrying whatever it
+    proposed. A fix that adds a measurement and a fix that adds the
+    observation pointing at it are separate patches, so the rollback also
+    leaves a dangling reference behind.
 
     Returns:
-        The payload with bindings merged in, or ``None`` when it is not JSON.
+        The payload with bindings reconciled, or ``None`` when it is not JSON.
     """
     try:
         payload = json.loads(body)
@@ -284,12 +368,14 @@ def _with_unit_bindings(body: str, graph: Graph) -> str | None:
     else:
         return None
     context = document.get("@context")
-    used -= _declared_in_context(context)
-    bindings = {prefix: str(uri) for prefix, uri in graph.namespaces() if prefix}
+    bindings = _bindings_for_payload(graph)
+    overridden = _override_conflicting_declarations(context, bindings)
     missing = {
-        prefix: bindings[prefix] for prefix in sorted(used) if prefix in bindings
+        prefix: bindings[prefix]
+        for prefix in sorted(used - _declared_in_context(context))
+        if prefix in bindings
     }
-    if not missing:
+    if not missing and not overridden:
         return body
     if context is None:
         document["@context"] = missing
@@ -301,6 +387,43 @@ def _with_unit_bindings(body: str, graph: Graph) -> str | None:
     else:
         document["@context"] = [context, missing]
     return json.dumps(document)
+
+
+def _override_conflicting_declarations(
+    context: object, bindings: dict[str, str]
+) -> int:
+    """Rewrite declared prefixes that disagree with ``bindings``, in place.
+
+    Only absolute-IRI declarations are touched: a context entry mapping a term
+    to a CURIE, or to a term-definition object, is not a prefix binding.
+
+    Returns:
+        How many declarations were overridden.
+    """
+    if isinstance(context, list):
+        return sum(
+            _override_conflicting_declarations(item, bindings) for item in context
+        )
+    if not isinstance(context, dict):
+        return 0
+    overridden = 0
+    for prefix, declared in list(context.items()):
+        if prefix.startswith("@") or prefix not in bindings:
+            continue
+        if not isinstance(declared, str) or "://" not in declared:
+            continue
+        if declared == bindings[prefix]:
+            continue
+        logger.warning(
+            "Critic payload declares prefix %r as <%s>; the unit graph binds "
+            "it to <%s> -- overriding the payload",
+            prefix,
+            declared,
+            bindings[prefix],
+        )
+        context[prefix] = bindings[prefix]
+        overridden += 1
+    return overridden
 
 
 def _is_absolute_iri(term: Node) -> bool:
@@ -335,6 +458,24 @@ class _ParsedPayload:
     graph: Graph | None = None
     #: The payload parsed but named a prefix nothing declared.
     unresolved_prefix: bool = False
+    #: The payload parsed but typed a literal its lexical form cannot hold.
+    quarantined_literal: bool = False
+
+
+def _has_quarantined_literal(parsed: Graph) -> bool:
+    """Whether any object literal fails XSD validation for its own datatype.
+
+    The same test the render path applies to a fresh graph, applied to a fix
+    payload. A ``"10^-15"^^xsd:decimal`` parses, so nothing stops it entering
+    the unit graph -- where every later serialization, SPARQL compile and
+    validation walk re-derives its value and rdflib logs the conversion
+    failure again. Refusing the fix keeps the bad literal out of the graph
+    instead of carrying it for the rest of the unit's life.
+    """
+    checked = RDFGraph()
+    checked += parsed
+    _, rejected = RDFGraph.partition_invalid_typed_literals(checked)
+    return bool(rejected)
 
 
 def _parse_payload(text: str | None, graph: Graph) -> _ParsedPayload:
@@ -350,7 +491,8 @@ def _parse_payload(text: str | None, graph: Graph) -> _ParsedPayload:
     Returns:
         The parsed triples, or why there are none: an empty result for an
         unparseable or statement-less payload, ``unresolved_prefix`` for one
-        whose terms could not be expanded to IRIs.
+        whose terms could not be expanded to IRIs, ``quarantined_literal``
+        for one typing a literal its lexical form cannot hold.
     """
     body = (text or "").strip()
     if not body:
@@ -370,9 +512,12 @@ def _parse_payload(text: str | None, graph: Graph) -> _ParsedPayload:
             return _ParsedPayload()
         if _has_unexpanded_terms(parsed):
             return _ParsedPayload(unresolved_prefix=True)
+        if _has_quarantined_literal(parsed):
+            return _ParsedPayload(quarantined_literal=True)
         return _ParsedPayload(graph=parsed)
 
     header = _prefix_header(graph)
+    body = _drop_conflicting_prefix_declarations(body, graph)
     for candidate in [
         *_terminator_candidates(body),
         *_terminator_candidates(_turtleize(body)),
@@ -385,6 +530,8 @@ def _parse_payload(text: str | None, graph: Graph) -> _ParsedPayload:
         if len(parsed):
             if _has_unexpanded_terms(parsed):
                 return _ParsedPayload(unresolved_prefix=True)
+            if _has_quarantined_literal(parsed):
+                return _ParsedPayload(quarantined_literal=True)
             return _ParsedPayload(graph=parsed)
     return _ParsedPayload()
 
@@ -640,6 +787,7 @@ def compile_critic_fixes(
     bad_index_refs = 0
     unresolved_prefix = 0
     junk_refused = 0
+    quarantined_literal = 0
 
     for fix in fixes:
         parsed_correct = _parse_payload(fix.correct_value, graph)
@@ -648,6 +796,16 @@ def compile_critic_fixes(
         # and only when the fix needed that payload: a REMOVE cited by id is
         # carried out whatever its unused correct_value says.
         unresolved = parsed_correct.unresolved_prefix and fix.action != "REMOVE"
+        # A payload holding an invalid typed literal yields no graph, so an
+        # ADD or REPLACE built on it has nothing to insert and falls through
+        # to residual below. Counted here, once, where the reason is still
+        # known -- and, as with an unresolved prefix, only when the fix needed
+        # the payload at all.
+        if parsed_correct.quarantined_literal and fix.action != "REMOVE":
+            logger.info(
+                "Critic fix refused (quarantined_literal): %s", fix.correct_value
+            )
+            quarantined_literal += 1
         insert_triples = (
             [triple for triple in correct if triple not in graph] if correct else []
         )
@@ -775,6 +933,7 @@ def compile_critic_fixes(
             deletes_refused=refused,
             unresolved_prefix=unresolved_prefix,
             junk_refused=junk_refused,
+            quarantined_literal=quarantined_literal,
         )
 
     combined: list[TripleOp] = []
@@ -785,7 +944,8 @@ def compile_critic_fixes(
     logger.info(
         "Critic fixes: %d compiled to patches (-%d/+%d triples), "
         "%d need a render, %d asked for no change, %d delete half(s) refused, "
-        "%d refused as placeholders, %d with an unresolved prefix%s",
+        "%d refused as placeholders, %d with an unresolved prefix, "
+        "%d with a quarantined literal%s",
         len(applied),
         len(deletes),
         len(inserts),
@@ -794,6 +954,7 @@ def compile_critic_fixes(
         refused,
         junk_refused,
         unresolved_prefix,
+        quarantined_literal,
         " (delete-share cap fired)" if capped else "",
     )
     return CompiledFixes(
@@ -807,6 +968,7 @@ def compile_critic_fixes(
         deletes_refused=refused,
         unresolved_prefix=unresolved_prefix,
         junk_refused=junk_refused,
+        quarantined_literal=quarantined_literal,
     )
 
 

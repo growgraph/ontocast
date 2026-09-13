@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from rdflib import OWL, RDF, RDFS, Literal, URIRef
 from rdflib.namespace import PROV, SH, XSD
 
-from ontocast.onto.constants import PROVENANCE_METADATA_TERMS
+from ontocast.onto.constants import DOCUMENT_METADATA_TERMS, PROVENANCE_METADATA_TERMS
 from ontocast.onto.enum import RetrievalMetric
 from ontocast.onto.model import (
     FactsValidationFinding,
@@ -356,13 +356,17 @@ def _non_catalog_vocabulary_findings(
             continue
         if term.startswith(_SCAFFOLDING_NAMESPACES):
             continue
-        # Chunk-metadata terms the pipeline mints itself. The prov: guard above
-        # only covers predicates, so schema:position, schema:identifier and the
-        # chunk node's own prov:Entity / schema:Text types were reported as
+        # Chunk- and document-metadata terms the pipeline mints itself. The
+        # ``prov:`` guard above only covers predicates, so schema:position,
+        # schema:identifier, the chunk node's own types, and the document
+        # node's ``foaf:Document`` / ``dcterms:title`` were reported as
         # vocabulary the renderer improvised, on every run whose catalog does
-        # not happen to include prov and schema.org. No catalog will ever
-        # supply them: they are scaffolding, like rdfs:label.
+        # not happen to include them. No catalog will ever supply them: they
+        # are scaffolding, like rdfs:label. Both sets are read from the same
+        # modules that emit them so the exemption cannot go stale.
         if URIRef(term) in PROVENANCE_METADATA_TERMS:
+            continue
+        if URIRef(term) in DOCUMENT_METADATA_TERMS:
             continue
         if any(term.startswith(ns) for ns in namespaces):
             continue

@@ -39,12 +39,20 @@ _HTML_ENTITIES = {"lt": "<", "gt": ">", "amp": "&", "quot": '"', "apos": "'"}
 _CARRIAGE_RETURN_WRAP_RE = re.compile(r"\r[ \t\f\v]*\n")
 
 # "2 × 10 6" is "2 × 10^6" with the superscript flattened: one or two exponent
-# digits, a sign allowed, and never the start of a hyphenated word
-# ("10 6-membered"). The bare "10 6" is rejoined only behind an approximation
-# cue ("~", "≈", "order of"); on its own it is two numbers more often than one.
-_EXPONENT_TAIL = r"10(?:\s+|\s*(?P<sign>[-−–])\s*)(?P<exp>\d{1,2})\b(?![-−–]\w)"
-_EXPONENT_PRODUCT_RE = re.compile(r"(?P<mantissa>\d)\s*[×x]\s*" + _EXPONENT_TAIL)
-_EXPONENT_BARE_RE = re.compile(r"(?P<cue>(?:order\s+of|[~≈∼≃])\s*)" + _EXPONENT_TAIL)
+# digits and never the start of a hyphenated word ("10 6-membered"). The bare
+# "10 6" is rejoined only behind an approximation cue ("~", "≈", "order of");
+# on its own it is two numbers more often than one.
+#
+# A sign is read only in the product form, where the mantissa "×" says the
+# tail is one number. Behind a bare cue the same characters are far more often
+# a range -- "∼10−15 meV" is ten to fifteen, and publishers typeset the range
+# dash as U+2212, the very character a negative exponent would use.
+_EXPONENT_TAIL_SIGNED = r"10(?:\s+|\s*(?P<sign>[-−–])\s*)(?P<exp>\d{1,2})\b(?![-−–]\w)"
+_EXPONENT_TAIL_BARE = r"10\s+(?P<exp>\d{1,2})\b(?![-−–]\w)"
+_EXPONENT_PRODUCT_RE = re.compile(r"(?P<mantissa>\d)\s*[×x]\s*" + _EXPONENT_TAIL_SIGNED)
+_EXPONENT_BARE_RE = re.compile(
+    r"(?P<cue>(?:order\s+of|[~≈∼≃])\s*)" + _EXPONENT_TAIL_BARE
+)
 
 
 def plain_text_to_docling_doc(text: str, doc_name: str) -> DoclingDocument:
@@ -101,7 +109,7 @@ def normalize_carriage_return_wraps(text: str) -> str:
 
 
 def _rejoin_exponent(prefix: str, match: re.Match[str]) -> str:
-    sign = "-" if match.group("sign") else ""
+    sign = "-" if match.groupdict().get("sign") else ""
     return f"{prefix}10^{sign}{match.group('exp')}"
 
 
@@ -111,6 +119,13 @@ def rejoin_flattened_exponents(text: str) -> str:
     The product form needs a mantissa digit before ``×``/``x``; the bare form
     needs an approximation cue before ``10``. Neither fires when the would-be
     exponent starts a hyphenated word.
+
+    Only the product form reads a sign. Behind a bare cue a dash between two
+    numbers is ambiguous -- a negative exponent and a range are written with
+    the same characters, and the range is the common reading -- so the rule
+    declines it. The risk is asymmetric: leaving a real ``∼10−6`` as written
+    costs nothing downstream, while rewriting a range to an exponent destroys
+    the value and leaves no trace of having done so.
     """
     text = _EXPONENT_PRODUCT_RE.sub(
         lambda match: _rejoin_exponent(f"{match.group('mantissa')} × ", match), text

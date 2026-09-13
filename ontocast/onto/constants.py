@@ -63,6 +63,8 @@ def prefix_lookup_for_ingest() -> dict[str, str]:
 
 PROV = Namespace("http://www.w3.org/ns/prov#")
 SCHEMA = Namespace("https://schema.org/")
+FOAF = Namespace("http://xmlns.com/foaf/0.1/")
+DCTERMS = Namespace("http://purl.org/dc/terms/")
 
 #: Terms OntoCast mints for pipeline telemetry that no standard vocabulary
 #: covers. Deliberately outside ``DEFAULT_IRI``: fact namespaces drive the
@@ -87,6 +89,23 @@ PROVENANCE_METADATA_TERMS: frozenset[URIRef] = frozenset(
         SCHEMA.articleSection,
         ONTOCAST.sectionLabelSource,
         ONTOCAST.sectionLabelConfidence,
+    }
+)
+
+#: Classes and predicates the pipeline mints on the document node itself
+#: (``apply_document_metadata_provenance``). Same exemption class as
+#: :data:`PROVENANCE_METADATA_TERMS`: scaffolding the pipeline writes, not
+#: vocabulary the renderer was offered and then invented. Read from here
+#: rather than an allow-list of IRIs so the finding cannot go stale when the
+#: document node's shape changes.
+DOCUMENT_METADATA_TERMS: frozenset[URIRef] = frozenset(
+    {
+        FOAF.Document,
+        DCTERMS.title,
+        DCTERMS.issued,
+        DCTERMS.source,
+        DCTERMS.identifier,
+        PROV.wasAttributedTo,
     }
 )
 

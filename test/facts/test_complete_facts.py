@@ -14,14 +14,17 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from rdflib import URIRef
+from rdflib import Literal, URIRef
+from rdflib.namespace import OWL, RDF, RDFS
 
 from ontocast.onto.content_unit import ContentUnit
-from ontocast.onto.enum import RenderMode, Status
+from ontocast.onto.enum import OntologyAssemblyMode, RenderMode, Status
 from ontocast.onto.model import FactsUnitFinding, FactsUnitFindingKind, TripleFix
+from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
+from ontocast.prompt.facts_guidelines import DEFAULT_QUANTITY_FALLBACK_VOCABULARY
 from ontocast.stategraph import atomic as atomic_module
 from ontocast.stategraph.atomic import (
     FACTS_PHASE,
@@ -32,7 +35,7 @@ from ontocast.stategraph.atomic import (
 from ontocast.stategraph.context_resolver import UnitOntologyContext
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.atomic import AtomicToolBox
-from ontocast.tool.facts_validation import CriticPatchPolicy
+from ontocast.tool.facts_validation import CriticPatchPolicy, ValidationPolicy
 from ontocast.toolbox import ToolBox
 from test.snapshot_helpers import empty_snapshot
 
@@ -40,20 +43,46 @@ pytestmark = pytest.mark.unit
 
 _SUBJECT = URIRef("http://example.org/sample_1")
 _POISON = URIRef("http://example.org/poison")
-_MEASURED_VALUE = URIRef("http://example.org/hasNumericValue")
+_QUDT = "http://qudt.org/schema/qudt/"
+_UNIT_NS = "http://qudt.org/vocab/unit/"
+_MEASURED_VALUE = URIRef(f"{_QUDT}numericValue")
+_UNIT_PROP = URIRef(f"{_QUDT}unit")
+_MEV = URIRef(f"{_UNIT_NS}MilliEV")
+_NM = URIRef(f"{_UNIT_NS}NanoM")
 _XSD_DECIMAL = URIRef("http://www.w3.org/2001/XMLSchema#decimal")
+
+
+def _quantity_ontology() -> RDFGraph:
+    """Minimal ontology so coverage can map unit IRIs back to surfaces."""
+    onto = RDFGraph()
+    onto.bind("qudt", _QUDT)
+    onto.add((URIRef(f"{_QUDT}unit"), RDF.type, OWL.ObjectProperty))
+    onto.add((URIRef(f"{_QUDT}unit"), RDFS.range, URIRef(f"{_QUDT}Unit")))
+    onto.add((URIRef(f"{_QUDT}Unit"), RDF.type, OWL.Class))
+    onto.add((_MEV, RDF.type, URIRef(f"{_QUDT}Unit")))
+    onto.add((_MEV, RDFS.label, Literal("meV")))
+    onto.add((_NM, RDF.type, URIRef(f"{_QUDT}Unit")))
+    onto.add((_NM, RDFS.label, Literal("nm")))
+    return onto
 
 
 def _unit_state(
     text: str = "a shift of 96 meV", graph: RDFGraph | None = None
 ) -> UnitFactsState:
+    facts = graph if graph is not None else RDFGraph()
+    facts.bind("qudt", _QUDT)
     unit = ContentUnit(
         text=text,
         index=0,
         doc_iri=URIRef("https://example.com/doc/d1"),
-        graph=graph if graph is not None else RDFGraph(),
+        graph=facts,
     )
-    state = UnitFactsState(content_unit=unit, ontology_snapshot=empty_snapshot())
+    snapshot = OntologySnapshot.from_graph(
+        _quantity_ontology(),
+        source_iris=["https://example.com/onto/units"],
+        assembly_mode=OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY,
+    )
+    state = UnitFactsState(content_unit=unit, ontology_snapshot=snapshot)
     state.status = Status.SUCCESS
     return state
 
@@ -65,7 +94,9 @@ def _atomic(*, completion_passes: int = 1) -> AtomicToolBox:
             facts_completion_passes=completion_passes,
             facts_patch_policy=CriticPatchPolicy(),
             additional_standard_namespaces=(),
-            validation_policy=None,
+            validation_policy=ValidationPolicy(
+                quantity_fallback_vocabulary=dict(DEFAULT_QUANTITY_FALLBACK_VOCABULARY)
+            ),
             acceptance_policy=None,
             numeric_coverage_limit=30,
             numeric_coverage_mandatory="off",
@@ -81,6 +112,15 @@ def _fix(correct: str) -> TripleFix:
         severity="minor",
         correct_value=correct,
         explanation="recovered measurement",
+    )
+
+
+def _mev_insert(value: str = "96") -> str:
+    """JSON-LD insert of a structured quantity with matching unit."""
+    return (
+        f'{{"@id": "{_SUBJECT}", '
+        f'"{_MEASURED_VALUE}": {{"@value": "{value}", "@type": "{_XSD_DECIMAL}"}}, '
+        f'"{_UNIT_PROP}": {{"@id": "{_MEV}"}}}}'
     )
 
 
@@ -109,10 +149,9 @@ def _poison_sensitive_findings(state, _atomic) -> list[FactsUnitFinding]:
 @pytest.mark.anyio
 async def test_a_pass_produces_only_additions(monkeypatch) -> None:
     state = _unit_state()
-    added = f'<{_SUBJECT}> <{_MEASURED_VALUE}> "96"^^<{_XSD_DECIMAL}> .'
 
     async def fake_complete(_state, _atomic, _inventory):
-        return [_fix(added)]
+        return [_fix(_mev_insert())]
 
     monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
     phase = replace(FACTS_PHASE, collect_findings=_no_findings)
@@ -125,7 +164,7 @@ async def test_a_pass_produces_only_additions(monkeypatch) -> None:
     attempt = state.attempt_log[-1]
     assert attempt.kind == "completion"
     assert attempt.n_fixes_applied == 1
-    assert attempt.n_triples_inserted == 1
+    assert attempt.n_triples_inserted >= 1
     assert attempt.n_triples_deleted == 0
     assert attempt.n_fixes_rolled_back == 0
 
@@ -169,7 +208,7 @@ async def test_only_add_fixes_are_kept(monkeypatch) -> None:
 
     async def fake_complete(_state, _atomic, _inventory):
         return [
-            _fix(f'<{_SUBJECT}> <{_MEASURED_VALUE}> "96"^^<{_XSD_DECIMAL}> .'),
+            _fix(_mev_insert()),
             TripleFix(
                 text_fragment="x",
                 action="REMOVE",
@@ -194,10 +233,9 @@ async def test_only_add_fixes_are_kept(monkeypatch) -> None:
 async def test_n_measurements_recovered_counts_precisely(monkeypatch) -> None:
     """One of two missing measurements is addressed; the count reflects that."""
     state = _unit_state(text="a shift of 96 meV and a gap of 12 nm")
-    only_the_first = f'<{_SUBJECT}> <{_MEASURED_VALUE}> "96"^^<{_XSD_DECIMAL}> .'
 
     async def fake_complete(_state, _atomic, _inventory):
-        return [_fix(only_the_first)]
+        return [_fix(_mev_insert())]
 
     monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
     phase = replace(FACTS_PHASE, collect_findings=_no_findings)
@@ -217,7 +255,7 @@ async def test_it_stops_early_once_measurements_are_covered(monkeypatch) -> None
 
     async def fake_complete(_state, _atomic, _inventory):
         calls["n"] += 1
-        return [_fix(f'<{_SUBJECT}> <{_MEASURED_VALUE}> "96"^^<{_XSD_DECIMAL}> .')]
+        return [_fix(_mev_insert())]
 
     monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
     phase = replace(FACTS_PHASE, collect_findings=_no_findings)

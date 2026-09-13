@@ -163,6 +163,9 @@ On `ToolBox.initialize` in this mode:
 
 - Orphan ontology IRIs (indexed but absent from the synchronized catalog) are pruned by default (`VECTOR_STORE_PRUNE_ORPHAN_IRIS_ON_INIT=true`) so renamed ontologies do not linger in retrieval.
 - Optional clean slate: `VECTOR_STORE_WIPE_ON_INIT=true` or CLI `--wipe-vector-store` drops the current partition before recreate+reindex.
+  The wipe itself is not conditional on the context mode -- it runs whenever a vector store is configured, so the flag never accepts a
+  destructive request and silently does nothing. Whether the partition is then recreated and reindexed *is* the mode's decision, so under
+  another mode the flag leaves the partition dropped and empty until a vector-search run rebuilds it.
 
 `QDRANT_URI` and `LANCEDB_ENABLED=true` are mutually exclusive.
 
@@ -192,7 +195,11 @@ Default path: per-window channel fusion → max-score IRI dedupe → global scor
 | `VECTOR_STORE_BM25_TOP_K` | unset | Sparse-lane depth when it should differ from `TOP_K`; unset means both are the same |
 | `VECTOR_STORE_FUSION_RANK_CONSTANT` | `0.0` | Smoothing in `weight / (constant + rank)`. See the warning below before raising it |
 | `VECTOR_STORE_PROPOSITION_WINDOW_MAX_CHARS` | unset | Characters per window; replaces the sentence bound when set |
+| `VECTOR_STORE_PROPOSITION_WINDOW_MAX_TOKENS` | unset | Encoder word pieces per window; replaces both bounds above, and rules truncation out rather than approximating it |
 | `VECTOR_STORE_PROPOSITION_WINDOW_STRIDE` | unset | Sentences advanced between windows; unset strides by the window size, so windows are disjoint |
+| `VECTOR_STORE_PROPOSITION_WINDOW_OVERLAP` | `0.0` | Fraction of a window repeated at the start of the next, under a budget |
+| `VECTOR_STORE_PROPOSITION_ABBREVIATION_AWARE` | `false` | Rejoin fragments split inside an abbreviation, an initial or a citation run |
+| `VECTOR_STORE_PROPOSITION_MEASUREMENT_AWARE` | `false` | Never break between a number and its unit, or inside a range |
 
 Advanced (off by default): `ONTOLOGY_PATCH_MERGED_SCORE_RATIO`.
 
@@ -430,44 +437,35 @@ Two properties are easy to be caught by:
   sequence limit and truncation becomes impossible by construction; read the
   limit and the observed characters-per-token from the retrieval metrics rather
   than assuming a ratio.
-- **A sentence count is not a bound on how much text a query carries.** Two
-  sentences of technical prose span an order of magnitude in length, and the
-  splitter breaks on every period with no abbreviation handling — so
-  `J. Phys. Chem. Lett.` is four "sentences", and a two-sentence window over a
-  citation is a fragment with nothing to retrieve.
-  `VECTOR_STORE_PROPOSITION_WINDOW_MAX_CHARS` bounds by length instead: it caps
-  the long windows that the encoder would truncate *and* coalesces the short
-  fragments, because it keeps taking sentences until the budget is met. It
-  replaces the sentence bound rather than joining it. Set it below the encoder's
-  sequence limit and truncation becomes impossible by construction; read the
-  limit and the observed characters-per-token from the retrieval metrics rather
-  than assuming a ratio.
-- **A sentence count is not a bound on how much text a query carries.** Two
-  sentences of technical prose span an order of magnitude in length, and the
-  splitter breaks on every period with no abbreviation handling — so
-  `J. Phys. Chem. Lett.` is four "sentences", and a two-sentence window over a
-  citation is a fragment with nothing to retrieve.
-  `VECTOR_STORE_PROPOSITION_WINDOW_MAX_CHARS` bounds by length instead: it caps
-  the long windows that the encoder would truncate *and* coalesces the short
-  fragments, because it keeps taking sentences until the budget is met. It
-  replaces the sentence bound rather than joining it. Set it below the encoder's
-  sequence limit and truncation becomes impossible by construction; read the
-  limit and the observed characters-per-token from the retrieval metrics rather
-  than assuming a ratio.
+- **A character budget is still a proxy.** Characters per token drift with
+  notation — formulae, symbols and digits cost more pieces per character than
+  prose — so a budget that fits one passage truncates the next.
+  `VECTOR_STORE_PROPOSITION_WINDOW_MAX_TOKENS` bounds a window in the unit the
+  encoder itself counts in, and replaces both of the bounds above. Below the
+  sequence limit it rules truncation out rather than approximating it, and it is
+  the only bound that *cuts* a sentence longer than the budget, at a whitespace
+  boundary: emitted whole, such a sentence is cut by the encoder anyway and its
+  tail reaches no lane at all. It needs a provider that exposes a tokenizer;
+  without one it degrades to a character approximation and logs that it did.
+- **Citation runs are not sentences.**
+  `VECTOR_STORE_PROPOSITION_ABBREVIATION_AWARE` rejoins the fragments the
+  period-splitter creates inside an abbreviation, an initial or a citation run,
+  so a packing bound counts prose rather than shards. General English and
+  bibliographic shapes only — a domain vocabulary here would make retrieval
+  quality a property of the corpus it was written against. Off by default,
+  because it changes the windows any earlier measurement was taken on.
+- **A break between a number and its unit costs the pair.** A window ending on
+  "a red shift of ∼10" retrieves nothing that the number and its unit together
+  would. `VECTOR_STORE_PROPOSITION_MEASUREMENT_AWARE` moves such a break
+  backwards, using number/unit *shapes* rather than a unit list. It only binds
+  where a cut inside a sentence is possible, which today means a token budget.
 - **Windows are disjoint by default.** A statement whose subject and value straddle a
   window boundary appears in no window at all, and neither half retrieves what the pair
-  together names. `VECTOR_STORE_PROPOSITION_WINDOW_STRIDE` overlaps them, at the cost of
-  more queries — and, once `PROPOSITION_MAX_WINDOWS` binds, of coverage elsewhere.
-- **`PROPOSITION_MAX_WINDOWS` drops text when it binds.** Over the cap, windows
-  are subsampled evenly across the unit — so coverage is preserved but *density*
-  is not, and the text in a dropped window reaches no dense or sparse lane at
-  all. Whether it binds is a property of how long your content units are, which
-  is why it can be inert on short units and lossy on long ones.
-- **`PROPOSITION_MAX_WINDOWS` drops text when it binds.** Over the cap, windows
-  are subsampled evenly across the unit — so coverage is preserved but *density*
-  is not, and the text in a dropped window reaches no dense or sparse lane at
-  all. Whether it binds is a property of how long your content units are, which
-  is why it can be inert on short units and lossy on long ones.
+  together names. `VECTOR_STORE_PROPOSITION_WINDOW_STRIDE` overlaps them by whole
+  sentences; `VECTOR_STORE_PROPOSITION_WINDOW_OVERLAP` is the fractional form the
+  budgets take, since a sentence says nothing about how much text a budgeted window
+  shares. Either costs queries — and, once `PROPOSITION_MAX_WINDOWS` binds, the extra
+  queries are bought by subsampling, so overlap and the cap work against each other.
 - **`PROPOSITION_MAX_WINDOWS` drops text when it binds.** Over the cap, windows
   are subsampled evenly across the unit — so coverage is preserved but *density*
   is not, and the text in a dropped window reaches no dense or sparse lane at

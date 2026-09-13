@@ -7,6 +7,7 @@ plus one the render path could not have: a pass is now transparent enough that
 *creating* mandatory findings is detectable and undone.
 """
 
+import logging
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import cast
@@ -74,7 +75,15 @@ def _fix(action, *, triple_ids=None, correct="") -> TripleFix:
     )
 
 
-def _run(state, findings=None, *, mandatory_before=0, phase=FACTS_PHASE, atomic=None):
+def _run(
+    state,
+    findings=None,
+    *,
+    mandatory_before=0,
+    findings_before=None,
+    phase=FACTS_PHASE,
+    atomic=None,
+):
     tools = atomic or _atomic()
     collected = findings if findings is not None else []
     phase = replace(phase, collect_findings=lambda _state, _tools: list(collected))
@@ -85,15 +94,15 @@ def _run(state, findings=None, *, mandatory_before=0, phase=FACTS_PHASE, atomic=
         render_attempt=1,
         pass_index=1,
         mandatory_before=mandatory_before,
+        findings_before=findings_before,
     )
 
 
-def _finding(mandatory: bool = True) -> FactsUnitFinding:
-    return FactsUnitFinding(
-        kind=FactsUnitFindingKind.UNKNOWN_TERM,
-        mandatory=mandatory,
-        message="unknown term",
-    )
+def _finding(
+    mandatory: bool = True,
+    kind: FactsUnitFindingKind = FactsUnitFindingKind.UNKNOWN_TERM,
+) -> FactsUnitFinding:
+    return FactsUnitFinding(kind=kind, mandatory=mandatory, message=str(kind))
 
 
 def test_a_pass_that_only_deletes_is_rolled_back() -> None:
@@ -265,6 +274,101 @@ def test_an_empty_no_update_pass_reevaluates_status_too() -> None:
 
     assert state.status == Status.SUCCESS
     assert state.failure_stage is None
+
+
+# --- "wrote nothing" is what the fix declared, not what the graph gained ------
+
+
+def _replace_onto_existing(state) -> None:
+    """A REPLACE whose replacement statement the graph already holds.
+
+    The realistic shape: a correction that removes one wrong property
+    re-states the rest of the node, and those statements apply as no-ops.
+    """
+    index = build_triple_index(state.content_unit.graph)
+    state.prompt_triple_index = index
+    target = [tid for tid, (_, p, _) in index.by_id.items() if p == _EX_PREDICATE]
+    state.suggestions.actionable_fixes = [
+        _fix(
+            "REPLACE",
+            triple_ids=target,
+            correct=f'<{_SUBJECT}> <{_LABEL}> "sample" .',
+        )
+    ]
+
+
+def test_a_replace_whose_replacement_already_exists_is_kept() -> None:
+    """The graph diff shows only the delete, but the fix wrote its statements.
+
+    Read as ``graph_after - graph_before`` this correction looks like a bare
+    deletion; judged on the statements it declared, every one of them stands
+    after it. It resolved a mandatory finding, so it stays.
+    """
+    state = _unit_state()
+    _replace_onto_existing(state)
+
+    outcome = _run(state, [_finding()], mandatory_before=2)
+
+    assert outcome.applied == 1
+    assert outcome.rolled_back == 0
+    graph = state.content_unit.graph
+    assert (_SUBJECT, _EX_PREDICATE, _VALUE) not in graph, "the wrong property went"
+    assert (_SUBJECT, _LABEL, Literal("sample")) in graph, "the node survives"
+
+
+def test_a_replace_onto_existing_that_resolves_nothing_is_no_progress() -> None:
+    """Declared inserts excuse it from ``delete_only``, not from earning its
+    place: nothing resolved and a smaller product is still a regression."""
+    state = _unit_state()
+    _replace_onto_existing(state)
+
+    outcome = _run(state, [_finding()], mandatory_before=1)
+
+    assert outcome.rolled_back == 1
+    assert (_SUBJECT, _EX_PREDICATE, _VALUE) in state.content_unit.graph
+    assert state.attempt_log[-1].rolled_back_fixes[0].reason == "no_progress"
+
+
+def test_a_pure_removal_declares_no_insert_and_stays_delete_only() -> None:
+    """A REMOVE has nothing to declare, so the rule it exists for still fires
+    even when the fix resolved a mandatory finding."""
+    state = _unit_state()
+    index = build_triple_index(state.content_unit.graph)
+    state.prompt_triple_index = index
+    doomed = [tid for tid, (_, p, _) in index.by_id.items() if p == _EX_PREDICATE]
+    state.suggestions.actionable_fixes = [_fix("REMOVE", triple_ids=doomed)]
+
+    outcome = _run(state, [], mandatory_before=2)
+
+    assert outcome.rolled_back == 1
+    assert (_SUBJECT, _EX_PREDICATE, _VALUE) in state.content_unit.graph
+    assert state.attempt_log[-1].rolled_back_fixes[0].reason == "delete_only"
+
+
+def test_a_new_mandatory_rollback_names_the_kinds_it_introduced(caplog) -> None:
+    """Counts alone do not say what went wrong; the kinds do."""
+    state = _unit_state()
+    state.suggestions.actionable_fixes = [
+        _fix("ADD", correct=f'<{_SUBJECT}> <http://example.org/new> "x" .')
+    ]
+    after = [
+        _finding(kind=FactsUnitFindingKind.UNKNOWN_TERM),
+        _finding(kind=FactsUnitFindingKind.DOMAIN_VIOLATION),
+        _finding(kind=FactsUnitFindingKind.DOMAIN_VIOLATION),
+    ]
+
+    with caplog.at_level(logging.WARNING, logger="ontocast.stategraph.atomic"):
+        outcome = _run(
+            state,
+            after,
+            mandatory_before=1,
+            findings_before=[_finding(kind=FactsUnitFindingKind.UNKNOWN_TERM)],
+        )
+
+    assert outcome.rolled_back == 1
+    assert "new_mandatory" in caplog.text
+    assert "introduced domain_violation x2" in caplog.text
+    assert "unknown_term" not in caplog.text, "already there before the fix"
 
 
 # --- one fix at a time --------------------------------------------------------

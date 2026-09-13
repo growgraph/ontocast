@@ -29,6 +29,7 @@ from rdflib.namespace import DCTERMS, FOAF, OWL, RDF, RDFS, XSD
 from ontocast.config import AggregationConfig
 from ontocast.onto.constants import (
     DEFAULT_IRI,
+    DOCUMENT_METADATA_TERMS,
     PROV,
     SCHEMA,
     prefix_lookup_for_ingest,
@@ -78,6 +79,10 @@ _DOC_METADATA_FIRST_CLASS: dict[str, URIRef] = {
     "issued": DCTERMS.issued,
     "source_system": PROV.wasAttributedTo,
 }
+# Predicates above plus ``FOAF.Document`` / ``DCTERMS.source`` /
+# ``DCTERMS.identifier`` are exactly :data:`DOCUMENT_METADATA_TERMS` — the
+# gate's exemption set is derived from that constant, not from this map.
+assert set(_DOC_METADATA_FIRST_CLASS.values()) <= DOCUMENT_METADATA_TERMS
 _DOC_METADATA_IDENTIFIER_KEYS = frozenset({"doi", "isbn", "pmid", "arxiv_id", "handle"})
 _DOC_METADATA_SOURCE_KEYS = frozenset({"source_uri", "source_url"})
 _DOC_METADATA_ENTITY_LINKS: dict[str, tuple[URIRef, URIRef]] = {

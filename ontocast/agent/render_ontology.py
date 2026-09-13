@@ -176,6 +176,7 @@ async def render_ontology_fresh(
         supplemental_ontologies or (),
     )
 
+    previous_prefixes = RDFGraph.get_known_prefixes()
     try:
         RDFGraph.set_known_prefixes(known_prefixes if known_prefixes else None)
         llm_tool = await tools.get_llm_tool(state.budget_tracker)
@@ -236,7 +237,7 @@ async def render_ontology_fresh(
             state, e, FailureStage.GENERATE_TTL_FOR_ONTOLOGY
         )
     finally:
-        RDFGraph.set_known_prefixes(None)
+        RDFGraph.set_known_prefixes(previous_prefixes)
 
 
 async def render_ontology_update(
@@ -281,6 +282,7 @@ async def render_ontology_update(
         supplemental_ontologies or (),
     )
 
+    previous_prefixes = RDFGraph.get_known_prefixes()
     try:
         llm_tool = await tools.get_llm_tool(state.budget_tracker)
         RDFGraph.set_known_prefixes(known_prefixes if known_prefixes else None)
@@ -367,4 +369,4 @@ async def render_ontology_update(
             state, e, FailureStage.GENERATE_GRAPH_UPDATE_FOR_ONTOLOGY
         )
     finally:
-        RDFGraph.set_known_prefixes(None)
+        RDFGraph.set_known_prefixes(previous_prefixes)

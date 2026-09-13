@@ -13,7 +13,8 @@ own ontology context according to mode/policy.
 
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections import Counter
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, TypeVar
 
@@ -42,8 +43,10 @@ from ontocast.onto.model import (
     Suggestions,
 )
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_access import build_llm_prefix_map
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import OntologyContextConfigError
+from ontocast.onto.triple_index import Triple
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.context_resolver import (
     UnitOntologyContext,
@@ -302,6 +305,7 @@ def _regression_reason(
     product_after: int,
     mandatory_before: int,
     mandatory_after: int,
+    declared_inserts: Iterable[Triple] = (),
 ) -> str | None:
     """Why a fix left the unit worse than it found it, or ``None``.
 
@@ -318,10 +322,34 @@ def _regression_reason(
        manufactures new defects is strictly worse than no fix, however much
        else it changed.
 
+    "Wrote nothing" is measured against ``declared_inserts``, not against the
+    graph diff alone. A REPLACE that removes one wrong property re-states the
+    whole corrected node, so the parts that were already right apply as
+    no-ops and the diff shows only the delete -- read as a graph diff, the
+    correction looks like a bare deletion and is undone. Such a fix still has
+    to earn its place: with its replacement present and nothing resolved it
+    falls through to ``no_progress``, and a fix that declares no insert at all
+    is a pure removal and stays ``delete_only``.
+
     Judged per fix against the running baseline, so one bad correction is
     undone alone instead of taking the whole critique with it.
+
+    Args:
+        graph_before: The patch target as the previous kept fix left it.
+        graph_after: The patch target with this fix applied.
+        product_before: The phase's product triple count before the fix.
+        product_after: The same count after it.
+        mandatory_before: Mandatory findings against ``graph_before``.
+        mandatory_after: Mandatory findings against ``graph_after``.
+        declared_inserts: The statements the fix's patch says it writes,
+            whether or not the graph already held them.
+
+    Returns:
+        The rule that fired, or ``None`` when the fix may stay.
     """
-    wrote_nothing = not (graph_after - graph_before)
+    wrote_nothing = not (graph_after - graph_before) and not any(
+        triple in graph_after for triple in declared_inserts
+    )
     deleted_something = bool(graph_before - graph_after)
     if deleted_something and wrote_nothing:
         return "delete_only"
@@ -332,26 +360,21 @@ def _regression_reason(
     return None
 
 
-def _patch_regressed(
-    *,
-    graph_before: RDFGraph,
-    graph_after: RDFGraph,
-    product_before: int,
-    product_after: int,
-    mandatory_before: int,
-    mandatory_after: int,
-) -> bool:
-    """Whether a fix left the unit worse; see :func:`_regression_reason`."""
-    return (
-        _regression_reason(
-            graph_before=graph_before,
-            graph_after=graph_after,
-            product_before=product_before,
-            product_after=product_after,
-            mandatory_before=mandatory_before,
-            mandatory_after=mandatory_after,
-        )
-        is not None
+def _added_mandatory_kinds(before: Sequence, after: Sequence) -> str:
+    """The mandatory finding kinds a fix added, as ``kind`` or ``kind xN``.
+
+    A rollback warning that reports only counts says a fix made things worse
+    without saying how, which is the one thing a reader needs to tell a
+    mis-scoped correction from a genuinely destructive one.
+    """
+    before_counts = Counter(finding.kind for finding in before if finding.mandatory)
+    after_counts = Counter(finding.kind for finding in after if finding.mandatory)
+    added = after_counts - before_counts
+    if not added:
+        return "none"
+    return ", ".join(
+        kind if count == 1 else f"{kind} x{count}"
+        for kind, count in sorted(added.items())
     )
 
 
@@ -392,6 +415,7 @@ def _apply_patches(
     patches: list[FixPatch],
     *,
     mandatory_before: int,
+    findings_before: Sequence | None = None,
 ) -> _PatchRun:
     """Apply patches one at a time, undoing each that leaves the unit worse.
 
@@ -400,9 +424,19 @@ def _apply_patches(
     after it and a fix that manufactures one is caught on its own. A whole
     pass used to be undone for the one fix that regressed, which is how a
     critique lost its good corrections to one bad one.
+
+    Args:
+        unit_state: The unit being repaired; mutated in place.
+        atomic: The tools the phase validates with.
+        phase: The loop phase, which supplies the validator and policies.
+        patches: One patch per compiled fix, in the order proposed.
+        mandatory_before: Mandatory findings against the graph as handed in.
+        findings_before: Those findings themselves, so a rollback can name
+            the kinds a fix introduced rather than only their count.
     """
     run = _PatchRun()
     baseline = mandatory_before
+    baseline_findings: Sequence = findings_before or ()
     current_findings: list | None = None
     for patch in patches:
         token = unit_state.snapshot_for_rollback()
@@ -427,16 +461,23 @@ def _apply_patches(
             product_after=unit_state.product_triple_count(),
             mandatory_before=baseline,
             mandatory_after=mandatory_after,
+            declared_inserts=patch.insert_triples,
         )
         if reason is not None:
+            introduced = (
+                f"; introduced {_added_mandatory_kinds(baseline_findings, findings)}"
+                if reason == "new_mandatory"
+                else ""
+            )
             logger.warning(
                 "Critic fix left the unit worse (%s; -%d/+%d triples, "
-                "mandatory %d -> %d) — rolling it back",
+                "mandatory %d -> %d%s) — rolling it back",
                 reason,
                 patch.deletes,
                 patch.inserts,
                 baseline,
                 mandatory_after,
+                introduced,
             )
             unit_state.restore(token)
             run.rolled_back.append(
@@ -452,6 +493,7 @@ def _apply_patches(
         run.deleted += patch.deletes
         run.inserted += patch.inserts
         baseline = mandatory_after
+        baseline_findings = findings
         current_findings = findings
     if current_findings is None:
         # Nothing stayed, so the graph is as it was; the findings are still
@@ -504,6 +546,7 @@ def _apply_critic_patch(
     render_attempt: int,
     pass_index: int,
     mandatory_before: int,
+    findings_before: Sequence | None = None,
 ) -> PatchOutcome:
     """Compile the critique into per-fix patches and apply them one at a time.
 
@@ -541,7 +584,12 @@ def _apply_critic_patch(
     )
 
     run = _apply_patches(
-        unit_state, atomic, phase, compiled.patches, mandatory_before=mandatory_before
+        unit_state,
+        atomic,
+        phase,
+        compiled.patches,
+        mandatory_before=mandatory_before,
+        findings_before=findings_before,
     )
     unit_state.critic_fixes_applied += len(run.applied)
     unit_state.critic_fixes_rolled_back += len(run.rolled_back)
@@ -623,6 +671,7 @@ async def _run_completion_passes(
             phase,
             compiled.patches,
             mandatory_before=mandatory_before,
+            findings_before=findings,
         )
         unit_state.deterministic_findings = run.findings
         _reevaluate_unit_status(unit_state, phase, atomic, run.findings)
@@ -970,6 +1019,11 @@ async def run_unit_loop(
     # The stage the loop is currently in, so an unhandled exception is
     # attributed to where it happened rather than always naming the critique.
     stage = phase.render_stage
+    # Catalog prefix map installed after context resolution (see below); the
+    # finally restores whatever was here so a unit cannot leak its map into
+    # the next task. ContextVar storage is per-task under the fan-out.
+    previous_prefixes: dict[str, str] | None = None
+    installed_prefixes = False
     try:
         if pre_resolved_context is not None:
             _apply_unit_ontology_context(unit_state, pre_resolved_context)
@@ -992,6 +1046,17 @@ async def run_unit_loop(
         ):
             _select_conformance_chapter(unit_state, tools)
         phase.prepare(unit_state)
+
+        # Install the catalog prefix map for the whole unit loop so critic and
+        # completion payloads reconcile against it, not only the unit graph's
+        # bindings. Render agents save/restore rather than clear to None.
+        previous_prefixes = RDFGraph.get_known_prefixes()
+        catalog_prefixes = build_llm_prefix_map(
+            unit_state.ontology_snapshot,
+            _supplemental_ontologies_for_unit(document_context, unit_state, tools),
+        )
+        RDFGraph.set_known_prefixes(catalog_prefixes if catalog_prefixes else None)
+        installed_prefixes = True
 
         max_visits = _resolve_max_visits_limit(
             unit_state.max_visits_per_node, max_visits_per_node
@@ -1089,6 +1154,7 @@ async def run_unit_loop(
                 render_attempt=render_attempt,
                 pass_index=pass_index,
                 mandatory_before=mandatory_before,
+                findings_before=findings,
             )
             logger.info(
                 "Unit %s critic pass %s/%s: %d applied, %d residual, %d no-op, "
@@ -1147,6 +1213,9 @@ async def run_unit_loop(
         logger.exception("Unhandled exception in %s unit loop", phase.name)
         unit_state.set_failure(stage, str(exc))
         return unit_state
+    finally:
+        if installed_prefixes:
+            RDFGraph.set_known_prefixes(previous_prefixes)
 
 
 async def facts_loop(

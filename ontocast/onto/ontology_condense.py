@@ -18,6 +18,7 @@ bad model -- the most expensive failure mode this pipeline has.
 """
 
 import logging
+import re
 
 from pydantic import BaseModel, Field
 from rdflib import RDFS, SKOS, Literal, URIRef
@@ -73,7 +74,10 @@ class TextCaps(BaseModel):
 
     Clipping rather than dropping is what keeps a usage contract available at a
     predictable price: the first sentence of a scope note is the part that says
-    when a term applies.
+    when a term applies. Where a cap fires, the cut is by content rather than
+    by position -- the opening sentence and any clause stating when the term
+    applies, then stop -- so a verbose catalog pays for its terms and not for
+    its prose style. A cap left unset leaves every literal exactly as authored.
     """
 
     naming: int | None = Field(
@@ -151,13 +155,96 @@ _CAPPED_PREDICATES: frozenset[URIRef] = (
 )
 
 
+#: A sentence boundary: terminal punctuation, optional closing quote or
+#: bracket, whitespace, then something that can open a sentence.
+_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])[\"')\]]?\s+(?=[A-Z0-9(\"'])")
+
+#: Trailing forms that end in a period without ending a sentence. General
+#: English and citation shapes only -- a single capital initial, the common
+#: Latin abbreviations, the reference words a description cites structure with.
+_ABBREVIATION_TAIL_RE = re.compile(
+    r"(?:\b(?:e\.g|i\.e|cf|etc|vs|al|approx|ca|Fig|Eq|Sec|Ref|No|Vol|pp)\."
+    r"|\b[A-Z]\.)\s*$"
+)
+
+#: Cues that a sentence states *when* a term applies rather than describing it
+#: further. Deliberately plain English modality and conditionality: the point
+#: is to keep the clause an extractor has to obey, not to parse the prose.
+_APPLICABILITY_CUE_RE = re.compile(
+    r"\b(?:use|uses|used|apply|applies|applicable|only|when|whenever|unless|"
+    r"must|should|shall|never|always|restricted|intended|reserved|prefer|"
+    r"preferred|do not|does not|not to be)\b",
+    re.IGNORECASE,
+)
+
+
+def split_sentences(text: str) -> list[str]:
+    """Split ``text`` into sentences, keeping each one's terminator.
+
+    Abbreviation-aware only to the extent that a period inside ``e.g.`` or a
+    single capital initial must not end a sentence; anything more would be
+    guessing at a catalog's writing style.
+    """
+    sentences: list[str] = []
+    start = 0
+    for match in _SENTENCE_BOUNDARY_RE.finditer(text):
+        head = text[start : match.start()]
+        if _ABBREVIATION_TAIL_RE.search(head):
+            continue
+        stripped = head.strip()
+        if stripped:
+            sentences.append(stripped)
+        start = match.end()
+    tail = text[start:].strip()
+    if tail:
+        sentences.append(tail)
+    return sentences
+
+
+def _contract_head(text: str, cap: int) -> str:
+    """The part of ``text`` worth keeping when it will not fit whole.
+
+    A term's description opens with what it *is* and, where it has one, a
+    clause saying when it applies; the rest elaborates for a human browsing
+    the ontology and is the part an extractor never reads. So the trim is by
+    content, not by position: the first sentence, plus at most one following
+    sentence that states an applicability condition, and then it stops even
+    when the cap would have allowed more.
+
+    Cutting on a sentence boundary also removes the failure a word-boundary
+    clip has: a description truncated mid-clause can read as a *narrower*
+    contract than the term has, and the model has no way to tell that from a
+    contract that really ended there.
+
+    Returns:
+        The retained sentences, or ``""`` when the text offers no better cut
+        than the caller's word-boundary fallback.
+    """
+    sentences = split_sentences(text)
+    if len(sentences) < 2:
+        return ""
+    first = sentences[0]
+    if len(first) > cap:
+        return ""
+    second = sentences[1]
+    candidate = f"{first} {second}"
+    if len(candidate) <= cap and _APPLICABILITY_CUE_RE.search(second):
+        return candidate
+    return first
+
+
 def clip_text(text: str, cap: int | None) -> str:
-    """Clip ``text`` to ``cap`` characters on a word boundary, marking the cut.
+    """Clip ``text`` to ``cap`` characters, marking the cut.
 
     The retained text is at most ``cap`` characters; :data:`CLIP_MARKER` is
     appended on top of it, so a clipped literal reads as clipped. A ``cap`` of
     None, or text already within it, is returned unchanged -- byte-identical, so
     a disabled cap cannot perturb a prompt or its cache key.
+
+    Where the text has more than one sentence the cut is content-aware (see
+    :func:`_contract_head`) and may retain well under ``cap``; a single
+    sentence longer than the cap falls back to a word boundary, which is the
+    only cut available inside it.
 
     Args:
         text: Literal text to bound.
@@ -168,6 +255,9 @@ def clip_text(text: str, cap: int | None) -> str:
     """
     if cap is None or len(text) <= cap:
         return text
+    head = _contract_head(text, cap)
+    if head:
+        return head + CLIP_MARKER
     head = text[:cap].rsplit(" ", 1)[0].rstrip()
     if not head:
         head = text[:cap].rstrip()

@@ -1955,6 +1955,67 @@ class VectorStoreConfig(BaseSettings):
             "assuming a ratio. Query-side only: changing it needs no reindex."
         ),
     )
+    proposition_window_max_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Encoder word pieces per query window. None (default) leaves the other "
+            "bounds in charge; when set it replaces both PROPOSITION_WINDOW_SENTENCES "
+            "and PROPOSITION_WINDOW_MAX_CHARS, and characters stop being consulted."
+            "\n\n"
+            "This is the only bound stated in the unit the encoder itself counts in. "
+            "Characters per token drift with notation, so a character budget that "
+            "fits one passage truncates the next; set below the encoder's sequence "
+            "limit, a token budget rules truncation out by construction. It is also "
+            "the only bound that cuts a sentence longer than the budget -- at a "
+            "whitespace boundary -- because such a sentence is truncated by the "
+            "encoder anyway and its tail then reaches no lane at all."
+            "\n\n"
+            "Needs a provider that exposes a tokenizer; without one the budget "
+            "degrades to a character approximation and logs that it did. "
+            "Query-side only: changing it needs no reindex."
+        ),
+    )
+    proposition_window_overlap: float = Field(
+        default=0.0,
+        ge=0.0,
+        lt=1.0,
+        description=(
+            "Fraction of a window repeated at the start of the next one, under a "
+            "character or token budget. 0.0 (default) leaves windows disjoint. "
+            "PROPOSITION_WINDOW_STRIDE is the sentence-granular spelling of the same "
+            "idea and does not apply under a budget, where a sentence says nothing "
+            "about how much text is shared. Overlap multiplies queries, so it costs "
+            "embedding time and, once PROPOSITION_MAX_WINDOWS binds, coverage "
+            "elsewhere in the unit."
+        ),
+    )
+    proposition_abbreviation_aware: bool = Field(
+        default=False,
+        description=(
+            "Rejoin window fragments the period-splitter created inside an "
+            "abbreviation, an initial or a citation run. Off by default: it changes "
+            "the windows every existing measurement was taken on."
+            "\n\n"
+            "The splitter breaks on every period, so a citation reads as several "
+            "'sentences' and a sentence-bounded window over one of them can carry a "
+            "dozen characters with nothing retrievable in them. General English and "
+            "bibliographic shapes only -- initials, a small abbreviation list, and a "
+            "guard for a fragment that does not open a sentence -- never a domain "
+            "vocabulary, which would make retrieval corpus-specific."
+        ),
+    )
+    proposition_measurement_aware: bool = Field(
+        default=False,
+        description=(
+            "Forbid a window break between a number and the unit it is written with, "
+            "or inside a range, using the number/unit shapes in the shared "
+            "measurement lexicon (shapes, not a unit vocabulary). Only binds where a "
+            "cut inside a sentence is possible, which means PROPOSITION_WINDOW_MAX_"
+            "TOKENS with a sentence over budget: a window ending on 'a red shift of "
+            "~10' retrieves nothing that the number and its unit together would."
+        ),
+    )
     proposition_max_windows: int = Field(
         default=16,
         ge=1,

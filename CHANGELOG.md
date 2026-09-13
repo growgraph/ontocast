@@ -35,6 +35,20 @@ change.
 
 ### Added
 
+- **Four opt-in bounds on retrieval proposition windows**, all off by default and
+  all domain-independent (`VECTOR_STORE_PROPOSITION_*`): `WINDOW_MAX_TOKENS` packs
+  a window to a budget in the encoder's own word pieces -- the unit it truncates
+  on -- and is the only bound that rules truncation out by construction and that
+  cuts a sentence longer than the budget rather than handing it to the encoder to
+  cut; `ABBREVIATION_AWARE` rejoins the fragments the period-splitter creates
+  inside an initial, an abbreviation or a citation run, using general English and
+  bibliographic shapes only; `MEASUREMENT_AWARE` keeps a break out of a
+  number/unit pair or a range, from the shapes in the shared measurement lexicon;
+  `WINDOW_OVERLAP` gives the budget modes a fractional overlap, since
+  `WINDOW_STRIDE` counts sentences and a sentence says nothing about how much text
+  a budgeted window shares. Unset, all four reproduce today's windows byte for
+  byte, asserted across the knob space rather than at the defaults alone.
+
 - **Two selection policies for one budget are now rejected rather than resolved
   silently.** `ONTOLOGY_PATCH_MMR_LAMBDA < 1.0` reranks and selects the whole
   atom budget itself, so it cannot honour the atom floors either. Reserving the
@@ -359,6 +373,24 @@ change.
   Test: `test/test_cli_server.py`.
 
 ### Changed
+
+- **A text cap now cuts by content rather than by position.** Where a cap
+  fires, the retained text is the term's opening sentence — usually its
+  definition — plus at most one following sentence that states when the term
+  applies, and then it stops even if the cap would have allowed more. What is
+  dropped is the elaboration written for a human browsing the ontology, which
+  an extractor never reads; what is kept is the part a term cannot be applied
+  safely without. Two things this also removes: a clip that lands mid-clause
+  can read as a *narrower* contract than the term has, with nothing to tell the
+  model it was cut short of the qualification; and chapter size stops being a
+  function of how verbose a catalog's authors were, since a term with one
+  sentence and a term with nine now cost about the same. The visible clip
+  marker is unchanged, the preference order (`skos:scopeNote` →
+  `skos:definition` → `rdfs:comment`) is unchanged, the retained text is still
+  at most the cap, a single sentence longer than the cap still falls back to a
+  word boundary, and text within the cap is still returned byte-identical. No
+  default changed: every `ONTOLOGY_TEXT_MAX_CHARS_*` cap still ships unset, so
+  a deployment that sets none sees no difference.
 
 - **The ontology chapter defaults to the cheapest form the render mode can
   read.** `ONTOLOGY_CHAPTER_FORMAT` gains `auto` and ships as the default: it
@@ -735,6 +767,132 @@ change.
   critic uses `format_facts_chapter_indexed`.
 
 ### Fixed
+
+- **Numeric coverage is unit-aware on the measurement lane.** A unit-adjacent
+  mention (`96 meV`) used to clear whenever *any* literal in the graph carried
+  that bare number, so an unrelated `96` — or a `96 K` — silenced a miss the
+  advisory exists to catch. Presence for measurements is now keyed on
+  structured `(number, unit)` pairs read from subjects that carry both the
+  configured numeric-value and unit properties; the unclassified (bare-number)
+  lane stays number-only. Mentions of the same number under different units
+  are kept as distinct. Consequence: a quantity node that holds a number but
+  no unit no longer clears its mention, so advisory volume rises on unit-less
+  graphs (still advisory at the default `FACTS_NUMERIC_COVERAGE_MANDATORY=off`,
+  capped by `FACTS_NUMERIC_COVERAGE_LIMIT`).
+
+- **`non_catalog_vocabulary` no longer flags the pipeline's own document
+  node.** Chunk provenance was already exempt via `PROVENANCE_METADATA_TERMS`;
+  the document node's `foaf:Document` / `dcterms:title` / `dcterms:issued` /
+  `dcterms:source` / `dcterms:identifier` / `prov:wasAttributedTo` were not,
+  so every aggregated run reported them as retrieval misses. They now live in
+  `DOCUMENT_METADATA_TERMS` beside the chunk set, read from the same place
+  `apply_document_metadata_provenance` emits them.
+
+- **The critic and completion paths reconcile prefixes against the catalog
+  map, not only the unit graph.** Render installed the catalog-derived map
+  and cleared it in `finally` before the critic ran, so a prefix a fix used
+  for the first time was bound nowhere and expanded to a term no catalog
+  declares. The unit loop now installs the map for its whole lifetime;
+  render agents save/restore rather than clear to `None`; and the critic
+  patch reconcilers fall back to that map under the unit graph's bindings
+  (the unit graph still wins on any prefix both declare).
+
+- **A repaired range is no longer read as an exponent.** The converter's
+  flattened-exponent rule accepted a sign in its *bare* form, so a value
+  written as an approximation cue, a number, a dash and a second number was
+  rewritten into a power of ten. A publisher typesets a numeric range with the
+  same minus-sign character a negative exponent uses, and behind a bare cue the
+  range is by far the commoner reading, so the rule was destroying values it
+  had no way to recognise — and doing it invisibly, since the rewritten text is
+  what every later stage sees. The bare form now takes no sign; the product
+  form still does, where a mantissa `×` says the tail is one number. The risk
+  is deliberately asymmetric: leaving a genuine bare negative exponent as
+  written costs nothing downstream, while rewriting a range destroys the value
+  and leaves no trace of having done so.
+
+- **A converter-rule fix is no longer inert behind the conversion cache.** The
+  cache key carried the repair *flag* but not a version of the repair *rules*,
+  so a corrected rule kept serving text the superseded rule had produced and
+  the fix looked like it had done nothing. A rules version now joins the key —
+  only when repair is enabled, mirroring the flag, so a deployment with repair
+  off keeps every conversion it has already cached.
+
+- **A correction whose replacement the graph already held was undone as if it
+  had deleted and written nothing.** The per-fix rollback test asked "did it
+  write anything?" as the difference between the graph before and after. But a
+  REPLACE that removes one wrong property re-states the whole corrected node,
+  and the statements that were already right apply as no-ops — so the diff
+  showed only the delete, and the gate read a valid correction as the bare
+  deletion it exists to forbid. The test now judges "wrote nothing" against the
+  statements the patch *declared*, whether or not the graph already held them.
+  Such a fix still has to earn its place: with its replacement present and
+  nothing resolved it falls through to `no_progress`, and a fix that declares
+  no insert at all is a pure removal and is still `delete_only`. The effect
+  compounds where it was wrong, because the fixes being undone are exactly the
+  mandatory findings the acceptance gate then reads, so the unit is rejected
+  for a defect its own critique had corrected.
+
+- **A rollback warning now names the finding kinds the fix introduced.** It
+  reported only counts, which says a fix made things worse without saying how
+  — the one thing needed to tell a mis-scoped correction from a genuinely
+  destructive one.
+
+- **A fix payload typing a literal its own datatype cannot hold is refused
+  rather than applied.** The render path already quarantines such a literal;
+  the critic patch path handed it straight to rdflib, which admits it and then
+  re-derives the failed value on every later serialization, SPARQL compile and
+  validation walk of the unit graph — one logged conversion failure per literal
+  per pass. The fix is now sent back as residual and counted on the compiled
+  result, beside the unresolved-prefix and placeholder counters.
+
+- **A model that re-typed a prefix wrong lost every statement it wrote under
+  it.** A render or fix payload carries its own prefix declarations, and a
+  model writing one is transcribing namespaces it read in the prompt. The
+  declaration used to win outright, so a prefix bound to a plausible neighbour
+  of the real namespace — the observation vocabulary in place of the quantity
+  one, a hyphen dropped from a units IRI — turned every term under it into an
+  IRI no catalog declares. The payload then failed the unknown-term check as a
+  whole and was rolled back with everything it carried, including numbers the
+  model had read correctly out of the text. A prefix the run already binds is
+  now reconciled against that binding, in a JSON-LD `@context` and in Turtle
+  `@prefix` alike, and the override is logged; a prefix nothing binds is
+  untouched, so a genuinely new namespace still works. Values that a term
+  definition maps to a CURIE are not prefix bindings and are left alone.
+
+- **A prune that emptied a node stopped one step short of it.** Dropping a
+  placeholder value removes the one statement that pointed at it, and the
+  subject left behind can be a placeholder in turn — an observation with a type
+  and a label, no feature of interest, no result. That was the worst outcome
+  available: the record of an attempted extraction was gone and the
+  `sh:minCount` violation that fired on the subject was still in the report,
+  because the pass computes its violations before it prunes anything. The prune
+  now follows its own effect up the referrers, using the same test as the
+  direct prune, so the outcome is a clean removal rather than a stub beside a
+  standing violation. A subject that still asserts something of its own is
+  untouched and stays a reported finding.
+
+- **One non-vector request could un-index a tenancy scope for the life of the
+  process.** A scoped ToolBox is built for the mode of whichever request
+  reached it first and then cached, so a request outside vector-search mode
+  left the scope without a prepared vector store — and every later vector
+  request reused it, writing ontologies that were indexed nowhere and
+  retrieving nothing, with no error anywhere. A cached scope now has its vector
+  store prepared when a request needs one and it is not ready.
+
+- **Flushing a tenancy left the vector store marked ready after dropping its
+  collections.** `clean_tenancy` drops the collections and their embedding
+  metadata; readiness stayed true, so every later search in the process
+  addressed a collection that no longer existed. The flush now follows the
+  startup path — drop, recreate, and only then report ready — and says so when
+  the recreate fails instead of leaving the flag optimistic. Nothing is
+  reindexed, because the flush emptied the catalog an index would come from.
+
+- **`--wipe-vector-store` accepted a destructive flag and did nothing.** The
+  wipe sat inside the branch gated on vector-search context mode, so under any
+  other mode it wiped nothing, initialized nothing, logged nothing and exited
+  0. The wipe now runs whenever a vector store is configured, independently of
+  the mode, and says so when there is none to wipe. Whether the store is then
+  *initialized* is still the mode's decision.
 
 - **`/flush` validated its tenancy differently from every other route.** The
   one destructive, unauthenticated route carried an inline copy of the shared

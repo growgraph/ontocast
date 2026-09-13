@@ -839,3 +839,65 @@ def test_a_populated_catalog_and_index_starts(test_ontology) -> None:
             cast(ToolBox, stub), [test_ontology], required=True
         )
     )
+
+
+def test_wipe_is_honoured_outside_vector_search_mode(
+    monkeypatch, test_ontology
+) -> None:
+    """A destructive flag must never be accepted and silently ignored.
+
+    The wipe used to sit inside the branch gated on
+    ``SELECTED_VECTOR_SEARCH_ONTOLOGY``, so under any other context mode
+    ``--wipe-vector-store`` wiped nothing, initialized nothing, logged nothing
+    and exited 0 -- and a redeploy that meant to clear a stale partition before
+    reindexing left the old vectors in place.
+    """
+    monkeypatch.setattr("ontocast.toolbox.update_ontology_manager", AsyncMock())
+
+    class Stub:
+        async def _check_catalog_index_agreement(self, ontologies):
+            return None
+
+        async def _check_catalog_ready(self, ontologies, *, required):
+            return None
+
+        triple_store_manager = None
+        llm = MagicMock()
+        config = Config()
+
+        def __init__(self) -> None:
+            self.vector_store = MagicMock()
+            self.vector_store.initialize = AsyncMock()
+            self.vector_store.wipe_store = AsyncMock()
+            self.vector_store_ready = True
+            self.vector_store_last_error = None
+            self.ontology_manager = MagicMock()
+            self.shapes_catalog = MagicMock()
+            self.shapes_catalog.sync = AsyncMock()
+
+        async def _synchronize_ontologies(self):
+            return [test_ontology]
+
+        async def _materialize_ontology(self, _):
+            return None
+
+        def should_initialize_vector_store(self, ontology_context_mode):
+            return ToolBox.should_initialize_vector_store(
+                cast(ToolBox, self), ontology_context_mode
+            )
+
+        def is_vector_store_ready(self):
+            return self.vector_store_ready
+
+    st = Stub()
+    asyncio.run(
+        ToolBox.initialize(
+            cast(ToolBox, st),
+            ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
+            wipe_vector_store=True,
+        )
+    )
+
+    st.vector_store.wipe_store.assert_awaited_once()
+    st.vector_store.initialize.assert_not_awaited(), "the mode still governs init"
+    assert st.vector_store_ready is False, "a wiped store is not a ready store"

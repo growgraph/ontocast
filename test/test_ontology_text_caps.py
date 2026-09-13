@@ -46,6 +46,100 @@ def test_clip_cuts_on_a_word_boundary_and_marks_the_cut() -> None:
     assert "the quick brown fox" in clipped
 
 
+def test_clip_stops_at_the_first_sentence_of_a_long_description() -> None:
+    """The opening sentence is the definition; the rest elaborates for a human.
+
+    The cut is by content, so it may retain well under the cap rather than
+    filling it with elaboration an extractor never reads.
+    """
+    text = (
+        "A sample held under controlled conditions. "
+        "Historically this class was introduced to model storage inventories "
+        "and later generalised. "
+        "See the companion note for the full derivation."
+    )
+
+    clipped = clip_text(text, 120)
+
+    assert clipped == "A sample held under controlled conditions." + CLIP_MARKER
+
+
+def test_clip_keeps_the_clause_saying_when_the_term_applies() -> None:
+    """A term reduced to its definition can be applied where it must not be."""
+    text = (
+        "A measured quantity with a unit. "
+        "Use only when the source states the unit explicitly. "
+        "The class was renamed in a later revision of this catalog."
+    )
+
+    clipped = clip_text(text, 120)
+
+    assert clipped == (
+        "A measured quantity with a unit. "
+        "Use only when the source states the unit explicitly." + CLIP_MARKER
+    )
+
+
+def test_clip_cuts_on_a_sentence_boundary_not_mid_word() -> None:
+    text = (
+        "An observation recorded during an experiment. "
+        "The remainder of this comment is elaboration that no extractor reads "
+        "and that a word-boundary clip would cut in the middle of a clause."
+    )
+
+    clipped = clip_text(text, 120)
+
+    assert clipped.removesuffix(CLIP_MARKER).endswith(".")
+
+
+def test_clip_ignores_a_period_inside_an_abbreviation() -> None:
+    """``e.g.`` is not a sentence boundary; cutting there loses the example."""
+    text = (
+        "A qualifier applied to a reported value, e.g. an approximation cue. "
+        "A second sentence of elaboration follows here to force the clip."
+    )
+
+    clipped = clip_text(text, 120)
+
+    assert clipped == (
+        "A qualifier applied to a reported value, e.g. an approximation cue."
+        + CLIP_MARKER
+    )
+
+
+def test_a_one_sentence_description_within_the_cap_is_untouched() -> None:
+    text = "A sample held under controlled conditions."
+
+    assert clip_text(text, 200) == text
+
+
+def test_a_single_sentence_over_the_cap_still_falls_back_to_a_word_boundary() -> None:
+    """There is no sentence boundary inside it to prefer."""
+    text = "A sample held under controlled conditions for a prolonged period"
+
+    clipped = clip_text(text, 20)
+
+    assert clipped == "A sample held under" + CLIP_MARKER
+
+
+def test_a_scope_note_still_wins_over_a_comment() -> None:
+    """The trim bounds the prose; it must not change which prose is chosen."""
+    from ontocast.prompt.term_sheet import build_ontology_term_sheet
+
+    graph = RDFGraph()
+    graph.bind("ex", EX)
+    graph.add((EX.Term, RDF.type, OWL.Class))
+    graph.add((EX.Term, RDFS.label, Literal("term")))
+    graph.add((EX.Term, RDFS.comment, Literal("A human-facing description.")))
+    graph.add((EX.Term, SKOS.scopeNote, Literal("Use only for measured values.")))
+
+    condensed, _ = condense_graph_for_prompt(graph, None, TextCaps(contract=200))
+    sheet = build_ontology_term_sheet(condensed)
+
+    assert "note: Use only for measured values." in sheet
+    assert "A human-facing description." not in sheet
+
+
 def test_clip_falls_back_when_there_is_no_word_boundary() -> None:
     """A single long token still has to be bounded, marker included."""
     assert clip_text("x" * 40, 10) == "x" * 10 + CLIP_MARKER

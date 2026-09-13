@@ -31,6 +31,14 @@ logger = logging.getLogger(__name__)
 # practice of renaming the cache subdirectory.
 CONVERTER_CACHE_FORMAT_VERSION = 1
 
+# Bumped whenever a numeric-artifact repair rule changes the text it produces.
+# Without it a rule fix is inert wherever conversions are cached: the key is
+# the same, so the cache keeps serving text repaired by the old rule and the
+# fix looks like it did nothing. It joins the key only when the repair flag is
+# set -- with repair off no rule ran, so no rule version can have changed the
+# output, and pre-existing entries stay valid.
+CONVERTER_REPAIR_RULES_VERSION = 2
+
 
 def _build_layout_options(config: ConverterConfig) -> Any:
     pipeline_options_module = importlib.import_module(
@@ -230,7 +238,9 @@ class ConverterTool(Tool):
         # Off is the pre-existing output, so the flag joins the key only when
         # it changes the text: enabling it re-converts, leaving it off keeps
         # every conversion cached before the flag existed.
-        if not config_dict.get("repair_numeric_artifacts"):
+        if config_dict.get("repair_numeric_artifacts"):
+            config_dict["repair_rules_version"] = CONVERTER_REPAIR_RULES_VERSION
+        else:
             config_dict.pop("repair_numeric_artifacts", None)
         config_dict["cache_format_version"] = CONVERTER_CACHE_FORMAT_VERSION
         cached_result = self.cache.get(content_for_cache, config=config_dict)

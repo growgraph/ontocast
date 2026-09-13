@@ -410,6 +410,7 @@ def test_closed_range_suggestions_match_case_exactly() -> None:
 
 
 def test_collect_unit_findings_numeric_coverage_is_advisory() -> None:
+    """A bare number leaves its unit-adjacent mention missing, still advisory."""
     graph = _facts('cd:v qudt:numericValue "96"^^xsd:decimal .')
     findings = collect_unit_findings(
         graph=graph,
@@ -425,9 +426,9 @@ def test_collect_unit_findings_numeric_coverage_is_advisory() -> None:
     ]
     assert len(coverage) == 1
     assert not coverage[0].mandatory
+    assert "96" in coverage[0].value
     assert "12.5" in coverage[0].message
     assert "77" in coverage[0].message
-    assert "96" not in coverage[0].value
 
 
 def test_format_findings_for_prompt_sections() -> None:

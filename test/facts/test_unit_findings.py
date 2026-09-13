@@ -295,12 +295,56 @@ def test_a_label_number_no_longer_silences_the_measurement_finding() -> None:
     assert "96" in findings["measurements"].value
 
 
-def test_an_extracted_value_leaves_the_finding() -> None:
+def test_a_bare_extracted_value_does_not_clear_the_measurement_finding() -> None:
+    """A number without its unit is not the measurement the text stated."""
     graph = RDFGraph()
     graph.add((CD.v1, QUDT.numericValue, Literal("96", datatype=XSD.decimal)))
     graph.add((CD.v2, QUDT.numericValue, Literal("77", datatype=XSD.decimal)))
 
     findings = _coverage(_TEXT, graph)
+
+    assert findings["measurements"].value == "96, 77"
+    assert findings["unclassified"].value == "3"
+
+
+def test_a_structured_quantity_with_matching_unit_clears_the_finding() -> None:
+    """Coverage keys the measurement lane on ``(number, unit)``."""
+    from ontocast.onto.model import FactsUnitFindingKind
+    from ontocast.prompt.facts_guidelines import DEFAULT_QUANTITY_FALLBACK_VOCABULARY
+    from ontocast.tool.facts_validation import collect_unit_findings
+    from ontocast.tool.facts_validation.terms import ValidationPolicy
+
+    ontology = RDFGraph()
+    ontology.bind("qudt", QUDT)
+    ontology.add((QUDT.unit, RDF.type, OWL.ObjectProperty))
+    ontology.add((QUDT.unit, RDFS.range, QUDT.Unit))
+    ontology.add((QUDT.Unit, RDF.type, OWL.Class))
+    ontology.add((UNIT.MilliEV, RDF.type, QUDT.Unit))
+    ontology.add((UNIT.MilliEV, RDFS.label, Literal("meV")))
+    ontology.add((UNIT.K, RDF.type, QUDT.Unit))
+    ontology.add((UNIT.K, RDFS.label, Literal("K")))
+
+    graph = RDFGraph()
+    graph.bind("qudt", QUDT)
+    graph.add((CD.v1, QUDT.numericValue, Literal("96", datatype=XSD.decimal)))
+    graph.add((CD.v1, QUDT.unit, UNIT.MilliEV))
+    graph.add((CD.v2, QUDT.numericValue, Literal("77", datatype=XSD.decimal)))
+    graph.add((CD.v2, QUDT.unit, UNIT.K))
+
+    findings = {
+        finding.facet: finding
+        for finding in collect_unit_findings(
+            graph=graph,
+            ontology_graph=ontology,
+            quarantined=[],
+            extraction_text=_TEXT,
+            fact_namespaces=[str(CD)],
+            policy=ValidationPolicy(
+                quantity_fallback_vocabulary=dict(DEFAULT_QUANTITY_FALLBACK_VOCABULARY)
+            ),
+        )
+        if finding.kind == FactsUnitFindingKind.NUMERIC_COVERAGE
+    }
 
     assert "measurements" not in findings
     assert findings["unclassified"].value == "3"

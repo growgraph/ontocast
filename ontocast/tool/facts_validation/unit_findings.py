@@ -81,9 +81,11 @@ def unit_numeric_inventory(
 
     The unit surfaces come from the unit individuals of the ontology context
     (found through the configured unit-role property), so a catalog-specific
-    unit counts as a measurement once the catalog declares it. Shared by the
-    coverage findings and the completion pass, which must agree on what is
-    missing.
+    unit counts as a measurement once the catalog declares it. Measurements
+    are judged against structured ``(number, unit)`` pairs in the graph —
+    a bare numeric literal does not clear a unit-adjacent mention. Shared by
+    the coverage findings and the completion pass, which must agree on what
+    is missing.
     """
     policy = policy or ValidationPolicy()
     unit_properties = expand_vocabulary_terms(
@@ -91,10 +93,18 @@ def unit_numeric_inventory(
         graph,
         ontology_graph,
     )
+    numeric_value_properties = expand_vocabulary_terms(
+        _vocabulary_role_subset(policy.quantity_fallback_vocabulary, "numeric_value"),
+        graph,
+        ontology_graph,
+    )
     return missing_numeric_inventory(
         extraction_text,
         graph,
         unit_surfaces=unit_surfaces_in_ontology(ontology_graph, unit_properties),
+        ontology_graph=ontology_graph,
+        numeric_value_properties=numeric_value_properties,
+        unit_properties=unit_properties,
         ignore_identifier_fragments=policy.numeric_identifier_guard,
         limit=limit,
     )

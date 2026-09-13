@@ -367,6 +367,7 @@ async def render_facts_fresh(
 
     prompt = _create_prompt_template()
 
+    previous_prefixes = RDFGraph.get_known_prefixes()
     try:
         # Set known prefixes in context before parsing
         RDFGraph.set_known_prefixes(known_prefixes if known_prefixes else None)
@@ -431,5 +432,7 @@ async def render_facts_fresh(
     except Exception as e:
         return _handle_rendering_error(state, e, FailureStage.GENERATE_TTL_FOR_FACTS)
     finally:
-        # Clear the context after parsing
-        RDFGraph.set_known_prefixes(None)
+        # Restore the loop-level catalog map (or whatever was there), rather
+        # than clearing to None — the critic and completion passes still need
+        # it after this render returns.
+        RDFGraph.set_known_prefixes(previous_prefixes)

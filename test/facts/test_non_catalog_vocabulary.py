@@ -126,6 +126,40 @@ def test_chunk_metadata_predicates_are_not_flagged() -> None:
     assert flagged == {}
 
 
+def test_document_metadata_predicates_are_not_flagged() -> None:
+    """The pipeline's document-node scaffolding is not renderer vocabulary.
+
+    ``apply_document_metadata_provenance`` types the document as
+    ``foaf:Document`` and may attach ``dcterms:title`` / ``dcterms:issued`` /
+    ``dcterms:source`` / ``dcterms:identifier``. Those terms were reported as
+    retrieval misses on every unit because they are not in the retrieved
+    snapshot either — the exemption must come from the same constant that
+    names what the pipeline writes.
+    """
+    facts = f"""
+    @prefix rdfs:    <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:     <http://www.w3.org/2001/XMLSchema#> .
+    @prefix prov:    <http://www.w3.org/ns/prov#> .
+    @prefix foaf:    <http://xmlns.com/foaf/0.1/> .
+    @prefix dcterms: <http://purl.org/dc/terms/> .
+    @prefix matsci:  <{MATSCI}> .
+    @prefix cd:      <{FACTS}> .
+
+    cd:sl_sample_1 a matsci:SuperlatticeSample ;
+        rdfs:label "sample" ;
+        matsci:describesMaterial cd:cspbbr3 .
+
+    <{FACTS}doc/paper> a foaf:Document, prov:Entity ;
+        dcterms:title "A perovskite aging study" ;
+        dcterms:issued "2019" ;
+        dcterms:identifier "10.1234/example" ;
+        dcterms:source <https://doi.org/10.1234/example> .
+    """
+    flagged = _non_catalog(_report(facts))
+
+    assert flagged == {}
+
+
 def test_findings_are_warnings_not_errors() -> None:
     """Telemetry about context assembly must not drive the un-merge repair."""
     for finding in _non_catalog(_report()).values():

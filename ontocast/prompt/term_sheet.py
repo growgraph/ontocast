@@ -218,6 +218,11 @@ def _term_line(graph: RDFGraph, subject: URIRef, *, kind: str) -> list[str]:
     # the comment is the ONLY prose they have -- dropping it would leave the
     # term as a name and a parent, which is a loss of content rather than a
     # re-encoding of it, and no cheaper representation can recover it.
+    #
+    # Its length is bounded upstream, not here: TextCaps clips the literals
+    # before the snapshot reaches any chapter format, and clips by content --
+    # opening sentence plus any clause saying when the term applies. Bounding
+    # it here instead would bound only this one format.
     note = _first_text(graph, subject, SKOS.scopeNote, SKOS.definition, RDFS.comment)
     if note:
         lines.append(f"      note: {note}")

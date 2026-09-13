@@ -592,12 +592,16 @@ reports, and the right setting depends on the corpus:
   quantities on one node are a defect whatever their provenance.
 - **`FACTS_NUMERIC_IDENTIFIER_GUARD`.** The numeric-coverage finding lists
   numbers present in the source text but absent from the graph, and the repair
-  render acts on it. Digit groups sitting against an identifier separator
-  (`600/92`, `10.1234/example`) are parts of one identifier, not quantities;
-  offering them invites the repair to structure a file number into numeric
-  properties, which the post-merge multi-value check then flags. A digit group
-  standing alone as its own token is deliberately *not* covered — nothing around
-  it distinguishes a file-number component from a small quantity — and a value
+  / completion passes act on it. Measurements — a number written next to its
+  unit — are judged against structured `(number, unit)` pairs in the graph: a
+  bare numeric literal, or the same number under a different unit, does not
+  clear a unit-adjacent mention. Bare numbers stay on the number-only presence
+  set. Digit groups sitting against an identifier separator (`600/92`,
+  `10.1234/example`) are parts of one identifier, not quantities; offering
+  them invites the repair to structure a file number into numeric properties,
+  which the post-merge multi-value check then flags. A digit group standing
+  alone as its own token is deliberately *not* covered — nothing around it
+  distinguishes a file-number component from a small quantity — and a value
   with its unit (`8.5 nm`) or a range (`10-15 meV`) is untouched.
 - **`FACTS_CONTEXT_FROM_UNITS`** (on by default). With `RENDER_MODE=facts` no ontology stage
   runs, so there are no reduced artifacts to merge and the document-level

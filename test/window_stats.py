@@ -45,6 +45,28 @@ _CLICK_DIR = click.Path(path_type=pathlib.Path, file_okay=False, exists=True)
 #: The sentence-count settings worth characterising: the shipped default is 2.
 _SENTENCE_SETTINGS = (1, 2, 3, 5)
 
+#: Window *shapes* worth characterising beside the sentence bound, as keyword
+#: arguments to the splitter. Each answers the same two questions the sentence
+#: table does -- how long is a window, and how many does a unit yield -- which
+#: is what makes windows-per-unit readable as the cost of a shape rather than
+#: as an incidental of the corpus. Recall is measured elsewhere; this is the
+#: cost axis alone.
+_SHAPES: dict[str, dict[str, Any]] = {
+    "baseline": {},
+    "abbrev": {"abbreviation_aware": True},
+    "t48": {"max_tokens": 48, "abbreviation_aware": True},
+    "t64": {"max_tokens": 64, "abbreviation_aware": True},
+    "t96": {"max_tokens": 96, "abbreviation_aware": True},
+    "t64-ov25": {"max_tokens": 64, "abbreviation_aware": True, "overlap": 0.25},
+    "t64-ov50": {"max_tokens": 64, "abbreviation_aware": True, "overlap": 0.50},
+    "s2-ov1": {"stride": 1},
+    "meas": {
+        "max_tokens": 64,
+        "abbreviation_aware": True,
+        "measurement_aware": True,
+    },
+}
+
 
 def _percentile(values: list[int], fraction: float) -> int:
     """Nearest-rank percentile; plain and dependency-free."""
@@ -110,13 +132,17 @@ def _encoder() -> tuple[Any, int | None]:
 
 def _measure(
     texts: list[str],
-    max_sentences: int,
     max_windows: int,
     encoder: Any,
     limit: int | None,
+    label: str = "",
+    **shape: Any,
 ) -> dict[str, Any]:
     """Window every text and describe the windows produced."""
     from ontocast.tool.chunk.proposition import split_proposition_windows
+
+    if shape.get("max_tokens") is not None:
+        shape.setdefault("token_counter", encoder.token_lengths)
 
     chars: list[int] = []
     per_unit: list[int] = []
@@ -124,13 +150,9 @@ def _measure(
     dropped_windows = 0
 
     for text in texts:
-        windows = split_proposition_windows(
-            text, max_sentences=max_sentences, max_windows=max_windows
-        )
+        windows = split_proposition_windows(text, max_windows=max_windows, **shape)
         # What the unit *would* have produced without the cap, to see the loss.
-        uncapped = split_proposition_windows(
-            text, max_sentences=max_sentences, max_windows=10**6
-        )
+        uncapped = split_proposition_windows(text, max_windows=10**6, **shape)
         if len(uncapped) > max_windows:
             capped_units += 1
             dropped_windows += len(uncapped) - len(windows)
@@ -138,7 +160,8 @@ def _measure(
         chars.extend(len(w) for w in windows)
 
     row: dict[str, Any] = {
-        "max_sentences": max_sentences,
+        "label": label,
+        "max_sentences": shape.get("max_sentences", 2),
         "windows": len(chars),
         "chars_min": min(chars) if chars else 0,
         "chars_median": int(statistics.median(chars)) if chars else 0,
@@ -158,9 +181,7 @@ def _measure(
         all_windows: list[str] = []
         for text in texts:
             all_windows.extend(
-                split_proposition_windows(
-                    text, max_sentences=max_sentences, max_windows=10**6
-                )
+                split_proposition_windows(text, max_windows=10**6, **shape)
             )
         counts = encoder.token_lengths(all_windows)
         if counts is None:
@@ -183,6 +204,20 @@ def _measure(
     return row
 
 
+def _row_line(head: str, row: dict[str, Any]) -> str:
+    """One table line; the head column is the setting or shape being described."""
+    return (
+        f"  {head}{row['windows']:>7}"
+        f"{row['chars_median']:>8}{row['chars_p90']:>8}{row['chars_max']:>8}"
+        f"{row.get('tokens_median', 0):>9}{row.get('tokens_p90', 0):>9}"
+        f"{row.get('over_limit_pct', 0.0):>7.0f}%"
+        f"{row.get('chars_per_token', 0.0):>8.2f}"
+        f"{row['windows_per_unit_median']:>8}"
+        f"{row['units_hitting_window_cap']:>8}"
+        f"{row['windows_dropped_by_cap']:>8}"
+    )
+
+
 @click.command()
 @click.option("--corpus", "corpora", multiple=True, type=_CLICK_DIR)
 @click.option(
@@ -203,17 +238,29 @@ def _measure(
     show_default=True,
     help="The PROPOSITION_MAX_WINDOWS cap under test.",
 )
+@click.option(
+    "--shape",
+    "shapes",
+    multiple=True,
+    type=click.Choice(sorted(_SHAPES)),
+    help="Window shape to characterise beside the sentence table; repeat, or "
+    "pass --all-shapes.",
+)
+@click.option("--all-shapes", is_flag=True, help="Characterise every known shape.")
 @click.option("--json-out", type=click.Path(path_type=pathlib.Path), default=None)
 def main(
     corpora: tuple[pathlib.Path, ...],
     source_dir: pathlib.Path | None,
     passage_chars: tuple[int, ...],
     max_windows: int,
+    shapes: tuple[str, ...],
+    all_shapes: bool,
     json_out: pathlib.Path | None,
 ) -> None:
     """Report window length and window-budget pressure per sentence setting."""
     if not corpora and not source_dir:
         raise click.UsageError("pass --corpus and/or --source-dir")
+    shapes = tuple(sorted(_SHAPES)) if all_shapes else shapes
 
     encoder, limit = _encoder()
     click.echo(
@@ -253,18 +300,25 @@ def main(
         )
         rows = []
         for setting in _SENTENCE_SETTINGS:
-            row = _measure(texts, setting, max_windows, encoder, limit)
-            rows.append(row)
-            click.echo(
-                f"  {row['max_sentences']:>4}{row['windows']:>7}"
-                f"{row['chars_median']:>8}{row['chars_p90']:>8}{row['chars_max']:>8}"
-                f"{row.get('tokens_median', 0):>9}{row.get('tokens_p90', 0):>9}"
-                f"{row.get('over_limit_pct', 0.0):>7.0f}%"
-                f"{row.get('chars_per_token', 0.0):>8.2f}"
-                f"{row['windows_per_unit_median']:>8}"
-                f"{row['units_hitting_window_cap']:>8}"
-                f"{row['windows_dropped_by_cap']:>8}"
+            row = _measure(
+                texts,
+                max_windows,
+                encoder,
+                limit,
+                label=f"s{setting}",
+                max_sentences=setting,
             )
+            rows.append(row)
+            click.echo(_row_line(f"{row['max_sentences']:>4}", row))
+
+        if shapes:
+            click.echo(f"\n  {'shape':>10}  (windows/unit is the cost axis)")
+            for label in shapes:
+                row = _measure(
+                    texts, max_windows, encoder, limit, label=label, **_SHAPES[label]
+                )
+                rows.append(row)
+                click.echo(_row_line(f"{label:>10}", row))
         results[name] = rows
 
     if json_out is not None:

@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from ontocast.config import Config, ToolConfig
 from ontocast.config.settings import PathConfig
-from ontocast.onto.enum import VectorStoreBackend
+from ontocast.onto.enum import OntologyContextMode, VectorStoreBackend
 from ontocast.onto.tenancy import TenancyScope
 from ontocast.registry import ToolBoxRegistry
 from ontocast.runtime import ToolBoxRuntime
@@ -287,3 +287,58 @@ async def test_aclose_closes_scoped_toolboxes(tmp_path) -> None:
     await tools.aclose()
 
     assert tools._registry is None
+
+
+@pytest.mark.anyio
+async def test_a_cached_scope_gains_its_vector_store_when_a_later_request_needs_it(
+    tmp_path,
+) -> None:
+    """One non-vector request must not decide the mode for a whole process.
+
+    A scope is built for whichever request reached it first and then cached for
+    the process lifetime. Without an upgrade on reuse, the ontologies written
+    through that scope were indexed nowhere and every later vector request
+    retrieved nothing -- silently, because a store that was never initialized
+    reports no error.
+    """
+    base = _config(tmp_path)
+    registry = ToolBoxRegistry(base, ToolBoxRuntime(base, llm=STUB_LLM))
+    scope = TenancyScope.build("acme", "p1")
+
+    tools = await registry.get(scope, ontology_context_mode=None)
+    assert not tools.is_vector_store_ready()
+
+    prepared: list[Any] = []
+
+    async def initialize(**kwargs: Any) -> None:
+        prepared.append(kwargs)
+
+    stub = cast(Any, tools)
+    stub.should_initialize_vector_store = lambda mode: mode is not None
+    stub.initialize = initialize
+
+    again = await registry.get(
+        scope, ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+    )
+
+    assert again is tools, "the scope is still cached, not rebuilt"
+    assert len(prepared) == 1
+    assert prepared[0]["wipe_vector_store"] is False, "an upgrade never wipes"
+
+
+@pytest.mark.anyio
+async def test_a_ready_scope_is_not_reinitialized_on_every_request(tmp_path) -> None:
+    base = _config(tmp_path)
+    registry = ToolBoxRegistry(base, ToolBoxRuntime(base, llm=STUB_LLM))
+    scope = TenancyScope.build("acme", "p1")
+    tools = await registry.get(scope)
+
+    calls: list[Any] = []
+    stub = cast(Any, tools)
+    stub.should_initialize_vector_store = lambda mode: True
+    stub.is_vector_store_ready = lambda: True
+    stub.initialize = lambda **kwargs: calls.append(kwargs)
+
+    await registry.get(scope, ontology_context_mode="anything")
+
+    assert calls == []

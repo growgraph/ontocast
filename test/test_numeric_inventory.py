@@ -68,6 +68,7 @@ def test_numeric_literals_in_graph_can_include_annotations() -> None:
 
 
 def test_missing_numeric_mentions() -> None:
+    """A bare numeric literal does not clear a unit-adjacent mention."""
     graph = RDFGraph()
     graph.add(
         (
@@ -77,7 +78,45 @@ def test_missing_numeric_mentions() -> None:
         )
     )
     missing = missing_numeric_mentions("shifts of 96 meV and 12.5 meV", graph)
-    assert missing == ["12.5"]
+    assert missing == ["96", "12.5"]
+
+
+def test_missing_measurement_needs_matching_unit() -> None:
+    """``96 K`` in the graph does not cover a ``96 meV`` mention."""
+    from rdflib import OWL, RDF, RDFS
+
+    from ontocast.util.numeric_inventory import missing_numeric_inventory
+
+    QUDT = "http://qudt.org/schema/qudt/"
+    UNIT = "http://qudt.org/vocab/unit/"
+    ontology = RDFGraph()
+    ontology.bind("qudt", QUDT)
+    ontology.add((URIRef(f"{QUDT}unit"), RDFS.range, URIRef(f"{QUDT}Unit")))
+    ontology.add((URIRef(f"{QUDT}Unit"), RDF.type, OWL.Class))
+    ontology.add((URIRef(f"{UNIT}K"), RDF.type, URIRef(f"{QUDT}Unit")))
+    ontology.add((URIRef(f"{UNIT}K"), RDFS.label, Literal("K")))
+    ontology.add((URIRef(f"{UNIT}MilliEV"), RDF.type, URIRef(f"{QUDT}Unit")))
+    ontology.add((URIRef(f"{UNIT}MilliEV"), RDFS.label, Literal("meV")))
+
+    graph = RDFGraph()
+    graph.bind("qudt", QUDT)
+    graph.add(
+        (
+            URIRef("http://x/s"),
+            URIRef(f"{QUDT}numericValue"),
+            Literal("96", datatype=XSD.decimal),
+        )
+    )
+    graph.add((URIRef("http://x/s"), URIRef(f"{QUDT}unit"), URIRef(f"{UNIT}K")))
+
+    inventory = missing_numeric_inventory(
+        "shifts of 96 meV and 96 K",
+        graph,
+        ontology_graph=ontology,
+        numeric_value_properties={f"{QUDT}numericValue"},
+        unit_properties={f"{QUDT}unit"},
+    )
+    assert [(m.value, m.unit) for m in inventory.measurements] == [("96", "meV")]
 
 
 # ---------------------------------------------------------------------------
@@ -183,12 +222,23 @@ def test_inventory_splits_measurements_from_bare_numbers() -> None:
     assert "a red shift of 10-15 meV" in inventory.measurements[0].context
 
 
-def test_inventory_keeps_one_mention_per_value_in_text_order() -> None:
+def test_inventory_keeps_one_mention_per_value_unit_in_text_order() -> None:
     from ontocast.util.numeric_inventory import inventory_numeric_mentions
 
     inventory = inventory_numeric_mentions("96 meV here, and 96 meV again, 5 nm")
 
     assert [m.value for m in inventory.measurements] == ["96", "5"]
+
+
+def test_inventory_keeps_same_number_under_different_units() -> None:
+    from ontocast.util.numeric_inventory import inventory_numeric_mentions
+
+    inventory = inventory_numeric_mentions("96 meV here and 96 K there")
+
+    assert [(m.value, m.unit) for m in inventory.measurements] == [
+        ("96", "meV"),
+        ("96", "K"),
+    ]
 
 
 def test_snapshot_unit_surfaces_widen_the_measurement_lane() -> None:
@@ -207,6 +257,7 @@ def test_snapshot_unit_surfaces_widen_the_measurement_lane() -> None:
 
 
 def test_missing_inventory_lists_measurements_first_then_bare_numbers() -> None:
+    """Bare numeric literals leave unit-adjacent mentions missing."""
     from ontocast.util.numeric_inventory import missing_numeric_inventory
 
     graph = RDFGraph()
@@ -221,11 +272,11 @@ def test_missing_inventory_lists_measurements_first_then_bare_numbers() -> None:
         "shifts of 96 meV and 12.5 meV over 3 samples at 250 K", graph
     )
 
-    assert [m.value for m in inventory.measurements] == ["12.5", "250"]
+    assert [m.value for m in inventory.measurements] == ["96", "12.5", "250"]
     assert inventory.unclassified == ["3"]
     assert missing_numeric_mentions(
         "shifts of 96 meV and 12.5 meV over 3 samples at 250 K", graph
-    ) == ["12.5", "250", "3"]
+    ) == ["96", "12.5", "250", "3"]
 
 
 def test_the_cap_drops_bare_numbers_before_measurements() -> None:

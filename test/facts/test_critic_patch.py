@@ -456,7 +456,50 @@ def test_a_jsonld_payload_with_an_unbound_prefix_is_refused() -> None:
     assert len(graph) == len(_graph()), "no ghost subject may be inserted"
 
 
-def test_a_declared_context_wins_over_the_units_binding() -> None:
+def test_a_catalog_prefix_the_unit_graph_lacks_still_compiles() -> None:
+    """The unit loop's catalog map fills prefixes a fix introduces for the first time.
+
+    Render used to clear the catalog map before the critic ran, so a prefix the
+    unit graph had never bound was reconciled against nothing and the fix was
+    refused as unresolved. The catalog map under the unit graph's bindings is
+    what makes a first-use prefix expand.
+    """
+    qqval = "https://growgraph.dev/ontologies/qqval#"
+    graph = _graph()
+    previous = RDFGraph.get_known_prefixes()
+    RDFGraph.set_known_prefixes({"qqval": qqval, "cd": CD, "matsci": MATSCI})
+    try:
+        fix = _fix(
+            "ADD",
+            correct=(
+                '{"@id": "cd:value_1", "@type": "qqval:QualifiedQuantityValue", '
+                '"rdfs:label": "ratio"}'
+            ),
+        )
+        compiled = compile_critic_fixes([fix], graph)
+    finally:
+        RDFGraph.set_known_prefixes(previous)
+
+    assert compiled.unresolved_prefix == 0
+    assert compiled.update is not None
+    apply_compiled_patch(graph, compiled.update)
+    assert (
+        URIRef(f"{CD}value_1"),
+        URIRef("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+        URIRef(f"{qqval}QualifiedQuantityValue"),
+    ) in graph
+
+
+def test_the_units_binding_wins_over_a_declared_context() -> None:
+    """A payload rebinding a prefix the graph binds is corrected, not honoured.
+
+    The critic is re-transcribing namespaces it was shown next to the
+    statements it is correcting, so a declaration that disagrees with the graph
+    under repair is a transcription error. Honouring it costs the whole fix:
+    every term under that prefix becomes an IRI no catalog declares, the
+    payload trips the unknown-term check, and the patch is rolled back carrying
+    whatever it proposed.
+    """
     graph = _graph()
     fix = _fix(
         "ADD",
@@ -471,10 +514,11 @@ def test_a_declared_context_wins_over_the_units_binding() -> None:
     assert compiled.update is not None
     apply_compiled_patch(graph, compiled.update)
     assert (
-        URIRef("https://other.example/s"),
+        URIRef(f"{CD}s"),
         URIRef(f"{RDFS_NS}label"),
         Literal("elsewhere"),
     ) in graph
+    assert (URIRef("https://other.example/s"), None, None) not in graph
 
 
 def test_a_turtle_payload_with_a_bracketed_curie_is_refused() -> None:
@@ -499,6 +543,72 @@ def test_a_removal_by_id_ignores_an_unbound_prefix_in_correct_value() -> None:
 
     assert compiled.update is not None
     assert compiled.unresolved_prefix == 0
+
+
+# --- literals a datatype cannot hold ------------------------------------------
+#
+# The render path quarantines these; the patch path used to hand them straight
+# to rdflib, which re-derives the failed value on every later serialization,
+# SPARQL compile and validation walk of the unit graph.
+
+
+@pytest.mark.parametrize(
+    "correct",
+    [
+        f'<{CD}sample_1> <{MATSCI}value> "10^-15"^^'
+        "<http://www.w3.org/2001/XMLSchema#decimal> .",
+        '{"@id": "cd:sample_1", "matsci:value": '
+        '{"@value": "10^-15", "@type": "xsd:decimal"}}',
+    ],
+    ids=["turtle", "jsonld"],
+)
+def test_a_fix_typing_an_unparseable_number_is_refused(correct: str) -> None:
+    graph = _graph()
+    fix = _fix("ADD", correct=correct)
+
+    compiled = compile_critic_fixes([fix], graph)
+
+    assert compiled.update is None
+    assert compiled.residual == [fix]
+    assert compiled.quarantined_literal == 1
+    assert len(graph) == len(_graph()), "the bad literal never enters the graph"
+
+
+def test_a_valid_typed_number_still_compiles() -> None:
+    """Only a lexical form its own datatype rejects is refused."""
+    graph = _graph()
+    fix = _fix(
+        "ADD",
+        correct=(
+            f'<{CD}sample_1> <{MATSCI}value> "1.5"^^'
+            "<http://www.w3.org/2001/XMLSchema#decimal> ."
+        ),
+    )
+
+    compiled = compile_critic_fixes([fix], graph)
+
+    assert compiled.quarantined_literal == 0
+    assert compiled.update is not None
+
+
+def test_a_removal_by_id_ignores_a_bad_literal_in_correct_value() -> None:
+    """The id is what a REMOVE acts on; its unused payload cannot veto it."""
+    graph = _graph()
+    index = build_triple_index(graph)
+    label_id = _id_of(index, "label")
+    fix = _fix(
+        "REMOVE",
+        correct=(
+            f'<{CD}sample_1> <{MATSCI}value> "10^-15"^^'
+            "<http://www.w3.org/2001/XMLSchema#decimal> ."
+        ),
+        triple_ids=[label_id],
+    )
+
+    compiled = compile_critic_fixes([fix], graph, index=index)
+
+    assert compiled.update is not None
+    assert compiled.quarantined_literal == 0
 
 
 # --- placeholders are not fixes ----------------------------------------------
