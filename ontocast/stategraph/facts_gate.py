@@ -131,6 +131,11 @@ def run_facts_gate(
 
     facts_validation = tools.config.get_tool_config().facts_validation
     shapes_graph = collect_shacl_shapes(ontology_graph, tools.shapes_catalog.graph())
+    # The check must see what the unit validator sees, or it reports
+    # contradictions no unit ever raised: the whole catalog rather than the
+    # union of retrieved snapshots (a term a snapshot omitted is still a
+    # term), and the shapes-contract exemptions the unit loop applies.
+    _, contract_terms, _ = tools.shapes_prompt_contract()
     contradictions = shacl_catalog_contradictions(
         shapes_graph,
         ontology_graph,
@@ -140,7 +145,9 @@ def run_facts_gate(
             ),
             quantity_fallback_vocabulary=facts_validation.quantity_fallback_vocabulary,
             code_predicates=tuple(facts_validation.code_predicates),
+            contract_exempt_terms=contract_terms,
         ),
+        catalog_terms=tools.ontology_manager.catalog_terms(),
     )
     if contradictions:
         # Data cannot satisfy both sides: the shapes demand these properties

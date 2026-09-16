@@ -328,6 +328,8 @@ def _fake_tools(
         SimpleNamespace(
             aggregator=aggregator,
             shapes_catalog=SimpleNamespace(graph=lambda: shapes),
+            shapes_prompt_contract=lambda: ("", (), False),
+            ontology_manager=SimpleNamespace(catalog_terms=lambda: set()),
             config=SimpleNamespace(
                 get_tool_config=lambda: SimpleNamespace(
                     facts_validation=facts_validation

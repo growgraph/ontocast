@@ -414,7 +414,7 @@ def _override_conflicting_declarations(
             continue
         if declared == bindings[prefix]:
             continue
-        logger.warning(
+        logger.debug(
             "Critic payload declares prefix %r as <%s>; the unit graph binds "
             "it to <%s> -- overriding the payload",
             prefix,

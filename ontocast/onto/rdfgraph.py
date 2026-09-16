@@ -107,7 +107,10 @@ def copy_triples(source: Iterable, target: Graph, *, origin: str) -> int:
             continue
         target.add(triple)
     if dropped:
-        logger.warning(
+        # Expected on every graph the aggregator annotated: its rdf:reifies
+        # provenance is triple-term syntax, which the rdflib copy for SHACL
+        # cannot hold. Not a loss -- the facts dump keeps them.
+        logger.debug(
             "%s: dropped %d RDF 1.2 triple-term triple(s); rdflib graphs cannot "
             "hold them",
             origin,
@@ -1169,7 +1172,7 @@ class RDFGraph(Graph):
                     continue
                 if not _is_namespace_declaration(declared) or declared == uri:
                     continue
-                logger.warning(
+                logger.debug(
                     "JSON-LD payload declares prefix %r as <%s>; the run binds "
                     "it to <%s> -- overriding the payload",
                     prefix,

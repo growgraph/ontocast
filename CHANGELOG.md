@@ -535,6 +535,16 @@ change.
 
 ### Changed
 
+- **Three per-occurrence warnings are now DEBUG or INFO.** A prefix
+  declaration a payload gets wrong is reconciled by design and logged at
+  DEBUG (JSON-LD payloads and critic patches alike; the outcome is what the
+  rollback counters record). The aggregator's `rdf:reifies` provenance is
+  triple-term syntax the rdflib copy taken for SHACL cannot hold; skipping it
+  there loses nothing, so it is DEBUG too. Segments left without a section
+  label are the normal state of headingless text and are logged at INFO --
+  the manifest's `section_label_histogram` is the record. Together these were
+  most of a run's WARNING volume and hid the ones that matter.
+
 - **A text cap now cuts by content rather than by position.** Where a cap
   fires, the retained text is the term's opening sentence — usually its
   definition — plus at most one following sentence that states when the term
@@ -859,6 +869,33 @@ change.
   critic uses `format_facts_chapter_indexed`.
 
 ### Fixed
+
+- **The gate's shapes-vs-validator cross-check no longer reports contradictions
+  the validator never raises.** It judged every shape-required property
+  against the union of the units' *retrieved* snapshots and without the
+  shapes-contract exemptions, while the unit validator judges unknown terms
+  against the whole catalog with those exemptions applied. A property the
+  catalog declares but no unit retrieved was therefore logged, per document,
+  as a catalog error that would "silently destroy extracted data" -- which it
+  cannot, because no unit is ever ordered to remove it.
+  `shacl_catalog_contradictions` takes the full catalog's terms and the same
+  policy the unit loop uses.
+
+- **A unit chosen by case-folded symbol is now a mandatory finding.** Symbol
+  surfaces are case-significant, and a catalog may hold two units whose symbols
+  differ by letter case alone, a prefix apart in magnitude. Retrieval and the
+  completion pass's term sheet can offer both side by side, and a render that
+  picks the wrong one produced a value nothing checked: numeric, on a real
+  catalog individual, shape-conformant, a factor wrong.
+  `UNIT_SYMBOL_CASE_MISMATCH` fires when a value node's number is written in
+  the unit's text next to a token that equals the assigned unit's declared
+  symbol only after case folding **and** another catalog unit declares that
+  token exactly; the exact-match unit is the suggestion. Symbols come from the
+  catalog's own symbol, notation and code literals, never from a compiled
+  list, and a case variant with no competing unit is a spelling, not a
+  finding. The completion prompt's output example no longer shows a real unit
+  IRI, which the model reused, and its term sheet now states that symbols are
+  case-sensitive.
 
 - **Numeric coverage is unit-aware on the measurement lane.** A unit-adjacent
   mention (`96 meV`) used to clear whenever *any* literal in the graph carried

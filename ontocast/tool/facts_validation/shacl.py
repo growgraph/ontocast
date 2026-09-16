@@ -8,7 +8,7 @@ unknown silently destroys extracted data.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from typing import Literal as TypingLiteral
 
 from pydantic import BaseModel, Field
@@ -221,6 +221,7 @@ def shacl_catalog_contradictions(
     ontology_graph: RDFGraph | None,
     *,
     policy: ValidationPolicy | None = None,
+    catalog_terms: Collection[str] | None = None,
 ) -> list[str]:
     """Property paths the shapes require but the unit validator would flag.
 
@@ -231,10 +232,24 @@ def shacl_catalog_contradictions(
     in practice, where shapes required ``qudt:numericValue``
     while the validator's mandatory findings drove repair renders to delete
     it. Callers log the returned IRIs as configuration errors.
+
+    Args:
+        shapes_graph: The shapes the gate validates against.
+        ontology_graph: The ontology context the facts were rendered against.
+        policy: The exemptions the unit validator applies. Pass the same
+            policy the unit loop uses -- including its shapes-contract
+            exemptions -- or the check reports contradictions the validator
+            never raises.
+        catalog_terms: The whole catalog's term inventory, when
+            ``ontology_graph`` is only a retrieved subset of it. The unit
+            validator judges unknown terms against the whole catalog, so a
+            term the snapshot omitted is not a contradiction.
     """
     if shapes_graph is None or ontology_graph is None:
         return []
-    catalog_terms = collect_catalog_terms(ontology_graph)
+    catalog_terms = set(collect_catalog_terms(ontology_graph)) | set(
+        catalog_terms or ()
+    )
     if not catalog_terms:
         return []
     policy = policy or ValidationPolicy()

@@ -40,11 +40,14 @@ from ontocast.tool.facts_validation.terms import (
     collect_declared_namespaces,
     expand_vocabulary_terms,
 )
+from ontocast.util.measurement_lexicon import unit_adjacent_numbers
 from ontocast.util.numeric_inventory import (
     NumericInventory,
     canonical_number,
     missing_numeric_inventory,
+    unit_surface_index,
     unit_surfaces_in_ontology,
+    unit_symbol_index,
 )
 
 logger = logging.getLogger(__name__)
@@ -303,6 +306,119 @@ def _label_only_number_findings(
 _LABEL_NUMBER_PATTERN = re.compile(
     r"(?<![\w.])(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(?![\w])"
 )
+
+
+def _unit_symbol_case_findings(
+    graph: RDFGraph,
+    ontology_graph: RDFGraph | None,
+    extraction_text: str,
+    fact_namespaces: Sequence[str],
+    policy: ValidationPolicy,
+) -> list[FactsUnitFinding]:
+    """Flag a unit whose declared symbol matches the text only by letter case.
+
+    Symbols are case-significant: a catalog may hold two units whose symbols
+    differ by case alone, a prefix apart in magnitude. Retrieval and prompt
+    assembly are case-folded in places, so both units can be offered side by
+    side, and a render that picks the wrong one is a silent magnitude error
+    that no other check sees -- the value is numeric, the unit is a real
+    catalog individual, and the shapes conform.
+
+    The check is fully generic: symbols come from the catalog's own code,
+    symbol and notation literals (:func:`unit_symbol_index`), the text side
+    from the unit-adjacent numbers of the unit's own text. A node is flagged
+    only when its numeric value is written in the text next to a token that
+    equals one of the assigned unit's symbols after case folding and none of
+    them exactly, **and** a different catalog unit declares that token as a
+    surface exactly -- the competing unit is what makes the case difference
+    a magnitude error rather than a spelling variant, and it is offered as
+    the suggestion. Mandatory: the value is otherwise recorded a factor wrong.
+    """
+    if not extraction_text:
+        return []
+    unit_properties = expand_vocabulary_terms(
+        _vocabulary_role_subset(policy.quantity_fallback_vocabulary, "unit"),
+        graph,
+        ontology_graph,
+    )
+    numeric_value_properties = expand_vocabulary_terms(
+        _vocabulary_role_subset(policy.quantity_fallback_vocabulary, "numeric_value"),
+        graph,
+        ontology_graph,
+    )
+    if not unit_properties or not numeric_value_properties:
+        return []
+    symbols = unit_symbol_index(ontology_graph, unit_properties)
+    if not symbols:
+        return []
+    surfaces = unit_surface_index(ontology_graph, unit_properties)
+    tokens_by_value: dict[str, set[str]] = {}
+    for mention in unit_adjacent_numbers(extraction_text, frozenset(surfaces)):
+        canonical = canonical_number(mention.value)
+        if canonical is not None:
+            tokens_by_value.setdefault(canonical, set()).add(mention.unit)
+    if not tokens_by_value:
+        return []
+    unit_predicates = {URIRef(iri) for iri in unit_properties}
+    value_predicates = {URIRef(iri) for iri in numeric_value_properties}
+    findings: list[FactsUnitFinding] = []
+    flagged: set[URIRef] = set()
+    for subject, predicate, unit in graph:
+        if predicate not in unit_predicates or not isinstance(unit, URIRef):
+            continue
+        if not isinstance(subject, URIRef) or subject in flagged:
+            continue
+        if not any(str(subject).startswith(ns) for ns in fact_namespaces):
+            continue
+        declared = symbols.get(str(unit))
+        if not declared:
+            continue
+        folded = {symbol.lower() for symbol in declared}
+        for value_predicate in value_predicates:
+            for obj in graph.objects(subject, value_predicate):
+                if not isinstance(obj, Literal):
+                    continue
+                canonical = canonical_literal(obj)
+                if canonical is None or canonical[1] != "numeric":
+                    continue
+                written = tokens_by_value.get(canonical[0], set())
+                if any(token in declared for token in written):
+                    continue
+                competing = [
+                    (
+                        token,
+                        [iri for iri in surfaces.get(token, ()) if iri != str(unit)],
+                    )
+                    for token in sorted(written)
+                    if token.lower() in folded
+                ]
+                competing = [(token, iris) for token, iris in competing if iris]
+                if not competing:
+                    continue
+                token, suggestions = competing[0]
+                findings.append(
+                    FactsUnitFinding(
+                        kind=FactsUnitFindingKind.UNIT_SYMBOL_CASE_MISMATCH,
+                        message=(
+                            f"<{subject}> records {canonical[0]} with unit "
+                            f"<{unit}>, whose declared symbol "
+                            f"({', '.join(sorted(declared))}) differs from the "
+                            f"text's '{token}' only by letter case, and "
+                            f"another catalog unit declares '{token}' exactly. "
+                            "Unit symbols are case-sensitive: assign the unit "
+                            "whose declared symbol matches the text exactly."
+                        ),
+                        subject=str(subject),
+                        predicate=str(predicate),
+                        value=token,
+                        suggestions=suggestions,
+                    )
+                )
+                flagged.add(subject)
+                break
+            if subject in flagged:
+                break
+    return findings
 
 
 def _scalar_as_bounds_findings(
@@ -699,6 +815,15 @@ def collect_unit_findings(
 
     findings.extend(
         _scalar_as_bounds_findings(graph, ontology_graph, normalized_fact_namespaces)
+    )
+    findings.extend(
+        _unit_symbol_case_findings(
+            graph,
+            ontology_graph,
+            extraction_text,
+            normalized_fact_namespaces,
+            policy,
+        )
     )
     findings.extend(domain_violation_findings(graph, ontology_graph))
     if not is_citation_metadata and not is_non_content:

@@ -925,7 +925,9 @@ async def prepare_content_units(
 
     unlabeled = sum(1 for s in segments if s.section_label is None)
     if unlabeled:
-        logger.warning(
+        # Normal for text with no headings (plain-text and JSON inputs); the
+        # manifest's section_label_histogram is the record.
+        logger.info(
             "%s segment(s) remain without section_label after classification",
             unlabeled,
         )

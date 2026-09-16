@@ -99,7 +99,7 @@ equal to `ADD`. `correct_value` is a **string** containing valid Turtle: any
 `@prefix` declarations not already bound above, then one or more triples
 about a single new subject (or a statement attaching a value to an existing
 subject named in EXISTING SUBJECTS). Leave `triple_ids` empty.
-Example: "cd:melting_point_1 a onto:Measurement ; qudt:numericValue \\"96\\"^^xsd:decimal ; qudt:unit unit:MilliEV ."
+Example: "cd:quantity_1 a onto:Quantity ; qudt:numericValue \\"1\\"^^xsd:decimal ; qudt:unit unit:EXAMPLE ."
 """
 
 _OUTPUT_INSTRUCTION_JSONLD = """\n\n
@@ -111,7 +111,7 @@ subject node: an inline `@context` for any prefix not already bound above,
 then `@id`/`@type` plus the recovered measurement's properties (or a
 statement attaching a value to an existing subject named in EXISTING
 SUBJECTS). Leave `triple_ids` empty.
-Example: "{\\"@context\\": {\\"qudt\\": \\"http://qudt.org/schema/qudt/\\"}, \\"@id\\": \\"cd:melting_point_1\\", \\"@type\\": \\"onto:Measurement\\", \\"qudt:numericValue\\": {\\"@value\\": \\"96\\", \\"@type\\": \\"xsd:decimal\\"}, \\"qudt:unit\\": {\\"@id\\": \\"unit:MilliEV\\"}}"
+Example: "{\\"@context\\": {\\"qudt\\": \\"http://qudt.org/schema/qudt/\\"}, \\"@id\\": \\"cd:quantity_1\\", \\"@type\\": \\"onto:Quantity\\", \\"qudt:numericValue\\": {\\"@value\\": \\"1\\", \\"@type\\": \\"xsd:decimal\\"}, \\"qudt:unit\\": {\\"@id\\": \\"unit:EXAMPLE\\"}}"
 """
 
 
@@ -215,7 +215,11 @@ def build_term_sheet(
         for qname, label in classes:
             lines.append(f'  {qname}  "{label}"' if label else f"  {qname}")
     if units:
-        lines.append("\nUnit individuals (object of a unit-valued property):")
+        lines.append(
+            "\nUnit individuals (object of a unit-valued property). Symbols are "
+            "case-sensitive: use a unit only when a listed symbol matches the "
+            "text exactly."
+        )
         for qname, surfaces in units:
             lines.append(f"  {qname}  ({surfaces})" if surfaces else f"  {qname}")
     return "\n".join(lines) + "\n"

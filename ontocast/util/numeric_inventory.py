@@ -561,3 +561,52 @@ def unit_surfaces_in_ontology(
 ) -> frozenset[str]:
     """The unit surfaces of an ontology graph; see :func:`unit_surface_index`."""
     return frozenset(unit_surface_index(ontology_graph, unit_properties))
+
+
+def unit_symbol_index(
+    ontology_graph: Graph | None, unit_properties: Collection[str] = ()
+) -> dict[str, frozenset[str]]:
+    """Unit individual -> the *symbol* surfaces it declares, case preserved.
+
+    The subset of :func:`unit_surface_index` that comes from code, symbol
+    and notation predicates rather than labels. Symbols are case-significant
+    by definition -- two units can differ by letter case alone -- while a
+    label is prose and is not. Kept separate so a check on symbol case never
+    fires on a label spelt with a capital.
+
+    Args:
+        ontology_graph: The unit's ontology context; ``None`` yields nothing.
+        unit_properties: IRIs of the unit-role properties (``qudt:unit``).
+
+    Returns:
+        Unit IRI -> its declared symbol surfaces. Empty when the graph
+        declares no symbols.
+    """
+    if ontology_graph is None or len(ontology_graph) == 0:
+        return {}
+    classes = _unit_classes(ontology_graph, unit_properties)
+    if not classes:
+        return {}
+    symbols: dict[str, set[str]] = {}
+    for cls in classes:
+        for individual in ontology_graph.subjects(RDF.type, cls):
+            if not isinstance(individual, URIRef):
+                continue
+            for predicate, value in ontology_graph.predicate_objects(individual):
+                if not isinstance(value, Literal):
+                    continue
+                local = _local(str(predicate)).lower()
+                if predicate != SKOS.notation and not any(
+                    token in local for token in _CODE_LOCAL_NAMES
+                ):
+                    continue
+                text = str(value).strip()
+                if (
+                    not text
+                    or len(text) > _MAX_SURFACE_CHARS
+                    or any(ch.isspace() for ch in text)
+                    or canonical_number(text) is not None
+                ):
+                    continue
+                symbols.setdefault(str(individual), set()).add(text)
+    return {iri: frozenset(found) for iri, found in symbols.items()}

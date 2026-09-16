@@ -191,12 +191,25 @@ mandatory finding must be resolved by *rewriting in place* — a repair response
 that only deletes statements is flagged as data destruction, not a fix. The
 gate additionally cross-checks the SHACL shapes against these rules at load
 time and logs an error for any property the shapes require but the term
-validator would flag — data cannot satisfy both sides.
+validator would flag — data cannot satisfy both sides. The cross-check
+judges the shapes the way the unit validator does: against the whole
+catalog, not the retrieved snapshot, and with the shapes-contract exemptions
+applied, so a required property a unit did not retrieve is not a
+contradiction.
 
 A companion mandatory finding, `LABEL_ONLY_NUMBER`, fires when a node carries
 the fallback vocabulary's unit property but no numeric literal on any
 property while its label holds a number as prose — a measurement that is
 invisible to every query.
+
+`UNIT_SYMBOL_CASE_MISMATCH` guards the other silent numeric error: a value
+node whose unit's declared symbol (from the catalog's own `qudt:symbol`,
+`skos:notation` or code literals) matches the unit written next to that
+number in the text only after case folding, while a *different* catalog unit
+declares the written form exactly. Symbols are case-significant, and two
+units a case apart are typically a prefix apart in magnitude; the exact-match
+unit is offered as the suggestion. A case variant with no competing unit is
+a spelling, not a finding.
 
 Code resolution is schema-driven, not vocabulary-specific: the connecting
 property is whichever object property the ontology context declares with a range

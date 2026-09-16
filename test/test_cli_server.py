@@ -336,6 +336,8 @@ def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
         SimpleNamespace(
             aggregator=_Aggregator(),
             shapes_catalog=SimpleNamespace(graph=lambda: None),
+            shapes_prompt_contract=lambda: ("", (), False),
+            ontology_manager=SimpleNamespace(catalog_terms=lambda: set()),
             config=Config(),
         ),
     )
@@ -1037,6 +1039,8 @@ def test_process_unit_route_runs_the_validation_gate(
         SimpleNamespace(
             aggregator=_Aggregator(),
             shapes_catalog=SimpleNamespace(graph=lambda: stored_shapes),
+            shapes_prompt_contract=lambda: ("", (), False),
+            ontology_manager=SimpleNamespace(catalog_terms=lambda: set()),
             config=SimpleNamespace(
                 get_tool_config=lambda: SimpleNamespace(
                     facts_validation=FactsValidationConfig.model_construct()

@@ -644,6 +644,7 @@ class FactsUnitFindingKind(StrEnum):
     NUMERIC_COVERAGE = "numeric_coverage"
     LABEL_ONLY_NUMBER = "label_only_number"
     SCALAR_AS_BOUNDS = "scalar_as_bounds"
+    UNIT_SYMBOL_CASE_MISMATCH = "unit_symbol_case_mismatch"
     DOMAIN_VIOLATION = "domain_violation"
     #: The render used no term from the ontology it was given. Not a
     #: property of any single triple, so no other kind can express it.
