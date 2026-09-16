@@ -5,6 +5,13 @@ on:
     push:
         branches: [main]
 
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+
 jobs:
     # Guards the packaged artifact, not the source tree: `pip install ontocast`
     # with no extras must import. This is the check that would have caught

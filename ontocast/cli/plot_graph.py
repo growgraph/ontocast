@@ -125,7 +125,7 @@ def flow_graph_to_mermaid(flow: FlowGraph) -> str:
 
 
 def _unit_loop_core_edges(
-    *, render_node: str, critic_node: str
+    *, render_node: str, critic_node: str, review_entry: str
 ) -> tuple[FlowEdge, ...]:
     """The unit loop without the optional web-evidence branches.
 
@@ -134,6 +134,12 @@ def _unit_loop_core_edges(
     critique cannot cost a re-extraction. And the critique ends in an applied
     patch rather than in a request: accepting and rejecting differ only in
     whether the unit may leave, not in whether the fixes are acted on.
+
+    Args:
+        render_node: Id of the render node.
+        critic_node: Id of the critic node.
+        review_entry: The node the deterministic checks hand over to -- the
+            critic itself, or the facts phase's skip gate in front of it.
     """
     return (
         FlowEdge("render_loop", render_node),
@@ -141,13 +147,13 @@ def _unit_loop_core_edges(
         FlowEdge(render_node, "render_loop", "fail", conditional=True),
         FlowEdge("render_loop", "exhausted", "exhausted", conditional=True),
         FlowEdge("pass_loop", "findings", "pass", conditional=True),
-        FlowEdge("findings", critic_node),
+        FlowEdge("findings", review_entry),
         FlowEdge(critic_node, "patch", "accept or reject", conditional=True),
     )
 
 
 def _unit_loop_evidence_edges(
-    *, render_node: str, critic_node: str
+    *, render_node: str, critic_node: str, review_entry: str
 ) -> tuple[FlowEdge, ...]:
     """The unit loop including optional plan/fetch web evidence."""
     return (
@@ -161,7 +167,7 @@ def _unit_loop_evidence_edges(
         FlowEdge("render_fail_search", "render_loop", "no", conditional=True),
         FlowEdge("render_loop", "exhausted", "exhausted", conditional=True),
         FlowEdge("pass_loop", "findings", "pass", conditional=True),
-        FlowEdge("findings", critic_node),
+        FlowEdge("findings", review_entry),
         FlowEdge(critic_node, "patch", "accept", conditional=True),
         FlowEdge(critic_node, "critic_fail_search", "reject", conditional=True),
         FlowEdge("critic_fail_search", "evid_c", "yes", conditional=True),
@@ -174,10 +180,16 @@ def _unit_loop_evidence_edges(
 def unit_loop_flow(
     phase: str, *, include_evidence: bool = False, passes_var: str
 ) -> FlowGraph:
-    """The per-unit loop, which is now one shape for both phases.
+    """The per-unit loop: one core shared by both phases, plus facts-only exits.
+
+    The facts phase adds three things the ontology phase does not have. A skip
+    gate spends no critic call on a citation-metadata unit or an empty render.
+    A critic that returns no critique leaves the loop unpatched and unreviewed.
+    And an optional insert-only completion stage runs after the critic loop,
+    however that loop ended -- except when every render failed.
 
     Args:
-        phase: ``"facts"`` or ``"ontology"`` -- only the node captions differ.
+        phase: ``"facts"`` or ``"ontology"``.
         include_evidence: Draw the optional web-evidence branches.
         passes_var: The setting that bounds the critic passes, named on the
             diagram so the picture and the configuration agree.
@@ -185,6 +197,10 @@ def unit_loop_flow(
     render_node = f"render_{phase}"
     critic_node = f"criticise_{phase}"
     noun = "facts" if phase == "facts" else "ontology"
+    is_facts = phase == "facts"
+    review_entry = "skip_critic" if is_facts else critic_node
+    # Where the critic loop hands over once it stops.
+    loop_exit = "completion" if is_facts else "done"
     common = (
         FlowNode("start", "Unit start", "terminal"),
         FlowNode("ctx", "Resolve / apply<br/>ontology context"),
@@ -194,9 +210,30 @@ def unit_loop_flow(
         FlowNode("findings", "Deterministic checks<br/>(no LLM call)"),
         FlowNode(critic_node, f"Criticise {noun}<br/>(cites statement ids)"),
         FlowNode("patch", "Compile, screen, apply<br/>patch (no LLM call)"),
-        FlowNode("converged", "changed nothing, or<br/>rolled back?", "decision"),
+        FlowNode(
+            "converged",
+            "no fix kept, and a rollback<br/>or no mandatory findings left?",
+            "decision",
+        ),
         FlowNode("done", "Return unit state", "terminal"),
         FlowNode("exhausted", "Return (retries exhausted)", "terminal"),
+    )
+    facts_nodes = (
+        FlowNode(
+            "skip_critic",
+            "citation metadata, or fewer than<br/>FACTS_CRITIC_MIN_TRIPLES triples?",
+            "decision",
+        ),
+        FlowNode(
+            "completion",
+            "Completion passes<br/>0 … FACTS_COMPLETION_PASSES<br/>(insert-only)",
+        ),
+    )
+    facts_edges = (
+        FlowEdge("skip_critic", critic_node, "no", conditional=True),
+        FlowEdge("skip_critic", "completion", "yes (no critic call)", conditional=True),
+        FlowEdge(critic_node, "completion", "unavailable (no patch)", conditional=True),
+        FlowEdge("completion", "done"),
     )
     if include_evidence:
         nodes = (
@@ -209,21 +246,38 @@ def unit_loop_flow(
             FlowNode("recritic", f"Re-criticise {noun}"),
         )
         loop_edges = _unit_loop_evidence_edges(
-            render_node=render_node, critic_node=critic_node
+            render_node=render_node,
+            critic_node=critic_node,
+            review_entry=review_entry,
         )
+        if is_facts:
+            facts_edges = (
+                *facts_edges,
+                FlowEdge(
+                    "recritic",
+                    "completion",
+                    "unavailable (no patch)",
+                    conditional=True,
+                ),
+            )
     else:
         nodes = common
         loop_edges = _unit_loop_core_edges(
-            render_node=render_node, critic_node=critic_node
+            render_node=render_node,
+            critic_node=critic_node,
+            review_entry=review_entry,
         )
+    if is_facts:
+        nodes = (*nodes, *facts_nodes)
     edges = (
         FlowEdge("start", "ctx"),
         FlowEdge("ctx", "render_loop"),
         *loop_edges,
         FlowEdge("patch", "converged"),
-        FlowEdge("converged", "done", "yes", conditional=True),
+        FlowEdge("converged", loop_exit, "yes", conditional=True),
         FlowEdge("converged", "pass_loop", "no", conditional=True),
-        FlowEdge("pass_loop", "done", "budget spent", conditional=True),
+        FlowEdge("pass_loop", loop_exit, "budget spent", conditional=True),
+        *(facts_edges if is_facts else ()),
     )
     return FlowGraph(
         nodes=nodes,

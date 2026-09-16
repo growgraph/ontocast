@@ -24,9 +24,11 @@ flowchart TD;
 	findings[Deterministic checks<br/>(no LLM call)]
 	criticise_facts[Criticise facts<br/>(cites statement ids)]
 	patch[Compile, screen, apply<br/>patch (no LLM call)]
-	converged{changed nothing, or<br/>rolled back?}
+	converged{no fix kept, and a rollback<br/>or no mandatory findings left?}
 	done([Return unit state])
 	exhausted([Return (retries exhausted)])
+	skip_critic{citation metadata, or fewer than<br/>FACTS_CRITIC_MIN_TRIPLES triples?}
+	completion[Completion passes<br/>0 … FACTS_COMPLETION_PASSES<br/>(insert-only)]
 	start --> ctx;
 	ctx --> render_loop;
 	render_loop --> render_facts;
@@ -34,9 +36,13 @@ flowchart TD;
 	render_facts -.->|fail| render_loop;
 	render_loop -.->|exhausted| exhausted;
 	pass_loop -.->|pass| findings;
-	findings --> criticise_facts;
+	findings --> skip_critic;
 	criticise_facts -.->|accept or reject| patch;
 	patch --> converged;
-	converged -.->|yes| done;
+	converged -.->|yes| completion;
 	converged -.->|no| pass_loop;
-	pass_loop -.->|budget spent| done;
+	pass_loop -.->|budget spent| completion;
+	skip_critic -.->|no| criticise_facts;
+	skip_critic -.->|yes (no critic call)| completion;
+	criticise_facts -.->|unavailable (no patch)| completion;
+	completion --> done;

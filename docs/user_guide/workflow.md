@@ -48,7 +48,7 @@ Nodes such as **Update Ontology** and **Render Facts** each run the per-unit ato
 
 ## Per-Unit Atomic Loop
 
-Inside `stategraph/atomic.py`, each content unit runs an independent **render → critic** loop. Ontology and facts share the same control flow; optional web-evidence branches are omitted in the default diagrams below (see `_evidence` variants).
+Inside `stategraph/atomic.py`, each content unit runs an independent **render → critic** loop. Ontology and facts share one core control flow; the facts loop adds three exits of its own: a critic skip for citation-metadata units and renders below `FACTS_CRITIC_MIN_TRIPLES`, an unpatched exit when the critic returns no critique, and the optional insert-only completion passes (`FACTS_COMPLETION_PASSES`) after the critic loop. Optional web-evidence branches are omitted in the default diagrams below (see `_evidence` variants).
 
 Outputs (under `docs/assets/`):
 
@@ -128,7 +128,7 @@ Each content unit runs an independent **ontology loop** (`stategraph/atomic.py`)
    - Vector-store ensemble (`selected_vector_search_ontology`; Qdrant or LanceDB)
    - Fixed catalog ontology (`fixed_single_ontology`)
 2. **Render** — LLM emits `GraphUpdate` operations (JSON-LD by default, or Turtle; see `LLM_GRAPH_FORMAT`)
-3. **Critic** — validate structure; retry up to `max_visits` (config or per-request override)
+3. **Critic** — up to `ONTOLOGY_CRITIC_PASSES` review-and-patch passes on the successful render; `max_visits` (config or per-request override) bounds only retries of a *failed* render
 4. **External evidence** (optional) — web search on retry when the node requests it
 
 See [Ontology Context](ontology_context.md) and [User Instructions](user_instructions.md).
@@ -165,9 +165,12 @@ the critique is worth acting on.
 Every mutation is still a compiled, validated `GraphUpdate`, exactly as a render
 produces. What changed is that producing one no longer requires an LLM.
 
-A pass ends the loop early when it changed nothing or was rolled back, and is
-undone whole if it deleted without writing, shrank the unit's product without
-resolving anything, or created new mandatory findings. See
+Fixes are applied one at a time, and each is undone on its own if it deleted
+without writing, shrank the unit's product without resolving anything, or
+created new mandatory findings. A pass ends the loop early when it kept no fix
+and either rolled one back or left no mandatory finding — the next pass would
+see the same graph and findings. A pass that kept no fix but still has
+mandatory findings does not end the loop. See
 [Validation](validation.md#how-a-critique-reaches-the-graph).
 
 When `FACTS_COMPLETION_PASSES` is set above its default of `0`, an
