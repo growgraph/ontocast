@@ -596,7 +596,7 @@ Applies to both Qdrant and LanceDB:
 # auto (default): Qdrant if QDRANT_URI is set, LanceDB if enabled, otherwise
 # vector retrieval is disabled. Explicit: qdrant | lancedb | none.
 # VECTOR_STORE_BACKEND=auto
-VECTOR_STORE_TOP_K=20
+VECTOR_STORE_TOP_K=40
 VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH=2
 VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=1200
 VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
@@ -629,7 +629,8 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 
 | Variable | Default | Role |
 |----------|---------|------|
-| `VECTOR_STORE_TOP_K` | `20` | Vector hits per channel per proposition window |
+| `VECTOR_STORE_TOP_K` | `40` | Vector hits per channel per proposition window. This is how many candidates a window *offers* selection, not how many survive it — `ONTOLOGY_PATCH_MAX_ATOMS_BASE` caps the retained set, so depth fills the same budget from a wider field rather than enlarging the snapshot. Costs vector-search time, not prompt budget |
+| `VECTOR_STORE_BM25_TOP_K` | *(unset)* | Depth of the sparse (BM25) lane when it should differ from `TOP_K`; unset uses `TOP_K` for every lane. Depth is a weight in disguise under reciprocal-rank fusion — a lane of length N votes at ranks 1..N however weak its tail — and the dense and sparse lanes stop paying at different depths, so one knob for both mis-tunes one of them |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH` | `2` | BFS depth for hub seed expansion |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT` | `16` | Top seeds that receive full BFS budget (`0` = all seeds) |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_ANCESTOR_CLOSURE_DEPTH` | `3` | `rdfs:subClassOf` hops in the schema shell |
@@ -653,6 +654,7 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `VECTOR_STORE_FUSION_CORE_WEIGHT` | `0.7` | Dense core-vector weight in rank fusion (weights are normalized, so only ratios matter) |
 | `VECTOR_STORE_FUSION_NEIGHBORHOOD_WEIGHT` | `0.15` | Dense neighborhood-vector weight; the neighborhood text describes a term's edges, so it corroborates the core lane more than it adds to it |
 | `VECTOR_STORE_FUSION_BM25_WEIGHT` | `0.8` | Sparse BM25 weight. A term whose surface form is a symbol (`meV`, a chemical formula) is often invisible to the dense lanes, so the sparse lane is its only evidence — see [Ontology Context](ontology_context.md#bm25-index-recreate) |
+| `VECTOR_STORE_FUSION_RANK_CONSTANT` | `0.0` | Smoothing added to each rank before the reciprocal in lane fusion: a lane contributes `weight / (constant + rank)`. At `0.0` the decay is brutal — rank 2 is worth half of rank 1 — so fused order is decided almost entirely by which lane ranked first. Raising it makes agreement *across* lanes outweigh position *within* one; a constant far above the lane depth flattens the ranking away entirely |
 | `VECTOR_STORE_INDEX_UNDESCRIBED_IRIS` | `false` | Atomize IRIs an ontology only *references* (object/predicate position) in addition to ones it describes. Reindex on change |
 | `VECTOR_STORE_EMBED_STANDARD_VOCAB_IRIS` | `false` | Atomize RDF/OWL/SKOS/DC/SHACL/schema.org IRIs instead of skipping them. Reindex on change |
 | `VECTOR_STORE_EXTRA_EXCLUDED_NAMESPACE_PREFIXES` | *(empty)* | Extra IRI prefixes never atomized from ontology sources, on top of the standard-vocabulary set. Reindex on change |
@@ -799,6 +801,7 @@ ONTOLOGY_PATCH_MMR_LAMBDA=1.0
 | `ONTOLOGY_PATCH_MERGED_SCORE_RATIO` | `0.0` | Advanced: drop seeds below `top_score × ratio` (`0` disables) |
 | `ONTOLOGY_PATCH_PER_ONTOLOGY_ATOM_FLOOR` | `2` | Reserve pass before the global fill: every contributing ontology is guaranteed `min(floor, its candidates)` seed slots (round-robin). Unlike the quota (a ceiling), the floor protects small modules from starvation at the atom cap. `0` disables |
 | `ONTOLOGY_PATCH_SMALL_MODULE_CLOSURE_MAX_TRIPLES` | `300` | Include a source ontology's whole header-stripped graph in the snapshot when it has ≥ 1 admitted atom and at most this many triples (prevents near-miss property improvisation on tiny vocabularies). `0` disables |
+| `ONTOLOGY_PATCH_SMALL_MODULE_CLOSURE_MAX_TOTAL_TRIPLES` | *(unset)* | Ceiling on what *all* whole-module closures together may contribute to one snapshot. Unset is unlimited — every module that fits `SMALL_MODULE_CLOSURE_MAX_TRIPLES` and won a seed is included. When set, candidates are admitted in order of retrieval relevance until the budget is spent, and a module too large for the remainder is skipped rather than ending the pass, so a smaller one behind it can still get in |
 | `ONTOLOGY_PATCH_PER_ROLE_ATOM_FLOOR` | `12` | Reserve pass for predicate-role atoms before the global fill. Prose reads as noun phrases, so classes out-score the properties that link them in a shared ranking. `0` disables |
 | `ONTOLOGY_PATCH_SCHEMA_CLOSURE_MAX_ENTITIES` | `32` | Cap on terms admitted by `rdfs:domain`/`rdfs:range` closure over the seeds: properties whose domain/range names an admitted class (or an ancestor), plus the domain/range classes of admitted properties. `0` disables |
 | `ONTOLOGY_PATCH_SCHEMA_CLOSURE_ANCESTOR_DEPTH` | `2` | How far to walk `rdfs:subClassOf` upward when matching a property's declared domain/range against an admitted class |
