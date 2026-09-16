@@ -24,7 +24,7 @@ flowchart TD;
 	findings[Deterministic checks<br/>(no LLM call)]
 	criticise_ontology[Criticise ontology<br/>(cites statement ids)]
 	patch[Compile, screen, apply<br/>patch (no LLM call)]
-	converged{changed nothing, or<br/>rolled back?}
+	converged{no fix kept, and a rollback<br/>or no mandatory findings left?}
 	done([Return unit state])
 	exhausted([Return (retries exhausted)])
 	start --> ctx;

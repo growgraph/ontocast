@@ -24,7 +24,7 @@ flowchart TD;
 	findings[Deterministic checks<br/>(no LLM call)]
 	criticise_facts[Criticise facts<br/>(cites statement ids)]
 	patch[Compile, screen, apply<br/>patch (no LLM call)]
-	converged{changed nothing, or<br/>rolled back?}
+	converged{no fix kept, and a rollback<br/>or no mandatory findings left?}
 	done([Return unit state])
 	exhausted([Return (retries exhausted)])
 	render_fail_search{initiate_search?}
@@ -33,6 +33,8 @@ flowchart TD;
 	critic_fail_search{initiate_search?}
 	evid_c[Plan + fetch<br/>web evidence]
 	recritic[Re-criticise facts]
+	skip_critic{citation metadata, or fewer than<br/>FACTS_CRITIC_MIN_TRIPLES triples?}
+	completion[Completion passes<br/>0 … FACTS_COMPLETION_PASSES<br/>(insert-only)]
 	start --> ctx;
 	ctx --> render_loop;
 	render_loop --> render_facts;
@@ -45,7 +47,7 @@ flowchart TD;
 	render_fail_search -.->|no| render_loop;
 	render_loop -.->|exhausted| exhausted;
 	pass_loop -.->|pass| findings;
-	findings --> criticise_facts;
+	findings --> skip_critic;
 	criticise_facts -.->|accept| patch;
 	criticise_facts -.->|reject| critic_fail_search;
 	critic_fail_search -.->|yes| evid_c;
@@ -53,6 +55,11 @@ flowchart TD;
 	recritic -.->|accept or reject| patch;
 	critic_fail_search -.->|no| patch;
 	patch --> converged;
-	converged -.->|yes| done;
+	converged -.->|yes| completion;
 	converged -.->|no| pass_loop;
-	pass_loop -.->|budget spent| done;
+	pass_loop -.->|budget spent| completion;
+	skip_critic -.->|no| criticise_facts;
+	skip_critic -.->|yes (no critic call)| completion;
+	criticise_facts -.->|unavailable (no patch)| completion;
+	completion --> done;
+	recritic -.->|unavailable (no patch)| completion;

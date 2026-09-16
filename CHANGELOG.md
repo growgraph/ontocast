@@ -359,6 +359,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ONTOLOGY_PATCH_SMALL_MODULE_CLOSURE_MAX_TOTAL_TRIPLES`; corrected `VECTOR_STORE_TOP_K`
   default (`40`).
 - Facts-loop diagrams regenerated; `demo/README.md` sample paths fixed.
+- **Per-unit loop diagrams corrected against `run_unit_loop`:** the convergence
+  diamond now states the real rule (no fix kept, and a rollback or no mandatory
+  finding left), and the facts loop shows its own exits — the critic skip
+  (citation metadata / `FACTS_CRITIC_MIN_TRIPLES`), the unpatched exit when the
+  critic is unavailable, and `FACTS_COMPLETION_PASSES`. `workflow.md` now
+  describes per-fix rollback and says `MAX_VISITS` does not bound critic passes.
 - Public callables fully annotated; `uv run mkdocs build` warning-free.
 - Guides updated: `LLM_JSON_MODE`, `CHUNK_MIN_UNIT_CHARS`, section-label rule,
   validation arms, `--keep-provenance`.

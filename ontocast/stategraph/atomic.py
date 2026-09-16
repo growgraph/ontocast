@@ -1,10 +1,10 @@
 """Reusable per-unit render/critic retry loops.
 
 These loops are designed for map/reduce execution where each content unit
-is processed independently. They deep-copy the incoming unit state, then run
-render -> critic until success or retry exhaustion. After the last allowed
-render succeeds, the critic is skipped: no further extract exists for feedback
-to inform.
+is processed independently. They deep-copy the incoming unit state, retry a
+*failed* render up to ``MAX_VISITS`` times, then run bounded critic passes whose
+critiques are compiled and applied as patches. A successful render is never
+repeated.
 
 Ontology context assembly (``resolve_unit_ontology_context``) runs at the
 start of both ``ontology_loop`` and ``facts_loop`` so each unit chooses its
