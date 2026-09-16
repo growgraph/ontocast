@@ -1,6 +1,10 @@
 """Tests for Fuseki base URI normalization."""
 
+import pytest
+
 from ontocast.tool.triple_manager.fuseki import normalize_fuseki_server_uri
+
+pytestmark = pytest.mark.unit
 
 
 def test_normalize_strips_fragment_ui_style() -> None:

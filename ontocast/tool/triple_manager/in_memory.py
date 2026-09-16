@@ -6,10 +6,12 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Literal, overload
 
 import pyoxigraph as ox
 from oxrdflib._converter import to_ox
 from rdflib import Graph, URIRef
+from rdflib.term import Node
 
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_header import OntologyHeader
@@ -56,16 +58,93 @@ def _clear_named_graph(store: ox.Store, graph_ctx: ox.NamedNode) -> None:
         store.remove(quad)
 
 
+#: What each triple position accepts once converted. ``to_ox`` maps
+#: ``urn:x-rdflib:default`` to :class:`ox.DefaultGraph` and ``None`` to
+#: ``None``, neither of which is a term, so a graph carrying either in a triple
+#: position reaches oxigraph as a type error rather than as a diagnosis.
+_OX_POSITION_TYPES: dict[str, tuple[type, ...]] = {
+    "subject": (ox.NamedNode, ox.BlankNode),
+    "predicate": (ox.NamedNode,),
+    "object": (ox.NamedNode, ox.BlankNode, ox.Literal),
+}
+
+
+@overload
+def _to_ox_term(
+    term: Node, position: Literal["subject"], graph_ctx: ox.NamedNode
+) -> ox.NamedNode | ox.BlankNode: ...
+
+
+@overload
+def _to_ox_term(
+    term: Node, position: Literal["predicate"], graph_ctx: ox.NamedNode
+) -> ox.NamedNode: ...
+
+
+@overload
+def _to_ox_term(
+    term: Node, position: Literal["object"], graph_ctx: ox.NamedNode
+) -> ox.NamedNode | ox.BlankNode | ox.Literal: ...
+
+
+def _to_ox_term(
+    term: Node,
+    position: Literal["subject", "predicate", "object"],
+    graph_ctx: ox.NamedNode,
+) -> ox.NamedNode | ox.BlankNode | ox.Literal:
+    """Convert one rdflib term, naming the graph and position when it cannot be.
+
+    Args:
+        term: The rdflib term to convert.
+        position: Which triple position ``term`` occupies.
+        graph_ctx: Target named graph, reported so the caller knows which graph
+            carried the bad term.
+
+    Returns:
+        The pyoxigraph term for ``term``, valid in ``position``.
+
+    Raises:
+        TypeError: The term does not convert to something valid in ``position``.
+    """
+    try:
+        converted = to_ox(term)
+    except ValueError as exc:
+        raise TypeError(
+            f"cannot serialize {position} {term!r} "
+            f"(rdflib type {type(term).__name__}) of graph <{graph_ctx.value}>: {exc}"
+        ) from exc
+    # Two checks, not one: the first narrows the union for the type checker,
+    # the second enforces what this particular position accepts.
+    if not isinstance(
+        converted, (ox.NamedNode, ox.BlankNode, ox.Literal)
+    ) or not isinstance(converted, _OX_POSITION_TYPES[position]):
+        raise TypeError(
+            f"{position} {term!r} (rdflib type {type(term).__name__}) of graph "
+            f"<{graph_ctx.value}> converts to {type(converted).__name__}, which "
+            f"is not valid in {position} position"
+        )
+    return converted
+
+
 def _rdflib_graph_to_quads(graph: Graph, graph_ctx: ox.NamedNode) -> list[ox.Quad]:
+    """Convert an rdflib graph to oxigraph quads in ``graph_ctx``.
+
+    Raises:
+        TypeError: A term does not convert to something valid in its position.
+            Previously three bare ``assert``s, which carried no message -- so
+            the failure named neither the term, the position nor the graph --
+            and which vanish entirely under ``python -O``.
+    """
     quads: list[ox.Quad] = []
     for subject, predicate, object_ in graph:
-        s_ox = to_ox(subject)
-        p_ox = to_ox(predicate)
-        o_ox = to_ox(object_)
-        assert isinstance(s_ox, (ox.NamedNode, ox.BlankNode, ox.Triple))
-        assert isinstance(p_ox, ox.NamedNode)
-        assert isinstance(o_ox, (ox.NamedNode, ox.BlankNode, ox.Literal, ox.Triple))
-        quads.append(ox.Quad(s_ox, p_ox, o_ox, graph_ctx))
+        quads.append(
+            ox.Quad(
+                _to_ox_term(subject, "subject", graph_ctx),
+                _to_ox_term(predicate, "predicate", graph_ctx),
+                _to_ox_term(object_, "object", graph_ctx),
+                graph_ctx,
+            )
+        )
     return quads
 
 

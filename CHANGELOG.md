@@ -5,7 +5,365 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.2] - unreleased
+## [0.6.4] - unreleased
+
+*0.6.3 was never tagged. Its entries ship here.*
+
+### Added
+
+- **Retrieval proposition window bounds** (`VECTOR_STORE_PROPOSITION_*`, all off
+  by default): `WINDOW_MAX_TOKENS` (token-budget packing; only bound that prevents
+  encoder truncation by construction), `ABBREVIATION_AWARE`, `MEASUREMENT_AWARE`,
+  `WINDOW_OVERLAP`. Unset preserves prior windowing byte-for-byte.
+
+- **Startup rejection** when `ONTOLOGY_PATCH_MMR_LAMBDA < 1.0` is combined with
+  non-zero atom floors (MMR selects the full budget; floors are incompatible).
+
+- **Startup warning** when `ONTOLOGY_PATCH_MAX_ATOMS` exceeds the window-scaled
+  ceiling and cannot bind; names the effective cap.
+
+- **Run manifest `prompting` block:** `llm_graph_format`, `ontology_chapter_format`,
+  `ontology_context_scope`, `fanout_warmup_units`, `parallel_workers`,
+  `embedding_model_name`. `llm` gains `prompt_cache_key`, `max_inflight`.
+
+- **Retrieval knobs** (each defaults to prior behaviour):
+  - `VECTOR_STORE_BM25_TOP_K` — sparse lane depth independent of `TOP_K`.
+  - `VECTOR_STORE_FUSION_RANK_CONSTANT` — `weight / (constant + rank)` smoothing.
+  - `VECTOR_STORE_PROPOSITION_WINDOW_STRIDE` — overlapping query windows; lifts
+    `PROPOSITION_WINDOW_SENTENCES` `le=4` ceiling.
+  - Query telemetry: `queries_truncated`, `query_sequence_limit`.
+
+- **Retrieval-recall tests** (`test/test_retrieval_recall.py`, `test/retrieval_gt.py`):
+  seed recall vs snapshot recall; no LLM. Env: `ONTOCAST_RECALL_CORPUS`,
+  `ONTOCAST_RECALL_COLLECTION_SUFFIX`, `ONTOCAST_RECALL_SKIP_INDEX`,
+  `ONTOCAST_RECALL_JSON`.
+
+- **`ONTOLOGY_PATCH_SMALL_MODULE_CLOSURE_MAX_TOTAL_TRIPLES`** — cap total triples
+  from whole-module closures; modules admitted by retrieval relevance, not seed count.
+  Metrics: `module_closure_*`, `relevance_by_ontology`.
+
+- **`ONTOLOGY_CONTEXT_SCOPE=document`** — resolve one ontology context union for all
+  units (prefix-cache friendly; recall-safe; empty union falls back to per-unit).
+
+- **`FANOUT_WARMUP_UNITS`** (default `0`) — complete N units before fan-out so a
+  prefix cache can warm. Useful with document-scoped context.
+
+- **`LLM_PROMPT_CACHE_KEY`** — OpenAI routing hint for prefix-cache shard affinity.
+
+- **Provider rate limits:** `LLM_REQUESTS_PER_SECOND` (token bucket),
+  `LLM_MAX_RETRIES` (SDK transport). Counters: `llm/rate_limited`. Recorded in
+  manifest `llm` block.
+
+- **Shapes prompt contract** (`FACTS_SHAPES_PROMPT_CONTRACT`, default `auto`):
+  SHACL shapes as `# CONFORMANCE REQUIREMENTS` (`full|context|auto|off`);
+  `FACTS_SHAPES_PROMPT_MAX_LINES`; terms join `ValidationPolicy.contract_exempt_terms`.
+
+- **Quantitative completeness** — facts prompt requires every stated measurement;
+  critic proposes ADD fixes for NUMERIC COVERAGE misses. Caps:
+  `FACTS_NUMERIC_COVERAGE_LIMIT` (default 30),
+  `FACTS_NUMERIC_COVERAGE_MANDATORY` (default off).
+
+- **`--facts-user-instruction` on `ontocast process`**. Manifest records length only.
+
+- **Run manifest records effective validation settings** (`validation_config`:
+  shapes contract mode, JSON mode, numeric-coverage policy, etc.) and a selection
+  census (`labeled_units`, `unlabeled_units`, `section_label_histogram`).
+
+- **`--ontology-dir` / `--shapes-dir` on `serve` and `process`** — override or clear
+  (`""`) seed directories.
+
+- **Missing seed directory fails `process` at startup** (serve warns; empty dir warns).
+
+- **Critic review-and-patch passes:** `FACTS_CRITIC_PASSES` (default `1`),
+  `ONTOLOGY_CRITIC_PASSES` (default `0`). Each pass compiles critic fixes into a
+  `GraphUpdate` (no extra LLM call). Delete-share caps roll back over-aggressive
+  patches; no-op fixes dropped. Telemetry on manifest and retrieval metrics.
+
+- **`ONTOLOGY_ACCEPT_BLOCKING_FINDING_KINDS`** — configure which deterministic
+  ontology findings block unit acceptance (same role as
+  `FACTS_ACCEPT_BLOCKING_SEVERITY` on the facts side).
+
+- **`ONTOLOGY_CONTEXT_REQUIRED`** (default `false`) — fail the run when a facts
+  unit's ontology context resolves to zero triples. Without this, an empty context
+  still runs (generic vocabulary, vacuous SHACL). Ontology units are not gated.
+
+- **SHACL conformance summary** gains `shacl_focus_nodes` and `shacl_vacuous`;
+  `conforms` is `null` when no focus nodes matched (not `true`). Target matching
+  follows `rdfs:subClassOf`.
+
+- **`DOMAIN_ADHERENCE` finding** — mandatory when a unit uses too little catalog
+  vocabulary (`FACTS_DOMAIN_ADHERENCE_MIN_SHARE`, default `0.15` of schema terms
+  in the graph; `0` disables).
+
+- **Catalog/index agreement check at startup** — empty catalog + populated index fails;
+  extra indexed IRIs warn.
+
+- **Critic telemetry on run manifest:** `fix_action_severity_histogram` (fixes keyed
+  `ACTION:severity`), `accept_reason_histogram`, plus
+  `facts_critic_fixes_applied` / `facts_critic_fixes_residual` in retrieval metrics.
+
+- **`FACTS_CONTEXT_FROM_UNITS`** (default off here; see Changed) — under
+  `RENDER_MODE=facts`, seed the merge/gate ontology vocabulary from the snapshots
+  each unit retrieved (no ontology stage runs otherwise).
+
+- **`FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT`** (default off) — the IRI branch of
+  `SUSPECT_MULTI_VALUE` reports an error only when merge evidence links the
+  conflicting objects across units (`cross_unit_object_pairs` on
+  `AggregationResult`).
+
+- **`FACTS_NUMERIC_IDENTIFIER_GUARD`** (default off here; see Changed) — keep
+  identifier digit groups (e.g. after `/` or `:`) out of the numeric-coverage
+  inventory.
+
+- **`CHUNK_MIN_UNIT_CHARS`** (default `0`) — drop content units below a character
+  floor before fan-out. Distinct from `CHUNK_MIN_SIZE` (chunker merge target).
+
+- **`LLM_JSON_MODE`** (default off) — OpenAI `response_format: json_object`; rejected
+  unless the prompt mentions JSON.
+
+- **`ontocast process --keep-provenance`** — retain chunk provenance in facts dump.
+
+- **`ONTOLOGY_CHAPTER_FORMAT=term_sheet`** — line-per-term `# ONTOLOGY` chapter for
+  facts mode. Requires `RENDER_MODE=facts`. Changes LLM cache key.
+
+- **Ontology chapter text caps:** `ONTOLOGY_TEXT_MAX_CHARS_NAMING|CONTRACT|PROSE`,
+  `ONTOLOGY_TEXT_TOTAL_BUDGET`. Word-boundary clip with marker; counters:
+  `chapter/text_*`, `chapter/literals_clipped`.
+
+- **Cloud reasoning:** `LLM_REASONING_EFFORT`, `LLM_THINKING_BUDGET` (mutually
+  exclusive on Google; recorded in manifest; join cache key when set).
+
+- **`AGG_UNIT_SCOPED_FACT_IRIS`** (default `true`) — rewrite instance IRIs to
+  `<local>__u<index>` before aggregation; served IRIs unscoped.
+
+- **Startup warning** when `AGG_SIMILARITY_THRESHOLD` is changed but
+  `AGG_CANDIDATE_SIMILARITY_THRESHOLD` stays at default — the former belongs to
+  cross-graph `EntityAligner`, not the in-pipeline aggregator.
+
+- **`AtomicToolBox.catalog_terms()`** — memoised union of catalog-declared terms,
+  keyed on content-addressed ontology ids. Parse-time repairs use it to tell
+  "absent from unit snapshot" from "absent from catalog".
+
+- **Batch `*.facts.validation.json`** gains `unit_repairs` (parse-time
+  `GraphRepairRecord`s) and `unit_failures` (unit index, phase, stage, reason).
+
+- **`llm/calls_failed` budget counter** — every provider call that raised.
+  Timeouts and rate limits remain separate subsets.
+
+- **`ONTOLOGY_CHAPTER_FORMAT`** (`auto|inherit|turtle|term_sheet`). `turtle` pins the
+  facts `# ONTOLOGY` chapter wire regardless of `LLM_GRAPH_FORMAT`; does not change
+  output wire or ontology-loop chapters.
+
+- **Startup warning** when `PARALLEL_WORKERS > LLM_MAX_INFLIGHT` — a unit never
+  issues two LLM calls at once, so excess workers only queue on the semaphore.
+
+- **Front/back-matter routing** (`CHUNK_NON_CONTENT_MODE`: `extract|skip`) — detect
+  author blocks, ORCID, licence, data availability, etc. `extract` (default) tags
+  `SourceUnit.is_non_content`; `skip` drops before fan-out.
+
+- **Density-aware chunk split** (`CHUNK_MAX_MEASUREMENTS_PER_UNIT`, default off) —
+  split units that exceed a cap of unit-adjacent numbers at the nearest sentence or
+  paragraph boundary.
+
+- **`CONVERTER_REPAIR_NUMERIC_ARTIFACTS`** (default off) — pattern-local fixes in
+  converted values: HTML entities, column wraps, flattened exponents, ligature gaps.
+
+- **`ontocast.util.measurement_lexicon`** — shared scanner for unit-adjacent numbers;
+  used by density split, numeric coverage, and proposition windows.
+
+- **Facts completion pass** (`FACTS_COMPLETION_PASSES`, default `0`) — after the
+  critic loop, insert-only recovery for measurements still listed in the
+  numeric-coverage inventory.
+
+### Changed
+
+- **Log levels:** prefix reconciliation, aggregator `rdf:reifies` skip, unlabeled
+  sections → DEBUG/INFO (reduces WARNING noise).
+
+- **Text cap clipping** keeps definition + one applicability sentence; marker and cap
+  semantics unchanged. All caps still unset by default.
+
+- **`ONTOLOGY_CHAPTER_FORMAT` default `auto`:** `term_sheet` for facts,
+  `inherit` otherwise. Resolved at config build (manifest/cache never show `auto`).
+  Set `inherit` to restore prior chapter. One-time facts cache-key change.
+
+- **`VECTOR_STORE_PROPOSITION_WINDOW_MAX_CHARS`** — character-budget query windows when
+  set (replaces sentence bound; query-side only; no reindex).
+
+- **`EmbeddingTool.token_lengths`** reports encoder word pieces; `count_over_limit`
+  delegates to it.
+
+- **`VECTOR_STORE_TOP_K` default `40`** (was `20`). Does not enlarge retained atom
+  budget (`ONTOLOGY_PATCH_MAX_ATOMS_BASE` caps selection). Set `20` to restore.
+
+- **`VECTOR_STORE_QUERY_UNIT_SIGNALS_ENABLED` default `true`** — match tokens after
+  numbers (e.g. `days` in "4-15 days") against catalog unit surfaces and add hits as
+  snapshot seeds outside the semantic budget. Query-time only; no reindex.
+
+- **Predicate alias repair:** requires token containment; never rewrites catalog-declared
+  predicates; ratio is tie-break only (`FACTS_PROPERTY_ALIAS_MIN_RATIO` default `0.95`).
+
+- **Facts prompt chapter order:** `preamble → conformance → ontology → TASK → …` for
+  shared prefix through ontology chapter. Invalidates cached prompts.
+
+- **`chars_received`** uses normalised text for all providers.
+
+- **Batch manifest selection census** populated from workflow state merge-back.
+
+- **`FACTS_CONTEXT_FROM_UNITS` and `FACTS_NUMERIC_IDENTIFIER_GUARD` default `true`**.
+
+- **Startup catalog check** requires populated catalog only under `RENDER_MODE=facts`.
+
+- **Retrieval-integrity checks** (catalog vs vector index) no longer consult
+  `ONTOLOGY_CONTEXT_REQUIRED` — index/catalog disagreement is always an error,
+  not a preference.
+
+- **Seed TTLs replayed** into a new tenancy scope on first use; `FACTS_SHAPES_DIR`
+  seeded the same way. Existing ontologies in the scope are not overwritten.
+
+- **Critic cites triple ids** (Turtle inline / JSON-LD index table); applies compiled
+  `GraphUpdate` patches directly. Finding-driven repair render removed.
+
+- **Unified `run_unit_loop`** for facts and ontology. `MAX_VISITS` bounds renders only;
+  critic improves via passes, not re-render. Ontology critic gates on deterministic
+  findings (not score). Facts critic runs when `FACTS_CRITIC_PASSES > 0`.
+
+- **Fix payload parsing** format-tolerant (`@value`, `@id`, bare IRIs).
+
+- **Facts prompt vocabulary precedence** — catalog over generic vocabularies; no bare-number
+  entities.
+
+- **Default OpenAI model `gpt-5.4`** (`LLM_MODEL_NAME`).
+
+- Test markers match `pyproject.toml`; `test/test_prompt_templates.py` smoke coverage.
+
+### Deprecated
+
+- `FACTS_LLM_REPAIR_VISITS` — alias for `FACTS_CRITIC_PASSES` (one release).
+- `MAX_CRITIC_VISITS_PER_NODE` — inert; still recorded in manifest.
+
+### Removed
+
+- **Dead code:** unused `SPARQLTool` operation API; conditional `SPARQLTool` build;
+  `BASE_RECURSION_LIMIT` / `ESTIMATED_CHUNKS`; facts `{fact_chapter}` /
+  `{improvement_instruction}` slots; `OntologyManager.update_ontology()`.
+
+- **Unused retrieval knobs:** six per-channel score gates + helper;
+  `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE=hybrid` and tier settings (`max_score` /
+  `sum_score` remain).
+
+- **`render_facts_update`** and facts update-render mode — nothing populated the
+  dispatch field after a successful render. Also removed: `_findings_instruction`,
+  non-indexed `format_facts_chapter`.
+
+- **`FACTS_LLM_REPAIR_VISITS`**, **`MAX_CRITIC_VISITS_PER_NODE`** (manifest
+  `loops.max_critic_visits` removed).
+
+### Fixed
+
+- **Deterministic semantic chunking** — seeded PCA/UMAP; `CHUNKER_CACHE_FORMAT_VERSION`.
+  Chunk boundaries differ from earlier versions. Short blocks pack by size directly.
+
+- **Gate shapes-vs-catalog cross-check** no longer flags properties the validator
+  would never reject — uses the full catalog and the same exemption policy as the
+  unit loop.
+
+- **`UNIT_SYMBOL_CASE_MISMATCH`** — case-folded unit symbol collision with competing
+  catalog unit.
+
+- **Numeric coverage** keyed on `(number, unit)` pairs for measurement lane.
+
+- **`non_catalog_vocabulary`** exempts document metadata (`DOCUMENT_METADATA_TERMS`).
+
+- **Prefix map** installed for full unit loop; critic/completion reconcile against catalog.
+
+- **Converter:** hyphenated ranges not rewritten as exponents; repair rules version in
+  cache key when repair enabled.
+
+- **Critic rollback** judged on declared inserts; rollback warning names finding kinds.
+
+- **Invalid literal datatypes** refused at patch apply; prefix overrides reconciled to
+  run bindings.
+
+- **Placeholder prune** walks up referrers — removing a bad value no longer leaves a
+  stub node with a standing `sh:minCount` violation.
+
+- **Scoped ToolBox cache** prepares the vector store when a later request needs one
+  (a non-vector request no longer leaves the scope unindexed for the process lifetime).
+  Flush resets readiness after dropping collections.
+
+- **`--wipe-vector-store`** runs when vector store configured regardless of mode.
+
+- **`/flush`** uses shared `resolve_tenant_project` (blank tenant → 400).
+
+- **Warning** when `ONTOLOGY_CONTEXT_SCOPE=document` conflicts with per-unit shapes
+  contract (`FACTS_SHAPES_PROMPT_CONTRACT=context`).
+
+- **Unit-path manifest** omits inert `ontology_context_scope` / `fanout_warmup_units`.
+
+- **"Is this a domain namespace?"** defined once (was duplicated in delta partitioner
+  and prompt domain-ontology clause).
+
+- **`/ontologies` and `/shapes`** share one scoped-ToolBox factory (was two identical
+  closures).
+
+- **Atom floors** (`ONTOLOGY_PATCH_PER_ONTOLOGY_ATOM_FLOOR`,
+  `ONTOLOGY_PATCH_PER_ROLE_ATOM_FLOOR`) apply on every selection path; the removed
+  `hybrid` merge mode had silently skipped them.
+
+- **Relevance gate** (`ONTOLOGY_PATCH_MIN_MERGED_MAX_SCORE`) scaled relative to fused
+  score — decouples from `VECTOR_STORE_FUSION_RANK_CONSTANT`.
+
+- **LanceDB atom schema declared** (not inferred from first batch).
+
+- **Byte-stable ontology chapter** for cache — blank-node relabelling, sorted JSON-LD,
+  deterministic term-sheet labels. Prompt path only; one-time facts cache-key change.
+
+- **`LLMConfigurationError`** on provider config rejection — aborts batch, exit `78`
+  (`llm/calls_rejected`). Throttling and input-length 400s remain per-unit.
+
+- **All-units-failed file** in failed-file list (non-zero CLI exit); dumps retained.
+
+- **gpt-5 temperature pin** matches series only (`gpt-5`, `gpt-5-mini`, `gpt-5-nano`).
+
+- **Unit acceptance status** set after the critic patch is applied, from
+  `material_defects()` on the post-patch findings (not the pre-patch verdict).
+
+- **Empty catalog fails facts `process`**; vector index must be populated after materialize.
+  `serve` warns on empty catalog.
+
+- **`EmptyOntologyContextError` / `OntologyContextConfigError`** propagate from fan-out.
+
+- **Seed sync** repairs a partition that listed an ontology IRI but served no terms —
+  checks term definitions, not just the `owl:Ontology` header.
+
+- **Empty ontology-context diagnostic** checks catalog state first (not only the
+  vector index); records `candidate_hits` and `threshold_rejected` before the
+  score gate.
+
+- **Zero-atom reindex** logged per ontology.
+
+- **All-unrecognised section labels** rejected at parse (CLI usage error).
+
+- **Graph serialization** raises diagnostic naming term, type, position.
+
+- **Fuseki `serialize_graph`** falls back to default facts dataset.
+
+- **CI:** `ty check` in unit job (full extras); single `toml-sort` formatter with pinned
+  `tomlkit`; `pyarrow.**` allowlist removed.
+
+### Documentation
+
+- **`docs/user_guide/configuration.md`:** `VECTOR_STORE_BM25_TOP_K`,
+  `VECTOR_STORE_FUSION_RANK_CONSTANT`,
+  `ONTOLOGY_PATCH_SMALL_MODULE_CLOSURE_MAX_TOTAL_TRIPLES`; corrected `VECTOR_STORE_TOP_K`
+  default (`40`).
+- Facts-loop diagrams regenerated; `demo/README.md` sample paths fixed.
+- Public callables fully annotated; `uv run mkdocs build` warning-free.
+- Guides updated: `LLM_JSON_MODE`, `CHUNK_MIN_UNIT_CHARS`, section-label rule,
+  validation arms, `--keep-provenance`.
+
+## [0.6.2] - 2026-08-29
 
 ### Breaking
 
@@ -388,11 +746,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   manifest. `_merge_workflow_state_into_agent_state` copies an explicit field
   list off the astream chunk, and `facts_loop_telemetry` /
   `ontology_loop_telemetry` / `ontology_reduce_metrics` were not on it — so
-  the case10 sampling run's manifests reported `critic: {calls: 0}` while
-  their own `retrieval_metrics` recorded 20 facts-critic and 26
-  ontology-critic calls, and the score distributions had to be mined out of
-  the LLM cache again, which is exactly what the manifest blocks exist to
-  prevent. The three fields are now copied, and `RunManifest` gains
+  a batch run's manifests reported `critic: {calls: 0}` while their own
+  `retrieval_metrics` recorded the calls that had actually been billed, and
+  the score distributions had to be mined out of the LLM cache again, which
+  is exactly what the manifest blocks exist to prevent. The three fields are now copied, and `RunManifest` gains
   `ontology_reduce_metrics` — the reduce policies' evidence
   (`minted_duplicates` and pairs, `deletes_dropped_unredeclared`,
   `apply_deletes_no_match`, `fresh_ontologies_merged`) was computed and then

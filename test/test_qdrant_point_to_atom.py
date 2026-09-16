@@ -9,11 +9,14 @@ that feeds a bare ``Record`` into a helper expecting ``point.score`` raises ``At
 
 from __future__ import annotations
 
+import pytest
 from qdrant_client.http import models as qdrant_models
 
 from ontocast.config import EmbeddingConfig, QdrantConfig
 from ontocast.tool.vector_store.qdrant import QdrantVectorStoreManager
 from test.qdrant_util import DeterministicEmbeddingTool
+
+pytestmark = pytest.mark.unit
 
 
 class _FakeScrollClient:

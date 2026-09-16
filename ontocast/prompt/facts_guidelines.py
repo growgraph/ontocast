@@ -17,7 +17,7 @@ facts_instruction_shared = """\n\n
 1. Facts MUST use the fixed namespace `{facts_namespace}` with the prefix `cd:`. Local names for facts should not be capitalized (use lowercase_snake_case).
 
 1a. TWO-NAMESPACE CONTRACT (most important rule):
-    - {domain_ontologies_clause}: schema elements only — classes (as `rdf:type` objects), predicates, and named individuals that exist verbatim in the ontology
+    - {domain_ontologies_clause} (see the ONTOLOGY section below): schema elements only — classes (as `rdf:type` objects), predicates, and named individuals that exist verbatim in the ontology
     - `cd:`: ALL new instances extracted from the text, even if typed by an ontology class
 
     CORRECT: `cd:trial_1 a onto:Trial ; onto:hasJudgment cd:judgment_1 .`
@@ -42,12 +42,18 @@ facts_instruction_shared = """\n\n
       `rdfs:subPropertyOf` of `onto:hasPart` and its domain/range fit the subject and object.
     - CORRECT: `cd:assembly_1 onto:hasComponent cd:widget_1 .`
 
-2. Use the provided domain ontology namespace(s) above and standard ontologies (RDFS, OWL, schema.org, etc.) to identify/infer entities, classes, types, and relationships
-3. Thoroughly Extract and Link: extract all possible text mentions that correspond to entities, classes, types, or relationships defined in the domain ontology namespace(s) above
-4. Enforce typing: all `cd:` entities (facts) are data instances and must be linked via `rdf:type` to a valid operational Class from either the domain ontology namespace(s) above or standard core vocabularies (e.g., `schema:Person`, `schema:Organization`, `onto:Trial`).
+2. VOCABULARY PRECEDENCE (read before choosing any term):
+   - The ONTOLOGY section of this prompt is the vocabulary you are being asked to use. Search it FIRST for every class and property you need, and prefer its terms even when a generic vocabulary has a term that would also fit.
+   - Generic vocabularies (RDFS, OWL, schema.org, …) are a LAST RESORT, for concepts the provided ontology genuinely does not cover. They are not an equal alternative.
+   - The reason is mechanical, not stylistic: the deployment validates this graph against shapes written for the provided ontology. A term from that ontology is checked and queryable; a generic substitute is invisible to every shape and every downstream query, so it reads as extracted but answers nothing.
+   - If the ONTOLOGY section is empty or has no term for a concept, say so by leaving the concept untyped rather than reaching for a generic near-equivalent that changes what was asserted.
+3. Thoroughly Extract and Link: extract all possible text mentions that correspond to entities, classes, types, or relationships defined in the provided ontology
+3a. QUANTITATIVE COMPLETENESS: extract EVERY quantitative statement in the text — every measured value, duration, condition, concentration, ratio, threshold, and uncertainty — even when the provided ontology has no term for it (the quantity fallback of rule 8 applies in that case). A number attached to a stated quantity is a fact and must reach the graph with its verbatim value and unit; a bare citation, page, figure, or equation token is typography and must not (rule 4). Completeness of the measured content is judged, so silently skipping a stated measurement is a defect, not a simplification.
+4. Enforce typing: all `cd:` entities (facts) are data instances and must be linked via `rdf:type` to a valid operational Class — from the provided ontology wherever one fits (e.g. `onto:Trial`), and only otherwise from a generic core vocabulary (e.g. `schema:Person`).
    - CRITICAL: NEVER type a `cd:` instance as `rdfs:Class` or `rdf:Property`. You are extracting data occurrences, not rewriting or defining the schema.
+   - Do NOT mint an entity for a bare number, a citation marker, or a reference token (`[12]`, "19", equation numbers). These are typography, not facts.
 5. Declare every namespace prefix you use (rdf, rdfs, owl, schema, domain ontologies, cd, etc.).
-5a. PREFIX HYGIENE: Use **only** prefix aliases declared in the ontology context above. Do not invent alternative aliases.
+5a. PREFIX HYGIENE: Use **only** prefix aliases declared in the ONTOLOGY section below. Do not invent alternative aliases.
 6. CRITICAL - Entity Matching & Namespace Isolation Protocol:
    - Understand the Ontology Contents: The provided ontology contains the schema (Classes and Properties). It may also contain a small set of static Reference Individuals (e.g., fixed status constants, countries, or controlled vocabularies). It does NOT contain the dynamic data instances described in your source text.
    - The Target Lookup Rule: BEFORE creating a `cd:` entity, check if the text mention refers to one of those static Reference Individuals existing verbatim in the provided ontology context (declared as `owl:NamedIndividual` or an explicit individual token).

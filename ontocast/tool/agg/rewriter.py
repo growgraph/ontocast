@@ -34,6 +34,8 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.iri_policy import is_in_namespace, normalize_namespace_iri
 from ontocast.onto.rdfgraph import RDFGraph
 
+from .unit_scope import unscoped_iri
+
 logger = logging.getLogger(__name__)
 
 # Local alias for readability
@@ -88,8 +90,11 @@ class GraphRewriter:
             return
         for canonical, originals in merged_entities.items():
             for original in originals:
-                if self.should_emit_sameas(original, canonical):
-                    target_graph.add((canonical, OWL.sameAs, original))
+                # A unit-scope suffix is aggregation bookkeeping, not an alias
+                # anyone asserted: the alias record names the source IRI.
+                source = unscoped_iri(original)
+                if self.should_emit_sameas(source, canonical):
+                    target_graph.add((canonical, OWL.sameAs, source))
 
     def apply_mapping_to_triple(
         self,

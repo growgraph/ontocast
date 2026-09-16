@@ -22,6 +22,8 @@ from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.llm import LLMTool
 from test.snapshot_helpers import snapshot_from_ontology
 
+pytestmark = pytest.mark.unit
+
 render_ontology_module = importlib.import_module("ontocast.agent.render_ontology")
 render_facts_module = importlib.import_module("ontocast.agent.render_facts")
 criticise_ontology_module = importlib.import_module("ontocast.agent.criticise_ontology")

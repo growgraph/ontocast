@@ -18,6 +18,8 @@ from pydantic_settings import BaseSettings
 
 import ontocast.config.settings as settings_module
 
+pytestmark = pytest.mark.unit
+
 #: Declared but deliberately absent from .env.example, with the reason.
 DELIBERATELY_UNDOCUMENTED = {
     # Unprefixed alias of LLM_MAX_INFLIGHT, which is documented. Advertising

@@ -61,6 +61,50 @@ class EmbeddingTool(Tool):
     def _apply(prefix: str, texts: list[str]) -> list[str]:
         return texts if not prefix else [f"{prefix}{text}" for text in texts]
 
+    @property
+    def sequence_limit(self) -> int | None:
+        """Tokens this provider accepts before it silently truncates, if known.
+
+        Truncation is the failure mode with no symptom: the provider returns a
+        vector of the right shape for a prefix of the text, and the caller cannot
+        tell that the tail was dropped. Exposing the limit is what lets a caller
+        report it instead of discovering it as unexplained recall loss.
+
+        Returns:
+            int | None: The limit, or None where the provider does not state one.
+        """
+        return None
+
+    def token_lengths(self, texts: list[str]) -> list[int] | None:
+        """Word pieces each text costs this encoder, or None if unknowable.
+
+        Lengths rather than a count of overflows, because the two answer different
+        questions: a count says how many queries were cut, while the distribution
+        says whether a budget is nearly right or wildly wrong -- and only the
+        latter can be used to size one.
+
+        Returns:
+            list[int] | None: One length per text, or None where the provider
+            exposes no tokenizer. A caller must read None as "cannot tell", never
+            as zero.
+        """
+        return None
+
+    def count_over_limit(self, texts: list[str]) -> int | None:
+        """How many of ``texts`` exceed :attr:`sequence_limit`.
+
+        Returns:
+            int | None: The count, or None when the limit or the tokenizer is
+            unknown.
+        """
+        limit = self.sequence_limit
+        if limit is None or not texts:
+            return None
+        lengths = self.token_lengths(texts)
+        if lengths is None:
+            return None
+        return sum(1 for length in lengths if length > limit)
+
     def embed_one(self, text: str) -> list[float]:
         """Return a vector for one query text."""
         vectors = self.embed_query([text])
@@ -106,6 +150,37 @@ class HuggingFaceEmbeddingTool(EmbeddingTool):
             texts, convert_to_numpy=True, show_progress_bar=len(texts) > 100
         )
         return [vector.tolist() for vector in vectors]
+
+    @property
+    def sequence_limit(self) -> int | None:
+        """The checkpoint's ``max_seq_length``.
+
+        Frequently far below what the tokenizer's own ``model_max_length`` reports,
+        and it is this value that governs: sentence-transformers truncates to it
+        before the model sees the text.
+        """
+        try:
+            limit = self._get_embedder().model.max_seq_length
+        except Exception:  # noqa: BLE001 - a missing attribute must not break retrieval
+            return None
+        return int(limit) if limit else None
+
+    def token_lengths(self, texts: list[str]) -> list[int] | None:
+        """Word pieces per text, from the checkpoint's own tokenizer.
+
+        Tokenizes without encoding, which is cheap beside the forward pass this
+        accompanies. Prefixes are applied first, because an instruction prefix
+        counts against the same budget as the text it introduces.
+        """
+        if not texts:
+            return []
+        try:
+            tokenizer = self._get_embedder().model.tokenizer
+            prefixed = self._apply(self.config.query_prefix, texts)
+            encoded = tokenizer(prefixed, add_special_tokens=True)["input_ids"]
+        except Exception:  # noqa: BLE001 - telemetry must never break retrieval
+            return None
+        return [len(ids) for ids in encoded]
 
 
 class _LangChainEmbeddingTool(EmbeddingTool):

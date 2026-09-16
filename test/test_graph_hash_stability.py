@@ -22,6 +22,8 @@ from ontocast.tool.triple_manager.in_memory import (
     _list_named_graph_uris,
 )
 
+pytestmark = pytest.mark.unit
+
 SUBJECT = URIRef("urn:test:subject")
 PREDICATE = URIRef("urn:test:predicate")
 

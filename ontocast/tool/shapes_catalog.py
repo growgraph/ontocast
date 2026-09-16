@@ -33,6 +33,10 @@ from ontocast.tool.triple_manager.util import LIST_NAMED_GRAPHS_QUERY
 
 logger = logging.getLogger(__name__)
 
+#: Bound on cached per-unit shape selections; distinct selections per run
+#: are at most the unit count, so this is generous.
+_SELECTION_CACHE_MAX = 64
+
 #: Every triple in the shapes partition, merged. SHACL evaluates one shapes
 #: graph, and shapes documents are independent, so the union is the whole answer.
 _ALL_SHAPES_QUERY = """
@@ -91,6 +95,16 @@ class ShapesCatalog(Tool):
         super().__init__(**kwargs)
         self._triple_store_manager: TripleStoreManager | None = None
         self._graph: RDFGraph | None = None
+        # Prompt-contract memo, keyed on the merged graph's identity: every
+        # (re)materialization builds a new graph object, so the key
+        # invalidates itself without each assignment site knowing about it.
+        self._contract_key: tuple[int, int] | None = None
+        self._contract_requirements: tuple = ()
+        self._contract_chapter: str = ""
+        self._contract_terms: tuple[str, ...] = ()
+        # Per-unit selections, keyed by the selected anchor set; bounded and
+        # dropped whenever the contract memo rebuilds.
+        self._selection_cache: dict[tuple[str, ...], str] = {}
 
     def register_triple_store(self, manager: TripleStoreManager | None) -> None:
         """Register the triple store holding the shapes partition."""
@@ -108,6 +122,81 @@ class ShapesCatalog(Tool):
         rather than reporting a clean run against no shapes.
         """
         return self._graph if self._graph is not None and len(self._graph) else None
+
+    def _contract(self, max_lines: int):
+        graph = self.graph()
+        if graph is None:
+            return (), "", ()
+        key = (id(graph), max_lines)
+        if self._contract_key != key:
+            from ontocast.prompt.shapes_contract import (
+                contract_terms,
+                derive_shape_requirements,
+                format_conformance_chapter,
+            )
+
+            self._contract_requirements = tuple(derive_shape_requirements(graph))
+            self._contract_chapter = format_conformance_chapter(
+                self._contract_requirements, max_lines=max_lines
+            )
+            self._contract_terms = contract_terms(graph)
+            self._contract_key = key
+            self._selection_cache = {}
+        return self._contract_requirements, self._contract_chapter, self._contract_terms
+
+    def conformance_chapter(self, *, max_lines: int) -> str:
+        """The whole catalog rendered as a prompt chapter; "" without shapes.
+
+        Memoized per merged graph -- run-constant, shared by every unit of
+        every document in a tenancy.
+        """
+        return self._contract(max_lines)[1]
+
+    def prompt_contract_terms(self, *, max_lines: int) -> tuple[str, ...]:
+        """IRIs the shapes require of the output (the exemption set).
+
+        Deliberately the FULL catalog's terms whatever selection does to the
+        chapter: exemptions protect legitimate catalog IRIs from
+        UNKNOWN_TERM, and the gate validates against every shape.
+        """
+        return self._contract(max_lines)[2]
+
+    def needs_selection(self, *, max_lines: int) -> bool:
+        """Whether the catalog's rule lines exceed the prompt cap.
+
+        Below the cap the whole-catalog chapter is strictly better than any
+        selection: run-constant, memoized once, no per-unit variance. Above
+        it, rendering everything means blind truncation in document order,
+        and per-unit selection takes over.
+        """
+        requirements, _, _ = self._contract(max_lines)
+        return sum(len(r.lines) for r in requirements) > max_lines
+
+    def selected_chapter(self, context_terms: set[str], *, max_lines: int) -> str:
+        """The chapter for one unit, joined on its ontology-context IRIs.
+
+        A shape is included iff its own terms (targets, paths, classes)
+        intersect ``context_terms``. Distinct selections per run are bounded
+        by the unit count, so rendered chapters are cached by selected-anchor
+        set (bounded; oldest evicted first).
+        """
+        requirements, _, _ = self._contract(max_lines)
+        if not requirements:
+            return ""
+        from ontocast.prompt.shapes_contract import (
+            format_conformance_chapter,
+            select_requirements,
+        )
+
+        selected = select_requirements(requirements, context_terms)
+        key = tuple(r.anchor for r in selected)
+        cached = self._selection_cache.get(key)
+        if cached is None:
+            cached = format_conformance_chapter(selected, max_lines=max_lines)
+            if len(self._selection_cache) >= _SELECTION_CACHE_MAX:
+                self._selection_cache.pop(next(iter(self._selection_cache)))
+            self._selection_cache[key] = cached
+        return cached
 
     async def sync(self, shapes_dir: str | None = None) -> None:
         """Seed from ``shapes_dir`` when needed, then materialize the merged graph.

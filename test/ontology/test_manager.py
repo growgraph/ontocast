@@ -17,6 +17,8 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool import OntologyManager
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def ontology_manager():

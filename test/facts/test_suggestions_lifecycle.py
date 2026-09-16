@@ -16,7 +16,7 @@ graph connectivity and gained validation errors while the one-visit arm did not.
 Two writers had to be fixed, because the loop can reach the repair with stale
 suggestions by two different routes:
 
-* a render consumes them (``render_facts_update``), and
+* a render consumes them (the facts render), and
 * the critic *accepts* on a later attempt of the same render, after an
   external-evidence search, with no render in between to consume them.
 """
@@ -76,6 +76,7 @@ def _tools() -> AtomicToolBox:
             web_grounding_enabled_for_node=lambda _node: False,
             object_property_literal_check=True,
             property_alias_min_ratio=0.85,
+            catalog_terms=lambda: set(),
             code_predicates=(),
             citation_vocabulary={},
             quantity_fallback_vocabulary=None,
@@ -133,42 +134,58 @@ async def test_a_rejecting_critic_records_suggestions(
 
 
 @pytest.mark.anyio
-async def test_an_accepting_critic_leaves_no_suggestions_for_the_repair(
+async def test_an_accepting_critic_keeps_its_own_fixes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The exit path that has no render between rejection and repair.
+    """Accepting means "no defect worth another render", not "no critique".
 
-    A critic that rejects, requests an evidence search, and then accepts on the
-    retry reaches ``_run_finding_driven_repair`` directly. Without this reset
-    the repair render inherits the rejected attempt's suggestions.
+    This used to assert the opposite -- that acceptance cleared the fixes --
+    which discarded the critique of every accepted render. Since a ``REMOVE``
+    fix can never make a render blocking, and most renders are accepted, that
+    was the bulk of everything the critic produced. The fixes now survive so
+    the repair lane can compile the mechanical ones with no LLM call and record
+    the rest as residual.
+
+    The stale-suggestion hazard the old reset guarded is still covered: the
+    accepted attempt's own fixes replace the rejected attempt's, so no repair
+    ever sees a superseded critique.
     """
     state = _unit_state()
 
     _stub_critique(monkeypatch, _critique(success=False, score=55))
     state = await criticise_facts_module.criticise_facts(state, _tools())
-    assert state.suggestions.actionable_fixes
+    rejected_fixes = list(state.suggestions.actionable_fixes)
+    assert rejected_fixes
 
-    _stub_critique(monkeypatch, _critique(success=True, score=98, severity="minor"))
+    _stub_critique(
+        monkeypatch,
+        _critique(success=True, score=98, severity="minor"),
+    )
     state = await criticise_facts_module.criticise_facts(state, _tools())
 
     assert state.status == Status.SUCCESS
-    assert not state.suggestions.actionable_fixes, (
-        "an accepting critic has no outstanding requests; the repair render "
-        "must not inherit the rejected attempt's suggestions"
+    assert state.suggestions.actionable_fixes, (
+        "an accepting critic's fixes must survive for the repair lane to "
+        "compile; discarding them threw away most of the critic's output"
     )
-    assert not state.suggestions.systemic_critique_summary
+    assert all(
+        fix
+        in _critique(success=True, score=98, severity="minor").actionable_triple_fixes
+        for fix in state.suggestions.actionable_fixes
+    ), "the accepted attempt's fixes must replace the rejected attempt's"
 
 
-def test_empty_suggestions_render_no_improvement_instruction() -> None:
-    """The reset must actually silence the improvement block, not just empty it.
+def test_facts_stage_has_no_suggestions_template() -> None:
+    """The facts render has no improvement slot, so the stage must be refused.
 
-    ``render_suggestions_prompt`` returns the whole "advisory ... think
-    independently ... proactively fix additional problems" template whenever
-    either field is non-empty, so a reset that left one populated would keep
-    the contradiction alive.
+    The facts prompt template carried ``{improvement_instruction}`` and
+    ``{fact_chapter}`` slots that only ever received ``""`` -- the facts
+    correction pass was removed when the critic gained its own compiled patch.
+    Refusing the stage keeps a caller from re-introducing a template that
+    nothing renders.
     """
     from ontocast.agent.common import render_suggestions_prompt
     from ontocast.onto.enum import WorkflowNode
 
-    rendered = render_suggestions_prompt(Suggestions(), WorkflowNode.TEXT_TO_FACTS)
-    assert rendered == ""
+    with pytest.raises(ValueError, match="not supported"):
+        render_suggestions_prompt(Suggestions(), WorkflowNode.TEXT_TO_FACTS)

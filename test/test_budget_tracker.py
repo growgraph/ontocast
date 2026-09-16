@@ -1,7 +1,11 @@
 """Tests for BudgetTracker usage and merge behavior."""
 
+import pytest
+
 from ontocast.onto.state import UNIT_SUM_SUFFIX, BudgetTracker
 from ontocast.onto.token_usage import TokenUsage
+
+pytestmark = pytest.mark.unit
 
 
 def test_add_usage_records_chars_and_tokens() -> None:

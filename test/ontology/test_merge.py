@@ -10,6 +10,8 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.ontology_manager import OntologyManager
 
+pytestmark = pytest.mark.unit
+
 logger = logging.getLogger(__name__)
 
 

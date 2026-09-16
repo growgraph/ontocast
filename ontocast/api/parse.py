@@ -5,7 +5,10 @@ import logging
 from enum import StrEnum
 from typing import TypeVar
 
-from ontocast.config.section_labels import normalise_user_section_label
+from ontocast.config.section_labels import (
+    all_known_label_ids,
+    normalise_user_section_label,
+)
 from ontocast.onto.enum import LLMGraphFormat, OntologyContextMode, RenderMode
 
 logger = logging.getLogger(__name__)
@@ -126,15 +129,55 @@ def parse_strip_provenance_param(value: str | None) -> bool:
     return False
 
 
-def _normalise_section_tokens(raw_tokens: list[str]) -> list[str]:
+def _normalise_section_tokens(raw_tokens: list[str]) -> tuple[list[str], list[str]]:
+    """Map user-supplied section names onto canonical labels.
+
+    Args:
+        raw_tokens: Section names as the caller wrote them.
+
+    Returns:
+        The recognised canonical labels, and the tokens that matched nothing.
+    """
     result: list[str] = []
+    dropped: list[str] = []
     for token in raw_tokens:
         normalised = normalise_user_section_label(token)
         if normalised is None:
-            logger.warning("Unrecognised section label %r — skipping", token)
+            logger.warning("Unrecognised section label %r \u2014 skipping", token)
+            dropped.append(token)
         else:
             result.append(normalised)
-    return result
+    return result, dropped
+
+
+def _resolve_section_tokens(raw_tokens: list[str], param: str) -> list[str]:
+    """Normalise section tokens, rejecting a list where nothing was recognised.
+
+    A partially recognised list still expresses a real intent, so unknown
+    tokens are dropped with a warning. A list where *every* token is unknown is
+    a caller mistake whose effect is the opposite of the request: the empty
+    result reads downstream as an explicit "no sections", which *replaces* the
+    resolved schema's defaults instead of adding to them. Failing here keeps a
+    typo from silently disabling section handling the caller never touched.
+
+    Args:
+        raw_tokens: Non-empty section names as the caller wrote them.
+        param: Parameter name, used in the error message.
+
+    Returns:
+        Canonical labels for the recognised tokens.
+
+    Raises:
+        RequestParamError: Tokens were supplied and none were recognised.
+    """
+    resolved, dropped = _normalise_section_tokens(raw_tokens)
+    if raw_tokens and not resolved:
+        known = ", ".join(sorted(all_known_label_ids()))
+        raise RequestParamError(
+            param,
+            f"{param} recognised none of {dropped}; known section labels are: {known}",
+        )
+    return resolved
 
 
 def parse_sections_list_param(
@@ -147,13 +190,15 @@ def parse_sections_list_param(
         param: Parameter name, used only in error messages.
 
     Raises:
-        RequestParamError: The value started with ``[`` but was not a JSON array.
+        RequestParamError: The value started with ``[`` but was not a JSON
+            array, or tokens were supplied and none named a known section
+            label.
     """
     if value is None:
         return []
     if isinstance(value, list):
         raw_tokens = [str(item).strip() for item in value if str(item).strip()]
-        return _normalise_section_tokens(raw_tokens)
+        return _resolve_section_tokens(raw_tokens, param)
     raw = str(value).strip()
     if not raw:
         return []
@@ -167,9 +212,9 @@ def parse_sections_list_param(
         if not isinstance(parsed, list):
             raise RequestParamError(param, f"{param} JSON must be an array")
         raw_tokens = [str(item).strip() for item in parsed if str(item).strip()]
-        return _normalise_section_tokens(raw_tokens)
+        return _resolve_section_tokens(raw_tokens, param)
     raw_tokens = [part.strip() for part in raw.split(",") if part.strip()]
-    return _normalise_section_tokens(raw_tokens)
+    return _resolve_section_tokens(raw_tokens, param)
 
 
 def parse_document_type_hint_param(value: str | None) -> str | None:

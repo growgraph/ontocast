@@ -8,6 +8,7 @@ import abc
 import asyncio
 import os
 from collections.abc import Sequence
+from typing import Any
 
 from pydantic import Field
 from rdflib import RDF, Graph
@@ -41,7 +42,7 @@ class TripleStoreManager(Tool):
     triple store backends (e.g., Fuseki, In-Memory).
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: Any):
         """Initialize the triple store manager.
 
         Args:
@@ -66,20 +67,20 @@ class TripleStoreManager(Tool):
         return await asyncio.to_thread(self.fetch_ontologies)
 
     @abc.abstractmethod
-    def serialize_graph(self, graph: Graph, **kwargs) -> bool:
+    def serialize_graph(self, graph: Graph, **kwargs: Any) -> bool:
         """Store an RDF graph in the triple store."""
         pass
 
-    async def aserialize_graph(self, graph: Graph, **kwargs) -> bool:
+    async def aserialize_graph(self, graph: Graph, **kwargs: Any) -> bool:
         """Async serialize helper for backends without native async I/O."""
         return await asyncio.to_thread(self.serialize_graph, graph, **kwargs)
 
     @abc.abstractmethod
-    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> bool:
+    def serialize(self, o: Ontology | RDFGraph, **kwargs: Any) -> bool:
         """Store an Ontology or RDFGraph in the triple store."""
         pass
 
-    async def aserialize(self, o: Ontology | RDFGraph, **kwargs) -> bool:
+    async def aserialize(self, o: Ontology | RDFGraph, **kwargs: Any) -> bool:
         """Async serialize helper for backends without native async I/O."""
         return await asyncio.to_thread(self.serialize, o, **kwargs)
 
@@ -335,7 +336,14 @@ class TripleStoreManagerWithAuth(TripleStoreManager):
         default=None, description="Triple store authentication tuple (user, password)"
     )
 
-    def __init__(self, uri=None, auth=None, env_uri=None, env_auth=None, **kwargs):
+    def __init__(
+        self,
+        uri: str | None = None,
+        auth: tuple[str, str] | str | None = None,
+        env_uri: str | None = None,
+        env_auth: str | None = None,
+        **kwargs: Any,
+    ):
         """Initialize the triple store manager with authentication.
 
         This method handles loading URI and authentication credentials from

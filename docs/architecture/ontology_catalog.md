@@ -74,9 +74,19 @@ actually changes. The first assignment is
 the exception: it happens at startup, before `initialize()`, which populates the catalog
 itself — resyncing there would just fetch everything twice.
 
-Seed TTLs from `ONTOCAST_ONTOLOGY_DIRECTORY` are **not** replayed on a switch. They are a
-startup bootstrap; materializing them into a different tenant as a side effect of a query
-parameter would be a surprise.
+Seed TTLs from `ONTOCAST_ONTOLOGY_DIRECTORY` **are** replayed on a switch, but only where
+the partition serves nothing of its own. Withholding them was the more conservative
+choice on paper and the worse one in practice: a scope whose catalog is empty for want of
+a bootstrap is the same fault as a startup one, and the tenant extracted against no
+vocabulary at all rather than being surprised by a write.
+
+The test is whether the partition serves *terms*, not whether it lists the IRI. A catalog
+read builds an ontology from its `owl:Ontology` subject and fills the graph separately, so
+one whose graph never arrived still answers with a few triples about itself — a non-empty
+graph that defines nothing. An ontology that does define terms is never overwritten: a
+previous run's evolved terminal outranks whatever is on disk.
+
+`FACTS_SHAPES_DIR` follows the same rule.
 
 ## Reading the catalog
 

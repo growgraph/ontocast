@@ -15,19 +15,24 @@ jobs:
             with:
                 version: "0.10.12"
                 enable-cache: true
-        # `ty check ontocast test` is a whole-program check, so every extra
-        # whose code it walks has to be importable here: `server` (FastAPI app
-        # + CLI), `documents` (docling-core types), `qdrant` and `graph`.
-        # Syncing `dev` alone -- correct before the dependency tiering moved
-        # those packages out of the base install -- made ty fail on ~40
-        # unresolved imports.
-        #
-        # This deliberately stops short of `--all-extras` (8.8 GB vs 633 MB;
-        # torch, docling/easyocr, lancedb, pygraphviz) because the heavy tier
-        # is instead whitelisted in `[tool.ty.analysis] allowed-unresolved-imports`
-        # in pyproject.toml. A new unresolved-import failure here means an
-        # extra crossed that line: either add it below, or whitelist it there.
-        -   name: Install dependencies (extras that ty type-checks)
-            run: uv sync --extra dev --extra server --extra documents --extra qdrant --extra graph --no-install-project
+        # `setup-uv`'s own cache covers uv's package cache, not the hook
+        # environments, which live in ~/.cache/pre-commit. Without this step
+        # every run rebuilt them from scratch and re-resolved each hook's
+        # dependencies, so an unchanged repository could go red on a transitive
+        # release. Keying on the config hash means a hook or pin change rebuilds
+        # and everything else reuses.
+        -   name: Cache hook environments
+            uses: actions/cache@v4
+            with:
+                path: ~/.cache/pre-commit
+                key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+        # This job is lint and formatting only, so it needs nothing but the
+        # `dev` extra. Type checking runs in `tests.yml`, whose `unit` job
+        # already installs every extra -- a whole-program check gets better
+        # answers where the whole program is actually importable.
+        -   name: Install dependencies
+            run: uv sync --extra dev --no-install-project
         -   name: Run pre-commit
             run: uv run pre-commit run --all-files
+            env:
+                SKIP: ty

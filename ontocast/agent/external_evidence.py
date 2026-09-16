@@ -17,6 +17,7 @@ from ontocast.onto.model import (
 )
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.tool.atomic import AtomicToolBox, SearchHit
+from ontocast.tool.llm import LLMConfigurationError
 
 logger = logging.getLogger(__name__)
 UnitStateT = TypeVar("UnitStateT", UnitFactsState, UnitOntologyState)
@@ -274,6 +275,11 @@ async def plan_external_evidence_for_node(
                 "format_instructions": parser.get_format_instructions(),
             },
         )
+    except LLMConfigurationError:
+        # Skipping external evidence is a sound fallback for a planner
+        # that failed; it is not one for a provider that rejects every
+        # request, which the rest of the unit is about to hit too.
+        raise
     except Exception as error:
         logger.warning(
             "Evidence planner failed for %s; skipping external evidence (%s).",

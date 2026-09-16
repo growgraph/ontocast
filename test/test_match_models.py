@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from rdflib import URIRef
 
 from ontocast.tool.agg.match_models import (
@@ -8,6 +9,8 @@ from ontocast.tool.agg.match_models import (
     GraphEntityMember,
     coerce_uri_ref,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def test_coerce_uri_ref_accepts_string() -> None:

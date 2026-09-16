@@ -15,6 +15,21 @@ The LLM caching system automatically caches responses from language model provid
 
 ---
 
+!!! note "This cache is not the provider's prompt cache"
+
+    Everything on this page is OntoCast's own on-disk cache: an identical
+    request is answered locally and never reaches the provider. A provider's
+    *prefix* cache is a different mechanism — the request is sent and billed,
+    but a repeated prompt prefix is billed at a discount. OntoCast shapes its
+    prompts so that prefixes can repeat, and `LLM_PROMPT_CACHE_KEY` keeps an
+    OpenAI fan-out on one cache shard; see
+    [One chapter per document](performance.md#one-chapter-per-document-and-warming-the-cache-that-serves-it).
+
+    The prompt is part of this cache's key, so anything that changes the prompt
+    text is a miss here too. A default whose prompt changed — as the facts
+    ontology chapter did in 0.6.4 — re-bills the first run after upgrading,
+    even with a warm cache.
+
 ## Configuration
 
 | Setting | Env | Default | Description |
@@ -104,6 +119,7 @@ Cache keys hash **normalized prompt text** (LangChain prompt values use `to_stri
 
 - provider, model name, temperature, base URL
 - the Ollama generation knobs `think`, `num_predict`, `num_ctx` — these bound reasoning and output length, so the same prompt under a different `num_ctx` is a different response
+- the cloud reasoning knobs `reasoning_effort` and `thinking_budget`, **only when set** — an unset knob means "provider default", which is what every entry written before the knobs existed was produced under, so leaving it unset keeps those entries valid while setting it re-issues every prompt
 - the output schema name, for structured `extract` calls
 - a `cache_format_version` constant, bumped whenever the entry shape or the set of key inputs changes
 
@@ -347,15 +363,14 @@ On a running server, the same counters are available from `GET /info` (`llm_cach
 Caching works seamlessly with the ToolBox through a shared Cacher instance:
 
 ```python
-from ontocast.toolbox import ToolBox
-from ontocast.config import Config
+from ontocast import Config, ToolBox
 
-# ToolBox automatically creates and uses a shared Cacher
-config = Config()
-tools = ToolBox(config)
+# ToolBox creates one Cacher and hands it to every tool
+tools = await ToolBox.acreate(Config())
+await tools.initialize()
 
-# All tools (LLM, Converter, Chunker) share the same cache instance
-result = tools.llm("Process this document")
+# LLM, converter and chunker all read and write the same cache
+result = await tools.llm("Process this document")
 converted = tools.converter(document_file)
 chunks = tools.chunker(text)
 ```
@@ -402,12 +417,18 @@ The `ConverterTool` automatically caches document conversion results based on th
 
 ### Chunker Caching
 
-The `ChunkerTool` caches chunking results based on:
-- **Input text content**: The exact text being chunked
-- **Chunking configuration**: All chunking parameters (max_size, min_size, model, etc.)
-- **Chunking mode**: Whether semantic or naive chunking is used
+The `ChunkerTool` caches chunking results keyed on exactly:
+- **Input text content**: the exact text being chunked
+- **`CHUNK_EMBEDDING_MODEL`**, **`CHUNK_MAX_SIZE`** and **`CHUNK_MIN_SIZE`**
+- **Chunking mode**: whether semantic or naive chunking ran
+- **`cache_format_version`**: bumped whenever the split algorithm changes its
+  output for the same inputs, so entries from an older algorithm are not served
 
-This ensures that identical text with identical chunking parameters will return cached results.
+Section detection, segmenter choice and unit filtering are not in the key:
+they run outside the cached call, on whole section blocks, and only an
+oversized block reaches the chunker. Because semantic chunking is seeded, a
+cache miss recomputes exactly what the hit would have returned; the cache
+saves time, not consistency.
 
 ### Cache Organization
 

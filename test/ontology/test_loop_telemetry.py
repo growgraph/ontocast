@@ -33,6 +33,7 @@ from ontocast.stategraph import atomic as unit_loops
 from ontocast.stategraph.context_resolver import UnitOntologyContext
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.facts_validation import CriticPatchPolicy, FactsAcceptancePolicy
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.toolbox import ToolBox
 
@@ -80,6 +81,16 @@ def _tools() -> AtomicToolBox:
         SimpleNamespace(
             get_llm_tool=_llm_tool,
             web_grounding_enabled_for_node=lambda _node: False,
+            ontology_acceptance_policy=FactsAcceptancePolicy(
+                blocking_finding_kinds=frozenset(
+                    {
+                        "foreign_delete",
+                        "foreign_namespace",
+                        "subclass_cycle",
+                        "role_confusion",
+                    }
+                )
+            ),
         ),
     )
 
@@ -131,10 +142,13 @@ async def test_a_rejection_is_recorded_with_its_evidence(
 ) -> None:
     _stub(monkeypatch, _critique(success=False, score=72))
     state = _unit_state()
+    # FOREIGN_DELETE, not MISSING_LABEL: the blocking set is the destructive or
+    # lossy subset only. An unlabelled new term is routine output, and gating on
+    # it would be a permanent per-unit tax rather than a defect signal.
     state.deterministic_findings = [
         OntologyUnitFinding(
-            kind=OntologyUnitFindingKind.MISSING_LABEL,
-            message="new term has no label",
+            kind=OntologyUnitFindingKind.FOREIGN_DELETE,
+            message="this update deletes catalog content",
         )
     ]
 
@@ -145,7 +159,7 @@ async def test_a_rejection_is_recorded_with_its_evidence(
     assert attempt.kind == "critic"
     assert attempt.score == 72
     assert attempt.success is False
-    assert attempt.accept_reason == "incumbent_rejected"
+    assert attempt.accept_reason == "mandatory_findings"
     assert attempt.severity_counts == {"critical": 1, "important": 1}
     assert attempt.n_actionable_fixes == 2
     assert attempt.n_deterministic_findings == 1
@@ -157,19 +171,28 @@ async def test_a_rejection_is_recorded_with_its_evidence(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    ("success", "score", "reason"),
-    [(True, 40, "incumbent_success"), (False, 95, "incumbent_score")],
+    ("success", "score", "incumbent"),
+    [(True, 40, True), (False, 95, True), (False, 72, False)],
 )
-async def test_an_acceptance_records_which_clause_fired(
-    monkeypatch: pytest.MonkeyPatch, success: bool, score: float, reason: str
+async def test_an_acceptance_records_what_the_retired_gate_would_have_said(
+    monkeypatch: pytest.MonkeyPatch, success: bool, score: float, incumbent: bool
 ) -> None:
-    _stub(monkeypatch, _critique(success=success, score=score))
+    """Both verdicts, so the gate change can be judged from artifacts.
+
+    Replacing a gate deserves a distribution rather than an argument, and the
+    ontology critic has never run on recorded data -- so the incumbent's answer
+    is recorded alongside the one that now decides.
+    """
+    # No fixes: the default set carries a *critical* one, which blocks on its
+    # own severity whatever the score says.
+    _stub(monkeypatch, _critique(success=success, score=score, fixes=[]))
     state = await criticise_ontology_module.criticise_ontology(_unit_state(), _tools())
 
     assert state.status == Status.SUCCESS
     [attempt] = state.attempt_log
     assert attempt.success is True
-    assert attempt.accept_reason == reason
+    assert attempt.accept_reason == "clean"
+    assert attempt.incumbent_accepted is incumbent
 
 
 @pytest.mark.anyio
@@ -205,7 +228,13 @@ async def test_findings_are_injected_into_the_critic_prompt(
 async def test_loop_collects_findings_even_when_no_critic_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """At MAX_VISITS=1 the critic is skipped; the residual must exist anyway."""
+    """With no critic passes configured, the residual must exist anyway.
+
+    The document-level residual metric sums this field over units, so a unit
+    that never reached a critic still has to report what the machine found --
+    otherwise the denominator quietly counts only the criticised units.
+    """
+    ontology_critic_passes = 0
     foreign = URIRef("https://elsewhere.example/vocab#Widget")
 
     async def fake_render(state: UnitOntologyState, tools, **kwargs):
@@ -217,7 +246,7 @@ async def test_loop_collects_findings_even_when_no_critic_runs(
         state.status = Status.SUCCESS
         return state
 
-    async def fake_resolve(_state, _tools, _unit):
+    async def fake_resolve(_state, _tools, _unit, **_kwargs):
         return UnitOntologyContext(
             snapshot=OntologySnapshot(
                 graph=_snapshot_graph(), source_iris=["https://example.com/onto"]
@@ -234,7 +263,13 @@ async def test_loop_collects_findings_even_when_no_critic_runs(
         ToolBox,
         SimpleNamespace(
             get_atomic_tools=lambda: cast(
-                AtomicToolBox, SimpleNamespace(validation_policy=None)
+                AtomicToolBox,
+                SimpleNamespace(
+                    validation_policy=None,
+                    ontology_critic_passes=ontology_critic_passes,
+                    ontology_patch_policy=CriticPatchPolicy(),
+                    ontology_acceptance_policy=None,
+                ),
             ),
             ontology_manager=OntologyManager(),
         ),

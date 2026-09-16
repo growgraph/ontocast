@@ -10,6 +10,7 @@ Available prompts:
 - render_facts: Extract facts from text using ontologies
 - criticise_ontology: Evaluate and critique ontology quality
 - criticise_facts: Validate and critique extracted facts
+- complete_facts: Insert-only facts completion pass (post-critic-loop)
 - common: Shared prompt templates and components
 - graph_format: GraphFormatProfile (prompt + format instructions for llm_graph_format)
 - llm_json_schema: Format-bound JSON Schema for canonical report models

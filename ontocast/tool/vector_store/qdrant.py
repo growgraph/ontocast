@@ -44,6 +44,7 @@ from ontocast.tool.vector_store.util import (
     atom_scope_fingerprint,
     collection_embedding_metadata,
     dedupe_hits_by_identity,
+    effective_bm25_top_k,
     effective_top_k,
     embedding_contract_help,
     identity_key_for_atom,
@@ -523,6 +524,7 @@ class QdrantVectorStoreManager(VectorStoreManager):
             core_weight=cw,
             neighborhood_weight=nw,
             bm25_weight=bw,
+            rank_constant=self.store_config.fusion_rank_constant,
             limit=eff_top_k,
         )
 
@@ -741,6 +743,7 @@ class QdrantVectorStoreManager(VectorStoreManager):
             core_weight=cw,
             neighborhood_weight=nw,
             bm25_weight=bw,
+            rank_constant=self.store_config.fusion_rank_constant,
             limit=eff_top_k,
         )
         return [hit.atom for hit in fused_hits]
@@ -783,7 +786,7 @@ class QdrantVectorStoreManager(VectorStoreManager):
             bm25_hits_raw = self._query_named_vector(
                 vector_name=BM25_VECTOR_NAME,
                 vector=bm25_query_vector,
-                limit=eff_top_k,
+                limit=effective_bm25_top_k(self.store_config, top_k),
                 search_filter=search_filter,
             )
         core_typed_hits = self._points_to_hits(core_hits)

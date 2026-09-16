@@ -19,6 +19,8 @@ from ontocast.tool.chunk.prepare import (
 from ontocast.toolbox import ToolBox
 from test.docling_test_helpers import doc_from_markdown_lines
 
+pytestmark = pytest.mark.unit
+
 _SECTION_OPTS = PrepareOptions(summarize_sections=["*"])
 
 _MULTI_SECTION_DOC = """# Abstract
@@ -136,6 +138,7 @@ def test_prepare_sets_section_label_on_chunks() -> None:
     assert all(chunk.section_label for chunk in labeled)
 
 
+@pytest.mark.slow
 def test_prepare_splits_oversized_section() -> None:
     long_body = "Word " * 400
     doc = doc_from_markdown_lines(f"# Results\n{long_body.strip()}")

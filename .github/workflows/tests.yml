@@ -97,6 +97,16 @@ jobs:
                 enable-cache: true
         -   name: Install dependencies
             run: uv sync --all-extras
+        # `ty check ontocast test` is a whole-program check, so it belongs where
+        # the whole program is installed. Under a partial install the optional
+        # tier has to be whitelisted as unresolved, which types those modules as
+        # `Any` and silently stops ty checking any call into them; here every
+        # extra is already present for the test run, so the check costs one step
+        # and no extra install. One matrix leg is enough -- the source is the
+        # same on both, and 3.13 only runs on main.
+        -   name: Type check
+            if: matrix.python-version == '3.12'
+            run: uv run ty check ontocast test
         # No .env exists in a clean checkout; pytest-dotenv no-ops on a missing
         # file, and integration tests self-skip when their service is
         # unreachable, so this runs offline.

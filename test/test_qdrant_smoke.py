@@ -19,6 +19,8 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.toolbox import ToolBox
 from test.qdrant_util import DeterministicEmbeddingTool, QdrantSessionTestContext
 
+pytestmark = pytest.mark.unit
+
 
 def _build_smoke_ontology() -> Ontology:
     graph = RDFGraph._from_turtle_str(

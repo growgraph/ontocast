@@ -12,7 +12,11 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from ontocast.onto.enum import RetrievalMetric
+
+pytestmark = pytest.mark.unit
 
 # Every wire name, pinned. Add a line when a metric is added; change one only
 # in a release that documents the break.
@@ -35,6 +39,24 @@ EXPECTED_WIRE_NAMES = {
     "FACTS_MANDATORY_RESIDUAL": "facts_mandatory_residual",
     "FACTS_CRITIC_CALLS": "facts_critic_calls",
     "FACTS_CRITIC_ACCEPTED": "facts_critic_accepted",
+    "FACTS_CRITIC_FIXES_APPLIED": "facts_critic_fixes_applied",
+    "FACTS_CRITIC_FIXES_RESIDUAL": "facts_critic_fixes_residual",
+    "FACTS_CRITIC_FIXES_NOOP": "facts_critic_fixes_noop",
+    "FACTS_CRITIC_PATCHES_ROLLED_BACK": "facts_critic_patches_rolled_back",
+    "ONTOLOGY_CRITIC_FIXES_APPLIED": "ontology_critic_fixes_applied",
+    "ONTOLOGY_CRITIC_FIXES_RESIDUAL": "ontology_critic_fixes_residual",
+    "ONTOLOGY_CRITIC_FIXES_NOOP": "ontology_critic_fixes_noop",
+    "ONTOLOGY_CRITIC_PATCHES_ROLLED_BACK": "ontology_critic_patches_rolled_back",
+    "FACTS_CRITIC_UNITS_UNREVIEWED": "facts_critic_units_unreviewed",
+    "FACTS_CRITIC_UNITS_SKIPPED": "facts_critic_units_skipped",
+    "FACTS_CRITIC_FIXES_ROLLED_BACK": "facts_critic_fixes_rolled_back",
+    "FACTS_CRITIC_FIXES_JUNK_REFUSED": "facts_critic_fixes_junk_refused",
+    "FACTS_CRITIC_FIXES_UNRESOLVED_PREFIX": "facts_critic_fixes_unresolved_prefix",
+    "FACTS_COMPLETION_CALLS": "facts_completion_calls",
+    "FACTS_COMPLETION_TRIPLES_INSERTED": "facts_completion_triples_inserted",
+    "FACTS_COMPLETION_MEASUREMENTS_RECOVERED": (
+        "facts_completion_measurements_recovered"
+    ),
     "FACTS_FINDINGS_RESIDUAL": "facts_findings_residual",
     "FACTS_REJECTED_MERGES": "facts_rejected_merges",
     "FACTS_MERGE_REPAIR_PASSES": "facts_merge_repair_passes",

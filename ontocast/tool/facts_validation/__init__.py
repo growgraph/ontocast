@@ -13,8 +13,15 @@ from ontocast.tool.facts_validation.acceptance import (
     accept_reason,
     material_defects,
 )
+from ontocast.tool.facts_validation.critic_patch import (
+    CompiledFixes,
+    CriticPatchPolicy,
+    apply_compiled_patch,
+    compile_critic_fixes,
+)
 from ontocast.tool.facts_validation.gate import (
     FactsValidationReport,
+    count_shacl_focus_nodes,
     record_facts_gate_metrics,
     summarize_conformance,
     validate_aggregated_facts,
@@ -47,9 +54,12 @@ from ontocast.tool.facts_validation.terms import (
 from ontocast.tool.facts_validation.unit_findings import (
     collect_unit_findings,
     domain_violation_findings,
+    unit_numeric_inventory,
 )
 
 __all__ = [
+    "CompiledFixes",
+    "CriticPatchPolicy",
     "FactsAcceptancePolicy",
     "FactsValidationReport",
     "MaterialDefect",
@@ -57,12 +67,14 @@ __all__ = [
     "ShaclViolation",
     "ValidationPolicy",
     "accept_reason",
+    "apply_compiled_patch",
     "apply_shacl_repairs",
     "build_surface_index",
     "collect_catalog_terms",
     "collect_declared_namespaces",
     "collect_shacl_shapes",
     "collect_unit_findings",
+    "compile_critic_fixes",
     "dedupe_literal_variants",
     "domain_violation_findings",
     "expand_vocabulary_terms",
@@ -77,6 +89,8 @@ __all__ = [
     "resolve_unique_surface",
     "run_shacl",
     "shacl_catalog_contradictions",
+    "count_shacl_focus_nodes",
     "summarize_conformance",
+    "unit_numeric_inventory",
     "validate_aggregated_facts",
 ]

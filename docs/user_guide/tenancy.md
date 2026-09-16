@@ -35,7 +35,7 @@ Tenant and project are **runtime parameters**, not environment variables. They m
 
 When `tenant` or `project` appears in the **query string**, the request is served by a `ToolBox` bound to that scope. Requests without tenancy query parameters use the server's active tenant/project from startup (defaults: `ontocast` / `test`).
 
-Seed TTLs from `ONTOCAST_ONTOLOGY_DIRECTORY` are **not** replayed into a new tenant — they are startup bootstrap only. Details: [Ontology Catalog](../architecture/ontology_catalog.md#why-it-resets-on-a-tenancy-switch). The same holds for `FACTS_SHAPES_DIR`: a new tenant's shapes are whatever its own partition already holds, which may be nothing — correctly read downstream as "SHACL never checked" rather than "conforms". See [Validation](validation.md#where-shapes-come-from).
+Seed TTLs from `ONTOCAST_ONTOLOGY_DIRECTORY` are replayed into a new tenant, but only for ontologies its partition serves no terms for — an ontology the new scope already defines is never overwritten by the on-disk copy. Details: [Ontology Catalog](../architecture/ontology_catalog.md#why-it-resets-on-a-tenancy-switch). `FACTS_SHAPES_DIR` is seeded on the same switch; a tenant with neither a shapes partition nor a shapes directory has no shapes, which reads downstream as "SHACL never checked" rather than "conforms". See [Validation](validation.md#where-shapes-come-from).
 
 ### One ToolBox per scope
 

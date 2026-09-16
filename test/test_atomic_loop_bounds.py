@@ -18,15 +18,18 @@ import pytest
 from rdflib import URIRef
 
 from ontocast.onto.content_unit import ContentUnit
-from ontocast.onto.enum import FailureStage, RenderMode, Status
+from ontocast.onto.enum import FailureStage, RenderMode, Status, WorkflowNode
+from ontocast.onto.model import Suggestions, TripleFix
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.retrieval_capabilities import EmptyOntologyContextError
 from ontocast.onto.state import AgentState
-from ontocast.onto.unit_states import UnitFactsState
+from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph import atomic as atomic_module
-from ontocast.stategraph.atomic import _resolve_critic_visits, facts_loop
+from ontocast.stategraph.atomic import facts_loop, ontology_loop
 from ontocast.stategraph.context_resolver import UnitOntologyContext
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.facts_validation import CriticPatchPolicy
 from ontocast.toolbox import ToolBox
 from test.snapshot_helpers import empty_snapshot
 
@@ -45,17 +48,29 @@ def _unit_state(**kwargs) -> UnitFactsState:
     )
 
 
-def _tools() -> ToolBox:
+def _tools(critic_passes: int = 1, *, critic_min_triples: int = 0) -> ToolBox:
     return cast(
         ToolBox,
         SimpleNamespace(
             get_atomic_tools=lambda: cast(
                 AtomicToolBox,
                 SimpleNamespace(
-                    facts_llm_repair_visits=1,
+                    facts_critic_passes=critic_passes,
+                    facts_patch_policy=CriticPatchPolicy(),
+                    ontology_critic_passes=critic_passes,
+                    ontology_patch_policy=CriticPatchPolicy(),
                     additional_standard_namespaces=(),
                     validation_policy=None,
                     acceptance_policy=None,
+                    ontology_acceptance_policy=None,
+                    numeric_coverage_limit=30,
+                    numeric_coverage_mandatory=False,
+                    # The stub renders leave the graph empty, so the floor
+                    # that skips empty renders must be off for the critic to
+                    # be reached at all; the skip itself is tested below.
+                    facts_critic_min_triples=critic_min_triples,
+                    facts_completion_passes=0,
+                    catalog_terms=lambda: set(),
                 ),
             ),
         ),
@@ -110,10 +125,8 @@ async def test_critic_crash_is_reported_as_a_critique_failure(monkeypatch) -> No
     monkeypatch.setattr(atomic_module, "render_facts", ok_render)
     monkeypatch.setattr(atomic_module, "criticise_facts", exploding_critic)
 
-    # max_visits >= 2 so a render attempt exists that is not the final one,
-    # which is the only case where the critic runs at all.
     result = await facts_loop(
-        _unit_state(max_visits_per_node=2),
+        _unit_state(),
         _tools(),
         _context(),
         pre_resolved_context=_resolved_context(),
@@ -123,31 +136,20 @@ async def test_critic_crash_is_reported_as_a_critique_failure(monkeypatch) -> No
     assert result.failure_stage == FailureStage.FACTS_CRITIQUE
 
 
-# -- 3c: the critic loop has its own bound ---------------------------------
-
-
-def test_critic_visits_default_to_the_legacy_coupling() -> None:
-    """Unset keeps today's behaviour: the critic shares the render bound."""
-    assert _resolve_critic_visits(_unit_state(max_visits_per_node=3)) == 3
-
-
-def test_critic_visits_can_be_decoupled_from_render_visits() -> None:
-    state = _unit_state(max_visits_per_node=3, max_critic_visits_per_node=1)
-    assert _resolve_critic_visits(state) == 1
+# -- 3c: the two budgets are independent -----------------------------------
 
 
 @pytest.mark.anyio
 async def test_a_rejecting_critic_does_not_escalate_to_another_render(
     monkeypatch,
 ) -> None:
-    """The Step-4 ledger: rejection buys a repair, not a re-extraction.
+    """Rejection buys a patch, not a re-extraction.
 
     A rejecting critic used to fall through to the next ``render_attempt``,
     re-extracting the unit from scratch -- so a unit's worst-case cost grew
     with MAX_VISITS and the answer to "this term is wrong" was "write the whole
-    unit again". Its fixes now go through the same bounded rewrite-in-place
-    pass the deterministic findings use, so the render count is flat in
-    MAX_VISITS.
+    unit again". MAX_VISITS now bounds render *failures* only, so the render
+    count is flat in it.
     """
     calls = {"render": 0, "critic": 0}
 
@@ -167,41 +169,134 @@ async def test_a_rejecting_critic_does_not_escalate_to_another_render(
     monkeypatch.setattr(atomic_module, "criticise_facts", failing_critic)
 
     await facts_loop(
-        _unit_state(max_visits_per_node=3, max_critic_visits_per_node=1),
+        _unit_state(max_visits_per_node=3),
         _tools(),
         _context(),
         pre_resolved_context=_resolved_context(),
     )
 
-    # One render, one critique, then the repair pass -- whatever the bound.
+    # One render, one critique, then the patch pass -- whatever the bound.
     assert calls["render"] == 1
     assert calls["critic"] == 1
 
 
 @pytest.mark.anyio
-async def test_critic_without_a_search_request_does_not_iterate(monkeypatch) -> None:
-    """Measures how reachable the inner critic loop actually is.
+async def test_the_critic_runs_once_per_configured_pass(monkeypatch) -> None:
+    """The pass count is the critic's budget, and MAX_VISITS is not.
 
-    A critic that fails *without* requesting external evidence breaks out of
-    the inner loop immediately and the unit goes to the repair pass, so with web
-    grounding off -- the default -- the critic runs exactly once per unit
-    whatever the bound is. The quadratic worst case the bound exists to cap is
-    reachable only through the evidence-request path, i.e. with
-    ``WEB_SEARCH_ENABLED=true``.
+    The old loop reached the critic only when a render attempt was left over,
+    and could then re-run it within one attempt via the external-evidence path,
+    so its worst case was MAX_VISITS squared and its *best* case at the default
+    was zero. Both are gone: passes are counted directly.
     """
+    calls = {"render": 0, "critic": 0}
+
+    async def ok_render(state, tools, **kwargs):
+        calls["render"] += 1
+        state.status = Status.SUCCESS
+        return state
+
+    async def improving_critic(state, tools):
+        # Each pass must actually change something, or the loop converges: a
+        # second critique of an unchanged graph is a second identical answer at
+        # full price, which is exactly what convergence exists to avoid.
+        calls["critic"] += 1
+        state.suggestions = Suggestions(
+            actionable_fixes=[
+                TripleFix(
+                    text_fragment="Alice",
+                    action="ADD",
+                    severity="important",
+                    correct_value=(
+                        f"<https://example.com/s{calls['critic']}> "
+                        f'<https://example.com/p> "v" .'
+                    ),
+                    explanation="add one statement",
+                )
+            ]
+        )
+        return state
+
+    monkeypatch.setattr(atomic_module, "render_facts", ok_render)
+    monkeypatch.setattr(atomic_module, "criticise_facts", improving_critic)
+
+    await facts_loop(
+        _unit_state(max_visits_per_node=3),
+        _tools(critic_passes=2),
+        _context(),
+        pre_resolved_context=_resolved_context(),
+    )
+
+    assert calls == {"render": 1, "critic": 2}
+
+
+@pytest.mark.anyio
+async def test_a_pass_that_changes_nothing_ends_the_loop(monkeypatch) -> None:
+    """A second critique of an unchanged graph is the same answer, billed twice."""
     calls = {"critic": 0}
 
     async def ok_render(state, tools, **kwargs):
         state.status = Status.SUCCESS
         return state
 
-    async def failing_critic(state, tools):
+    async def barren_critic(state, tools):
         calls["critic"] += 1
         state.status = Status.FAILED
         return state
 
     monkeypatch.setattr(atomic_module, "render_facts", ok_render)
-    monkeypatch.setattr(atomic_module, "criticise_facts", failing_critic)
+    monkeypatch.setattr(atomic_module, "criticise_facts", barren_critic)
+
+    await facts_loop(
+        _unit_state(),
+        _tools(critic_passes=5),
+        _context(),
+        pre_resolved_context=_resolved_context(),
+    )
+
+    assert calls["critic"] == 1
+
+
+@pytest.mark.anyio
+async def test_zero_passes_costs_exactly_one_call(monkeypatch) -> None:
+    """Extraction only, with the deterministic findings still collected."""
+    calls = {"render": 0, "critic": 0}
+
+    async def ok_render(state, tools, **kwargs):
+        calls["render"] += 1
+        state.status = Status.SUCCESS
+        return state
+
+    async def critic(state, tools):
+        calls["critic"] += 1
+        return state
+
+    monkeypatch.setattr(atomic_module, "render_facts", ok_render)
+    monkeypatch.setattr(atomic_module, "criticise_facts", critic)
+
+    result = await facts_loop(
+        _unit_state(max_visits_per_node=3),
+        _tools(critic_passes=0),
+        _context(),
+        pre_resolved_context=_resolved_context(),
+    )
+
+    assert calls == {"render": 1, "critic": 0}
+    # The residual metric sums this field across units, so a unit that skipped
+    # the critic must still report what the machine found.
+    assert result.deterministic_findings is not None
+
+
+@pytest.mark.anyio
+async def test_max_visits_retries_only_a_failed_render(monkeypatch) -> None:
+    calls = {"render": 0}
+
+    async def failing_render(state, tools, **kwargs):
+        calls["render"] += 1
+        state.status = Status.FAILED
+        return state
+
+    monkeypatch.setattr(atomic_module, "render_facts", failing_render)
 
     await facts_loop(
         _unit_state(max_visits_per_node=3),
@@ -210,5 +305,207 @@ async def test_critic_without_a_search_request_does_not_iterate(monkeypatch) -> 
         pre_resolved_context=_resolved_context(),
     )
 
-    # One critique, then the repair pass -- the bound of 3 buys nothing.
-    assert calls["critic"] == 1
+    assert calls["render"] == 3
+
+
+# -- when the critic is not spent, and when it does not answer ---------------
+
+
+@pytest.mark.anyio
+async def test_the_critic_is_skipped_on_an_empty_render(monkeypatch) -> None:
+    """A critic shown an empty graph scores it perfect and bills a call."""
+    calls = {"critic": 0}
+
+    async def ok_render(state, tools, **kwargs):
+        state.status = Status.SUCCESS
+        return state
+
+    async def critic(state, tools):
+        calls["critic"] += 1
+        return state
+
+    monkeypatch.setattr(atomic_module, "render_facts", ok_render)
+    monkeypatch.setattr(atomic_module, "criticise_facts", critic)
+
+    result = await facts_loop(
+        _unit_state(),
+        _tools(critic_min_triples=1),
+        _context(),
+        pre_resolved_context=_resolved_context(),
+    )
+
+    assert calls["critic"] == 0
+    assert result.critic_outcome == "skipped"
+    skipped = [a for a in result.attempt_log if a.kind == "critic_skipped"]
+    assert [a.accept_reason for a in skipped] == ["empty_render"]
+    assert result.status == Status.SUCCESS
+
+
+@pytest.mark.anyio
+async def test_the_critic_is_skipped_on_citation_metadata(monkeypatch) -> None:
+    calls = {"critic": 0}
+
+    async def ok_render(state, tools, **kwargs):
+        state.content_unit.graph.add(
+            (
+                URIRef("https://example.com/w1"),
+                URIRef("https://schema.org/name"),
+                URIRef("https://example.com/n"),
+            )
+        )
+        state.status = Status.SUCCESS
+        return state
+
+    async def critic(state, tools):
+        calls["critic"] += 1
+        return state
+
+    monkeypatch.setattr(atomic_module, "render_facts", ok_render)
+    monkeypatch.setattr(atomic_module, "criticise_facts", critic)
+
+    unit = ContentUnit(
+        text="[1] A. Author, J. Stuff 12 (2019) 34.",
+        index=0,
+        doc_iri=URIRef("https://example.com/doc/d1"),
+        graph=RDFGraph(),
+        is_citation_metadata=True,
+    )
+    result = await facts_loop(
+        UnitFactsState(content_unit=unit, ontology_snapshot=empty_snapshot()),
+        _tools(critic_min_triples=1),
+        _context(),
+        pre_resolved_context=_resolved_context(),
+    )
+
+    assert calls["critic"] == 0
+    assert result.critic_outcome == "skipped"
+    assert result.attempt_log[-1].accept_reason == "citation_metadata"
+
+
+@pytest.mark.anyio
+async def test_an_unavailable_critic_leaves_the_render_unreviewed(
+    monkeypatch,
+) -> None:
+    """A critic that did not answer has not accepted.
+
+    The unit used to leave the loop SUCCESS with whatever suggestions the
+    state happened to hold; now it leaves FAILED at the critique stage with
+    its render intact, and nothing is compiled against a critique that never
+    arrived.
+    """
+    triple = (
+        URIRef("https://example.com/s"),
+        URIRef("https://example.com/p"),
+        URIRef("https://example.com/o"),
+    )
+
+    async def ok_render(state, tools, **kwargs):
+        state.content_unit.graph.add(triple)
+        state.status = Status.SUCCESS
+        return state
+
+    async def unavailable_critic(state, tools):
+        # What the agent's failure branch records: an outcome, a billed
+        # attempt, and stale suggestions that must not be applied.
+        state.critic_outcome = "unavailable"
+        state.suggestions = Suggestions(
+            actionable_fixes=[
+                TripleFix(
+                    text_fragment="Alice",
+                    action="ADD",
+                    severity="critical",
+                    correct_value='<https://example.com/s> <https://example.com/q> "v" .',
+                    explanation="stale",
+                )
+            ]
+        )
+        state.set_failure(FailureStage.FACTS_CRITIQUE, "request timed out")
+        return state
+
+    monkeypatch.setattr(atomic_module, "render_facts", ok_render)
+    monkeypatch.setattr(atomic_module, "criticise_facts", unavailable_critic)
+
+    result = await facts_loop(
+        _unit_state(),
+        _tools(critic_passes=2),
+        _context(),
+        pre_resolved_context=_resolved_context(),
+    )
+
+    assert result.status == Status.FAILED
+    assert result.failure_stage == FailureStage.FACTS_CRITIQUE
+    assert set(result.content_unit.graph) == {triple}, "the render is kept as is"
+    assert result.critic_fixes_applied == 0
+    assert not [a for a in result.attempt_log if a.kind == "critic_patch"]
+
+
+# -- a deployment fault is not a unit failure -------------------------------
+
+
+@pytest.mark.anyio
+async def test_an_unresolvable_ontology_context_stops_the_run(monkeypatch) -> None:
+    """``ONTOLOGY_CONTEXT_REQUIRED`` promises the run stops; this is where.
+
+    The blanket handler caught the error alongside genuine per-unit faults and
+    recorded it as a render failure. Since the cause is the deployment, every
+    sibling unit hit it too, so the fan-out finished, wrote a zero-triple
+    manifest and exited successfully -- the vacuous pass the setting exists to
+    prevent, with one traceback per unit burying the cause.
+    """
+
+    async def refuse(state, tools, **kwargs):  # pragma: no cover - never reached
+        raise AssertionError("render must not run without an ontology context")
+
+    async def empty_context(unit_state, context, tools):
+        raise EmptyOntologyContextError("catalog is empty")
+
+    monkeypatch.setattr(atomic_module, "render_facts", refuse)
+    monkeypatch.setattr(atomic_module, "_apply_facts_ontology_context", empty_context)
+
+    with pytest.raises(EmptyOntologyContextError):
+        await facts_loop(_unit_state(), _tools(), _context())
+
+
+@pytest.mark.anyio
+async def test_the_ontology_loop_reaches_the_renderer_with_an_empty_catalog(
+    monkeypatch,
+) -> None:
+    """The bootstrap journey, at the seam where it used to die.
+
+    An ontology unit resolves its own context, and with no catalog that context
+    is empty -- which is the signal ``render_ontology`` reads to mint a fresh
+    ontology, not a fault. Asserting the resolver is asked for the exemption
+    pins the wiring: the resolver's own exemption is useless if the loop does
+    not request it.
+    """
+    asked: list[bool] = []
+    rendered: list[str] = []
+
+    async def resolve(context, tools, unit, *, can_create_vocabulary=False):
+        asked.append(can_create_vocabulary)
+        return UnitOntologyContext(
+            snapshot=empty_snapshot(), writable_iris=[], confidence=0.0
+        )
+
+    async def render(state, tools, **kwargs):
+        rendered.append("ontology")
+        state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.SUCCESS)
+        return state
+
+    monkeypatch.setattr(atomic_module, "resolve_unit_ontology_context", resolve)
+    monkeypatch.setattr(atomic_module, "render_ontology", render)
+
+    state = UnitOntologyState(
+        content_unit=ContentUnit(
+            text="Alice works for ACME.",
+            index=0,
+            doc_iri=URIRef("https://example.com/doc/d1"),
+            graph=RDFGraph(),
+        ),
+        ontology_snapshot=empty_snapshot(),
+    )
+    result = await ontology_loop(state, _tools(critic_passes=0), _context())
+
+    assert asked == [True]
+    assert rendered == ["ontology"]
+    assert result.status != Status.FAILED

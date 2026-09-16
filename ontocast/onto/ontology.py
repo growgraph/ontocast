@@ -3,7 +3,7 @@ import pathlib
 import re
 from collections import defaultdict
 from datetime import datetime
-from typing import Annotated, Union
+from typing import TYPE_CHECKING, Annotated, Any, Union
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from rdflib import DCTERMS, OWL, RDF, RDFS, SH, XSD, Literal, URIRef
@@ -14,6 +14,9 @@ from ontocast.onto.llm_graph_payload import LLMGraphWire
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.util import derive_ontology_id
+
+if TYPE_CHECKING:
+    import networkx as nx
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +117,7 @@ class OntologyProperties(BaseModel):
     )
 
     @property
-    def namespace(self):
+    def namespace(self) -> str:
         """Get the namespace for this ontology.
 
         Returns:
@@ -239,7 +242,7 @@ class Ontology(OntologyPropertiesWithLineage):
             self.iri = base_iri
             logger.debug("Extracted version from IRI fragment: %s", version_str)
 
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: Any):
         # Pop construction-only flags before pydantic init
         current_domain = kwargs.pop("current_domain", DEFAULT_DOMAIN)
         identity_locked = bool(kwargs.pop("identity_locked", False))
@@ -374,7 +377,7 @@ class Ontology(OntologyPropertiesWithLineage):
         # Check characteristics
         return self.iri == ONTOLOGY_NULL_IRI and self.ontology_id is None
 
-    def set_properties(self, **kwargs):
+    def set_properties(self, **kwargs: Any):
         """Set ontology properties from keyword arguments and sync to graph.
         Only update properties if they are missing (None or empty).
         Also enforces ontology_id/iri consistency as in __init__, but only
@@ -1158,7 +1161,9 @@ class Ontology(OntologyPropertiesWithLineage):
         return self
 
     @classmethod
-    def from_file(cls, file_path: pathlib.Path, format: str = "turtle", **kwargs):
+    def from_file(
+        cls, file_path: pathlib.Path, format: str = "turtle", **kwargs: Any
+    ) -> "Ontology":
         """Create an Ontology instance by loading a graph from a file.
 
         Args:
@@ -1186,7 +1191,7 @@ class Ontology(OntologyPropertiesWithLineage):
         return graph
 
     @classmethod
-    def from_working_context(cls, *args, **kwargs):  # pragma: no cover
+    def from_working_context(cls, *args, **kwargs: Any):  # pragma: no cover
         """Removed: use :class:`~ontocast.onto.ontology_snapshot.OntologySnapshot`.
 
         Raises:
@@ -1238,7 +1243,7 @@ class Ontology(OntologyPropertiesWithLineage):
         }
 
     @staticmethod
-    def build_lineage_graph(ontologies: list["Ontology"]):
+    def build_lineage_graph(ontologies: list["Ontology"]) -> "nx.DiGraph":
         """Build a NetworkX directed graph representing the lineage of all given ontologies.
 
         Constructs a directed graph where nodes represent ontologies (by their hash)

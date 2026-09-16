@@ -12,29 +12,36 @@ This demo shows how OntoCast can extract a knowledge graph from a document and v
 
 ## Demo Steps
 
+Run every command below from the repository root, so the relative paths resolve.
+
 ### 1. Start the OntoCast Server
 
 Make sure you have OntoCast installed and a triple store (optional) running. Then start the server:
 
 ```bash
-ONTOCAST_ONTOLOGY_DIRECTORY=../test/data/ontologies uv run ontocast serve
+ONTOCAST_ONTOLOGY_DIRECTORY=test/data/ontologies uv run ontocast serve
 ```
 
 ### 2. Process a Sample Document
 
-You can use the provided `sample.pdf` or `sample.txt` in this directory.
+Two example PDFs ship in this directory. Either works:
 
 **For PDF:**
 ```bash
-curl -X POST http://localhost:8999/process -F "file=@demo/sample.pdf"
+curl -X POST http://localhost:8999/process \
+  -F "file=@demo/A_Brief_Introduction_To_AI.pdf"
 ```
 
 **For plain text:**
 ```bash
-curl -X POST http://localhost:8999/process -H "Content-Type: application/json" -d '{"text": "Your document text here"}'
+curl -X POST http://localhost:8999/process \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Your document text here"}'
 ```
 
 The response will include extracted facts and ontology in Turtle format.
+`ttl/response.json` is a recorded response you can inspect without running the
+server.
 
 ---
 
@@ -50,9 +57,10 @@ The response will include extracted facts and ontology in Turtle format.
 ---
 
 ## Files in This Directory
-- `sample.pdf` – Example document for demo
-- `sample.txt` – Example plain text for demo
-- (Optional) `sample.ttl` – Example Turtle output
+- `A_Brief_Introduction_To_AI.pdf` – Example document for the demo
+- `water-resources-management-plan-overview.pdf` – Second example document
+- `ttl/response.json` – Recorded `/process` response for reference
+- `figs/thames-water.png` – Screenshot used above
 
 ---
 
@@ -63,4 +71,4 @@ The response will include extracted facts and ontology in Turtle format.
 ---
 
 ## Need Help?
-Open an issue or check the [OntoCast documentation](https://growgraph.github.io/ontocast). 
+Open an issue or check the [OntoCast documentation](https://growgraph.github.io/ontocast).

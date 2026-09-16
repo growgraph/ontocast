@@ -14,6 +14,8 @@ import pytest
 from ontocast.tool.triple_manager.core import TripleStoreUnavailableError
 from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
 
+pytestmark = pytest.mark.unit
+
 _ONTO_IRI = "https://example.org/catalog"
 _GRAPH_URI = f"{_ONTO_IRI}#abc123"
 

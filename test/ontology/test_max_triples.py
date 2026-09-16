@@ -7,6 +7,7 @@ rest of the run with only a WARNING, and with no way to shrink back under, since
 deletions were rejected too. It now rejects only updates that grow the graph.
 """
 
+import pytest
 from rdflib import Literal, URIRef
 from rdflib.namespace import RDFS
 
@@ -14,6 +15,8 @@ from ontocast.onto.enum import LLMGraphFormat
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.state import AgentState
+
+pytestmark = pytest.mark.unit
 
 EX = "https://example.org/onto#"
 _TURTLE_CTX = {"llm_graph_format": LLMGraphFormat.TURTLE}

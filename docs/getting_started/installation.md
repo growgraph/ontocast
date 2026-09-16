@@ -37,7 +37,7 @@ for you.
 | `qdrant` | Qdrant vector store | Pulls `qdrant-client` and gRPC |
 | `lancedb` | Embedded LanceDB vector store (no external service) | |
 | `sparse` | `fastembed` BM25 sparse embeddings | Implied by `qdrant` and `lancedb`; pulls an ONNX runtime |
-| `semantic-chunking` | Clustering-based chunker (`CHUNK_SEGMENTER=semantic`) | Pulls `torch` and `sentence-transformers`; multi-GB download. The model is shared with retrieval and disambiguation when `CHUNK_EMBEDDING_MODEL` matches theirs |
+| `semantic-chunking` | Clustering-based chunker (`CHUNK_SEGMENTER=semantic`) | Without it the default segmenter falls back to paragraph/sentence splitting with only a log warning. Pulls `torch` and `sentence-transformers`; multi-GB download. The model is shared with retrieval and disambiguation when `CHUNK_EMBEDDING_MODEL` matches theirs |
 | `graph` | `networkx` ontology lineage graphs | |
 | `shacl` | SHACL validation of aggregated facts (`FACTS_SHAPES_DIR` or inline `sh:NodeShape`) plus the LLM-free shape-driven autofix | Without it, shape validation logs a warning and does nothing — see [Validation](../user_guide/validation.md) |
 | `web-search` | Optional web grounding (`WEB_SEARCH_ENABLED=true`) | |

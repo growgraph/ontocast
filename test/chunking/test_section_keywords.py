@@ -16,6 +16,8 @@ from ontocast.config.section_labels import (
     resolve_heading_label,
 )
 
+pytestmark = pytest.mark.unit
+
 SCHEMA = load_section_label_schema("academic")
 
 RECOGNISED = [

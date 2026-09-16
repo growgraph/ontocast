@@ -11,10 +11,13 @@ These tests exercise the validation gates directly (no embeddings needed) so
 they run fast and deterministically.
 """
 
+import pytest
 from rdflib import URIRef
 
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.agg.aggregate import EmbeddingBasedAggregator
+
+pytestmark = pytest.mark.unit
 
 SCHEMA = "https://schema.org/"
 DOC = "https://growgraph.dev/doc/testdoc/"

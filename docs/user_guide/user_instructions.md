@@ -90,7 +90,22 @@ curl -X POST http://localhost:8999/process \
   -F "facts_user_instruction=Extract financial data and numerical values"
 ```
 
-### 3. Programmatic Usage
+### 3. Batch CLI
+
+`ontocast process` accepts the facts slot directly, so a batch run carries the
+same deployment guidance a server request would:
+
+```bash
+ontocast process --input-path ./docs \
+  --facts-user-instruction "Extract financial data and numerical values" \
+  --output-dir ./out
+```
+
+The run manifest records only the instruction's length
+(`validation_config.facts_user_instruction_chars`), never its text — the dump
+is shareable, and deployment guidance can carry sensitive detail.
+
+### 4. Programmatic Usage
 
 When using OntoCast programmatically, set user instructions in the AgentState:
 

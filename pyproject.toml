@@ -65,7 +65,7 @@ license-files = ["LICENSE"]
 name = "ontocast"
 readme = "README.md"
 requires-python = ">=3.12,<4.0"
-version = "0.6.2"
+version = "0.6.4"
 
 [project.optional-dependencies]
 # `plot` is deliberately excluded: pygraphviz builds from source against system
@@ -272,19 +272,21 @@ select = ["E", "F", "I001", "W"]
 "ontocast/prompt/*.py" = ["E501"]
 
 [tool.ty.analysis]
-# The heavy tail of the optional tier: loaded lazily / only when selected, and
-# too expensive to install just to type-check. The pre-commit workflow syncs
-# only `dev,server,documents,qdrant,graph`, so anything outside that set must be
-# listed here -- the two lists together have to cover every third-party import
-# under `ontocast/` and `test/`. docling-core is deliberately NOT listed here:
-# whitelisting it previously hid the fact that `ontocast.onto.state` imported it
-# unguarded while it was only in an extra, which made a base
-# `pip install ontocast` unimportable.
-allowed-unresolved-imports = [
-  "docling.**",
-  "duckduckgo_search.**",
-  "hdbscan.**",
-  "lancedb.**",
-  "pyshacl.**",
-  "umap.**"
-]
+# Deliberately empty, and worth keeping that way.
+#
+# This used to whitelist the heavy tail of the optional tier (docling, lancedb,
+# pyarrow, pyshacl, hdbscan, umap, duckduckgo_search) because the type check ran
+# under a partial install that could not import them. Whitelisting an import
+# does not merely silence "unresolved" -- it types the module as `Any`, so every
+# call into it stops being checked. The whitelist was therefore buying a cheaper
+# CI job with a quieter type checker, on exactly the third-party boundaries where
+# a type error is most likely.
+#
+# `ty check ontocast test` now runs in the `unit` job of tests.yml, which already
+# installs every extra for the test run, so nothing needs whitelisting and the
+# list is empty with the full suite passing. Before adding an entry here, check
+# whether the import is simply missing from an extra -- that is the more common
+# cause, and the honest fix. docling-core in particular must never be listed:
+# whitelisting it once hid `ontocast.onto.state` importing it unguarded while it
+# was only in an extra, which made a base `pip install ontocast` unimportable.
+allowed-unresolved-imports = []

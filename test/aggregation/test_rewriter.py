@@ -1,8 +1,11 @@
+import pytest
 from rdflib import OWL, RDF, Literal, URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.agg.rewriter import GraphRewriter
+
+pytestmark = pytest.mark.unit
 
 
 def test_apply_mapping_to_triple(graph_rewriter: GraphRewriter) -> None:

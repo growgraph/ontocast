@@ -9,6 +9,7 @@ survived". A condenser that hits its number by dropping ``rdfs:label`` or
 
 import logging
 
+import pytest
 from rdflib import Literal, URIRef
 from rdflib.namespace import DCTERMS, OWL, RDF, RDFS, SKOS
 
@@ -19,6 +20,8 @@ from ontocast.onto.ontology_condense import (
     condense_graph_for_prompt,
 )
 from ontocast.onto.rdfgraph import RDFGraph
+
+pytestmark = pytest.mark.unit
 
 EX = "https://example.org/onto#"
 

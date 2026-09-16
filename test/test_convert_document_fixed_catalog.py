@@ -1,10 +1,14 @@
 """convert_document validates fixed-single-ontology catalog id when applicable."""
 
+import pytest
+
 from ontocast.agent.convert_document import convert_document
 from ontocast.onto.enum import OntologyContextMode, Status
 from ontocast.onto.state import AgentState
 from ontocast.tool.converter import ConverterTool
 from ontocast.toolbox import ToolBox
+
+pytestmark = pytest.mark.unit
 
 
 def test_convert_document_fails_when_fixed_mode_missing_catalog_id() -> None:

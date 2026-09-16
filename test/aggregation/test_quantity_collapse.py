@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from rdflib import Literal, URIRef
 
+from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool import EmbeddingBasedAggregator
@@ -75,4 +76,56 @@ def test_case4_pre_merge_quantities_stay_distinct(
     assert len(subjects_by_value["30.0"]) == 2, (
         "impurity and photon-propagation 30 meV contributions must remain "
         "two distinct nodes"
+    )
+
+
+def _quantity_unit(index: int, value: str, unit_iri: str) -> ContentUnit:
+    """A unit that mints ``cd:temperature_value`` for its own measurement."""
+    graph = RDFGraph()
+    graph.parse(
+        data=f"""
+        @prefix cd: <{DEFAULT_IRI}> .
+        @prefix qudt: <http://qudt.org/schema/qudt/> .
+        @prefix unit: <http://qudt.org/vocab/unit/> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        cd:sample_a qudt:hasQuantity cd:temperature_value .
+        cd:temperature_value a qudt:QuantityValue ;
+            rdfs:label "temperature" ;
+            qudt:numericValue "{value}"^^xsd:decimal ;
+            qudt:unit unit:{unit_iri} .
+        """,
+        format="turtle",
+    )
+    return ContentUnit(
+        text=f"measured at {value} {unit_iri}",
+        index=index,
+        doc_iri=URIRef("https://growgraph.dev/doc/376c5e808804"),
+        graph=graph,
+        type=OutputType.FACTS,
+    )
+
+
+def test_cross_unit_same_local_name_quantities_stay_distinct(
+    aggregator: EmbeddingBasedAggregator,
+) -> None:
+    """Two units minting one local name for two measurements stay two nodes.
+
+    Before unit scoping the two ``cd:temperature_value`` mentions were one
+    entity by IRI before any guard ran; scoped, they reach the literal and
+    functional-object guards as a candidate pair and are kept apart.
+    """
+    units = [_quantity_unit(0, "6", "K"), _quantity_unit(1, "10", "DEG_C")]
+
+    merged = aggregator.postprocess_facts_units(units, ontology_graph=RDFGraph()).graph
+
+    value_counts = _distinct_value_counts(merged)
+    assert len(value_counts) == 2
+    assert all(count == 1 for count in value_counts.values())
+    assert all(count == 1 for count in _distinct_unit_counts(merged).values())
+    assert not any(
+        "__u" in str(term)
+        for triple in merged
+        for term in triple
+        if isinstance(term, URIRef)
     )

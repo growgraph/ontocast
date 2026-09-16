@@ -8,7 +8,7 @@ unknown silently destroys extracted data.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from typing import Literal as TypingLiteral
 
 from pydantic import BaseModel, Field
@@ -221,6 +221,7 @@ def shacl_catalog_contradictions(
     ontology_graph: RDFGraph | None,
     *,
     policy: ValidationPolicy | None = None,
+    catalog_terms: Collection[str] | None = None,
 ) -> list[str]:
     """Property paths the shapes require but the unit validator would flag.
 
@@ -231,10 +232,24 @@ def shacl_catalog_contradictions(
     in practice, where shapes required ``qudt:numericValue``
     while the validator's mandatory findings drove repair renders to delete
     it. Callers log the returned IRIs as configuration errors.
+
+    Args:
+        shapes_graph: The shapes the gate validates against.
+        ontology_graph: The ontology context the facts were rendered against.
+        policy: The exemptions the unit validator applies. Pass the same
+            policy the unit loop uses -- including its shapes-contract
+            exemptions -- or the check reports contradictions the validator
+            never raises.
+        catalog_terms: The whole catalog's term inventory, when
+            ``ontology_graph`` is only a retrieved subset of it. The unit
+            validator judges unknown terms against the whole catalog, so a
+            term the snapshot omitted is not a contradiction.
     """
     if shapes_graph is None or ontology_graph is None:
         return []
-    catalog_terms = collect_catalog_terms(ontology_graph)
+    catalog_terms = set(collect_catalog_terms(ontology_graph)) | set(
+        catalog_terms or ()
+    )
     if not catalog_terms:
         return []
     policy = policy or ValidationPolicy()
@@ -478,6 +493,15 @@ def _shacl_repairs_for(
                 )
             )
 
+    if pruned:
+        _cascade_empty_referrers(
+            graph,
+            pruned=pruned,
+            removals=removals,
+            records=records,
+            fact_namespaces=fact_namespaces,
+        )
+
     return _ShaclRepairPlan(
         removals=removals,
         additions=additions,
@@ -485,6 +509,78 @@ def _shacl_repairs_for(
         pruned=pruned,
         retargets=retargets,
     )
+
+
+def _cascade_empty_referrers(
+    graph: RDFGraph,
+    *,
+    pruned: set[Node],
+    removals: list[tuple],
+    records: list[GraphRepairRecord],
+    fact_namespaces: Sequence[str],
+) -> None:
+    """Extend a prune to referrers the prune itself empties.
+
+    Pruning a placeholder value node removes the one triple that pointed at it,
+    and the subject left behind can be a placeholder in turn: an observation
+    with a type and a label, no feature of interest, no result. Stopping there
+    is the worst of both outcomes -- the evidence that an extraction was
+    attempted is gone, and the ``sh:minCount`` violation that fired on the
+    subject is still in the report, because the pass computed its violations
+    before it pruned anything. Following the prune up its referrers turns that
+    into a clean removal, and it uses the same test the direct prune does: a
+    node asserts nothing when what survives carries no predicate beyond
+    ``rdf:type`` / ``rdfs:label`` / ``skos:prefLabel``.
+    """
+    frontier = set(pruned)
+    while frontier:
+        candidates = {
+            subject
+            for node in frontier
+            for subject, _ in graph.subject_predicates(node)
+            if subject not in pruned
+        }
+        frontier = set()
+        for candidate in candidates:
+            if not _violation_in_fact_scope(graph, candidate, fact_namespaces):
+                continue
+            surviving = [
+                (predicate, obj)
+                for predicate, obj in graph.predicate_objects(candidate)
+                if obj not in pruned
+            ]
+            if any(
+                predicate not in _EMPTY_NODE_PREDICATES for predicate, _ in surviving
+            ):
+                continue
+            referrers = {subject for subject, _ in graph.subject_predicates(candidate)}
+            if len(referrers) > 1:
+                # Shared: removing it changes statements this pass never saw.
+                continue
+            pruned.add(candidate)
+            frontier.add(candidate)
+            # Only what this step adds: the edges from the candidate onto the
+            # nodes already being pruned are queued for removal as those
+            # nodes' incoming triples, and counting them twice would overstate
+            # what the cascade removed.
+            extra = [
+                *graph.triples((None, None, candidate)),
+                *((candidate, predicate, obj) for predicate, obj in surviving),
+            ]
+            if not extra:
+                # Nothing of the candidate outlives the prune that reached it,
+                # so it leaves the graph either way; a record here would name a
+                # removal of nothing.
+                continue
+            removals.extend(extra)
+            records.append(
+                GraphRepairRecord(
+                    kind=FactsGateRepairKind.SHACL_PRUNE,
+                    source=str(candidate),
+                    target="",
+                    triple_count=len(extra),
+                )
+            )
 
 
 def _fact_scope_violations(

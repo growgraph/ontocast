@@ -281,30 +281,53 @@ def rank_fuse_channel_hits(
     neighborhood_weight: float,
     bm25_weight: float,
     limit: int,
+    rank_constant: float = 0.0,
 ) -> list[OntologySearchHit]:
+    """Fuse three ranked channels into one list by weighted reciprocal rank.
+
+    Each channel contributes ``weight / (rank_constant + rank)`` per atom, summed
+    across channels. Raw channel scores never enter the fused score -- they are only
+    a tiebreak -- which is what lets an uncalibrated BM25 scale sit beside cosine
+    without either dominating by units alone.
+
+    ``rank_constant`` is the smoothing term. At 0 (the default, and the historical
+    behaviour) a rank-2 hit is worth exactly half a rank-1 hit and rank 3 a third,
+    so the fused order is decided almost entirely by which channel put what first;
+    a deep list of weak matches still hands out ranks 1..N at full lane weight.
+    Raising it flattens that decay, so agreement *across* channels outweighs
+    position *within* one -- which is the property reciprocal-rank fusion is
+    usually chosen for.
+
+    Args:
+        core_hits: Core-lane hits, best first.
+        neighborhood_hits: Neighborhood-lane hits, best first.
+        bm25_hits: Sparse-lane hits, best first.
+        core_weight: Normalized weight for the core lane.
+        neighborhood_weight: Normalized weight for the neighborhood lane.
+        bm25_weight: Normalized weight for the sparse lane.
+        limit: Maximum hits to return.
+        rank_constant: Added to each rank before the reciprocal.
+
+    Returns:
+        list[OntologySearchHit]: Fused hits, best first, each carrying the fused
+        score in place of its channel score.
+    """
     rank_scores: dict[str, float] = {}
     best_hit_by_id: dict[str, OntologySearchHit] = {}
 
-    for rank, hit in enumerate(core_hits, start=1):
-        atom_id = hit.atom.atom_id
-        rank_scores[atom_id] = rank_scores.get(atom_id, 0.0) + (core_weight / rank)
-        prev = best_hit_by_id.get(atom_id)
-        if prev is None or hit.score > prev.score:
-            best_hit_by_id[atom_id] = hit
-    for rank, hit in enumerate(neighborhood_hits, start=1):
-        atom_id = hit.atom.atom_id
-        rank_scores[atom_id] = rank_scores.get(atom_id, 0.0) + (
-            neighborhood_weight / rank
-        )
-        prev = best_hit_by_id.get(atom_id)
-        if prev is None or hit.score > prev.score:
-            best_hit_by_id[atom_id] = hit
-    for rank, hit in enumerate(bm25_hits, start=1):
-        atom_id = hit.atom.atom_id
-        rank_scores[atom_id] = rank_scores.get(atom_id, 0.0) + (bm25_weight / rank)
-        prev = best_hit_by_id.get(atom_id)
-        if prev is None or hit.score > prev.score:
-            best_hit_by_id[atom_id] = hit
+    def fold(hits: list[OntologySearchHit], weight: float) -> None:
+        for rank, hit in enumerate(hits, start=1):
+            atom_id = hit.atom.atom_id
+            rank_scores[atom_id] = rank_scores.get(atom_id, 0.0) + (
+                weight / (rank_constant + rank)
+            )
+            prev = best_hit_by_id.get(atom_id)
+            if prev is None or hit.score > prev.score:
+                best_hit_by_id[atom_id] = hit
+
+    fold(core_hits, core_weight)
+    fold(neighborhood_hits, neighborhood_weight)
+    fold(bm25_hits, bm25_weight)
 
     ranked_atom_ids = sorted(
         rank_scores.keys(),
@@ -477,6 +500,24 @@ def effective_top_k(store_config: VectorStoreConfig, top_k: int | None) -> int:
     if top_k is not None:
         return top_k
     return store_config.top_k
+
+
+def effective_bm25_top_k(store_config: VectorStoreConfig, top_k: int | None) -> int:
+    """Depth of the sparse lane, which need not match the dense lanes'.
+
+    Fusion is by reciprocal rank, so a channel's *depth* is a weight in disguise: a
+    sparse list of length N hands out ranks 1..N at full lane weight however weak its
+    tail is. The dense and sparse lanes fail differently -- dense retrieval degrades
+    gracefully into topical near-misses, lexical retrieval into unrelated documents
+    that share a token -- so the depth at which each stops being useful is not the
+    same number, and tying them together means tuning one mis-tunes the other.
+
+    Returns:
+        int: ``bm25_top_k`` when set, else whatever the dense lanes use.
+    """
+    if store_config.bm25_top_k is not None:
+        return store_config.bm25_top_k
+    return effective_top_k(store_config, top_k)
 
 
 def iter_batches(items: list[Any], batch_size: int) -> list[list[Any]]:

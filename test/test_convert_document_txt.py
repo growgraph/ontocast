@@ -1,10 +1,14 @@
 """convert_document handles .txt uploads as plain text (regression for #67)."""
 
+import pytest
+
 from ontocast.agent.convert_document import convert_document
 from ontocast.onto.enum import Status
 from ontocast.onto.state import AgentState
 from ontocast.tool.converter import ConverterTool
 from ontocast.toolbox import ToolBox
+
+pytestmark = pytest.mark.unit
 
 
 def test_convert_document_txt_is_plain_text_not_json() -> None:

@@ -18,21 +18,25 @@ config:
 flowchart TD;
 	start([Unit start])
 	ctx[Resolve / apply<br/>ontology context]
-	render_loop{render attempt<br/>1 … max_visits}
+	render_loop{failed render<br/>1 … MAX_VISITS}
 	render_facts[Render facts]
-	final_render{final render<br/>attempt?}
-	quarantine[Surface unresolved<br/>quarantine]
+	pass_loop{critic pass<br/>1 … FACTS_CRITIC_PASSES}
+	findings[Deterministic checks<br/>(no LLM call)]
+	criticise_facts[Criticise facts<br/>(cites statement ids)]
+	patch[Compile, screen, apply<br/>patch (no LLM call)]
+	converged{changed nothing, or<br/>rolled back?}
 	done([Return unit state])
-	criticise_facts[Criticise facts]
 	exhausted([Return (retries exhausted)])
 	start --> ctx;
 	ctx --> render_loop;
 	render_loop --> render_facts;
-	render_facts -.->|success| final_render;
+	render_facts -.->|success| pass_loop;
 	render_facts -.->|fail| render_loop;
-	final_render -.->|no| criticise_facts;
-	criticise_facts -.->|success| done;
-	criticise_facts -.->|fail| render_loop;
 	render_loop -.->|exhausted| exhausted;
-	final_render -.->|yes| quarantine;
-	quarantine --> done;
+	pass_loop -.->|pass| findings;
+	findings --> criticise_facts;
+	criticise_facts -.->|accept or reject| patch;
+	patch --> converged;
+	converged -.->|yes| done;
+	converged -.->|no| pass_loop;
+	pass_loop -.->|budget spent| done;

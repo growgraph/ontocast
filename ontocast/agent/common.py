@@ -15,9 +15,6 @@ from ontocast.prompt.common import (
     suggestion_concrete_template,
     suggestion_general_template,
 )
-from ontocast.prompt.render_facts import (
-    improvement_instruction_template as facts_template,
-)
 from ontocast.prompt.render_ontology import (
     improvement_instruction_template as ontology_template,
 )
@@ -368,12 +365,9 @@ def render_suggestions_prompt(suggestions: Suggestions, stage: WorkflowNode) -> 
             suggestion_str=suggestions.to_markdown()
         )
 
-    if stage == WorkflowNode.TEXT_TO_FACTS:
-        template = facts_template
-    elif stage == WorkflowNode.TEXT_TO_ONTOLOGY:
-        template = ontology_template
-    else:
+    if stage != WorkflowNode.TEXT_TO_ONTOLOGY:
         raise ValueError(f"Stage {stage} not supported")
+    template = ontology_template
     if general_template or concrete_template:
         final_prompt = template.format(
             suggestions_instruction=f"\n\n{general_template}\n\n{concrete_template}"
@@ -411,6 +405,14 @@ async def call_llm_with_retry(
     signal, and losing the call silently costs a unit one of its few loop
     visits — so a single identical re-issue (per outer call) is allowed before
     the timeout propagates.
+
+    :class:`~ontocast.tool.llm.LLMConfigurationError` propagates on the first
+    occurrence and consumes nothing: it is deliberately not a subclass of
+    ``LLMRequestTimeoutError``, and the provider call sits outside the parse
+    ``try`` below, so a request the provider refuses is never re-sent with
+    parse-error feedback attached and never spends the timeout re-issue. Both
+    properties come from statement placement rather than an explicit clause;
+    test_llm_resilience.py pins them.
 
     Retries back off exponentially with jitter, so N units failing to parse
     simultaneously do not re-issue in lockstep.

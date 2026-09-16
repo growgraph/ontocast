@@ -1,5 +1,6 @@
 """Tests for ontocast.onto.ontology_access."""
 
+import pytest
 from rdflib import Namespace, URIRef
 
 from ontocast.onto.constants import WELL_KNOWN_PREFIXES
@@ -18,6 +19,8 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from test.snapshot_helpers import empty_snapshot, snapshot_from_ontology
+
+pytestmark = pytest.mark.unit
 
 
 def _source_unit() -> SourceUnit:

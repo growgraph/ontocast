@@ -6,9 +6,8 @@ from urllib.parse import unquote
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
 from ontocast.api.schemas import OntologyDeleteResponse, OntologyMutationResponse
-from ontocast.api.tenancy_resolution import apply_request_tenancy
+from ontocast.api.tenancy_resolution import make_scoped_toolbox_resolver
 from ontocast.config import ServerConfig
-from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.toolbox import ToolBox
@@ -23,26 +22,12 @@ def build_ontology_router(
 ) -> APIRouter:
     router = APIRouter(prefix="/ontologies", tags=["ontologies"])
 
-    init_vec = (
-        server_config.ontology_context_mode
-        == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+    apply_ontology_tenancy = make_scoped_toolbox_resolver(
+        tools,
+        active_tenant=active_tenant,
+        active_project=active_project,
+        server_config=server_config,
     )
-
-    async def apply_ontology_tenancy(request: Request) -> ToolBox:
-        """Return the ToolBox serving this request's tenant/project partition.
-
-        Handlers must use the returned ToolBox rather than the enclosing
-        ``tools``: with per-scope ToolBoxes, the two differ whenever the client
-        passes ``?tenant=`` / ``?project=``.
-        """
-        scoped, _, _ = await apply_request_tenancy(
-            request,
-            tools,
-            active_tenant=active_tenant,
-            active_project=active_project,
-            initialize_vector_store=init_vec,
-        )
-        return scoped
 
     @router.post(
         "",

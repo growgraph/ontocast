@@ -123,6 +123,11 @@ Rules:
 - After each successful run, dumps provenance-stripped Turtle:
   - Facts: `doc.facts.ttl` (or `doc.L3.facts.ttl` for JSONL line 3)
   - Ontology artifacts: `doc.ontology.ttl` (or `doc.<id>.ontology.ttl` when multiple)
+- `--keep-provenance` retains chunk-level provenance in the facts dump instead
+  of stripping it. Stripping stays the default, but a stripped graph carries no
+  chunk references at all, so nothing in it can be traced back to a source span,
+  re-verified against the document, or audited. Same meaning as the HTTP
+  `strip_provenance` parameter, inverted.
 - Dump destination defaults to siblings of each input. Override with `--output-dir` (shared), or separately with `--facts-output-dir` / `--ontology-output-dir`.
 
 **HTTP:** pass `document_metadata` as a JSON object field (JSON body) or stringified JSON (multipart / query).
@@ -275,7 +280,7 @@ Document processing uses a **parallel map/reduce** architecture:
 
 - **Map**: each content unit runs an independent ontology or facts loop (bounded by `PARALLEL_WORKERS`)
 - **Reduce**: normalize merged ontology updates; merge and disambiguate facts across units
-- Per-request `max_visits` overrides the server default for render/critic retry budgets
+- Per-request `max_visits` overrides the server default for retrying a **failed** render
 
 ## Facts Extraction Model
 

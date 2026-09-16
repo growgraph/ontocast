@@ -6,8 +6,12 @@ silently drops a chunk or extracts the wrong one, whereas an unlabeled chunk is
 merely unselectable.
 """
 
+import pytest
+
 from ontocast.config.section_labels import load_section_label_schema
 from ontocast.tool.chunk.density import classify_by_density, score_section_labels
+
+pytestmark = pytest.mark.unit
 
 SCHEMA = load_section_label_schema("academic")
 

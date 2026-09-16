@@ -8,6 +8,7 @@ was written for, which is the reason these tests exist at all.
 
 from __future__ import annotations
 
+import pytest
 from rdflib import OWL, RDF, RDFS, SKOS, Literal, URIRef
 
 from ontocast.config import EmbeddingConfig, VectorStoreConfig
@@ -22,6 +23,8 @@ from ontocast.tool.vector_store.util import (
     embedding_model_fingerprint,
     sync_atomizer_from_store_config,
 )
+
+pytestmark = pytest.mark.unit
 
 # -------------------------------------------------------------------------
 # facts

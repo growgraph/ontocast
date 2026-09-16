@@ -14,7 +14,7 @@ from collections import defaultdict
 from pydantic import Field
 from rdflib import Literal, URIRef
 
-from ontocast.onto.constants import COMMON_PREFIXES, DEFAULT_IRI
+from ontocast.onto.constants import COMMON_PREFIXES
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.iri_policy import normalize_namespace_iri, split_namespace_local
 from ontocast.onto.model import BasePydanticModel
@@ -23,8 +23,8 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.util import (
-    RDFLIB_DEFAULT_NAMESPACE_URIS,
     is_rdflib_default_namespace,
+    non_domain_namespaces,
 )
 from ontocast.tool.ontology_manager import OntologyManager
 
@@ -47,16 +47,13 @@ class OntologyDelta(BasePydanticModel):
         return len(self.inserts) == 0 and len(self.deletes) == 0
 
 
+# The same membership the prompt's "domain ontologies" clause uses, in stem
+# form: this comparison is against normalized IRIs, so trailing / and # are
+# stripped. Membership is defined once in ``non_domain_namespaces``.
 _STANDARD_NAMESPACE_STEMS: frozenset[str] = frozenset(
     {
         normalize_namespace_iri(uri.strip("<>"), context="auto").rstrip("/#")
-        for uri in (
-            *RDFLIB_DEFAULT_NAMESPACE_URIS,
-            *(v.strip("<>") for v in COMMON_PREFIXES.values()),
-            "https://schema.org/",
-            "http://schema.org/",
-            DEFAULT_IRI,
-        )
+        for uri in non_domain_namespaces()
     }
 )
 
