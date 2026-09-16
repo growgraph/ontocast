@@ -177,7 +177,7 @@ Default path: per-window channel fusion → max-score IRI dedupe → global scor
 
 | Variable | Default | Role |
 |----------|---------|------|
-| `VECTOR_STORE_TOP_K` | `20` | Hits per channel per proposition window |
+| `VECTOR_STORE_TOP_K` | `40` | Hits per channel per proposition window |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` | `1200` | Global triple cap for context |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_DEPTH` | `2` | BFS depth for hub seed expansion |
 | `VECTOR_STORE_INDUCED_SUBGRAPH_HUB_SEED_COUNT` | `16` | Top seeds receiving full BFS budget |
@@ -225,9 +225,12 @@ in other catalog ontologies via `rdfs:subClassOf`, `rdfs:domain`, or `rdfs:range
 
 ### Diagnostics
 
-There is no in-repo recall harness. Retrieval quality is measured out of
-repo, in `ontocast-validation`; this page describes the mechanisms and the
-per-run telemetry, not their measured quality.
+`test/test_retrieval_recall.py` is the in-repo recall harness: point
+`ONTOCAST_RECALL_CORPUS` at a corpus directory and it reports the retrieval
+funnel for your own catalog (setup in
+[Contributing](../contributing.md)). It ships no corpus; reference corpora and
+their measured results live in `ontocast-validation`. This page describes the
+mechanisms and the per-run telemetry, not their measured quality.
 
 When comparing configurations there, note two things about recall measurement:
 the **case**-level figures saturate as soon as cases carry several expected
@@ -534,8 +537,9 @@ Returns **400** if the mode is fixed but no ontology id is provided. `ontocast s
     A *missing* id is a 400. An id that is present but matches no catalog entry
     is **not** an error: it logs a warning and the unit renders against an
     **empty ontology snapshot**, which usually looks like a bad extraction
-    rather than a misconfiguration. Check the catalog
-    (`GET /ontologies`) if a fixed-mode run suddenly produces sparse output.
+    rather than a misconfiguration. If a fixed-mode run suddenly produces
+    sparse output, look for that warning in the server log: it names the id
+    that matched nothing.
 
 ## Ontology identity
 

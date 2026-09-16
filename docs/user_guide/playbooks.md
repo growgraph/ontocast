@@ -143,14 +143,21 @@ Why these:
 
     **A fixed id that matches nothing.** A *missing* id is a clean 400. An id
     that matches no catalog entry is **not** an error — it logs a warning and
-    renders against an empty snapshot. Check `GET /ontologies` if output goes
-    sparse after a rename.
+    renders against an empty snapshot. If output goes sparse after a rename,
+    look for that warning in the server log: it names the id that matched
+    nothing.
 
 Tune `AGG_CANDIDATE_SIMILARITY_THRESHOLD` on what you actually see: raise it
 when distinct entities are being merged, lower it when duplicates survive
 (`AGG_SIMILARITY_THRESHOLD` only affects the cross-graph aligner). Details in
 [Entity Disambiguation](aggregation.md), and the validation gate is described in
 [Facts Validation](validation.md).
+
+What each call costs is mostly the ontology chapter. On a facts run it already
+defaults to a term sheet — one line per term instead of a serialized graph
+(`ONTOLOGY_CHAPTER_FORMAT=auto`); leave it there unless the model needs the
+graph's axioms. See
+[The ontology chapter as a term sheet](performance.md#the-ontology-chapter-as-a-term-sheet).
 
 ---
 
@@ -173,7 +180,7 @@ LANCEDB_ENABLED=true                 # embedded; or QDRANT_URI for a server. Nev
 EMBEDDING_MODEL_NAME=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 EMBEDDING_DIMENSION=384
 
-VECTOR_STORE_TOP_K=20
+VECTOR_STORE_TOP_K=40
 VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=1200
 ```
 
@@ -193,6 +200,16 @@ Tune in this order, one at a time:
 2. `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` — more schema per unit.
 3. `ONTOLOGY_PATCH_MAX_ATOMS` — **lower** it for noisy catalogs, where the
    problem is irrelevant terms crowding out correct ones.
+
+Retrieval gives every unit its own chapter, so no two calls in a document share
+a prompt prefix and a provider's prefix cache has nothing to serve. To make the
+chapter repeat, set `ONTOLOGY_CONTEXT_SCOPE=document` (every unit sees the
+union of the document's retrieved context) together with
+`FANOUT_WARMUP_UNITS=1` (the first unit completes and populates the cache
+before the rest fan out), and on OpenAI a stable `LLM_PROMPT_CACHE_KEY`. All
+three are off by default and pay off only if `budget.prefix_cache_hit_rate`
+rises on your provider — see
+[One chapter per document](performance.md#one-chapter-per-document-and-warming-the-cache-that-serves-it).
 
 !!! warning "The retrieval defaults are fitted to one corpus"
 
@@ -296,7 +313,7 @@ separates "the model did badly" from "that stage never ran".
 | Bibliography extracted as domain facts | Reference routing | `CHUNK_BIBLIOGRAPHY_MODE=skip` |
 | Ligature gaps in PDF text (`di ff usion`) | Converter profile | `CONVERTER_PROFILE=born_digital` |
 
-## Where the other ~175 variables are
+## Where the other variables are
 
 [Configuration System](configuration.md) is the complete reference, and
 `.env.example` documents every variable with its default. Areas deliberately

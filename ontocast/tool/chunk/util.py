@@ -18,6 +18,15 @@ from ontocast.tool.chunk.sizing import merge_small_parts
 
 __all__ = ["SENTENCE_SPLIT_REGEX", "SemanticChunker", "split_proposition_windows"]
 
+# Fixed seed for the PCA/UMAP reduction, so a given text and chunk config always
+# yield the same unit boundaries. Not a tuning knob: any value is equally good,
+# what matters is that it never changes between runs.
+_CLUSTER_RANDOM_STATE = 0
+
+# Below this many sentences there is one embedding window for the whole text,
+# which is too few points to cluster; the text is packed by size instead.
+_SENTENCE_WINDOW_SIZE = 5
+
 
 class SemanticChunker(BaseDocumentTransformer):
     def __init__(
@@ -42,7 +51,7 @@ class SemanticChunker(BaseDocumentTransformer):
     def _build_sentence_windows(
         self,
         sentences: List[str],
-        window_size: int = 5,
+        window_size: int = _SENTENCE_WINDOW_SIZE,
     ) -> List[str]:
         if len(sentences) <= window_size:
             return [" ".join(sentences)]
@@ -73,6 +82,9 @@ class SemanticChunker(BaseDocumentTransformer):
         ensure chunks respect max_size constraints. Large clusters will be split
         post-processing.
 
+        Deterministic: the reduction is seeded, so the same vectors always get
+        the same labels, in any process.
+
         Args:
             vectors: Embedding vectors for sentences.
             sentences: Original sentence texts for length validation.
@@ -83,11 +95,26 @@ class SemanticChunker(BaseDocumentTransformer):
         # 1. PCA to reduce noise
         pca_dims = min(vectors.shape[0] - 1, 50)
         if pca_dims > 1:
-            vectors = PCA(n_components=pca_dims).fit_transform(vectors)
+            # Seeded: svd_solver="auto" picks the randomized solver on large inputs.
+            vectors = PCA(
+                n_components=pca_dims, random_state=_CLUSTER_RANDOM_STATE
+            ).fit_transform(vectors)
 
         # 2. UMAP to 5 dimensions
-        # n_neighbors=2 captures very local structure for chunking
-        reducer = UMAP(n_components=5, n_neighbors=2, min_dist=0.0, metric="cosine")
+        # n_neighbors=2 captures very local structure for chunking. That graph
+        # is always disconnected, and the default spectral init lays its
+        # components out differently on every run even when seeded, so the
+        # init is PCA. umap forces n_jobs=1 once seeded; passing it avoids the
+        # override warning.
+        reducer = UMAP(
+            n_components=5,
+            n_neighbors=2,
+            min_dist=0.0,
+            metric="cosine",
+            init="pca",
+            random_state=_CLUSTER_RANDOM_STATE,
+            n_jobs=1,
+        )
         reduced_vectors = reducer.fit_transform(vectors)
 
         # 3. HDBSCAN with parameters favoring more clusters
@@ -155,9 +182,15 @@ class SemanticChunker(BaseDocumentTransformer):
             # (we can't split sentences, so we must keep it whole)
             return sentences
 
-        windows = self._build_sentence_windows(sentences, window_size=5)
-        vectors = self._get_embeddings(windows)
-        labels = self._cluster_sentences(vectors, sentences)
+        if len(sentences) <= _SENTENCE_WINDOW_SIZE:
+            # One window for all sentences: nothing to cluster, pack by size.
+            labels = np.zeros(len(sentences), dtype=int)
+        else:
+            windows = self._build_sentence_windows(
+                sentences, window_size=_SENTENCE_WINDOW_SIZE
+            )
+            vectors = self._get_embeddings(windows)
+            labels = self._cluster_sentences(vectors, sentences)
 
         # Process sentences in original order, grouping consecutive sentences
         # from the same cluster into chunks

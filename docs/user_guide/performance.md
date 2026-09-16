@@ -232,7 +232,9 @@ between one checkpoint in memory and two.
 
 Read [Configuration](configuration.md) first: changing `CHUNK_EMBEDDING_MODEL`
 invalidates the chunk cache, shifts chunk boundaries, and affects the calibrated
-schema-detection thresholds.
+schema-detection thresholds. With the model fixed, boundaries are reproducible:
+the chunker's reduction is seeded, so repeated runs of a document see the same
+units.
 
 Inference on a shared model is **serialised per model**. That bounds peak
 memory, which is what matters when `PARALLEL_WORKERS` units and several

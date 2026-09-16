@@ -18,6 +18,12 @@ from ontocast.tool.sentence_transformer import (
 
 logger = logging.getLogger(__name__)
 
+# Joins the chunk cache key. Bump whenever the split algorithm changes its output
+# for the same text and config: the key is otherwise unchanged, so the cache
+# would keep serving boundaries computed by the old algorithm.
+# 1: seeded PCA/UMAP with PCA init (boundaries reproducible across runs).
+CHUNKER_CACHE_FORMAT_VERSION = 1
+
 
 @lru_cache(maxsize=1)
 def _embedding_model_available() -> bool:
@@ -254,6 +260,7 @@ class ChunkerTool(Tool):
             "chunking_mode": self.chunking_mode,
             "max_size": self.config.max_size,
             "min_size": self.config.min_size,
+            "cache_format_version": CHUNKER_CACHE_FORMAT_VERSION,
         }
 
         # Check cache first

@@ -350,4 +350,27 @@ def _cache_config(tool: ChunkerTool) -> dict[str, Any]:
         "chunking_mode": tool.chunking_mode,
         "max_size": tool.config.max_size,
         "min_size": tool.config.min_size,
+        "cache_format_version": chunker_module.CHUNKER_CACHE_FORMAT_VERSION,
     }
+
+
+def test_chunk_cache_misses_entries_from_an_older_split_algorithm(
+    monkeypatch: pytest.MonkeyPatch, clean_encoder_cache, tmp_path
+) -> None:
+    from ontocast.tool.cache import Cacher
+
+    monkeypatch.setattr(chunker_module, "_embedding_model_available", lambda: False)
+    monkeypatch.setattr(chunker_module, "_semantic_chunking_available", lambda: False)
+
+    cache = Cacher(cache_dir=tmp_path)
+    text = "One sentence. Another sentence."
+    tool = ChunkerTool(chunk_config=ChunkConfig(embedding_model="model-a"), cache=cache)
+    stale_key = {
+        k: v for k, v in _cache_config(tool).items() if k != "cache_format_version"
+    }
+    # An entry written before the version joined the key holds boundaries from
+    # the old algorithm; it must not be served.
+    tool.cache.set(text, ["stale chunk"], config=stale_key)
+
+    assert tool(text) != ["stale chunk"]
+    assert tool.cache.get(text, config=_cache_config(tool)) is not None

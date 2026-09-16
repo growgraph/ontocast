@@ -45,7 +45,7 @@ uv add "ontocast[server,openai]"
 # or: pip install "ontocast[server,openai]"
 ```
 
-Common add-ons: `doc-processing` (PDF/DOCX), `lancedb` or `qdrant` (ontology retrieval), `shacl` (shape validation).
+Common add-ons: `doc-processing` (PDF/DOCX), `semantic-chunking` (clustering-based chunk boundaries; pulls torch, a multi-GB download — without it chunking falls back to paragraph/sentence splits), `lancedb` or `qdrant` (ontology retrieval), `shacl` (shape validation).
 
 ```sh
 uv add "ontocast[server,openai,doc-processing,lancedb,shacl]"
@@ -75,7 +75,7 @@ Omit `FUSEKI_URI` for in-memory pyoxigraph. Details: [Quick Start](https://growg
 
 ### Supplying Your Ontologies
 
-OntoCast uses seed ontologies (in Turtle `.ttl` format) to guide extraction. Provide yours in two ways:
+OntoCast can guide extraction with seed ontologies (in Turtle `.ttl` format), and can build them for you when you have none. Provide yours in two ways:
 
 1. **Directory Seed:** Set `ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/your/ontologies` in your environment, or pass `--ontology-dir /path/to/your/ontologies` for a single run. All `.ttl` files in that folder sync automatically on startup.
 2. **API Upload:** Register schemas dynamically with the running server:
@@ -87,8 +87,9 @@ OntoCast uses seed ontologies (in Turtle `.ttl` format) to guide extraction. Pro
 
 ## Configuration
 
-Start from [`.env.example.minimal`](.env.example.minimal) — 46 variables instead
-of 241, grouped by the decision they belong to. Then pick a
+Start from [`.env.example.minimal`](.env.example.minimal) — the few dozen
+variables that decide what a run does, out of the full surface in
+`.env.example`, grouped by the decision they belong to. Then pick a
 [playbook](https://growgraph.github.io/ontocast/user_guide/playbooks/) for what
 you are actually doing: evaluating, building an ontology, populating facts,
 scaling to a large catalog, or serving it.

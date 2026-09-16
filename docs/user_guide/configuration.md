@@ -305,6 +305,17 @@ oversized section block, so chunks never straddle sections and inherit their
 section label deterministically. `docling` uses Docling `HybridChunker`
 structural segments instead.
 
+The semantic split is itself deterministic: its dimensionality reduction is
+seeded, so the same text and `CHUNK_*` settings produce the same content units
+on every run and in every process, and two runs of one document read identical
+inputs. Chunk boundaries changed in 0.6.4 when the seeding landed; chunk-cache
+entries written earlier are not reused.
+
+Semantic chunking needs the `semantic-chunking` extra. Without it the default
+`semantic` segmenter still runs, but splits oversized blocks on paragraph and
+sentence boundaries instead of clustering them, and says so only in a log
+warning at startup. Install the extra if boundaries matter.
+
 `CHUNK_EMBEDDING_MODEL` is the sentence-transformers checkpoint used for
 semantic chunking and embedding-based schema detection. It shares one
 process-wide model with `EMBEDDING_MODEL_NAME` (retrieval) and
@@ -523,7 +534,7 @@ No environment variables. Pass on `POST /process`, multipart form, JSON body, or
 | `document_metadata` | `--document-metadata` | JSON object of caller-asserted document identity (DOI/ISBN, ids, title, typed entities) — see [Concepts](concepts.md#document-level-identity-metadata) |
 
 ```bash
-ontocast process --input-path ./papers/ \
+ontocast process --input-path ./documents/ \
   --output-dir ./out \
   --target-sections results,methods \
   --summarize-sections results \
@@ -676,10 +687,13 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `VECTOR_STORE_SYMBOL_CASE_MISMATCH_DEMOTE_FACTOR` | `0.5` | Score multiplier applied under the `demote` policy |
 | `FACTS_OBJECT_PROPERTY_LITERAL_CHECK` | `true` | Quarantine string literals on predicates whose schema range is a class (e.g. `qudt:unit`); surfaced to the facts critic and the deterministic repair loop |
 | `FACTS_CRITIC_PASSES` | `1` | Review-and-patch passes per unit, **in provider calls**. Each pass re-runs the deterministic checks for free, sends the graph and its findings to the critic, and applies what comes back as a compiled patch. `0` leaves the residue to the LLM-free repairs and the gate |
+| `FACTS_CRITIC_MIN_TRIPLES` | `1` | Skip the facts critic for a unit whose render holds fewer triples than this. A critic shown an empty graph scores it perfect and bills a call for nothing; the default skips exactly the empty renders, recorded as `skipped` rather than reviewed. `0` reviews every unit |
 | `FACTS_CRITIC_MAX_DELETE_SHARE` | `0.25` | Largest share of a unit graph one pass may remove; past it the pass keeps its inserts and drops its deletes |
 | `FACTS_CRITIC_MIN_DELETES` | `5` | Deletions always permitted regardless of share, so short units stay correctable |
 | `FACTS_CRITIC_ALLOW_SUBJECT_RENAME` | `false` | Whether a `REPLACE` may delete about one subject while writing about another |
 | `FACTS_COMPLETION_PASSES` | `0` | Insert-only completion passes per unit, **in provider calls**, run after the critic loop above and only while the numeric-coverage inventory still lists a measurement absent from the graph. Shown a compact term sheet and the unit's existing catalog-typed subjects instead of the full ontology chapter; every proposed fix is `action=ADD` and goes through the same per-subject regression check a critic fix does. `0` (default) disables it — see [Validation](validation.md#completion-pass-insert-only-recovery) |
+| `FACTS_NUMERIC_COVERAGE_LIMIT` | `30` | Cap on missing-numeric mentions listed in one `NUMERIC_COVERAGE` finding. Bounds prompt size; mentions are listed shortest-first, not by relevance. `0` disables the finding |
+| `FACTS_NUMERIC_COVERAGE_MANDATORY` | `off` | Which `NUMERIC_COVERAGE` findings block unit acceptance. `measurements` blocks on numbers written next to a unit; `all` also on bare numbers; `off` keeps both advisory, leaving the critic to judge per mention whether a number is a quantity or an artifact. `true`/`false` are accepted as `all`/`off` |
 | `ONTOLOGY_CRITIC_PASSES` | `0` | The same budget for ontology units, opt-in |
 | `ONTOLOGY_CRITIC_MAX_DELETE_SHARE` | `0.10` | Stricter than the facts side: an ontology delete propagates onto shared catalog terminals |
 | `ONTOLOGY_CRITIC_MIN_DELETES` | `3` | Deletions always permitted regardless of share |
@@ -698,6 +712,7 @@ VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY=24
 | `FACTS_FUNCTIONAL_MIN_SINGLE_SUPPORT` | `3` | Distinct single-valued subjects a predicate needs before the gate treats it as empirically functional. Below this the evidence is too thin to call a second value a violation |
 | `FACTS_QUANTITY_FALLBACK_VOCABULARY` | QUDT | Role → term mapping the facts prompt names as the fallback for bounded/approximate quantities when retrieval supplied no suitable class. Roles: `value_class`, `numeric_value`, `unit`, plus optional `lower_bound`/`upper_bound` (and roles containing `inclusive`) naming the catalog's range properties. Override for catalogs modelling quantities with another vocabulary; set to `{}` to forbid the fallback entirely and keep the renderer inside the provided context. Terms in a configured fallback namespace are reported by `NON_CATALOG_VOCABULARY` as a *deliberate* fallback, and the configured terms are exempt from `UNKNOWN_TERM`. When all of `numeric_value`/`lower_bound`/`upper_bound` are set, equal-bound pairs are promoted to a single scalar at parse time; the `unit` role drives the `LABEL_ONLY_NUMBER` finding — see [Validation](validation.md#which-terms-count-as-unknown) |
 | `FACTS_DOMAIN_ADHERENCE_MIN_SHARE` | `0.15` | Floor on the fraction of a render's distinct schema terms (predicates and `rdf:type` objects, excluding minted instances and RDF/RDFS/OWL/XSD/SKOS/DC/PROV plumbing) that must come from the unit's ontology context. Below it a mandatory `DOMAIN_ADHERENCE` finding asks for a rewrite. Catches what no per-triple check can see: a render that says everything in a generic vocabulary is well-formed term by term, exempt from `UNKNOWN_TERM`, and matched by no shape — it reads as extracted while answering nothing. `0` disables; leave it disabled if you extract without a catalog |
+| `FACTS_DOMAIN_ADHERENCE_MIN_TERMS` | `4` | Fewest distinct schema terms a render must use before its catalog share is judged at all. A share over one or two terms is noise — a front-matter unit typing an identifier and an author with generic vocabulary has not abandoned the catalog. `0` judges every non-empty render |
 | `FACTS_ADDITIONAL_STANDARD_NAMESPACES` | schema.org | Namespaces exempt from `UNKNOWN_TERM` beyond the RDF/OWL substrate and annotation/provenance terms. Only meta-vocabularies are built in; a domain vocabulary shared across catalogs (SOSA/SSN, CSVW, FOAF, Dublin Core profiles) is exempted here. schema.org is the default because the shipped citation vocabulary uses it |
 | `CHUNK_CITATION_VOCABULARY` | schema.org | Role → term mapping used by the citation-metadata prompt in `citations_only` mode. Bibliographic entries are not domain content, so unlike the rest of the pipeline these terms are configuration rather than retrieval. Roles: `work_class`, `fallback_class`, `title`, `author`, `author_name`, `date_published`, `venue`, `identifier`, `cites` |
 
@@ -757,14 +772,15 @@ Budget behavior:
 - `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` is the global upper bound returned to the LLM.
 - `VECTOR_STORE_INDUCED_SUBGRAPH_ESTIMATED_TRIPLES_PER_QUERY` shapes per-entity allocation during retrieval.
 
-!!! warning "Retrieval defaults are single-corpus fits"
+!!! warning "Retrieval defaults are a starting point, not a fit to your catalog"
 
     The shipped retrieval defaults — notably
-    `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES` (raised 550 → 1200),
+    `VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES`,
     `PER_ONTOLOGY_ATOM_FLOOR`, `PER_ROLE_ATOM_FLOOR`, and
-    `SCHEMA_CLOSURE_MAX_ENTITIES` — were tuned one axis at a time against a
-    single catalog, and the triple budget more than doubles prompt-context cost
-    per unit. Treat them as a starting point and re-sweep for your own catalog;
+    `SCHEMA_CLOSURE_MAX_ENTITIES` — were set one axis at a time, and the right
+    value depends on how large and how overlapping a catalog is. The triple
+    budget is also the main driver of prompt-context cost per unit. Re-sweep
+    them for your own catalog;
     each field's description in `ontocast/config/settings.py` records what it
     controls.
 
@@ -792,7 +808,7 @@ ONTOLOGY_PATCH_MMR_LAMBDA=1.0
 | Variable | Default | Role |
 |----------|---------|------|
 | `ONTOLOGY_PATCH_CROSS_QUERY_MERGE_MODE` | `max_score` | Default merge; `sum_score` sums per-window scores, so a term several windows agree on outranks one window's top hit |
-| `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | `0` | Max seeds per ontology in round-robin fill; `0` (default) means global score order, which measured better on both recall and precision |
+| `ONTOLOGY_PATCH_PER_ONTOLOGY_SEED_QUOTA` | `0` | Max seeds per ontology in round-robin fill; `0` (default) means global score order, which ranks every candidate on one scale; a quota caps each ontology's share so one cannot take the whole budget, at the cost of admitting lower-scoring terms from the others |
 | `ONTOLOGY_PATCH_SEEDS_PER_WINDOW` | `4` | Scales effective cap with proposition window count |
 | `ONTOLOGY_PATCH_MAX_ATOMS_BASE` | `96` | Floor for effective atom cap; below the candidate pool it silently clips seeds on multi-ontology catalogs |
 | `ONTOLOGY_PATCH_MAX_ATOMS` | `96` | Hard cap: `min(max_atoms, max(base, seeds_per_window × n_queries))` (`0` = unlimited) |
@@ -822,7 +838,7 @@ what to read while doing so.
 | `ONTOLOGY_PATCH_PER_ROLE_ATOM_FLOOR` | `12` | 8–16 | Weak on its own; contributes once the schema closure is on |
 | `ONTOLOGY_PATCH_MAX_ATOMS` / `_BASE` | `96` | 96–192 | Trades directly against context size once the triple budget is not binding. **Raise `_BASE`, not `MAX_ATOMS`:** the effective cap is `min(MAX_ATOMS, max(MAX_ATOMS_BASE, SEEDS_PER_WINDOW × windows))` and `windows` is capped by `VECTOR_STORE_PROPOSITION_MAX_WINDOWS`, so at the defaults nothing above 96 can bind and every larger value is the same run. A warning at startup names the ceiling |
 | `VECTOR_STORE_TOP_K` | `40` | 20–40 | How many candidates each window **offers** selection — not how many survive it. `MAX_ATOMS_BASE` caps the retained set, so raising this fills the same budget from a wider field rather than enlarging the snapshot; it buys the terms a shallower list ranked just out of reach, most of all the scaffolding vocabulary that arrives through expansion rather than as a seed. Costs vector-search time, not prompt budget |
-| `ONTOLOGY_PATCH_MMR_LAMBDA` | `1.0` | — | **Insensitive** (0.5–1.0 identical on this corpus). Leave alone unless you see near-duplicate terms crowding the snapshot. Below 1.0 it selects the whole budget itself and cannot honour the two atom floors, so the combination is **rejected at startup**: zero the floors to choose MMR, or leave this at 1.0 to keep them |
+| `ONTOLOGY_PATCH_MMR_LAMBDA` | `1.0` | — | Diversity trade-off: `1.0` ranks by relevance alone, lower values penalise terms similar to ones already selected. Leave alone unless you see near-duplicate terms crowding the snapshot. Below 1.0 it selects the whole budget itself and cannot honour the two atom floors, so the combination is **rejected at startup**: zero the floors to choose MMR, or leave this at 1.0 to keep them |
 
 Combined at the defaults: needed-term recall 11/11, declared-property coverage
 82%, at roughly 2.7× the snapshot size of the old settings. That size increase is
@@ -918,10 +934,11 @@ describe a lane that does not run until you turn it on.
 
 !!! note "Enabling search adds a second critic call per pass"
 
-    The critic breaks out of its loop immediately when it fails *without*
-    requesting external evidence, so with search off it runs at most once per
-    render whatever `MAX_VISITS` says. Turning search on is what opens the
-    quadratic path — bound it with `MAX_CRITIC_VISITS_PER_NODE`.
+    With search off, each critic pass is one provider call. With search on, a
+    critique that fails *and* asks for external evidence triggers one search
+    and one re-critique within the same pass, so a pass costs at most two
+    critic calls. The number of passes stays bounded by `FACTS_CRITIC_PASSES`
+    and `ONTOLOGY_CRITIC_PASSES`; lower those to bound the search cost.
 
 ### Other
 

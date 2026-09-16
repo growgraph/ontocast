@@ -42,7 +42,7 @@ uv add "ontocast[server,openai]"
 # or: pip install "ontocast[server,openai]"
 ```
 
-Common add-ons: `doc-processing` (PDF/DOCX), `lancedb` or `qdrant` (ontology retrieval), `shacl` (shape validation).
+Common add-ons: `doc-processing` (PDF/DOCX), `semantic-chunking` (clustering-based chunk boundaries; pulls torch, a multi-GB download — without it chunking falls back to paragraph/sentence splits), `lancedb` or `qdrant` (ontology retrieval), `shacl` (shape validation).
 
 ```sh
 uv add "ontocast[server,openai,doc-processing,lancedb,shacl]"
@@ -84,8 +84,9 @@ OntoCast can guide extraction with seed ontologies (in Turtle `.ttl` format), an
 
 ## Configuration
 
-Start from `.env.example.minimal` — 46 variables instead of 241, grouped by the
-decision they belong to. Then pick a [playbook](user_guide/playbooks.md) for what
+Start from `.env.example.minimal` — the few dozen variables that decide what a
+run does, out of the full surface in `.env.example`, grouped by the decision
+they belong to. Then pick a [playbook](user_guide/playbooks.md) for what
 you are actually doing: evaluating, building an ontology, populating facts,
 scaling to a large catalog, or serving it.
 
@@ -100,7 +101,7 @@ things:
 | `MAX_VISITS_PER_NODE` | `1` | Retries of a **failed** render. The critic's budget is `FACTS_CRITIC_PASSES` |
 | `PARALLEL_WORKERS` | `16` | Concurrent content-unit workers |
 | `LLM_PROVIDER` / `LLM_MODEL_NAME` / `LLM_API_KEY` | `openai` | Provider selection and credentials |
-| `ONTOCAST_ONTOLOGY_DIRECTORY` | — | Seed ontologies synced on startup |
+| `ONTOCAST_ONTOLOGY_DIRECTORY` | — | Seed ontologies synced on startup (CLI: `--ontology-dir`; empty string means none) |
 | `FUSEKI_URI` | — | Triple store; unset means in-memory pyoxigraph |
 
 `RENDER_MODE`, `ONTOLOGY_CONTEXT_MODE` and `LLM_GRAPH_FORMAT` are also
