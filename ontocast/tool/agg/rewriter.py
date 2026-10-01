@@ -334,7 +334,7 @@ class GraphRewriter:
         The last three appear only for a unit that carries a section label.
         Without them a finished run cannot be audited for *which* part of the
         document a fact came from: the label reached the summarizer and
-        ``ontocast inspect-sections`` and stopped there.
+        ``ontocast sections`` and stopped there.
         """
 
         unit_uri = URIRef(unit.iri_absolute)

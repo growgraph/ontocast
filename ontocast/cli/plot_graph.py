@@ -16,18 +16,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Warm palette matching the Mermaid hand-drawn theme
+# Cream nodes on a warm ground, drawn in GrowGraph ink; start and end nodes in
+# GrowGraph blue; conditional edges dashed in orange.
 _NODE_FILL = "#FFF3E0"
-_NODE_BORDER = "#143642"
-_NODE_FONT = "#372237"
-_ACCENT_FILL = "#BCCCFF"
-_ACCENT_BORDER = "#0C369F"
+_NODE_BORDER = "#293241"
+_NODE_FONT = "#293241"
+_ACCENT_FILL = "#D6E0EE"
+_ACCENT_BORDER = "#224777"
 _EDGE_COLOR = "#8D6E63"
 _COND_EDGE_COLOR = "#E64A19"
 _BG_COLOR = "#FFFCF7"
 _FONTNAME = "Helvetica"
 
 _NODE_LABELS: dict[str, str] = {"__end__": "END", "__start__": "START"}
+
+#: Output formats ``plot-graph`` can write, and the default selection.
+FORMATS = ("svg", "png", "pdf")
+DEFAULT_FORMATS = ("svg", "png")
 
 NodeShape = Literal["process", "decision", "terminal"]
 
@@ -308,6 +313,21 @@ def _flow_label_for_graphviz(label: str, is_lr: bool) -> str:
     return _wrap_label(text) if is_lr else text
 
 
+def _write(viz: Any, fname: str, extensions: tuple[str, ...], rankdir: str) -> None:
+    """Render ``viz`` once per requested format; LR layouts get a ``.lr`` infix."""
+    out = fname + ".lr" if rankdir.upper() == "LR" else fname
+    for ext in extensions:
+        if ext == "svg":
+            viz.draw(out + ".svg", format="svg:cairo", prog="dot")
+        elif ext == "png":
+            viz.draw(out + ".png", format="png", prog="dot", args="-Gdpi=150")
+        elif ext == "pdf":
+            viz.draw(out + ".pdf", format="pdf", prog="dot")
+        else:
+            raise ValueError(f"unsupported diagram format: {ext}")
+        print(f"Wrote {out}.{ext}")
+
+
 def draw_flow_graphviz(
     pgv_module: Any,
     flow: FlowGraph,
@@ -382,17 +402,14 @@ def draw_flow_graphviz(
     viz.get_node(flow.start_node).attr.update(**accent_attrs)
     viz.get_node(flow.end_node).attr.update(**accent_attrs)
 
-    out = fname + f".{rankdir.lower()}" if rankdir.lower() == "lr" else fname
-    for ext in extensions:
-        if ext == "svg":
-            viz.draw(out + ".svg", format="svg:cairo", prog="dot")
-            print(f"📄 Wrote {out}.svg")
-        elif ext == "png":
-            viz.draw(out + ".png", format="png", prog="dot", args="-Gdpi=300")
-            print(f"📄 Wrote {out}.png")
+    _write(viz, fname, extensions, rankdir)
 
 
-def write_atomic_loop_diagrams(pgv_module: Any, output_dir: Path) -> None:
+def write_atomic_loop_diagrams(
+    pgv_module: Any,
+    output_dir: Path,
+    extensions: tuple[str, ...] = DEFAULT_FORMATS,
+) -> None:
     assets = Path(output_dir)
     assets.mkdir(parents=True, exist_ok=True)
     for name, builder in (
@@ -404,10 +421,10 @@ def write_atomic_loop_diagrams(pgv_module: Any, output_dir: Path) -> None:
         flow = builder()
         mmd_path = assets / f"{name}.mmd"
         mmd_path.write_text(flow_graph_to_mermaid(flow))
-        print(f"📄 Wrote {mmd_path}")
+        print(f"Wrote {mmd_path}")
         base = assets / name
-        draw_flow_graphviz(pgv_module, flow, str(base), ("svg", "png"), rankdir="TB")
-        draw_flow_graphviz(pgv_module, flow, str(base), ("svg", "png"), rankdir="LR")
+        draw_flow_graphviz(pgv_module, flow, str(base), extensions, rankdir="TB")
+        draw_flow_graphviz(pgv_module, flow, str(base), extensions, rankdir="LR")
 
 
 def draw_graphviz(
@@ -426,7 +443,7 @@ def draw_graphviz(
         bgcolor=_BG_COLOR,
         pad="0.3" if is_lr else "0.6",
         nodesep="0.35" if is_lr else "0.7",
-        ranksep="0.5" if is_lr else "0.9",
+        ranksep="0.28" if is_lr else "0.9",
         fontname=_FONTNAME,
         splines=splines,
     )
@@ -436,9 +453,9 @@ def draw_graphviz(
         fillcolor=_NODE_FILL,
         color=_NODE_BORDER,
         fontcolor=_NODE_FONT,
-        fontsize="11" if is_lr else "13",
+        fontsize="14" if is_lr else "13",
         fontname=_FONTNAME,
-        margin="0.15,0.08" if is_lr else "0.25,0.12",
+        margin="0.1,0.06" if is_lr else "0.25,0.12",
         penwidth="1.5" if is_lr else "1.8",
     )
     viz.edge_attr.update(
@@ -490,14 +507,7 @@ def draw_graphviz(
         if last.id not in hidden_nodes:
             viz.get_node(last.id).attr.update(**accent_attrs)
 
-    out = fname + f".{rankdir.lower()}" if rankdir.lower() == "lr" else fname
-    for ext in extensions:
-        if ext == "svg":
-            viz.draw(out + ".svg", format="svg:cairo", prog="dot")
-            print(f"📄 Wrote {out}.svg")
-        elif ext == "png":
-            viz.draw(out + ".png", format="png", prog="dot", args="-Gdpi=300")
-            print(f"📄 Wrote {out}.png")
+    _write(viz, fname, extensions, rankdir)
 
 
 @click.command()
@@ -508,7 +518,14 @@ def draw_graphviz(
     show_default=True,
     help="Directory to write diagrams into. Created if absent.",
 )
-def main(output_dir: Path) -> None:
+@click.option(
+    "--format",
+    "formats",
+    default=",".join(DEFAULT_FORMATS),
+    show_default=True,
+    help=f"Comma-separated output formats, any of: {', '.join(FORMATS)}.",
+)
+def main(output_dir: Path, formats: str) -> None:
     """Render the workflow graph and per-unit loop diagrams.
 
     Diagram rendering only needs the compiled graph topology, so the LLM is
@@ -516,6 +533,12 @@ def main(output_dir: Path) -> None:
     ``Config()`` rather than pinned to a local Ollama, so the command works
     wherever the package is installed.
     """
+    extensions = tuple(f.strip().lower() for f in formats.split(",") if f.strip())
+    unknown = sorted(set(extensions) - set(FORMATS))
+    if unknown:
+        raise click.BadParameter(
+            f"unknown format(s): {', '.join(unknown)}", param_hint="--format"
+        )
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -533,24 +556,11 @@ def main(output_dir: Path) -> None:
     try:
         pgv_module = importlib.import_module("pygraphviz")
 
-        draw_graphviz(pgv_module, graph, graph_stem, ("svg", "png"), rankdir="TB")
-        draw_graphviz(pgv_module, graph, graph_stem, ("svg", "png"), rankdir="LR")
-        write_atomic_loop_diagrams(pgv_module, output_dir)
+        draw_graphviz(pgv_module, graph, graph_stem, extensions, rankdir="TB")
+        draw_graphviz(pgv_module, graph, graph_stem, extensions, rankdir="LR")
+        write_atomic_loop_diagrams(pgv_module, output_dir, extensions)
     except ImportError as e:
         logger.info(f"pygraphviz not available, skipping graphviz output: {e}")
-
-    try:
-        from langchain_core.runnables.graph import MermaidDrawMethod
-
-        png_data = graph.draw_mermaid_png(
-            draw_method=MermaidDrawMethod.API,
-            frontmatter_config=frontmatter_config,
-            padding=20,
-        )
-
-        (output_dir / "graph.preview.png").write_bytes(png_data)
-    except ImportError as e:
-        logger.info(f"MermaidDrawMethod not available, skipping mermaid PNG: {e}")
 
 
 if __name__ == "__main__":

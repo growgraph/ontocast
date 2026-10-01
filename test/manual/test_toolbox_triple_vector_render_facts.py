@@ -394,7 +394,7 @@ async def test_ingest_retrieve_micro_chunks_render_facts(
 
     snapshot = OntologySnapshot.from_graph(
         stitched,
-        source_iris=[fin_onto.iri] if fin_onto.iri else [],
+        source_iris=[fin_onto.iri],
         assembly_mode=OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE,
         title="Stitched patch context (manual finance test)",
         description=(

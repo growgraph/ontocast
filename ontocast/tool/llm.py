@@ -82,14 +82,11 @@ _inflight_semaphores: "weakref.WeakKeyDictionary[Any, dict[int, asyncio.Semaphor
 
 # The budget tracker usage should be charged to, scoped to the running task.
 #
-# The LLM tool is a singleton owned by the ToolBox, so binding a per-unit
-# tracker to an instance attribute meant concurrent unit workers overwrote each
-# other: whichever bound last collected every in-flight call's usage. Document
-# totals still summed correctly (the reduce merges all per-unit trackers) but
-# per-unit attribution was arbitrary, and it is reported to API clients.
-#
-# A ContextVar is task-local -- asyncio.gather copies the current context into
-# each task -- so parallel units no longer share one slot.
+# The LLM tool is a singleton owned by the ToolBox, so a tracker held on the
+# instance would be shared by concurrent unit workers and per-unit usage, which
+# is reported to API clients, would land on whichever unit bound last. A
+# ContextVar is task-local -- asyncio.gather copies the current context into
+# each task -- so every unit charges its own tracker.
 _active_budget_tracker: ContextVar[Any | None] = ContextVar(
     "ontocast_active_budget_tracker", default=None
 )
@@ -210,7 +207,7 @@ def llm_cache_config(
 # to be overridden rather than passed through. Anchored on a following hyphen or
 # end-of-string so it does not also swallow later families whose names merely
 # start the same way -- gpt-5.4 takes a temperature like any other model, and
-# silently forcing it to 1.0 would make every benchmark arm undecodable.
+# silently forcing it to 1.0 would make its runs unrepeatable.
 _TEMPERATURE_PINNED_TO_ONE = re.compile(r"^gpt-5(-|$)")
 
 
@@ -490,14 +487,11 @@ class CachedResponse(BaseModel):
     kwargs: dict[str, Any] = Field(default_factory=dict, description="Invoke kwargs.")
     usage: TokenUsage | None = Field(
         default=None,
-        # Optional rather than a cache_format_version bump: it is purely
-        # additive, and bumping would evict every existing entry and force a
-        # paid re-run before any cache replay works again. Entries written
-        # before this field report usage as unknown, which is the truth.
-        #
-        # usage_metadata is a separate AIMessage attribute, not part of
-        # response_metadata, so persisting the latter never captured it -- which
-        # is why replayed runs used to report zero tokens.
+        # Optional rather than a cache_format_version bump: the field is
+        # additive, and a bump would evict every existing entry. Entries
+        # without it report usage as unknown. usage_metadata is a separate
+        # AIMessage attribute, not part of response_metadata, so it is stored
+        # here on its own.
         description="Token counts, replayed on a hit. None for older entries.",
     )
 
@@ -958,9 +952,8 @@ class LLMTool(Tool):
             except Exception as exc:
                 # A provider throttle that survived the SDK's own retries
                 # surfaces as a failed render; without a counter it is
-                # indistinguishable from a model failure in the telemetry,
-                # which is how a throttled arm once read as a quality
-                # regression. Detected by exception shape rather than type so
+                # indistinguishable from a model failure in the telemetry.
+                # Detected by exception shape rather than type so
                 # no provider SDK is imported here. Re-raised unchanged --
                 # this layer deliberately does not retry (see
                 # agent/common.py): raise LLM_MAX_RETRIES or lower

@@ -66,7 +66,7 @@ server.
 
 ## Tips
 - You can use your own documents by changing the file path in the `curl` command.
-- For more details, see the [main README](../README.md) or the [Triple Store Setup Guide](../docs/user_guide/triple_stores.md).
+- For more details, see the [main README](../README.md) or the [Triple Store Setup Guide](https://growgraph.github.io/ontocast/guides/triple_stores/).
 
 ---
 

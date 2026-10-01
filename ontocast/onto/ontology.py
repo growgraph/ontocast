@@ -582,8 +582,8 @@ class Ontology(OntologyPropertiesWithLineage):
         updated_ontology.created_at = datetime.now(timezone.utc)
         updated_ontology.hash = None
         updated_ontology._clear_lineage_metadata_triples()
-        updated_ontology._compute_and_set_hash()
-        if not updated_ontology.hash and updated_ontology.parent_hashes:
+        computed_hash = updated_ontology._compute_and_set_hash()
+        if not computed_hash and updated_ontology.parent_hashes:
             updated_ontology.hash = updated_ontology.parent_hashes[0]
         updated_ontology.sync_properties_to_graph()
         return updated_ontology
@@ -625,8 +625,8 @@ class Ontology(OntologyPropertiesWithLineage):
         merged.sync_properties_to_graph()
         return merged
 
-    def _compute_and_set_hash(self) -> None:
-        """Compute the hash of the ontology graph and set it.
+    def _compute_and_set_hash(self) -> str | None:
+        """Compute the hash of the ontology graph, set it and return it.
 
         The hash is computed from the canonicalized graph using SHA256.
         The hash is computed from the graph WITHOUT hash/parent_hash triples,
@@ -707,6 +707,7 @@ class Ontology(OntologyPropertiesWithLineage):
                 )
                 # Set a placeholder hash if computation fails
                 self.hash = None
+        return self.hash
 
     def _normalize_version(self, version: str) -> str:
         """Normalize a version string to semantic versioning format."""

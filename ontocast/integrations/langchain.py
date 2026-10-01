@@ -23,8 +23,8 @@ each omission, since "my agent has six tools instead of eleven" is otherwise
 unbreakable.
 
 **Mutation is opt-in.** The write tools are excluded unless ``mutating=True``.
-``ontocast_delete_ontology`` drops a named graph, unlinks a file from disk, and
-deletes vectors -- three irreversible effects from one model-chosen string.
+``ontocast_delete_ontology`` drops a named graph and deletes vectors -- two
+irreversible effects from one model-chosen string.
 """
 
 from __future__ import annotations
@@ -663,9 +663,10 @@ def _delete_ontology(tools: "ToolBox", max_chars: int) -> BaseTool:
         name="ontocast_delete_ontology",
         description=(
             "Permanently delete an ontology: removes its named graph from the "
-            "triple store, deletes its file from the ontology directory, and "
-            "drops its search vectors. This cannot be undone. Confirm the IRI "
-            "with ontocast_list_ontologies before calling."
+            "triple store and drops its search vectors. This cannot be undone. "
+            "A seed file in the ontology directory is kept and loads again on "
+            "the next start. Confirm the IRI with ontocast_list_ontologies "
+            "before calling."
         ),
         args_schema=DeleteOntologyArgs,
         coroutine=run,
@@ -685,8 +686,8 @@ def _convert_document(tools: "ToolBox", max_chars: int) -> BaseTool:
     return _tool(
         name="ontocast_convert_document",
         description=(
-            "Convert a document file (PDF, DOCX, HTML) at a filesystem path into "
-            "markdown text."
+            "Convert a document file (PDF or PowerPoint) at a filesystem path "
+            "into markdown text."
         ),
         args_schema=ConvertDocumentArgs,
         coroutine=run,

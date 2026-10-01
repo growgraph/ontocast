@@ -534,8 +534,7 @@ class RunManifest(BaseModel):
             "``AgentState.ontology_reduce_metrics``: apply/partition counters "
             "plus the reduce policies' evidence -- minted_duplicates and "
             "their pairs, deletes_dropped_unredeclared, apply_deletes_no_match, "
-            "fresh_ontologies_merged. The case10 sampling run computed all of "
-            "these and recorded none, because no manifest field carried them."
+            "fresh_ontologies_merged."
         ),
     )
     selection: RunManifestSelection | None = None

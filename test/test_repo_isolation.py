@@ -39,6 +39,8 @@ ALLOWED_ESCAPES: dict[str, set[str]] = {
         "docs",
     },
     "test_retrieval_metric_keys.py": {"ontocast"},
+    # Checks that every setting the docs name exists.
+    "test_settings_reference.py": {"docs"},
     "test_repo_isolation.py": {"pyproject.toml"},
 }
 

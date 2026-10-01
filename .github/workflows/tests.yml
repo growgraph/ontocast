@@ -19,11 +19,11 @@ jobs:
     import-smoke:
         runs-on: ubuntu-latest
         steps:
-        -   uses: actions/checkout@v5
+        -   uses: actions/checkout@v7
         -   name: Install uv
-            uses: astral-sh/setup-uv@v7
+            uses: astral-sh/setup-uv@v10.2.0
             with:
-                version: "0.10.12"
+                version: "0.12.21"
         -   name: Build wheel
             run: uv build --wheel --out-dir dist
         -   name: Install the wheel with NO extras
@@ -72,11 +72,11 @@ jobs:
     server-install:
         runs-on: ubuntu-latest
         steps:
-        -   uses: actions/checkout@v5
+        -   uses: actions/checkout@v7
         -   name: Install uv
-            uses: astral-sh/setup-uv@v7
+            uses: astral-sh/setup-uv@v10.2.0
             with:
-                version: "0.10.12"
+                version: "0.12.21"
         -   name: Build wheel
             run: uv build --wheel --out-dir dist
         -   name: Install the wheel with the server extra
@@ -96,11 +96,11 @@ jobs:
         env:
             UV_PYTHON: ${{ matrix.python-version }}
         steps:
-        -   uses: actions/checkout@v5
+        -   uses: actions/checkout@v7
         -   name: Install uv
-            uses: astral-sh/setup-uv@v7
+            uses: astral-sh/setup-uv@v10.2.0
             with:
-                version: "0.10.12"
+                version: "0.12.21"
                 enable-cache: true
         -   name: Install dependencies
             run: uv sync --all-extras

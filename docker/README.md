@@ -34,7 +34,7 @@ FUSEKI_AUTH=admin/abc123-qwe
 #FUSEKI_ONTOLOGIES_DATASET=ontocast--test--ontologies
 ```
 
-When dataset env vars are unset, names default to `ontocast--test--facts` and `ontocast--test--ontologies`. Per-request `?tenant=` / `?project=` retarget partitions at runtime. See [Tenancy](../docs/user_guide/tenancy.md).
+When dataset env vars are unset, names default to `ontocast--test--facts` and `ontocast--test--ontologies`. Per-request `?tenant=` / `?project=` retarget partitions at runtime. See [Tenancy](https://growgraph.github.io/ontocast/guides/tenancy/).
 
 ### Seed ontologies (optional)
 
@@ -193,6 +193,6 @@ curl http://localhost:6333/healthz
 
 ## Further reading
 
-- [Triple store guide](../docs/user_guide/triple_stores.md)
-- [Tenancy](../docs/user_guide/tenancy.md)
-- [Configuration](../docs/user_guide/configuration.md)
+- [Triple store guide](https://growgraph.github.io/ontocast/guides/triple_stores/)
+- [Tenancy](https://growgraph.github.io/ontocast/guides/tenancy/)
+- [Configuration](https://growgraph.github.io/ontocast/guides/configuration/)

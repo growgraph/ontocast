@@ -101,12 +101,12 @@ class CompiledFixes:
     patches: list[FixPatch] = field(default_factory=list)
     #: Fixes folded into ``update``.
     applied: list[TripleFix] = field(default_factory=list)
-    #: Fixes that need a scoped repair render.
+    #: Fixes that could not be applied; counted and reported, not retried.
     residual: list[TripleFix] = field(default_factory=list)
     #: Fixes whose delete set and insert set are the same statements. They ask
     #: for no change, so they are neither applied nor sent back as work -- but
     #: they are counted, because a critique made mostly of these is a critic
-    #: producing motion rather than corrections, and nothing used to see it.
+    #: producing motion rather than corrections.
     noop: list[TripleFix] = field(default_factory=list)
     #: Ids cited that the index never issued. Counted, never guessed at.
     bad_index_refs: int = 0
@@ -164,7 +164,7 @@ def _bindings_for_payload(graph: Graph) -> dict[str, str]:
     """Prefix bindings for parsing a critic fix: catalog map under the unit graph.
 
     The unit graph's binding wins for any prefix both declare — a graph that
-    already uses ``qqval:`` is the authority for what that prefix means under
+    already uses a prefix is the authority for what that prefix means under
     repair. Catalog-only prefixes (installed for the unit loop via
     :meth:`RDFGraph.set_known_prefixes`) fill in so a fix can introduce a term
     the unit has not used yet, rather than expanding it against nothing.

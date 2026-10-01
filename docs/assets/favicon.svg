@@ -1,14 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96">
-  <!-- White circle background -->
-  <circle cx="48" cy="48" r="45" fill="white"/>
-  
-  <!-- Original diagram, centered in the white circle -->
+  <circle cx="48" cy="48" r="47" fill="#ffffff"/>
   <g transform="translate(-2 0)">
-    <circle cx="65" cy="32" r="15" fill="none" stroke-width="4" stroke="#8b1f6b" />
-    <circle cx="22" cy="44" r="8" fill="none" stroke-width="4" stroke="#8b1f6b" />
-    <circle cx="63" cy="73" r="8" fill="none" stroke-width="4" stroke="#8b1f6b" />
-    <line x1="30" y1="39" x2="49" y2="33" stroke-width="3" stroke="#8b1f6b" stroke-linecap="round" />
-    <line x1="31" y1="45" x2="51" y2="39" stroke-width="3" stroke="#8b1f6b" stroke-linecap="round" />
-    <line x1="64" y1="48" x2="63" y2="64" stroke-width="4" stroke="#8b1f6b" stroke-linecap="round" />
+    <g stroke="#0b8a7f" stroke-width="8" stroke-linecap="round">
+      <line x1="22" y1="44" x2="65" y2="32"/>
+      <line x1="65" y1="32" x2="63" y2="73"/>
+    </g>
+    <g fill="#0b8a7f">
+      <circle cx="65" cy="32" r="17"/>
+      <circle cx="22" cy="44" r="10"/>
+      <circle cx="63" cy="73" r="10"/>
+    </g>
   </g>
 </svg>

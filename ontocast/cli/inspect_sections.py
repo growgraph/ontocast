@@ -122,7 +122,7 @@ def _print_table(title: str, rows: list[dict], columns: list[tuple[str, int]]) -
     "--input-path",
     type=click.Path(exists=True, path_type=pathlib.Path),
     required=True,
-    help="Document to inspect (PDF, markdown, text or JSON).",
+    help="Document to inspect (PDF, PowerPoint, markdown, text or JSON).",
 )
 @click.option(
     "--section-schema-id",

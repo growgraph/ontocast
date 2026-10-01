@@ -696,8 +696,8 @@ class EmbeddingBasedAggregator:
                 "AGG_SIMILARITY_THRESHOLD=%s is set, but the in-pipeline "
                 "aggregator does not read it: it clusters and gates at "
                 "AGG_CANDIDATE_SIMILARITY_THRESHOLD (still at its default %s). "
-                "AGG_SIMILARITY_THRESHOLD only drives the cross-graph "
-                "EntityAligner (/align_entities, match-graphs).",
+                "AGG_SIMILARITY_THRESHOLD is only the cross-graph aligner's "
+                "fallback threshold (the ontocast_align_entities tool).",
                 cfg.similarity_threshold,
                 cfg.candidate_similarity_threshold,
             )

@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 *0.6.3 was never tagged. Its entries ship here.*
 
 ### Added
+- **`plot-graph --format`** selects any of `svg`, `png`, `pdf` (default `svg,png`).
+- **`ontocast.config.env_names`:** environment-variable names of every settings field.
 
 - **Retrieval proposition window bounds** (`VECTOR_STORE_PROPOSITION_*`, all off
   by default): `WINDOW_MAX_TOKENS` (token-budget packing; only bound that prevents
@@ -177,6 +179,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`plot` extra** requires `pygraphviz>=2.0`, whose wheels bundle Graphviz.
+- **`docs` extra:** `properdocs` replaces `mkdocs`; `mkdocs-jupyter` and the
+  `griffe<2` pin are dropped.
+- **`plot-graph`** no longer writes `graph.preview.png` (a remote mermaid.ink call).
+- **`plot-graph`:** the left-to-right pipeline figure uses larger labels and
+  tighter spacing, so it stays legible at page width.
+
 - **Log levels:** prefix reconciliation, aggregator `rdf:reifies` skip, unlabeled
   sections → DEBUG/INFO (reduces WARNING noise).
 
@@ -259,7 +268,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`FACTS_LLM_REPAIR_VISITS`**, **`MAX_CRITIC_VISITS_PER_NODE`** (manifest
   `loops.max_critic_visits` removed).
 
+- **`suthing` dropped from the `server` extra.** Nothing in the package imports
+  it; installing `ontocast[server]` no longer pulls it in.
+
 ### Fixed
+
+- **`AGG_SIMILARITY_THRESHOLD`** description and warning say what reads it: the
+  aligner's fallback when a caller names no threshold. `POST /match/entities` and
+  `match-graphs` use their own `similarity_threshold`.
 
 - **Deterministic semantic chunking** — seeded PCA/UMAP; `CHUNKER_CACHE_FORMAT_VERSION`.
   Chunk boundaries differ from earlier versions. Short blocks pack by size directly.
@@ -354,20 +370,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
-- **`docs/user_guide/configuration.md`:** `VECTOR_STORE_BM25_TOP_K`,
-  `VECTOR_STORE_FUSION_RANK_CONSTANT`,
-  `ONTOLOGY_PATCH_SMALL_MODULE_CLOSURE_MAX_TOTAL_TRIPLES`; corrected `VECTOR_STORE_TOP_K`
-  default (`40`).
-- Facts-loop diagrams regenerated; `demo/README.md` sample paths fixed.
-- **Per-unit loop diagrams corrected against `run_unit_loop`:** the convergence
-  diamond now states the real rule (no fix kept, and a rollback or no mandatory
-  finding left), and the facts loop shows its own exits — the critic skip
-  (citation metadata / `FACTS_CRITIC_MIN_TRIPLES`), the unpatched exit when the
-  critic is unavailable, and `FACTS_COMPLETION_PASSES`. `workflow.md` now
-  describes per-fix rollback and says `MAX_VISITS` does not bound critic passes.
-- Public callables fully annotated; `uv run mkdocs build` warning-free.
-- Guides updated: `LLM_JSON_MODE`, `CHUNK_MIN_UNIT_CHARS`, section-label rule,
-  validation arms, `--keep-provenance`.
+- Docs are built with ProperDocs (`properdocs.yml`, `properdocs build` / `serve`)
+  and reorganized into Getting started, Concepts, Guides, Reference and Internals,
+  with a new theme and landing page.
+- The configuration reference is generated from the settings models, one entry per
+  environment variable; setting descriptions rewritten to state behaviour only.
+- Pipeline and per-unit loop diagrams redrawn in the new palette and served as SVG;
+  the loop diagrams state the real convergence rule and the facts loop's exits.
+- Docs no longer claim OntoCast reads a `.env` file (it reads the environment), or
+  that `FUSEKI_URI` alone enables Fuseki (`FUSEKI_AUTH` is also required).
+- `demo/README.md` sample paths fixed; public callables fully annotated.
 
 ## [0.6.2] - 2026-08-29
 

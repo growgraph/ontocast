@@ -1393,10 +1393,10 @@ class ToolBox:
     async def delete_ontology_by_iri(self, ontology_iri: str) -> None:
         """Remove ontology from manager, vector store, and triple store.
 
-        ``ontology_directory`` is deliberately untouched. Deletion used to
-        unlink any seed TTL declaring this IRI, which destroyed curated input
-        the next init reloads from — an irreversible edit to the user's files
-        in response to a store-level delete.
+        ``ontology_directory`` is deliberately untouched: unlinking a seed TTL
+        that declares this IRI would destroy curated input the next init
+        reloads from -- an irreversible edit to the user's files in response
+        to a store-level delete.
         """
         import asyncio
 

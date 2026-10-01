@@ -1,0 +1,156 @@
+site_name: OntoCast
+site_description: Ontology-guided extraction of RDF knowledge graphs from documents
+site_url: https://growgraph.github.io/ontocast
+repo_url: https://github.com/growgraph/ontocast
+repo_name: growgraph/ontocast
+copyright: Copyright &copy; 2025-2026 GrowGraph
+edit_uri: edit/main/docs/
+theme:
+    name: material
+    # Colours are set in docs/stylesheets/extra.css.
+    palette:
+    -   media: '(prefers-color-scheme: light)'
+        scheme: default
+        primary: custom
+        accent: custom
+        toggle:
+            icon: material/toggle-switch-off-outline
+            name: Switch to dark mode
+    -   media: '(prefers-color-scheme: dark)'
+        scheme: slate
+        primary: custom
+        accent: custom
+        toggle:
+            icon: material/toggle-switch
+            name: Switch to light mode
+    font:
+        text: Source Sans 3
+        code: JetBrains Mono
+    logo: assets/logo.svg
+    icon:
+        repo: fontawesome/brands/github
+    favicon: assets/favicon.svg
+    features:
+    -   navigation.tabs
+    -   navigation.tabs.sticky
+    -   navigation.top
+    -   navigation.footer
+    -   toc.follow
+    -   content.code.copy
+    -   content.action.edit
+    -   search.highlight
+    -   search.suggest
+extra_css:
+-   https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700&display=swap
+-   stylesheets/extra.css
+exclude_docs: |
+    _build/
+plugins:
+# Underscores are separators, so an env var such as `ONTOLOGY_CONTEXT_MODE` is
+# indexed as its words as well as whole.
+-   search:
+        separator: '[\s\-,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|_'
+-   glightbox
+-   gen-files:
+        scripts:
+        -   docs/_build/gen_pages.py
+        -   docs/_build/gen_config.py
+-   literate-nav
+-   mkdocstrings:
+        default_handler: python
+        handlers:
+            python:
+                options:
+                    show_root_full_path: true
+                    show_source: true
+                    show_root_toc_entry: false
+                    docstring_style: google
+                    show_category_heading: true
+                    show_if_no_docstring: true
+validation:
+    omitted_files: warn
+    absolute_links: warn
+    unrecognized_links: warn
+    anchors: warn
+nav:
+-   Home: index.md
+-   Getting started:
+    -   Installation: getting_started/installation.md
+    -   Quick start: getting_started/quickstart.md
+-   Concepts:
+    -   How OntoCast works: concepts/index.md
+    -   Glossary: concepts/glossary.md
+    -   Ontologies and facts: concepts/ontologies_and_facts.md
+    -   Structured documents: concepts/structured_documents.md
+    -   Entity disambiguation: concepts/entity_disambiguation.md
+-   Guides:
+    -   Overview: guides/index.md
+    -   Configuring OntoCast: guides/configuration.md
+    -   Recipes: guides/recipes.md
+    -   Choosing ontology context: guides/ontology_context.md
+    -   Writing user instructions: guides/user_instructions.md
+    -   Validation and SHACL: guides/validation.md
+    -   Embedding OntoCast in your agent: guides/embedding.md
+    -   Triple stores: guides/triple_stores.md
+    -   Tenancy: guides/tenancy.md
+    -   LLM caching: guides/llm_caching.md
+    -   Performance tuning: guides/performance.md
+    -   Reading run telemetry: guides/telemetry.md
+    -   Troubleshooting: guides/troubleshooting.md
+-   Reference:
+    -   Overview: reference/index.md
+    -   Configuration:
+        -   Overview: reference/configuration/index.md
+        -   Pipeline and server: reference/configuration/pipeline.md
+        -   Language model: reference/configuration/llm.md
+        -   Document conversion: reference/configuration/conversion.md
+        -   Chunking: reference/configuration/chunking.md
+        -   Ontology retrieval: reference/configuration/ontology-retrieval.md
+        -   Embeddings and vector stores: reference/configuration/embeddings.md
+        -   Facts validation: reference/configuration/facts-validation.md
+        -   Ontology validation: reference/configuration/ontology-validation.md
+        -   Entity disambiguation: reference/configuration/aggregation.md
+        -   Web search: reference/configuration/web-search.md
+        -   Storage and paths: reference/configuration/storage.md
+    -   HTTP API: reference/http_api.md
+    -   Python API: reference/python/
+-   Internals:
+    -   Overview: internals/index.md
+    -   How ontology retrieval works: internals/retrieval.md
+    -   Validation layers and the critic loop: internals/validation_layers.md
+    -   How prompts are built: internals/prompt_construction.md
+    -   Telemetry counters: internals/telemetry_counters.md
+    -   How LLM responses are parsed: internals/llm_responses.md
+    -   Ontology catalog: internals/ontology_catalog.md
+-   Contributing: contributing.md
+markdown_extensions:
+-   pymdownx.highlight:
+        anchor_linenums: true
+        line_spans: __span
+        pygments_lang_class: true
+-   pymdownx.inlinehilite
+-   pymdownx.snippets
+-   pymdownx.superfences
+-   attr_list
+-   md_in_html
+-   admonition
+-   footnotes
+-   meta
+-   def_list
+-   pymdownx.blocks.caption
+-   pymdownx.details
+-   pymdownx.tabbed:
+        alternate_style: true
+-   pymdownx.emoji
+-   pymdownx.tasklist:
+        custom_checkbox: true
+-   pymdownx.keys
+-   pymdownx.magiclink
+-   pymdownx.betterem
+-   pymdownx.caret
+-   pymdownx.tilde
+-   pymdownx.mark
+-   pymdownx.smartsymbols
+-   pymdownx.escapeall
+-   toc:
+        permalink: true

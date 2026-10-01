@@ -7,7 +7,7 @@ from ontocast.toolbox import ToolBox
 
 
 class OntologyContextConfigError(ValueError):
-    """Raised when vector-search ontology context mode is requested but Qdrant is missing."""
+    """Raised when vector-search ontology context mode is requested without a vector store."""
 
 
 class VectorStoreUnavailableError(OntologyContextConfigError):
@@ -17,7 +17,7 @@ class VectorStoreUnavailableError(OntologyContextConfigError):
 
 
 def vector_retrieval_available(tools: ToolBox) -> bool:
-    """True when Qdrant vector store and patch retriever are both configured."""
+    """True when a vector store (Qdrant or LanceDB) and the patch retriever are ready."""
     return (
         tools.vector_store is not None
         and tools.patch_retriever is not None
@@ -34,9 +34,10 @@ def require_vector_retrieval(tools: ToolBox) -> None:
     if last_error is not None:
         details = f" Last vector-store init error: {last_error}"
     raise VectorStoreUnavailableError(
-        "ontology_context_mode='selected_vector_search_ontology' requires a configured Qdrant "
-        "vector store (set tool qdrant.uri, matching embedding dimension) so "
-        "vector_store and patch_retriever are available and initialized."
+        "ontology_context_mode='selected_vector_search_ontology' requires a vector "
+        "store: set QDRANT_URI or LANCEDB_ENABLED=true, with an embedding "
+        "dimension matching the index, so the vector store and patch retriever "
+        "are available and initialized."
         f"{details}"
     )
 

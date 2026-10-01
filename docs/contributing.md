@@ -1,185 +1,160 @@
 # Contributing to OntoCast
 
-We welcome contributions! This document provides guidelines for contributing to the project.
+This page covers what you need to change OntoCast and get the change merged:
+setting up, running the tests, writing documentation, and the checklist a pull
+request has to pass.
 
-## Getting Started
+## Set up
 
-1. Fork the repository on GitHub
-2. Clone your fork locally
-3. Install development dependencies:
-   ```bash
-   uv sync --all-extras
-   ```
-4. Install pre-commit hooks:
-   ```bash
-   pre-commit install
-   ```
+1. Fork the repository on GitHub and clone your fork.
+2. Install every extra, including the development and documentation tools:
 
-## Development Workflow
+    ```bash
+    uv sync --all-extras
+    ```
 
-1. Create a branch for your feature or bugfix:
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
+3. Install the pre-commit hooks:
 
-2. Run tests:
-   ```bash
-   HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run pytest -m "not slow"
-   ```
-   That is the bar the default run has to clear: offline, model-free, no
-   provider credentials. Markers carve out the rest — `slow` loads an ML model
-   or takes more than a few seconds, `integration` needs a live service. Both
-   are deselected unless you pass `-m`, and service-gated tests skip themselves
-   when the service is unreachable.
+    ```bash
+    uv run pre-commit install
+    ```
 
-   **Do not source `.env` into the test run.** The suite is only meaningful
-   against declared defaults, and a developer's live configuration silently
-   invalidates it — a local `RENDER_MODE=facts` leaves the entire ontology
-   block untested while the suite still reports green. `pytest-dotenv` is
-   blocked in `addopts` (`-pno:dotenv`) and `test/conftest.py` fails the run
-   outright if a pipeline mode selector leaked in from the shell. Set what an
-   individual test needs with `monkeypatch`. For an integration run, export
-   only the service URLs it needs:
-   ```bash
-   QDRANT_URI=http://localhost:6333 uv run pytest -m integration
-   ```
+Run every Python command through `uv run`, so it uses the project's locked
+environment.
 
-3. Build docs locally after doc or API changes:
-   ```bash
-   uv run mkdocs build
-   ```
+## Run the tests
 
-4. Commit, push, and open a Pull Request
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run pytest -m "not slow"
+```
 
-## Testing
+This is the run every change has to pass: offline, without model weights or
+provider credentials. Two markers carve out the rest. `slow` tests load an ML
+model or take more than a few seconds; `integration` tests need a live service
+and skip themselves when it is unreachable. Select them with `-m`, exporting
+only the service URLs they need:
+
+```bash
+QDRANT_URI=http://localhost:6333 uv run pytest -m integration
+```
+
+!!! warning "Do not load your `.env` into a test run"
+    The suite checks the declared defaults, and your live configuration
+    silently changes what it tests: a local `RENDER_MODE=facts` leaves the whole
+    ontology half untested while the suite stays green. `pytest-dotenv` is
+    disabled in `addopts` (`-pno:dotenv`), and `test/conftest.py` stops the run
+    if a pipeline mode setting is present in the environment. Set what a single
+    test needs with `monkeypatch`.
 
 ### Test layout
 
-Tests are grouped into packages mirroring the source tree:
+Tests are grouped by the part of the source they cover:
 
 | Package | Covers |
 |---|---|
-| `test/facts/` | `tool/facts_validation/` — term policy, per-unit findings, the gate, acceptance, the repair loop |
-| `test/ontology/` | the ontology lane — catalog identity, per-unit context, delta validation, reconcile, loop telemetry |
-| `test/chunking/` | conversion to content units — segmentation, section labels, schema detection |
-| `test/aggregation/` | `tool/agg/` — entity disambiguation, merge guards, provenance |
-| `test/manual/` | opt-in, needs `ONTOCAST_RUN_MANUAL_TESTS=1`; not collected otherwise |
+| `test/facts/` | `tool/facts_validation/`: term policy, per-unit findings, the gate, acceptance, the repair loop |
+| `test/ontology/` | The ontology half: catalog identity, per-unit context, delta validation, reconciliation, loop telemetry |
+| `test/chunking/` | Conversion to content units: segmentation, section labels, schema detection |
+| `test/aggregation/` | `tool/agg/`: entity disambiguation, merge guards, provenance |
+| `test/manual/` | Opt-in; collected only with `ONTOCAST_RUN_MANUAL_TESTS=1` |
 
-Everything else stays at the top level. Put a new test beside the ones covering
-the same subsystem rather than adding a top-level module.
+Everything else stays at the top level of `test/`. Put a new test beside the
+tests for the same subsystem. When you merge two test modules, check for
+top-level names both define, private fixture factories especially: a
+duplicate silently shadows the other, and half the tests stop testing what
+they were written for while the suite still passes.
 
-When consolidating modules, check for top-level names defined differently in
-each — private fixture factories especially. Concatenating two files that both
-define `_tools()` shadows one with the other, and the suite still passes while
-half of it stops testing what it was written for.
+### Fixtures live under `test/`
 
-### Test fixtures live under `test/`
-
-The sdist ships `/test` and a short allowlist of root files; it does not ship
-`docs/`, `demo/`, or any corpus directory. A test that resolves a path outside
-`test/` therefore cannot run from a published sdist, and three such tests once
-skipped silently on every machine that lacked the corpus rather than failing.
-`test/test_repo_isolation.py` enforces this: put fixtures under `test/data/`,
-and if a test genuinely must read a declaration file at the repo root, add it
-to that module's `ALLOWED_ESCAPES` with the reason.
-
-### Measurement lives elsewhere
-
-Performance and extraction-quality numbers do not belong in this repository's
-documentation, changelog, or docstrings. `ontocast` is a technical package: its
-docs state mechanisms, contracts and defaults, which stay true across corpora
-and model versions. A measured figure does not — it is true of one corpus, one
-model and one day, and once written down it is quietly wrong from then on, with
-nothing to detect that it drifted.
-
-So:
-
-- **Do** describe what a knob controls, which direction it moves things, and
-  what saturates. **Do not** attach the number a sweep produced.
-- **Do** name the telemetry a reader should use to measure their own setup —
-  `retrieval_metrics`, `budget`, the run manifest. **Do not** substitute your
-  numbers for theirs.
-- **Do not** name a corpus, a benchmark, or an individual evaluation run —
-  in prose, in a changelog entry, in a test name, or in a docstring. A reader
-  outside this repository cannot resolve those names, and a reader inside the
-  project should be reading the measurement system instead.
-- Justify a default by its **mechanism** ("saturates quickly", "gates
-  everything below it"), not by the run that chose it.
-
-Benchmark and evaluation results are tracked systematically in
-`ontocast-validation`. Link there when a number is genuinely needed.
-
-This is about *claims*, not vocabulary. Fixture data is exempt: an example namespace, a sample document that happens to say "we used a benchmark", or a test graph named after a domain are arbitrary test inputs, not assertions about a measured run.
+The source distribution ships `test/` but not `docs/`, `demo/` or any data
+directory, so a test that reads a file outside `test/` cannot run from it. Put
+fixtures under `test/data/`. `test/test_repo_isolation.py` enforces this; if a
+test must read a file at the repository root, add it to `ALLOWED_ESCAPES` in
+that module with the reason.
 
 ### Retrieval quality
 
-`test/test_retrieval_recall.py` measures whether a relevant catalog term
-actually survives to the prompt snapshot — the thing the plumbing tests, which
-assert ordering and parameter pass-through against fake vectors, cannot see. It
-reports two numbers per run:
-
-- **seed recall** — the expected term reached the final seed set, so it survived
-  vector search, the cross-window merge and the atom cap;
-- **snapshot recall** — the term is also *defined* in the returned graph, so it
-  survived induced-subgraph expansion, budget caps and component pruning.
-
-The gap between them attributes a loss to the graph stage rather than the vector
-stage, which is what makes a regression localisable without bisecting. Wiring
-and scoring live in `test/retrieval_runner.py`; `test/retrieval_sweep.py` reuses
-them to sweep retrieval parameters in one process.
-
-It makes **no LLM call** — retrieval is embeddings and graph work — so it needs
-no provider credentials, and the toolbox's eagerly constructed client is pinned
-to a provider that needs no API key. The backend may be an embedded LanceDB, so
-no service has to be running:
+`test/test_retrieval_recall.py` checks whether a relevant catalog term reaches
+the ontology context a unit is shown, reporting how many expected terms survive
+vector search and how many survive graph expansion. It makes no LLM call and
+can run on an embedded LanceDB. Point `ONTOCAST_RECALL_CORPUS` at a corpus
+directory (`cases.jsonl` plus `ontologies/*.ttl`); without it the tests skip.
+The corpora live in `ontocast-validation`.
 
 ```bash
 ONTOCAST_RECALL_CORPUS=<corpus dir> LANCEDB_ENABLED=true \
   uv run pytest test/test_retrieval_recall.py -m "integration and slow" -s
 ```
 
-A corpus is a directory holding `cases.jsonl` (`{"id", "text",
-"expected_iris", "ontology_iri"}`) and `ontologies/*.ttl`; the tests skip
-themselves when `ONTOCAST_RECALL_CORPUS` is unset, and the corpora themselves
-live in `ontocast-validation` rather than here. `ONTOCAST_RECALL_JSON` writes
-the funnel as JSON. One index serves a whole sweep — every retrieval knob is
-applied at merge or expansion time, so none of them joins the embedding
-fingerprint — which is what `ONTOCAST_RECALL_COLLECTION_SUFFIX` and
-`ONTOCAST_RECALL_SKIP_INDEX` are for.
+Set `ONTOCAST_RECALL_JSON` to write the results to a file; the module
+docstring lists the other controls.
 
-Two cautions. Real embeddings are not bit-reproducible run to run, so compare
-arms by rank and by which ontologies contributed no seed term at all, not by
-exact percentages; and the on-topic precision figure is a noise proxy that
-penalises legitimately retrieved parent terms from another module. This is an
-ablation instrument, not an equality assertion.
+## Measurement lives elsewhere
 
-Also in-repo: `test/test_retrieval_predicate_recall.py` for predicate-surface
-coverage, and the per-run `retrieval_metrics` reported by the API and batch
-dumps. See [Ontology Context —
-Diagnostics](user_guide/ontology_context.md#diagnostics).
+Documentation, the changelog, docstrings, comments and test names in this
+repository describe mechanisms, contracts and defaults. They do not carry
+measured results:
+
+- Describe what a setting controls, which direction it moves things, and what
+  saturates. Do not quote the number a sweep produced.
+- Name the telemetry a reader uses to measure their own deployment:
+  `budget`, `retrieval_metrics`, the run manifest.
+- Do not name a corpus, a benchmark or an evaluation run, and do not name a
+  test, fixture or flag after one; name it after what it guards.
+- Justify a default by its mechanism ("saturates quickly", "gates everything
+  below it"), not by the run that chose it.
+
+Benchmark and evaluation results are tracked in `ontocast-validation`; link
+there when a number is needed. The rule covers claims, not vocabulary: fixture
+data such as an example namespace or a sample document is exempt.
 
 ## Documentation
 
-- User-facing guides live in `docs/` (MkDocs). Update `mkdocs.yml` nav when adding pages.
-- **API reference** under `docs/reference/` is **generated at build time** by `docs/gen_pages.py` from Python modules. Do not commit hand-written reference stubs; add docstrings in code instead.
-- **Workflow diagrams** in `docs/assets/` (`graph*`, `ontology_loop*`, `facts_loop*`) are generated by `uv run plot-graph` (requires optional `pygraphviz` for PNG/SVG). Loop diagrams default to the core path; `*_evidence.*` includes optional web-search branches.
-- Keep `README.md` concise; put detailed explanations in `docs/`.
-- Update `CHANGELOG.md` for user-visible changes.
+The documentation is built with ProperDocs. To work on it, install the
+documentation tools and serve the site locally:
 
-## Code Style
+```bash
+uv sync --extra dev --extra docs
+uv run properdocs serve
+```
 
-- Python 3.12+ with type hints everywhere
-- Follow PEP 8; use `pydantic.BaseModel` for structured data in the library
-- Google-style docstrings on public APIs
-- Match existing naming and patterns in the module you edit
+Name every extra you need in one `uv sync` command: `uv sync` removes the
+extras you leave out. Before you open a pull request, check that the strict
+build passes:
 
-## Pull Request Checklist
+```bash
+uv run properdocs build --strict
+```
 
-1. Tests pass (`HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run pytest -m "not slow"`)
-2. Docs build (`uv run mkdocs build`) when docs or public API changed
-3. `CHANGELOG.md` updated for notable changes
-4. Clear PR description with problem and solution
+- Add a new page to the `nav` in `properdocs.yml`.
+- The [Python API reference](reference/python/index.md) and the
+  [configuration reference](reference/configuration/index.md) are generated at
+  build time (`docs/_build/gen_pages.py`, `docs/_build/gen_config.py`). Do not
+  write pages for them: add docstrings to a module, and a `description` to a
+  settings `Field`.
+- A `Field` description states what the setting does, in the present tense.
+  `test/test_settings_reference.py` fails on history wording such as
+  "previously", "no longer" or "deprecated".
+- The workflow diagrams in `docs/assets/` are generated: regenerate them with
+  `uv run plot-graph`, which needs the `plot` extra.
+- Keep `README.md` short and put detail in `docs/`.
 
-## Reporting Issues
+## Code style
 
-Include Python version, OntoCast version, steps to reproduce, expected vs actual behavior, and relevant logs.
+- Python 3.12 or later, with type hints everywhere.
+- `pydantic.BaseModel` for structured data.
+- Google-style docstrings on public APIs.
+- Follow the naming and patterns of the module you edit.
+
+## Pull request checklist
+
+1. The tests pass: `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run pytest -m "not slow"`.
+2. The docs build with `uv run properdocs build --strict` when you changed
+   docs, settings or public API.
+3. `CHANGELOG.md` has an entry for every user-visible change.
+4. The description states the problem and the solution.
+
+## Reporting issues
+
+Include your Python and OntoCast versions, the steps to reproduce, what you
+expected and what happened, and the relevant logs.

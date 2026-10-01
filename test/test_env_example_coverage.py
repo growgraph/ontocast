@@ -13,10 +13,9 @@ import re
 from pathlib import Path
 
 import pytest
-from pydantic import AliasChoices
-from pydantic_settings import BaseSettings
 
-import ontocast.config.settings as settings_module
+from ontocast.config.env_names import iter_settings_fields
+from ontocast.config.settings import Config
 
 pytestmark = pytest.mark.unit
 
@@ -31,27 +30,9 @@ DELIBERATELY_UNDOCUMENTED = {
 def _declared_env_vars() -> dict[str, str]:
     """Map every env-settable variable to the field that declares it."""
     declared: dict[str, str] = {}
-    for name in dir(settings_module):
-        obj = getattr(settings_module, name)
-        if not (isinstance(obj, type) and issubclass(obj, BaseSettings)):
-            continue
-        prefix = (obj.model_config.get("env_prefix") or "").upper()
-        for field_name, field in obj.model_fields.items():
-            annotation = field.annotation
-            # A nested BaseSettings field is a sub-model, not a scalar var.
-            if isinstance(annotation, type) and issubclass(annotation, BaseSettings):
-                continue
-            alias = field.validation_alias or field.alias
-            if isinstance(alias, AliasChoices):
-                # AliasChoices bypasses env_prefix: each choice is a literal
-                # variable name.
-                names = [str(choice).upper() for choice in alias.choices]
-            elif isinstance(alias, str):
-                names = [alias.upper()]
-            else:
-                names = [f"{prefix}{field_name}".upper()]
-            for env_name in names:
-                declared.setdefault(env_name, f"{name}.{field_name}")
+    for field in iter_settings_fields(Config):
+        for env_name in field.env_names:
+            declared.setdefault(env_name, f"{field.group.__name__}.{field.name}")
     return declared
 
 
@@ -178,7 +159,7 @@ _FILES_QUOTING_COUNTS = (
     "README.md",
     ".env.example",
     "docs/index.md",
-    "docs/user_guide/configuration.md",
+    "docs/guides/configuration.md",
 )
 
 

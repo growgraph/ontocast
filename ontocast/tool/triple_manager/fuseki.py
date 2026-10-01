@@ -202,12 +202,9 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
     def _prepare_auth(self) -> httpx.BasicAuth | None:
         """Prepare httpx BasicAuth from self.auth.
 
-        Accepts ``user/password`` and ``user:password``. Both forms appear in
-        the wild -- the colon form is what Fuseki's own docs and most HTTP
-        tooling use -- and previously only the slash form parsed, so
-        ``FUSEKI_AUTH=admin:secret`` silently produced *no* auth header and
-        surfaced as an opaque 401. The separator that appears first wins, so a
-        password containing the other character still round-trips.
+        Accepts ``user/password`` and ``user:password`` (the form Fuseki's own
+        docs and most HTTP tooling use). The separator that appears first wins,
+        so a password containing the other character still round-trips.
 
         Returns:
             httpx.BasicAuth instance, or None when no auth is configured.

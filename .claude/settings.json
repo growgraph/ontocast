@@ -11,8 +11,6 @@
             "Edit(./site/**)",
             "Read(./data/pdf/**)",
             "Edit(./data/pdf/**)",
-            "Read(./docs/assets/**)",
-            "Edit(./docs/assets/**)",
             "Bash(git commit)",
             "Bash(git commit *)",
             "Bash(git commit:*)",

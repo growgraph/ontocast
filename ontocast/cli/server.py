@@ -55,7 +55,7 @@ class LLMConfigAbort(click.ClickException):
     """A provider rejected the request as configured; the run stopped.
 
     Exits ``EX_CONFIG`` (78) rather than the generic 1, so a driver looping
-    over benchmark arms can tell a broken configuration from documents that
+    over configurations can tell a broken configuration from documents that
     merely failed to extract.
     """
 
@@ -501,7 +501,7 @@ def serve(
     default=None,
     help=(
         "Comma-separated section labels to summarize before extraction, or '*' / empty "
-        "for all chunks. When set, summarization runs inside chunk preparation."
+        "for all chunks. Summaries are written per content unit during extraction."
     ),
 )
 @click.option(
@@ -526,7 +526,8 @@ def serve(
     default=None,
     help=(
         "Section label schema id (academic, financial, legal, clinical, manual, "
-        "fiction, general). Overrides --document-type-hint when set."
+        "fiction, patent, standard, news, general). Overrides "
+        "--document-type-hint when set."
     ),
 )
 @click.option(

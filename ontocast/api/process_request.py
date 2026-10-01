@@ -128,24 +128,9 @@ class ParsedProcessRequest:
     document_metadata: dict[str, object]
 
 
-async def load_parsed_process_request(
-    request: Request,
-    server_config: ServerConfig,
-    *,
-    log_label: str = "process",
-) -> ParsedProcessRequest | JSONResponse:
-    """Read request parameters from query string, JSON body or multipart form.
-
-    All three transports are read through :data:`_PARAM_SPECS`, in precedence
-    order (query, then body/form), so every parameter is honoured on every
-    transport. The body branches differ only in how raw values are obtained --
-    a decoded JSON object, or the form's multi-items -- never in which
-    parameters they support.
-    """
-    content_type = request.headers.get("content-type") or ""
-    logger.debug("%s Content-Type: %s", log_label, content_type)
-
-    values: dict[str, Any] = {
+def _default_values(server_config: ServerConfig) -> dict[str, Any]:
+    """Parameter defaults, before any transport's values are applied."""
+    return {
         "render_mode": None,
         "llm_graph_format": None,
         "ontology_context_mode": None,
@@ -163,6 +148,26 @@ async def load_parsed_process_request(
         "section_schema_id": None,
         "document_metadata": {},
     }
+
+
+async def load_parsed_process_request(
+    request: Request,
+    server_config: ServerConfig,
+    *,
+    log_label: str = "process",
+) -> ParsedProcessRequest | JSONResponse:
+    """Read request parameters from query string, JSON body or multipart form.
+
+    All three transports are read through :data:`_PARAM_SPECS`, in precedence
+    order (query, then body/form), so every parameter is honoured on every
+    transport. The body branches differ only in how raw values are obtained --
+    a decoded JSON object, or the form's multi-items -- never in which
+    parameters they support.
+    """
+    content_type = request.headers.get("content-type") or ""
+    logger.debug("%s Content-Type: %s", log_label, content_type)
+
+    values = _default_values(server_config)
 
     _apply_source(values, dict(request.query_params))
 

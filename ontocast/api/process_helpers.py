@@ -278,8 +278,7 @@ def dump_run_manifest(
     facts_validation = tool_config.facts_validation
     facts_critic_passes = facts_validation.critic_passes
     # The .facts.ttl dump strips provenance; count what the file will actually
-    # hold, or the manifest is not comparable to its own TTL (1711 vs 557 on
-    # observed runs).
+    # hold, or the manifest is not comparable to its own TTL.
     serialized_facts = (
         TripleStoreManager.strip_provenance(state.aggregated_facts)
         if state.aggregated_facts is not None
@@ -689,9 +688,8 @@ def _merge_workflow_state_into_agent_state(
         value = workflow_state.get(counter)
         if value:
             setattr(state, counter, int(value))
-    # The manifest's critic blocks read these; leaving them off this copy list
-    # is why case10's manifests reported `critic: {calls: 0}` while their own
-    # retrieval_metrics recorded 20 facts-critic and 26 ontology-critic calls.
+    # The manifest's critic blocks read these; without this copy the manifest
+    # would report no critic calls while retrieval_metrics recorded them.
     facts_telemetry = workflow_state.get("facts_loop_telemetry")
     if facts_telemetry:
         state.facts_loop_telemetry = dict(facts_telemetry)
