@@ -74,6 +74,10 @@ def normalize_fuseki_server_uri(raw: str | None) -> str | None:
     )
 
 
+class FusekiAccessError(RuntimeError):
+    """Fuseki refused a request for want of valid credentials."""
+
+
 class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
     """Fuseki-based triple store manager.
 
@@ -425,6 +429,10 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
         Note:
             This method will not fail if the dataset already exists.
+
+        Raises:
+            FusekiAccessError: The server refused the request for want of
+                credentials (401/403).
         """
         # Use a temporary client to avoid event loop cleanup issues
         async with httpx.AsyncClient(auth=self._prepare_auth(), timeout=30.0) as client:
@@ -438,6 +446,14 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                 fuseki_admin_url, data=payload, headers=headers
             )
 
+            if response.status_code in (401, 403):
+                given = "were refused" if self.auth else "are required"
+                raise FusekiAccessError(
+                    f"Fuseki at {self.uri} answered {response.status_code} creating "
+                    f"dataset {dataset_name!r}: credentials {given}. Set "
+                    "FUSEKI_AUTH to a user with admin rights, or allow "
+                    "anonymous access in the server's shiro.ini."
+                )
             if response.status_code == 200 or response.status_code == 201:
                 logger.info(f"Fuseki dataset '{dataset_name}' created successfully.")
             elif response.status_code == 409:

@@ -159,6 +159,19 @@ async def test_registry_builds_and_caches_a_scope(tmp_path) -> None:
 
 
 @pytest.mark.anyio
+async def test_registry_scope_knows_its_scope(tmp_path) -> None:
+    """A scoped ToolBox reports its partition, so its graph is cached per scope."""
+    base = _config(tmp_path)
+    registry = ToolBoxRegistry(base, ToolBoxRuntime(base, llm=STUB_LLM))
+    scope = TenancyScope.build("acme", "p1")
+
+    scoped = await registry.get(scope)
+
+    assert scoped.scope == scope
+    assert await scoped.for_scope("acme", "p1") is scoped
+
+
+@pytest.mark.anyio
 async def test_registry_isolates_scopes(tmp_path) -> None:
     base = _config(tmp_path)
     registry = ToolBoxRegistry(base, ToolBoxRuntime(base, llm=STUB_LLM))
@@ -342,3 +355,44 @@ async def test_a_ready_scope_is_not_reinitialized_on_every_request(tmp_path) -> 
     await registry.get(scope, ontology_context_mode="anything")
 
     assert calls == []
+
+
+# -- triple store selection ------------------------------------------------
+
+
+@pytest.mark.parametrize("auth", [None, "admin/admin"])
+def test_fuseki_uri_selects_fuseki_with_or_without_auth(
+    tmp_path, auth: str | None
+) -> None:
+    from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
+
+    config = _config(tmp_path)
+    config.tool_config.fuseki.uri = "http://127.0.0.1:3030"
+    config.tool_config.fuseki.auth = auth
+
+    tools = ToolBox(config, llm=STUB_LLM)
+
+    assert isinstance(tools.triple_store_manager, FusekiTripleStoreManager)
+
+
+@pytest.mark.anyio
+async def test_initialize_defaults_to_the_configured_context_mode(
+    tmp_path, monkeypatch
+) -> None:
+    """Without an explicit mode, ``initialize`` prepares what the config asks for."""
+    from ontocast.onto.enum import OntologyContextMode
+
+    tools = _toolbox(tmp_path)
+    tools.config.server.ontology_context_mode = (
+        OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+    )
+    seen: list[object] = []
+
+    def record(mode):
+        seen.append(mode)
+        return False
+
+    monkeypatch.setattr(tools, "should_initialize_vector_store", record)
+    await tools.initialize()
+
+    assert seen == [OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY]

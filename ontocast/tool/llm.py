@@ -198,6 +198,9 @@ def llm_cache_config(
         config_dict["reasoning_effort"] = config.reasoning_effort
     if config.thinking_budget is not None:
         config_dict["thinking_budget"] = config.thinking_budget
+    # Same rule: off is what every existing entry was produced under.
+    if config.json_mode:
+        config_dict["json_mode"] = True
     config_dict.update(extra)
     return config_dict
 

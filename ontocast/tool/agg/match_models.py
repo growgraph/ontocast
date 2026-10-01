@@ -55,24 +55,26 @@ class EntityMatch(BaseModel):
 
 
 class MatchMetrics(BaseModel):
-    precision: float
-    recall: float
-    f1: float
+    """Triple, fact and entity scores; a ratio is ``None`` where undefined."""
+
+    precision: float | None
+    recall: float | None
+    f1: float | None
     true_positives: int
     false_positives: int
     false_negatives: int
     predicted_count: int
     ground_truth_count: int
-    entity_precision: float
-    entity_recall: float
-    entity_f1: float
+    entity_precision: float | None
+    entity_recall: float | None
+    entity_f1: float | None
     entity_true_positives: int
     entity_false_positives: int
     entity_false_negatives: int
     domain_entity_matches: int
-    fact_precision: float
-    fact_recall: float
-    fact_f1: float
+    fact_precision: float | None
+    fact_recall: float | None
+    fact_f1: float | None
     fact_true_positives: int
     fact_false_positives: int
     fact_false_negatives: int

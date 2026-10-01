@@ -90,11 +90,11 @@ decides how that slice is chosen:
 | `selected_vector_search_ontology` | Retrieval picks the relevant terms from all ontologies | A vector store: LanceDB (`lancedb` extra) or Qdrant (`qdrant` extra) |
 | `fixed_single_ontology` | The same ontology for every part | [`ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`](../reference/configuration/pipeline.md#ontology_context_fixed_ontology_id): its IRI, id or prefix |
 
-For fixed mode with `ontocast process`, set both `ONTOLOGY_CONTEXT_MODE` and
-`ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`. The server does not apply the environment
-value to requests: pass `ontology_context_fixed_ontology_id` with each request,
-where a non-empty value selects fixed mode whatever `ontology_context_mode`
-says.
+For fixed mode, set both `ONTOLOGY_CONTEXT_MODE` and
+`ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`. A server request in fixed mode that names
+no ontology uses the configured one. A request can also pass
+`ontology_context_fixed_ontology_id` itself, which selects fixed mode whatever
+`ontology_context_mode` says.
 
 Retrieval is the right choice once the catalog holds more ontologies than a
 model can sensibly choose between; [Choosing ontology
@@ -146,10 +146,10 @@ calls in flight across all documents. When the provider rate-limits you, lower
 ## Choose where graphs are stored
 
 By default graphs live in memory and are gone when the process ends. To keep
-them in Apache Jena Fuseki, set **both**
-[`FUSEKI_URI`](../reference/configuration/storage.md#fuseki_uri) and
-[`FUSEKI_AUTH`](../reference/configuration/storage.md#fuseki_auth): with only the
-URI, OntoCast stays in memory. Datasets are named per tenant and project; see
+them in Apache Jena Fuseki, set
+[`FUSEKI_URI`](../reference/configuration/storage.md#fuseki_uri), and
+[`FUSEKI_AUTH`](../reference/configuration/storage.md#fuseki_auth) if the server
+requires credentials. Datasets are named per tenant and project; see
 [Triple stores](triple_stores.md) and [Tenancy](tenancy.md).
 
 The server listens on

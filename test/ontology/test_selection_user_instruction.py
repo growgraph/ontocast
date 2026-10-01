@@ -126,3 +126,37 @@ async def test_context_resolver_forwards_selection_instruction(monkeypatch) -> N
 
     assert result.primary_writable_iri == selected.iri
     assert captured_instruction["value"] == "Prefer healthcare ontologies"
+
+
+@pytest.mark.anyio
+async def test_selection_call_is_counted_on_the_bound_tracker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The per-unit selection call is visible in ``budget.counters``."""
+    from ontocast.onto.state import BudgetTracker
+    from ontocast.tool.llm import use_budget_tracker
+
+    selected = Ontology(
+        iri="https://example.org/ontology/selected",
+        graph=RDFGraph._from_turtle_str(
+            "@prefix ex: <https://example.org/onto#> . ex:A ex:relatedTo ex:B ."
+        ),
+    )
+
+    async def _fake_call_llm_with_retry(**_kwargs):
+        return SimpleNamespace(answer_index=1)
+
+    monkeypatch.setattr(
+        "ontocast.agent.select_ontology_catalog.call_llm_with_retry",
+        _fake_call_llm_with_retry,
+    )
+    tracker = BudgetTracker()
+    with use_budget_tracker(tracker):
+        await select_catalog_ontology_for_excerpt(
+            _FakeOntologyManager([selected]), LLMTool.__new__(LLMTool), "Some text", ""
+        )
+        await select_catalog_ontology_for_excerpt(
+            _FakeOntologyManager([selected]), LLMTool.__new__(LLMTool), "   ", ""
+        )
+
+    assert tracker.counters["llm/ontology_selection"] == 1

@@ -50,13 +50,18 @@ def crawl_directories(
     if not input_path.is_dir():
         raise ValueError(f"The path {input_path} is neither a file nor a directory.")
 
+    skipped: list[pathlib.Path] = []
     for file in input_path.rglob("*"):
-        if (
-            file.is_file()
-            and file.suffix.lower() in accepted
-            and (file.stem.startswith(prefix) if prefix is not None else True)
-        ):
+        if not file.is_file():
+            continue
+        if prefix is not None and not file.stem.startswith(prefix):
+            continue
+        if file.suffix.lower() in accepted:
             file_paths.append(file)
+        else:
+            skipped.append(file)
+    for file in skipped:
+        logger.warning("Skipping %s: unsupported file type %r", file, file.suffix)
     return file_paths
 
 

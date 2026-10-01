@@ -12,7 +12,7 @@ from ontocast.onto.constants import DEFAULT_DOMAIN, ONTOLOGY_NULL_IRI, PROV
 from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.llm_graph_payload import LLMGraphWire
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.sparql_models import GraphUpdate, TripleOp
+from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.util import derive_ontology_id
 
 if TYPE_CHECKING:
@@ -77,6 +77,14 @@ def normalize_semantic_version(version: str) -> str:
         f"normalizing to '1.0.0'"
     )
     return "1.0.0"
+
+
+#: ``rdf:type`` objects counted as class-level changes by version bumps.
+_CLASS_TYPES = frozenset({OWL.Class, RDFS.Class, OWL.Ontology})
+#: ``rdf:type`` objects counted as property-level changes by version bumps.
+_PROPERTY_TYPES = frozenset(
+    {OWL.ObjectProperty, OWL.DatatypeProperty, OWL.AnnotationProperty, RDF.Property}
+)
 
 
 class OntologyProperties(BaseModel):
@@ -728,58 +736,24 @@ class Ontology(OntologyPropertiesWithLineage):
         if not updates:
             return ("patch", "No updates to analyze")
 
-        # Count operations by type
         total_deletes = 0
         total_inserts = 0
-
-        # Track specific types of changes
         class_changes = 0
         property_changes = 0
-        instance_changes = 0
 
         for update in updates:
             for op in update.triple_operations:
-                if isinstance(op, TripleOp):
-                    if op.type == "delete":
-                        total_deletes += len(op.graph)
-                        # Check if deleting core ontology constructs
-                        for subject, predicate, object_ in op.graph:
-                            predicate_str = str(predicate)
-                            object_str = str(object_)
-                            if "rdf:type" in predicate_str:
-                                if any(
-                                    cls in object_str.lower()
-                                    for cls in ["class", "property", "ontology"]
-                                ):
-                                    if (
-                                        "owl:class" in object_str
-                                        or "rdfs:class" in object_str
-                                    ):
-                                        class_changes += 1
-                                    elif "owl:ontology" in object_str:
-                                        class_changes += 1
-                    else:  # insert
-                        total_inserts += len(op.graph)
-                        # Check if adding core ontology constructs
-                        for subject, predicate, object_ in op.graph:
-                            predicate_str = str(predicate)
-                            object_str = str(object_)
-                            if "rdf:type" in predicate_str:
-                                if (
-                                    "owl:class" in object_str
-                                    or "rdfs:class" in object_str
-                                ):
-                                    class_changes += 1
-                                elif "owl:ontology" in object_str:
-                                    class_changes += 1
-                                elif (
-                                    "owl:objectproperty" in object_str
-                                    or "owl:datatypeproperty" in object_str
-                                    or "rdf:property" in object_str
-                                ):
-                                    property_changes += 1
-                                else:
-                                    instance_changes += 1
+                if op.type == "delete":
+                    total_deletes += len(op.graph)
+                else:
+                    total_inserts += len(op.graph)
+                for _, predicate, object_ in op.graph:
+                    if predicate != RDF.type:
+                        continue
+                    if object_ in _CLASS_TYPES:
+                        class_changes += 1
+                    elif object_ in _PROPERTY_TYPES:
+                        property_changes += 1
 
         # Decision logic - conservative approach, favor PATCH
 

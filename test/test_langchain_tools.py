@@ -245,3 +245,48 @@ def test_model_list_truncates_by_item_and_stays_valid_json() -> None:
     payload, _, note = text.partition("\n// showing")
     assert note
     json.loads(payload)
+
+
+def test_extract_needs_docling_core(
+    toolbox: ToolBox, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``ontocast_extract`` converts plain text into a docling document."""
+    from ontocast.integrations import langchain as module
+
+    monkeypatch.setattr(module, "is_available", lambda _name: False)
+    assert module._unavailable_reason("ontocast_extract", toolbox) is not None
+
+
+def test_in_memory_config_lets_lancedb_be_enabled_afterwards() -> None:
+    from ontocast.tool.vector_store.factory import resolve_backend
+
+    config = Config.in_memory()
+    assert resolve_backend(config.tool_config) is VectorStoreBackend.NONE
+    config.tool_config.lancedb.enabled = True
+    assert resolve_backend(config.tool_config) is VectorStoreBackend.LANCEDB
+
+
+def test_explicit_lancedb_backend_gets_the_bm25_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """VECTOR_STORE_BACKEND=lancedb alone must not leave LanceDB without BM25."""
+    from ontocast import toolbox as toolbox_module
+    from ontocast.runtime import ToolBoxRuntime
+
+    sentinel = object()
+    captured: dict[str, object] = {}
+
+    def fake_create(_tool_config, *, embedding, sparse_embedding):
+        captured["sparse_embedding"] = sparse_embedding
+        return None
+
+    monkeypatch.setattr(toolbox_module, "create_vector_store_manager", fake_create)
+    monkeypatch.setattr(
+        ToolBoxRuntime, "sparse_embedding_tool", lambda _self, _cfg: sentinel
+    )
+    config = Config.in_memory(tool_config=ToolConfig(path_config=PathConfig()))
+    config.tool_config.vector_store.backend = VectorStoreBackend.LANCEDB
+
+    ToolBox(config, llm=STUB_LLM)
+
+    assert captured["sparse_embedding"] is sentinel

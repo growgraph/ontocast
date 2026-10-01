@@ -17,7 +17,7 @@ from pydantic import Field
 
 from ontocast.config import ConverterConfig
 from ontocast.onto.docling_helpers import apply_text_sanitizers
-from ontocast.util.optional import require
+from ontocast.util.optional import is_available, require
 
 if TYPE_CHECKING:
     from docling_core.types.doc import DoclingDocument
@@ -102,6 +102,7 @@ def build_document_converter(config: ConverterConfig) -> Any:
     )
 
     InputFormat = getattr(base_models_module, "InputFormat")
+    FormatToExtensions = getattr(base_models_module, "FormatToExtensions")
     DocumentConverter = getattr(document_converter_module, "DocumentConverter")
     PdfFormatOption = getattr(document_converter_module, "PdfFormatOption")
     PdfPipelineOptions = getattr(pipeline_options_module, "PdfPipelineOptions")
@@ -134,12 +135,22 @@ def build_document_converter(config: ConverterConfig) -> Any:
         backend=backend_map[config.pdf_backend],
     )
 
-    # Build format map without constructing a throwaway DocumentConverter.
-    # Docling's DocumentConverter accepts a partial format_options dict and
-    # fills remaining formats from its defaults when omitted formats are needed;
-    # we only override PDF here.
+    # Docling fills the options of every other allowed format from its
+    # defaults; only PDF is configured here.
     format_options = {InputFormat.PDF: pdf_format_option}
-    return DocumentConverter(format_options=format_options)
+    wanted = {suffix.lstrip(".") for suffix in config.supported_extensions}
+    allowed_formats = [
+        input_format
+        for input_format, suffixes in FormatToExtensions.items()
+        if wanted.intersection(suffixes)
+    ]
+    return DocumentConverter(
+        allowed_formats=allowed_formats or None, format_options=format_options
+    )
+
+
+#: Suffixes Docling recognises from content, so their cache keys carry no suffix.
+_SNIFFED_SUFFIXES = frozenset({".pdf", ".pptx"})
 
 
 class ConverterTool(Tool):
@@ -150,13 +161,15 @@ class ConverterTool(Tool):
     It includes caching to avoid re-converting the same documents.
 
     Attributes:
-        supported_extensions: Set of supported file extensions.
+        supported_extensions: Suffixes this install converts:
+            ``CONVERTER_SUPPORTED_EXTENSIONS``, or none when Docling is not
+            installed.
         cache: Cacher instance for caching conversion results.
     """
 
     supported_extensions: set[str] = Field(
-        default={".pdf", ".pptx"},
-        description="Set of supported file extensions",
+        default_factory=set,
+        description="File suffixes this install converts",
     )
     cache: Any = Field(default=None, exclude=True)
     converter_config: ConverterConfig = Field(default_factory=ConverterConfig)
@@ -175,6 +188,14 @@ class ConverterTool(Tool):
         """
         super().__init__(**kwargs)
         self.converter_config = converter_config or ConverterConfig()
+        if "supported_extensions" not in kwargs:
+            # Computed from the install, so /info never advertises a format
+            # whose conversion would fail on import.
+            self.supported_extensions = (
+                set(self.converter_config.supported_extensions)
+                if is_available("docling")
+                else set()
+            )
         self._converter = None
         self._converter_lock = threading.Lock()  # Lock for thread-safe converter access
 
@@ -210,11 +231,38 @@ class ConverterTool(Tool):
                     raise
             return self._converter
 
-    def __call__(self, file_input: bytes | str | pathlib.Path) -> DoclingDocument:
+    def cache_config(self, filename: str | None) -> dict[str, Any]:
+        """Config part of the conversion cache key for a file called ``filename``.
+
+        The accepted suffix set is left out, so widening or narrowing it
+        re-converts nothing. The suffix joins the key only beyond PDF and PPTX,
+        whose keys predate it: other formats are chosen by name, and the same
+        bytes parse differently as Markdown and as AsciiDoc.
+        """
+        config_dict = self.converter_config.model_dump(mode="json")
+        config_dict.pop("supported_extensions", None)
+        # Off is the pre-existing output, so the flag joins the key only when
+        # it changes the text: enabling it re-converts, leaving it off keeps
+        # every conversion cached before the flag existed.
+        if config_dict.get("repair_numeric_artifacts"):
+            config_dict["repair_rules_version"] = CONVERTER_REPAIR_RULES_VERSION
+        else:
+            config_dict.pop("repair_numeric_artifacts", None)
+        config_dict["cache_format_version"] = CONVERTER_CACHE_FORMAT_VERSION
+        suffix = pathlib.Path(filename).suffix.lower() if filename else ""
+        if suffix and suffix not in _SNIFFED_SUFFIXES:
+            config_dict["input_suffix"] = suffix
+        return config_dict
+
+    def __call__(
+        self, file_input: bytes | str | pathlib.Path, *, filename: str | None = None
+    ) -> DoclingDocument:
         """Convert a document to a DoclingDocument.
 
         Args:
             file_input: The input file as either bytes, string, or pathlib.Path.
+            filename: Name of an uploaded file given as bytes. Docling picks
+                text formats (Markdown, AsciiDoc) by name, not content.
 
         Returns:
             DoclingDocument: The converted document.
@@ -232,17 +280,11 @@ class ConverterTool(Tool):
         else:
             raise TypeError(f"Unsupported file input type: {type(file_input).__name__}")
 
+        if filename is None and isinstance(file_input, pathlib.Path):
+            filename = file_input.name
         # Check cache first. The format version lives in the key, so bumping it
         # orphans stale entries in place rather than stranding a whole directory.
-        config_dict = self.converter_config.model_dump(mode="json")
-        # Off is the pre-existing output, so the flag joins the key only when
-        # it changes the text: enabling it re-converts, leaving it off keeps
-        # every conversion cached before the flag existed.
-        if config_dict.get("repair_numeric_artifacts"):
-            config_dict["repair_rules_version"] = CONVERTER_REPAIR_RULES_VERSION
-        else:
-            config_dict.pop("repair_numeric_artifacts", None)
-        config_dict["cache_format_version"] = CONVERTER_CACHE_FORMAT_VERSION
+        config_dict = self.cache_config(filename)
         cached_result = self.cache.get(content_for_cache, config=config_dict)
         if cached_result is not None:
             logger.debug("Cache hit for document conversion")
@@ -268,7 +310,7 @@ class ConverterTool(Tool):
                     "docling.datamodel.base_models"
                 )
                 DocumentStream = getattr(base_models_module, "DocumentStream")
-                ds = DocumentStream(name="doc", stream=BytesIO(file_input))
+                ds = DocumentStream(name=filename or "doc", stream=BytesIO(file_input))
             except ImportError:
                 raise ImportError(f"Could not import DocumentConverter: {file_input}")
             result = converter.convert(ds)

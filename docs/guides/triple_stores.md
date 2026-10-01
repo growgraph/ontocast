@@ -11,13 +11,13 @@ run Fuseki, and how seed files reach the store.
 | Persistence | None: data is gone when the process exits | Kept across restarts |
 | SPARQL | Full SPARQL 1.1 (pyoxigraph) | Full SPARQL 1.1 |
 | Tenancy partitions | Yes | Yes, one dataset per partition |
-| Setup | None | A Fuseki server and two settings |
+| Setup | None | A Fuseki server and its URI |
 
-OntoCast uses Fuseki only when both
-[`FUSEKI_URI`](../reference/configuration/storage.md#fuseki_uri) and
-[`FUSEKI_AUTH`](../reference/configuration/storage.md#fuseki_auth) are set.
-With either one missing it uses the in-memory store, without a warning, so a
-run you meant to keep is lost when the process exits.
+OntoCast uses Fuseki when
+[`FUSEKI_URI`](../reference/configuration/storage.md#fuseki_uri) is set, and
+the in-memory store otherwise.
+[`FUSEKI_AUTH`](../reference/configuration/storage.md#fuseki_auth) is needed
+only when the server requires credentials.
 
 ## Running Fuseki
 
@@ -41,11 +41,18 @@ export FUSEKI_AUTH=admin/your-password
 
 `FUSEKI_URI` is the server root, not a dataset URL; a link copied from the
 Fuseki web interface (`.../#/dataset/...`) is trimmed to the root.
-`FUSEKI_AUTH` is `user/password` or `user:password`.
+`FUSEKI_AUTH`, when set, is `user/password` or `user:password`.
 
 OntoCast creates the datasets it needs (TDB2) at startup, and when a request
 first names a new partition. Their names come from the tenant and project; see
 [Tenancy](tenancy.md).
+
+Datasets are created through Fuseki's admin API (`/$/datasets`), so
+`FUSEKI_AUTH` must name a user allowed to use it. Without `FUSEKI_AUTH`, the
+server's `shiro.ini` must allow anonymous access to both the admin API and the
+datasets; the bundled `docker/fuseki` setup requires credentials on every path.
+A `401` or `403` while creating a dataset stops startup with an error naming
+`FUSEKI_AUTH`.
 
 ## Seed ontologies and shapes
 

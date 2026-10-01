@@ -58,7 +58,8 @@ use which tenant.
 Because the commands always name the partitions after the tenant and project,
 `FUSEKI_DATASET`, `FUSEKI_ONTOLOGIES_DATASET`, `FUSEKI_SHAPES_DATASET` and the
 Qdrant collection and LanceDB table settings take effect only when you build a
-`ToolBox` in your own code.
+`ToolBox` in your own code; `serve` and `process` log a warning naming any of
+them they replace.
 
 ## A new partition and the seed directories
 

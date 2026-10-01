@@ -64,7 +64,9 @@ the unit leaves the loop marked failed at the critique stage.
 ### Budgets
 
 - **`FACTS_CRITIC_PASSES`** defaults to 1, so a facts unit costs two calls: one
-  render, one review. `0` leaves the findings to layers 1 and 3.
+  render, one review. `0` leaves the findings to layers 1 and 3. In the default
+  `selected_single_ontology` context mode each unit also makes one ontology
+  selection call, counted as `llm/ontology_selection` in `budget.counters`.
 - **`FACTS_CRITIC_MIN_TRIPLES`** skips the critic for a render with fewer
   triples; at the default it skips exactly the empty renders, which a critic
   would score perfect for nothing. Citation-metadata units are skipped too. A

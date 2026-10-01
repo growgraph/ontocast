@@ -78,15 +78,18 @@ The same matching compares an extracted graph with a reference one, for
 example to evaluate a run against a hand-made graph. Three routes do this:
 `POST /match/entities` aligns entities across graphs, `POST
 /match/derive-matches` turns that into pairs, and `POST /match/evaluate`
-scores precision, recall and F1 for triples, facts and entities. The
+scores precision, recall and F1 for triples, facts and entities. Entities are
+the subjects and objects that are not vocabulary (classes, properties,
+predicates). A score with nothing to divide by, such as precision for an empty
+prediction, is `null`, so it does not count as zero in an average. The
 `match-graphs` command runs the same comparison over two directories of Turtle
 files. See the [HTTP API](../reference/http_api.md).
 
-The route and the command take their own `similarity_threshold`.
+The route, the command and the `ontocast_align_entities` agent tool use
 [`AGG_SIMILARITY_THRESHOLD`](../reference/configuration/aggregation.md#agg_similarity_threshold)
-is the fallback when a caller names none, as the `ontocast_align_entities`
-agent tool does. Neither affects merging during a run, which uses only the
-candidate threshold above.
+and [`AGG_EMBEDDING_MODEL`](../reference/configuration/aggregation.md#agg_embedding_model)
+unless the caller names a `similarity_threshold` or `embedding_model`. Neither
+affects merging during a run, which uses only the candidate threshold above.
 
 **Facts** scores count only relations between instances, such as a sample to
 its substrate; **triple** scores also count types and the class hierarchy. An

@@ -36,7 +36,9 @@ left nothing to process. `/process_unit` reports a conversion failure as
 `conversion_failed`.
 
 For a conversion failure, check the file type against `input_types` in `GET
-/info`: PDF and PowerPoint input needs the `doc-processing` extra.
+/info`: converted formats need the `doc-processing` extra, and
+[`CONVERTER_SUPPORTED_EXTENSIONS`](../reference/configuration/conversion.md#converter_supported_extensions)
+may narrow them.
 
 A `200` with an empty `data.facts` has different causes:
 
@@ -141,10 +143,16 @@ tuning](performance.md) explains the concurrency layers and what to measure.
 - **The settings file is not read.** OntoCast reads only the process environment, never a `.env` file. Load the file into the environment of the command you run: `set -a; source .env; set +a`.
 - **The server reads settings once.** Restart `ontocast serve` after a change.
 - **A request overrides it.** `render_mode`, `ontology_context_mode`, `ontology_context_fixed_ontology_id`, `llm_graph_format` and `max_visits` sent with a request win over the environment.
-- **Fuseki needs two settings.** OntoCast uses Fuseki only when both `FUSEKI_URI` and `FUSEKI_AUTH` are set. With the URI alone it keeps graphs in memory and loses them on exit.
-- **Dataset names come from the tenant and project.** `ontocast serve` and `ontocast process` name the Fuseki datasets and vector collections after the tenant and project (`--tenant`, `--project`), whatever `FUSEKI_DATASET` says. See [Tenancy](tenancy.md).
+- **Dataset names come from the tenant and project.** `ontocast serve` and `ontocast process` name the Fuseki datasets and vector collections after the tenant and project (`--tenant`, `--project`), whatever `FUSEKI_DATASET` or a table setting says, and log a warning naming the ignored setting. See [Tenancy](tenancy.md).
 - **Fixed mode needs the mode setting.** For `ontocast process`, set `ONTOLOGY_CONTEXT_MODE=fixed_single_ontology` as well as `ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`.
 - **The name is wrong.** An unknown variable is ignored without a warning. Check the spelling against the [configuration reference](../reference/configuration/index.md); the run manifest shows the values the run used.
+
+## Fuseki refuses the connection
+
+`FusekiAccessError: ... answered 401 creating dataset` means the server wants
+credentials OntoCast did not send, or rejected the ones it did. Set
+`FUSEKI_AUTH` to a user with admin rights, or allow anonymous access in the
+server's `shiro.ini`. See [Triple stores](triple_stores.md).
 
 ## Vector mode returns 409
 

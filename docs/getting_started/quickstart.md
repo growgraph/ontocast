@@ -11,7 +11,7 @@ pip install "ontocast[server,openai,doc-processing]"
 ```
 
 `server` provides the `ontocast` command, `openai` the model provider, and
-`doc-processing` the PDF and PowerPoint converter. For plain text or JSON input
+`doc-processing` the document converter (PDF, Office, HTML, Markdown, images). For plain text or JSON input
 you can leave out `doc-processing`. [Installation](installation.md) lists the
 other extras.
 

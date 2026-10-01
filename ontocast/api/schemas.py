@@ -141,6 +141,24 @@ class OntologyMutationResponse(BaseModel):
     hash: str | None = None
 
 
+class OntologySummary(BaseModel):
+    """Header of the current version of one catalog ontology."""
+
+    iri: str
+    ontology_id: str | None = None
+    title: str | None = None
+    description: str | None = None
+    version: str | None = None
+    hash: str | None = None
+
+
+class OntologyListResponse(BaseModel):
+    """Current version of every ontology in the partition's catalog."""
+
+    status: str = "success"
+    ontologies: list[OntologySummary]
+
+
 class OntologyDeleteResponse(BaseModel):
     status: str = "success"
     iri: str

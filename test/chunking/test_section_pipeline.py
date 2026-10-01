@@ -461,6 +461,40 @@ def test_forward_fill_propagates_label_to_unlabeled_neighbor() -> None:
     assert segments[2].section_label == "results"
 
 
+def test_forward_fill_does_not_spread_an_excluded_density_label() -> None:
+    """Density judged each neighbour itself; spreading an excluded label from
+    one content guess would drop text no tier labelled."""
+    from ontocast.onto.enum import SectionLabelSource
+
+    schema = _academic_schema()
+    segments = [
+        PrepareSegment(
+            text="We thank the facility staff.",
+            section_label="acknowledgements",
+            section_label_source=SectionLabelSource.CONTENT_DENSITY,
+        ),
+        PrepareSegment(text="Films were annealed at 100 C."),
+    ]
+    _forward_fill_section_labels(segments, schema)
+    assert segments[1].section_label is None
+
+
+def test_forward_fill_spreads_an_excluded_heading_label() -> None:
+    from ontocast.onto.enum import SectionLabelSource
+
+    schema = _academic_schema()
+    segments = [
+        PrepareSegment(
+            text="We thank the facility staff.",
+            section_label="acknowledgements",
+            section_label_source=SectionLabelSource.HEADING_KEYWORD,
+        ),
+        PrepareSegment(text="and colleagues for discussions."),
+    ]
+    _forward_fill_section_labels(segments, schema)
+    assert segments[1].section_label == "acknowledgements"
+
+
 def test_forward_fill_does_not_propagate_before_first_label() -> None:
     schema = _academic_schema()
     segments = [

@@ -26,9 +26,10 @@ setting changes which step.
 
 ## Convert
 
-OntoCast turns the input into text. PDF and PowerPoint files go through a
-document converter (the `doc-processing` extra); `.txt`, `.json` and `.jsonl`
-input is read as is. For PDFs with selectable text, such as publisher PDFs, set
+OntoCast turns the input into text. PDF, Word, PowerPoint, Excel, HTML, Markdown, CSV, AsciiDoc and image files go through a
+document converter (the `doc-processing` extra;
+[`CONVERTER_SUPPORTED_EXTENSIONS`](../reference/configuration/conversion.md#converter_supported_extensions)
+lists the suffixes); `.txt`, `.json` and `.jsonl` input is read as is. For PDFs with selectable text, such as publisher PDFs, set
 [`CONVERTER_PROFILE=born_digital`](../reference/configuration/conversion.md#converter_profile).
 
 ## Chunk

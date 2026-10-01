@@ -76,3 +76,41 @@ def test_unit_path_manifest_omits_fanout_only_settings(tmp_path):
         unit_prompting["ontology_chapter_format"]
         == doc_prompting["ontology_chapter_format"]
     )
+
+
+def _vector_cfg(max_triples: int, scope=OntologyContextScope.UNIT) -> Config:
+    from ontocast.onto.enum import OntologyContextMode
+
+    return Config(
+        server=ServerConfig(
+            ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY,
+            ontology_context_scope=scope,
+            ontology_context_max_triples=max_triples,
+        )
+    )
+
+
+def test_raised_max_triples_under_the_induced_cap_warns(caplog):
+    with caplog.at_level(logging.WARNING, logger="ontocast.config.settings"):
+        _vector_cfg(8000)
+    assert "ONTOLOGY_CONTEXT_MAX_TRIPLES" in caplog.text
+    assert "VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES" in caplog.text
+
+
+def test_default_max_triples_is_silent(caplog):
+    with caplog.at_level(logging.WARNING, logger="ontocast.config.settings"):
+        _vector_cfg(ServerConfig().ontology_context_max_triples or 0)
+    assert "ONTOLOGY_CONTEXT_MAX_TRIPLES" not in caplog.text
+
+
+def test_max_triples_below_the_induced_cap_is_silent(caplog):
+    with caplog.at_level(logging.WARNING, logger="ontocast.config.settings"):
+        _vector_cfg(500)
+    assert "ONTOLOGY_CONTEXT_MAX_TRIPLES" not in caplog.text
+
+
+def test_document_scope_max_triples_is_silent(caplog):
+    """The union of per-unit retrievals can exceed the induced cap."""
+    with caplog.at_level(logging.WARNING, logger="ontocast.config.settings"):
+        _vector_cfg(8000, OntologyContextScope.DOCUMENT)
+    assert "ONTOLOGY_CONTEXT_MAX_TRIPLES" not in caplog.text

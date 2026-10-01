@@ -224,11 +224,13 @@ async def load_parsed_process_request(
         ontology_context_mode_value,
         fixed_ontology_id,
     )
-    if (
-        ontology_context_mode_value == OntologyContextMode.FIXED_SINGLE_ONTOLOGY
-        and not fixed_ontology_id
-    ):
-        return missing_fixed_catalog_ontology_id_response()
+    if ontology_context_mode_value == OntologyContextMode.FIXED_SINGLE_ONTOLOGY:
+        # Applied after mode resolution: the server's id fills fixed mode in,
+        # but never selects it for a request that asked for another mode.
+        if not fixed_ontology_id:
+            fixed_ontology_id = server_config.ontology_context_fixed_ontology_id.strip()
+        if not fixed_ontology_id:
+            return missing_fixed_catalog_ontology_id_response()
 
     return ParsedProcessRequest(
         files_dict=files_dict,

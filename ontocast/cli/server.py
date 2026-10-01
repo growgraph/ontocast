@@ -32,7 +32,7 @@ from ontocast.api.parse import (
 )
 from ontocast.api.process_helpers import (
     flush_triple_configured_scope,
-    get_supported_input_extensions,
+    get_batch_input_extensions,
     process_files_input,
 )
 from ontocast.api.tenancy_resolution import (
@@ -42,9 +42,10 @@ from ontocast.api.tenancy_resolution import (
 from ontocast.cli.cache import cache as cache_cli
 from ontocast.cli.inspect_sections import main as inspect_sections_cli
 from ontocast.config import Config
+from ontocast.config.env_names import env_names
 from ontocast.onto.enum import OntologyContextMode, RenderMode
 from ontocast.onto.retrieval_capabilities import validate_ontology_context_mode
-from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
+from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT, TenancyScope
 from ontocast.stategraph import create_agent_graph
 from ontocast.tool.llm import LLMConfigurationError
 from ontocast.toolbox import ToolBox
@@ -218,6 +219,57 @@ class BootstrappedRuntime:
     ontology_context_mode: OntologyContextMode
 
 
+def store_names_replaced_by_tenancy(
+    config: Config, tenant: str, project: str
+) -> list[str]:
+    """Name the dataset and table settings that tenancy will replace.
+
+    ``serve`` and ``process`` derive every dataset, collection and table name
+    from the tenant and project. A configured name that is neither the default
+    scope's nor the target scope's was set by the operator and is about to be
+    ignored.
+
+    Returns:
+        The environment names of those settings, in declaration order.
+    """
+    default = TenancyScope.build(DEFAULT_TENANT, DEFAULT_PROJECT)
+    target = TenancyScope.build(tenant, project)
+    tool_config = config.tool_config
+    groups = (
+        (
+            tool_config.fuseki,
+            (
+                ("dataset", "facts_name"),
+                ("ontologies_dataset", "ontologies_name"),
+                ("shapes_dataset", "shapes_name"),
+            ),
+        ),
+        (
+            tool_config.vector_store,
+            (("ontology_table", "ontologies_name"), ("facts_table", "facts_name")),
+        ),
+        (
+            tool_config.qdrant,
+            (
+                ("ontology_collection", "ontologies_name"),
+                ("facts_collection", "facts_name"),
+            ),
+        ),
+        (
+            tool_config.lancedb,
+            (("ontology_table", "ontologies_name"), ("facts_table", "facts_name")),
+        ),
+    )
+    replaced: list[str] = []
+    for group, fields in groups:
+        for field, scope_attr in fields:
+            value = getattr(group, field)
+            derived = {getattr(default, scope_attr), getattr(target, scope_attr)}
+            if value is not None and value not in derived:
+                replaced.append(env_names(type(group), field)[0])
+    return replaced
+
+
 def _bootstrap_tools(
     *,
     tenant: str | None,
@@ -268,6 +320,15 @@ def _bootstrap_tools(
         == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
     )
     if stores_use_tenancy_partitions(tools):
+        replaced = store_names_replaced_by_tenancy(config, t_res, p_res)
+        if replaced:
+            logger.warning(
+                "%s ignored: dataset, collection and table names are derived "
+                "from the tenant and project (%s/%s).",
+                ", ".join(replaced),
+                t_res,
+                p_res,
+            )
         asyncio.run(
             tools.update_tenancy_with_vector_mode(
                 t_res,
@@ -625,7 +686,7 @@ def process(
     ontology_out_dir = (
         ontology_output_dir.expanduser() if ontology_output_dir is not None else None
     )
-    supported_suffixes = get_supported_input_extensions(runtime.tools)
+    supported_suffixes = get_batch_input_extensions(runtime.tools)
     try:
         files = sorted(crawl_directories(input_path, suffixes=supported_suffixes))
     except ValueError as exc:

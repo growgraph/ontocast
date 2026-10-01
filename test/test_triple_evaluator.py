@@ -125,7 +125,7 @@ def test_evaluate_projects_distinct_iris_with_str_match_fields() -> None:
         entity_matches=entity_matches,
     )
     assert metrics.true_positives >= 1
-    assert metrics.f1 > 0.0
+    assert metrics.f1 is not None and metrics.f1 > 0.0
 
 
 def test_evaluate_entity_metrics_use_set_membership() -> None:
@@ -345,3 +345,42 @@ def test_wrong_type_excluded_from_facts_but_counts_in_triple_metrics() -> None:
     assert metrics.fact_f1 == 1.0
     assert metrics.true_positives == 1
     assert metrics.false_positives == 1
+
+
+def test_empty_prediction_has_undefined_precision() -> None:
+    gt = RDFGraph()
+    gt.add(
+        (
+            URIRef("https://example.org/a"),
+            URIRef("https://pred/relatedTo"),
+            URIRef("https://example.org/b"),
+        )
+    )
+    metrics = TripleSetEvaluator().evaluate(
+        predicted_graph=RDFGraph(), gt_graph=gt, entity_matches=[]
+    )
+    assert metrics.precision is None
+    assert metrics.recall == 0.0
+    assert metrics.entity_precision is None
+    assert metrics.false_negatives == 1
+
+
+def test_entity_counts_ignore_predicates() -> None:
+    a = URIRef("https://example.org/a")
+    b = URIRef("https://example.org/b")
+    rel = URIRef("https://pred/relatedTo")
+    graph = RDFGraph()
+    graph.add((a, rel, b))
+
+    metrics = TripleSetEvaluator().evaluate(
+        predicted_graph=graph,
+        gt_graph=graph,
+        entity_matches=[
+            EntityMatch(predicted_entity=a, gt_entity=a, similarity=1.0),
+            EntityMatch(predicted_entity=rel, gt_entity=rel, similarity=1.0),
+        ],
+    )
+    assert metrics.entity_true_positives == 1
+    assert metrics.entity_false_positives == 1  # b, unmatched
+    assert metrics.entity_false_negatives == 1
+    assert metrics.entity_precision == 0.5

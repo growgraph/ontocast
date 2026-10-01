@@ -1,15 +1,21 @@
-"""Ontology upload, replace, and delete routes."""
+"""Ontology list, upload, replace, and delete routes."""
 
 from io import BytesIO
 from urllib.parse import unquote
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
-from ontocast.api.schemas import OntologyDeleteResponse, OntologyMutationResponse
+from ontocast.api.schemas import (
+    OntologyDeleteResponse,
+    OntologyListResponse,
+    OntologyMutationResponse,
+    OntologySummary,
+)
 from ontocast.api.tenancy_resolution import make_scoped_toolbox_resolver
 from ontocast.config import ServerConfig
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.tool.triple_manager.util import dedupe_terminal_ontologies
 from ontocast.toolbox import ToolBox
 
 
@@ -28,6 +34,30 @@ def build_ontology_router(
         active_project=active_project,
         server_config=server_config,
     )
+
+    @router.get(
+        "",
+        response_model=OntologyListResponse,
+        summary="List the current version of every catalog ontology",
+    )
+    async def list_ontologies(request: Request) -> OntologyListResponse:
+        scoped = await apply_ontology_tenancy(request)
+        headers = dedupe_terminal_ontologies(
+            await scoped.ontology_manager.aget_catalog_headers()
+        )
+        return OntologyListResponse(
+            ontologies=[
+                OntologySummary(
+                    iri=header.iri,
+                    ontology_id=header.ontology_id,
+                    title=header.title,
+                    description=header.description,
+                    version=header.version,
+                    hash=header.hash,
+                )
+                for header in sorted(headers, key=lambda header: header.iri)
+            ]
+        )
 
     @router.post(
         "",

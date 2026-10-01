@@ -31,7 +31,7 @@ class EntityAligner:
 
     def __init__(
         self,
-        embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2",
+        embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         similarity_threshold: float = 0.80,
     ) -> None:
         self.similarity_threshold = similarity_threshold

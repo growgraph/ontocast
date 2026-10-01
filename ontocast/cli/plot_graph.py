@@ -9,6 +9,7 @@ import click
 
 from ontocast.config import Config
 from ontocast.stategraph import create_agent_graph
+from ontocast.tool.llm import LLMTool
 from ontocast.toolbox import ToolBox
 
 if TYPE_CHECKING:
@@ -528,10 +529,9 @@ def draw_graphviz(
 def main(output_dir: Path, formats: str) -> None:
     """Render the workflow graph and per-unit loop diagrams.
 
-    Diagram rendering only needs the compiled graph topology, so the LLM is
-    never called. The provider is still read from the environment via
-    ``Config()`` rather than pinned to a local Ollama, so the command works
-    wherever the package is installed.
+    Rendering needs only the compiled graph topology: the LLM client is never
+    set up and the stores are in memory, so no provider credentials or
+    services are required.
     """
     extensions = tuple(f.strip().lower() for f in formats.split(",") if f.strip())
     unknown = sorted(set(extensions) - set(FORMATS))
@@ -542,9 +542,11 @@ def main(output_dir: Path, formats: str) -> None:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    config = Config()
+    config = Config.in_memory()
     config.tool_config.path_config.ontology_directory = None
-    toolbox = ToolBox(config)
+    # Not set up, so no provider client is built; the graph never calls it.
+    llm = LLMTool(config=config.tool_config.llm_config)
+    toolbox = ToolBox(config, llm=llm)
 
     app = create_agent_graph(toolbox)
     graph = app.get_graph()

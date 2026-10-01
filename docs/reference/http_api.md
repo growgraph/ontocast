@@ -19,6 +19,7 @@ FastAPI serves interactive documentation at `/docs` and the OpenAPI schema at
 | `GET /info` | Version, accepted input types, cache statistics |
 | `POST /process` | Extract an ontology and facts from one document |
 | `POST /process_unit` | Extract from a short text as a single content unit, without chunking |
+| `GET /ontologies` | List the catalog's ontologies |
 | `POST /ontologies` | Add an ontology to the catalog |
 | `PUT /ontologies/{iri}` | Replace a catalog ontology |
 | `DELETE /ontologies/{iri}` | Remove a catalog ontology |
@@ -72,7 +73,7 @@ Send the document in one of two ways:
 
 | Content type | Body |
 |---|---|
-| `multipart/form-data` | One uploaded file (`.pdf`, `.pptx`, `.txt` or `.json`; see `/info` for this install) plus any parameters as form fields |
+| `multipart/form-data` | One uploaded file (`.txt`, `.json`, or a suffix in [`CONVERTER_SUPPORTED_EXTENSIONS`](configuration/conversion.md#converter_supported_extensions) such as `.pdf`, `.docx` or `.md`; `/info` lists what this install accepts) plus any parameters as form fields |
 | `application/json` | A JSON object. The document text is its `text` field, or else its longest top-level string field. A `url` field is recorded as the document's source |
 
 Any other content type, or a form with no file, returns `400`.
@@ -88,7 +89,7 @@ by the default.
 |---|---|---|
 | `render_mode` | `ontology`, `facts` or `ontology_and_facts` | [`RENDER_MODE`](configuration/pipeline.md#render_mode) |
 | `ontology_context_mode` | `selected_single_ontology`, `selected_vector_search_ontology` or `fixed_single_ontology` | [`ONTOLOGY_CONTEXT_MODE`](configuration/pipeline.md#ontology_context_mode) |
-| `ontology_context_fixed_ontology_id` | IRI, `ontology_id` or prefix of a catalog ontology. A non-empty value selects `fixed_single_ontology` whatever `ontology_context_mode` says | none |
+| `ontology_context_fixed_ontology_id` | IRI, `ontology_id` or prefix of a catalog ontology. A non-empty value selects `fixed_single_ontology` whatever `ontology_context_mode` says | In fixed mode, [`ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`](configuration/pipeline.md#ontology_context_fixed_ontology_id) |
 | `llm_graph_format` | `jsonld` or `turtle`: the format the model writes graphs in | [`LLM_GRAPH_FORMAT`](configuration/pipeline.md#llm_graph_format) |
 | `max_visits` | Integer of at least 1: retries of a render that failed outright | [`MAX_VISITS_PER_NODE`](configuration/pipeline.md#max_visits_per_node) |
 | `strip_provenance` | `true` to leave reification and provenance triples out of the returned Turtle | `false` |
@@ -194,11 +195,14 @@ are Turtle files in a `file` form field. The path IRI is URL-encoded.
 
 | Route | Behavior |
 |---|---|
+| `GET /ontologies` | Lists the current version of each ontology: `iri`, `ontology_id`, `title`, `description`, `version` and `hash` |
 | `POST /ontologies` | Adds the ontology. Returns `iri`, `ontology_id`, `version` and `hash` |
 | `PUT /ontologies/{iri}` | Replaces the ontology. The uploaded file must declare the same ontology IRI as the path, or the call returns `400` |
 | `DELETE /ontologies/{iri}` | Removes the ontology. Returns its `iri` |
 
 ```bash
+curl "http://127.0.0.1:8999/ontologies?tenant=acme&project=reports"
+
 curl -X POST "http://127.0.0.1:8999/ontologies?tenant=acme&project=reports" \
   -F "file=@my-ontology.ttl"
 
@@ -247,9 +251,9 @@ strings in the JSON body.
 
 | Route | Body | Returns in `data` |
 |---|---|---|
-| `POST /match/entities` | `graphs` (a list of `{id, graph}`), `regime` (`ontology_loose` (default) or `ontology_strict`), `similarity_threshold` (0 to 1, default `0.8`), `embedding_model` | Entity clusters across the graphs |
+| `POST /match/entities` | `graphs` (a list of `{id, graph}`), `regime` (`ontology_loose` (default) or `ontology_strict`), `similarity_threshold` (0 to 1; default `AGG_SIMILARITY_THRESHOLD`), `embedding_model` (default `AGG_EMBEDDING_MODEL`) | Entity clusters across the graphs |
 | `POST /match/derive-matches` | `clusters` (from `/match/entities`), `predicted_graph_id`, `gt_graph_id`, `similarity_threshold` (default `0`) | `entity_matches`: one-to-one predicted-to-reference matches |
-| `POST /match/evaluate` | `predicted_graph`, `gt_graph`, `entity_matches` | Triple and entity precision, recall and F1. `rdfs:label` triples are not counted |
+| `POST /match/evaluate` | `predicted_graph`, `gt_graph`, `entity_matches` | Triple, fact and entity precision, recall and F1. `rdfs:label` triples are not counted; entities are the subjects and objects that are not vocabulary. A ratio with a zero denominator (nothing predicted, or no reference) is `null` |
 
 ```json
 {
@@ -278,10 +282,11 @@ an upload route called without `file`, gets FastAPI's standard `422` with a
 | Status | Cause | `error_code` |
 |---|---|---|
 | `400` | Unsupported content type, or a form with no file | none |
-| `400` | Unrecognised `render_mode`, `ontology_context_mode` or `llm_graph_format` value | `invalid_param:<name>` |
+| `400` | Unrecognised `render_mode`, `ontology_context_mode`, `llm_graph_format` or `strip_provenance` value | `invalid_param:<name>` |
+| `400` | A blank `tenant` or `project` | `invalid_param:<name>` on `/process`, `/process_unit` and `/flush` |
 | `400` | `max_visits` or `summary_max_sentences` not a positive integer; `document_metadata` not a JSON object; a section list that is malformed JSON or names no known label | `invalid_param:<name>` |
-| `400` | `ontology_context_mode=fixed_single_ontology` without `ontology_context_fixed_ontology_id` | none |
-| `400` | Empty `tenant` or `project` on `/flush`, or no store configured; a Turtle file that does not parse, or whose ontology IRI does not match the path, on `/ontologies` or `/shapes` | none |
+| `400` | `fixed_single_ontology` mode with no ontology id in the request or in `ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID` | none |
+| `400` | No store configured on `/flush`; a Turtle file that does not parse, or whose ontology IRI does not match the path, on `/ontologies` or `/shapes` | none |
 | `409` | `selected_vector_search_ontology` requested but no vector store is configured and ready | `VECTOR_STORE_UNAVAILABLE` |
 | `422` | No content unit produced output, including when the document could not be converted (`/process`) | `no_units_extracted` |
 | `422` | The uploaded file could not be converted (`/process_unit`) | `conversion_failed:<stage>` |

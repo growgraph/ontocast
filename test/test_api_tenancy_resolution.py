@@ -61,6 +61,68 @@ def test_resolve_tenant_project_strips() -> None:
     assert p == "b"
 
 
+@pytest.mark.parametrize(
+    ("tenant", "project", "param"), [(" ", None, "tenant"), (None, "  ", "project")]
+)
+def test_resolve_tenant_project_blank_is_a_param_error(
+    tenant: str | None, project: str | None, param: str
+) -> None:
+    from ontocast.api.parse import RequestParamError
+
+    with pytest.raises(RequestParamError) as excinfo:
+        resolve_tenant_project(tenant, project)
+    assert excinfo.value.param == param
+
+
+def test_blank_tenant_on_a_scoped_router_is_a_400() -> None:
+    from ontocast.api.shapes import build_shapes_router
+
+    tools = SimpleNamespace(
+        vector_store=object(), triple_store_manager=None, for_scope=AsyncMock()
+    )
+    app = FastAPI()
+    app.include_router(
+        build_shapes_router(
+            cast(ToolBox, tools),
+            active_tenant="startup_t",
+            active_project="startup_p",
+            server_config=ServerConfig(),
+        )
+    )
+    response = TestClient(app).get("/shapes", params={"tenant": " "})
+    assert response.status_code == 400, response.text
+    tools.for_scope.assert_not_called()
+
+
+@pytest.mark.parametrize("initialize_vector_store", [True, False])
+def test_default_scope_prepares_its_vector_store_for_a_vector_request(
+    initialize_vector_store: bool,
+) -> None:
+    """A vector-mode request on the startup scope must not 409 for want of init."""
+    ensure = AsyncMock()
+    tools = SimpleNamespace(ensure_vector_store=ensure)
+
+    scoped, t, p = asyncio.run(
+        apply_request_tenancy(
+            _http_request(b""),
+            cast(ToolBox, tools),
+            active_tenant="startup_t",
+            active_project="startup_p",
+            initialize_vector_store=initialize_vector_store,
+        )
+    )
+
+    assert scoped is tools
+    assert (t, p) == ("startup_t", "startup_p")
+    if initialize_vector_store:
+        ensure.assert_awaited_once_with(
+            OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY,
+            fail_on_vector_store_error=False,
+        )
+    else:
+        ensure.assert_not_called()
+
+
 def test_request_has_tenancy_query_params() -> None:
     assert not request_has_tenancy_query_params(_http_request(b""))
     assert request_has_tenancy_query_params(_http_request(b"tenant=x"))
@@ -249,6 +311,57 @@ def test_ontology_delete_with_tenant_query_uses_scoped_toolbox(
     )
     delete_by_iri.assert_awaited_once_with("https://example.org/onto")
     startup_delete.assert_not_called()
+
+
+def test_list_ontologies_returns_terminal_versions_of_the_scope() -> None:
+    from ontocast.onto.ontology_header import OntologyHeader
+
+    old = OntologyHeader(
+        iri="https://example.org/onto", ontology_id="ex", version="1.0.0", hash="h1"
+    )
+    new = OntologyHeader(
+        iri="https://example.org/onto",
+        ontology_id="ex",
+        title="Example",
+        version="1.1.0",
+        hash="h2",
+        parent_hashes=["h1"],
+    )
+    scoped = SimpleNamespace(
+        ontology_manager=SimpleNamespace(
+            aget_catalog_headers=AsyncMock(return_value=[old, new])
+        )
+    )
+    tools = SimpleNamespace(
+        vector_store=object(),
+        triple_store_manager=None,
+        for_scope=AsyncMock(return_value=scoped),
+    )
+    app = FastAPI()
+    app.include_router(
+        build_ontology_router(
+            cast(ToolBox, tools),
+            active_tenant="startup_t",
+            active_project="startup_p",
+            server_config=ServerConfig(),
+        )
+    )
+
+    response = TestClient(app).get(
+        "/ontologies", params={"tenant": "acme", "project": "p1"}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ontologies"] == [
+        {
+            "iri": "https://example.org/onto",
+            "ontology_id": "ex",
+            "title": "Example",
+            "description": None,
+            "version": "1.1.0",
+            "hash": "h2",
+        }
+    ]
 
 
 def test_shapes_routes_use_the_scoped_toolbox() -> None:

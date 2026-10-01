@@ -85,7 +85,9 @@ Two settings refine this:
 
 - [`CHUNK_SECTION_DENSITY`](../reference/configuration/chunking.md#chunk_section_density)
   decides what content alone may label. `conservative` (default) recognizes only
-  reference lists and acknowledgements, whose form is unmistakable.
+  reference lists and acknowledgements (at least two thanks or funding
+  statements), whose form is unmistakable. An excluded label found this way
+  applies to that part only; it is not carried to the parts after it.
   `aggressive` also guesses methods, results and introduction, which content
   does not separate cleanly, so a filter may then act on a wrong label.
 - [`CHUNK_SECTION_TEXT_HEADINGS`](../reference/configuration/chunking.md#chunk_section_text_headings)

@@ -90,11 +90,10 @@ def test_a_critic_call_with_no_score_still_counts_as_a_call() -> None:
 
 
 def test_batch_state_merge_carries_the_critic_telemetry() -> None:
-    """The case10 failure shape: manifests said `critic: {calls: 0}` while
-    their own retrieval_metrics recorded 20 facts-critic and 26
-    ontology-critic calls. The batch path merges astream dict chunks through
-    an explicit copy list, and the telemetry fields were not on it -- so
-    everything summarize_loop reads arrived empty at manifest time.
+    """A batch manifest must not report `critic: {calls: 0}` for critic calls
+    its own retrieval_metrics recorded. The batch path merges astream dict
+    chunks through an explicit copy list; a telemetry field missing from it
+    arrives empty at manifest time, and so does everything summarize_loop reads.
     """
     from ontocast.api.process_helpers import _merge_workflow_state_into_agent_state
     from ontocast.onto.state import AgentState

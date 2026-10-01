@@ -697,7 +697,8 @@ class EmbeddingBasedAggregator:
                 "aggregator does not read it: it clusters and gates at "
                 "AGG_CANDIDATE_SIMILARITY_THRESHOLD (still at its default %s). "
                 "AGG_SIMILARITY_THRESHOLD is only the cross-graph aligner's "
-                "fallback threshold (the ontocast_align_entities tool).",
+                "fallback threshold (POST /match/entities, match-graphs, the "
+                "ontocast_align_entities tool).",
                 cfg.similarity_threshold,
                 cfg.candidate_similarity_threshold,
             )

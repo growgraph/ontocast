@@ -170,7 +170,7 @@ the index is empty or does not match the catalog; see
 ## Serve it
 
 ```bash
-FUSEKI_URI=http://localhost:3032     # keep graphs in Fuseki; needs FUSEKI_AUTH too
+FUSEKI_URI=http://localhost:3032     # keep graphs in Fuseki
 FUSEKI_AUTH=admin/your-password
 MAX_CONCURRENT_PROCESSES=4           # documents processed at once; more requests wait
 ```

@@ -716,6 +716,28 @@ class ChunkConfig(BaseSettings):
     )
 
 
+#: Suffixes converted with Docling by default: document, spreadsheet, markup
+#: and image formats its standard pipelines handle without extra models.
+DEFAULT_CONVERTER_EXTENSIONS: tuple[str, ...] = (
+    ".pdf",
+    ".docx",
+    ".pptx",
+    ".xlsx",
+    ".html",
+    ".htm",
+    ".md",
+    ".csv",
+    ".adoc",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".tif",
+    ".tiff",
+)
+#: Suffixes OntoCast reads itself; Docling never sees them.
+READ_WITHOUT_CONVERTER_EXTENSIONS = frozenset({".txt", ".json", ".jsonl"})
+
+
 class ConverterConfig(BaseSettings):
     """Document-conversion settings for Docling-backed inputs."""
 
@@ -811,10 +833,39 @@ class ConverterConfig(BaseSettings):
         ),
     )
 
+    supported_extensions: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_CONVERTER_EXTENSIONS),
+        description=(
+            "File suffixes converted with Docling, as a JSON list. Narrow it to "
+            "refuse formats; a suffix Docling does not support fails at "
+            "conversion. .txt, .json and .jsonl are read without Docling and "
+            "cannot be listed. Not part of the converter cache key."
+        ),
+    )
+
     model_config = SettingsConfigDict(
         env_prefix="CONVERTER_",
         case_sensitive=False,
     )
+
+    @field_validator("supported_extensions")
+    @classmethod
+    def _normalise_extensions(cls, value: list[str]) -> list[str]:
+        normalised: list[str] = []
+        for raw in value:
+            suffix = raw.strip().lower()
+            if not suffix:
+                continue
+            suffix = suffix if suffix.startswith(".") else f".{suffix}"
+            if suffix not in normalised:
+                normalised.append(suffix)
+        reserved = sorted(set(normalised) & READ_WITHOUT_CONVERTER_EXTENSIONS)
+        if reserved:
+            raise ValueError(
+                f"{', '.join(reserved)} are read without Docling and cannot be "
+                "converter extensions"
+            )
+        return normalised
 
     @model_validator(mode="after")
     def _apply_profile_defaults(self) -> ConverterConfig:
@@ -935,11 +986,9 @@ class ServerConfig(BaseSettings):
     ontology_context_fixed_ontology_id: str = Field(
         default="",
         description=(
-            "Catalog ontology (IRI, ontology_id or author prefix) used when "
-            "ONTOLOGY_CONTEXT_MODE is fixed_single_ontology in ontocast process. "
-            "Setting it does not change the mode, and the HTTP server does not "
-            "apply it to requests: pass ontology_context_fixed_ontology_id with "
-            "each request instead."
+            "Catalog ontology (IRI, ontology_id or author prefix) used in "
+            "fixed_single_ontology mode, by ontocast process and by HTTP requests "
+            "that name none. Setting it does not change the mode."
         ),
     )
     ontology_max_triples: int | None = Field(
@@ -1015,6 +1064,8 @@ class ServerConfig(BaseSettings):
         "redundant structure, then comments and definitions); labels, types, "
         "hierarchy and domain/range are never dropped, so this is best-effort "
         "and a graph that cannot fit is passed through with a warning. "
+        "In selected_vector_search_ontology with unit scope, "
+        "VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES caps the context first. "
         "None disables condensing.",
     )
     parallel_workers: int = Field(
@@ -1116,30 +1167,31 @@ class FusekiConfig(BaseSettings):
     auth: str | None = Field(
         default=None,
         description=(
-            "Fuseki credentials as user/password or user:password. Fuseki is "
-            "used only when both this and FUSEKI_URI are set; otherwise graphs "
-            "stay in memory."
+            "Fuseki credentials as user/password or user:password. Optional: "
+            "FUSEKI_URI alone selects Fuseki, unauthenticated."
         ),
     )
     dataset: str | None = Field(
         default=None,
         description=(
-            "Facts dataset name; if unset, derived from built-in default "
-            f"tenant/project ({DEFAULT_TENANT!r}/{DEFAULT_PROJECT!r})."
+            "Facts dataset name; defaults to the name derived from "
+            f"{DEFAULT_TENANT!r}/{DEFAULT_PROJECT!r}. "
+            "ontocast serve and ontocast process replace it with the name "
+            "derived from the tenant and project; only an embedded ToolBox reads it."
         ),
     )
     ontologies_dataset: str | None = Field(
         default=None,
         description=(
-            "Ontologies dataset (FUSEKI_ONTOLOGIES_DATASET); if unset, derived "
-            "from the same default tenant/project as dataset."
+            "Ontologies dataset name; derived like FUSEKI_DATASET, and replaced "
+            "the same way by ontocast serve and ontocast process."
         ),
     )
     shapes_dataset: str | None = Field(
         default=None,
         description=(
-            "SHACL shapes dataset (FUSEKI_SHAPES_DATASET); if unset, derived "
-            "from the same default tenant/project as dataset. Kept apart from "
+            "SHACL shapes dataset name; derived like FUSEKI_DATASET, and "
+            "replaced the same way by ontocast serve and ontocast process. Kept apart from "
             "the ontologies dataset because catalog discovery claims every "
             "named graph carrying an owl:Ontology subject, and a shapes "
             "document declares one."
@@ -1412,9 +1464,8 @@ class AggregationConfig(BaseSettings):
         le=1.0,
         description=(
             "Cosine threshold of the cross-graph entity aligner when the caller "
-            "names none, as the ontocast_align_entities agent tool does. "
-            "POST /match/entities and match-graphs take their own "
-            "similarity_threshold instead. The in-pipeline aggregator uses "
+            "names none: POST /match/entities, match-graphs and the "
+            "ontocast_align_entities agent tool. The in-pipeline aggregator uses "
             "AGG_CANDIDATE_SIMILARITY_THRESHOLD; this setting does not affect it."
         ),
     )
@@ -2149,7 +2200,8 @@ class VectorStoreConfig(BaseSettings):
     ontology_table: str | None = Field(
         default=None,
         description=(
-            "Ontology atom table/collection name; derived from tenant/project when unset."
+            "Ontology atom table/collection name; derived like FUSEKI_DATASET, "
+            "and replaced the same way by ontocast serve and ontocast process."
         ),
     )
     facts_table: str | None = Field(
@@ -2324,7 +2376,11 @@ class QdrantConfig(BaseSettings):
     )
     ontology_collection: str | None = Field(
         default=None,
-        description="Qdrant collection for ontology atom vectors; derived when unset.",
+        description=(
+            "Qdrant collection for ontology atom vectors; derived like "
+            "FUSEKI_DATASET, and replaced the same way by ontocast serve and "
+            "ontocast process."
+        ),
     )
     facts_collection: str | None = Field(
         default=None,
@@ -2406,7 +2462,10 @@ class LanceDBConfig(BaseSettings):
     )
     ontology_table: str | None = Field(
         default=None,
-        description="Lance table for ontology atom vectors; derived when unset.",
+        description=(
+            "Lance table for ontology atom vectors; derived like FUSEKI_DATASET, "
+            "and replaced the same way by ontocast serve and ontocast process."
+        ),
     )
     facts_table: str | None = Field(
         default=None,
@@ -3009,6 +3068,37 @@ class Config(BaseSettings):
     )
 
     @model_validator(mode="after")
+    def warn_when_max_triples_cannot_bind(self) -> "Config":
+        """Warn when a raised ``ONTOLOGY_CONTEXT_MAX_TRIPLES`` cannot take effect.
+
+        In vector mode with unit scope the induced subgraph is already capped
+        at ``VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES``, so a larger
+        context budget changes nothing. Only a value moved off the default is
+        reported: the default sits above the induced cap by design.
+        """
+        server = self.server
+        max_triples = server.ontology_context_max_triples
+        default = ServerConfig.model_fields["ontology_context_max_triples"].default
+        induced_cap = self.tool_config.vector_store.induced_subgraph_max_total_triples
+        if (
+            server.ontology_context_mode
+            == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+            and server.ontology_context_scope == OntologyContextScope.UNIT
+            and max_triples is not None
+            and max_triples != default
+            and max_triples >= induced_cap
+        ):
+            logger.warning(
+                "ONTOLOGY_CONTEXT_MAX_TRIPLES=%s cannot take effect: in vector "
+                "mode the context is already capped at "
+                "VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES=%s. Raise that "
+                "instead to widen the context.",
+                max_triples,
+                induced_cap,
+            )
+        return self
+
+    @model_validator(mode="after")
     def warn_when_a_per_unit_chapter_defeats_the_shared_prefix(self) -> "Config":
         """Warn when a per-unit conformance chapter cancels a document-scoped one.
 
@@ -3073,7 +3163,8 @@ class Config(BaseSettings):
         own optional extra.
 
         Environment variables still populate any section not named in
-        ``overrides``; only the store selection is forced.
+        ``overrides``; only the store selection is forced. The vector backend
+        is left on ``auto``, so enabling LanceDB on the result takes effect.
 
         Args:
             **overrides: Fields to set on the returned ``Config``.
@@ -3085,7 +3176,7 @@ class Config(BaseSettings):
         config.tool_config.fuseki.uri = None
         config.tool_config.qdrant.uri = None
         config.tool_config.lancedb.enabled = False
-        config.tool_config.vector_store.backend = VectorStoreBackend.NONE
+        config.tool_config.vector_store.backend = VectorStoreBackend.AUTO
         return config
 
     def for_tenancy(self, tenant: str, project: str) -> "Config":
