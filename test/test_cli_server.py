@@ -359,10 +359,16 @@ def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
     assert set(ontology_graph) == set(facts_graph)
 
 
-def _match_test_app(monkeypatch: pytest.MonkeyPatch):
+def _match_test_app(
+    monkeypatch: pytest.MonkeyPatch,
+    aligner_calls: list[tuple[str | None, float | None]] | None = None,
+):
     class _FakeAligner:
-        def __init__(self, embedding_model: str, similarity_threshold: float) -> None:
-            pass
+        def __init__(
+            self, embedding_model: str | None, similarity_threshold: float | None
+        ) -> None:
+            if aligner_calls is not None:
+                aligner_calls.append((embedding_model, similarity_threshold))
 
         def align_graphs(self, graphs, *, regime):
             class _Result:
@@ -473,6 +479,77 @@ def test_align_entities_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert response.status_code == 200
     assert response.json()["data"]["cluster_count"] == 1
+
+
+_TWO_GRAPHS = [
+    {
+        "id": "predicted",
+        "graph": "<https://p.example/a> <https://p.example/r> <https://p.example/b> .",
+    },
+    {
+        "id": "gt",
+        "graph": "<https://g.example/a> <https://p.example/r> <https://g.example/b> .",
+    },
+]
+
+
+def test_align_entities_defers_to_aggregation_config_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str | None, float | None]] = []
+    client = TestClient(_match_test_app(monkeypatch, calls))
+    response = client.post("/match/entities", json={"graphs": _TWO_GRAPHS})
+    assert response.status_code == 200
+    assert calls == [(None, None)]
+
+
+def test_align_entities_passes_explicit_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str | None, float | None]] = []
+    client = TestClient(_match_test_app(monkeypatch, calls))
+    response = client.post(
+        "/match/entities",
+        json={
+            "graphs": _TWO_GRAPHS,
+            "embedding_model": "some/model",
+            "similarity_threshold": 0.5,
+        },
+    )
+    assert response.status_code == 200
+    assert calls == [("some/model", 0.5)]
+
+
+def test_info_lists_what_process_accepts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``/info`` must not advertise JSONL: ``/process`` cannot convert it."""
+    monkeypatch.setattr(
+        app_module, "create_agent_graph", lambda _tools, **_kwargs: SimpleNamespace()
+    )
+    tools = cast(
+        ToolBox,
+        SimpleNamespace(
+            llm=None, converter=SimpleNamespace(supported_extensions={".pdf"})
+        ),
+    )
+    app = create_app(
+        tools=tools,
+        server_config=ServerConfig(),
+        active_tenant="tenant-a",
+        active_project="project-a",
+    )
+    response = TestClient(app).get("/info")
+    assert response.status_code == 200
+    assert response.json()["input_types"] == ["json", "pdf", "txt"]
+
+
+def test_batch_input_extensions_include_jsonl() -> None:
+    from ontocast.api.process_helpers import get_batch_input_extensions
+
+    tools = cast(
+        ToolBox,
+        SimpleNamespace(converter=SimpleNamespace(supported_extensions={".pdf"})),
+    )
+    assert get_batch_input_extensions(tools) == (".json", ".jsonl", ".pdf", ".txt")
 
 
 def test_evaluate_match_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1192,3 +1269,26 @@ def test_a_document_whose_every_unit_failed_is_recorded_as_failed(tmp_path) -> N
     )
 
     assert failed == [src]
+
+
+def test_store_names_replaced_by_tenancy_are_named() -> None:
+    """An explicitly set dataset or table name is replaced at startup; say so."""
+    from ontocast.cli.server import store_names_replaced_by_tenancy
+
+    config = Config.in_memory()
+    config.tool_config.fuseki.dataset = "my-facts"
+    config.tool_config.lancedb.ontology_table = "my-atoms"
+
+    assert store_names_replaced_by_tenancy(config, "acme", "p1") == [
+        "FUSEKI_DATASET",
+        "LANCEDB_ONTOLOGY_TABLE",
+    ]
+
+
+def test_derived_store_names_are_not_reported() -> None:
+    from ontocast.cli.server import store_names_replaced_by_tenancy
+
+    config = Config.in_memory()
+    assert store_names_replaced_by_tenancy(config, "acme", "p1") == []
+    scoped = config.for_tenancy("acme", "p1")
+    assert store_names_replaced_by_tenancy(scoped, "acme", "p1") == []

@@ -107,3 +107,16 @@ def test_cli_accepts_a_single_file(tmp_path: pathlib.Path, monkeypatch) -> None:
 
     assert result.exit_code == 0, result.output
     assert processed == [paper]
+
+
+def test_directory_crawl_reports_skipped_files(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    (tmp_path / "paper.pdf").write_bytes(b"%PDF-1.4")
+    (tmp_path / "notes.xyz").write_text("x")
+
+    with caplog.at_level("WARNING", logger="ontocast.util.files"):
+        found = crawl_directories(tmp_path, suffixes=(".pdf",))
+
+    assert found == [tmp_path / "paper.pdf"]
+    assert "notes.xyz" in caplog.text

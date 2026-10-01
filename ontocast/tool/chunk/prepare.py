@@ -212,20 +212,35 @@ def _filter_segments_excluding(
     denied = {section.strip().lower() for section in denylist if section.strip()}
     if not denied:
         return segments
-    kept = [
-        segment
-        for segment in segments
-        if segment.section_label is None or segment.section_label.lower() not in denied
-    ]
-    dropped = len(segments) - len(kept)
+    kept: list[PrepareSegment] = []
+    dropped: dict[str, list[PrepareSegment]] = {}
+    for segment in segments:
+        label = segment.section_label
+        if label is not None and label.lower() in denied:
+            dropped.setdefault(label, []).append(segment)
+        else:
+            kept.append(segment)
     if dropped:
+        # Per label, with size and labelling tier: a content-density misfire
+        # drops real text, and this line is where it shows.
+        detail = "; ".join(
+            f"{label}: {len(group)} segment(s), "
+            f"{sum(len(s.text) for s in group)} chars "
+            f"({', '.join(sorted({_source_name(s) for s in group}))})"
+            for label, group in sorted(dropped.items())
+        )
         logger.info(
-            "Section exclusion %s: dropped %s/%s segment(s) before sizing",
-            sorted(denied),
-            dropped,
+            "Section exclusion dropped %s/%s segment(s) before sizing: %s",
+            len(segments) - len(kept),
             len(segments),
+            detail,
         )
     return kept
+
+
+def _source_name(segment: PrepareSegment) -> str:
+    source = segment.section_label_source
+    return source.value if source is not None else "unknown"
 
 
 def _hybrid_segments(
@@ -415,13 +430,21 @@ def _forward_fill_section_labels(
       This is the guard that keeps the span fix from being undone here;
     - the segment opens with a recognised section heading of its own;
     - the fill would run backwards against the schema's canonical section order
-      (filling ``results`` into a region that precedes the ``introduction``).
+      (filling ``results`` into a region that precedes the ``introduction``);
+    - the preceding label is excluded by default and came from content density:
+      density already judged the neighbour and declined, and spreading the
+      label would silently drop text no tier recognised.
     """
+    excluded = set(schema.default_exclude)
     last_label: str | None = None
     fill_count = 0
     for index, segment in enumerate(segments):
         if segment.section_label is not None:
-            last_label = segment.section_label
+            spreads = not (
+                segment.section_label in excluded
+                and segment.section_label_source is SectionLabelSource.CONTENT_DENSITY
+            )
+            last_label = segment.section_label if spreads else None
             continue
         if segment.section_label_source is SectionLabelSource.OUTLINE_UNRESOLVED:
             last_label = None

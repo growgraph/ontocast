@@ -45,7 +45,7 @@ def create_vector_store_manager(
         ValueError: If an explicitly requested backend is not configured, or if
             Qdrant's ``vector_size`` contradicts the embedding dimension.
     """
-    backend = _resolve_backend(tool_config)
+    backend = resolve_backend(tool_config)
 
     if backend is VectorStoreBackend.NONE:
         return None
@@ -78,7 +78,7 @@ def create_vector_store_manager(
     )
 
 
-def _resolve_backend(tool_config: ToolConfig) -> VectorStoreBackend:
+def resolve_backend(tool_config: ToolConfig) -> VectorStoreBackend:
     """Resolve ``AUTO`` against the populated connection settings.
 
     ``AUTO`` falls back to ``NONE``. Vector retrieval is one of three

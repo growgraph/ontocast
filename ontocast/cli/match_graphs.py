@@ -9,6 +9,7 @@ from typing import Any
 import click
 from rdflib.term import Node
 
+from ontocast.config import AggregationConfig
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.agg.entity_aligner import EntityAligner
 from ontocast.tool.agg.match_common import (
@@ -34,6 +35,11 @@ def _load_ttl(path: pathlib.Path) -> RDFGraph:
     graph = RDFGraph()
     graph.parse(data=path.read_text(encoding="utf-8"), format="turtle")
     return graph
+
+
+def _fmt(value: float | None) -> str:
+    """Four decimals, or ``n/a`` for a ratio that is undefined."""
+    return "n/a" if value is None else f"{value:.4f}"
 
 
 def _format_triple(triple: tuple[Node, Node, Node]) -> str:
@@ -140,16 +146,16 @@ def _print_verbose(
     m = metrics_payload["metrics"]
     click.echo("\n--- summary ---")
     click.echo(
-        f"triple  P={m['precision']:.4f} R={m['recall']:.4f} F1={m['f1']:.4f} "
+        f"triple  P={_fmt(m['precision'])} R={_fmt(m['recall'])} F1={_fmt(m['f1'])} "
         f"(tp={m['true_positives']} fp={m['false_positives']} fn={m['false_negatives']})"
     )
     click.echo(
-        f"entity  P={m['entity_precision']:.4f} R={m['entity_recall']:.4f} "
-        f"F1={m['entity_f1']:.4f}"
+        f"entity  P={_fmt(m['entity_precision'])} R={_fmt(m['entity_recall'])} "
+        f"F1={_fmt(m['entity_f1'])}"
     )
     click.echo(
-        f"fact    P={m['fact_precision']:.4f} R={m['fact_recall']:.4f} "
-        f"F1={m['fact_f1']:.4f}"
+        f"fact    P={_fmt(m['fact_precision'])} R={_fmt(m['fact_recall'])} "
+        f"F1={_fmt(m['fact_f1'])}"
     )
 
 
@@ -177,14 +183,14 @@ def _print_verbose(
 @click.option(
     "--similarity-threshold",
     type=float,
-    default=0.80,
-    show_default=True,
+    default=None,
+    help="Defaults to AGG_SIMILARITY_THRESHOLD.",
 )
 @click.option(
     "--embedding-model",
     type=str,
-    default="paraphrase-multilingual-MiniLM-L12-v2",
-    show_default=True,
+    default=None,
+    help="Defaults to AGG_EMBEDDING_MODEL.",
 )
 @click.option(
     "--json-out",
@@ -202,12 +208,18 @@ def main(
     gt_path: pathlib.Path,
     predicted_path: pathlib.Path,
     regime: str,
-    similarity_threshold: float,
-    embedding_model: str,
+    similarity_threshold: float | None,
+    embedding_model: str | None,
     json_out: pathlib.Path | None,
     verbose: bool,
 ) -> None:
     """Align and score two TTL graphs (same logic as validation match_triples.py)."""
+    if similarity_threshold is None or embedding_model is None:
+        aggregation = AggregationConfig()
+        if similarity_threshold is None:
+            similarity_threshold = aggregation.similarity_threshold
+        if embedding_model is None:
+            embedding_model = aggregation.embedding_model
     if not 0.0 <= similarity_threshold <= 1.0:
         raise click.BadParameter(
             "similarity_threshold must be between 0 and 1",
@@ -241,8 +253,8 @@ def main(
     else:
         m = payload["metrics"]
         click.echo(
-            f"\nP={m['precision']:.4f} R={m['recall']:.4f} F1={m['f1']:.4f} | "
-            f"entity F1={m['entity_f1']:.4f} | fact F1={m['fact_f1']:.4f} | "
+            f"\nP={_fmt(m['precision'])} R={_fmt(m['recall'])} F1={_fmt(m['f1'])} | "
+            f"entity F1={_fmt(m['entity_f1'])} | fact F1={_fmt(m['fact_f1'])} | "
             f"matches={payload['entity_match_count']}"
         )
 

@@ -42,10 +42,19 @@ _SAFE_ONTOLOGY_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def get_supported_input_extensions(tools: ToolBox) -> tuple[str, ...]:
-    """Return all input file suffixes handled by document conversion."""
-    built_in_suffixes = {".json", ".jsonl", ".txt"}
+    """Return the file suffixes document conversion accepts (one document per file)."""
+    built_in_suffixes = {".json", ".txt"}
     converter_suffixes = set(tools.converter.supported_extensions)
     return tuple(sorted(built_in_suffixes | converter_suffixes))
+
+
+def get_batch_input_extensions(tools: ToolBox) -> tuple[str, ...]:
+    """Return the suffixes ``ontocast process`` reads: conversion's plus JSONL.
+
+    A JSONL file is fanned out into one document per line before conversion,
+    which only the batch path does.
+    """
+    return tuple(sorted({*get_supported_input_extensions(tools), ".jsonl"}))
 
 
 def turtle_from_graph(graph: RDFGraph, *, strip_provenance: bool) -> str:

@@ -8,7 +8,7 @@ from .match_common import (
     collect_ontology_entities,
     compute_prf,
     count_domain_entity_matches,
-    extract_entities,
+    extract_instance_entities,
     prepare_fact_triples,
     prepare_metric_triples,
     project_triples,
@@ -57,13 +57,19 @@ class TripleSetEvaluator:
             len(ground_truth_facts),
         )
 
-        predicted_entities = set(extract_entities(predicted_graph))
-        gt_entities = set(extract_entities(gt_graph))
+        predicted_entities = set(extract_instance_entities(predicted_graph))
+        gt_entities = set(extract_instance_entities(gt_graph))
+        instance_matches = [
+            matched
+            for matched in entity_matches
+            if as_uri_ref(matched.predicted_entity) in predicted_entities
+            and as_uri_ref(matched.gt_entity) in gt_entities
+        ]
         matched_predicted = {
-            as_uri_ref(matched.predicted_entity) for matched in entity_matches
+            as_uri_ref(matched.predicted_entity) for matched in instance_matches
         }
-        matched_gt = {as_uri_ref(matched.gt_entity) for matched in entity_matches}
-        entity_true_positives = len(entity_matches)
+        matched_gt = {as_uri_ref(matched.gt_entity) for matched in instance_matches}
+        entity_true_positives = len(instance_matches)
         entity_false_positives = len(predicted_entities - matched_predicted)
         entity_false_negatives = len(gt_entities - matched_gt)
         entity_precision, entity_recall, entity_f1 = compute_prf(

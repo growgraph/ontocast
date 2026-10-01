@@ -1,5 +1,7 @@
 """convert_document handles .txt uploads as plain text (regression for #67)."""
 
+from typing import cast
+
 import pytest
 
 from ontocast.agent.convert_document import convert_document
@@ -23,3 +25,25 @@ def test_convert_document_txt_is_plain_text_not_json() -> None:
 
     assert result.status == Status.SUCCESS
     assert result.docling_doc is not None
+
+
+def test_converted_upload_reaches_the_converter_with_its_name() -> None:
+    """Docling picks the format from the name for text formats such as Markdown."""
+    calls: list[tuple[bytes, str | None]] = []
+
+    class _Converter:
+        supported_extensions = {".md"}
+
+        def __call__(self, content: bytes, *, filename: str | None = None):
+            from ontocast.onto.docling_helpers import plain_text_to_docling_doc
+
+            calls.append((content, filename))
+            return plain_text_to_docling_doc("converted", filename or "doc")
+
+    state = AgentState(raw_input={"note.md": b"# Title"})
+    tools = ToolBox.__new__(ToolBox)
+    tools.converter = cast(ConverterTool, _Converter())
+
+    convert_document(state, tools)
+
+    assert calls == [(b"# Title", "note.md")]

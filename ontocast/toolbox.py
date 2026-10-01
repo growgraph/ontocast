@@ -10,7 +10,7 @@ from rdflib.namespace import OWL, RDF
 
 from ontocast.config import Config
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI
-from ontocast.onto.enum import OntologyContextMode, RenderMode
+from ontocast.onto.enum import OntologyContextMode, RenderMode, VectorStoreBackend
 from ontocast.onto.ontology import Ontology, OntologyProperties
 from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.rdfgraph import RDFGraph
@@ -42,6 +42,7 @@ from ontocast.tool.vector_store import (
     VectorStoreManager,
     create_vector_store_manager,
 )
+from ontocast.tool.vector_store.factory import resolve_backend
 from ontocast.util.loop import require_no_running_loop
 
 if TYPE_CHECKING:
@@ -209,9 +210,8 @@ class ToolBox:
             warn_if_workers_exceed_inflight(config)
         self.runtime = runtime or ToolBoxRuntime(config, llm=llm)
 
-        # Create triple store manager: Fuseki when configured, otherwise in-memory.
-        use_fuseki = tool_config.fuseki.uri and tool_config.fuseki.auth
-        if use_fuseki and tool_config.fuseki.uri and tool_config.fuseki.auth:
+        # Fuseki when a URI is configured (auth is optional), otherwise in-memory.
+        if tool_config.fuseki.uri:
             self.triple_store_manager: TripleStoreManager = FusekiTripleStoreManager(
                 uri=tool_config.fuseki.uri,
                 auth=tool_config.fuseki.auth,
@@ -258,12 +258,12 @@ class ToolBox:
         # materialize exactly those and nothing else -- rewriting a whole
         # catalog on every switch is what scoped ToolBoxes exist to avoid.
         self._last_seed_repairs: list[Ontology] = []
+        self._vector_store_init_lock = asyncio.Lock()
 
-        # The factory owns backend selection, including resolving AUTO and
-        # returning None when the backend is explicitly disabled. Both
-        # supported backends need the BM25 tool, so the only case that skips it
-        # is having no vector store at all.
-        needs_sparse = bool(tool_config.qdrant.uri or tool_config.lancedb.enabled)
+        # Both supported backends need the BM25 tool, so the only case that
+        # skips it is having no vector store at all -- decided by the same
+        # resolution the factory uses.
+        needs_sparse = resolve_backend(tool_config) is not VectorStoreBackend.NONE
         vector_store = create_vector_store_manager(
             tool_config,
             embedding=self.embedding_tool,
@@ -493,6 +493,15 @@ class ToolBox:
         if self._active_tenancy is None:
             return None
         return TenancyScope.build(*self._active_tenancy)
+
+    def bind_scope(self, scope: TenancyScope) -> None:
+        """Record the partition a ToolBox was built for.
+
+        For a ToolBox whose stores were configured for ``scope`` at
+        construction (``Config.for_tenancy``): stores and catalogs are left
+        alone, unlike ``update_tenancy``, which retargets them.
+        """
+        self._active_tenancy = scope.key
 
     def attach_registry(self, registry: "ToolBoxRegistry") -> None:
         """Resolve other partitions through ``registry`` rather than a private one.
@@ -843,6 +852,29 @@ class ToolBox:
     def is_vector_store_ready(self) -> bool:
         return self.vector_store is not None and self.vector_store_ready
 
+    async def ensure_vector_store(
+        self,
+        ontology_context_mode: OntologyContextMode | None,
+        *,
+        fail_on_vector_store_error: bool,
+    ) -> None:
+        """Prepare the vector store when ``ontology_context_mode`` needs it.
+
+        A ToolBox is initialized for the mode it started in; a later request in
+        vector mode would otherwise find no index and be refused.
+        """
+        if not self.should_initialize_vector_store(ontology_context_mode):
+            return
+        async with self._vector_store_init_lock:
+            if self.is_vector_store_ready():
+                return
+            logger.info("Preparing the vector store for a vector-mode request")
+            await self.initialize(
+                ontology_context_mode=ontology_context_mode,
+                fail_on_vector_store_error=fail_on_vector_store_error,
+                wipe_vector_store=False,
+            )
+
     async def _check_catalog_index_agreement(
         self, synchronized_ontologies: list[Ontology]
     ) -> None:
@@ -1040,7 +1072,8 @@ class ToolBox:
 
         Args:
             ontology_context_mode: When vector search mode, ensure the vector store
-                is ready before materializing atoms.
+                is ready before materializing atoms. ``None`` uses
+                ``ONTOLOGY_CONTEXT_MODE``.
             fail_on_vector_store_error: Raise on vector init failure when True.
             wipe_vector_store: Drop the current vector partition before init.
                 ``None`` uses ``VECTOR_STORE_WIPE_ON_INIT`` (default False).
@@ -1062,6 +1095,8 @@ class ToolBox:
         import time
 
         init_started = time.perf_counter()
+        if ontology_context_mode is None:
+            ontology_context_mode = self.config.server.ontology_context_mode
         vsc = self.config.tool_config.vector_store
         do_wipe = vsc.wipe_on_init if wipe_vector_store is None else wipe_vector_store
         do_prune = (

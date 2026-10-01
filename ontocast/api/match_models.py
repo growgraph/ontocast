@@ -20,8 +20,15 @@ class TaggedGraphInput(BaseModel):
 class AlignEntitiesRequest(BaseModel):
     graphs: list[TaggedGraphInput]
     regime: MatchRegime = MatchRegime.ONTOLOGY_LOOSE
-    similarity_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
-    embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
+    similarity_threshold: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Unset uses AGG_SIMILARITY_THRESHOLD.",
+    )
+    embedding_model: str | None = Field(
+        default=None, description="Unset uses AGG_EMBEDDING_MODEL."
+    )
 
 
 class AlignEntitiesResponse(BaseModel):

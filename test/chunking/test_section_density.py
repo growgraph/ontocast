@@ -36,6 +36,18 @@ colleagues for helpful discussions on the interpretation of the data. This work
 was supported in part by the Department of Energy.
 """
 
+_METHODS_WITH_ONE_FUNDING_MENTION = """
+Nanocrystals were synthesised by hot injection and washed twice with toluene.
+The furnace used for annealing was purchased under grant no. 1729841. Films
+were spin-coated at 2000 rpm and dried under nitrogen before measurement.
+"""
+
+_METHODS_WITH_ONE_ACKNOWLEDGE = """
+We acknowledge that the absorption onset depends on the ligand shell, so all
+samples were prepared with the same oleylamine to oleic acid ratio and stored
+under nitrogen in the dark until the optical measurements were taken.
+"""
+
 _NEUTRAL_PROSE = """
 The assemblies were placed on a temperature-controlled stage and allowed to
 equilibrate. Over the course of the study the behaviour of the system remained
@@ -56,6 +68,14 @@ class TestConservativeTier:
 
         assert result is not None
         assert result[0] == "acknowledgements"
+
+    @pytest.mark.parametrize(
+        "text", [_METHODS_WITH_ONE_FUNDING_MENTION, _METHODS_WITH_ONE_ACKNOWLEDGE]
+    )
+    def test_a_single_acknowledgement_cue_is_not_enough(self, text):
+        """One grant number or 'we acknowledge' in a short methods chunk would
+        otherwise label it acknowledgements, which the default schema excludes."""
+        assert "acknowledgements" not in score_section_labels(text, SCHEMA)
 
     def test_neutral_prose_is_refused(self):
         assert classify_by_density(_NEUTRAL_PROSE, SCHEMA) is None

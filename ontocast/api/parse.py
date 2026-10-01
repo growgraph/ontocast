@@ -113,20 +113,24 @@ def resolve_ontology_context_mode(
     return requested_mode
 
 
-def parse_strip_provenance_param(value: str | None) -> bool:
-    """Parse ``strip_provenance`` query/form value."""
+def parse_strip_provenance_param(value: str | bool | None) -> bool:
+    """Parse ``strip_provenance`` query/form value.
+
+    Raises:
+        RequestParamError: The value is not a recognised boolean spelling.
+    """
     if value is None:
         return False
+    if isinstance(value, bool):
+        return value
     normalized = str(value).strip().lower()
     if normalized in {"", "0", "false", "no", "off"}:
         return False
     if normalized in {"1", "true", "yes", "on"}:
         return True
-    logger.warning(
-        "Invalid strip_provenance %r, treating as false",
-        value,
+    raise RequestParamError(
+        "strip_provenance", "strip_provenance must be true or false"
     )
-    return False
 
 
 def _normalise_section_tokens(raw_tokens: list[str]) -> tuple[list[str], list[str]]:

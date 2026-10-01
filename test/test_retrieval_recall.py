@@ -26,10 +26,10 @@ and tuning sweeps / embedding bake-offs (large):
 
 * ``ONTOCAST_RECALL_CORPUS``      -- prebuilt corpus directory (``cases.jsonl`` +
   ``ontologies/``), the domain-neutral tier
-* ``ONTOCAST_RECALL_ROOT``        -- Text2KGBench corpus root
+* ``ONTOCAST_RECALL_ROOT``        -- relation-labelled prose corpus root
 * ``ONTOCAST_RECALL_ONTOLOGIES``  -- ontologies loaded into the catalog (default 6);
-  Text2KGBench tier only
-* ``ONTOCAST_RECALL_CASES``       -- cases per ontology (default 15); Text2KGBench tier
+  relation-labelled tier only
+* ``ONTOCAST_RECALL_CASES``       -- cases per ontology (default 15); relation-labelled tier
   only
 * ``ONTOCAST_RECALL_JSON``        -- write the funnel to this path as JSON
 
@@ -72,8 +72,8 @@ from test.retrieval_gt import (
     corpus_root,
     load_anchor_cases,
     load_corpus,
-    load_text2kgbench,
-    text2kgbench_root,
+    load_relation_corpus,
+    relation_corpus_root,
 )
 from test.retrieval_runner import (
     build_toolbox,
@@ -257,30 +257,30 @@ def test_corpus_recall(
 
 
 @pytest.mark.slow
-def test_text2kgbench_recall(
+def test_multi_ontology_prose_recall(
     recall_store_config: dict[str, Any],
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
-    """Text2KGBench: real prose against a multi-ontology catalog.
+    """Real prose against a multi-ontology catalog.
 
     Ground truth is derived, not hand-labelled: each row's relation labels resolve to
     ontology IRIs, so every case is an unambiguous retrieval target. Loading several
     ontologies at once also stresses per-ontology seed allocation and multi-component
     snapshot assembly, which two fixtures cannot reproduce.
     """
-    root = text2kgbench_root()
+    root = relation_corpus_root()
     if root is None:
         pytest.skip(
-            "Text2KGBench corpus not found; set ONTOCAST_RECALL_ROOT to its root"
+            "Relation-labelled corpus not found; set ONTOCAST_RECALL_ROOT to its root"
         )
 
-    cases, ontologies = load_text2kgbench(
+    cases, ontologies = load_relation_corpus(
         root,
         max_ontologies=_env_int("ONTOCAST_RECALL_ONTOLOGIES", 6),
         max_cases_per_ontology=_env_int("ONTOCAST_RECALL_CASES", 15),
     )
     if not cases:
-        pytest.skip("Text2KGBench corpus present but yielded no resolvable cases")
+        pytest.skip("Relation-labelled corpus present but yielded no resolvable cases")
 
     tools = build_toolbox(
         recall_store_config, tmp_path_factory.mktemp("recall_ontologies")
@@ -288,7 +288,7 @@ def test_text2kgbench_recall(
     counts = _run(tools, ontologies, cases)
     report = _emit(
         counts,
-        f"text2kgbench recall ({len(ontologies)} ontologies, {len(cases)} cases)",
+        f"multi-ontology prose recall ({len(ontologies)} ontologies, {len(cases)} cases)",
     )
 
     assert counts.cases > 0

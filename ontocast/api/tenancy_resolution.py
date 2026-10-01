@@ -2,8 +2,10 @@
 
 from collections.abc import Awaitable, Callable
 
+from fastapi import HTTPException
 from starlette.requests import Request
 
+from ontocast.api.parse import RequestParamError
 from ontocast.config import ServerConfig
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT
@@ -24,10 +26,17 @@ def stores_use_tenancy_partitions(tools: ToolBox) -> bool:
 
 
 def resolve_tenant_project(tenant: str | None, project: str | None) -> tuple[str, str]:
+    """Apply defaults to a requested tenant/project and strip both.
+
+    Raises:
+        RequestParamError: A value was given but is blank after stripping.
+    """
     t = (tenant or DEFAULT_TENANT).strip()
     p = (project or DEFAULT_PROJECT).strip()
-    if not t or not p:
-        raise ValueError("tenant and project must be non-empty after resolution")
+    if not t:
+        raise RequestParamError("tenant", "tenant must be non-empty")
+    if not p:
+        raise RequestParamError("project", "project must be non-empty")
     return t, p
 
 
@@ -60,7 +69,16 @@ async def apply_request_tenancy(
         ``(tools, tenant, project)`` -- **use the returned ToolBox**, not the one
         passed in, for everything downstream of this call.
     """
+    vector_mode = (
+        OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+        if initialize_vector_store
+        else None
+    )
     if not request_has_tenancy_query_params(request):
+        if vector_mode is not None:
+            await tools.ensure_vector_store(
+                vector_mode, fail_on_vector_store_error=False
+            )
         return tools, active_tenant, active_project
     request_tenant = request.query_params.get("tenant", None)
     request_project = request.query_params.get("project", None)
@@ -73,14 +91,7 @@ async def apply_request_tenancy(
     scoped = await tools.for_scope(
         resolved_tenant,
         resolved_project,
-        # `initialize_vector_store` already encodes "this request runs in the
-        # vector-search context mode"; pass the mode itself, since that is what
-        # ToolBox.should_initialize_vector_store checks.
-        ontology_context_mode=(
-            OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
-            if initialize_vector_store
-            else None
-        ),
+        ontology_context_mode=vector_mode,
         fail_on_vector_store_error=False,
     )
     return scoped, resolved_tenant, resolved_project
@@ -112,13 +123,16 @@ def make_scoped_toolbox_resolver(
     )
 
     async def resolve(request: Request) -> ToolBox:
-        scoped, _, _ = await apply_request_tenancy(
-            request,
-            tools,
-            active_tenant=active_tenant,
-            active_project=active_project,
-            initialize_vector_store=initialize_vector_store,
-        )
+        try:
+            scoped, _, _ = await apply_request_tenancy(
+                request,
+                tools,
+                active_tenant=active_tenant,
+                active_project=active_project,
+                initialize_vector_store=initialize_vector_store,
+            )
+        except RequestParamError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
         return scoped
 
     return resolve

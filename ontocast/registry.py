@@ -130,6 +130,7 @@ class ToolBoxRegistry:
                 self.base_config.for_tenancy(scope.tenant, scope.project),
                 runtime=self.runtime,
             )
+            tools.bind_scope(scope)
             await tools.initialize(
                 ontology_context_mode=ontology_context_mode,
                 fail_on_vector_store_error=fail_on_vector_store_error,
@@ -153,17 +154,9 @@ class ToolBoxRegistry:
         vector request in that process: the ontologies it wrote were indexed
         nowhere and retrieval returned nothing, with no error anywhere.
         """
-        if not tools.should_initialize_vector_store(ontology_context_mode):
-            return
-        if tools.is_vector_store_ready():
-            return
-        logger.info(
-            "Preparing the vector store for a cached tenancy scope built without one"
-        )
-        await tools.initialize(
-            ontology_context_mode=ontology_context_mode,
+        await tools.ensure_vector_store(
+            ontology_context_mode,
             fail_on_vector_store_error=fail_on_vector_store_error,
-            wipe_vector_store=False,
         )
 
     async def _evict_if_needed(self) -> None:

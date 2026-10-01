@@ -46,7 +46,7 @@ PAGES: list[tuple[str, str, str, list[str]]] = [
     (
         "conversion",
         "Document conversion",
-        "How PDF and PowerPoint files become text.",
+        "How uploaded documents become text.",
         ["ConverterConfig"],
     ),
     (

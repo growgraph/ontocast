@@ -47,7 +47,7 @@ pip install "ontocast[server,openai,doc-processing]"
 
 `server` provides the `ontocast` command and HTTP API, `openai` the model
 provider (`anthropic`, `google` and `ollama` also exist), and `doc-processing`
-the PDF and PowerPoint converter. All extras:
+the document converter (PDF, Office, HTML, Markdown, images). All extras:
 [Installation](https://growgraph.github.io/ontocast/getting_started/installation/).
 
 ## Quick start

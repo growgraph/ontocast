@@ -244,6 +244,7 @@ def _unavailable_reason(name: str, tools: "ToolBox") -> str | None:
     if name in (
         "ontocast_convert_document",
         "ontocast_chunk_text",
+        "ontocast_extract",
     ) and not is_available("docling_core"):
         return 'requires docling-core; install with pip install "ontocast[documents]"'
     return None
@@ -686,8 +687,9 @@ def _convert_document(tools: "ToolBox", max_chars: int) -> BaseTool:
     return _tool(
         name="ontocast_convert_document",
         description=(
-            "Convert a document file (PDF or PowerPoint) at a filesystem path "
-            "into markdown text."
+            "Convert a document file (PDF, Word, PowerPoint, Excel, HTML, "
+            "Markdown, CSV, AsciiDoc or image) at a filesystem path into "
+            "markdown text."
         ),
         args_schema=ConvertDocumentArgs,
         coroutine=run,

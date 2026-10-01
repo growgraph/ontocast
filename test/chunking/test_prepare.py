@@ -507,3 +507,24 @@ def test_a_selection_that_matches_is_unaffected_by_error_mode() -> None:
 
     assert chunks
     assert {chunk.section_label for chunk in chunks} == {"methods"}
+
+
+def test_partial_exclusion_names_label_size_and_tier(caplog) -> None:
+    """A dropped segment is reported with its label, size and labelling tier,
+    so a content-density misfire is visible without a dry run."""
+    from ontocast.onto.enum import SectionLabelSource
+    from ontocast.tool.chunk.prepare import PrepareSegment, _filter_segments_excluding
+
+    segments = [
+        PrepareSegment(text="Body text.", section_label="results"),
+        PrepareSegment(
+            text="x" * 120,
+            section_label="acknowledgements",
+            section_label_source=SectionLabelSource.CONTENT_DENSITY,
+        ),
+    ]
+    with caplog.at_level("INFO", logger="ontocast.tool.chunk.prepare"):
+        kept = _filter_segments_excluding(segments, ["acknowledgements"])
+
+    assert len(kept) == 1
+    assert "acknowledgements: 1 segment(s), 120 chars (content_density)" in caplog.text

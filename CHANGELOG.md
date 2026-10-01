@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pull request; the `cla` status check tracks acceptances (write access and bots are exempt).
 - **`plot-graph --format`** selects any of `svg`, `png`, `pdf` (default `svg,png`).
 - **`ontocast.config.env_names`:** environment-variable names of every settings field.
+- **More input formats:** Word, Excel, HTML, Markdown, CSV, AsciiDoc and images
+  convert through Docling alongside PDF and PowerPoint;
+  `CONVERTER_SUPPORTED_EXTENSIONS` narrows the set, and `ontocast process` warns
+  about each file it skips by suffix.
+- **`GET /ontologies`** lists the current version of each catalog ontology in the
+  request's tenant and project.
+- **Startup warnings:** `serve` and `process` name any dataset, collection or table
+  setting replaced by the tenant/project-derived name; a raised
+  `ONTOLOGY_CONTEXT_MAX_TRIPLES` that the induced-subgraph cap overrides is reported.
+- **`llm/ontology_selection`** in `budget.counters` counts the per-unit ontology
+  selection calls of `selected_single_ontology` mode.
+- **`ToolBox.ensure_vector_store`** prepares the vector store for a mode on demand.
 
 ### Changed
 
@@ -20,6 +32,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`docs` extra:** `properdocs` replaces `mkdocs`; `mkdocs-jupyter` and the
   `griffe<2` pin are dropped.
 - **`plot-graph`** no longer writes `graph.preview.png` (a remote mermaid.ink call).
+- **`strip_provenance`:** an unrecognised value returns `400` (it was read as `false`).
+- **`FUSEKI_URI` alone selects Fuseki;** `FUSEKI_AUTH` is optional. Previously the
+  URI without auth fell back to the in-memory store. A `401`/`403` while creating a
+  dataset now stops startup with `FusekiAccessError` (it was logged and ignored).
+- **`ToolBox.initialize()`** without `ontology_context_mode` prepares what
+  `ONTOLOGY_CONTEXT_MODE` asks for, including the vector index.
+- **`Config.in_memory()`** leaves the vector backend on `auto`, so enabling LanceDB
+  on the result takes effect.
+- **Graph evaluation** (`POST /match/evaluate`, `match-graphs`): a precision,
+  recall or F1 with a zero denominator is `null` (was `0.0`), and entity metrics
+  count subjects and objects that are not vocabulary (predicates were counted).
+- **Section labels from content density:** acknowledgements need two gratitude or
+  funding cues, and an excluded density label no longer spreads to the following
+  unlabelled segments. Fewer methods chunks are dropped as acknowledgements.
+- **LLM cache key** includes `json_mode` when `LLM_JSON_MODE` is on; entries
+  written with it off keep their keys.
+- **Fixed ontology mode over HTTP:** a request that names no
+  `ontology_context_fixed_ontology_id` uses `ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`
+  (every such request returned `400`).
 - **`plot-graph`:** the left-to-right pipeline figure uses larger labels and
   tighter spacing, so it stays legible at page width.
 
@@ -32,19 +63,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Section-label matching** compiles each heading pattern and keyword once. The
   catalog outgrows `re`'s cache, so schema detection recompiled it for every heading.
-- **`GET /info`** `input_types` lists what `/process` accepts: `txt`, `json`,
-  `pdf`, `pptx` (it advertised `text` and `markdown`).
+- **`GET /info`** `input_types` lists what `/process` accepts on this install (it
+  advertised `text`, `markdown` and `jsonl`, and PDF without the `doc-processing`
+  extra; JSONL is read only by `ontocast process`).
 - **LangChain tools:** `ontocast_delete_ontology` no longer claims to delete the
   seed file (it keeps it; the ontology reloads on the next start), and
-  `ontocast_convert_document` names the formats it converts: PDF and PowerPoint.
+  `ontocast_convert_document` names the formats it converts.
 - **Vector-search context error** names both ways to enable a vector store,
   `QDRANT_URI` or `LANCEDB_ENABLED=true`.
 - **CLI help:** `--section-schema-id` lists every schema (`patent`, `standard`,
   `news` were missing); `--summarize-sections` says summaries are written per
   content unit.
-- **`AGG_SIMILARITY_THRESHOLD`** description and warning say what reads it: the
-  aligner's fallback when a caller names no threshold. `POST /match/entities` and
-  `match-graphs` use their own `similarity_threshold`.
+- **Ontology version bumps** see class and property additions and deletions; they
+  were never detected, so no update produced a major bump.
+- **Section exclusion log** names each dropped label with its size and labelling tier.
+- **Converter availability:** without the `doc-processing` extra no converted format
+  is accepted or advertised (PDF and PPTX were, then failed on import).
+- **`plot-graph`** runs without LLM credentials or storage services.
+- **`VECTOR_STORE_BACKEND=lancedb`** without `LANCEDB_ENABLED` gets the BM25 tool
+  (it failed on first search).
+- **A vector-mode request on the startup scope** prepares the vector index instead
+  of returning `409` when the server started in another mode.
+- **LangChain `ontocast_extract`** is offered only when `docling-core` is installed.
+- **Per-tenant requests** reuse their scope's compiled graph; it was recompiled on
+  every request with `?tenant=` or `?project=`.
+- **A blank `tenant` or `project`** returns `400` on every route; outside `/flush`
+  it returned `500`.
+- **`POST /match/entities` and `match-graphs`** default `similarity_threshold` and
+  `embedding_model` to `AGG_SIMILARITY_THRESHOLD` / `AGG_EMBEDDING_MODEL` (they
+  hard-coded `0.80` and an unprefixed model name that loaded a second copy).
 
 ### Documentation
 
@@ -55,8 +102,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment variable; setting descriptions rewritten to state behaviour only.
 - Pipeline and per-unit loop diagrams redrawn in the new palette and served as SVG;
   the loop diagrams state the real convergence rule and the facts loop's exits.
-- Docs no longer claim OntoCast reads a `.env` file (it reads the environment), or
-  that `FUSEKI_URI` alone enables Fuseki (`FUSEKI_AUTH` is also required).
+- Docs no longer claim OntoCast reads a `.env` file (it reads the environment).
 - `demo/README.md` sample paths fixed; public callables fully annotated.
 
 ## [0.6.4] - 2026-09-16

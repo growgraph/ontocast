@@ -384,6 +384,8 @@ def test_flag_off_keeps_pre_flag_cache_entries_valid(monkeypatch) -> None:
 
         legacy_key = tool.converter_config.model_dump(mode="json")
         legacy_key.pop("repair_numeric_artifacts")
+        # Written before the field existed; it never joins the key.
+        legacy_key.pop("supported_extensions")
         legacy_key["cache_format_version"] = CONVERTER_CACHE_FORMAT_VERSION
         tool.cache.set(
             content,
@@ -395,3 +397,104 @@ def test_flag_off_keeps_pre_flag_cache_entries_valid(monkeypatch) -> None:
 
         assert builds == []
         assert doc.export_to_markdown().strip() == "cached"
+
+
+# -- supported formats -------------------------------------------------------
+
+#: The shipped default. Changing it changes what ``/process`` accepts and what
+#: ``/info`` advertises, so it is pinned here deliberately.
+SHIPPED_EXTENSIONS = [
+    ".pdf",
+    ".docx",
+    ".pptx",
+    ".xlsx",
+    ".html",
+    ".htm",
+    ".md",
+    ".csv",
+    ".adoc",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".tif",
+    ".tiff",
+]
+
+
+def test_default_supported_extensions_are_pinned() -> None:
+    assert ConverterConfig().supported_extensions == SHIPPED_EXTENSIONS
+
+
+def test_supported_extensions_are_normalised() -> None:
+    config = ConverterConfig(supported_extensions=["PDF", " .Docx "])
+    assert config.supported_extensions == [".pdf", ".docx"]
+
+
+@pytest.mark.parametrize("suffix", [".txt", ".json", ".jsonl"])
+def test_suffixes_read_without_docling_are_refused(suffix: str) -> None:
+    with pytest.raises(ValueError, match=suffix):
+        ConverterConfig(supported_extensions=[".pdf", suffix])
+
+
+def test_supported_extensions_read_from_the_environment(monkeypatch) -> None:
+    monkeypatch.setenv("CONVERTER_SUPPORTED_EXTENSIONS", '[".pdf", ".md"]')
+    assert ConverterConfig().supported_extensions == [".pdf", ".md"]
+
+
+def test_tool_accepts_the_configured_set_when_docling_is_installed(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from ontocast.tool import converter as module
+
+    monkeypatch.setattr(module, "is_available", lambda _name: True)
+    tool = ConverterTool(
+        cache=Cacher(cache_dir=tmp_path),
+        converter_config=ConverterConfig(supported_extensions=[".pdf", ".md"]),
+    )
+    assert tool.supported_extensions == {".pdf", ".md"}
+
+
+def test_tool_accepts_nothing_without_docling(monkeypatch, tmp_path: Path) -> None:
+    from ontocast.tool import converter as module
+
+    monkeypatch.setattr(module, "is_available", lambda _name: False)
+    tool = ConverterTool(cache=Cacher(cache_dir=tmp_path))
+    assert tool.supported_extensions == set()
+
+
+def test_cache_key_ignores_the_extension_set(tmp_path: Path) -> None:
+    """Widening or narrowing the accepted set must not re-convert anything."""
+    narrow = ConverterTool(
+        cache=Cacher(cache_dir=tmp_path),
+        converter_config=ConverterConfig(supported_extensions=[".pdf"]),
+    )
+    wide = ConverterTool(cache=Cacher(cache_dir=tmp_path))
+    assert narrow.cache_config("paper.pdf") == wide.cache_config("paper.pdf")
+    assert "supported_extensions" not in wide.cache_config("paper.pdf")
+
+
+def test_cache_key_names_the_format_only_beyond_pdf_and_pptx(tmp_path: Path) -> None:
+    """PDF/PPTX keys stay as they were; other formats are keyed by suffix,
+    since the same bytes parse differently as Markdown and as AsciiDoc."""
+    tool = ConverterTool(cache=Cacher(cache_dir=tmp_path))
+    assert tool.cache_config("a.pdf") == tool.cache_config(None)
+    assert tool.cache_config("a.pptx") == tool.cache_config(None)
+    assert tool.cache_config("a.md") != tool.cache_config("a.adoc")
+
+
+def test_document_converter_allows_only_the_configured_formats() -> None:
+    pytest.importorskip("docling")
+    from docling.datamodel.base_models import InputFormat
+
+    converter = build_document_converter(
+        ConverterConfig(supported_extensions=[".pdf", ".md"])
+    )
+    assert set(converter.allowed_formats) == {InputFormat.PDF, InputFormat.MD}
+
+
+def test_markdown_bytes_convert_when_named(tmp_path: Path) -> None:
+    """Docling cannot sniff Markdown from bytes; the upload's name must reach it."""
+    pytest.importorskip("docling")
+    tool = ConverterTool(cache=Cacher(cache_dir=tmp_path))
+    doc = tool(b"# Title\n\nSome text.\n", filename="note.md")
+    assert "Some text." in doc.export_to_markdown()

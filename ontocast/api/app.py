@@ -387,14 +387,8 @@ def create_app(
                 # accepted here and refused everywhere else.
                 try:
                     t, p = resolve_tenant_project(tenant, project)
-                except ValueError as err:
-                    return JSONResponse(
-                        status_code=400,
-                        content=StatusErrorBody(
-                            error=str(err),
-                            error_type=type(err).__name__,
-                        ).model_dump(),
-                    )
+                except RequestParamError as err:
+                    return request_param_error_response(err)
                 try:
                     await tools.clean_tenancy_data(t, p, include_shapes=include_shapes)
                 except NotImplementedError as err:

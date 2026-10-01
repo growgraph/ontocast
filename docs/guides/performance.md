@@ -74,7 +74,9 @@ Each extraction call carries the same chapters in the same order: a fixed
 preamble, the conformance requirements from your SHACL shapes, the ontology
 chapter, then the task and the text of the content unit. The ontology chapter
 is usually the largest part, and every call of every unit pays for it again.
-The number of calls per unit is set by the critic and completion budgets; see
+The number of calls per unit is set by the critic and completion budgets, plus
+one ontology selection call per unit in the default `selected_single_ontology`
+mode (`llm/ontology_selection` in `budget.counters`); see
 [Balance quality and cost](configuration.md#balance-quality-and-cost).
 
 Every lever below changes the prompt text, so the first run after a change

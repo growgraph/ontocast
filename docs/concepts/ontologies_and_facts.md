@@ -31,7 +31,7 @@ from the graph's content. Each version records:
 | `dcterms:identifier` | `hash:<hash>` of this version |
 | `prov:wasDerivedFrom` | The version it was made from; two parents when two versions were merged |
 | `dcterms:created` | When this version was created |
-| `owl:versionInfo` | A semantic version, bumped by major, minor or patch according to what the change removed and added |
+| `owl:versionInfo` | A semantic version. Major when more than five triples are deleted, including more than two classes or three properties; minor for any other deletion, or for five or more new classes or properties; patch otherwise |
 
 A run always reads the newest version of each ontology, and older versions stay
 in the store, so you can compare what a run changed with what was there before.

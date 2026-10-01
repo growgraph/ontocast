@@ -99,6 +99,7 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `llm/parse_retry` | `ontocast/agent/common.py` | Calls re-sent because the previous answer did not parse or validate |
 | `llm/json_bracket_repair` | `ontocast/agent/common.py` | Answers recovered by correcting mismatched closing brackets |
 | `llm/parse_abandoned` | `ontocast/agent/common.py` | Calls given up after the retries ran out or the same JSON error recurred |
+| `llm/ontology_selection` | `ontocast/agent/select_ontology_catalog.py` | Ontology selection calls, one per unit in `selected_single_ontology` mode |
 | `chapter/text_chars_before` | `ontocast/agent/render_facts.py` | Summed length of capped text literals before the text caps |
 | `chapter/text_chars_after` | `ontocast/agent/render_facts.py` | The same after the caps |
 | `chapter/literals_clipped` | `ontocast/agent/render_facts.py` | Literals the caps shortened |

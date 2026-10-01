@@ -121,23 +121,20 @@ ontologies. To add the embedded LanceDB store (`lancedb` extra) to an in-memory
 configuration:
 
 ```python
-from ontocast.onto.enum import OntologyContextMode, VectorStoreBackend
+from ontocast.onto.enum import OntologyContextMode
 
 config = Config.in_memory()
 config.tool_config.lancedb.enabled = True
-config.tool_config.vector_store.backend = VectorStoreBackend.LANCEDB
 config.tool_config.embedding.provider = "openai"  # embed through the API, no local model
+config.server.ontology_context_mode = OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
 
 tools = await ToolBox.acreate(config)
-await tools.initialize(
-    ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
-)
+await tools.initialize()
 ```
 
-`Config.in_memory()` switches the vector store off explicitly, so enabling
-LanceDB takes both lines. The index is built only when `initialize()` is told
-the run uses vector retrieval; for extraction, set the same mode on the
-`AgentState` (`ontology_context_mode`). For a Qdrant server, install the
+`initialize()` builds the index when the configured mode, or the
+`ontology_context_mode` passed to it, is vector retrieval; for extraction, set
+the same mode on the `AgentState` (`ontology_context_mode`). For a Qdrant server, install the
 `qdrant` extra and set `QDRANT_URI`. The
 default embedding provider runs a local model and needs `sentence-transformers`
 (in `doc-processing`). [Choosing ontology context](ontology_context.md) explains

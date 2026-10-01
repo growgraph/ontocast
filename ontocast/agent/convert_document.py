@@ -127,7 +127,7 @@ def convert_document(state: AgentState, tools: ToolBox) -> AgentState:
     logger.debug("Converting %s with extension %s", filename, file_extension)
 
     if file_extension in tools.converter.supported_extensions:
-        doc = tools.converter(file_content)
+        doc = tools.converter(file_content, filename=filename)
         state.set_docling_doc(doc)
         blocked = _fail_when_fixed_catalog_ontology_missing(state)
         return blocked if blocked is not None else state

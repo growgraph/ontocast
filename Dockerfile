@@ -12,8 +12,8 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN touch README.md
 
-# Everything except `plot` (pygraphviz builds against system graphviz headers),
-# `dev`, and `docs`. `server` + the LLM providers are what make the image a
+# Everything except `plot` (`plot-graph` is a development tool; its wheel would
+# also need X11/glib libraries and a font in this slim image), `dev`, and `docs`. `server` + the LLM providers are what make the image a
 # runnable API server; a base install has no CLI and no provider.
 RUN uv sync --all-extras --no-extra plot --no-extra dev --no-extra docs
 

@@ -7,19 +7,18 @@ plus the per-stage accounting needed to attribute a miss to a specific pipeline 
 
 Two ground-truth tiers:
 
-* **Text2KGBench** — an external corpus (see ``ontocast-validation``) where every row
-  pairs a sentence with the triples it expresses. Each triple's ``rel`` is an
+* **Relation-labelled prose** — an external corpus (see ``ontocast-validation``) where
+  every row pairs a sentence with the triples it expresses. Each triple's ``rel`` is an
   ``rdfs:label`` of an ontology term, so the sentence-to-IRI map falls out by
-  construction with no hand labelling. Large enough (29 ontologies, ~13.5k relation
-  mentions) to discriminate between embedding models and to stress multi-ontology
-  allocation.
+  construction with no hand labelling. Spanning many ontologies, it can discriminate
+  between embedding models and stresses multi-ontology allocation.
 * **Synthetic anchors** — in-repo fixtures whose labels contain nonsense phrases that
   also appear verbatim in the paired document. Small and near-verbatim, so they mostly
   exercise plumbing and the lexical lane, but they need no external data and are
   deterministic.
 
 Retrieval is scored permissively: a term counts as retrieved when *any* IRI carrying the
-expected label is found. Text2KGBench labels are occasionally shared by a class and a
+expected label is found. Corpus labels are occasionally shared by a class and a
 property (e.g. ``composer``), and surfacing either means retrieval did its job; requiring
 class/property disambiguation would measure something else.
 """
@@ -40,8 +39,8 @@ from rdflib import RDFS, URIRef
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 
-DEFAULT_TEXT2KGBENCH_ROOT = Path.home() / "data" / "ontocast" / "validation"
-TEXT2KGBENCH_ROOT_ENV = "ONTOCAST_RECALL_ROOT"
+DEFAULT_RELATION_CORPUS_ROOT = Path.home() / "data" / "ontocast" / "validation"
+RELATION_CORPUS_ROOT_ENV = "ONTOCAST_RECALL_ROOT"
 
 CORPUS_ROOT_ENV = "ONTOCAST_RECALL_CORPUS"
 
@@ -408,7 +407,7 @@ class StageCounts:
 def _disambiguate_prefixes(graph: RDFGraph, stem: str) -> None:
     """Rebind generic author prefixes to a per-ontology unique prefix.
 
-    Every Text2KGBench ontology binds ``onto:``, but ``OntologyManager`` registers the
+    Every ontology of the relation-labelled corpus binds ``onto:``, but ``OntologyManager`` registers the
     author prefix as a catalog alias and rejects a second ontology claiming one already
     bound. That is a property of this corpus rather than of the ontologies under test, so
     the collision is normalised away here instead of being worked around in the catalog.
@@ -427,10 +426,10 @@ def _label_index(graph: RDFGraph) -> dict[str, set[str]]:
     return index
 
 
-def text2kgbench_root() -> Path | None:
+def relation_corpus_root() -> Path | None:
     """Corpus root from ``ONTOCAST_RECALL_ROOT``, else the conventional location."""
-    override = os.getenv(TEXT2KGBENCH_ROOT_ENV)
-    root = Path(override).expanduser() if override else DEFAULT_TEXT2KGBENCH_ROOT
+    override = os.getenv(RELATION_CORPUS_ROOT_ENV)
+    root = Path(override).expanduser() if override else DEFAULT_RELATION_CORPUS_ROOT
     return root if (root / "a_ontologies").is_dir() else None
 
 
@@ -442,13 +441,13 @@ def _ground_truth_path(root: Path, stem: str) -> Path | None:
     return None
 
 
-def load_text2kgbench(
+def load_relation_corpus(
     root: Path,
     *,
     max_ontologies: int = 6,
     max_cases_per_ontology: int = 20,
 ) -> tuple[list[RecallCase], list[Ontology]]:
-    """Load ``(cases, ontologies)`` from a Text2KGBench-style corpus.
+    """Load ``(cases, ontologies)`` from a relation-labelled prose corpus.
 
     Only rows whose relation labels all resolve to ontology IRIs become cases, so a
     failure is always a retrieval failure and never a ground-truth gap.

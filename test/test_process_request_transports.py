@@ -64,10 +64,10 @@ CASES: list[tuple[str, Any, str, Any]] = [
 ]
 
 
-def _probe_app() -> FastAPI:
+def _probe_app(server_config: ServerConfig | None = None) -> FastAPI:
     """An app whose only route reports what the shared parser extracted."""
     app = FastAPI()
-    server_config = ServerConfig()
+    server_config = server_config or ServerConfig()
 
     @app.post("/probe")
     async def probe(request: Request):
@@ -94,6 +94,9 @@ def _probe_app() -> FastAPI:
             "summary_max_sentences": parsed.summary_max_sentences,
             "target_sections": parsed.target_sections,
             "document_type_hint": parsed.document_type_hint,
+            "ontology_context_fixed_ontology_id": (
+                parsed.ontology_context_fixed_ontology_id
+            ),
         }
 
     return app
@@ -175,3 +178,49 @@ def test_document_metadata_round_trips_as_object_and_string(
 def test_malformed_max_visits_is_a_400_not_a_500(client: TestClient) -> None:
     response = client.post("/probe", json={"text": "hi", "max_visits": "abc"})
     assert response.status_code == 400
+
+
+def _fixed_mode_client(fixed_id: str) -> TestClient:
+    return TestClient(
+        _probe_app(
+            ServerConfig(
+                ontology_context_mode="fixed_single_ontology",
+                ontology_context_fixed_ontology_id=fixed_id,
+            )
+        )
+    )
+
+
+def test_fixed_mode_server_supplies_its_configured_ontology_id() -> None:
+    response = _fixed_mode_client("ex").post("/probe", json={"text": "hi"})
+    assert response.status_code == 200, response.text
+    assert response.json()["ontology_context_fixed_ontology_id"] == "ex"
+    assert response.json()["ontology_context_mode_value"] == "fixed_single_ontology"
+
+
+def test_request_ontology_id_overrides_the_configured_one() -> None:
+    response = _fixed_mode_client("ex").post(
+        "/probe", json={"text": "hi", "ontology_context_fixed_ontology_id": "other"}
+    )
+    assert response.json()["ontology_context_fixed_ontology_id"] == "other"
+
+
+def test_configured_ontology_id_does_not_force_fixed_mode() -> None:
+    """A request choosing another mode is not overridden by the server's id."""
+    response = _fixed_mode_client("ex").post(
+        "/probe",
+        json={"text": "hi", "ontology_context_mode": "selected_single_ontology"},
+    )
+    assert response.json()["ontology_context_mode_value"] == "selected_single_ontology"
+    assert response.json()["ontology_context_fixed_ontology_id"] == ""
+
+
+def test_fixed_mode_without_any_ontology_id_is_a_400() -> None:
+    response = _fixed_mode_client("").post("/probe", json={"text": "hi"})
+    assert response.status_code == 400
+
+
+def test_unknown_strip_provenance_is_a_400(client: TestClient) -> None:
+    response = client.post("/probe", json={"text": "hi", "strip_provenance": "maybe"})
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "invalid_param:strip_provenance"

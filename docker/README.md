@@ -7,7 +7,7 @@ This directory contains Docker Compose stacks for **optional** infrastructure On
 | **Apache Fuseki** | `fuseki/` | Persistent RDF triple store (production) |
 | **Qdrant** | `qdrant/` | Vector store for ontology patch retrieval |
 
-OntoCast does **not** require Docker to run. When `FUSEKI_URI` / `FUSEKI_AUTH` are unset, the server uses an **in-memory pyoxigraph** triple store automatically (data is not persisted across restarts).
+OntoCast does **not** require Docker to run. When `FUSEKI_URI` is unset, the server uses an **in-memory pyoxigraph** triple store automatically (data is not persisted across restarts).
 
 ---
 
@@ -15,7 +15,7 @@ OntoCast does **not** require Docker to run. When `FUSEKI_URI` / `FUSEKI_AUTH` a
 
 OntoCast picks the triple store in `ToolBox` at startup:
 
-1. **Fuseki** — when both `FUSEKI_URI` and `FUSEKI_AUTH` are set
+1. **Fuseki** — when `FUSEKI_URI` is set. `FUSEKI_AUTH` is required by this bundled setup (its `shiro.ini` asks for credentials on every path); a Fuseki that allows anonymous access to the admin API and datasets needs none
 2. **In-memory** — otherwise (zero git config, process-local only)
 
 There is no filesystem or Neo4j fallback anymore. Use Fuseki (below) when you need durable RDF storage.
@@ -185,7 +185,7 @@ curl http://localhost:6333/healthz
 ### Common problems
 
 - **Connection refused** — container not running or wrong port in OntoCast `.env`
-- **Authentication failed** — `FUSEKI_AUTH` must be `user/password` (slash-separated)
+- **Authentication failed** (`FusekiAccessError ... 401` at startup) — `FUSEKI_AUTH` is missing or wrong; it is `user/password` and the user needs admin rights to create datasets
 - **Wrong URI** — use the Fuseki HTTP root (`http://host:port`), not `/#/dataset/...` UI links
 - **Data gone after restart** — expected with in-memory backend; run Fuseki for persistence
 

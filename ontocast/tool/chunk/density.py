@@ -100,10 +100,12 @@ def score_section_labels(
     if "acknowledgements" in allowed:
         gratitude = len(_GRATITUDE.findall(stripped))
         funding = len(_FUNDING.findall(stripped))
-        if gratitude or funding:
-            # Acknowledgements are short, so a single gratitude clause in a
-            # brief passage is strong evidence; the same clause buried in a
-            # long section is not.
+        # Two cues at least: one grant number or "we acknowledge" also occurs
+        # in methods text, and this label is excluded by default.
+        if gratitude + funding >= 2:
+            # Acknowledgements are short, so gratitude clauses in a brief
+            # passage are strong evidence; the same clauses buried in a long
+            # section are not.
             density = _per_kilochar(gratitude * 2 + funding, length)
             scores["acknowledgements"] = min(0.95, density / 2.0)
 

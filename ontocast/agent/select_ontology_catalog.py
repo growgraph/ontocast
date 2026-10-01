@@ -10,7 +10,7 @@ from ontocast.onto.model import create_ontology_selector_report_model
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
 from ontocast.prompt.select_ontology import template_prompt
-from ontocast.tool.llm import LLMTool
+from ontocast.tool.llm import LLMTool, record_active_count
 from ontocast.tool.ontology_manager import OntologyManager
 
 logger = logging.getLogger(__name__)
@@ -56,6 +56,9 @@ async def select_catalog_ontology_for_excerpt(
         ],
     )
 
+    # Charged by name so the run manifest's budget shows this per-unit call
+    # apart from the render and critic calls.
+    record_active_count("llm/ontology_selection")
     selector = await call_llm_with_retry(
         llm_tool=llm_tool,
         prompt=prompt,

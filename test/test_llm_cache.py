@@ -170,6 +170,19 @@ def test_unset_reasoning_knobs_keep_the_pre_existing_cache_key() -> None:
     assert key["thinking_budget"] == 512
 
 
+def test_json_mode_joins_the_cache_key_only_when_on() -> None:
+    """JSON mode changes the response; off keeps every existing entry's key."""
+    from ontocast.tool.llm import llm_cache_config
+
+    config = LLMConfig(provider=LLMProvider.OPENAI, model_name=OpenAIModel.GPT4_O_MINI)
+    off = llm_cache_config(config)
+    assert "json_mode" not in off
+
+    config.json_mode = True
+    on = llm_cache_config(config)
+    assert on["json_mode"] is True
+
+
 def test_get_cache_stats_includes_disk(llm_config, cache_dir) -> None:
     async def run() -> None:
         tool = await _make_tool(llm_config, cache_dir)

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from itertools import product
 
 import numpy as np
-from rdflib import RDF, RDFS, XSD, URIRef
+from rdflib import OWL, RDF, RDFS, XSD, URIRef
 from rdflib.term import Literal, Node
 
 from ontocast.onto.iri_policy import split_namespace_local
@@ -20,6 +20,20 @@ GENERIC_NAMESPACES = frozenset(
         "http://www.w3.org/2000/01/rdf-schema#",
         "http://www.w3.org/2002/07/owl#",
         "http://www.w3.org/2001/XMLSchema#",
+    }
+)
+
+
+#: ``rdf:type`` objects that mark their subject as vocabulary, not an instance.
+_SCHEMA_TYPES = frozenset(
+    {
+        OWL.Class,
+        RDFS.Class,
+        OWL.ObjectProperty,
+        OWL.DatatypeProperty,
+        OWL.AnnotationProperty,
+        RDF.Property,
+        OWL.Ontology,
     }
 )
 
@@ -42,6 +56,28 @@ def extract_entities(graph: RDFGraph) -> list[URIRef]:
     ordered_entities = list(entities)
     ordered_entities.sort(key=lambda entity: str(entity))
     return ordered_entities
+
+
+def extract_instance_entities(graph: RDFGraph) -> list[URIRef]:
+    """IRIs in subject or object position that are not ontology terms.
+
+    Predicates and schema vocabulary are excluded: entity metrics measure the
+    individuals a graph identifies, not the vocabulary it uses.
+    """
+    vocabulary: set[Node] = set(collect_ontology_entities(set(graph)))
+    vocabulary.update(predicate for _, predicate, _ in graph)
+    vocabulary.update(
+        subject
+        for subject, _, obj in graph.triples((None, RDF.type, None))
+        if obj in _SCHEMA_TYPES
+    )
+    entities = {
+        term
+        for subject, _, obj in graph
+        for term in (subject, obj)
+        if isinstance(term, URIRef) and term not in vocabulary
+    }
+    return sorted(entities, key=str)
 
 
 def map_term(term: Node, mapping: dict[URIRef, URIRef]) -> Node:
@@ -150,21 +186,24 @@ def count_domain_entity_matches(entity_matches: list[EntityMatch]) -> int:
     )
 
 
-def safe_divide(numerator: float, denominator: float) -> float:
-    if denominator == 0:
-        return 0.0
-    return numerator / denominator
-
-
 def compute_prf(
     true_positives: int,
     predicted_count: int,
     ground_truth_count: int,
-) -> tuple[float, float, float]:
-    precision = safe_divide(true_positives, predicted_count)
-    recall = safe_divide(true_positives, ground_truth_count)
-    f1 = safe_divide(2 * precision * recall, precision + recall)
-    return precision, recall, f1
+) -> tuple[float | None, float | None, float | None]:
+    """Precision, recall and F1, each ``None`` where it is undefined.
+
+    Precision is undefined with no predictions and recall with no ground truth;
+    F1 is undefined when either is. Reporting zero instead would let an empty
+    prediction pull a macro average down by its count, not its quality.
+    """
+    precision = true_positives / predicted_count if predicted_count else None
+    recall = true_positives / ground_truth_count if ground_truth_count else None
+    if precision is None or recall is None:
+        return precision, recall, None
+    if precision + recall == 0:
+        return precision, recall, 0.0
+    return precision, recall, 2 * precision * recall / (precision + recall)
 
 
 def project_triples(
