@@ -349,9 +349,8 @@ def make_render_ontology_node(tools: ToolBox):
             ontology_mandatory_residual
         )
         # The ontology critic's own ledger, mirroring the facts block: without
-        # it, whether the critic ran at all (it never does at MAX_VISITS=1) and
-        # how often `success or score > 90` accepted are unrecoverable from a
-        # run's artifacts.
+        # it, whether the critic ran (ONTOLOGY_CRITIC_PASSES) and what it
+        # accepted are unrecoverable from a run's artifacts.
         ontology_critic_attempts = [
             attempt
             for attempts in state.ontology_loop_telemetry.values()

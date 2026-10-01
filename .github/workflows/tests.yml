@@ -5,6 +5,13 @@ on:
     push:
         branches: [main]
 
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+
 jobs:
     # Guards the packaged artifact, not the source tree: `pip install ontocast`
     # with no extras must import. This is the check that would have caught
@@ -12,11 +19,11 @@ jobs:
     import-smoke:
         runs-on: ubuntu-latest
         steps:
-        -   uses: actions/checkout@v5
+        -   uses: actions/checkout@v7
         -   name: Install uv
-            uses: astral-sh/setup-uv@v7
+            uses: astral-sh/setup-uv@v10.2.0
             with:
-                version: "0.10.12"
+                version: "0.12.21"
         -   name: Build wheel
             run: uv build --wheel --out-dir dist
         -   name: Install the wheel with NO extras
@@ -65,11 +72,11 @@ jobs:
     server-install:
         runs-on: ubuntu-latest
         steps:
-        -   uses: actions/checkout@v5
+        -   uses: actions/checkout@v7
         -   name: Install uv
-            uses: astral-sh/setup-uv@v7
+            uses: astral-sh/setup-uv@v10.2.0
             with:
-                version: "0.10.12"
+                version: "0.12.21"
         -   name: Build wheel
             run: uv build --wheel --out-dir dist
         -   name: Install the wheel with the server extra
@@ -89,11 +96,11 @@ jobs:
         env:
             UV_PYTHON: ${{ matrix.python-version }}
         steps:
-        -   uses: actions/checkout@v5
+        -   uses: actions/checkout@v7
         -   name: Install uv
-            uses: astral-sh/setup-uv@v7
+            uses: astral-sh/setup-uv@v10.2.0
             with:
-                version: "0.10.12"
+                version: "0.12.21"
                 enable-cache: true
         -   name: Install dependencies
             run: uv sync --all-extras
@@ -109,8 +116,12 @@ jobs:
             run: uv run ty check ontocast test
         # No .env exists in a clean checkout; pytest-dotenv no-ops on a missing
         # file, and integration tests self-skip when their service is
-        # unreachable, so this runs offline.
+        # unreachable. The HuggingFace offline switches hold the default run to
+        # its contract: a test that needs model weights fails here instead of
+        # downloading them, and belongs behind `slow`.
         -   name: Run tests
             run: uv run pytest -m "not slow"
             env:
                 PYTHONUNBUFFERED: '1'
+                HF_HUB_OFFLINE: '1'
+                TRANSFORMERS_OFFLINE: '1'

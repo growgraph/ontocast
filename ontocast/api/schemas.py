@@ -26,7 +26,7 @@ class InfoResponse(BaseModel):
         default_factory=lambda: ["text-to-triples", "ontology-extraction"]
     )
     input_types: list[str] = Field(
-        default_factory=lambda: ["text", "json", "pdf", "markdown"]
+        default_factory=lambda: ["txt", "json", "pdf", "pptx"]
     )
     output_types: list[str] = Field(default_factory=lambda: ["turtle", "json"])
     llm_cache: dict | None = Field(
@@ -106,7 +106,7 @@ class ProcessResultMetadata(BaseModel):
         description=(
             "Residual findings behind the summary, after every repair stage. "
             "A consumer that needs to know *which* nodes are non-conformant "
-            "reads these; previously they existed only in the server log."
+            "reads these."
         ),
     )
     facts_gate_repairs: list[dict] = Field(

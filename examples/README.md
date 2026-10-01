@@ -33,4 +33,4 @@ calling the model, so it is also the quickest way to check what your install
 supports.
 
 Background and the full tool table:
-[Embedding OntoCast](https://growgraph.github.io/ontocast/user_guide/embedding/).
+[Embedding OntoCast](https://growgraph.github.io/ontocast/guides/embedding/).

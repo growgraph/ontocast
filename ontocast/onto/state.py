@@ -101,8 +101,7 @@ class BudgetTracker(BasePydanticModel):
     # Kept apart from the billed totals rather than folded in: a cache-replayed
     # run costs nothing, so adding these to input_tokens/output_tokens would
     # report spend that never happened. Reported together they answer the other
-    # question -- what the workload costs cold -- which is what the replay
-    # protocol in docs/user_guide/performance.md is measuring.
+    # question -- what the workload costs cold.
     cached_input_tokens: int = Field(
         default=0, description="Input tokens replayed from the OntoCast disk cache"
     )

@@ -5,15 +5,22 @@ on:
     push:
         branches: [main]
 
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+
 jobs:
     pre-commit:
         runs-on: ubuntu-latest
         steps:
-        -   uses: actions/checkout@v5
+        -   uses: actions/checkout@v7
         -   name: Install uv
-            uses: astral-sh/setup-uv@v7
+            uses: astral-sh/setup-uv@v10.2.0
             with:
-                version: "0.10.12"
+                version: "0.12.21"
                 enable-cache: true
         # `setup-uv`'s own cache covers uv's package cache, not the hook
         # environments, which live in ~/.cache/pre-commit. Without this step
@@ -22,10 +29,10 @@ jobs:
         # release. Keying on the config hash means a hook or pin change rebuilds
         # and everything else reuses.
         -   name: Cache hook environments
-            uses: actions/cache@v4
+            uses: actions/cache@v6
             with:
                 path: ~/.cache/pre-commit
-                key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+                key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
         # This job is lint and formatting only, so it needs nothing but the
         # `dev` extra. Type checking runs in `tests.yml`, whose `unit` job
         # already installs every extra -- a whole-program check gets better

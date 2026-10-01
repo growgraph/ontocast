@@ -17,16 +17,12 @@ jobs:
             id-token: write
 
         steps:
-        -   uses: actions/checkout@v4
+        -   uses: actions/checkout@v7
 
-        -   name: Set up Python
-            uses: actions/setup-python@v5
-            with:
-                python-version: '3.12'
         -   name: Install uv
-            uses: astral-sh/setup-uv@v7
+            uses: astral-sh/setup-uv@v10.2.0
             with:
-                version: "0.10.12"
+                version: "0.12.21"
         # 0.4.4 was bumped in pyproject.toml but never tagged, so the release
         # tag and the published version could drift apart unnoticed. Fail loudly
         # instead of publishing a version nobody tagged.

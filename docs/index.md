@@ -1,168 +1,151 @@
-# OntoCast <img src="https://raw.githubusercontent.com/growgraph/ontocast/refs/heads/main/docs/assets/favicon.ico" alt="OntoCast logo" style="height: 32px; width:32px;"/>
-
-**Agentic ontology-assisted extraction of RDF knowledge graphs from documents.**
-
-![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)
-[![PyPI version](https://badge.fury.io/py/ontocast.svg)](https://badge.fury.io/py/ontocast)
-[![PyPI Downloads](https://static.pepy.tech/badge/ontocast)](https://pepy.tech/projects/ontocast)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![pre-commit](https://github.com/growgraph/ontocast/actions/workflows/pre-commit.yml/badge.svg)](https://github.com/growgraph/ontocast/actions/workflows/pre-commit.yml)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17796467.svg)](https://doi.org/10.5281/zenodo.17796467)
-
-OntoCast turns unstructured text into queryable RDF: it **co-evolves** domain ontologies and fact graphs in a parallel map/reduce pipeline, with RDF 1.2 provenance, entity disambiguation across chunks, and optional vector-backed ontology retrieval. Run it as a REST service, a batch CLI, or embed the pipeline in your own LangChain / LangGraph agent.
-
+---
+hide:
+- navigation
+- toc
 ---
 
-## Why OntoCast
+<div class="oc-hero" markdown>
+<div class="oc-hero__text" markdown>
 
-Most extractors dump triples and leave ontology drift to you. OntoCast treats schema and instance data as one loop: per-chunk render → critic → merge, with GraphUpdate patches (insert/delete) instead of regenerating whole graphs, SHACL validation with LLM-free autofix, and a light install so you can embed the core without pulling Docling, gRPC, or ONNX.
+# OntoCast
 
----
+OntoCast reads documents and writes an RDF knowledge graph: an ontology that
+describes the domain, and the facts the documents state in its terms.
+{ .oc-lead }
 
-## Features
+Give it your ontologies and it extracts facts against them; give it none and it
+builds one as it reads. Each part of a document is handled by a language model
+in a render-and-critique loop, and every change to a graph is a small,
+checked patch rather than a rewritten file.
 
-- **Parallel ontology + facts loops** — concurrent per-unit render/critic with configurable workers
-- **GraphUpdate patches** — token-efficient insert/delete ops, not full-graph regeneration
-- **Entity disambiguation** — embedding + symbolic alignment across chunks
-- **RDF 1.2 provenance** — quoted triples / provenance artifacts; optional `strip_provenance`
-- **Ontology context** — catalog selection, vector retrieval (LanceDB or Qdrant), or a fixed ontology
-- **Facts validation** — invariants, SHACL, and machine repairs without an extra LLM pass
-- **Stores** — in-memory pyoxigraph by default; Fuseki for persistence; tenancy by tenant/project
-- **LLM caching** — disk cache, in-flight limits, optional read-only / batch pre-warm
-- **Embeddable** — `ontocast_tools`, `run_unit_pipeline`, or a LangGraph node
-
----
-
-## Install
-
-Pick at least one LLM provider extra. Add `server` for the CLI and HTTP API:
-
-```sh
-uv add "ontocast[server,openai]"
-# or: pip install "ontocast[server,openai]"
-```
-
-Common add-ons: `doc-processing` (PDF/DOCX), `semantic-chunking` (clustering-based chunk boundaries; pulls torch, a multi-GB download — without it chunking falls back to paragraph/sentence splits), `lancedb` or `qdrant` (ontology retrieval), `shacl` (shape validation).
-
-```sh
-uv add "ontocast[server,openai,doc-processing,lancedb,shacl]"
-```
-
-See [Installation](getting_started/installation.md) for the full extras table.
-
----
-
-## Quick Start
+It is for engineers who need a graph they can query, validate and trace back to
+the text it came from.
 
 ```bash
-cp .env.example .env
-# Set LLM_API_KEY (and LLM_PROVIDER / LLM_MODEL_NAME as needed)
-
-ontocast serve
-curl -X POST http://localhost:8999/process -F "file=@document.pdf"
+pip install "ontocast[server,openai]"
 ```
 
-Batch without a server:
+[Quick start](getting_started/quickstart.md){ .md-button .md-button--primary }
+[How it works](concepts/index.md){ .md-button }
 
-```bash
-ontocast process --input-path ./document.pdf --head-chunks 5 --output-dir ./out
-```
+</div>
+<figure class="oc-layers">
+<svg viewBox="0 0 440 300" role="img" aria-labelledby="oc-layers-title" xmlns="http://www.w3.org/2000/svg">
+<title id="oc-layers-title">Documents pass through a render-and-critique loop and become two layers of one graph: an ontology of classes above, and facts below, each fact typed by a class.</title>
+<defs>
+<marker id="oc-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path class="oc-layers__arrowhead" d="M0,1 L9,5 L0,9 z"/>
+</marker>
+<marker id="oc-arrow-loop" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+<path class="oc-layers__arrowhead oc-layers__arrowhead--loop" d="M0,1 L9,5 L0,9 z"/>
+</marker>
+</defs>
+<rect class="oc-layers__band oc-layers__band--onto" x="186" y="36" width="246" height="86" rx="8"/>
+<rect class="oc-layers__band oc-layers__band--facts" x="186" y="172" width="246" height="100" rx="8"/>
+<g class="oc-layers__doc">
+<rect x="44" y="82" width="62" height="82" rx="4"/>
+<rect x="36" y="90" width="62" height="82" rx="4"/>
+<rect x="28" y="98" width="62" height="82" rx="4"/>
+</g>
+<g class="oc-layers__text-line">
+<path d="M38,114 H80"/>
+<path d="M38,124 H74"/>
+<path d="M38,134 H80"/>
+<path d="M38,144 H66"/>
+<path d="M38,154 H78"/>
+<path d="M38,164 H58"/>
+</g>
+<text class="oc-layers__caption" x="62" y="202" text-anchor="middle">Documents</text>
+<path class="oc-layers__flow" d="M108,140 H121" marker-end="url(#oc-arrow)"/>
+<path class="oc-layers__loop" d="M157,122.7 A20,20 0 1 1 137,122.7" marker-end="url(#oc-arrow-loop)"/>
+<text class="oc-layers__small" x="147" y="178" text-anchor="middle">render</text>
+<text class="oc-layers__small" x="147" y="192" text-anchor="middle">critique</text>
+<path class="oc-layers__flow" d="M171,140 H182" marker-end="url(#oc-arrow)"/>
+<g class="oc-layers__typed">
+<path d="M212,208 L236,96"/>
+<path d="M254,236 L236,96"/>
+<path d="M290,204 L310,76"/>
+<path d="M326,244 L310,76"/>
+<path d="M362,212 L384,100"/>
+<path d="M404,238 L384,100"/>
+</g>
+<g class="oc-layers__schema-edge">
+<path d="M236,96 L310,76"/>
+<path d="M310,76 L384,100"/>
+</g>
+<g class="oc-layers__class">
+<rect x="219" y="85" width="34" height="22" rx="5"/>
+<rect x="293" y="65" width="34" height="22" rx="5"/>
+<rect x="367" y="89" width="34" height="22" rx="5"/>
+</g>
+<g class="oc-layers__fact-edge">
+<path d="M212,208 L254,236 L290,204 L326,244 L362,212 L404,238"/>
+<path d="M254,236 L326,244"/>
+</g>
+<g class="oc-layers__fact">
+<circle cx="212" cy="208" r="5.5"/>
+<circle cx="254" cy="236" r="5.5"/>
+<circle cx="290" cy="204" r="5.5"/>
+<circle cx="326" cy="244" r="5.5"/>
+<circle cx="362" cy="212" r="5.5"/>
+<circle cx="404" cy="238" r="5.5"/>
+</g>
+<text class="oc-layers__label" x="198" y="56">Ontology</text>
+<text class="oc-layers__label" x="198" y="264">Facts</text>
+</svg>
+</figure>
+</div>
 
-Omit `FUSEKI_URI` for in-memory pyoxigraph. Details: [Quick Start Guide](getting_started/quickstart.md).
+## What you can do with it
 
-### Supplying Your Ontologies
+<div class="oc-columns" markdown>
+<div markdown>
 
-OntoCast can guide extraction with seed ontologies (in Turtle `.ttl` format), and can build them for you when you have none. Provide yours in two ways:
+### Build or extend an ontology
 
-1. **Directory Seed:** Set `ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/your/ontologies` in your environment, or pass `--ontology-dir /path/to/your/ontologies` for a single run. All `.ttl` files in that folder sync automatically on startup.
-2. **API Upload:** Register schemas dynamically with the running server:
-   ```bash
-   curl -X POST "http://localhost:8999/ontologies?tenant=ontocast&project=test" -F "file=@my_ontology.ttl"
-   ```
+From the text, OntoCast proposes classes and properties, checks them for
+structure and consistency, and merges them into the ontology one version at a
+time. Start from your own ontologies or from none.
 
----
+</div>
+<div markdown>
 
-## Configuration
+### Extract facts in its terms
 
-Start from `.env.example.minimal` — the few dozen variables that decide what a
-run does, out of the full surface in `.env.example`, grouped by the decision
-they belong to. Then pick a [playbook](user_guide/playbooks.md) for what
-you are actually doing: evaluating, building an ontology, populating facts,
-scaling to a large catalog, or serving it.
+Facts are written against the ontology, so every new entity is typed by it.
+Mentions of the same entity across a document are merged into one, and the
+result can be validated with SHACL shapes before it is stored.
 
-The knobs that change *what the pipeline does* — as opposed to where it stores
-things:
+</div>
+<div markdown>
 
-| Variable | Default | What it controls |
-|---|---|---|
-| `RENDER_MODE` | `ontology_and_facts` | Which halves run. `ontology` writes no facts; `facts` skips the ontology block and extracts only against the catalog you already have — see [Render Mode](user_guide/configuration.md#render-mode-render_mode) |
-| `ONTOLOGY_CONTEXT_MODE` | `selected_single_ontology` | Where each unit's schema comes from: LLM catalog selection, vector retrieval, or one pinned ontology — see [Ontology Context](user_guide/ontology_context.md) |
-| `LLM_GRAPH_FORMAT` | `jsonld` | Wire encoding the LLM emits graphs in; `turtle` is the legacy alternative |
-| `MAX_VISITS_PER_NODE` | `1` | Retries of a **failed** render. The critic's budget is `FACTS_CRITIC_PASSES` |
-| `PARALLEL_WORKERS` | `16` | Concurrent content-unit workers |
-| `LLM_PROVIDER` / `LLM_MODEL_NAME` / `LLM_API_KEY` | `openai` | Provider selection and credentials |
-| `ONTOCAST_ONTOLOGY_DIRECTORY` | — | Seed ontologies synced on startup (CLI: `--ontology-dir`; empty string means none) |
-| `FUSEKI_URI` | — | Triple store; unset means in-memory pyoxigraph |
+### Run it the way you work
 
-`RENDER_MODE`, `ONTOLOGY_CONTEXT_MODE` and `LLM_GRAPH_FORMAT` are also
-per-request parameters on `/process`. Full surface, including chunking,
-retrieval and validation: [Configuration System](user_guide/configuration.md).
+Run OntoCast as an HTTP service, as a batch command over a folder, or inside
+your own LangChain or LangGraph agent. Graphs stay in memory by default, or go
+to Apache Jena Fuseki.
 
----
+</div>
+</div>
 
-## Embed in your agent
+## What to read next
 
-```python
-from langchain.agents import create_agent
-from ontocast import Config, ToolBox, ontocast_tools
+<div class="grid cards oc-next" markdown>
 
-tools = await ToolBox.acreate(Config.in_memory())
-await tools.initialize()
+-   **[Installation](getting_started/installation.md)**
 
-agent = create_agent(
-    model,
-    tools=[*ontocast_tools(tools)],
-    prompt="Edit the ontology from the user's text.",
-)
-```
+    Install the package with the extras you need.
 
-Also: `run_unit_pipeline` for a single passage, or `make_ontocast_node` inside your own LangGraph — see [Embedding OntoCast](user_guide/embedding.md).
+-   **[Quick start](getting_started/quickstart.md)**
 
----
+    Start the server and turn one document into a graph.
 
-## Workflow
+-   **[How it works](concepts/index.md)**
 
-![Workflow diagram](assets/graph.png)
+    The pipeline from document to graph, stage by stage.
 
-1. Convert → chunk prepare (segment, tag, filter, size)
-2. Parallel ontology render → normalize → consolidate → structural check → critic
-3. Parallel facts render → merge / disambiguate → validate (invariants, SHACL, autofix)
-4. Serialize to the triple store; return Turtle from the API
+-   **[Recipes](guides/recipes.md)**
 
-[Workflow Guide](user_guide/workflow.md) · landscape: [`graph.lr.png`](assets/graph.lr.png) · per-unit: [`ontology_loop`](assets/ontology_loop.png), [`facts_loop`](assets/facts_loop.png)
+    Settings for evaluating, building an ontology, or serving.
 
----
-
-## Documentation
-
-Browse the complete documentation using the sidebar or start with these core guides:
-
-| | |
-|---|---|
-| [Installation](getting_started/installation.md) · [Quick Start](getting_started/quickstart.md) | Getting started |
-| [Core Concepts](user_guide/concepts.md) · [Workflow Guide](user_guide/workflow.md) · [Configuration System](user_guide/configuration.md) | How it works |
-| [API Endpoints](user_guide/api.md) · [Embedding OntoCast](user_guide/embedding.md) · [Tenancy](user_guide/tenancy.md) | Integrate |
-| [Ontology Context](user_guide/ontology_context.md) · [Validation / SHACL](user_guide/validation.md) · [Triple Stores](user_guide/triple_stores.md) | Operate |
-| [API Reference](reference/) | Python API |
-
-Release notes: [CHANGELOG](https://github.com/growgraph/ontocast/blob/main/CHANGELOG.md)
-
----
-
-## Contributing
-
-We welcome contributions! See the [Contributing Guide](contributing.md) for guidelines, and feel free to open issues or discussions on [GitHub](https://github.com/growgraph/ontocast).
-
-## License
-
-This project is licensed under the Apache License 2.0 — see the [LICENSE](https://github.com/growgraph/ontocast/blob/main/LICENSE) file for details.
+</div>

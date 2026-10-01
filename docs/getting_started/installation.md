@@ -1,89 +1,89 @@
 # Installation
 
-This guide will help you install OntoCast and its dependencies.
+This page helps you choose which parts of OntoCast to install: the base
+package is small, and everything heavy sits behind an extra you add only when
+you need it.
 
-## System Requirements
+## Requirements
 
-- Python 3.12 or higher
-- uv (Python package installer)
+- Python 3.12 or later
+- `pip`, or `uv` if you manage your project with it
 
-## Installation Steps
+## Install
 
-Pick your install by what you are doing.
+Pick the install by what you are doing:
 
 ```bash
-# Running the server or the CLI
-uv add "ontocast[server,openai,documents]"
+# Run the server or the CLI on PDF and PowerPoint files
+pip install "ontocast[server,openai,doc-processing]"
 
-# Embedding OntoCast in your own application -- see the Embedding guide
-uv add "ontocast[openai]"
+# Embed OntoCast in your own application; see Embedding OntoCast in your agent
+pip install "ontocast[openai]"
 ```
 
-The base `ontocast` package is deliberately light: the extraction pipeline, the
-RDF stack, the in-memory triple and vector stores, and the ontology tooling.
-Anything that pulls a service SDK, a document-processing stack or an ML runtime
-sits behind an extra, so that embedding OntoCast in another application does not
-install a gRPC stack and an ONNX runtime.
+With `uv`, use `uv add` with the same specifiers.
 
-**You must pick at least one LLM provider extra** — OntoCast does not choose one
-for you.
+The base package holds the extraction pipeline, the RDF stack, the in-memory
+triple and vector stores, and the ontology tooling. Anything that pulls a
+service SDK, a document-processing stack or an ML runtime sits behind an
+extra, so embedding OntoCast in another application installs only what it
+uses.
+
+**Pick at least one LLM provider extra.** OntoCast does not install one for
+you.
+
+## Extras
 
 | Extra | Enables | Notes |
 |-------|---------|-------|
 | `openai` / `anthropic` / `google` / `ollama` | The matching LLM provider | One is required |
 | `server` | The `ontocast` command, every console script, and the HTTP API | FastAPI, uvicorn, click, rich. Without it the console scripts print an install hint and exit |
-| `documents` | `docling-core`: representing and chunking converted documents | Required to chunk anything; pulls pandas, pyarrow, transformers |
-| `doc-processing` | PDF / DOCX / PPT conversion (Docling), OCR, and the `sentence-transformers` backend used by the default `EMBEDDING_PROVIDER=huggingface` | Implies `documents` |
+| `documents` | Representing and chunking converted documents (`docling-core`) | Included by `server` and `doc-processing`; pulls pandas, pyarrow, transformers |
+| `doc-processing` | PDF and PowerPoint conversion (Docling), OCR, and the `sentence-transformers` backend used by the default `EMBEDDING_PROVIDER=huggingface` | Includes `documents` |
 | `qdrant` | Qdrant vector store | Pulls `qdrant-client` and gRPC |
-| `lancedb` | Embedded LanceDB vector store (no external service) | |
-| `sparse` | `fastembed` BM25 sparse embeddings | Implied by `qdrant` and `lancedb`; pulls an ONNX runtime |
-| `semantic-chunking` | Clustering-based chunker (`CHUNK_SEGMENTER=semantic`) | Without it the default segmenter falls back to paragraph/sentence splitting with only a log warning. Pulls `torch` and `sentence-transformers`; multi-GB download. The model is shared with retrieval and disambiguation when `CHUNK_EMBEDDING_MODEL` matches theirs |
+| `lancedb` | Embedded LanceDB vector store, no external service | |
+| `sparse` | `fastembed` BM25 sparse embeddings | Included by `qdrant` and `lancedb`; pulls an ONNX runtime |
+| `semantic-chunking` | The clustering-based chunker (`CHUNK_SEGMENTER=semantic`, the default) | Without it the chunker falls back to paragraph and sentence splitting and logs a warning. Pulls `torch` and `sentence-transformers`, a multi-gigabyte download |
 | `graph` | `networkx` ontology lineage graphs | |
-| `shacl` | SHACL validation of aggregated facts (`FACTS_SHAPES_DIR` or inline `sh:NodeShape`) plus the LLM-free shape-driven autofix | Without it, shape validation logs a warning and does nothing — see [Validation](../user_guide/validation.md) |
-| `web-search` | Optional web grounding (`WEB_SEARCH_ENABLED=true`) | |
-| `plot` | `plot-graph` workflow diagrams | Builds `pygraphviz` from source; needs system graphviz headers |
-| `all` | Everything above **except** `plot` | `plot` is excluded because its source build fails without system headers |
+| `shacl` | SHACL validation of extracted facts, plus the shape-driven autofix | Without it, shape validation logs a warning and does nothing; see [Validation](../guides/validation.md) |
+| `web-search` | Web grounding (`WEB_SEARCH_ENABLED=true`) | |
+| `plot` | `plot-graph` workflow diagrams | `pygraphviz`, whose wheel bundles Graphviz |
+| `all` | Every extra above except `plot` | `plot` is not included in `all` because it is a large optional dependency |
 
-Vector retrieval is **off** in a base install: ontology context comes from a
-single working ontology per unit, which is the default. Turning it on means
-picking one of the two backends — `lancedb` (embedded, no server) or `qdrant`
-(server) — and installing its extra. See
-[Embedding OntoCast](../user_guide/embedding.md).
+Vector retrieval is off in a base install: each content unit is shown one
+working ontology, which is the default. To turn retrieval on, install one of
+the two backends, `lancedb` (embedded) or `qdrant` (a server), and set
+`ONTOLOGY_CONTEXT_MODE=selected_vector_search_ontology`; see [Choosing ontology
+context](../guides/ontology_context.md).
 
 ```bash
-# Typical: document conversion plus an embedded vector store
-uv add "ontocast[doc-processing,lancedb]"
+# Document conversion plus an embedded vector store
+pip install "ontocast[doc-processing,lancedb]"
 
-# Everything except the graphviz-dependent plotting extra
-uv add "ontocast[all]"
+# Everything except plotting
+pip install "ontocast[all]"
 
-# Plotting requires system graphviz first, e.g. apt install graphviz graphviz-dev
-uv add "ontocast[plot]"
+# Plotting
+pip install "ontocast[plot]"
 ```
 
 ## Console scripts
 
-Installing with the `server` extra puts these on your `PATH`. All of them route
-through the same entry point, so without that extra they print an install hint
-instead of a `ModuleNotFoundError`.
+The `server` extra puts these commands on your `PATH`. Without it they print
+an install hint instead of failing with an import error.
 
 | Command | Purpose |
 |---------|---------|
-| `ontocast serve` | Start the HTTP API — see [API](../user_guide/api.md) |
-| `ontocast process` | Local in-process batch extraction over a file or directory |
-| `ontocast sections` | Print the detected section outline for a document without running extraction |
-| `pdfs-to-markdown` | Convert a directory of PDFs to Markdown JSON, so a corpus is converted once and reused |
-| `test-api` | Smoke-test a running server's `/process` endpoint |
-| `match-graphs` | Match two TTL graphs locally — see [Aggregation](../user_guide/aggregation.md) |
-| `plot-graph` | Regenerate the workflow diagrams under `docs/assets/` (needs the `plot` extra) |
+| `ontocast serve` | Start the HTTP server; see the [HTTP API](../reference/http_api.md) |
+| `ontocast process` | Extract from a local file or directory, without a server |
+| `ontocast sections` | Print the section outline detected in a document, without running extraction |
+| `ontocast cache` | Inspect (`stats`), trim (`prune`) or empty (`clear`) the on-disk cache |
+| `pdfs-to-markdown` | Convert a directory of PDFs to Markdown JSON once, so later runs reuse the conversion |
+| `match-graphs` | Match the entities of two Turtle graphs; see [Entity disambiguation](../concepts/entity_disambiguation.md) |
+| `plot-graph` | Regenerate the workflow diagrams (needs the `plot` extra) |
 
-`pdfs-to-markdown`, `test-api` and `plot-graph` are development and operations
-helpers rather than part of the extraction pipeline.
+## Next steps
 
-## Next Steps
-
-After installation, you can:
-
-1. Read the [Quick Start](quickstart.md) guide
-2. Check the [Configuration](../user_guide/configuration.md) reference
-3. Browse the generated [API Reference](../reference/onto/state.md) after `uv run mkdocs build`
+- [Quick start](quickstart.md): take one document to a knowledge graph.
+- [Configuring OntoCast](../guides/configuration.md): the settings that change what a run does.
+- [Python API reference](../reference/python/index.md): the modules you call when embedding OntoCast.

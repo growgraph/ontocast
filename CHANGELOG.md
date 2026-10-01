@@ -5,7 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.4] - unreleased
+## [Unreleased]
+
+### Added
+
+- **Contributor License Agreement.** Outside contributors accept `CLA.md` once, by commenting on a
+  pull request; the `cla` status check tracks acceptances (write access and bots are exempt).
+- **`plot-graph --format`** selects any of `svg`, `png`, `pdf` (default `svg,png`).
+- **`ontocast.config.env_names`:** environment-variable names of every settings field.
+
+### Changed
+
+- **`plot` extra** requires `pygraphviz>=2.0,<3`, whose wheels bundle Graphviz.
+- **`docs` extra:** `properdocs` replaces `mkdocs`; `mkdocs-jupyter` and the
+  `griffe<2` pin are dropped.
+- **`plot-graph`** no longer writes `graph.preview.png` (a remote mermaid.ink call).
+- **`plot-graph`:** the left-to-right pipeline figure uses larger labels and
+  tighter spacing, so it stays legible at page width.
+
+### Removed
+
+- **`suthing` dropped from the `server` extra.** Nothing in the package imports
+  it; installing `ontocast[server]` no longer pulls it in.
+
+### Fixed
+
+- **Section-label matching** compiles each heading pattern and keyword once. The
+  catalog outgrows `re`'s cache, so schema detection recompiled it for every heading.
+- **`GET /info`** `input_types` lists what `/process` accepts: `txt`, `json`,
+  `pdf`, `pptx` (it advertised `text` and `markdown`).
+- **LangChain tools:** `ontocast_delete_ontology` no longer claims to delete the
+  seed file (it keeps it; the ontology reloads on the next start), and
+  `ontocast_convert_document` names the formats it converts: PDF and PowerPoint.
+- **Vector-search context error** names both ways to enable a vector store,
+  `QDRANT_URI` or `LANCEDB_ENABLED=true`.
+- **CLI help:** `--section-schema-id` lists every schema (`patent`, `standard`,
+  `news` were missing); `--summarize-sections` says summaries are written per
+  content unit.
+- **`AGG_SIMILARITY_THRESHOLD`** description and warning say what reads it: the
+  aligner's fallback when a caller names no threshold. `POST /match/entities` and
+  `match-graphs` use their own `similarity_threshold`.
+
+### Documentation
+
+- Docs are built with ProperDocs (`properdocs.yml`, `properdocs build` / `serve`)
+  and reorganized into Getting started, Concepts, Guides, Reference and Internals,
+  with a new theme and landing page.
+- The configuration reference is generated from the settings models, one entry per
+  environment variable; setting descriptions rewritten to state behaviour only.
+- Pipeline and per-unit loop diagrams redrawn in the new palette and served as SVG;
+  the loop diagrams state the real convergence rule and the facts loop's exits.
+- Docs no longer claim OntoCast reads a `.env` file (it reads the environment), or
+  that `FUSEKI_URI` alone enables Fuseki (`FUSEKI_AUTH` is also required).
+- `demo/README.md` sample paths fixed; public callables fully annotated.
+
+## [0.6.4] - 2026-09-16
 
 *0.6.3 was never tagged. Its entries ship here.*
 
@@ -2527,7 +2581,9 @@ BASE_RECURSION_LIMIT=1000
 
 See [docs/user_guide/](docs/user_guide/) for full guides.
 
-[0.6.2]: https://github.com/growgraph/ontocast/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/growgraph/ontocast/compare/v0.6.4...HEAD
+[0.6.4]: https://github.com/growgraph/ontocast/compare/v0.6.2...v0.6.4
+[0.6.2]: https://github.com/growgraph/ontocast/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/growgraph/ontocast/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/growgraph/ontocast/compare/v0.4.3...v0.6.0
 [0.4.3]: https://github.com/growgraph/ontocast/compare/v0.4.2...v0.4.3

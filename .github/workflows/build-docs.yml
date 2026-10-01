@@ -5,45 +5,48 @@ on:
         -   main
         paths:
         -   'docs/**'
-        -   'mkdocs.yml'
-        -   'ontocast/**' # Check this path
+        -   'properdocs.yml'
+        -   'pyproject.toml'
+        -   'uv.lock'
+        -   'ontocast/**'
     workflow_dispatch:
 
 permissions:
-    contents: write
-    pages: write
-    id-token: write
+    contents: read
+
+# One deployment at a time; a newer push queues instead of cancelling a
+# deployment that is already in flight.
+concurrency:
+    group: pages
+    cancel-in-progress: false
 
 jobs:
     build:
         runs-on: ubuntu-latest
         steps:
         -   name: Checkout code
-            uses: actions/checkout@v4
-            with:
-                fetch-depth: 0
-
-        -   name: Set up Python
-            uses: actions/setup-python@v6
-            with:
-                python-version: '3.12'
+            uses: actions/checkout@v7
         -   name: Install uv
-            uses: astral-sh/setup-uv@v7
+            uses: astral-sh/setup-uv@v10.2.0
             with:
-                version: "0.10.12"
+                version: "0.12.21"
+                enable-cache: true
         -   name: Install dependencies
             run: |
                 uv sync --extra docs
         -   name: Build site
             run: |
-                uv run mkdocs build --site-dir _site
+                uv run properdocs build --strict --site-dir _site
         -   name: Upload Pages artifact
-            uses: actions/upload-pages-artifact@v3
+            uses: actions/upload-pages-artifact@v5
             with:
                 path: _site
 
     deploy:
         needs: build
+        permissions:
+            pages: write
+            id-token: write
         environment:
             name: github-pages
             url: ${{ steps.deployment.outputs.page_url }}
@@ -51,4 +54,4 @@ jobs:
         steps:
         -   name: Deploy to GitHub Pages
             id: deployment
-            uses: actions/deploy-pages@v4
+            uses: actions/deploy-pages@v5

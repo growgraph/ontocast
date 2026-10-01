@@ -1,204 +1,142 @@
-# Quick Start
+# Quick start
 
-This guide will help you get started with OntoCast quickly. We'll walk through a simple example of processing a document and viewing the results.
+This page takes one document all the way to a knowledge graph: you install
+OntoCast, start its server, send it a PDF, and read back the ontology and facts
+it extracted.
 
-## Prerequisites
-
-- OntoCast installed (see [Installation](installation.md))
-- A sample document to process (e.g., a pdf or a markdown file)
-
-## Basic Example
-
-### Query the Server
+## 1. Install
 
 ```bash
-curl -X POST http://url:port/process -F "file=@sample.pdf"
-
-curl -X POST http://url:port/process -F "file=@sample.json"
+pip install "ontocast[server,openai,doc-processing]"
 ```
 
-`url` would be `localhost` for a locally running server, default port is 8999
+`server` provides the `ontocast` command, `openai` the model provider, and
+`doc-processing` the PDF and PowerPoint converter. For plain text or JSON input
+you can leave out `doc-processing`. [Installation](installation.md) lists the
+other extras.
 
-### Running a Server
+## 2. Give it a model
 
-To start an OntoCast server:
+OntoCast reads its settings from environment variables. With the defaults it
+calls OpenAI, so the only setting you need is the key:
 
 ```bash
-# Backend automatically detected from .env configuration
+export LLM_API_KEY=sk-...
+```
+
+To use another provider, install its extra and set three variables:
+
+| Provider | Extra | Settings |
+|---|---|---|
+| Anthropic | `anthropic` | `LLM_PROVIDER=anthropic`, `LLM_MODEL_NAME`, `LLM_API_KEY` |
+| Google | `google` | `LLM_PROVIDER=google`, `LLM_MODEL_NAME`, `LLM_API_KEY` |
+| Ollama | `ollama` | `LLM_PROVIDER=ollama`, `LLM_MODEL_NAME`, `LLM_BASE_URL` (for example `http://localhost:11434`) |
+
+!!! tip "Keeping settings in a file"
+    The repository ships `.env.example.minimal`, the settings worth a decision,
+    and `.env.example`, all of them. Copy one to `.env` and edit it. OntoCast
+    does not read the file itself, so load it into the environment of the
+    command you run:
+
+    ```bash
+    set -a; source .env; set +a
+    ```
+
+## 3. Start the server
+
+```bash
 ontocast serve
-
-# Process specific file (local batch)
-ontocast process --input-path ./document.pdf --output-dir ./out
-
-# Process with chunk limit (for testing)
-ontocast process --input-path ./document.pdf --head-chunks 5
-
-# Override render/critic retry budget
-ontocast process --input-path ./document.pdf --max-visits 2
-
-# Clean-slate vector reindex (embedding-contract / BM25 schema changes)
-ontocast serve --wipe-vector-store
 ```
 
-- Triple store: Fuseki when `FUSEKI_URI` is set; otherwise in-memory pyoxigraph
-- Vector store: Qdrant (`QDRANT_URI`) or LanceDB (`LANCEDB_ENABLED=true`), not both
-- Paths and directories are configured via `.env`
-- `--input-path` takes a single file or a directory (searched recursively). A
-  path that does not exist, a file whose extension is not supported, or a
-  directory holding no supported input is a hard error with a non-zero exit —
-  never a silent no-op
-
-### Configuration
-
-OntoCast uses a hierarchical configuration system with environment variables. Create a `.env` file in your project directory (or copy `.env.example`):
-
-This block is a subset of `.env.example`. For a curated starting point see
-`.env.example.minimal` and the [Configuration Playbooks](../user_guide/playbooks.md).
+The server listens on `http://127.0.0.1:8999`. It keeps graphs in memory, so
+they are gone when it stops; [Triple stores](../guides/triple_stores.md) shows
+how to keep them in Apache Jena Fuseki. Check that it is up:
 
 ```bash
-# Domain configuration (used for URI generation)
-CURRENT_DOMAIN=https://example.com
-PORT=8999
-
-# LLM Configuration
-LLM_PROVIDER=openai
-LLM_API_KEY=your-api-key-here
-LLM_MODEL_NAME=gpt-5.4
-LLM_TEMPERATURE=0.0
-
-# Server Configuration
-MAX_VISITS=1
-RENDER_MODE=ontology_and_facts    # ontology | facts | ontology_and_facts
-ONTOLOGY_CONTEXT_MAX_TRIPLES=4000 # prompt budget for the ontology chapter
-PARALLEL_WORKERS=16
-ENABLE_ONTOLOGY_CONSOLIDATION=false
-
-# Paths
-ONTOCAST_ONTOLOGY_DIRECTORY=/path/to/ontology/files
-# ONTOCAST_CACHE_DIR=/path/to/cache/directory
-
-# Triple store (optional — omit FUSEKI_URI for in-memory pyoxigraph)
-# FUSEKI_URI=http://localhost:3030
-# FUSEKI_AUTH=admin/admin
-
-# Optional aggregation controls
-AGG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
-AGG_CANDIDATE_SIMILARITY_THRESHOLD=0.70
-
-# Optional web-search grounding
-WEB_SEARCH_ENABLED=false
-WEB_SEARCH_PROVIDER=duckduckgo
-WEB_SEARCH_TOP_K=3
+curl http://127.0.0.1:8999/health
 ```
 
-#### Alternative: Ollama Configuration
+## 4. Send a document
 
 ```bash
-# For Ollama
-LLM_PROVIDER=ollama
-LLM_BASE_URL=http://localhost:11434
-LLM_MODEL_NAME=granite4.1:8b
+curl -X POST http://127.0.0.1:8999/process -F "file=@paper.pdf" -o result.json
 ```
 
-#### Alternative: Claude / Gemini
+OntoCast accepts `.pdf`, `.pptx`, `.txt`, `.json` and `.jsonl` files, or text
+in a JSON body:
 
 ```bash
-# Anthropic Claude
-LLM_PROVIDER=anthropic
-LLM_MODEL_NAME=claude-sonnet-4-20250514
-LLM_API_KEY=your-anthropic-api-key
-
-# Google Gemini
-LLM_PROVIDER=google
-LLM_MODEL_NAME=gemini-2.0-flash
-LLM_API_KEY=your-google-api-key
+curl -X POST http://127.0.0.1:8999/process \
+  -H "Content-Type: application/json" \
+  -d '{"text": "The sample was annealed at 150 °C for 10 minutes."}'
 ```
 
-### CLI Parameters
+You gave OntoCast no ontology, so it builds one from the document and then
+extracts the facts in its terms. The request returns when the whole document
+is done, and each part of the document goes through the model separately, so a
+long document takes a while.
 
-```bash
-# Start the API server (config from .env / environment)
-ontocast serve
+## 5. Read the result
 
-# Process specific input file; dump TTLs under ./out
-ontocast process --input-path /path/to/document.pdf --output-dir ./out
-
-# Process only first 5 chunks (for testing)
-ontocast process --input-path /path/to/document.pdf --head-chunks 5
-
-# Override MAX_VISITS for this run
-ontocast process --input-path /path/to/document.pdf --max-visits 2
-
-# Drop and recreate the vector partition before reindex
-ontocast serve --wipe-vector-store
-
-# Point this run at a seed catalog, whatever the environment says
-ontocast process --input-path ./docs --ontology-dir ./my-ontologies
-
-# Run with no seed catalog at all: an ontology-rendering run builds the first
-# ontology from the corpus. The empty string overrides a configured directory.
-ontocast process --input-path ./docs --ontology-dir ''
-
-# Separate facts vs ontology dump folders
-ontocast process --input-path ./docs \
-  --facts-output-dir ./out/facts \
-  --ontology-output-dir ./out/ontologies
-```
-
-`--ontology-dir` is the **input** catalog; `--ontology-output-dir` is where
-results are written. `--shapes-dir` overrides `FACTS_SHAPES_DIR` the same way.
-
-**Note:** Other paths and directories are configured via the `.env` file.
-`ontocast process` refuses to start when `--ontology-dir` names something that
-is not a directory — a mistyped path is indistinguishable downstream from
-"deliberately none", and surfaces much later as an unexplained empty catalog.
-
-### Receive Results
-
-After processing, the facts graph and the ontology-update artifacts are
-returned in Turtle format
+The response is JSON. The graphs are Turtle strings:
 
 ```json
 {
-    "data": {
-        "facts": "# facts in turtle format",
-        "ontology_artifacts": [
-            {"iri": "https://...", "title": "...", "ttl": "# ontology update in turtle"}
-        ]
-    }
-  ...
+  "data": {
+    "facts": "@prefix cd: <...> . ...",
+    "ontology_artifacts": [
+      {"iri": "https://...", "ontology_id": "...", "title": "...", "triples": 42, "ttl": "..."}
+    ]
+  },
+  "metadata": {"status": "...", "chunks_processed": 7, "budget": {...}, "failed_units": [], ...}
 }
 ```
 
-## Configuration System
+Save the facts to a file you can load into any RDF tool:
 
-OntoCast uses a hierarchical configuration system:
+```bash
+jq -r .data.facts result.json > facts.ttl
+jq -r '.data.ontology_artifacts[0].ttl' result.json > ontology.ttl
+```
 
-- **ToolConfig**: Configuration for tools (LLM, triple stores, paths)
-- **ServerConfig**: Configuration for server behavior
-- **Environment Variables**: Override defaults via `.env` file or environment
+`metadata` says what the run cost and where it struggled: `budget` counts LLM
+calls, `failed_units` lists any part of the document that produced nothing, and
+`facts_conformance` summarizes validation. If no part of the document produced
+output, the server answers `422` instead. [Reading run
+telemetry](../guides/telemetry.md) explains the rest.
 
-### Key Environment Variables
+## Process files without a server
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `LLM_API_KEY` | API key for LLM provider | Required for openai / anthropic / google |
-| `LLM_PROVIDER` | `openai`, `ollama`, `anthropic`, or `google` | openai |
-| `LLM_MODEL_NAME` | Model name | gpt-5.4 |
-| `FUSEKI_URI` + `FUSEKI_AUTH` | Persistent triple store | Omit for in-memory (default) |
-| `ONTOCAST_ONTOLOGY_DIRECTORY` | Seed ontology TTL files | Optional bootstrap |
-| `MAX_VISITS` | Maximum visits per node | 1 |
-| `ONTOLOGY_CONTEXT_MAX_TRIPLES` | Triple budget for the ontology sent to the LLM | 4000 |
-| `ONTOLOGY_MAX_TRIPLES` | Growth backstop on the ontology working graph (not a context cap) | unset |
-| `ENABLE_ONTOLOGY_CONSOLIDATION` | Run ontology consolidation pass | false |
+`ontocast process` runs the same pipeline on local files and writes the graphs
+next to them, or into one directory:
 
-Full reference: [Configuration](../user_guide/configuration.md).
+```bash
+ontocast process --input-path ./papers --output-dir ./out
+```
 
-## Next Steps
+`--input-path` takes a file or a directory, searched recursively. For each
+document the command writes `<name>.facts.ttl`, plus one
+`<name>.<ontology>.ontology.ttl` for every ontology the document changed. To
+try settings on part of a document first, add `--head-chunks 3`.
 
-Now that you've processed your first document, you can:
+## Start from your own ontologies
 
-1. Try processing different types of documents (PDF, Word)
-2. Configure Fuseki for persistent triple storage (see [Triple Stores](../user_guide/triple_stores.md))
-3. Check the [API Endpoints](../user_guide/api.md) for REST usage
-4. Explore the [User Guide](../user_guide/concepts.md) for advanced usage
+Extraction is better when OntoCast works in terms of an ontology you trust.
+Put your Turtle files in a directory and pass it at startup:
+
+```bash
+ontocast serve --ontology-dir ./my-ontologies
+```
+
+Or upload one to a running server:
+
+```bash
+curl -X POST http://127.0.0.1:8999/ontologies -F "file=@my-ontology.ttl"
+```
+
+## What to read next
+
+- [How OntoCast works](../concepts/index.md): what happens to the document between steps 4 and 5.
+- [Configuring OntoCast](../guides/configuration.md): the settings that change what a run does.
+- [Recipes](../guides/recipes.md): settings for evaluating, building an ontology, or extracting facts at scale.
+- [HTTP API](../reference/http_api.md): every route and parameter.

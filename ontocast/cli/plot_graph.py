@@ -16,18 +16,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Warm palette matching the Mermaid hand-drawn theme
+# Cream nodes on a warm ground, drawn in GrowGraph ink; start and end nodes in
+# GrowGraph blue; conditional edges dashed in orange.
 _NODE_FILL = "#FFF3E0"
-_NODE_BORDER = "#143642"
-_NODE_FONT = "#372237"
-_ACCENT_FILL = "#BCCCFF"
-_ACCENT_BORDER = "#0C369F"
+_NODE_BORDER = "#293241"
+_NODE_FONT = "#293241"
+_ACCENT_FILL = "#D6E0EE"
+_ACCENT_BORDER = "#224777"
 _EDGE_COLOR = "#8D6E63"
 _COND_EDGE_COLOR = "#E64A19"
 _BG_COLOR = "#FFFCF7"
 _FONTNAME = "Helvetica"
 
 _NODE_LABELS: dict[str, str] = {"__end__": "END", "__start__": "START"}
+
+#: Output formats ``plot-graph`` can write, and the default selection.
+FORMATS = ("svg", "png", "pdf")
+DEFAULT_FORMATS = ("svg", "png")
 
 NodeShape = Literal["process", "decision", "terminal"]
 
@@ -125,7 +130,7 @@ def flow_graph_to_mermaid(flow: FlowGraph) -> str:
 
 
 def _unit_loop_core_edges(
-    *, render_node: str, critic_node: str
+    *, render_node: str, critic_node: str, review_entry: str
 ) -> tuple[FlowEdge, ...]:
     """The unit loop without the optional web-evidence branches.
 
@@ -134,6 +139,12 @@ def _unit_loop_core_edges(
     critique cannot cost a re-extraction. And the critique ends in an applied
     patch rather than in a request: accepting and rejecting differ only in
     whether the unit may leave, not in whether the fixes are acted on.
+
+    Args:
+        render_node: Id of the render node.
+        critic_node: Id of the critic node.
+        review_entry: The node the deterministic checks hand over to -- the
+            critic itself, or the facts phase's skip gate in front of it.
     """
     return (
         FlowEdge("render_loop", render_node),
@@ -141,13 +152,13 @@ def _unit_loop_core_edges(
         FlowEdge(render_node, "render_loop", "fail", conditional=True),
         FlowEdge("render_loop", "exhausted", "exhausted", conditional=True),
         FlowEdge("pass_loop", "findings", "pass", conditional=True),
-        FlowEdge("findings", critic_node),
+        FlowEdge("findings", review_entry),
         FlowEdge(critic_node, "patch", "accept or reject", conditional=True),
     )
 
 
 def _unit_loop_evidence_edges(
-    *, render_node: str, critic_node: str
+    *, render_node: str, critic_node: str, review_entry: str
 ) -> tuple[FlowEdge, ...]:
     """The unit loop including optional plan/fetch web evidence."""
     return (
@@ -161,7 +172,7 @@ def _unit_loop_evidence_edges(
         FlowEdge("render_fail_search", "render_loop", "no", conditional=True),
         FlowEdge("render_loop", "exhausted", "exhausted", conditional=True),
         FlowEdge("pass_loop", "findings", "pass", conditional=True),
-        FlowEdge("findings", critic_node),
+        FlowEdge("findings", review_entry),
         FlowEdge(critic_node, "patch", "accept", conditional=True),
         FlowEdge(critic_node, "critic_fail_search", "reject", conditional=True),
         FlowEdge("critic_fail_search", "evid_c", "yes", conditional=True),
@@ -174,10 +185,16 @@ def _unit_loop_evidence_edges(
 def unit_loop_flow(
     phase: str, *, include_evidence: bool = False, passes_var: str
 ) -> FlowGraph:
-    """The per-unit loop, which is now one shape for both phases.
+    """The per-unit loop: one core shared by both phases, plus facts-only exits.
+
+    The facts phase adds three things the ontology phase does not have. A skip
+    gate spends no critic call on a citation-metadata unit or an empty render.
+    A critic that returns no critique leaves the loop unpatched and unreviewed.
+    And an optional insert-only completion stage runs after the critic loop,
+    however that loop ended -- except when every render failed.
 
     Args:
-        phase: ``"facts"`` or ``"ontology"`` -- only the node captions differ.
+        phase: ``"facts"`` or ``"ontology"``.
         include_evidence: Draw the optional web-evidence branches.
         passes_var: The setting that bounds the critic passes, named on the
             diagram so the picture and the configuration agree.
@@ -185,6 +202,10 @@ def unit_loop_flow(
     render_node = f"render_{phase}"
     critic_node = f"criticise_{phase}"
     noun = "facts" if phase == "facts" else "ontology"
+    is_facts = phase == "facts"
+    review_entry = "skip_critic" if is_facts else critic_node
+    # Where the critic loop hands over once it stops.
+    loop_exit = "completion" if is_facts else "done"
     common = (
         FlowNode("start", "Unit start", "terminal"),
         FlowNode("ctx", "Resolve / apply<br/>ontology context"),
@@ -194,9 +215,30 @@ def unit_loop_flow(
         FlowNode("findings", "Deterministic checks<br/>(no LLM call)"),
         FlowNode(critic_node, f"Criticise {noun}<br/>(cites statement ids)"),
         FlowNode("patch", "Compile, screen, apply<br/>patch (no LLM call)"),
-        FlowNode("converged", "changed nothing, or<br/>rolled back?", "decision"),
+        FlowNode(
+            "converged",
+            "no fix kept, and a rollback<br/>or no mandatory findings left?",
+            "decision",
+        ),
         FlowNode("done", "Return unit state", "terminal"),
         FlowNode("exhausted", "Return (retries exhausted)", "terminal"),
+    )
+    facts_nodes = (
+        FlowNode(
+            "skip_critic",
+            "citation metadata, or fewer than<br/>FACTS_CRITIC_MIN_TRIPLES triples?",
+            "decision",
+        ),
+        FlowNode(
+            "completion",
+            "Completion passes<br/>0 … FACTS_COMPLETION_PASSES<br/>(insert-only)",
+        ),
+    )
+    facts_edges = (
+        FlowEdge("skip_critic", critic_node, "no", conditional=True),
+        FlowEdge("skip_critic", "completion", "yes (no critic call)", conditional=True),
+        FlowEdge(critic_node, "completion", "unavailable (no patch)", conditional=True),
+        FlowEdge("completion", "done"),
     )
     if include_evidence:
         nodes = (
@@ -209,21 +251,38 @@ def unit_loop_flow(
             FlowNode("recritic", f"Re-criticise {noun}"),
         )
         loop_edges = _unit_loop_evidence_edges(
-            render_node=render_node, critic_node=critic_node
+            render_node=render_node,
+            critic_node=critic_node,
+            review_entry=review_entry,
         )
+        if is_facts:
+            facts_edges = (
+                *facts_edges,
+                FlowEdge(
+                    "recritic",
+                    "completion",
+                    "unavailable (no patch)",
+                    conditional=True,
+                ),
+            )
     else:
         nodes = common
         loop_edges = _unit_loop_core_edges(
-            render_node=render_node, critic_node=critic_node
+            render_node=render_node,
+            critic_node=critic_node,
+            review_entry=review_entry,
         )
+    if is_facts:
+        nodes = (*nodes, *facts_nodes)
     edges = (
         FlowEdge("start", "ctx"),
         FlowEdge("ctx", "render_loop"),
         *loop_edges,
         FlowEdge("patch", "converged"),
-        FlowEdge("converged", "done", "yes", conditional=True),
+        FlowEdge("converged", loop_exit, "yes", conditional=True),
         FlowEdge("converged", "pass_loop", "no", conditional=True),
-        FlowEdge("pass_loop", "done", "budget spent", conditional=True),
+        FlowEdge("pass_loop", loop_exit, "budget spent", conditional=True),
+        *(facts_edges if is_facts else ()),
     )
     return FlowGraph(
         nodes=nodes,
@@ -252,6 +311,21 @@ def ontology_loop_flow(*, include_evidence: bool = False) -> FlowGraph:
 def _flow_label_for_graphviz(label: str, is_lr: bool) -> str:
     text = label.replace("<br/>", "\n")
     return _wrap_label(text) if is_lr else text
+
+
+def _write(viz: Any, fname: str, extensions: tuple[str, ...], rankdir: str) -> None:
+    """Render ``viz`` once per requested format; LR layouts get a ``.lr`` infix."""
+    out = fname + ".lr" if rankdir.upper() == "LR" else fname
+    for ext in extensions:
+        if ext == "svg":
+            viz.draw(out + ".svg", format="svg:cairo", prog="dot")
+        elif ext == "png":
+            viz.draw(out + ".png", format="png", prog="dot", args="-Gdpi=150")
+        elif ext == "pdf":
+            viz.draw(out + ".pdf", format="pdf", prog="dot")
+        else:
+            raise ValueError(f"unsupported diagram format: {ext}")
+        print(f"Wrote {out}.{ext}")
 
 
 def draw_flow_graphviz(
@@ -328,17 +402,14 @@ def draw_flow_graphviz(
     viz.get_node(flow.start_node).attr.update(**accent_attrs)
     viz.get_node(flow.end_node).attr.update(**accent_attrs)
 
-    out = fname + f".{rankdir.lower()}" if rankdir.lower() == "lr" else fname
-    for ext in extensions:
-        if ext == "svg":
-            viz.draw(out + ".svg", format="svg:cairo", prog="dot")
-            print(f"📄 Wrote {out}.svg")
-        elif ext == "png":
-            viz.draw(out + ".png", format="png", prog="dot", args="-Gdpi=300")
-            print(f"📄 Wrote {out}.png")
+    _write(viz, fname, extensions, rankdir)
 
 
-def write_atomic_loop_diagrams(pgv_module: Any, output_dir: Path) -> None:
+def write_atomic_loop_diagrams(
+    pgv_module: Any,
+    output_dir: Path,
+    extensions: tuple[str, ...] = DEFAULT_FORMATS,
+) -> None:
     assets = Path(output_dir)
     assets.mkdir(parents=True, exist_ok=True)
     for name, builder in (
@@ -350,10 +421,10 @@ def write_atomic_loop_diagrams(pgv_module: Any, output_dir: Path) -> None:
         flow = builder()
         mmd_path = assets / f"{name}.mmd"
         mmd_path.write_text(flow_graph_to_mermaid(flow))
-        print(f"📄 Wrote {mmd_path}")
+        print(f"Wrote {mmd_path}")
         base = assets / name
-        draw_flow_graphviz(pgv_module, flow, str(base), ("svg", "png"), rankdir="TB")
-        draw_flow_graphviz(pgv_module, flow, str(base), ("svg", "png"), rankdir="LR")
+        draw_flow_graphviz(pgv_module, flow, str(base), extensions, rankdir="TB")
+        draw_flow_graphviz(pgv_module, flow, str(base), extensions, rankdir="LR")
 
 
 def draw_graphviz(
@@ -372,7 +443,7 @@ def draw_graphviz(
         bgcolor=_BG_COLOR,
         pad="0.3" if is_lr else "0.6",
         nodesep="0.35" if is_lr else "0.7",
-        ranksep="0.5" if is_lr else "0.9",
+        ranksep="0.28" if is_lr else "0.9",
         fontname=_FONTNAME,
         splines=splines,
     )
@@ -382,9 +453,9 @@ def draw_graphviz(
         fillcolor=_NODE_FILL,
         color=_NODE_BORDER,
         fontcolor=_NODE_FONT,
-        fontsize="11" if is_lr else "13",
+        fontsize="14" if is_lr else "13",
         fontname=_FONTNAME,
-        margin="0.15,0.08" if is_lr else "0.25,0.12",
+        margin="0.1,0.06" if is_lr else "0.25,0.12",
         penwidth="1.5" if is_lr else "1.8",
     )
     viz.edge_attr.update(
@@ -436,14 +507,7 @@ def draw_graphviz(
         if last.id not in hidden_nodes:
             viz.get_node(last.id).attr.update(**accent_attrs)
 
-    out = fname + f".{rankdir.lower()}" if rankdir.lower() == "lr" else fname
-    for ext in extensions:
-        if ext == "svg":
-            viz.draw(out + ".svg", format="svg:cairo", prog="dot")
-            print(f"📄 Wrote {out}.svg")
-        elif ext == "png":
-            viz.draw(out + ".png", format="png", prog="dot", args="-Gdpi=300")
-            print(f"📄 Wrote {out}.png")
+    _write(viz, fname, extensions, rankdir)
 
 
 @click.command()
@@ -454,7 +518,14 @@ def draw_graphviz(
     show_default=True,
     help="Directory to write diagrams into. Created if absent.",
 )
-def main(output_dir: Path) -> None:
+@click.option(
+    "--format",
+    "formats",
+    default=",".join(DEFAULT_FORMATS),
+    show_default=True,
+    help=f"Comma-separated output formats, any of: {', '.join(FORMATS)}.",
+)
+def main(output_dir: Path, formats: str) -> None:
     """Render the workflow graph and per-unit loop diagrams.
 
     Diagram rendering only needs the compiled graph topology, so the LLM is
@@ -462,6 +533,12 @@ def main(output_dir: Path) -> None:
     ``Config()`` rather than pinned to a local Ollama, so the command works
     wherever the package is installed.
     """
+    extensions = tuple(f.strip().lower() for f in formats.split(",") if f.strip())
+    unknown = sorted(set(extensions) - set(FORMATS))
+    if unknown:
+        raise click.BadParameter(
+            f"unknown format(s): {', '.join(unknown)}", param_hint="--format"
+        )
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -479,24 +556,11 @@ def main(output_dir: Path) -> None:
     try:
         pgv_module = importlib.import_module("pygraphviz")
 
-        draw_graphviz(pgv_module, graph, graph_stem, ("svg", "png"), rankdir="TB")
-        draw_graphviz(pgv_module, graph, graph_stem, ("svg", "png"), rankdir="LR")
-        write_atomic_loop_diagrams(pgv_module, output_dir)
+        draw_graphviz(pgv_module, graph, graph_stem, extensions, rankdir="TB")
+        draw_graphviz(pgv_module, graph, graph_stem, extensions, rankdir="LR")
+        write_atomic_loop_diagrams(pgv_module, output_dir, extensions)
     except ImportError as e:
         logger.info(f"pygraphviz not available, skipping graphviz output: {e}")
-
-    try:
-        from langchain_core.runnables.graph import MermaidDrawMethod
-
-        png_data = graph.draw_mermaid_png(
-            draw_method=MermaidDrawMethod.API,
-            frontmatter_config=frontmatter_config,
-            padding=20,
-        )
-
-        (output_dir / "graph.preview.png").write_bytes(png_data)
-    except ImportError as e:
-        logger.info(f"MermaidDrawMethod not available, skipping mermaid PNG: {e}")
 
 
 if __name__ == "__main__":

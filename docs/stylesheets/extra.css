@@ -1,0 +1,581 @@
+/* Palette. The header is GrowGraph ink; GrowGraph blue carries links, accents
+   and buttons, and a light blue carries marks that sit on the ink itself.
+   Text colours meet WCAG AA against their background. */
+
+:root,
+[data-md-color-scheme="default"] {
+  --oc-ink: #293241;
+  --oc-ink-light: #3d4a5e;
+  --oc-ink-dark: #1d2430;
+  --oc-blue: #224777;
+  --oc-link: #2a5a9a;
+  /* Blue for marks on the ink, where #224777 is too faint. */
+  --oc-blue-on-ink: #8fb0e0;
+  --oc-mark: var(--oc-blue);
+  --oc-amber: #f39c12;
+  --oc-amber-text: #b9700a;
+  --oc-rule: rgba(41, 50, 65, 0.16);
+  --oc-tint: rgba(41, 50, 65, 0.06);
+  --oc-blue-tint: rgba(34, 71, 119, 0.07);
+  --oc-amber-tint: rgba(243, 156, 18, 0.1);
+
+  --md-primary-fg-color: var(--oc-ink);
+  --md-primary-fg-color--light: var(--oc-ink-light);
+  --md-primary-fg-color--dark: var(--oc-ink-dark);
+  --md-primary-bg-color: #ffffff;
+  --md-primary-bg-color--light: rgba(255, 255, 255, 0.72);
+  --md-accent-fg-color: var(--oc-blue);
+  --md-accent-fg-color--transparent: rgba(34, 71, 119, 0.1);
+  --md-typeset-a-color: var(--oc-link);
+  --md-code-bg-color: #f3f4f7;
+  --md-footer-bg-color: var(--oc-ink-dark);
+  --md-footer-bg-color--dark: #161b24;
+}
+
+/* Dark: Material's slate, hue-shifted toward the ink so the page and the
+   header belong to one family. */
+[data-md-color-scheme="slate"] {
+  --md-hue: 218;
+  --oc-mark: var(--oc-blue-on-ink);
+  --oc-amber-text: #f5b041;
+  --oc-rule: rgba(255, 255, 255, 0.16);
+  --oc-tint: rgba(255, 255, 255, 0.05);
+  --oc-blue-tint: rgba(143, 176, 224, 0.08);
+  --oc-amber-tint: rgba(243, 156, 18, 0.1);
+
+  --md-primary-fg-color: #1d2430;
+  --md-primary-fg-color--light: #293241;
+  --md-primary-fg-color--dark: #141922;
+  --md-accent-fg-color: #9cbcf0;
+  --md-accent-fg-color--transparent: rgba(156, 188, 240, 0.1);
+  --md-typeset-a-color: #9cbcf0;
+  --md-footer-bg-color: #141922;
+  --md-footer-bg-color--dark: #0f131a;
+}
+
+/* Type. Headings take the wordmark's face; body and code come from
+   `theme.font`. Material sets h1 light and grey, which reads as a caption
+   next to a 600 heading face, so headings take the full text colour. */
+
+/* On `body`, not `:root`: that is where Material defines the family it falls
+   back to, and a variable referencing an undefined one resolves to nothing. */
+body {
+  --oc-heading-font: "Montserrat", var(--md-text-font-family), sans-serif;
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4,
+.md-header__title,
+.md-tabs__link,
+.md-nav__title {
+  font-family: var(--oc-heading-font);
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4 {
+  color: var(--md-default-fg-color);
+  font-weight: 600;
+  letter-spacing: -0.012em;
+}
+
+.md-typeset h1 {
+  font-size: 1.9em;
+  line-height: 1.2;
+}
+
+.md-typeset h2 {
+  font-size: 1.4em;
+  line-height: 1.3;
+  margin-top: 2em;
+}
+
+.md-typeset h3 {
+  font-size: 1.12em;
+  line-height: 1.35;
+}
+
+.md-typeset h4 {
+  font-size: 1em;
+}
+
+/* A heading that is an identifier stays in the code face at heading weight. */
+.md-typeset h1 code,
+.md-typeset h2 code,
+.md-typeset h3 code,
+.md-typeset h4 code {
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.md-header__title {
+  font-weight: 600;
+}
+
+/* Header and tabs. */
+
+.md-header__button.md-logo img {
+  height: 1.7rem;
+  width: 1.7rem;
+}
+
+.md-tabs__link {
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+.md-tabs__item--active .md-tabs__link {
+  box-shadow: inset 0 -0.12rem 0 var(--oc-blue-on-ink);
+}
+
+/* Buttons. */
+
+.md-typeset .md-button {
+  border-color: var(--md-accent-fg-color);
+  border-radius: 0.2rem;
+  color: var(--md-accent-fg-color);
+  font-family: var(--oc-heading-font);
+  font-weight: 600;
+}
+
+.md-typeset .md-button--primary,
+.md-typeset .md-button:focus,
+.md-typeset .md-button:hover {
+  background-color: var(--oc-blue);
+  border-color: var(--oc-blue);
+  color: #ffffff;
+}
+
+/* On the dark page the brand blue sinks into the background, so a filled
+   button takes the light accent with ink text. */
+[data-md-color-scheme="slate"] .md-typeset .md-button--primary,
+[data-md-color-scheme="slate"] .md-typeset .md-button:focus,
+[data-md-color-scheme="slate"] .md-typeset .md-button:hover {
+  background-color: var(--md-accent-fg-color);
+  border-color: var(--md-accent-fg-color);
+  color: var(--oc-ink-dark);
+}
+
+/* Tables carry most of the reference content: a tinted header row, figures
+   that line up, and cells that do not break an identifier mid-word. */
+
+.md-typeset table:not([class]) {
+  border-color: var(--oc-rule);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.md-typeset table:not([class]) th {
+  background-color: var(--oc-tint);
+  font-family: var(--oc-heading-font);
+  font-weight: 600;
+  padding: 0.7em 1em;
+}
+
+.md-typeset table:not([class]) td {
+  border-top-color: var(--oc-rule);
+  padding: 0.6em 1em;
+}
+
+.md-typeset table:not([class]) code {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+/* Code. */
+
+.md-typeset code {
+  border-radius: 0.15rem;
+}
+
+.md-typeset pre > code {
+  border-radius: 0.2rem;
+}
+
+/* Admonitions in the palette: a rule on the left and a light tint, so a note
+   reads as an aside rather than a coloured box. Warnings keep a warm hue. */
+
+.md-typeset .admonition,
+.md-typeset details {
+  border-width: 0 0 0 0.2rem;
+  border-radius: 0.15rem;
+  box-shadow: none;
+  font-size: 0.72rem;
+}
+
+.md-typeset .admonition.note,
+.md-typeset details.note,
+.md-typeset .admonition.info,
+.md-typeset details.info,
+.md-typeset .admonition.abstract,
+.md-typeset details.abstract,
+.md-typeset .admonition.example,
+.md-typeset details.example {
+  border-color: var(--oc-mark);
+  background-color: var(--oc-blue-tint);
+}
+
+.md-typeset .note > .admonition-title,
+.md-typeset .note > summary,
+.md-typeset .info > .admonition-title,
+.md-typeset .info > summary,
+.md-typeset .abstract > .admonition-title,
+.md-typeset .abstract > summary,
+.md-typeset .example > .admonition-title,
+.md-typeset .example > summary {
+  background-color: transparent;
+}
+
+.md-typeset .note > .admonition-title::before,
+.md-typeset .note > summary::before,
+.md-typeset .info > .admonition-title::before,
+.md-typeset .info > summary::before,
+.md-typeset .abstract > .admonition-title::before,
+.md-typeset .abstract > summary::before,
+.md-typeset .example > .admonition-title::before,
+.md-typeset .example > summary::before {
+  background-color: var(--oc-mark);
+}
+
+.md-typeset .admonition.tip,
+.md-typeset details.tip {
+  border-color: var(--oc-ink-light);
+  background-color: var(--oc-tint);
+}
+
+.md-typeset .tip > .admonition-title,
+.md-typeset .tip > summary {
+  background-color: transparent;
+}
+
+.md-typeset .tip > .admonition-title::before,
+.md-typeset .tip > summary::before {
+  background-color: var(--md-default-fg-color--light);
+}
+
+.md-typeset .admonition.warning,
+.md-typeset details.warning,
+.md-typeset .admonition.danger,
+.md-typeset details.danger {
+  border-color: var(--oc-amber);
+  background-color: var(--oc-amber-tint);
+}
+
+.md-typeset .warning > .admonition-title,
+.md-typeset .warning > summary,
+.md-typeset .danger > .admonition-title,
+.md-typeset .danger > summary {
+  background-color: transparent;
+}
+
+.md-typeset .warning > .admonition-title::before,
+.md-typeset .warning > summary::before,
+.md-typeset .danger > .admonition-title::before,
+.md-typeset .danger > summary::before {
+  background-color: var(--oc-amber-text);
+}
+
+.md-typeset .admonition-title,
+.md-typeset summary {
+  font-family: var(--oc-heading-font);
+  font-weight: 600;
+}
+
+/* Figures: the pipeline diagrams carry their own cream background, framed as
+   a card so they sit well on the white page and on the dark slate. */
+
+.md-typeset .oc-figure {
+  margin: 1.5em auto;
+  max-width: 100%;
+}
+
+.md-typeset .oc-figure img {
+  background-color: #fffcf7;
+  border: 0.05rem solid var(--oc-rule);
+  border-radius: 0.3rem;
+  display: block;
+  margin: 0 auto;
+  padding: 0.6rem;
+}
+
+.md-typeset .oc-figure figcaption {
+  color: var(--md-default-fg-color--light);
+  font-size: 0.68rem;
+  margin-top: 0.6em;
+  max-width: 40em;
+}
+
+/* A tall top-to-bottom figure stays narrow rather than filling the column. */
+.md-typeset .oc-figure--tall img {
+  max-width: 34rem;
+  width: 100%;
+}
+
+/* A floated figure never runs into the next section. */
+.md-typeset h2 {
+  clear: both;
+}
+
+/* A left-to-right figure fills the column so its labels stay legible. */
+.md-typeset .oc-figure--wide img {
+  width: 100%;
+}
+
+/* A tall figure shown as an overview beside the text that explains it;
+   the lightbox shows it full size. */
+.md-typeset .oc-figure--aside {
+  margin: 0 auto 1.5em;
+  max-width: 16rem;
+}
+
+@media screen and (min-width: 60em) {
+  .md-typeset .oc-figure--aside {
+    float: right;
+    margin: 0.2em 0 1em 1.5rem;
+    width: 15rem;
+  }
+}
+
+/* API reference: indent each object's body under a rule, so nesting is
+   visible on pages that hold a module, its classes and their members. */
+
+.md-typeset .doc-contents:not(.first) {
+  border-left: 0.1rem solid var(--oc-rule);
+  padding-left: 0.9rem;
+}
+
+.md-typeset .doc-heading {
+  margin-top: 1.6em;
+}
+
+/* An object heading is a whole signature, often several lines of it; at
+   heading weight it reads as a block of bold. */
+.md-typeset .doc-heading code {
+  font-size: 0.9em;
+  font-weight: 400;
+}
+
+.md-typeset h5.doc-heading,
+.md-typeset .doc-contents h5 {
+  color: var(--md-default-fg-color--light);
+  font-family: var(--oc-heading-font);
+  font-weight: 600;
+  text-transform: none;
+}
+
+.md-typeset details.quote {
+  border-color: var(--oc-rule);
+}
+
+/* Landing page. */
+
+.oc-hero {
+  align-items: center;
+  display: grid;
+  gap: 1.5rem 3rem;
+  grid-template-columns: minmax(0, 1fr);
+  margin: 0.5rem 0 3rem;
+}
+
+@media screen and (min-width: 60em) {
+  .oc-hero {
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+    margin-top: 1.5rem;
+  }
+}
+
+.md-typeset .oc-hero h1 {
+  font-size: 3.2em;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  margin: 0 0 0.45em;
+}
+
+.md-typeset .oc-hero p {
+  max-width: 34em;
+}
+
+.md-typeset .oc-hero .oc-lead {
+  font-size: 1.3em;
+  line-height: 1.4;
+}
+
+.md-typeset .oc-hero .highlight {
+  max-width: 22em;
+}
+
+.md-typeset .oc-hero .md-button {
+  margin: 0.4rem 0.5rem 0 0;
+}
+
+/* Documents in, one graph out in two layers: the ontology's classes (blue,
+   squared) above the facts (amber, round), each fact tied to its class by a
+   dashed "typed by" line. */
+
+.md-typeset .oc-layers {
+  margin: 0 auto;
+  max-width: 32rem;
+  width: 100%;
+}
+
+.oc-layers svg {
+  display: block;
+  height: auto;
+  width: 100%;
+}
+
+.oc-layers .oc-layers__band--onto {
+  fill: var(--oc-blue-tint);
+}
+
+.oc-layers .oc-layers__band--facts {
+  fill: var(--oc-amber-tint);
+}
+
+.oc-layers .oc-layers__doc rect {
+  fill: var(--md-default-bg-color);
+  stroke: var(--md-default-fg-color--light);
+  stroke-width: 1.25;
+}
+
+.oc-layers .oc-layers__text-line {
+  stroke: var(--md-default-fg-color--lighter);
+  stroke-linecap: round;
+  stroke-width: 2.5;
+}
+
+.oc-layers .oc-layers__flow {
+  fill: none;
+  stroke: var(--md-default-fg-color--light);
+  stroke-width: 1.5;
+}
+
+.oc-layers .oc-layers__loop {
+  fill: none;
+  stroke: var(--oc-mark);
+  stroke-linecap: round;
+  stroke-width: 3;
+}
+
+.oc-layers .oc-layers__arrowhead {
+  fill: var(--md-default-fg-color--light);
+}
+
+.oc-layers .oc-layers__arrowhead--loop {
+  fill: var(--oc-mark);
+}
+
+.oc-layers .oc-layers__typed {
+  fill: none;
+  stroke: var(--md-default-fg-color--lighter);
+  stroke-dasharray: 3 3;
+  stroke-width: 1;
+}
+
+.oc-layers .oc-layers__schema-edge {
+  fill: none;
+  stroke: var(--oc-mark);
+  stroke-width: 2;
+}
+
+.oc-layers .oc-layers__class rect {
+  fill: var(--md-default-bg-color);
+  stroke: var(--oc-mark);
+  stroke-width: 2.5;
+}
+
+.oc-layers .oc-layers__fact-edge {
+  fill: none;
+  stroke: var(--oc-amber);
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+.oc-layers .oc-layers__fact {
+  fill: var(--oc-amber);
+}
+
+.oc-layers text {
+  fill: var(--md-default-fg-color);
+  font-family: var(--md-text-font-family);
+}
+
+.oc-layers .oc-layers__label {
+  font-family: var(--oc-heading-font);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.oc-layers .oc-layers__caption {
+  font-size: 12.5px;
+}
+
+.oc-layers .oc-layers__small {
+  fill: var(--md-default-fg-color--light);
+  font-size: 11.5px;
+}
+
+/* Three things the library does, as ruled columns. */
+
+.oc-columns {
+  display: grid;
+  gap: 1.5rem 2.5rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media screen and (min-width: 60em) {
+  .oc-columns {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.oc-columns > div {
+  border-top: 0.12rem solid var(--oc-mark);
+  padding-top: 0.2rem;
+}
+
+.md-typeset .oc-columns h3 {
+  margin-top: 0.8em;
+}
+
+/* The landing page has no sidebar to edit from, and the edit button would
+   sit on top of the hero. */
+.md-content__inner:has(.oc-hero) > .md-content__button {
+  display: none;
+}
+
+/* Entry-point cards. */
+
+@media screen and (min-width: 60em) {
+  .md-typeset .grid.cards.oc-next {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.md-typeset .grid.cards > ul > li {
+  border-color: var(--oc-rule);
+  border-radius: 0.2rem;
+}
+
+.md-typeset .grid.cards > ul > li:focus-within,
+.md-typeset .grid.cards > ul > li:hover {
+  border-color: var(--oc-mark);
+  box-shadow: none;
+}
+
+/* Configuration reference: one entry per setting, the name as a heading and
+   its default and type on one quiet line beneath it. */
+
+.md-typeset .oc-setting-meta {
+  color: var(--md-default-fg-color--light);
+  font-size: 0.68rem;
+  margin-top: -0.4em;
+}
+
+.md-typeset h3:has(> code:only-child) {
+  margin-top: 1.8em;
+}

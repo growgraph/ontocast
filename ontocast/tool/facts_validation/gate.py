@@ -504,10 +504,10 @@ def validate_aggregated_facts(
             None disables the distinction.
         key_supported_subjects: Final URIs of merge clusters backed by
             natural-key evidence. Irreconcilable *string* values on these
-            subjects are reported as warnings, not errors: "Application no.
-            36760/06" and "Case of Stanev v. Bulgaria" are two names for one
-            key-confirmed case, and an error here would drive the un-merge
-            repair to split a correct merge.
+            subjects are reported as warnings, not errors: a registry number
+            and a full title can be two names for one key-confirmed record,
+            and an error here would drive the un-merge repair to split a
+            correct merge.
 
     Returns:
         Report with all findings, ordered by subject.

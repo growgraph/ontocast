@@ -15,10 +15,9 @@
 !test/
 !test/**
 
-# --- docs (text only) ---
+# --- docs ---
 !docs/
 !docs/**
-docs/assets/
 
 # --- fixtures (skip PDFs / caches) ---
 !data/
@@ -92,3 +91,10 @@ demo/**/*.jpeg
 *.woff2
 *.ttf
 *.eot
+
+# --- docs assets (beat extension ignores above) ---
+!docs/assets/**/*.svg
+!docs/assets/**/*.png
+!docs/assets/**/*.ico
+!docs/assets/**/*.gif
+!docs/assets/**/*.webp

@@ -650,8 +650,7 @@ class FactsUnitFindingKind(StrEnum):
     #: property of any single triple, so no other kind can express it.
     DOMAIN_ADHERENCE = "domain_adherence"
     #: Not machine-found: a fix the LLM critic proposed, carried through the
-    #: same repair pipeline so a rejection costs one rewrite-in-place render
-    #: instead of a full re-extraction.
+    #: same patch pipeline as the deterministic findings.
     CRITIC_FIX = "critic_fix"
 
 

@@ -264,29 +264,49 @@ class LLMConfig(BaseSettings):
     """LLM configuration settings."""
 
     provider: LLMProvider = Field(
-        default=LLMProvider.OPENAI, description="LLM provider"
+        default=LLMProvider.OPENAI,
+        description=(
+            "Provider the LLM calls go to. Each needs its install extra; "
+            "ollama also needs LLM_BASE_URL, the others LLM_API_KEY."
+        ),
     )
     model_name: LLMModelName = Field(
-        default=OpenAIModel.GPT5_4, description="LLM model name"
+        default=OpenAIModel.GPT5_4,
+        description=(
+            "Model name passed to the provider. Any name the provider accepts "
+            "works; a name OntoCast does not know is passed through with a "
+            "warning."
+        ),
     )
-    temperature: float = Field(default=0.0, description="LLM temperature setting")
+    temperature: float = Field(
+        default=0.0,
+        description=(
+            "Sampling temperature. Keep 0.0 so a run is repeatable and its "
+            "cached responses stay valid. OpenAI gpt-5, gpt-5-mini and "
+            "gpt-5-nano accept only 1.0, which is applied for them."
+        ),
+    )
     base_url: str | None = Field(
         default=None, description="LLM base URL (for ollama, etc.)"
     )
-    api_key: str | None = Field(default=None, description="API key for LLM provider")
+    api_key: str | None = Field(
+        default=None,
+        description=(
+            "Key for OpenAI, Anthropic or Google. Only this variable is read, "
+            "not the provider's own (OPENAI_API_KEY and so on). Not needed "
+            "for ollama."
+        ),
+    )
     prompt_cache_key: str | None = Field(
         default=None,
         description=(
-            "OpenAI prompt_cache_key: a routing hint that steers requests "
-            "sharing a prompt prefix to the same cache shard. The provider "
-            "caches by prefix either way, but without a key a wide simultaneous "
-            "fan-out can be spread across machines that each build their own "
-            "entry, so calls that do share a prefix still miss. Any stable "
-            "string works; one per deployment or per corpus is the useful "
-            "granularity, and it must NOT be per-request or it defeats itself. "
-            "Not a secret and not part of the LLM disk-cache key -- it changes "
-            "routing, never the response. OpenAI only. Set via "
-            "LLM_PROMPT_CACHE_KEY."
+            "OpenAI prompt_cache_key: a routing hint that sends requests "
+            "sharing a prompt prefix to the same cache shard, so a wide "
+            "simultaneous fan-out hits the provider's prefix cache instead of"
+            " building one entry per machine. Use one stable string per "
+            "deployment, never one per request. Changes routing only, never "
+            "the response, so it is not part of the LLM disk-cache key. "
+            "OpenAI only."
         ),
     )
     cache_enabled: bool = Field(
@@ -306,8 +326,7 @@ class LLMConfig(BaseSettings):
         # the literal variables LLM_MAX_INFLIGHT and (unprefixed) MAX_INFLIGHT.
         validation_alias=AliasChoices("llm_max_inflight", "max_inflight"),
         description=(
-            "Maximum concurrent provider LLM requests shared across all documents. "
-            "Set via LLM_MAX_INFLIGHT."
+            "Maximum concurrent provider LLM requests shared across all documents."
         ),
     )
     request_timeout_seconds: float | None = Field(
@@ -331,8 +350,7 @@ class LLMConfig(BaseSettings):
             "requests-per-minute while never holding many connections at "
             "once. Set from the deployment's provider tier; None (default) "
             "means unpaced. A throttle that slips through anyway is counted "
-            "as llm/rate_limited in the budget. Set via "
-            "LLM_REQUESTS_PER_SECOND."
+            "as llm/rate_limited in the budget."
         ),
     )
     max_retries: int | None = Field(
@@ -341,12 +359,12 @@ class LLMConfig(BaseSettings):
         description=(
             "Retry budget handed to the provider SDK for transport-level "
             "failures (rate limits, connection resets), which back off and "
-            "honour Retry-After. None (default) keeps each SDK's own "
-            "default. This is the knob to raise when a tier throttles -- the "
-            "pipeline itself deliberately never retries transport failures "
-            "(that multiplies request rate exactly when the provider asks "
-            "for less). Ignored by the Ollama provider, which exposes no "
-            "retry budget. Set via LLM_MAX_RETRIES."
+            "honour Retry-After. None (default) keeps each SDK's own default."
+            " This is the knob to raise when a tier throttles -- the pipeline"
+            " itself deliberately never retries transport failures (that "
+            "multiplies request rate exactly when the provider asks for "
+            "less). Ignored by the Ollama provider, which exposes no retry "
+            "budget."
         ),
     )
     think: bool | None = Field(
@@ -383,16 +401,12 @@ class LLMConfig(BaseSettings):
     json_mode: bool = Field(
         default=False,
         description=(
-            "Constrain OpenAI decoding to syntactically valid JSON "
-            "(response_format json_object). Every response is parsed as a JSON "
-            "envelope regardless of LLM_GRAPH_FORMAT -- Turtle only makes the "
-            "graph fields flat strings inside that envelope -- so this makes a "
-            "whole class of syntax error unreachable instead of repaired after "
-            "the fact. Strict json_schema mode is deliberately not offered: it "
-            "requires closed schemas and the graph fields are open. Default off "
-            "because OpenAI rejects the request unless the word JSON appears in "
-            "the prompt, which is a property of the prompt set in use. OpenAI "
-            "only; other providers ignore it."
+            "Constrain OpenAI decoding to valid JSON (response_format "
+            "json_object). Every response is parsed as a JSON envelope "
+            "whatever LLM_GRAPH_FORMAT is, so this rules out envelope syntax "
+            "errors rather than repairing them. Off by default because OpenAI"
+            " rejects the request unless the prompt contains the word JSON. "
+            "OpenAI only; other providers ignore it."
         ),
     )
     reasoning_effort: (
@@ -400,36 +414,26 @@ class LLMConfig(BaseSettings):
     ) = Field(
         default=None,
         description=(
-            "How much reasoning the model spends before it answers "
-            "(none | minimal | low | medium | high | xhigh). Reasoning tokens "
-            "are billed inside the output total, so this bounds the part of "
-            "the bill that reasoning_share_of_output in the budget attributes "
-            "to thinking; lower effort trades that for latency and cost. Read "
-            "by OpenAI reasoning models as reasoning_effort and by Gemini 3+ "
-            "as thinking_level. The vocabulary is the union across providers "
-            "and across model generations of one provider -- the floor is "
-            "spelled minimal by some models and none by others, and xhigh is "
-            "newer than both -- so which levels a given model accepts stays "
-            "the provider's business, reported as a rejected request rather "
-            "than guessed at here. None keeps the provider default. Joins the "
-            "LLM cache key, so changing it re-issues every prompt. Ollama and "
-            "Anthropic warn and ignore it. Set via LLM_REASONING_EFFORT."
+            "How much the model reasons before answering: none, minimal, low,"
+            " medium, high or xhigh. Sent to OpenAI reasoning models as "
+            "reasoning_effort and to Gemini 3+ as thinking_level; which "
+            "levels a model accepts is the provider's decision, and a "
+            "rejected level fails the request. Reasoning tokens are billed as"
+            " output (reasoning_share_of_output in the budget). Unset keeps "
+            "the provider default. Part of the LLM cache key. Ollama and "
+            "Anthropic ignore it with a warning."
         ),
     )
     thinking_budget: int | None = Field(
         default=None,
         ge=-1,
         description=(
-            "Thinking-token budget for Gemini 2.5 thinking models: 0 "
-            "disables thinking on models that allow it, -1 lets the model "
-            "choose, a positive value caps it. The integer spelling of "
-            "LLM_REASONING_EFFORT, read the same way "
-            "(reasoning_share_of_output). Superseded from Gemini 3 on, where "
-            "the discrete thinking_level replaces it and the two are mutually "
-            "exclusive -- set LLM_REASONING_EFFORT for those models instead. "
-            "None keeps the provider default. Joins the LLM cache key, so "
-            "changing it re-issues every prompt. Non-Google providers warn "
-            "and ignore it. Set via LLM_THINKING_BUDGET."
+            "Thinking-token budget for Gemini 2.5 models: 0 disables thinking"
+            " where the model allows it, -1 lets the model choose, a positive"
+            " value caps it. Gemini 3 and later take LLM_REASONING_EFFORT "
+            "instead; the two cannot be combined. Unset keeps the provider "
+            "default. Part of the LLM cache key. Other providers ignore it "
+            "with a warning."
         ),
     )
 
@@ -504,8 +508,21 @@ class LLMConfig(BaseSettings):
 class ChunkConfig(BaseSettings):
     """Chunking configuration settings."""
 
-    min_size: int = Field(default=3000, description="Minimum chunk size in characters")
-    max_size: int = Field(default=12000, description="Maximum chunk size in characters")
+    min_size: int = Field(
+        default=3000,
+        description=(
+            "Smallest chunk in characters. Shorter neighbouring pieces are "
+            "merged until they reach it, without passing CHUNK_MAX_SIZE."
+        ),
+    )
+    max_size: int = Field(
+        default=12000,
+        description=(
+            "Largest chunk in characters. Raising it gives each LLM call more "
+            "context and makes fewer calls; lower it if the model loses track "
+            "of long chunks."
+        ),
+    )
     embedding_model: str = Field(
         default="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
         description=(
@@ -568,15 +585,14 @@ class ChunkConfig(BaseSettings):
     section_schema_detect: Literal["off", "lexical", "headings", "auto"] = Field(
         default="headings",
         description=(
-            "Infer the document-type schema when the request supplies neither "
-            "section_schema_id nor a document_type_hint that matches one. "
-            "'off' always uses the manifest default; 'lexical' scores headings "
-            "against each schema's vocabulary (free, no model); 'headings' "
-            "(default) adds an embedding-based heading tier when the semantic "
-            "extras are installed; 'auto' additionally allows a much weaker "
-            "content-based tier for documents with almost no headings. "
-            "Detection never overrides an explicit schema or a matching hint, "
-            "and abstains to the default rather than guessing."
+            "How to infer the document-type schema when the request names "
+            "none and its document_type_hint matches none: 'off' uses the "
+            "manifest default; 'lexical' scores headings against each "
+            "schema's vocabulary; 'headings' adds an embedding tier when the "
+            "semantic extras are installed; 'auto' also allows a weaker "
+            "content-based tier for documents with almost no headings. An "
+            "explicit schema or a matching hint always wins, and detection "
+            "falls back to the default rather than guess."
         ),
     )
     section_schema_detect_min_score: float = Field(
@@ -589,10 +605,9 @@ class ChunkConfig(BaseSettings):
     section_schema_detect_min_margin: float = Field(
         default=1.8,
         description=(
-            "Factor by which the winning schema must beat the runner-up. The "
-            "tightest correct case in the reference corpus -- a published trial "
-            "protocol, which shares IMRaD headings with academic papers -- sits "
-            "at 2.0x."
+            "Factor by which the winning schema's score must exceed the "
+            "runner-up's; below it detection falls back to the default "
+            "schema. Raise it to detect less often and more surely."
         ),
     )
     section_schema_detect_content_min_margin: float = Field(
@@ -638,29 +653,25 @@ class ChunkConfig(BaseSettings):
         default=0,
         ge=0,
         description=(
-            "Drop content units shorter than this many characters before the "
-            "extraction fan-out; 0 (default) disables the floor. Distinct from "
-            "min_size, which is a target the chunker aims at while merging "
-            "segments -- a heading stub or a caption fragment can still leave "
-            "chunking well under it. Every unit below the floor otherwise costs "
-            "a patch retrieval, a full render and a critic call to extract from "
-            "a fragment. Watch the per-unit node durations and the budget "
-            "summary to size it for a corpus."
+            "Drop content units shorter than this many characters before "
+            "extraction; 0 disables the floor. Unlike CHUNK_MIN_SIZE, which "
+            "the chunker only aims at, this is enforced: a heading stub or "
+            "caption fragment would otherwise cost a retrieval, a render and "
+            "a critic call. Size it from the per-unit node durations in the "
+            "budget summary."
         ),
     )
     non_content_mode: Literal["extract", "skip"] = Field(
         default="extract",
         description=(
-            "Routing for units detected as front/back matter with no domain "
-            "facts: a unit whose leading heading names author information, "
-            "notes, ORCID, data availability, competing interests, licence, "
-            "supporting information and the like *and* that states no "
-            "unit-adjacent number; or a unit whose tokens are mostly emails, "
-            "URLs, ORCIDs and initials. 'extract' (default) keeps the unit and "
-            "marks it is_non_content; 'skip' drops it before the fan-out. "
-            "Every decision is logged, and skipped units are counted in the "
-            "run manifest. A measurement anywhere in the unit keeps it, "
-            "whatever its heading."
+            "What to do with front or back matter that states no domain "
+            "facts: a unit headed by author information, notes, ORCID, data "
+            "availability, competing interests, licence or similar that "
+            "contains no number with a unit, or a unit made mostly of emails,"
+            " URLs, ORCIDs and initials. 'extract' keeps it and marks it "
+            "is_non_content; 'skip' drops it before extraction and counts it "
+            "in the run manifest. A measurement anywhere in the unit keeps "
+            "it."
         ),
     )
     max_measurements_per_unit: int = Field(
@@ -790,16 +801,13 @@ class ConverterConfig(BaseSettings):
     repair_numeric_artifacts: bool = Field(
         default=False,
         description=(
-            "Repair pattern-local conversion artifacts in every text item at "
-            "conversion time, so chunk boundaries are computed on repaired "
-            "text: escaped HTML entities (&lt; &gt; &amp;), carriage-return "
-            "column wraps, flattened exponents ('2 x 10 6' -> '2 × 10^6'; the "
-            "bare '10 6' only behind an approximation cue) and single-sided "
-            "ligature gaps that cannot read as two words ('a ffected', "
-            "'signifi cant'). Off by default; when on it joins the converter "
-            "cache key, so enabling it re-converts. Superscript duplication "
-            "and citation markers fused into values are left alone: they are "
-            "not recoverable from the text."
+            "Repair conversion artifacts in the extracted text before "
+            "chunking: escaped HTML entities, carriage-return column wraps, "
+            "flattened exponents ('2 x 10 6' -> '2 × 10^6') and ligature gaps"
+            " such as 'signifi cant'. Duplicated superscripts and citation "
+            "markers fused into values are left alone, since the text cannot "
+            "recover them. Part of the converter cache key, so enabling it "
+            "re-converts."
         ),
     )
 
@@ -830,17 +838,17 @@ class ServerConfig(BaseSettings):
             "0.0.0.0 for containers."
         ),
     )
-    port: int = Field(default=8999, ge=1, le=65535, description="Server port")
+    port: int = Field(
+        default=8999, ge=1, le=65535, description="Port the server listens on."
+    )
     max_visits_per_node: int = Field(
         default=1,
         ge=1,
         description=(
-            "Retries of a *failed* fresh extraction, and nothing else. A render "
-            "that succeeds is never repeated: improving it is what the critic "
-            "passes are for, and re-extracting a unit from scratch to fix a "
-            "local defect is the expensive answer to a cheap question. Raise "
-            "this only if renders are failing outright (unparseable responses, "
-            "provider errors)."
+            "Retries of a render that failed outright (unparseable response, "
+            "provider error). A render that succeeds is not repeated; "
+            "improving it is the critic's job (FACTS_CRITIC_PASSES, "
+            "ONTOLOGY_CRITIC_PASSES)."
         ),
         validation_alias=AliasChoices("max_visits_per_node", "max_visits"),
     )
@@ -851,59 +859,45 @@ class ServerConfig(BaseSettings):
     llm_graph_format: LLMGraphFormat = Field(
         default=LLMGraphFormat.JSONLD,
         description=(
-            "Format used by the LLM when emitting RDF graph payloads: "
-            "'jsonld' (default, compact JSON-LD objects) or 'turtle' "
-            "(legacy, Turtle strings)."
+            "Format the LLM writes RDF graphs in: 'jsonld' (compact JSON-LD "
+            "objects) or 'turtle' (Turtle strings)."
         ),
     )
     ontology_chapter_format: OntologyChapterFormat = Field(
         default=OntologyChapterFormat.AUTO,
         description=(
             "Syntax of the ontology chapter in the facts render and critic "
-            "prompts. 'auto' (default) resolves to 'term_sheet' when "
-            "render_mode is facts and 'inherit' otherwise -- the cheapest "
-            "chapter each mode can legally read. 'inherit' follows "
-            "llm_graph_format; 'turtle' serializes the chapter as Turtle "
-            "regardless, which spends fewer characters per triple than "
-            "pretty-printed JSON-LD; 'term_sheet' replaces the serialized "
-            "graph with a line-per-term listing -- name, surface forms, type, "
-            "hierarchy, domain/range and usage contract -- dropping the "
-            "per-statement RDF scaffolding and the prose written for human "
-            "readers, and is the cheapest of the three by a wide margin. "
-            "Context only: the graph payloads the model emits stay in "
-            "llm_graph_format. 'term_sheet' requires a facts-only render "
-            "mode, because the ontology loop emits a patch against the "
-            "statements in its chapter and so needs a graph; asking for it "
-            "explicitly on another mode is rejected, where 'auto' simply "
-            "yields a graph chapter. 'auto' is resolved here, so the run "
-            "manifest and the LLM cache key carry the chapter actually built. "
-            "Changing the resolved value invalidates the LLM cache for facts "
-            "calls."
+            "prompts. 'inherit' follows LLM_GRAPH_FORMAT; 'turtle' always "
+            "uses Turtle, which is shorter than JSON-LD; 'term_sheet' lists "
+            "one line per term (name, labels, type, hierarchy, domain and "
+            "range, usage) and is the shortest. 'term_sheet' needs "
+            "RENDER_MODE=facts, because the ontology loop patches the "
+            "statements in its chapter. 'auto' picks 'term_sheet' for "
+            "facts-only runs and 'inherit' otherwise. Only the prompt context"
+            " changes; the model's output keeps LLM_GRAPH_FORMAT. Part of the"
+            " LLM cache key for facts calls."
         ),
     )
     ontology_text_max_chars_naming: int | None = Field(
         default=None,
         ge=1,
         description=(
-            "Character cap on rdfs:label / skos:prefLabel / skos:altLabel in "
-            "the ontology chapter. Nothing else bounds a single literal, so "
-            "without a cap the chapter costs what a catalog's authors chose to "
-            "write rather than what it declares. A tersely authored catalog is "
-            "unaffected -- these are bounds, not reductions. Clipping is on a "
-            "word boundary and leaves a visible marker, so the model can tell "
-            "a clipped name from a complete one. Joins the LLM cache key. Set "
-            "via ONTOLOGY_TEXT_MAX_CHARS_NAMING. None disables the cap."
+            "Character cap on each rdfs:label, skos:prefLabel and "
+            "skos:altLabel in the ontology chapter; unset disables it. Long "
+            "names are clipped at a word boundary with a visible marker, so "
+            "the model can tell a clipped name from a complete one. Part of "
+            "the LLM cache key."
         ),
     )
     ontology_text_max_chars_contract: int | None = Field(
         default=None,
         ge=1,
         description=(
-            "Character cap on skos:scopeNote / skos:definition, the statements "
-            "saying when a term applies. Worth clipping rather than dropping: "
-            "a scope note's first sentence usually carries the contract and "
-            "the rest elaborates. Joins the LLM cache key. Set via "
-            "ONTOLOGY_TEXT_MAX_CHARS_CONTRACT. None disables the cap."
+            "Character cap on skos:scopeNote / skos:definition, the "
+            "statements saying when a term applies. Worth clipping rather "
+            "than dropping: a scope note's first sentence usually carries the"
+            " contract and the rest elaborates. Joins the LLM cache key. None"
+            " disables the cap."
         ),
     )
     ontology_text_max_chars_prose: int | None = Field(
@@ -911,24 +905,22 @@ class ServerConfig(BaseSettings):
         ge=1,
         description=(
             "Character cap on rdfs:comment and the remaining SKOS notes -- "
-            "description aimed at someone browsing the ontology rather than at "
-            "an extractor. Joins the LLM cache key. Set via "
-            "ONTOLOGY_TEXT_MAX_CHARS_PROSE. None disables the cap."
+            "description aimed at someone browsing the ontology rather than "
+            "at an extractor. Joins the LLM cache key. None disables the cap."
         ),
     )
     ontology_text_total_budget: int | None = Field(
         default=None,
         ge=1,
         description=(
-            "Ceiling on the summed length of all text literals in one ontology "
-            "chapter -- the backstop for a catalog that stays inside the "
-            "per-role caps by holding very many short terms. Over budget, "
-            "prose is tightened then dropped, then contracts, and only then "
-            "are names clipped to a floor; names are never dropped, so a "
-            "chapter that still does not fit is passed through with a warning "
-            "rather than made unusable. Read back via the retrieval metrics "
-            "(text_chars_before/after, literals_clipped, literals_dropped). "
-            "Joins the LLM cache key. Set via ONTOLOGY_TEXT_TOTAL_BUDGET."
+            "Ceiling on the total length of all text literals in one ontology "
+            "chapter, for catalogs with very many short terms. Over budget, "
+            "literals are shortened, never removed: prose first, then usage "
+            "contracts, then names, each to the largest cap that meets the "
+            "budget, down to a floor; a chapter that still does not fit is used "
+            "as is. Reported in budget.counters as chapter/text_chars_before, "
+            "chapter/text_chars_after, chapter/literals_clipped and "
+            "chapter/text_over_budget. Part of the LLM cache key."
         ),
     )
     ontology_context_mode: OntologyContextMode = Field(
@@ -943,8 +935,11 @@ class ServerConfig(BaseSettings):
     ontology_context_fixed_ontology_id: str = Field(
         default="",
         description=(
-            "Catalog ontology id when ontology_context_mode is fixed_single_ontology "
-            "(batch/server default from env)."
+            "Catalog ontology (IRI, ontology_id or author prefix) used when "
+            "ONTOLOGY_CONTEXT_MODE is fixed_single_ontology in ontocast process. "
+            "Setting it does not change the mode, and the HTTP server does not "
+            "apply it to requests: pass ontology_context_fixed_ontology_id with "
+            "each request instead."
         ),
     )
     ontology_max_triples: int | None = Field(
@@ -957,18 +952,15 @@ class ServerConfig(BaseSettings):
     )
     ontology_context_required: bool = Field(
         default=False,
-        description="Fail the run when a FACTS unit's ontology context "
-        "resolves to zero triples, instead of extracting with no catalog "
-        "vocabulary. For facts an empty context is not a degraded extraction, "
-        "it is a different one: the renderer falls back on whatever standard "
-        "vocabulary the prompt names, and the SHACL gate then has no node to "
-        "constrain, so the run reports a vacuous pass. Turn it on for a "
-        "deployment that extracts against a curated catalog, where an empty "
-        "context can only mean the catalog did not load. It is off by default "
-        "because the default render mode builds ontologies as well as facts, "
-        "and a corpus with no catalog is that mode's starting point rather "
-        "than a fault. It never applies to an ONTOLOGY unit, whose empty "
-        "context is the signal to create a new ontology.",
+        description=(
+            "Fail the run when a facts unit's ontology context is empty, instead "
+            "of extracting without a catalog. With no context the renderer falls "
+            "back on generic vocabulary and SHACL has nothing to check, so the "
+            "run would report a meaningless pass. Turn it on when extracting "
+            "against a curated catalog. Off by default because the default render"
+            " mode builds ontologies as it goes. Never applies to ontology units,"
+            " for which an empty context means 'create a new ontology'."
+        ),
     )
 
     @property
@@ -990,33 +982,28 @@ class ServerConfig(BaseSettings):
     ontology_context_scope: OntologyContextScope = Field(
         default=OntologyContextScope.UNIT,
         description=(
-            "Whether the ontology chapter is resolved per content unit ('unit', "
-            "the default) or once per document and shared ('document'). Per-unit "
-            "retrieval gives each unit a smaller chapter, but a different one, so "
-            "no two calls share a prompt prefix and a provider's prefix cache can "
-            "serve none of them -- a document then pays the chapter at full price "
-            "once per unit. 'document' unions the per-unit contexts and shows the "
-            "union to every unit: larger per call, identical across the fan-out, "
-            "and so charged at the cached rate on every call after the first. It "
-            "is recall-safe by construction -- the union contains every atom each "
-            "unit's own retrieval selected -- and costs precision, since a unit "
-            "also sees its siblings' terms. Pair with FANOUT_WARMUP_UNITS, "
-            "without which the fan-out issues every call before any of them has "
-            "populated the cache. Set via ONTOLOGY_CONTEXT_SCOPE."
+            "Resolve the ontology chapter per content unit ('unit') or once "
+            "per document ('document'). Per-unit chapters are smaller but all"
+            " different, so no call shares a prompt prefix with another. "
+            "'document' shows every unit the union of the per-unit contexts: "
+            "larger, but identical across the document, so a provider's "
+            "prefix cache serves every call after the first. Each unit still "
+            "sees every term its own retrieval chose, plus its siblings'. "
+            "Takes effect only in facts-only runs: after an ontology stage, "
+            "facts units already share one merged document context. Pair it "
+            "with FANOUT_WARMUP_UNITS."
         ),
     )
     fanout_warmup_units: int = Field(
         default=0,
         ge=0,
         description=(
-            "How many content units to run to completion before fanning the rest "
-            "out concurrently. 0 (default) fans out everything at once. A "
-            "provider's prefix cache is populated by a *completed* request, so a "
-            "fan-out that issues N calls sharing a prefix simultaneously has all "
-            "N miss it; running one unit first turns the other N-1 misses into "
-            "hits. Only worth setting where the calls actually share a prefix -- "
-            "that is, with ONTOLOGY_CONTEXT_SCOPE=document -- and it costs the "
-            "wall-clock of one serialized call. Set via FANOUT_WARMUP_UNITS."
+            "Content units to complete before the rest are run concurrently; "
+            "0 runs all at once. A provider's prefix cache is filled by a "
+            "completed request, so calls sent together all miss it. Useful "
+            "only when calls share a prefix "
+            "(ONTOLOGY_CONTEXT_SCOPE=document); costs the time of the warm-up"
+            " units."
         ),
     )
     ontology_context_max_triples: int | None = Field(
@@ -1034,14 +1021,13 @@ class ServerConfig(BaseSettings):
         default=16,
         ge=1,
         description=(
-            "Maximum concurrent content-unit workers within one document. A unit "
-            "never issues two LLM calls at once, so this is also the provider "
-            "concurrency a single document reaches. LLM_MAX_INFLIGHT is the "
-            "process-wide cap across all documents and is the one to lower if a "
-            "provider rate-limits; raising this one past it buys nothing. "
-            "Check budget.node_durations before raising it: if a stage's "
-            "loop_lag_total is a large share of its wall clock, the units are "
-            "blocked rather than queued and more workers will make it worse."
+            "Maximum content units processed at once within one document. A "
+            "unit makes one LLM call at a time, so this is also the "
+            "concurrency one document puts on the provider. LLM_MAX_INFLIGHT "
+            "caps calls across all documents and is the one to lower when a "
+            "provider rate-limits. If a stage's loop_lag_total in "
+            "budget.node_durations is a large share of its wall-clock time, "
+            "more workers will slow it down."
         ),
     )
     enable_ontology_consolidation: bool = Field(
@@ -1127,7 +1113,14 @@ class FusekiConfig(BaseSettings):
             "path or #/dataset/... UI URL; use FUSEKI_DATASET for the dataset name."
         ),
     )
-    auth: str | None = Field(default=None, description="Fuseki authentication")
+    auth: str | None = Field(
+        default=None,
+        description=(
+            "Fuseki credentials as user/password or user:password. Fuseki is "
+            "used only when both this and FUSEKI_URI are set; otherwise graphs "
+            "stay in memory."
+        ),
+    )
     dataset: str | None = Field(
         default=None,
         description=(
@@ -1187,7 +1180,7 @@ class DomainConfig(BaseSettings):
         default=DEFAULT_DOMAIN,
         validation_alias=AliasChoices("current_domain", "CURRENT_DOMAIN"),
         description=(
-            "IRI stem used to form document namespaces. Also read directly by "
+            "IRI stem from which document namespaces are formed. Used by "
             "AgentState when no explicit value is supplied."
         ),
     )
@@ -1217,16 +1210,14 @@ class PathConfig(BaseSettings):
             "Size ceiling for the whole cache directory. Once exceeded, "
             "least-recently-used entries are deleted until the total fits. "
             "Accepts a byte count or a human size such as '1GB' or '500MB'. "
-            "Set to 0 to disable automatic pruning. Set via "
-            "ONTOCAST_CACHE_MAX_BYTES."
+            "Set to 0 to disable automatic pruning."
         ),
     )
     cache_ttl_days: int | None = Field(
         default=None,
         description=(
-            "Delete cache entries not used for this many days, applied before "
-            "the size ceiling. None disables the age cut. Set via "
-            "ONTOCAST_CACHE_TTL_DAYS."
+            "Delete cache entries not used for this many days, applied before"
+            " the size ceiling. None disables the age cut."
         ),
     )
     cache_prune_every: int = Field(
@@ -1273,17 +1264,36 @@ class WebSearchConfig(BaseSettings):
         ),
     )
     provider: WebSearchProvider = Field(
-        default=WebSearchProvider.DUCKDUCKGO, description="Web-search provider"
+        default=WebSearchProvider.DUCKDUCKGO,
+        description="Search engine queried for evidence when web search is enabled.",
     )
-    top_k: int = Field(default=3, ge=1, le=10, description="Number of results to fetch")
+    top_k: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Search results fetched per query.",
+    )
     timeout_seconds: float = Field(
-        default=8.0, ge=1.0, le=60.0, description="Search request timeout"
+        default=8.0,
+        ge=1.0,
+        le=60.0,
+        description=(
+            "Seconds to wait for one search request, rounded down to whole seconds."
+        ),
     )
     max_snippet_chars: int = Field(
-        default=400, ge=80, le=2000, description="Snippet truncation limit per hit"
+        default=400,
+        ge=80,
+        le=2000,
+        description="Characters kept from each result's snippet; the rest is cut.",
     )
     max_total_chars: int = Field(
-        default=1800, ge=200, le=10000, description="Total evidence text budget"
+        default=1800,
+        ge=200,
+        le=10000,
+        description=(
+            "Characters of search evidence added to one prompt, across all results."
+        ),
     )
     ontology_render_enabled: bool = Field(
         default=True,
@@ -1349,9 +1359,15 @@ class WebSearchConfig(BaseSettings):
         default_factory=list,
         description="Optional blocklist of source domains for evidence",
     )
-    region: str = Field(default="wt-wt", description="DuckDuckGo region code")
+    region: str = Field(
+        default="wt-wt",
+        description=(
+            "DuckDuckGo region code, such as us-en or de-de; wt-wt means no region."
+        ),
+    )
     safesearch: str = Field(
-        default="moderate", description="DuckDuckGo safesearch mode"
+        default="moderate",
+        description="DuckDuckGo safe-search mode: on, moderate or off.",
     )
 
     @field_validator("allowed_domains", "blocked_domains", mode="before")
@@ -1395,10 +1411,11 @@ class AggregationConfig(BaseSettings):
         ge=0.0,
         le=1.0,
         description=(
-            "Cosine threshold for the cross-graph EntityAligner "
-            "(/align_entities, match-graphs). The in-pipeline aggregator "
-            "clusters and gates at AGG_CANDIDATE_SIMILARITY_THRESHOLD; this "
-            "knob does not affect it."
+            "Cosine threshold of the cross-graph entity aligner when the caller "
+            "names none, as the ontocast_align_entities agent tool does. "
+            "POST /match/entities and match-graphs take their own "
+            "similarity_threshold instead. The in-pipeline aggregator uses "
+            "AGG_CANDIDATE_SIMILARITY_THRESHOLD; this setting does not affect it."
         ),
     )
     candidate_similarity_threshold: float = Field(
@@ -1515,7 +1532,12 @@ class EmbeddingConfig(BaseSettings):
     """Embedding provider settings used by vector stores."""
 
     provider: EmbeddingProvider = Field(
-        default=EmbeddingProvider.HUGGINGFACE, description="Embedding model provider"
+        default=EmbeddingProvider.HUGGINGFACE,
+        description=(
+            "Where vector-store embeddings are computed: huggingface runs a "
+            "local sentence-transformers model, openai and ollama call a "
+            "service."
+        ),
     )
     model_name: str = Field(
         default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
@@ -1578,14 +1600,11 @@ class PatchRetrievalConfig(BaseSettings):
         ge=0.0,
         description=(
             "Relevance floor below which a unit is treated as having no "
-            "relevant ontology and gets an empty patch. Expressed as a "
-            "fraction of the best score a window could achieve -- an atom "
-            "ranked first in every lane -- rather than as an absolute number "
-            "on the fused scale, because the lane weights and "
-            "VECTOR_STORE_FUSION_RANK_CONSTANT both rescale that scale, and a "
-            "threshold calibrated at one setting then rejects everything at "
-            "another. Scores are per-window fused rank scores (RRF-style), not "
-            "raw cosine. Set to 0 to disable."
+            "relevant ontology and gets an empty patch. A fraction of the "
+            "best fused score a window can reach (an atom ranked first in "
+            "every lane), not an absolute score, so it stays meaningful when "
+            "lane weights or VECTOR_STORE_FUSION_RANK_CONSTANT change. 0 "
+            "disables it."
         ),
     )
     merged_score_ratio: float = Field(
@@ -1611,11 +1630,10 @@ class PatchRetrievalConfig(BaseSettings):
         default=0,
         ge=0,
         description=(
-            "Max seeds retained per ontology IRI when filling the final seed list "
-            "(round-robin). 0 means no per-ontology "
-            "cap (global score order only), which is the default: a quota spreads the "
-            "seed budget across ontologies that merely scored something, and measured "
-            "worse on both recall and precision than plain global score order."
+            "Maximum seeds kept per ontology when filling the seed list "
+            "round-robin. 0 means no per-ontology cap: seeds are taken in "
+            "global score order, so the budget is not spread across "
+            "ontologies that merely scored something."
         ),
     )
     per_ontology_atom_floor: int = Field(
@@ -1633,39 +1651,27 @@ class PatchRetrievalConfig(BaseSettings):
         default=300,
         ge=0,
         description=(
-            "Include a source ontology's whole (header-stripped) graph in the "
-            "snapshot when it has at least one admitted atom and at most this "
-            "many triples. Partial inclusion of a tiny vocabulary pushes the "
-            "renderer to improvise near-miss property names. Inert unless the "
-            "module wins at least one seed, so it pairs with "
-            "per_ontology_atom_floor. The single largest lever on snapshot "
-            "quality, because a qualified-quantity or observation module is "
-            "only useful whole. Set it above the largest module you need "
-            "entire; past that it adds triples for little gain. 0 disables."
+            "Include a source ontology whole (header stripped) when it has at"
+            " least one retrieved atom and at most this many triples. A small"
+            " vocabulary shown in part pushes the renderer to invent "
+            "near-miss property names, and modules such as qualified-quantity"
+            " or observation patterns are only useful whole. Takes effect "
+            "only for modules that win a seed, so it pairs with "
+            "per_ontology_atom_floor. 0 disables it."
         ),
     )
     small_module_closure_max_total_triples: int | None = Field(
         default=None,
         ge=0,
         description=(
-            "Ceiling on the triples all whole-module closures may contribute to "
-            "one snapshot. None (default) is unlimited: every module that fits "
-            "SMALL_MODULE_CLOSURE_MAX_TRIPLES and won a seed is included, which "
-            "is the historical behaviour. When set, candidate modules are "
-            "admitted in order of retrieval relevance -- the best score any of "
-            "their atoms achieved -- until the budget is spent, and a module too "
-            "large for the remaining budget is skipped rather than ending the "
-            "pass, so a smaller one behind it can still get in. "
-            "\n\n"
-            "Relevance, not seed count, is the right ordering here: a module can "
-            "only win as many seeds as it has terms, so counting them ranks "
-            "modules by size and excludes precisely the small, sharply relevant "
-            "vocabulary the closure exists to admit whole. A budget filled "
-            "best-first also keeps the usual case working, which is a "
-            "*combination* of modules rather than one winner. Read back from "
+            "Ceiling on the triples that whole-module inclusions may add to "
+            "one snapshot; unset means no ceiling. Modules are admitted in "
+            "order of their best atom's retrieval score until the budget is "
+            "spent, and a module too large for what remains is skipped so a "
+            "smaller one can still fit. Ordering by score rather than seed "
+            "count keeps small, sharply relevant vocabularies in. See "
             "module_closure_iris, module_closure_declined_iris and "
-            "module_closure_triples in the run manifest. Set via "
-            "ONTOLOGY_PATCH_SMALL_MODULE_CLOSURE_MAX_TOTAL_TRIPLES."
+            "module_closure_triples in the run manifest."
         ),
     )
     per_role_atom_floor: int = Field(
@@ -1721,22 +1727,22 @@ class PatchRetrievalConfig(BaseSettings):
         default=96,
         ge=0,
         description=(
-            "Minimum effective atom cap before window scaling (0 defers entirely to "
-            "seeds_per_window * n_queries). Raised to match max_atoms: the cap does not "
-            "grow with catalog size, and a lower floor was discarding candidates that "
-            "per-channel top_k had already paid to retrieve."
+            "Minimum effective atom cap before window scaling (0 defers "
+            "entirely to seeds_per_window * n_queries). The cap does not grow"
+            " with catalog size, so a floor below max_atoms discards "
+            "candidates the per-lane top_k has already retrieved."
         ),
     )
     max_atoms: int = Field(
         default=96,
         ge=0,
         description=(
-            "Hard cap for retained atoms after merge / optional MMR (0 means unlimited). "
-            "Effective cap is min(max_atoms, max(max_atoms_base, seeds_per_window * n_queries)). "
-            "Measured the single largest recall lever on multi-window input, where the "
-            "candidate pool reaches ~170 atoms: raising 48 -> 96 moved seed term recall "
-            "36% -> 64% on a linked 6-ontology catalog while improving precision. Beyond "
-            "this the induced-subgraph triple budget, not the seed count, is the limit."
+            "Hard cap on atoms kept after merging and optional MMR; 0 means "
+            "unlimited. The effective cap is min(max_atoms, "
+            "max(max_atoms_base, seeds_per_window * n_queries)). On "
+            "multi-window input this is the main lever on how many relevant "
+            "terms reach the snapshot; above it, the induced-subgraph triple "
+            "budget becomes the limit."
         ),
     )
 
@@ -1780,37 +1786,22 @@ class VectorStoreConfig(BaseSettings):
         default=40,
         ge=1,
         description=(
-            "Default number of fused vector hits per query for ontology-patch "
-            "retrieval. Call sites may pass an explicit ``top_k`` to override "
-            "this for a single retrieval; when omitted, patch search uses this "
-            "value. "
-            "\n\n"
-            "This is how many candidates each window *offers*, which is not the "
-            "same knob as how many atoms survive: ONTOLOGY_PATCH_MAX_ATOMS_BASE "
-            "caps the retained set, so a deeper list does not enlarge the "
-            "snapshot -- it fills the same budget from a wider field, and the "
-            "terms it recovers are the ones a shallower list ranked just out of "
-            "reach. Conflating the two caps is what made this read as inert. "
-            "Deeper costs vector-search time and nothing in the prompt."
+            "Fused hits each query window offers to ontology-patch retrieval."
+            " This is the candidate pool, not the result size: "
+            "ONTOLOGY_PATCH_MAX_ATOMS caps what is kept, so a deeper pool "
+            "fills the same budget from a wider field. Costs search time, not"
+            " prompt size."
         ),
     )
     bm25_top_k: int | None = Field(
         default=None,
         ge=1,
         description=(
-            "Depth of the sparse (BM25) lane, when it should differ from TOP_K. "
-            "None (default) uses TOP_K for every lane, which is the historical "
-            "behaviour. "
-            "\n\n"
-            "Depth is a weight in disguise here, because lanes are fused by "
-            "reciprocal rank: a sparse list of length N contributes ranks 1..N at "
-            "full lane weight however weak its tail is. Dense and lexical retrieval "
-            "also fail differently -- dense degrades into topical near-misses, "
-            "lexical into unrelated text sharing a token -- so the depth at which "
-            "each stops paying is not the same number, and one knob for both means "
-            "tuning either mis-tunes the other. Lower it to keep the sparse lane as "
-            "evidence for the terms it is uniquely good at (symbols, notations, "
-            "formulae) without letting its tail vote. Set via VECTOR_STORE_BM25_TOP_K."
+            "Depth of the sparse (BM25) lane; unset uses TOP_K. Lanes are "
+            "fused by reciprocal rank, so every hit in a lane votes at full "
+            "lane weight and depth acts as weight. Lower it to keep the "
+            "sparse lane for what it finds best (symbols, notations, "
+            "formulae) without letting its weak tail vote."
         ),
     )
     induced_subgraph_depth: int = Field(
@@ -1848,8 +1839,8 @@ class VectorStoreConfig(BaseSettings):
         default=24,
         ge=1,
         description=(
-            "Estimated triple budget per proposition/query used to shape per-entity "
-            "allocation in induced subgraph retrieval."
+            "Estimated triples per query window, used to divide the induced "
+            "subgraph's triple budget among seed entities."
         ),
     )
     induced_subgraph_type_promotion_score_factor: float = Field(
@@ -1913,67 +1904,38 @@ class VectorStoreConfig(BaseSettings):
         default=None,
         ge=1,
         description=(
-            "Sentences advanced between consecutive windows. None (default) strides by "
-            "the full window size, so windows are contiguous and disjoint -- the "
-            "historical behaviour. "
-            "\n\n"
-            "A smaller stride overlaps them, which matters because a statement whose "
-            "subject and value straddle a window boundary is otherwise in no window at "
-            "all: neither half is a query that can retrieve the term the whole "
-            "sentence pair names. Overlap costs queries -- and therefore embedding "
-            "time and, once PROPOSITION_MAX_WINDOWS binds, coverage elsewhere in the "
-            "unit. Set via VECTOR_STORE_PROPOSITION_WINDOW_STRIDE."
+            "Sentences advanced between query windows; unset strides by the "
+            "full window, so windows do not overlap. A smaller stride "
+            "overlaps them, so a statement split across a window boundary "
+            "still lands in one window, at the cost of more queries."
         ),
     )
     proposition_window_max_chars: int | None = Field(
         default=None,
         ge=1,
         description=(
-            "Characters per retrieval query window. None (default) bounds windows "
-            "by PROPOSITION_WINDOW_SENTENCES instead, which is the historical "
-            "behaviour and is reproduced exactly. When set, this replaces the "
-            "sentence bound rather than joining it: the two are alternative ways "
-            "of saying how much text one query carries, and honouring both means "
-            "the tighter one silently wins."
-            "\n\n"
-            "A sentence count bounds the wrong quantity. What decides whether a "
-            "query works is its length: how many distinct terms one embedding "
-            "vector must carry, and whether the encoder truncates it -- which it "
-            "does on tokens, silently, returning a correctly shaped vector for a "
-            "prefix of the text. Two sentences of technical prose span an order of "
-            "magnitude in length, so a single sentence setting is simultaneously "
-            "too loose for some windows and too tight for others. The splitter "
-            "also has no abbreviation handling and breaks on every period, so a "
-            "citation like 'J. Phys. Chem. Lett.' reads as four sentences and a "
-            "two-sentence window over it carries nothing retrievable."
-            "\n\n"
-            "A budget fixes both ends: it caps windows that would truncate, and it "
-            "coalesces short fragments, since it keeps taking sentences until the "
-            "budget is met. Set it below the encoder's sequence limit to make "
-            "truncation impossible; read EMBEDDING_MODEL_NAME's limit and the "
-            "observed characters-per-token off the retrieval metrics rather than "
-            "assuming a ratio. Query-side only: changing it needs no reindex."
+            "Characters per retrieval query window, used instead of "
+            "PROPOSITION_WINDOW_SENTENCES when set. Length, not sentence "
+            "count, decides whether a query works: sentences vary widely in "
+            "length, and the encoder silently truncates long input. Windows "
+            "take sentences until the budget is met, which also joins short "
+            "fragments. Keep it below the encoder's sequence limit "
+            "(characters per token are in the retrieval metrics). Query side "
+            "only: no reindex needed."
         ),
     )
     proposition_window_max_tokens: int | None = Field(
         default=None,
         ge=1,
         description=(
-            "Encoder word pieces per query window. None (default) leaves the other "
-            "bounds in charge; when set it replaces both PROPOSITION_WINDOW_SENTENCES "
-            "and PROPOSITION_WINDOW_MAX_CHARS, and characters stop being consulted."
-            "\n\n"
-            "This is the only bound stated in the unit the encoder itself counts in. "
-            "Characters per token drift with notation, so a character budget that "
-            "fits one passage truncates the next; set below the encoder's sequence "
-            "limit, a token budget rules truncation out by construction. It is also "
-            "the only bound that cuts a sentence longer than the budget -- at a "
-            "whitespace boundary -- because such a sentence is truncated by the "
-            "encoder anyway and its tail then reaches no lane at all."
-            "\n\n"
-            "Needs a provider that exposes a tokenizer; without one the budget "
-            "degrades to a character approximation and logs that it did. "
-            "Query-side only: changing it needs no reindex."
+            "Encoder tokens per query window; when set it takes precedence "
+            "over PROPOSITION_WINDOW_SENTENCES and "
+            "PROPOSITION_WINDOW_MAX_CHARS. Set below the encoder's sequence "
+            "limit, it makes truncation impossible, and it splits a sentence "
+            "longer than the budget at a word boundary. Needs an embedding "
+            "provider that exposes its tokenizer; otherwise it falls back to "
+            "a character estimate and logs that it did. Query side only: no "
+            "reindex needed."
         ),
     )
     proposition_window_overlap: float = Field(
@@ -1993,16 +1955,12 @@ class VectorStoreConfig(BaseSettings):
     proposition_abbreviation_aware: bool = Field(
         default=False,
         description=(
-            "Rejoin window fragments the period-splitter created inside an "
-            "abbreviation, an initial or a citation run. Off by default: it changes "
-            "the windows every existing measurement was taken on."
-            "\n\n"
-            "The splitter breaks on every period, so a citation reads as several "
-            "'sentences' and a sentence-bounded window over one of them can carry a "
-            "dozen characters with nothing retrievable in them. General English and "
-            "bibliographic shapes only -- initials, a small abbreviation list, and a "
-            "guard for a fragment that does not open a sentence -- never a domain "
-            "vocabulary, which would make retrieval corpus-specific."
+            "Rejoin window fragments that the sentence splitter cut at an "
+            "abbreviation, an initial or a citation, where a window can "
+            "otherwise hold a few characters with nothing to retrieve. Uses "
+            "general English and bibliographic patterns only, never a domain "
+            "vocabulary. Off by default because it changes every window's "
+            "boundaries."
         ),
     )
     proposition_measurement_aware: bool = Field(
@@ -2035,13 +1993,13 @@ class VectorStoreConfig(BaseSettings):
         ge=0.0,
         le=1.0,
         description=(
-            "Minimum fused retrieval score for the consistency critic to report a "
-            "potential cross-ontology conflict. This is a weighted reciprocal-rank score "
-            "(sum of weight/rank over the core, neighborhood and BM25 channels), not a "
-            "cosine similarity: with default fusion weights a rank-1 core hit alone "
-            "scores 0.583 and rank-2 scores 0.292, so 0.5 means 'top-ranked in the "
-            "dominant dense channel'. The former name and 0.7 default read as a "
-            "similarity and silently required rank-1 in two channels at once."
+            "Minimum fused retrieval score for the consistency critic to report "
+            "a possible conflict between ontologies. A weighted reciprocal-rank "
+            "score summed over the core, neighborhood and BM25 lanes, not a "
+            "cosine similarity: each lane adds its normalized weight divided by "
+            "the rank. With BM25 enabled and default weights, a rank-1 hit in "
+            "one lane alone scores below 0.5 (about 0.42 for the core lane), so "
+            "0.5 requires at least two lanes to agree on the term."
         ),
     )
     embedding_batch_size: int = Field(
@@ -2088,12 +2046,10 @@ class VectorStoreConfig(BaseSettings):
         ge=0.0,
         le=1.0,
         description=(
-            "Neighborhood vector score weight for dual-vector ranking fusion. Lowered "
-            "0.3 -> 0.15: the neighborhood text describes a term's edges rather than "
-            "the term, so it corroborates the core lane more than it adds to it. "
-            "Halving it "
-            "raises seed recall without changing which terms the core lane "
-            "found."
+            "Weight of the neighborhood lane in rank fusion. The neighborhood"
+            " text describes a term's relations rather than the term, so it "
+            "mainly corroborates the core lane; keep it below the core "
+            "weight."
         ),
     )
     fusion_bm25_weight: float = Field(
@@ -2101,34 +2057,22 @@ class VectorStoreConfig(BaseSettings):
         ge=0.0,
         le=1.0,
         description=(
-            "BM25 sparse-lane weight for rank fusion (normalized with core and "
-            "neighborhood weights when BM25 retrieval is enabled). Raised 0.2 -> 0.8: "
-            "a term whose surface form is a symbol or notation (unit symbols, chemical "
-            "formulae, gene symbols) is frequently invisible to the dense lanes, so the "
-            "sparse lane is its only evidence. At 0.2 a rank-1 BM25 hit was "
-            "outvoted several times over by a rank-1 dense hit, so a unit term "
-            "that was the top sparse hit for the passage naming it -- and "
-            "absent from every dense lane -- still lost its slot. This does not "
-            "weaken the dense lanes; it stops the sparse lane from being a "
-            "tie-breaker."
+            "Weight of the sparse (BM25) lane in rank fusion, normalized with"
+            " the core and neighborhood weights when BM25 is enabled. Terms "
+            "whose surface form is a symbol or notation (unit symbols, "
+            "chemical formulae, gene symbols) are often found only by this "
+            "lane, so a low weight lets any dense hit outvote them."
         ),
     )
     fusion_rank_constant: float = Field(
         default=0.0,
         ge=0.0,
         description=(
-            "Smoothing term added to each rank before the reciprocal in lane fusion: "
-            "a lane contributes weight / (constant + rank). 0.0 (default) is the "
-            "historical behaviour. "
-            "\n\n"
-            "At 0 the decay is brutal -- a rank-2 hit is worth half a rank-1 hit and "
-            "rank 3 a third -- so the fused order is decided almost entirely by which "
-            "lane put what first, and a lane's deep tail still votes at full weight. "
-            "Raising it flattens the curve so that agreement *across* lanes outweighs "
-            "position *within* one, which is the property reciprocal-rank fusion is "
-            "normally chosen for. The useful range is bounded by the lane depth: a "
-            "constant far above TOP_K makes every rank nearly equal, which discards "
-            "the ranking. Set via VECTOR_STORE_FUSION_RANK_CONSTANT."
+            "Constant added to each rank in lane fusion: a lane contributes "
+            "weight / (constant + rank). At 0 the first rank dominates, so "
+            "fusion follows whichever lane put a term first. Raising it makes"
+            " agreement across lanes count for more than position within one;"
+            " far above TOP_K it makes all ranks nearly equal."
         ),
     )
     minimal_label_limit: int = Field(
@@ -2145,18 +2089,13 @@ class VectorStoreConfig(BaseSettings):
     index_undescribed_iris: bool = Field(
         default=False,
         description=(
-            "If True, atomize every IRI in an ontology graph, including ones appearing "
-            "only in object or predicate position. Default False: an ontology mints an "
-            "atom only for terms it describes (a subject-position triple, or a label). "
-            "A merely referenced IRI carries no local text, so its atom is its mangled "
-            "local name -- 'a0e0l2i0m1h0t 3d0' for a QUDT dimension vector -- and such "
-            "strings embed near the corpus centroid, making them hubs that rank "
-            "against every query. On a multi-module catalog that borrows from an "
-            "external vocabulary, such references can be a large fraction of all "
-            "atoms, and dimension vectors alone can take a substantial share of "
-            "the dense retrieval slots for a document, crowding whole ontologies "
-            "out. Referenced IRIs stay reachable via induced-subgraph expansion; "
-            "they just stop being seeds. Changing this requires a reindex."
+            "Index every IRI in an ontology, including those that appear only"
+            " as an object or predicate. By default only terms the ontology "
+            "describes (as a subject, or with a label) are indexed: a merely "
+            "referenced IRI has no text but its local name, and such strings "
+            "embed as generic hubs that match every query and crowd out real "
+            "terms. Referenced IRIs stay reachable through induced-subgraph "
+            "expansion. Changing this requires a reindex."
         ),
     )
     embed_standard_vocab_iris: bool = Field(
@@ -2171,13 +2110,12 @@ class VectorStoreConfig(BaseSettings):
     extra_excluded_namespace_prefixes: list[str] = Field(
         default_factory=list,
         description=(
-            "Additional IRI prefixes whose entities are never atomized from ontology "
-            "sources, on top of the standard-vocabulary set. Use for an upper ontology "
-            "or external vocabulary a catalog references but does not define (BFO, SOSA, "
-            "OM-2). Mostly redundant once index_undescribed_iris is False -- an "
-            "undefined reference is already skipped -- so reach for it when a vocabulary "
-            "*is* vendored but should still stay out of the semantic lane. Changing this "
-            "requires a reindex."
+            "IRI prefixes never indexed from ontology sources, in addition to"
+            " the standard vocabularies. Use it for an upper ontology or "
+            "external vocabulary that a catalog includes but that should not "
+            "compete in retrieval (BFO, SOSA, OM-2); merely referenced "
+            "vocabularies are already skipped while index_undescribed_iris is"
+            " false. Changing this requires a reindex."
         ),
     )
     dedup_mode: VectorStoreDedupMode = Field(
@@ -2242,12 +2180,10 @@ class VectorStoreConfig(BaseSettings):
             "http://qudt.org/schema/qudt/ucumCode",
         ],
         description=(
-            "Predicate IRIs whose literal objects are indexed as symbols/notations "
-            "(default: skos:notation, qudt:symbol, qudt:ucumCode). This is the "
-            "indexing half of the pair whose retrieval half is "
-            "INDUCED_SUBGRAPH_SYMBOL_PREDICATES; previously only the retrieval "
-            "half was configurable, so overriding it changed what surfaced "
-            "without changing what was indexed. Changing this requires a reindex."
+            "Predicates whose literal objects are indexed as symbols or "
+            "notations (default: skos:notation, qudt:symbol, qudt:ucumCode). "
+            "The indexing counterpart of INDUCED_SUBGRAPH_SYMBOL_PREDICATES; "
+            "set both together. Changing this requires a reindex."
         ),
     )
     lexical_trigger_enabled: bool = Field(
@@ -2303,49 +2239,45 @@ class VectorStoreConfig(BaseSettings):
         ge=0.0,
         le=1.0,
         description=(
-            "Score assigned to lexical-trigger hits. Calibrated against fused "
-            "reciprocal-rank scores: a rank-1 core hit scores 0.583, the merged-atom "
-            "floor is 0.18. The previous hardcoded 1.0 outranked every semantic seed "
-            "and monopolized hub-BFS expansion slots."
+            "Score given to lexical-trigger hits, on the fused reciprocal-rank "
+            "scale: with BM25 enabled and default weights, a rank-1 core hit "
+            "alone scores about 0.42. Keep it below that, so trigger hits join "
+            "the semantic seeds rather than outrank all of them."
         ),
     )
     lexical_trigger_fusion: LexicalTriggerFusion = Field(
         default=LexicalTriggerFusion.MAX_MERGE,
         description=(
-            "How trigger hits combine with semantic hits: 'max_merge' promotes an "
-            "already-retrieved atom to max(semantic score, trigger score) and appends "
-            "unseen atoms; 'append' (legacy) only appends unseen atoms, silently "
-            "discarding the trigger evidence for atoms retrieval already found."
+            "How lexical-trigger hits combine with semantic hits: 'max_merge'"
+            " raises an already retrieved atom to the higher of its two "
+            "scores and appends unseen atoms; 'append' only appends unseen "
+            "atoms, so the trigger adds nothing to an atom retrieval already "
+            "found."
         ),
     )
     query_unit_signals_enabled: bool = Field(
         default=True,
         description=(
-            "Match number-adjacent tokens in the unit text ('4-15 days', "
-            "'200 kV', '0.5 %') case-insensitively and plural-tolerantly "
-            "against catalog surface forms (labels, symbols, UCUM codes) and "
-            "inject the matched entities as additional snapshot seeds at "
-            "lexical_trigger_score, outside the semantic atom budget. The "
-            "mechanism fits quantitative extraction exactly -- a stated "
-            "measurement is a number followed by a unit, and the terms this "
-            "recovers are the units and qualifiers a value node needs. Query "
-            "time only, so enabling or disabling it needs no reindex. Turn it "
-            "off for a catalog whose surface forms are not Latin-script, or "
-            "one where the facts being extracted are not quantities."
+            "Match the tokens that follow numbers in the unit text ('4-15 "
+            "days', '200 kV', '0.5 %') against catalog labels, symbols and "
+            "UCUM codes, ignoring case and plurals, and add the matched terms"
+            " as seeds at lexical_trigger_score, outside the semantic atom "
+            "budget. Recovers the units and qualifiers a measurement needs. "
+            "Query side only: no reindex needed. Turn it off when the facts "
+            "extracted are not quantities, or the catalog's labels are not in"
+            " Latin script."
         ),
     )
     symbol_case_mismatch_policy: SymbolCaseMismatchPolicy = Field(
         default=SymbolCaseMismatchPolicy.DEMOTE,
         description=(
-            "Treatment of retrieved atoms whose case-preserved symbol surfaces "
-            "(skos:notation, qudt:symbol, qudt:ucumCode) match a query token "
-            "only case-insensitively, with no exact-case match on any surface. "
-            "The BM25 document text is case-folded before indexing, so prose "
-            "'meV' also retrieves unit:MegaEV (symbol 'MeV') — one token away "
-            "from a 10^9 unit error. 'demote' multiplies the atom score by "
+            "Treatment of retrieved atoms whose symbol (skos:notation, "
+            "qudt:symbol, qudt:ucumCode) matches a query token only when case"
+            " is ignored. The BM25 index is case-folded, so 'meV' in the text"
+            " also retrieves the unit with symbol 'MeV', a factor of 10^9 "
+            "apart. 'demote' multiplies the score by "
             "symbol_case_mismatch_demote_factor, 'drop' removes the atom, "
-            "'off' keeps legacy behavior. Exact-case and label-only matches "
-            "are never affected."
+            "'off' keeps it. Exact-case and label matches are never affected."
         ),
     )
     symbol_case_mismatch_demote_factor: float = Field(
@@ -2353,7 +2285,9 @@ class VectorStoreConfig(BaseSettings):
         ge=0.0,
         le=1.0,
         description=(
-            "Score multiplier applied by symbol_case_mismatch_policy='demote'."
+            "Factor a case-mismatched symbol's score is multiplied by when "
+            "VECTOR_STORE_SYMBOL_CASE_MISMATCH_POLICY is demote. 0 ranks it "
+            "last, 1 leaves it unchanged."
         ),
     )
 
@@ -2378,8 +2312,16 @@ class VectorStoreConfig(BaseSettings):
 class QdrantConfig(BaseSettings):
     """Qdrant-specific vector store connection settings."""
 
-    uri: str | None = Field(default=None, description="Qdrant HTTP endpoint URI.")
-    api_key: str | None = Field(default=None, description="Qdrant API key.")
+    uri: str | None = Field(
+        default=None,
+        description=(
+            "Qdrant server URL, such as http://localhost:6333. Setting it "
+            "selects Qdrant as the vector store."
+        ),
+    )
+    api_key: str | None = Field(
+        default=None, description="API key for a Qdrant server that requires one."
+    )
     ontology_collection: str | None = Field(
         default=None,
         description="Qdrant collection for ontology atom vectors; derived when unset.",
@@ -2390,8 +2332,13 @@ class QdrantConfig(BaseSettings):
             "Qdrant collection reserved for future fact vectors; created on init."
         ),
     )
-    grpc_port: int = Field(default=6334, description="Qdrant gRPC port.")
-    use_grpc: bool = Field(default=False, description="Use gRPC client transport.")
+    grpc_port: int = Field(
+        default=6334, description="Qdrant gRPC port, used when QDRANT_USE_GRPC is on."
+    )
+    use_grpc: bool = Field(
+        default=False,
+        description="Talk to Qdrant over gRPC instead of HTTP.",
+    )
     vector_size: int | None = Field(
         default=None,
         ge=1,
@@ -2513,12 +2460,11 @@ class FactsValidationConfig(BaseSettings):
         ge=0.0,
         le=1.0,
         description=(
-            "Largest share of a unit graph one critic pass may remove. Past "
-            "this every fix that removes something goes back as residual and "
-            "only pure additions are applied: a critique wanting to remove "
-            "more than this has stopped correcting and started rewriting, and "
-            "a REPLACE stripped of its delete half would be an ADD of the new "
-            "value beside the old one."
+            "Largest share of a unit graph one critic pass may remove. Beyond"
+            " it, fixes that remove statements are returned as residual "
+            "findings and only pure additions are applied: a critique that "
+            "removes this much is rewriting the graph rather than correcting "
+            "it."
         ),
     )
     critic_min_deletes: int = Field(
@@ -2533,9 +2479,10 @@ class FactsValidationConfig(BaseSettings):
     critic_allow_subject_rename: bool = Field(
         default=False,
         description=(
-            "Whether a REPLACE may delete statements about one subject while "
-            "writing about another. That is a rename, and carried out literally "
-            "it orphans the old node and leaves the new one bare."
+            "Whether a critic REPLACE fix may delete statements about one "
+            "subject while writing about another. That is a rename, and "
+            "applied literally it orphans the old node and leaves the new one"
+            " bare."
         ),
     )
     property_alias_min_ratio: float = Field(
@@ -2543,15 +2490,12 @@ class FactsValidationConfig(BaseSettings):
         ge=0.0,
         le=1.0,
         description=(
-            "SequenceMatcher floor for breaking a tie in the deterministic "
-            "near-miss property rewrite. A predicate absent from both the "
-            "unit's ontology context and the full catalog is rewritten only "
-            "to a catalog term whose name tokens contain, are contained by, "
-            "or spell the same as its own; when several such terms qualify, "
-            "the best-scoring one wins if it clears this ratio outright. "
-            "Similarity alone never licenses a rewrite: a high ratio also "
-            "joins names that differ by a single token, and rewriting across "
-            "that gap substitutes one property for another."
+            "Similarity floor (SequenceMatcher ratio) for choosing among "
+            "candidates in the near-miss property rewrite. A predicate found "
+            "neither in the unit's context nor in the catalog is rewritten "
+            "only to a catalog term whose name tokens contain, are contained "
+            "in, or equal its own; when several qualify, the best wins if it "
+            "clears this ratio. Similarity alone never triggers a rewrite."
         ),
     )
     merge_repair_passes: int = Field(
@@ -2567,44 +2511,34 @@ class FactsValidationConfig(BaseSettings):
     accept_blocking_severity: Literal["critical", "important", "never"] = Field(
         default="critical",
         description=(
-            "Which critic-proposed fix severities block a unit from leaving "
-            "the render/critic loop. Deterministic mandatory findings always "
-            "block; this is the cut applied to the LLM critic's own severity "
-            "label, which is model output from a field description with no "
-            "rubric and so has to be watched rather than trusted. 'critical' "
-            "is the only severity the critic applies selectively enough to "
-            "discriminate on; it labels most fixes 'important', so gating "
-            "there accepts almost nothing. Set 'never' to let deterministic "
-            "findings gate alone."
+            "Which critic-assigned severities keep a unit in the "
+            "render/critic loop. Deterministic mandatory findings always "
+            "block; this threshold applies only to the severity label the LLM"
+            " critic gives its own fixes. The critic labels most fixes "
+            "'important', so 'critical' is the only level that discriminates."
+            " 'never' lets deterministic findings decide alone."
         ),
     )
     numeric_identifier_guard: bool = Field(
         default=True,
         description=(
-            "Exclude digit groups that are parts of an identifier from the "
-            "numeric-coverage inventory. Without it a file number or a "
-            "citation ('600/92', '2024-01-15') is tokenized into digit groups "
-            "and offered to the critic as numbers missing from the graph, "
-            "which it answers by structuring them into numeric properties -- "
-            "and the post-merge multi-value check then flags them. Only groups "
-            "joined to an identifier inside one token are dropped; a unit "
-            "attached to a value ('5mg') still counts. Set false to list every "
-            "digit group."
+            "Leave digit groups that belong to an identifier, such as a file "
+            "number, a date or a citation, out of the numeric-coverage "
+            "inventory, so the critic is not asked to model them as "
+            "quantities. Only digits joined to an identifier inside one token"
+            " are dropped; a number with a unit attached ('5mg') still "
+            "counts. false lists every digit group."
         ),
     )
     context_from_units: bool = Field(
         default=True,
         description=(
-            "In facts-only runs, seed the merge/validate ontology context from "
-            "the ontology snapshots the units actually resolved. With no "
-            "ontology stage there are no reduced artifacts to merge, so the "
-            "document-level context is otherwise empty and BOTH consumers see "
-            "it: the aggregator loses the type and functionality declarations "
-            "its merge guards read, and the validation gate skips every check "
-            "that needs a vocabulary (reported as "
-            "validated_without_ontology_context in the retrieval metrics). Set "
-            "false to reproduce the empty-context behaviour; watch "
-            "validated_without_ontology_context and ontology_snapshot_triples."
+            "In facts-only runs, build the document-level ontology context "
+            "from the snapshots the units resolved. With no ontology stage "
+            "that context is otherwise empty: entity merging loses the type "
+            "and functionality declarations its guards read, and validation "
+            "skips every check that needs a vocabulary (reported as "
+            "validated_without_ontology_context in the retrieval metrics)."
         ),
     )
     suspect_multi_value_severity: Literal["error", "warning"] = Field(
@@ -2619,15 +2553,12 @@ class FactsValidationConfig(BaseSettings):
     suspect_multi_value_require_cross_unit: bool = Field(
         default=False,
         description=(
-            "Require evidence that a multi-valued IRI predicate was created by "
-            "merging before reporting it as an error. The IRI branch of "
-            "SUSPECT_MULTI_VALUE flags any subject with two objects on a "
-            "predicate that is single-valued elsewhere in the graph, and error "
-            "findings drive the un-merge repair -- so a statement one unit "
-            "asserted with two genuine objects is repaired away. When set, "
-            "such a pair is reported as a warning instead. Numeric and string "
-            "branches are unaffected: two distinct quantities on one node are "
-            "a defect whatever their provenance."
+            "Report a multi-valued IRI predicate as an error only when the "
+            "values came from merging different units; otherwise report a "
+            "warning. Errors trigger the un-merge repair, which would remove "
+            "a statement that one unit genuinely made with two objects. "
+            "Numeric and string values are not affected: two distinct "
+            "quantities on one node are always a defect."
         ),
     )
     domain_adherence_min_share: float = Field(
@@ -2635,18 +2566,15 @@ class FactsValidationConfig(BaseSettings):
         ge=0.0,
         le=1.0,
         description=(
-            "Floor on the fraction of a render's distinct schema terms "
-            "(predicates and rdf:type objects, excluding minted instances and "
-            "RDF/RDFS/OWL/XSD/SKOS/DC/PROV plumbing) that must come from the "
-            "unit's ontology context, below which a mandatory "
-            "DOMAIN_ADHERENCE finding asks for a rewrite. Catches the failure "
-            "no per-triple check can see: a render that expresses everything "
-            "in a generic vocabulary is well-formed term by term, exempt from "
-            "UNKNOWN_TERM, and invisible to every shape, so it reads as "
-            "extracted while answering nothing. Set 0 to disable, and leave it "
-            "disabled for deployments that extract without a catalog. Raise it "
-            "toward the share your own healthy runs report -- watch "
-            "domain_adherence in the facts findings to calibrate."
+            "Minimum fraction of a render's distinct schema terms (predicates"
+            " and rdf:type objects, excluding minted instances and RDF, RDFS,"
+            " OWL, XSD, SKOS, DC and PROV) that must come from the unit's "
+            "ontology context; below it a mandatory DOMAIN_ADHERENCE finding "
+            "asks for a rewrite. It catches renders that use a generic "
+            "vocabulary throughout, which every per-triple check and shape "
+            "accepts. 0 disables it; keep it disabled when extracting without"
+            " a catalog, and calibrate it from domain_adherence in the facts "
+            "findings."
         ),
     )
     domain_adherence_min_terms: int = Field(
@@ -2680,24 +2608,15 @@ class FactsValidationConfig(BaseSettings):
             "unit": "qudt:unit",
         },
         description=(
-            "Vocabulary the facts prompt names as the fallback for bounded or "
-            "approximate quantities when the retrieved context supplies no "
-            "suitable class. Roles: value_class, numeric_value, unit. Defaults "
-            "to QUDT; override for catalogs modelling quantities otherwise. An "
-            "empty mapping forbids the fallback and keeps the renderer inside "
-            "the provided context. Terms named here are treated as a deliberate "
-            "fallback by the NON_CATALOG_VOCABULARY finding rather than as an "
-            "unexplained outside term, and are likewise exempt from the "
-            "per-unit UNKNOWN_TERM finding — the validator must never order "
-            "the renderer to remove the vocabulary the prompt recommends. "
-            "Optional roles lower_bound and upper_bound (plus roles containing "
-            "'inclusive' for the bound flags) name the catalog's range "
-            "properties; when all of numeric_value/lower_bound/upper_bound "
-            "are set, equal-bound pairs are promoted to a single scalar on "
-            "the numeric_value property at parse time. The unit role also "
-            "drives the LABEL_ONLY_NUMBER finding: a node carrying the unit "
-            "property but no numeric literal, with a number in its label, is "
-            "a mandatory fix."
+            "Vocabulary the facts prompt offers for quantities when the "
+            "retrieved context has no suitable class, as a role-to-IRI "
+            "mapping: value_class, numeric_value and unit, plus optional "
+            "lower_bound, upper_bound and roles containing 'inclusive'. "
+            "Defaults to QUDT; an empty mapping forbids the fallback. Terms "
+            "named here are exempt from UNKNOWN_TERM and "
+            "NON_CATALOG_VOCABULARY. When numeric_value and both bounds are "
+            "set, a range with equal bounds becomes a single value; the unit "
+            "role also drives the LABEL_ONLY_NUMBER finding."
         ),
     )
     functional_min_single_support: int = Field(
@@ -2722,32 +2641,23 @@ class FactsValidationConfig(BaseSettings):
     shapes_dir: str | None = Field(
         default=None,
         description=(
-            "Seed directory of SHACL shape files (.ttl, searched recursively), "
-            "read once at startup and materialized into the tenant's shapes "
-            "partition of the triple store — the same read-only bootstrap "
-            "contract ONTOCAST_ONTOLOGY_DIRECTORY has. The validation gate "
-            "reads the partition, not this directory, so shapes uploaded over "
-            "/shapes are equally in force. Shapes inlined in the ontology "
-            "context (sh:NodeShape) are still picked up automatically; SHACL "
-            "runs only when pyshacl is installed (extra: 'shacl'). Setting "
-            "this without the extra installed, or pointing it at a directory "
-            "with no readable shapes, logs a warning rather than silently "
-            "skipping validation."
+            "Directory of SHACL shape files (.ttl, searched recursively) "
+            "loaded at startup into the tenant's shapes partition of the "
+            "triple store, as ONTOCAST_ONTOLOGY_DIRECTORY is for ontologies. "
+            "Validation reads the partition, so shapes uploaded through "
+            "/shapes apply as well. Requires the 'shacl' extra; without it, "
+            "or with no readable shapes, a warning is logged."
         ),
     )
     shacl_inference: Literal["none", "rdfs", "owlrl"] = Field(
         default="rdfs",
         description=(
-            "Inference pyshacl applies before evaluating shapes. RDFS is the "
-            "default because the renderer emits the most specific predicate it "
-            "can, and SHACL property paths carry no rdfs:subPropertyOf "
-            "entailment: a shape naming the superproperty reports the "
-            "specialised statement as missing. (Class targets need no help — "
-            "SHACL resolves those through rdfs:subClassOf itself.) Turning "
-            "inference off therefore raises the violation count rather than "
-            "lowering it. Set 'none' for shapes written against exactly the "
-            "terms the graph "
-            "uses, or when validation time dominates."
+            "Inference pyshacl applies before evaluating shapes. 'rdfs' "
+            "(default) lets a shape that names a superproperty match the more"
+            " specific predicate the renderer emits, which SHACL property "
+            "paths do not do on their own; turning it off raises the "
+            "violation count. Use 'none' for shapes written against exactly "
+            "the terms the graph uses, or when validation time dominates."
         ),
     )
     shacl_advanced: bool = Field(
@@ -2761,36 +2671,24 @@ class FactsValidationConfig(BaseSettings):
     shapes_prompt_contract: Literal["off", "auto", "full", "context"] = Field(
         default="auto",
         description=(
-            "Render the loaded SHACL shapes as a CONFORMANCE REQUIREMENTS "
-            "chapter in the facts render and critic prompts, so the renderer "
-            "is shown the same rulebook the gate validates against instead of "
-            "being graded on rules no prompt states. The chapter is derived "
-            "from the shapes at run time -- sh:message verbatim where the "
-            "author wrote one, a synthesized structural line otherwise. "
-            "Modes: 'off' -- no chapter; 'full' -- the whole catalog, capped "
-            "at shapes_prompt_max_lines and memoized per tenancy; 'context' "
-            "-- per-unit selection, keeping only shapes whose target "
-            "classes/properties intersect the unit's resolved ontology "
-            "snapshot (shape relevance is derivative of ontology-term "
-            "relevance, so the snapshot is the join key and no separate "
-            "retrieval is needed); 'auto' (default) -- 'full' while the "
-            "catalog fits the line cap, 'context' once it outgrows it, which "
-            "keeps small catalogs run-constant and stops large ones being "
-            "blind-truncated in document order. A deployment without shapes "
-            "sees an unchanged prompt in every mode. Terms the shapes "
-            "require are exempt from UNKNOWN_TERM (full catalog, whatever "
-            "the mode -- they are catalog IRIs, and the validator must never "
-            "order removal of what the contract asks for)."
+            "Show the loaded SHACL shapes to the facts renderer and critic as"
+            " a conformance chapter, so they are prompted with the rules "
+            "validation applies. Each shape contributes its sh:message, or a "
+            "generated line when it has none. 'off': no chapter. 'full': "
+            "every shape, up to shapes_prompt_max_lines. 'context': only "
+            "shapes whose targets appear in the unit's ontology snapshot. "
+            "'auto': 'full' while the catalog fits the line cap, 'context' "
+            "once it does not. Without shapes the prompt is the same in every"
+            " mode. Terms the shapes require are exempt from UNKNOWN_TERM."
         ),
     )
     shapes_prompt_max_lines: int = Field(
         default=60,
         ge=1,
         description=(
-            "Cap on total rule lines in the shapes-derived conformance "
-            "chapter. A prompt-size guard, not a relevance ranking: the "
-            "chapter notes in-text when rules were truncated, so the model "
-            "does not read absence as nonexistence."
+            "Cap on rule lines in the shapes conformance chapter. A size "
+            "guard, not a ranking; when it truncates, the chapter says so, so"
+            " the model does not read a missing rule as no rule."
         ),
     )
     numeric_coverage_limit: int = Field(
@@ -2806,28 +2704,21 @@ class FactsValidationConfig(BaseSettings):
     numeric_coverage_mandatory: Literal["off", "measurements", "all"] = Field(
         default="off",
         description=(
-            "Which NUMERIC_COVERAGE findings are mandatory, so unextracted "
-            "source numerics block unit acceptance like any other "
-            "deterministic finding. The inventory is split in two: "
-            "'measurements' are numbers written next to a unit, 'unclassified' "
-            "are bare numbers. 'off' (default) keeps both findings advisory; "
-            "'measurements' blocks on the unit-adjacent list only; 'all' "
-            "blocks on both. The booleans true/false are accepted as all/off. "
-            "Advisory by default because the critic judges per mention "
-            "whether it is a quantity or an artifact, and blocking forces that "
-            "judgement into the loop; 'measurements' is the setting for runs "
-            "that treat a missed unit-adjacent value as a defect."
+            "Which NUMERIC_COVERAGE findings block a unit's acceptance: 'off'"
+            " keeps them advisory; 'measurements' blocks on numbers written "
+            "with a unit that are missing from the graph; 'all' also blocks "
+            "on bare numbers. true and false are accepted as 'all' and 'off'."
+            " Advisory by default because the critic decides per mention "
+            "whether a number is a quantity."
         ),
     )
 
     @field_validator("numeric_coverage_mandatory", mode="before")
     @classmethod
     def _coverage_mode_from_bool(cls, value: object) -> object:
-        """Accept the boolean this knob used to be.
+        """Read a boolean as a mode: ``true`` is ``all``, ``false`` is ``off``.
 
-        ``true`` meant every coverage finding blocks, which is now ``all``;
-        ``false`` is ``off``. Env values arrive as strings, so the textual
-        booleans are folded too.
+        Env values arrive as strings, so the textual booleans are folded too.
         """
         if isinstance(value, bool):
             return "all" if value else "off"
@@ -2855,14 +2746,12 @@ class FactsValidationConfig(BaseSettings):
         default=0,
         ge=0,
         description=(
-            "Completion passes per facts unit, in **LLM calls**, run after the "
-            "critic loop and only when the numeric inventory still lists "
-            "measurements (a number with its unit) absent from the graph. The "
-            "pass is insert-only: it is shown a term sheet instead of the "
-            "ontology chapter, the unit's existing catalog-typed subjects, the "
-            "text, and the missed measurements with their context, and each "
-            "new subject it writes is kept or rolled back by the same "
-            "regression check a critic fix goes through. 0 disables it."
+            "Insert-only completion passes per facts unit, in LLM calls, run "
+            "after the critic loop when numbers written with a unit are still"
+            " missing from the graph. A pass sees a term sheet, the unit's "
+            "typed subjects, the text and the missing measurements, and each "
+            "subject it adds is kept or rolled back by the same regression "
+            "check as a critic fix. 0 disables it."
         ),
     )
     shacl_max_triples: int = Field(
@@ -2878,17 +2767,13 @@ class FactsValidationConfig(BaseSettings):
     shacl_autofix: Literal["off", "rewrite", "prune"] = Field(
         default="prune",
         description=(
-            "LLM-free repair of SHACL violations at the gate. 'rewrite' applies "
-            "only additive/rewriting fixes the catalog can ground: retyping a "
-            "literal to a sh:datatype it parses as, and resolving a string "
-            "literal to the catalog IRI whose surface form it matches exactly "
-            "and uniquely. 'prune' (default) additionally drops nodes that "
-            "violate sh:minCount while asserting nothing themselves (no triple "
-            "beyond rdf:type/rdfs:label, unreferenced elsewhere) — a "
-            "placeholder value node stands for an extraction that did not "
-            "happen. Neither mode invents a value: a node carrying real data "
-            "but missing a required property stays a reported finding. 'off' "
-            "reports without repairing."
+            "Repair of SHACL violations without an LLM call. 'rewrite' "
+            "retypes a literal to the sh:datatype it parses as, and replaces "
+            "a string with the catalog IRI whose label it matches exactly and"
+            " uniquely. 'prune' also drops placeholder nodes that violate "
+            "sh:minCount and state nothing beyond a type and label. Neither "
+            "invents a value: a node with real data but a missing property "
+            "stays a finding. 'off' reports only."
         ),
     )
     shacl_autofix_passes: int = Field(
@@ -2907,12 +2792,11 @@ class FactsValidationConfig(BaseSettings):
             "http://www.w3.org/2004/02/skos/core#notation",
         ],
         description=(
-            "Predicates whose literal objects are machine-resolvable codes "
-            "(UCUM codes, symbols, notations). Used to resolve a code the model "
-            "emitted — e.g. qudt:ucumCode 'd' on a value node with no "
-            "qudt:unit — to the catalog individual declaring it, when exactly "
-            "one does. Matching is exact and case-sensitive: these are codes, "
-            "not labels."
+            "Predicates whose literal objects are machine codes (UCUM codes, "
+            "symbols, notations). A code the model emitted, such as "
+            "qudt:ucumCode 'd' on a value node with no qudt:unit, is resolved"
+            " to the one catalog individual that declares it. Matching is "
+            "exact and case-sensitive."
         ),
     )
 
@@ -2928,29 +2812,23 @@ class OntologyValidationConfig(BaseSettings):
     reconcile_minted_terms: Literal["off", "detect", "rewrite"] = Field(
         default="detect",
         description=(
-            "What to do at reduce time about a newly minted term whose "
-            "label/notation exactly matches one existing term of compatible "
-            "role in the FULL catalog terminal. Under vector-retrieval "
-            "context the snapshot is a retrieved subset, so the renderer "
-            "cannot see the catalog term it is duplicating — the per-unit "
-            "label-collision check indexes exactly the part of the catalog "
-            "where the duplicate is not. 'detect' (default) records and logs "
-            "each pair without touching the delta, so a sampling run measures "
-            "the duplication base rate; 'rewrite' additionally rewrites the "
-            "minted IRI to the catalog IRI in the merged inserts — flip it "
-            "only after 'detect' has shown the matches are true duplicates; "
-            "'off' disables the scan."
+            "What to do when a newly minted term's label or notation exactly "
+            "matches an existing term of compatible role in the full catalog."
+            " Under vector retrieval the renderer sees only part of the "
+            "catalog, so it can mint a duplicate of a term it was not shown. "
+            "'detect' logs each pair and changes nothing; 'rewrite' also "
+            "replaces the minted IRI with the catalog IRI in the merged "
+            "update (enable it once 'detect' shows the matches are true "
+            "duplicates); 'off' skips the check."
         ),
     )
     critic_passes: int = Field(
         default=0,
         ge=0,
         description=(
-            "Review-and-patch passes per ontology unit, in **LLM calls**. "
-            "Defaults to 0, which is what the loop has always done in practice: "
-            "the ontology critic was gated behind a spare render slot and so "
-            "has never run on a default deployment. Enabling it is a real "
-            "increase in cost per unit, so it is opt-in until measured."
+            "Review-and-patch passes per ontology unit, in LLM calls. 0 "
+            "(default) disables the ontology critic; each pass adds one call "
+            "per unit."
         ),
     )
     critic_max_delete_share: float = Field(
@@ -3109,7 +2987,14 @@ class Config(BaseSettings):
     server: ServerConfig = Field(default_factory=ServerConfig)
 
     # Additional settings
-    logging_level: str | None = Field(default=None, description="Logging level")
+    logging_level: str | None = Field(
+        default=None,
+        description=(
+            "Log level for OntoCast: debug, info, warning or error. Other "
+            "libraries log one level higher. Unset leaves logging as Python "
+            "configures it."
+        ),
+    )
     clean: bool = Field(
         default=False,
         description=(

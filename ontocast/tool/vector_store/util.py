@@ -290,8 +290,7 @@ def rank_fuse_channel_hits(
     a tiebreak -- which is what lets an uncalibrated BM25 scale sit beside cosine
     without either dominating by units alone.
 
-    ``rank_constant`` is the smoothing term. At 0 (the default, and the historical
-    behaviour) a rank-2 hit is worth exactly half a rank-1 hit and rank 3 a third,
+    ``rank_constant`` is the smoothing term. At 0 (the default) a rank-2 hit is worth exactly half a rank-1 hit and rank 3 a third,
     so the fused order is decided almost entirely by which channel put what first;
     a deep list of weak matches still hands out ranks 1..N at full lane weight.
     Raising it flattens that decay, so agreement *across* channels outweighs
