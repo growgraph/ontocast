@@ -126,7 +126,9 @@ Release notes: [CHANGELOG.md](CHANGELOG.md)
 ## Contributing
 
 See [Contributing](https://growgraph.github.io/ontocast/contributing/). Issues
-and discussion: [GitHub](https://github.com/growgraph/ontocast).
+and discussion: [GitHub](https://github.com/growgraph/ontocast). Contributors
+accept the [Contributor License Agreement](CLA.md) once, by commenting on
+their first pull request.
 
 ## License
 

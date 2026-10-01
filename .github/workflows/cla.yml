@@ -1,0 +1,38 @@
+# Checks that every contributor to a pull request has accepted CLA.md, and records acceptances
+# posted as comments. Logic: .github/scripts/cla.js. The result is the `cla` commit status.
+#
+# pull_request_target runs with the base repository's token so it can comment and record
+# signatures on pull requests from forks. It is safe here because the job only checks out the
+# base branch's copy of the script and never runs pull request code.
+name: CLA
+
+on:
+    pull_request_target:
+        types: [opened, reopened, synchronize]
+    issue_comment:
+        types: [created]
+
+permissions:
+    contents: write        # record acceptances on the cla-signatures branch
+    issues: write          # comment on the pull request
+    pull-requests: write   # read pull request commits
+    statuses: write        # set the `cla` commit status
+
+concurrency:
+    group: cla-${{ github.event.pull_request.number || github.event.issue.number }}
+    cancel-in-progress: false
+
+jobs:
+    cla:
+        if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
+        runs-on: ubuntu-latest
+        steps:
+        -   uses: actions/checkout@v7
+            with:
+                sparse-checkout: .github/scripts
+                persist-credentials: false
+        -   uses: actions/github-script@v9
+            with:
+                script: |
+                    const cla = require('./.github/scripts/cla.js');
+                    await cla({ github, context, core });

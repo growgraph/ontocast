@@ -4,6 +4,38 @@ This page covers what you need to change OntoCast and get the change merged:
 setting up, running the tests, writing documentation, and the checklist a pull
 request has to pass.
 
+## Licensing your contribution
+
+OntoCast is released under the Apache License 2.0. Before we can merge your
+first pull request, you need to accept the
+[Growgraph Contributor License Agreement](https://github.com/growgraph/ontocast/blob/main/CLA.md)
+(CLA). You do it once, and it covers all your future contributions to
+Growgraph projects. You keep the copyright in your work, and everything you
+contribute stays available under an open source license.
+
+When you open a pull request, a bot checks whether you have accepted the CLA.
+If you have not, it comments with a link. Read the agreement and reply on the
+pull request with:
+
+```
+I have read the Growgraph CLA and I accept it.
+```
+
+The `cla` check then turns green. You can also sign the agreement on paper:
+see its section 11.
+
+**Contributing as part of your job?** Contributions written at work are
+welcome. Many employers own what their employees write, though, so before you
+contribute, either get your employer's permission or ask them to sign our
+Corporate CLA (write to team@growgraph.dev). If you are not sure whether your
+employer has a claim, ask them first.
+
+Do not submit code you did not write without telling us its source and
+license.
+
+Every commit must be authored with an e-mail address linked to your GitHub
+account; otherwise the check cannot match the commit to your acceptance.
+
 ## Set up
 
 1. Fork the repository on GitHub and clone your fork.
@@ -153,6 +185,7 @@ uv run properdocs build --strict
    docs, settings or public API.
 3. `CHANGELOG.md` has an entry for every user-visible change.
 4. The description states the problem and the solution.
+5. Every contributor has accepted the CLA: the `cla` check is green.
 
 ## Reporting issues
 
