@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Section-label matching** compiles each heading pattern and keyword once. The
+  catalog outgrows `re`'s cache, so schema detection recompiled it for every heading.
 - **`GET /info`** `input_types` lists what `/process` accepts: `txt`, `json`,
   `pdf`, `pptx` (it advertised `text` and `markdown`).
 - **LangChain tools:** `ontocast_delete_ontology` no longer claims to delete the

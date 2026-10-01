@@ -36,6 +36,18 @@ _ALPHA_NUMBERING = re.compile(r"^(?:[A-Za-z]|[IVXLivxl]+)[.)]\s+")
 _ARTEFACT_TOKEN = re.compile(r"^(?:sı|si|s)\s+(?=[A-Za-z])", re.I)
 
 
+# The catalog holds more patterns than ``re``'s own cache, so schema detection,
+# which matches every schema, would otherwise recompile them on every heading.
+@lru_cache(maxsize=None)
+def _compile_heading_pattern(pattern: str) -> re.Pattern[str]:
+    return re.compile(pattern, re.I)
+
+
+@lru_cache(maxsize=None)
+def _compile_keyword(keyword: str) -> re.Pattern[str]:
+    return re.compile(rf"(?<!\w){re.escape(keyword)}(?!\w)", re.I)
+
+
 class SectionLabelDef(BaseModel):
     """One canonical section label, its heading patterns and recall keywords.
 
@@ -59,10 +71,7 @@ class SectionLabelDef(BaseModel):
 
     @property
     def compiled_keywords(self) -> tuple[re.Pattern[str], ...]:
-        return tuple(
-            re.compile(rf"(?<!\w){re.escape(keyword)}(?!\w)", re.I)
-            for keyword in self.keywords
-        )
+        return tuple(_compile_keyword(keyword) for keyword in self.keywords)
 
 
 class SectionLabelSchema(BaseModel):
@@ -117,7 +126,7 @@ class SectionLabelSchema(BaseModel):
         compiled: list[tuple[str, re.Pattern[str]]] = []
         for label_def in self.labels:
             for pattern in label_def.heading_patterns:
-                compiled.append((label_def.id, re.compile(pattern, re.I)))
+                compiled.append((label_def.id, _compile_heading_pattern(pattern)))
         return tuple(compiled)
 
 

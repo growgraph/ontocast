@@ -151,6 +151,7 @@ def test_prepare_splits_oversized_section() -> None:
     assert all(len(chunk.text) <= 300 for chunk in chunks)
 
 
+@pytest.mark.slow  # the docling fallback loads a HuggingFace tokenizer
 def test_prepare_fallback_when_no_structural_segments() -> None:
     doc = doc_from_markdown_lines("")
     chunks = asyncio.run(_prepare(doc, options=PrepareOptions()))
@@ -326,6 +327,7 @@ def test_sections_first_semantic_labels_inherited_without_llm() -> None:
     assert all(chunk.section_label is not None for chunk in chunks)
 
 
+@pytest.mark.slow  # the docling segmenter loads a HuggingFace tokenizer
 def test_docling_segmenter_option_still_supported() -> None:
     doc = doc_from_markdown_lines(_EXCLUDABLE_DOC)
     config = ChunkConfig(min_size=40, max_size=500, segmenter="docling")

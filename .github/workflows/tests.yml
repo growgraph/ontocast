@@ -116,8 +116,12 @@ jobs:
             run: uv run ty check ontocast test
         # No .env exists in a clean checkout; pytest-dotenv no-ops on a missing
         # file, and integration tests self-skip when their service is
-        # unreachable, so this runs offline.
+        # unreachable. The HuggingFace offline switches hold the default run to
+        # its contract: a test that needs model weights fails here instead of
+        # downloading them, and belongs behind `slow`.
         -   name: Run tests
             run: uv run pytest -m "not slow"
             env:
                 PYTHONUNBUFFERED: '1'
+                HF_HUB_OFFLINE: '1'
+                TRANSFORMERS_OFFLINE: '1'
