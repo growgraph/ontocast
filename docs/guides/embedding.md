@@ -125,8 +125,12 @@ from ontocast.onto.enum import OntologyContextMode
 
 config = Config.in_memory()
 config.tool_config.lancedb.enabled = True
-config.tool_config.embedding.provider = "openai"  # embed through the API, no local model
-config.server.ontology_context_mode = OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+config.tool_config.embedding.provider = (
+    "openai"  # embed through the API, no local model
+)
+config.server.ontology_context_mode = (
+    OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
+)
 
 tools = await ToolBox.acreate(config)
 await tools.initialize()
