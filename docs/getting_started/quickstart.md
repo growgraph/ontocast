@@ -34,13 +34,15 @@ To use another provider, install its extra and set three variables:
 
 !!! tip "Keeping settings in a file"
     The repository ships `.env.example.minimal`, the settings worth a decision,
-    and `.env.example`, all of them. Copy one to `.env` and edit it. OntoCast
-    does not read the file itself, so load it into the environment of the
+    and `.env.example`, all of them. Copy one, edit it, and pass it to the
     command you run:
 
     ```bash
-    set -a; source .env; set +a
+    ontocast --env-file my.env serve
     ```
+
+    The flag is repeatable, so keys and project settings can live in separate
+    files; see [Configuring OntoCast](../guides/configuration.md#layering-settings-files).
 
 ## 3. Start the server
 

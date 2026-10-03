@@ -40,6 +40,8 @@ from ontocast.api.tenancy_resolution import (
     stores_use_tenancy_partitions,
 )
 from ontocast.cli.cache import cache as cache_cli
+from ontocast.cli.config import config as config_cli
+from ontocast.cli.env_files import apply_env_files
 from ontocast.cli.inspect_sections import main as inspect_sections_cli
 from ontocast.config import Config
 from ontocast.config.env_names import env_names
@@ -430,11 +432,24 @@ def _shared_runtime_options(fn: F) -> F:
 
 
 @click.group()
-def cli() -> None:
+@click.option(
+    "--env-file",
+    "env_files",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=pathlib.Path),
+    help=(
+        "Dotenv file to load before running; repeatable. Later files override "
+        "earlier ones, and variables exported in the shell override them all."
+    ),
+)
+def cli(env_files: tuple[pathlib.Path, ...]) -> None:
     """OntoCast: start the API server or process local files in batch mode."""
+    if env_files:
+        apply_env_files(env_files)
 
 
 cli.add_command(cache_cli)
+cli.add_command(config_cli)
 cli.add_command(inspect_sections_cli)
 
 

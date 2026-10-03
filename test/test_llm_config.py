@@ -24,8 +24,8 @@ pytestmark = pytest.mark.unit
     [
         (LLMProvider.OPENAI, OpenAIModel.GPT4_O_MINI),
         (LLMProvider.OLLAMA, OllamaModel.LLAMA3_1),
-        (LLMProvider.ANTHROPIC, ClaudeModel.CLAUDE_SONNET_4),
-        (LLMProvider.GOOGLE, GeminiModel.GEMINI_2_0_FLASH),
+        (LLMProvider.ANTHROPIC, ClaudeModel.CLAUDE_SONNET_4_6),
+        (LLMProvider.GOOGLE, GeminiModel.GEMINI_3_7_FLASH),
     ],
 )
 def test_llm_config_accepts_matching_provider_and_model(
@@ -41,8 +41,8 @@ def test_llm_config_accepts_matching_provider_and_model(
     [
         (LLMProvider.OPENAI, OllamaModel.LLAMA3_1),
         (LLMProvider.OLLAMA, OpenAIModel.GPT4_O_MINI),
-        (LLMProvider.ANTHROPIC, GeminiModel.GEMINI_2_0_FLASH),
-        (LLMProvider.GOOGLE, ClaudeModel.CLAUDE_SONNET_4),
+        (LLMProvider.ANTHROPIC, GeminiModel.GEMINI_3_7_FLASH),
+        (LLMProvider.GOOGLE, ClaudeModel.CLAUDE_SONNET_4_6),
     ],
 )
 def test_llm_config_warns_but_accepts_mismatched_provider_and_model(
@@ -119,15 +119,15 @@ def _default_model_for(provider: LLMProvider):
     if provider == LLMProvider.OPENAI:
         return OpenAIModel.GPT4_O_MINI
     if provider == LLMProvider.ANTHROPIC:
-        return ClaudeModel.CLAUDE_SONNET_4
-    return GeminiModel.GEMINI_2_0_FLASH
+        return ClaudeModel.CLAUDE_SONNET_4_6
+    return GeminiModel.GEMINI_3_7_FLASH
 
 
 @pytest.mark.parametrize(
-    "effort", ["none", "minimal", "low", "medium", "high", "xhigh"]
+    "effort", ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 )
 def test_llm_config_accepts_each_reasoning_effort(
-    effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"],
+    effort: Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"],
 ) -> None:
     # The union across providers and across model generations of one provider:
     # the floor is spelled `minimal` on some models and `none` on others. Which
@@ -141,7 +141,7 @@ def test_llm_config_rejects_an_unknown_reasoning_effort() -> None:
     # first call, after the ontology sync has already been paid for.
     with pytest.raises(ValidationError):
         LLMConfig.model_validate(
-            {"provider": LLMProvider.OPENAI, "reasoning_effort": "max"}
+            {"provider": LLMProvider.OPENAI, "reasoning_effort": "maximum"}
         )
 
 

@@ -142,12 +142,12 @@ tuning](performance.md) explains the concurrency layers and what to measure.
 
 ## Settings seem ignored
 
-- **The settings file is not read.** OntoCast reads only the process environment, never a `.env` file. Load the file into the environment of the command you run: `set -a; source .env; set +a`.
+- **The settings file is not read.** OntoCast reads a file only when it is passed with `ontocast --env-file FILE`; otherwise it reads the process environment alone. A variable exported in the shell wins over the file.
 - **The server reads settings once.** Restart `ontocast serve` after a change.
 - **A request overrides it.** `render_mode`, `ontology_context_mode`, `ontology_context_fixed_ontology_id`, `llm_graph_format` and `max_visits` sent with a request win over the environment.
 - **Dataset names come from the tenant and project.** `ontocast serve` and `ontocast process` name the Fuseki datasets and vector collections after the tenant and project (`--tenant`, `--project`), whatever `FUSEKI_DATASET` or a table setting says, and log a warning naming the ignored setting. See [Tenancy](tenancy.md).
 - **Fixed mode needs the mode setting.** For `ontocast process`, set `ONTOLOGY_CONTEXT_MODE=fixed_single_ontology` as well as `ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`.
-- **The name is wrong.** An unknown variable is ignored without a warning. Check the spelling against the [configuration reference](../reference/configuration/index.md); the run manifest shows the values the run used.
+- **The name is wrong.** An unknown variable in the environment is ignored without a warning. `ontocast config check FILE` names the unknown variables in a settings file, and `--env-file` warns about them at startup; the run manifest shows the values the run used.
 
 ## Fuseki refuses the connection
 

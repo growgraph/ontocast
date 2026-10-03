@@ -67,9 +67,9 @@ without a server:
 ontocast process --input-path ./papers --output-dir ./out
 ```
 
-To keep settings in a file, copy [`.env.example.minimal`](.env.example.minimal)
-to `.env` and load it into your shell with `set -a; source .env; set +a`:
-OntoCast does not read the file itself. Step by step:
+To keep settings in a file, copy [`.env.example.minimal`](.env.example.minimal),
+edit it, and pass it with `ontocast --env-file my.env serve` (repeatable; later
+files win). Step by step:
 [Quick start](https://growgraph.github.io/ontocast/getting_started/quickstart/).
 
 ## Your own ontologies
