@@ -39,7 +39,7 @@ you.
 | `openai` / `anthropic` / `google` / `ollama` | The matching LLM provider | One is required |
 | `server` | The `ontocast` command, every console script, and the HTTP API | FastAPI, uvicorn, click, rich. Without it the console scripts print an install hint and exit |
 | `documents` | Representing and chunking converted documents (`docling-core`) | Included by `server` and `doc-processing`; pulls pandas, pyarrow, transformers |
-| `doc-processing` | PDF, Word, PowerPoint, Excel, HTML, Markdown, CSV, AsciiDoc and image conversion (Docling; [`CONVERTER_SUPPORTED_EXTENSIONS`](../reference/configuration/conversion.md#converter_supported_extensions)), OCR, and the `sentence-transformers` backend used by the default `EMBEDDING_PROVIDER=huggingface` | Includes `documents` |
+| `doc-processing` | PDF, Word, PowerPoint, Excel, HTML, Markdown, CSV, AsciiDoc and image conversion (Docling; [`CONVERTER_SUPPORTED_EXTENSIONS`](../reference/configuration/conversion.md#converter_supported_extensions)), OCR for scanned pages, an optional equation-to-LaTeX model (downloaded when first enabled), and the `sentence-transformers` backend used by the default `EMBEDDING_PROVIDER=huggingface` | Includes `documents` |
 | `qdrant` | Qdrant vector store | Pulls `qdrant-client` and gRPC |
 | `lancedb` | Embedded LanceDB vector store, no external service | |
 | `sparse` | `fastembed` BM25 sparse embeddings | Included by `qdrant` and `lancedb`; pulls an ONNX runtime |

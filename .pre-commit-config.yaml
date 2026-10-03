@@ -3,7 +3,7 @@ fail_fast: false
 repos:
   # Python linting and formatting
 -   repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.7
+    rev: v0.16.10
     hooks:
     -   id: ruff-check
         args: [--fix]
@@ -53,7 +53,7 @@ repos:
   # environment and a fresh CI one can format differently from identical config
   # -- which is how this passed locally while failing in CI. Bump deliberately.
 -   repo: https://github.com/pappasam/toml-sort
-    rev: v0.24.3
+    rev: v0.25.0
     hooks:
     -   id: toml-sort
         args: [-ia]

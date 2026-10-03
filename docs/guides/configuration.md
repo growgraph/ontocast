@@ -162,7 +162,7 @@ a proxy that authenticates sits in front of it.
 
 | Setting | When to change it |
 |---|---|
-| [`CONVERTER_PROFILE`](../reference/configuration/conversion.md#converter_profile) | `born_digital` for PDFs with selectable text, such as publisher PDFs |
+| [`CONVERTER_PROFILE`](../reference/configuration/conversion.md#converter_profile) | `auto` (default) checks each PDF for a text layer: `fast` (no OCR, fast tables) when it has one, `ocr` when its pages are images. `lean` adds equations as LaTeX, at a model call per equation. Fix a profile when every input is of one kind |
 | [`CHUNK_MIN_SIZE`](../reference/configuration/chunking.md#chunk_min_size), [`CHUNK_MAX_SIZE`](../reference/configuration/chunking.md#chunk_max_size) | Size of each part in characters: larger parts give the model more context per call |
 | [`CHUNK_BIBLIOGRAPHY_MODE`](../reference/configuration/chunking.md#chunk_bibliography_mode) | Reference lists are skipped by default; `citations_only` extracts them as bibliographic records |
 

@@ -18,7 +18,7 @@ The cache directory holds one subdirectory per tool:
 | Subdirectory | Holds | An entry is reused when these match |
 |---|---|---|
 | `llm/` | Provider responses | The full prompt text and the LLM settings listed below |
-| `converter/` | Converted documents | The file's bytes and the `CONVERTER_*` settings |
+| `converter/` | Converted documents | The file's bytes, the `CONVERTER_*` settings and the profile the document resolved to |
 | `chunker/` | Chunked text | The text, `CHUNK_EMBEDDING_MODEL`, `CHUNK_MIN_SIZE`, `CHUNK_MAX_SIZE`, and whether semantic chunking ran |
 
 The LLM settings in the key are those that change the answer:

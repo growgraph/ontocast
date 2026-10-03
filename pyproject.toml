@@ -4,7 +4,7 @@ requires = ["hatchling"]
 
 [project]
 authors = [
-  {email = "alexander@growgraph.dev", name = "Alexander Belikov"}
+  { email = "alexander@growgraph.dev", name = "Alexander Belikov" }
 ]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -65,7 +65,7 @@ license-files = ["LICENSE"]
 name = "ontocast"
 readme = "README.md"
 requires-python = ">=3.12,<4.0"
-version = "0.6.4"
+version = "0.6.5"
 
 [project.optional-dependencies]
 # `plot` is not included: it only serves `plot-graph`, which regenerates the

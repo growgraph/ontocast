@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -23,18 +24,158 @@ from ontocast.tool.converter import (
     ConverterTool,
     build_document_converter,
 )
+from ontocast.tool.pdf_regime import pdf_has_text_layer
 from ontocast.toolbox import ToolBox
 
 pytestmark = pytest.mark.unit
 
 
-def test_converter_config_born_digital_profile_applies_expected_defaults() -> None:
-    config = ConverterConfig(profile="born_digital")
+def _pdf(pages: list[str], render_mode: int = 0) -> bytes:
+    """A minimal PDF, one page per string; an empty string is a page with no text."""
+    n = len(pages)
+    kids = " ".join(f"{4 + 2 * i} 0 R" for i in range(n))
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        f"<< /Type /Pages /Kids [{kids}] /Count {n} >>".encode(),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    for i, text in enumerate(pages):
+        content = (
+            f"BT {render_mode} Tr /F1 10 Tf 72 720 Td ({text}) Tj ET".encode()
+            if text
+            else b""
+        )
+        objs.append(
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources "
+            f"<< /Font << /F1 3 0 R >> >> /Contents {5 + 2 * i} 0 R >>".encode()
+        )
+        objs.append(
+            b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream"
+        )
+    out, offsets = b"%PDF-1.4\n", []
+    for k, obj in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % k + obj + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+    out += b"".join(b"%010d 00000 n \n" % o for o in offsets)
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objs) + 1,
+        xref,
+    )
+    return out
 
-    assert config.pdf_backend == "pypdfium2"
-    assert config.do_ocr is False
-    assert config.force_backend_text is True
-    assert config.repair_ligature_gaps is True
+
+SENTENCE = "The quick brown fox jumps over the lazy dog near the riverbank."
+TEXT_PDF = _pdf([SENTENCE, SENTENCE, SENTENCE])
+IMAGE_ONLY_PDF = _pdf(["", "", ""])
+HIDDEN_TEXT_PDF = _pdf([SENTENCE, SENTENCE], render_mode=3)
+
+
+def test_default_profile_is_auto() -> None:
+    assert ConverterConfig().profile == "auto"
+
+
+@pytest.mark.parametrize(
+    ("removed", "replacement"), [("born_digital", "fast"), ("default", "ocr")]
+)
+def test_removed_profiles_name_their_replacement(
+    removed: str, replacement: str
+) -> None:
+    with pytest.raises(ValueError, match=f"'{replacement}'"):
+        ConverterConfig(profile=removed)
+
+
+def test_profile_presets() -> None:
+    fast = ConverterConfig().resolved("fast")
+    assert (fast.profile, fast.do_ocr, fast.table_mode, fast.do_formula_enrichment) == (
+        "fast",
+        False,
+        "fast",
+        False,
+    )
+    lean = ConverterConfig().resolved("lean")
+    assert (lean.profile, lean.do_ocr, lean.table_mode, lean.do_formula_enrichment) == (
+        "lean",
+        False,
+        "fast",
+        True,
+    )
+    ocr = ConverterConfig().resolved("ocr")
+    assert (ocr.profile, ocr.do_ocr, ocr.table_mode, ocr.do_formula_enrichment) == (
+        "ocr",
+        True,
+        "accurate",
+        False,
+    )
+
+
+def test_presets_leave_explicit_fields_alone(monkeypatch) -> None:
+    assert (
+        ConverterConfig(profile="lean", table_mode="accurate")
+        .resolved("lean")
+        .table_mode
+        == "accurate"
+    )
+    monkeypatch.setenv("CONVERTER_DO_OCR", "true")
+    assert ConverterConfig(profile="lean").resolved("lean").do_ocr is True
+
+
+def test_fixed_profile_resolves_only_to_itself() -> None:
+    with pytest.raises(ValueError, match="cannot resolve"):
+        ConverterConfig(profile="ocr").resolved("lean")
+
+
+@pytest.mark.parametrize(("profile", "formula"), [("fast", False), ("lean", True)])
+def test_build_document_converter_applies_the_text_layer_presets(
+    profile: Literal["fast", "lean"], formula: bool
+) -> None:
+    pytest.importorskip("docling")
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import TableFormerMode
+
+    converter = build_document_converter(ConverterConfig().resolved(profile))
+
+    options = converter.format_to_options[InputFormat.PDF].pipeline_options
+    assert options.do_ocr is False
+    assert options.do_formula_enrichment is formula
+    assert options.table_structure_options.mode == TableFormerMode.FAST
+
+
+def test_pdf_text_layer_detection() -> None:
+    assert pdf_has_text_layer(TEXT_PDF) is True
+    assert pdf_has_text_layer(IMAGE_ONLY_PDF) is False
+    # A scan's OCR layer is invisible text; it is read rather than re-recognised.
+    assert pdf_has_text_layer(HIDDEN_TEXT_PDF) is True
+    assert pdf_has_text_layer(b"%PDF-not-really") is False
+
+
+def test_auto_routes_each_pdf_by_its_text_layer(monkeypatch, tmp_path: Path) -> None:
+    builds: list[ConverterConfig] = []
+    monkeypatch.setattr(
+        "ontocast.tool.converter.build_document_converter", _fake_build(builds)
+    )
+    tool = ConverterTool(cache=Cacher(cache_dir=tmp_path))
+
+    tool(TEXT_PDF, filename="paper.pdf")
+    tool(IMAGE_ONLY_PDF)  # no name: recognised as a PDF from its bytes
+    tool(b"# Title\n", filename="note.md")
+
+    assert [c.profile for c in builds] == ["fast", "ocr"]
+    assert set(tool._converters) == {"fast", "ocr"}
+    assert tool.cache_config("a.pdf", "fast") != tool.cache_config("a.pdf", "ocr")
+
+
+def test_fixed_profile_skips_detection(monkeypatch, tmp_path: Path) -> None:
+    def fail(_data: bytes) -> bool:
+        raise AssertionError("a fixed profile must not inspect the PDF")
+
+    monkeypatch.setattr("ontocast.tool.converter.pdf_has_text_layer", fail)
+    tool = ConverterTool(
+        cache=Cacher(cache_dir=tmp_path),
+        converter_config=ConverterConfig(profile="ocr"),
+    )
+    assert tool.resolve_profile(TEXT_PDF, "paper.pdf") == "ocr"
 
 
 def test_build_document_converter_uses_configured_pdf_backend_and_options() -> None:
@@ -67,34 +208,20 @@ def test_converter_cache_key_includes_config() -> None:
         content = b"%PDF-test-bytes"
         doc_json = plain_text_to_docling_doc("cached", "doc").model_dump_json()
 
-        default_tool = ConverterTool(
+        ocr_tool = ConverterTool(
             cache=shared_cache,
-            converter_config=ConverterConfig(do_ocr=True),
+            converter_config=ConverterConfig(profile="ocr"),
         )
-        born_digital_tool = ConverterTool(
+        fast_tool = ConverterTool(
             cache=shared_cache,
-            converter_config=ConverterConfig(profile="born_digital"),
+            converter_config=ConverterConfig(profile="fast"),
         )
 
-        default_tool.cache.set(
-            content,
-            doc_json,
-            config=default_tool.converter_config.model_dump(mode="json"),
-        )
+        ocr_tool.cache.set(content, doc_json, config=ocr_tool.cache_config("a.pdf"))
 
+        assert ocr_tool.cache.get(content, config=ocr_tool.cache_config("a.pdf"))
         assert (
-            default_tool.cache.get(
-                content,
-                config=default_tool.converter_config.model_dump(mode="json"),
-            )
-            is not None
-        )
-        assert (
-            born_digital_tool.cache.get(
-                content,
-                config=born_digital_tool.converter_config.model_dump(mode="json"),
-            )
-            is None
+            fast_tool.cache.get(content, config=fast_tool.cache_config("a.pdf")) is None
         )
 
 
@@ -129,12 +256,12 @@ def test_toolbox_wires_converter_config() -> None:
         od.mkdir()
         tool_config = ToolConfig(
             path_config=PathConfig(ontology_directory=od),
-            converter_config=ConverterConfig(profile="born_digital"),
+            converter_config=ConverterConfig(profile="ocr", repair_ligature_gaps=True),
         )
 
         toolbox = ToolBox(Config(tool_config=tool_config))
 
-        assert toolbox.converter.converter_config.profile == "born_digital"
+        assert toolbox.converter.converter_config.profile == "ocr"
         assert toolbox.converter.converter_config.repair_ligature_gaps is True
         # Docling converter is deferred until first conversion
         assert toolbox.converter._converter is None
@@ -166,7 +293,7 @@ def test_converter_tool_builds_document_converter_once(monkeypatch) -> None:
         doc2 = tool(b"%PDF-unique-lazy-2%")
         assert doc1 is not None and doc2 is not None
         assert len(builds) == 1
-        assert tool._converter is not None
+        assert len(tool._converters) == 1
 
 
 # --- CONVERTER_REPAIR_NUMERIC_ARTIFACTS --------------------------------------
@@ -174,7 +301,7 @@ def test_converter_tool_builds_document_converter_once(monkeypatch) -> None:
 
 def test_repair_numeric_artifacts_default_is_off() -> None:
     assert ConverterConfig().repair_numeric_artifacts is False
-    assert ConverterConfig(profile="born_digital").repair_numeric_artifacts is False
+    assert ConverterConfig(profile="fast").repair_numeric_artifacts is False
 
 
 def test_unescapes_only_named_entities_with_semicolons() -> None:
@@ -382,7 +509,8 @@ def test_flag_off_keeps_pre_flag_cache_entries_valid(monkeypatch) -> None:
         shared_cache = Cacher(cache_dir=tmp)
         tool = ConverterTool(cache=shared_cache, converter_config=ConverterConfig())
 
-        legacy_key = tool.converter_config.model_dump(mode="json")
+        # These bytes are no readable PDF, so ``auto`` resolves them to ``ocr``.
+        legacy_key = tool.converter_config.resolved("ocr").model_dump(mode="json")
         legacy_key.pop("repair_numeric_artifacts")
         # Written before the field existed; it never joins the key.
         legacy_key.pop("supported_extensions")
