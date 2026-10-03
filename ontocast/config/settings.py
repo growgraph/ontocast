@@ -738,14 +738,41 @@ DEFAULT_CONVERTER_EXTENSIONS: tuple[str, ...] = (
 READ_WITHOUT_CONVERTER_EXTENSIONS = frozenset({".txt", ".json", ".jsonl"})
 
 
+#: Settings each fixed profile sets, for every field not set explicitly.
+CONVERTER_PROFILE_PRESETS: dict[str, dict[str, Any]] = {
+    # The PDF's own text layer already holds the words, so OCR would only
+    # re-read it, and the fast table model keeps the cell structure the text
+    # layer anchors.
+    "fast": {"do_ocr": False, "table_mode": "fast", "do_formula_enrichment": False},
+    # As fast, plus equations decoded to LaTeX: a model call per detected
+    # equation, so its cost grows with the document's equation count.
+    "lean": {"do_ocr": False, "table_mode": "fast", "do_formula_enrichment": True},
+    # Docling's own defaults: OCR on bitmap regions, accurate tables. Formula
+    # decoding stays off, since on page images it reads glyphs rather than
+    # an equation's structure.
+    "ocr": {"do_ocr": True, "table_mode": "accurate", "do_formula_enrichment": False},
+}
+_REMOVED_PROFILES = {
+    "born_digital": "use 'fast' for PDFs with a text layer, or 'auto'",
+    "default": "use 'ocr' for the previous behaviour, or 'auto'",
+}
+
+
 class ConverterConfig(BaseSettings):
     """Document-conversion settings for Docling-backed inputs."""
 
-    profile: Literal["default", "born_digital"] = Field(
-        default="default",
+    profile: Literal["auto", "fast", "lean", "ocr"] = Field(
+        default="auto",
         description=(
-            "Conversion preset. 'born_digital' prefers embedded PDF text and enables "
-            "a temporary ligature-gap workaround for publisher PDFs."
+            "Conversion preset. 'auto' picks per PDF: 'fast' when the PDF has a "
+            "text layer (born-digital, or a scan with an OCR text layer), 'ocr' "
+            "when its pages are images only. 'fast' turns OCR off and uses the "
+            "fast table model. 'lean' is 'fast' plus equations decoded to LaTeX, "
+            "at one model call per equation; choose it, or set "
+            "CONVERTER_DO_FORMULA_ENRICHMENT, when equations matter. 'ocr' is "
+            "Docling's own defaults: OCR on, accurate tables, no formula decoding. "
+            "A preset sets only the fields not set explicitly. The resolved "
+            "profile joins the converter cache key."
         ),
     )
     pdf_backend: Literal["docling_parse", "pypdfium2"] = Field(
@@ -754,7 +781,10 @@ class ConverterConfig(BaseSettings):
     )
     do_ocr: bool = Field(
         default=True,
-        description="Enable OCR in Docling's standard PDF pipeline.",
+        description=(
+            "Enable OCR in Docling's standard PDF pipeline. Set by the profile "
+            "unless given explicitly."
+        ),
     )
     do_table_structure: bool = Field(
         default=True,
@@ -770,6 +800,23 @@ class ConverterConfig(BaseSettings):
     table_cell_matching: bool = Field(
         default=True,
         description="Enable Docling table cell matching during table extraction.",
+    )
+    table_mode: Literal["accurate", "fast"] = Field(
+        default="accurate",
+        description=(
+            "TableFormer mode: 'accurate' or 'fast'. Set by the profile unless "
+            "given explicitly."
+        ),
+    )
+    do_formula_enrichment: bool = Field(
+        default=False,
+        description=(
+            "Decode display equations to LaTeX with Docling's formula model, "
+            "instead of a placeholder. The model is downloaded on first use and "
+            "runs once per detected equation, so conversion time grows with the "
+            "equation count. On only in the 'lean' profile; set explicitly, it "
+            "applies to every PDF, scanned ones included."
+        ),
     )
     layout_model: Literal[
         "heron",
@@ -813,9 +860,9 @@ class ConverterConfig(BaseSettings):
         default=False,
         description=(
             "Repair ASCII fi/fl/ff-style ligature gaps that some publisher PDFs "
-            "emit after Docling extraction. Off by default, but "
-            "CONVERTER_PROFILE=born_digital turns it on. Participates in the "
-            "converter cache key. Removal condition: Docling normalises these "
+            "emit after Docling extraction, mostly through the pypdfium2 "
+            "backend. Participates in the converter cache key. Removal "
+            "condition: Docling normalises these "
             "gap patterns itself, at which point this becomes a no-op that can "
             "be dropped in a breaking release."
         ),
@@ -848,6 +895,15 @@ class ConverterConfig(BaseSettings):
         case_sensitive=False,
     )
 
+    @field_validator("profile", mode="before")
+    @classmethod
+    def _refuse_removed_profiles(cls, value: Any) -> Any:
+        if isinstance(value, str) and value in _REMOVED_PROFILES:
+            raise ValueError(
+                f"converter profile '{value}' was removed; {_REMOVED_PROFILES[value]}"
+            )
+        return value
+
     @field_validator("supported_extensions")
     @classmethod
     def _normalise_extensions(cls, value: list[str]) -> list[str]:
@@ -867,14 +923,22 @@ class ConverterConfig(BaseSettings):
             )
         return normalised
 
-    @model_validator(mode="after")
-    def _apply_profile_defaults(self) -> ConverterConfig:
-        if self.profile == "born_digital":
-            self.pdf_backend = "pypdfium2"
-            self.do_ocr = False
-            self.force_backend_text = True
-            self.repair_ligature_gaps = True
-        return self
+    def resolved(self, profile: Literal["fast", "lean", "ocr"]) -> ConverterConfig:
+        """This config with ``profile``'s preset applied to every field not set
+        explicitly (in the constructor or the environment).
+
+        ``profile`` must be the configured one unless that is ``auto``.
+        """
+        if self.profile not in ("auto", profile):
+            raise ValueError(f"profile is {self.profile!r}, cannot resolve {profile!r}")
+        values = self.model_dump()
+        for field, value in CONVERTER_PROFILE_PRESETS[profile].items():
+            if field not in self.model_fields_set:
+                values[field] = value
+        values["profile"] = profile
+        return ConverterConfig.model_construct(
+            _fields_set=self.model_fields_set | {"profile"}, **values
+        )
 
 
 class ServerConfig(BaseSettings):

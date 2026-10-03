@@ -11,7 +11,7 @@ import logging
 import pathlib
 import threading
 from io import BytesIO
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field
 
@@ -24,12 +24,14 @@ if TYPE_CHECKING:
 
 from .cache import CONVERTER_CACHE_SUBDIR, Cacher, ToolCacher
 from .onto import Tool
+from .pdf_regime import pdf_has_text_layer
 
 logger = logging.getLogger(__name__)
 
 # Bumped when the cached DoclingDocument shape changes, replacing the older
-# practice of renaming the cache subdirectory.
-CONVERTER_CACHE_FORMAT_VERSION = 1
+# practice of renaming the cache subdirectory. 2: keys carry the resolved
+# profile and its preset fields.
+CONVERTER_CACHE_FORMAT_VERSION = 2
 
 # Bumped whenever a numeric-artifact repair rule changes the text it produces.
 # Without it a rule fix is inert wherever conversions are cached: the key is
@@ -88,7 +90,11 @@ def _build_ocr_options(config: ConverterConfig) -> Any:
 
 
 def build_document_converter(config: ConverterConfig) -> Any:
-    """Build a Docling DocumentConverter from OntoCast converter settings."""
+    """Build a Docling DocumentConverter from OntoCast converter settings.
+
+    ``config`` is taken as given; resolve an ``auto`` profile first
+    (``ConverterConfig.resolved``).
+    """
     base_models_module = importlib.import_module("docling.datamodel.base_models")
     document_converter_module = importlib.import_module("docling.document_converter")
     pipeline_options_module = importlib.import_module(
@@ -105,7 +111,10 @@ def build_document_converter(config: ConverterConfig) -> Any:
     FormatToExtensions = getattr(base_models_module, "FormatToExtensions")
     DocumentConverter = getattr(document_converter_module, "DocumentConverter")
     PdfFormatOption = getattr(document_converter_module, "PdfFormatOption")
-    PdfPipelineOptions = getattr(pipeline_options_module, "PdfPipelineOptions")
+    PdfPipelineOptions = getattr(
+        pipeline_options_module, "ThreadedPdfPipelineOptions", None
+    ) or getattr(pipeline_options_module, "PdfPipelineOptions")
+    TableFormerMode = getattr(pipeline_options_module, "TableFormerMode")
     TableStructureOptions = getattr(
         pipeline_options_module, "TableStructureOptions", None
     ) or getattr(pipeline_options_module, "BaseTableStructureOptions")
@@ -123,8 +132,10 @@ def build_document_converter(config: ConverterConfig) -> Any:
         ocr_options=_build_ocr_options(config),
         layout_options=_build_layout_options(config),
         table_structure_options=TableStructureOptions(
-            do_cell_matching=config.table_cell_matching
+            do_cell_matching=config.table_cell_matching,
+            mode=TableFormerMode(config.table_mode),
         ),
+        do_formula_enrichment=config.do_formula_enrichment,
     )
     backend_map = {
         "docling_parse": DoclingParseDocumentBackend,
@@ -148,6 +159,9 @@ def build_document_converter(config: ConverterConfig) -> Any:
         allowed_formats=allowed_formats or None, format_options=format_options
     )
 
+
+#: A profile a document actually converts with (``auto`` resolves to one).
+FixedProfile = Literal["fast", "lean", "ocr"]
 
 #: Suffixes Docling recognises from content, so their cache keys carry no suffix.
 _SNIFFED_SUFFIXES = frozenset({".pdf", ".pptx"})
@@ -196,7 +210,8 @@ class ConverterTool(Tool):
                 if is_available("docling")
                 else set()
             )
-        self._converter = None
+        # One Docling converter per resolved profile, each built on first use.
+        self._converters: dict[str, Any] = {}
         self._converter_lock = threading.Lock()  # Lock for thread-safe converter access
 
         # Initialize cache - use shared cacher or create new one
@@ -208,38 +223,70 @@ class ConverterTool(Tool):
             shared_cache = Cacher()
             self.cache = ToolCacher(shared_cache, CONVERTER_CACHE_SUBDIR)
 
-    def ensure_converter(self) -> Any:
-        """Return the Docling converter, building it once on first use.
+    @property
+    def _converter(self) -> Any:
+        """The converter for the default resolved profile, or None before first use."""
+        return self._converters.get(self._default_profile())
+
+    def _default_profile(self) -> FixedProfile:
+        profile = self.converter_config.profile
+        return "fast" if profile == "auto" else profile
+
+    def resolve_profile(self, content: bytes, filename: str | None) -> FixedProfile:
+        """The fixed profile a document converts with.
+
+        ``auto`` checks a PDF's text layer: ``fast`` when it has one, ``ocr``
+        when its pages are images only. Other formats take ``fast``; it differs
+        from ``ocr`` only in PDF options.
+        """
+        if self.converter_config.profile != "auto":
+            return self.converter_config.profile
+        suffix = pathlib.Path(filename).suffix.lower() if filename else ""
+        if suffix == ".pdf" or (not suffix and content[:5] == b"%PDF-"):
+            return "fast" if pdf_has_text_layer(content) else "ocr"
+        return "fast"
+
+    def ensure_converter(self, profile: FixedProfile | None = None) -> Any:
+        """Return the Docling converter for ``profile``, building it on first use.
 
         Exposed so a server can warm the models at startup instead of making the
         first request pay for loading the layout, OCR and table-structure models.
+        Without ``profile``, the configured one (``fast`` under ``auto``).
 
         Returns:
             Any: The shared docling ``DocumentConverter``. Untyped because
             docling is an optional dependency resolved lazily.
         """
-        converter = self._converter
+        profile = profile or self._default_profile()
+        converter = self._converters.get(profile)
         if converter is not None:
             return converter
         with self._converter_lock:
-            if self._converter is None:
-                logger.info("Building Docling DocumentConverter (first conversion)")
+            if profile not in self._converters:
+                logger.info("Building Docling DocumentConverter (profile %s)", profile)
                 try:
-                    self._converter = build_document_converter(self.converter_config)
+                    self._converters[profile] = build_document_converter(
+                        self.converter_config.resolved(profile)
+                    )
                 except ImportError as e:
                     logger.error("Could not import DocumentConverter: %s", e)
                     raise
-            return self._converter
+            return self._converters[profile]
 
-    def cache_config(self, filename: str | None) -> dict[str, Any]:
+    def cache_config(
+        self, filename: str | None, profile: FixedProfile | None = None
+    ) -> dict[str, Any]:
         """Config part of the conversion cache key for a file called ``filename``.
 
-        The accepted suffix set is left out, so widening or narrowing it
+        Keyed by the resolved config, so a document converted under ``auto``
+        shares its entry with the same document under the profile ``auto``
+        chose. The accepted suffix set is left out, so widening or narrowing it
         re-converts nothing. The suffix joins the key only beyond PDF and PPTX,
         whose keys predate it: other formats are chosen by name, and the same
         bytes parse differently as Markdown and as AsciiDoc.
         """
-        config_dict = self.converter_config.model_dump(mode="json")
+        profile = profile or self._default_profile()
+        config_dict = self.converter_config.resolved(profile).model_dump(mode="json")
         config_dict.pop("supported_extensions", None)
         # Off is the pre-existing output, so the flag joins the key only when
         # it changes the text: enabling it re-converts, leaving it off keeps
@@ -282,9 +329,10 @@ class ConverterTool(Tool):
 
         if filename is None and isinstance(file_input, pathlib.Path):
             filename = file_input.name
+        profile = self.resolve_profile(content_for_cache, filename)
         # Check cache first. The format version lives in the key, so bumping it
         # orphans stale entries in place rather than stranding a whole directory.
-        config_dict = self.cache_config(filename)
+        config_dict = self.cache_config(filename, profile)
         cached_result = self.cache.get(content_for_cache, config=config_dict)
         if cached_result is not None:
             logger.debug("Cache hit for document conversion")
@@ -298,7 +346,7 @@ class ConverterTool(Tool):
             if isinstance(cached_result, dict):
                 return docling_document.model_validate(cached_result)
 
-        converter = self.ensure_converter()
+        converter = self.ensure_converter(profile)
 
         # Deliberately outside the lock: conversion is the multi-second part, and
         # holding the build lock across it serialised every concurrent document

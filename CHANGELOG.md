@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.5]
 
 ### Added
 
@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **PDF conversion picks its settings per document.** `CONVERTER_PROFILE` defaults to
+  `auto`: a PDF with a text layer converts with OCR off and the fast table model
+  (`fast`); one whose pages are images only keeps OCR on (`ocr`, Docling's defaults).
+  `lean` adds equations decoded to LaTeX. New settings `CONVERTER_TABLE_MODE` and
+  `CONVERTER_DO_FORMULA_ENRICHMENT`; a profile sets only the fields not set
+  explicitly. Converter cache entries are rebuilt.
 - **`plot` extra** requires `pygraphviz>=2.0,<3`, whose wheels bundle Graphviz.
 - **`docs` extra:** `properdocs` replaces `mkdocs`; `mkdocs-jupyter` and the
   `griffe<2` pin are dropped.
@@ -56,6 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **`CONVERTER_PROFILE=born_digital` and `=default`.** Both now fail validation with
+  the replacement: `fast` (or `auto`) and `ocr` (the previous default).
 - **`suthing` dropped from the `server` extra.** Nothing in the package imports
   it; installing `ontocast[server]` no longer pulls it in.
 

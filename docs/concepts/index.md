@@ -29,8 +29,12 @@ setting changes which step.
 OntoCast turns the input into text. PDF, Word, PowerPoint, Excel, HTML, Markdown, CSV, AsciiDoc and image files go through a
 document converter (the `doc-processing` extra;
 [`CONVERTER_SUPPORTED_EXTENSIONS`](../reference/configuration/conversion.md#converter_supported_extensions)
-lists the suffixes); `.txt`, `.json` and `.jsonl` input is read as is. For PDFs with selectable text, such as publisher PDFs, set
-[`CONVERTER_PROFILE=born_digital`](../reference/configuration/conversion.md#converter_profile).
+lists the suffixes); `.txt`, `.json` and `.jsonl` input is read as is. Each PDF is checked for a text layer
+([`CONVERTER_PROFILE=auto`](../reference/configuration/conversion.md#converter_profile)): one with selectable text,
+including a scan with an OCR layer, converts with OCR off; one whose pages are images only converts with OCR on.
+Equations stay placeholders unless the `lean` profile or
+[`CONVERTER_DO_FORMULA_ENRICHMENT`](../reference/configuration/conversion.md#converter_do_formula_enrichment)
+decodes them to LaTeX, which runs a model per equation.
 
 ## Chunk
 

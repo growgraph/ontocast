@@ -22,7 +22,9 @@ never ran".
 | Warning that the ontology context is still over budget | The ontology is too large to show whole | Split the catalog, or switch to `selected_vector_search_ontology`; see [Choosing ontology context](ontology_context.md) |
 | Parts split mid-argument, or too coarse | Chunk size bounds | [`CHUNK_MIN_SIZE`](../reference/configuration/chunking.md#chunk_min_size), [`CHUNK_MAX_SIZE`](../reference/configuration/chunking.md#chunk_max_size) |
 | Reference list extracted as domain facts | Bibliography routing | [`CHUNK_BIBLIOGRAPHY_MODE`](../reference/configuration/chunking.md#chunk_bibliography_mode) |
-| Gaps inside words in PDF text (`di ff usion`) | Converter profile | `CONVERTER_PROFILE=born_digital` |
+| Gaps inside words in PDF text (`di ff usion`) | Ligature repair | [`CONVERTER_REPAIR_LIGATURE_GAPS=true`](../reference/configuration/conversion.md#converter_repair_ligature_gaps) |
+| A born-digital PDF converted as if scanned, or the reverse | Converter profile | Fix [`CONVERTER_PROFILE`](../reference/configuration/conversion.md#converter_profile) to `fast` or `ocr` |
+| Equations missing from the text (`<!-- formula-not-decoded -->`) | Formula decoding is off | [`CONVERTER_PROFILE=lean`](../reference/configuration/conversion.md#converter_profile), or [`CONVERTER_DO_FORMULA_ENRICHMENT=true`](../reference/configuration/conversion.md#converter_do_formula_enrichment); conversion slows with each equation |
 | Memory use higher than expected | Several local embedding models loaded | [Performance tuning](performance.md) |
 
 ## No facts, or a 422
