@@ -10,10 +10,13 @@ tells you to align.
 """
 
 import re
+from io import StringIO
 from pathlib import Path
 
 import pytest
+from dotenv import dotenv_values
 
+from ontocast.config.env_audit import Verdict, audit_assignments
 from ontocast.config.env_names import iter_settings_fields
 from ontocast.config.settings import Config
 
@@ -201,6 +204,47 @@ def test_quoted_variable_counts_are_accurate() -> None:
         f"Stale variable counts (actual: {sorted(real)}): {wrong}. Update the "
         "prose, or rephrase it so it does not quote a number."
     )
+
+
+_ASSIGNMENT_LINE = re.compile(r"^#?\s*([A-Z][A-Z0-9_]*=.*)$")
+
+
+@pytest.mark.parametrize("filename", [".env.example", ".env.example.minimal"])
+def test_example_values_are_accepted(filename: str) -> None:
+    """The name checks above cannot see a value that went stale.
+
+    `.env.example.minimal` kept advertising `CONVERTER_PROFILE=default` after
+    that profile was removed, and `.env.example` shipped an empty list setting
+    that failed to parse at startup. Every line is checked on its own,
+    commented ones included -- they are what a reader uncomments. An empty
+    commented value documents "unset" and is skipped.
+    """
+    path = Path(__file__).resolve().parents[1] / filename
+    rejected: list[str] = []
+    for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+        match = _ASSIGNMENT_LINE.match(line)
+        if match is None:
+            continue
+        parsed = dotenv_values(stream=StringIO(match.group(1)))
+        if line.startswith("#") and not any(parsed.values()):
+            continue
+        report = audit_assignments(parsed)
+        rejected.extend(
+            f"{filename}:{lineno} {f.name} {f.verdict.value}: {f.detail}"
+            for f in report.findings
+            if f.verdict in (Verdict.UNKNOWN, Verdict.INVALID)
+        )
+    assert rejected == []
+
+
+@pytest.mark.parametrize("filename", [".env.example", ".env.example.minimal"])
+def test_example_file_builds_a_config(filename: str) -> None:
+    """Copied verbatim, an example file must start OntoCast."""
+    path = Path(__file__).resolve().parents[1] / filename
+    report = audit_assignments(dotenv_values(path))
+
+    assert report.config_errors == []
+    assert [f.name for f in report.findings if f.verdict is Verdict.INVALID] == []
 
 
 def test_minimal_env_example_stays_minimal() -> None:

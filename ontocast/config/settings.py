@@ -6,13 +6,14 @@ environment variables and usage patterns in the OntoCast system.
 
 from __future__ import annotations
 
+import json
 import logging
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from ontocast.onto.constants import (
     DEFAULT_CACHE_MAX_BYTES,
@@ -97,28 +98,37 @@ class LLMModelNameAbstract(StrEnum):
 class OpenAIModel(LLMModelNameAbstract):
     """OpenAI model names"""
 
-    # Flagship & Specialized Reasoning
+    # GPT-6: astra (most capable), sol (balanced), luna (high volume)
+    GPT6_ASTRA = "gpt-6-astra"
+    GPT6_SOL = "gpt-6-sol"
+    GPT6_LUNA = "gpt-6-luna"
+
+    # GPT-5.6: sol (deepest reasoning; the bare alias), terra, luna (cheapest)
+    GPT5_6 = "gpt-5.6"
+    GPT5_6_SOL = "gpt-5.6-sol"
+    GPT5_6_TERRA = "gpt-5.6-terra"
+    GPT5_6_LUNA = "gpt-5.6-luna"
+
     GPT5_4_PRO = "gpt-5.4-pro"
     GPT5_4_THINKING = "gpt-5.4-thinking"
     GPT5_4 = "gpt-5.4"
-
-    # Cost-Optimized Lineup
     GPT5_4_MINI = "gpt-5.4-mini"
     GPT5_4_NANO = "gpt-5.4-nano"
 
-    GPT4_O = "gpt-4o"
-    GPT4_O_MINI = "gpt-4o-mini"
-    GPT4_1 = "gpt-41"
-    GPT4_1_MINI = "gpt-41-mini"
     GPT5 = "gpt-5"
     GPT5_MINI = "gpt-5-mini"
     GPT5_NANO = "gpt-5-nano"
+    GPT4_1 = "gpt-4.1"
+    GPT4_1_MINI = "gpt-4.1-mini"
+    GPT4_O = "gpt-4o"
+    GPT4_O_MINI = "gpt-4o-mini"
 
 
 class OllamaModel(LLMModelNameAbstract):
     """Ollama model names"""
 
     # Meta
+    MUSE_GLIMMER = "muse-glimmer"
     LLAMA4_SCOUT = "llama4-scout:17b"
     LLAMA3_3 = "llama3.3"
     LLAMA3_3_70B = "llama3.3:70b"
@@ -126,6 +136,9 @@ class OllamaModel(LLMModelNameAbstract):
     LLAMA3_1_70B = "llama3.1:70b"
 
     # Alibaba Qwen
+    QWEN3_8 = "qwen3.8"
+    QWEN3_8_27B = "qwen3.8:27b"
+    QWEN3_8_FLASH_NEXT = "qwen3.8-flash-next"
     QWEN3_6 = "qwen3.6"
     QWEN3_6_LATEST = "qwen3.6:latest"
     QWEN3_6_27B = "qwen3.6:27b"
@@ -138,12 +151,24 @@ class OllamaModel(LLMModelNameAbstract):
     QWEN2_5_CODER = "qwen2.5-coder"
     QWEN2_5_72B = "qwen2.5:72b"
 
+    # Zhipu GLM
+    GLM5_3 = "glm-5.3"
+    GLM5_3_FLASH = "glm-5.3-flash"
+
     # IBM Granite
+    GRANITE4_2_3B = "granite4.2:3b"
+    GRANITE4_2_8B = "granite4.2:8b"
+    GRANITE4_2_30B = "granite4.2:30b"
     GRANITE4_1_3B = "granite4.1:3b"
     GRANITE4_1_8B = "granite4.1:8b"
     GRANITE4_1_30B = "granite4.1:30b"
 
+    # NVIDIA / OpenAI open weights
+    NEMOTRON3_5_LIGHTNING = "nemotron-3.5-lightning"
+    GPT_OSS_20B = "gpt-oss:20b"
+
     # Moonshot / DeepSeek
+    DEEPSEEK_V4_1_FLASH = "deepseek-v4.1-flash"
     DEEPSEEK_R1 = "deepseek-r1"
     DEEPSEEK_V3 = "deepseek-v3"
     KIMI_K3 = "kimi-k3"
@@ -156,40 +181,33 @@ class OllamaModel(LLMModelNameAbstract):
 class ClaudeModel(LLMModelNameAbstract):
     """Anthropic Claude model names"""
 
-    CLAUDE_SONNET_4 = "claude-sonnet-4-20250514"
-    CLAUDE_3_5_SONNET = "claude-3-5-sonnet-latest"
-    CLAUDE_3_5_HAIKU = "claude-3-5-haiku-latest"
-
-    # Frontier Flagships (High Intelligence / Reasoning)
-    CLAUDE_4_7_OPUS = "claude-4.7-opus-latest"
-    CLAUDE_4_6_OPUS = "claude-4.6-opus-latest"
-
-    # Balanced Production Sweet Spot
-    CLAUDE_4_6_SONNET = "claude-4.6-sonnet-latest"
-    CLAUDE_4_5_SONNET = "claude-4.5-sonnet-latest"
-
-    # Ultra-Fast / Cost-Effective
-    CLAUDE_4_5_HAIKU = "claude-4.5-haiku-latest"
+    CLAUDE_FABLE_5_1 = "claude-fable-5-1"
+    CLAUDE_OPUS_5_5 = "claude-opus-5-5"
+    CLAUDE_OPUS_5 = "claude-opus-5"
+    CLAUDE_OPUS_4_8 = "claude-opus-4-8"
+    CLAUDE_OPUS_4_7 = "claude-opus-4-7"
+    CLAUDE_OPUS_4_6 = "claude-opus-4-6"
+    CLAUDE_SONNET_5_5 = "claude-sonnet-5-5"
+    CLAUDE_SONNET_5 = "claude-sonnet-5"
+    CLAUDE_SONNET_4_6 = "claude-sonnet-4-6"
+    CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
 
 
 class GeminiModel(LLMModelNameAbstract):
     """Google Gemini model names"""
 
-    GEMINI_2_0_FLASH = "gemini-2.0-flash"
-    GEMINI_1_5_PRO = "gemini-1.5-pro"
-
     # Frontier Intelligence & Reasoning
     GEMINI_3_1_PRO = "gemini-3.1-pro"
-    GEMINI_2_5_PRO = "gemini-2.5-pro"
+    GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
 
     # Speed & Multimodal Agents
+    GEMINI_3_7_FLASH = "gemini-3.7-flash"
     GEMINI_3_5_FLASH = "gemini-3.5-flash"
     GEMINI_3_FLASH = "gemini-3-flash"
-    GEMINI_2_5_FLASH = "gemini-2.5-flash"
+    GEMINI_3_FLASH_PREVIEW = "gemini-3-flash-preview"
 
     # Ultra Budget & Low-Latency
     GEMINI_3_1_FLASH_LITE = "gemini-3.1-flash-lite"
-    GEMINI_2_5_FLASH_LITE = "gemini-2.5-flash-lite"
 
 
 #: The enums above are *presets*, not a whitelist: any string is accepted, and
@@ -271,7 +289,7 @@ class LLMConfig(BaseSettings):
         ),
     )
     model_name: LLMModelName = Field(
-        default=OpenAIModel.GPT5_4,
+        default=OpenAIModel.GPT5_6_LUNA,
         description=(
             "Model name passed to the provider. Any name the provider accepts "
             "works; a name OntoCast does not know is passed through with a "
@@ -410,12 +428,12 @@ class LLMConfig(BaseSettings):
         ),
     )
     reasoning_effort: (
-        Literal["none", "minimal", "low", "medium", "high", "xhigh"] | None
+        Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
     ) = Field(
         default=None,
         description=(
             "How much the model reasons before answering: none, minimal, low,"
-            " medium, high or xhigh. Sent to OpenAI reasoning models as "
+            " medium, high, xhigh or max. Sent to OpenAI reasoning models as "
             "reasoning_effort and to Gemini 3+ as thinking_level; which "
             "levels a model accepts is the provider's decision, and a "
             "rejected level fails the request. Reasoning tokens are billed as"
@@ -1467,13 +1485,22 @@ class WebSearchConfig(BaseSettings):
         le=1000,
         description="Minimum snippet length to keep a search hit",
     )
-    allowed_domains: list[str] = Field(
+    # NoDecode hands the raw environment string to `parse_domains`; without it
+    # the settings source JSON-decodes first and rejects the comma-separated
+    # and empty forms.
+    allowed_domains: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
-        description="Optional allowlist of source domains for evidence",
+        description=(
+            "Optional allowlist of source domains for evidence: comma-separated "
+            "or a JSON list"
+        ),
     )
-    blocked_domains: list[str] = Field(
+    blocked_domains: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
-        description="Optional blocklist of source domains for evidence",
+        description=(
+            "Optional blocklist of source domains for evidence: comma-separated "
+            "or a JSON list"
+        ),
     )
     region: str = Field(
         default="wt-wt",
@@ -1489,6 +1516,8 @@ class WebSearchConfig(BaseSettings):
     @field_validator("allowed_domains", "blocked_domains", mode="before")
     @classmethod
     def parse_domains(cls, value: str | list[str]) -> list[str]:
+        if isinstance(value, str) and value.lstrip().startswith("["):
+            value = json.loads(value)
         if isinstance(value, list):
             return [entry.strip().lower() for entry in value if entry.strip()]
         if isinstance(value, str):

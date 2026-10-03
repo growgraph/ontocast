@@ -213,6 +213,50 @@ def llm_cache_config(
 # silently forcing it to 1.0 would make its runs unrepeatable.
 _TEMPERATURE_PINNED_TO_ONE = re.compile(r"^gpt-5(-|$)")
 
+# Version parsers for the families whose providers reject `temperature` -- any
+# value, or any but the default. The single-digit major keeps legacy names such
+# as `gpt-41` out; the one- or two-digit minor keeps a dated snapshot
+# (`claude-opus-4-20250514`) from reading as a minor version.
+_OPENAI_VERSION = re.compile(r"^gpt-(\d)(?:\.(\d+))?(?!\d)")
+_CLAUDE_VERSION = re.compile(
+    r"^claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d{1,2}))?(?!\d)"
+)
+
+
+def _rejects_temperature(
+    provider: str, model_name: str, reasoning_effort: str | None = None
+) -> bool:
+    """Whether the provider rejects ``temperature`` for ``model_name``.
+
+    Such models get no temperature at all and sample at their own default; a
+    sent value fails the request. OpenAI rejects it from GPT-5.5 on while the
+    model reasons, and accepts it at ``reasoning_effort="none"`` (the bare
+    gpt-5 series is pinned to 1.0 instead). Anthropic rejects it from Opus 4.7,
+    Sonnet 5 and every Fable/Mythos model. Read from the version in the name,
+    so a generation newer than this package is classified too.
+    """
+    name = str(model_name).strip().lower()
+    if provider == LLMProvider.OPENAI:
+        match = _OPENAI_VERSION.match(name)
+        return (
+            match is not None
+            and (int(match.group(1)), int(match.group(2) or 0)) >= (5, 5)
+            and reasoning_effort != "none"
+        )
+    if provider == LLMProvider.ANTHROPIC:
+        match = _CLAUDE_VERSION.match(name)
+        if match is None:
+            return False
+        family = match.group(1)
+        version = (int(match.group(2)), int(match.group(3) or 0))
+        if family in ("fable", "mythos"):
+            return True
+        if family == "opus":
+            return version >= (4, 7)
+        if family == "sonnet":
+            return version >= (5, 0)
+    return False
+
 
 def _reads_thinking_level(model_name: str) -> bool:
     """Whether ``model_name`` is a Gemini generation that reads thinking_level.
@@ -625,14 +669,28 @@ class LLMTool(Tool):
         if self.config.max_retries is not None:
             retry_kwargs["max_retries"] = self.config.max_retries
         self._warn_ignored_reasoning_knobs()
+        if self.config.provider == LLMProvider.OPENAI and (
+            _TEMPERATURE_PINNED_TO_ONE.match(str(self.config.model_name))
+        ):
+            self.config.temperature = 1.0
+            logger.warning(
+                f"Setting temperature to {self.config.temperature} for gpt-5 class "
+                f"model {self.config.model_name}"
+            )
+        temperature: float | None = self.config.temperature
+        if _rejects_temperature(
+            self.config.provider,
+            self.config.model_name,
+            self.config.reasoning_effort,
+        ):
+            temperature = None
+            logger.info(
+                "Not sending temperature to %s: the provider rejects it for this "
+                "model at this reasoning effort, so it samples at its own default",
+                self.config.model_name,
+            )
 
         if self.config.provider == LLMProvider.OPENAI:
-            if _TEMPERATURE_PINNED_TO_ONE.match(str(self.config.model_name)):
-                self.config.temperature = 1.0
-                logger.warning(
-                    f"Setting temperature to {self.config.temperature} for gpt-5 class "
-                    f"model {self.config.model_name}"
-                )
             ChatOpenAI = require(
                 "langchain_openai", feature="The OpenAI LLM provider"
             ).ChatOpenAI
@@ -658,7 +716,7 @@ class LLMTool(Tool):
                 reasoning_kwargs["reasoning_effort"] = self.config.reasoning_effort
             self._llm = ChatOpenAI(
                 model=self.config.model_name,
-                temperature=self.config.temperature,
+                temperature=temperature,
                 base_url=self.config.base_url,
                 api_key=(
                     SecretStr(self.config.api_key) if self.config.api_key else None
@@ -687,7 +745,7 @@ class LLMTool(Tool):
         elif self.config.provider == LLMProvider.ANTHROPIC:
             anthropic_kwargs: dict[str, Any] = {
                 "model": self.config.model_name,
-                "temperature": self.config.temperature,
+                "temperature": temperature,
             }
             if self.config.api_key:
                 anthropic_kwargs["anthropic_api_key"] = SecretStr(self.config.api_key)

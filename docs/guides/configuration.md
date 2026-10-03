@@ -17,15 +17,51 @@ Every setting is an environment variable, such as `LLM_PROVIDER` or
 `RENDER_MODE`; case does not matter. Booleans are `true` or `false`; lists and
 mappings are written as JSON.
 
-OntoCast does not read a settings file itself. To keep your settings in one,
-start from `.env.example.minimal` (the settings worth a decision) or
-`.env.example` (all of them) in the repository, and load it into the
-environment of the command you run:
+To keep your settings in a file, start from `.env.example.minimal` (the
+settings worth a decision) or `.env.example` (all of them) in the repository,
+and pass it to the CLI:
 
 ```bash
-set -a; source .env; set +a
-ontocast serve
+ontocast --env-file my.env serve
 ```
+
+### Layering settings files
+
+`--env-file` is repeatable. Files apply in order, a later file overriding an
+earlier one, and a variable exported in the shell overrides them all. That
+lets credentials and project settings live apart, and keeps a one-off change
+on the command line:
+
+```bash
+LLM_MODEL_NAME=gpt-5.6-terra ontocast \
+  --env-file ~/.config/ontocast/openai.env \
+  --env-file project.env \
+  process --input-path ./papers --output-dir ./out
+```
+
+Keep in a file only the settings you mean to differ from the defaults. A copied
+default stays in force after a release improves it, and a variable whose
+setting was renamed or removed is ignored without effect. `ontocast config
+check` reports both, naming variables but never printing values:
+
+```bash
+ontocast config check project.env
+```
+
+| Verdict | Meaning |
+|---|---|
+| `unknown` | No setting reads it: renamed, removed, or not an OntoCast variable |
+| `invalid` | The setting rejects the value, alone or with the file's other values |
+| `redundant` | Equals the current default; delete the line |
+| `pinned` | Overrides the current default; review it when you upgrade |
+
+The command exits `1` when a file has an unknown or invalid variable. Each file
+is judged on its own against the defaults, not against the environment.
+`--env-file` also warns at startup about variables no setting reads, and still
+exports them, since libraries read some of them (`HF_TOKEN`).
+
+Embedded in Python, `Config()` reads the process environment only; load a file
+there with your own tooling.
 
 The server reads its settings once, at startup. A few can also be set per
 request on `/process`: `render_mode`, `ontology_context_mode`,
@@ -48,13 +84,17 @@ see [Embedding OntoCast in your agent](embedding.md).
 | [`LLM_BASE_URL`](../reference/configuration/llm.md#llm_base_url) | The Ollama server, or the endpoint of any OpenAI-compatible service (with `LLM_PROVIDER=openai`) |
 
 Leave [`LLM_TEMPERATURE`](../reference/configuration/llm.md#llm_temperature) at
-`0`: extraction should be repeatable. Responses are cached on disk, so a
+`0`: extraction should be repeatable. Reasoning models may refuse it, and then
+it is not sent: OpenAI GPT-5.5 and later accept it only with
+`LLM_REASONING_EFFORT=none`, and Claude Opus 4.7, Sonnet 5 and later never do.
+The default model, `gpt-5.6-luna`, therefore samples at its provider default
+unless reasoning is off. Responses are cached on disk, so a
 document you run twice with the same prompts costs nothing the second time; see
 [LLM caching](llm_caching.md).
 
 For reasoning models,
 [`LLM_REASONING_EFFORT`](../reference/configuration/llm.md#llm_reasoning_effort)
-sets how much the model thinks before answering (OpenAI, Gemini 3 and later);
+sets how much the model thinks before answering, from `none` to `max` (OpenAI, Gemini 3 and later);
 reasoning tokens are billed as output. For local models through Ollama, raise
 [`LLM_NUM_CTX`](../reference/configuration/llm.md#llm_num_ctx): Ollama's default
 context window is too small for most OntoCast prompts.

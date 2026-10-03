@@ -37,7 +37,7 @@ def test_setup_openai() -> None:
 def test_setup_anthropic() -> None:
     config = LLMConfig(
         provider=LLMProvider.ANTHROPIC,
-        model_name=ClaudeModel.CLAUDE_SONNET_4,
+        model_name=ClaudeModel.CLAUDE_SONNET_4_6,
         api_key="test-key",
         base_url="https://api.example.com",
     )
@@ -47,14 +47,14 @@ def test_setup_anthropic() -> None:
         asyncio.run(tool.setup())
         mock_cls.assert_called_once()
         kwargs = mock_cls.call_args.kwargs
-        assert kwargs["model"] == ClaudeModel.CLAUDE_SONNET_4
+        assert kwargs["model"] == ClaudeModel.CLAUDE_SONNET_4_6
         assert kwargs["anthropic_api_url"] == "https://api.example.com"
 
 
 def test_setup_google() -> None:
     config = LLMConfig(
         provider=LLMProvider.GOOGLE,
-        model_name=GeminiModel.GEMINI_2_0_FLASH,
+        model_name=GeminiModel.GEMINI_3_7_FLASH,
         api_key="test-key",
     )
     with patch("langchain_google_genai.ChatGoogleGenerativeAI") as mock_cls:
@@ -63,7 +63,7 @@ def test_setup_google() -> None:
         asyncio.run(tool.setup())
         mock_cls.assert_called_once()
         kwargs = mock_cls.call_args.kwargs
-        assert kwargs["model"] == GeminiModel.GEMINI_2_0_FLASH
+        assert kwargs["model"] == GeminiModel.GEMINI_3_7_FLASH
         assert kwargs["google_api_key"] == "test-key"
 
 
@@ -112,7 +112,7 @@ def test_setup_openai_leaves_reasoning_effort_to_the_client_when_unset() -> None
 def test_setup_google_passes_thinking_budget_to_the_client() -> None:
     config = LLMConfig(
         provider=LLMProvider.GOOGLE,
-        model_name=GeminiModel.GEMINI_2_0_FLASH,
+        model_name="gemini-2.5-flash",
         api_key="test-key",
         thinking_budget=0,
     )
@@ -130,7 +130,7 @@ def test_setup_google_passes_thinking_budget_to_the_client() -> None:
     [
         (
             LLMProvider.ANTHROPIC,
-            ClaudeModel.CLAUDE_SONNET_4,
+            ClaudeModel.CLAUDE_SONNET_4_6,
             "langchain_anthropic.ChatAnthropic",
             {"reasoning_effort": "low"},
         ),
@@ -210,7 +210,7 @@ def test_setup_keeps_the_thinking_budget_on_a_gemini_2_5_model() -> None:
     """The generation that still reads it is unaffected by the 3+ handling."""
     config = LLMConfig(
         provider=LLMProvider.GOOGLE,
-        model_name=GeminiModel.GEMINI_2_5_FLASH,
+        model_name="gemini-2.5-flash",
         api_key="test-key",
         thinking_budget=0,
     )
@@ -262,3 +262,81 @@ def test_setup_leaves_temperature_alone_for_later_families(model_name) -> None:
         asyncio.run(LLMTool(config=config).setup())
         assert mock_cls.call_args.kwargs["temperature"] == 0.0
         assert config.temperature == 0.0
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    [
+        OpenAIModel.GPT5_6_LUNA,
+        OpenAIModel.GPT5_6_TERRA,
+        OpenAIModel.GPT6_LUNA,
+        OpenAIModel.GPT6_ASTRA,
+        "gpt-7-nova",
+    ],
+)
+def test_setup_omits_temperature_while_a_newer_openai_model_reasons(
+    model_name,
+) -> None:
+    """GPT-5.5 onward rejects a temperature unless reasoning is off."""
+    config = LLMConfig(
+        provider=LLMProvider.OPENAI,
+        model_name=model_name,
+        api_key="k",
+        temperature=0.0,
+    )
+    with patch("langchain_openai.ChatOpenAI") as mock_cls:
+        mock_cls.return_value = MagicMock()
+        asyncio.run(LLMTool(config=config).setup())
+        assert mock_cls.call_args.kwargs["temperature"] is None
+        # The configured value stays what the cache key and manifest record.
+        assert config.temperature == 0.0
+
+
+@pytest.mark.parametrize("model_name", [OpenAIModel.GPT5_6_LUNA, OpenAIModel.GPT6_SOL])
+def test_setup_keeps_temperature_at_reasoning_effort_none(model_name) -> None:
+    """With reasoning off the model samples, so a pinned temperature applies."""
+    config = LLMConfig(
+        provider=LLMProvider.OPENAI,
+        model_name=model_name,
+        api_key="k",
+        temperature=0.0,
+        reasoning_effort="none",
+    )
+    with patch("langchain_openai.ChatOpenAI") as mock_cls:
+        mock_cls.return_value = MagicMock()
+        asyncio.run(LLMTool(config=config).setup())
+        assert mock_cls.call_args.kwargs["temperature"] == 0.0
+
+
+@pytest.mark.parametrize(
+    ("model_name", "sent"),
+    [
+        (ClaudeModel.CLAUDE_OPUS_5_5, False),
+        (ClaudeModel.CLAUDE_OPUS_4_7, False),
+        (ClaudeModel.CLAUDE_SONNET_5_5, False),
+        (ClaudeModel.CLAUDE_FABLE_5_1, False),
+        (ClaudeModel.CLAUDE_OPUS_4_6, True),
+        (ClaudeModel.CLAUDE_SONNET_4_6, True),
+        (ClaudeModel.CLAUDE_HAIKU_4_5, True),
+        # A dated snapshot's date is not a minor version.
+        ("claude-opus-4-20250514", True),
+    ],
+)
+def test_setup_sends_temperature_only_to_claude_models_that_accept_it(
+    model_name, sent: bool
+) -> None:
+    config = LLMConfig(
+        provider=LLMProvider.ANTHROPIC,
+        model_name=model_name,
+        api_key="k",
+        temperature=0.0,
+    )
+    with patch("langchain_anthropic.ChatAnthropic") as mock_cls:
+        mock_cls.return_value = MagicMock()
+        asyncio.run(LLMTool(config=config).setup())
+        temperature = mock_cls.call_args.kwargs["temperature"]
+        assert temperature == (0.0 if sent else None)
+
+
+def test_default_model_is_a_preset() -> None:
+    assert LLMConfig().model_name == OpenAIModel.GPT5_6_LUNA
