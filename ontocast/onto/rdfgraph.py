@@ -690,6 +690,18 @@ def _triple_sort_key(triple: tuple) -> tuple[tuple[str, str, str], ...]:
     return tuple(_term_sort_key(term) for term in triple)
 
 
+def _record_parse_event(name: str) -> None:
+    """Count a recovered parse on the running task's budget tracker, if any.
+
+    Recovery is otherwise only a log line, so a run could not tell a payload
+    that parsed cleanly from one that was repaired.
+    """
+    # Deferred: the tool layer imports this module.
+    from ontocast.tool.llm import record_active_count
+
+    record_active_count(name)
+
+
 class RDFGraph(Graph):
     """Subclass of rdflib.Graph with Pydantic schema support.
 
@@ -761,29 +773,30 @@ class RDFGraph(Graph):
         return result
 
     def __iadd__(self, other: Union["RDFGraph", Graph, Iterable]) -> "RDFGraph":
-        """In-place addition operator for RDFGraph instances.
+        """In-place addition: add ``other``'s triples and prefixes to this graph.
 
-        Merges the RDF graphs while maintaining the RDFGraph type and binding prefixes.
+        Costs the size of ``other``, not of this graph. Prefixes combine as in
+        :meth:`__add__`: existing bindings win and a clashing incoming prefix
+        is renamed.
 
         Args:
-            other: The graph to add to this one.
+            other: The graph (or iterable of triples) to add.
 
         Returns:
             RDFGraph: self after modification.
         """
-        # Use __add__ to get the merged result with proper prefix binding
-        result = self.__add__(other)
-
-        # Clear current graph and copy the result
-        self.remove((None, None, None))  # Remove all triples
-
-        # Copy all triples from result
-        copy_triples(result, self, origin="RDFGraph.__iadd__")
-
-        # Copy namespace bindings from result
-        for prefix, uri in result.namespaces():
-            self.bind(prefix, uri)
-
+        if other is self:
+            return self
+        existing = {prefix: str(uri) for prefix, uri in self.namespaces() if prefix}
+        incoming: dict[str, str] = {}
+        if isinstance(other, Graph):
+            incoming = {
+                prefix: str(uri) for prefix, uri in other.namespaces() if prefix
+            }
+        copy_triples(other, self, origin="RDFGraph.__iadd__")
+        for prefix, uri in merge_namespace_bindings(existing, incoming).items():
+            if existing.get(prefix) != uri:
+                self.bind(prefix, uri)
         return self
 
     def copy(self) -> "RDFGraph":
@@ -973,6 +986,7 @@ class RDFGraph(Graph):
             repaired_graph = cls()
             repaired_graph.parse(data=repaired_turtle, format="turtle")
             repaired_graph._sanitize_prefix_boundaries_from_turtle(normalized_turtle)
+            _record_parse_event("rdf/turtle_repair")
             return repaired_graph
 
     def _sanitize_prefix_boundaries_from_turtle(self, turtle_str: str) -> None:
@@ -1460,6 +1474,7 @@ class RDFGraph(Graph):
             g = cls()
             g.parse(data=json.dumps(jsonld_data), format="json-ld")
             cls._bind_context_prefixes(g, jsonld_data)
+            _record_parse_event("rdf/jsonld_rdflib_fallback")
             return g
 
         normalized_str = normalized if isinstance(normalized, str) else str(normalized)

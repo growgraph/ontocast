@@ -50,8 +50,8 @@ graph, deletions first. Two things follow:
   an explicit delete.
 
 The facts critic works the same way: its fixes are applied as a patch to the
-unit's facts. The model writes patches as compact JSON-LD by default, or as
-Turtle; see
+unit's facts. The model writes patches as Turtle by default, or as compact
+JSON-LD; see
 [`LLM_GRAPH_FORMAT`](../reference/configuration/pipeline.md#llm_graph_format).
 Either way, the patch that is applied is the same.
 

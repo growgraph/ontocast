@@ -427,3 +427,16 @@ def test_schema_includes_web_search_when_enabled(
     schema = schema_for_model(report_cls, fmt, web_search_enabled=True)
     assert "external_evidence_request" in schema.get("properties", {})
     assert "ExternalEvidenceRequest" in schema.get("$defs", {})
+
+
+def test_jsonld_instructions_require_id_objects() -> None:
+    """A bare string is a JSON-LD literal; no instruction may offer it for an IRI."""
+    profile = get_graph_format_profile(LLMGraphFormat.JSONLD)
+    for text in (
+        profile.render_fresh_output_instruction(target="facts"),
+        profile.render_update_output_instruction(),
+        profile.critique_graph_instruction(),
+    ):
+        assert "plain compact IRI string" not in text
+        assert '{"@id": "prefix:local"}' in text
+        assert "literal" in text

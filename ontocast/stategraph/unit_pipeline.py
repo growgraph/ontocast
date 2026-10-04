@@ -145,6 +145,7 @@ async def run_unit_pipeline(
             current_domain=agent_state.current_domain,
             ontology_max_triples=tools.config.server.ontology_max_triples,
             llm_graph_format=agent_state.llm_graph_format,
+            llm_output_layout=tools.config.server.llm_output_layout,
             ontology_context_max_triples=tools.config.server.ontology_context_max_triples,
         )
         logger.info("run_unit_pipeline: starting ontology loop")
@@ -182,6 +183,7 @@ async def run_unit_pipeline(
             budget_tracker=deepcopy(agent_state.budget_tracker),
             max_visits_per_node=max_visits,
             llm_graph_format=agent_state.llm_graph_format,
+            llm_output_layout=tools.config.server.llm_output_layout,
             ontology_context_max_triples=tools.config.server.ontology_context_max_triples,
             ontology_chapter_format=tools.config.server.ontology_chapter_format,
             ontology_text_caps=tools.config.server.ontology_text_caps,

@@ -77,7 +77,9 @@ async def criticise_ontology(
         raise ValueError("Empty ontology context cannot be criticised")
     current_graph = access.effective_graph_for_prompt()
 
-    profile = get_graph_format_profile(state.llm_graph_format)
+    profile = get_graph_format_profile(
+        state.llm_graph_format, output_layout=state.llm_output_layout
+    )
     parser = PydanticOutputParser(pydantic_object=OntologyCritiqueReport)
     llm_tool: LLMTool = await tools.get_llm_tool(state.budget_tracker)
 

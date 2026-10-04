@@ -5,7 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.7]
+
+### Added
+
+- **`LLM_OUTPUT_LAYOUT`** (`compact` | `free`): `compact` asks for minified JSON responses and
+  one-line-per-subject Turtle; recorded in the run manifest's `prompting` block.
+- **Counters** `rdf/turtle_repair` and `rdf/jsonld_rdflib_fallback` for graph payloads that
+  parsed only after recovery, and `repair/compact_iri_literal`.
+
+### Changed
+
+- **Default output encoding** is `LLM_GRAPH_FORMAT=turtle` with `LLM_OUTPUT_LAYOUT=compact`
+  (was `jsonld` with no layout instruction). Set `LLM_GRAPH_FORMAT=jsonld` and
+  `LLM_OUTPUT_LAYOUT=free` to keep the old behaviour; cached LLM responses are not reused.
+
+### Fixed
+
+- **JSON-LD instructions** no longer offer a plain string for an IRI object, which JSON-LD parses
+  as a literal; every JSON-LD instruction now requires `{"@id": …}`.
+- **Compact IRIs written as plain strings** (`"unit:NanoM"`) on an IRI-valued position are coerced
+  to IRIs after a facts render and in critic and completion patches, which skipped every
+  literal check.
+- **`ontocast_extract` and `make_ontocast_node`** honour `LLM_GRAPH_FORMAT`; both ran on the
+  class default.
+- **Facts aggregation scales linearly with the document**: an entity's representation reads
+  only the triples that mention it, through the graph's indexes, instead of whole unit graphs
+  merged per mention. Long documents no longer stall before clustering; ontology anchor
+  selection and entity alignment no longer scan the whole graph per entity.
+- **`RDFGraph +=`** adds in place, at the cost of the right-hand side (it rebuilt the whole graph).
+- **`CHUNK_MIN_SIZE` held only within a labeled section**: neighbouring unlabeled sections are
+  now joined up to it, and a heading with no text of its own opens the unit that follows instead
+  of becoming a unit. Documents with sparse section labels yield far fewer, larger units; their
+  cached LLM responses are not reused.
+
+## [0.6.6] - 2026-10-04
 
 ### Added
 
@@ -33,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Removed `CONVERTER_PROFILE` values** `default` and `born_digital` dropped from shipped env
   examples.
 
-## [0.6.5]
+## [0.6.5] - 2026-10-04
 
 ### Added
 

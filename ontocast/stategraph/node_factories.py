@@ -216,6 +216,7 @@ def make_render_ontology_node(tools: ToolBox):
                     current_domain=state.current_domain,
                     ontology_max_triples=tools.config.server.ontology_max_triples,
                     llm_graph_format=state.llm_graph_format,
+                    llm_output_layout=tools.config.server.llm_output_layout,
                     ontology_context_max_triples=tools.config.server.ontology_context_max_triples,
                 )
                 loop_start = time.perf_counter()
@@ -575,6 +576,7 @@ def make_consolidate_ontology_node(tools: ToolBox):
             current_domain=state.current_domain,
             ontology_max_triples=tools.config.server.ontology_max_triples,
             llm_graph_format=state.llm_graph_format,
+            llm_output_layout=tools.config.server.llm_output_layout,
             ontology_context_max_triples=tools.config.server.ontology_context_max_triples,
             working_graph=snap.graph.copy(),
             assembly_anchor_iri=primary.iri or "",
@@ -699,6 +701,7 @@ def make_render_facts_node(tools: ToolBox):
                     budget_tracker=unit_budget,
                     max_visits_per_node=state.max_visits,
                     llm_graph_format=state.llm_graph_format,
+                    llm_output_layout=tools.config.server.llm_output_layout,
                     ontology_context_max_triples=tools.config.server.ontology_context_max_triples,
                     ontology_chapter_format=tools.config.server.ontology_chapter_format,
                     ontology_text_caps=tools.config.server.ontology_text_caps,

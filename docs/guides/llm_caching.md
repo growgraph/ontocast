@@ -31,11 +31,11 @@ entries instead of misreading them.
 
 Because the whole prompt is part of the key, anything that changes the prompt
 misses the cache: a different document part, a changed ontology in the
-catalog, a user instruction, `LLM_GRAPH_FORMAT`, `ONTOLOGY_CHAPTER_FORMAT`, or
-an OntoCast upgrade that changes prompt wording. Settings that act only after
+catalog, a user instruction, `LLM_GRAPH_FORMAT`, `LLM_OUTPUT_LAYOUT`,
+`ONTOLOGY_CHAPTER_FORMAT`, or an OntoCast upgrade that changes prompt wording. Settings that act only after
 the last LLM call, such as entity disambiguation (`AGG_*`), leave the cache
 warm.
-`LLM_PROMPT_CACHE_KEY` and `LLM_JSON_MODE` are not part of the key.
+`LLM_PROMPT_CACHE_KEY` is not part of the key; `LLM_JSON_MODE` is, when it is on.
 
 Each entry is a JSON file holding the prompt, the response, the provider's
 response metadata and its token usage, so a hit reports the same usage as the

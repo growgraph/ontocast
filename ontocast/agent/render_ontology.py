@@ -145,7 +145,9 @@ async def render_ontology_fresh(
 ) -> UnitOntologyState:
     """Create a brand-new catalog ontology from text (empty seed path)."""
 
-    profile = get_graph_format_profile(state.llm_graph_format)
+    profile = get_graph_format_profile(
+        state.llm_graph_format, output_layout=state.llm_output_layout
+    )
     parser = PydanticOutputParser(pydantic_object=OntologyRenderReport)
     logger.info("Rendering fresh ontology")
     intro_instruction = intro_instruction_fresh.format(
@@ -248,7 +250,9 @@ async def render_ontology_update(
     """Complement an existing snapshot via GraphUpdate inserts."""
 
     state.quarantined_literal_triples = []
-    profile = get_graph_format_profile(state.llm_graph_format)
+    profile = get_graph_format_profile(
+        state.llm_graph_format, output_layout=state.llm_output_layout
+    )
     parser = PydanticOutputParser(pydantic_object=GraphUpdateRenderReport)
     access = ontology_access_for_unit_ontology(state)
     intro_instruction = _build_update_intro(state, access)

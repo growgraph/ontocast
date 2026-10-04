@@ -43,7 +43,10 @@ from ontocast.onto.model import (
     Suggestions,
 )
 from ontocast.onto.ontology import Ontology
-from ontocast.onto.ontology_access import build_llm_prefix_map
+from ontocast.onto.ontology_access import (
+    build_llm_prefix_map,
+    ontology_access_for_unit_facts,
+)
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import OntologyContextConfigError
 from ontocast.onto.triple_index import Triple
@@ -58,7 +61,9 @@ from ontocast.tool.facts_validation import (
     FactsAcceptancePolicy,
     ValidationPolicy,
     collect_unit_findings,
+    expand_vocabulary_terms,
     material_defects,
+    repair_compact_iri_literals,
     unit_numeric_inventory,
 )
 from ontocast.tool.facts_validation.critic_patch import (
@@ -132,6 +137,30 @@ def _resolve_max_visits_limit(state_visits: int, override: int | None) -> int:
     """Return a safe visit limit while respecting explicit overrides."""
     visits = state_visits if override is None else override
     return max(1, visits)
+
+
+def _repair_facts_patch(
+    unit_state: UnitFactsState, atomic: AtomicToolBox
+) -> list[GraphRepairRecord]:
+    """Repairs a critic or completion patch needs before it is judged.
+
+    Patches are parsed outside the render, so they miss its parse-time repairs;
+    a bare-string IRI they insert would otherwise read as a missing property.
+    """
+    graph = unit_state.content_unit.graph
+    context = ontology_access_for_unit_facts(unit_state).effective_ontology_for_prompt()
+    known = atomic.catalog_terms() | expand_vocabulary_terms(
+        atomic.quantity_fallback_vocabulary, graph, context.graph
+    )
+    _, records = repair_compact_iri_literals(graph, context.graph, known)
+    return records
+
+
+def _repair_ontology_patch(
+    unit_state: UnitOntologyState, atomic: AtomicToolBox
+) -> list[GraphRepairRecord]:
+    """The ontology loop applies patches as updates; nothing to repair here."""
+    return []
 
 
 def _collect_facts_findings(
@@ -452,6 +481,7 @@ def _apply_patches(
                 )
             )
             continue
+        repairs = phase.repair_patch(unit_state, atomic)
         findings = _timed_findings(unit_state, atomic, phase)
         mandatory_after = sum(1 for finding in findings if finding.mandatory)
         reason = _regression_reason(
@@ -490,6 +520,7 @@ def _apply_patches(
             )
             continue
         run.applied.append(patch)
+        unit_state.applied_repairs.extend(repairs)
         run.deleted += patch.deletes
         run.inserted += patch.inserts
         baseline = mandatory_after
@@ -900,6 +931,9 @@ class LoopPhase:
     render: Callable[..., Awaitable[None]]
     criticise: Callable[..., Awaitable[None]]
     collect_findings: Callable[..., list]
+    #: Deterministic repairs on a patched graph, run before it is judged. Its
+    #: records are kept only if the patch is.
+    repair_patch: Callable[..., list[GraphRepairRecord]]
     critic_passes: Callable[[AtomicToolBox], int]
     patch_policy: Callable[[AtomicToolBox], CriticPatchPolicy]
     acceptance_policy: Callable[[AtomicToolBox], FactsAcceptancePolicy]
@@ -918,6 +952,7 @@ FACTS_PHASE = LoopPhase(
     render=_render_facts_phase,
     criticise=_criticise_facts_phase,
     collect_findings=_collect_facts_findings,
+    repair_patch=_repair_facts_patch,
     critic_passes=lambda atomic: atomic.facts_critic_passes,
     patch_policy=lambda atomic: atomic.facts_patch_policy,
     acceptance_policy=lambda atomic: atomic.acceptance_policy,
@@ -934,6 +969,7 @@ ONTOLOGY_PHASE = LoopPhase(
     render=_render_ontology_phase,
     criticise=_criticise_ontology_phase,
     collect_findings=_collect_ontology_findings,
+    repair_patch=_repair_ontology_patch,
     critic_passes=lambda atomic: atomic.ontology_critic_passes,
     patch_policy=lambda atomic: atomic.ontology_patch_policy,
     acceptance_policy=lambda atomic: atomic.ontology_acceptance_policy,

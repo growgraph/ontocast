@@ -143,7 +143,8 @@ facts_literal_rules_turtle = """\
 facts_literal_rules_jsonld = """\
    - Dates: {"@value": "2024-01-15", "@type": "xsd:date"} — never use Turtle ^^ syntax
    - Numbers: {"@value": "42", "@type": "xsd:integer"} etc.
-   - Language tags: {"@value": "...", "@language": "en"}"""
+   - Language tags: {"@value": "...", "@language": "en"}
+   - IRI objects: {"@id": "unit:NanoM"} — a bare string ("unit:NanoM") is a literal, not an IRI"""
 
 facts_output_hygiene_turtle = (
     "No comments in Turtle: output must contain only @prefix declarations and triples "

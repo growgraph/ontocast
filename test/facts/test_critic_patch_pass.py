@@ -56,6 +56,7 @@ def _atomic() -> AtomicToolBox:
         SimpleNamespace(
             facts_critic_passes=1,
             facts_patch_policy=CriticPatchPolicy(),
+            quantity_fallback_vocabulary=None,
             additional_standard_namespaces=(),
             validation_policy=None,
             acceptance_policy=None,
@@ -448,3 +449,33 @@ def test_the_finding_walk_per_fix_is_charged_to_deterministic_repair() -> None:
     _run(state, [])
 
     assert "repair/deterministic" in state.budget_tracker.node_durations
+
+
+def test_a_bare_string_iri_in_a_patch_is_repaired_before_it_is_judged() -> None:
+    """Patches skip the render's parse-time repairs; the phase hook covers them."""
+    qudt_unit = URIRef("http://qudt.org/schema/qudt/unit")
+    milli_ev = URIRef("http://qudt.org/vocab/unit/MilliEV")
+    state = _unit_state()
+    state.prompt_triple_index = build_triple_index(state.content_unit.graph)
+    payload = (
+        '{"@context": {"qudt": "http://qudt.org/schema/qudt/", '
+        '"unit": "http://qudt.org/vocab/unit/"}, '
+        f'"@id": "{_VALUE}", "qudt:unit": "unit:MilliEV"}}'
+    )
+    state.suggestions.actionable_fixes = [_fix("ADD", correct=payload)]
+    atomic = _atomic()
+    cast(SimpleNamespace, atomic).catalog_terms = lambda: {str(milli_ev)}
+
+    # The unit loop installs the catalog's prefixes for the whole loop.
+    RDFGraph.set_known_prefixes({"unit": "http://qudt.org/vocab/unit/"})
+    try:
+        outcome = _run(state, [], atomic=atomic)
+    finally:
+        RDFGraph.set_known_prefixes(None)
+
+    assert outcome.applied == 1
+    assert (_VALUE, qudt_unit, milli_ev) in state.content_unit.graph
+    assert (_VALUE, qudt_unit, Literal("unit:MilliEV")) not in state.content_unit.graph
+    assert FactsUnitFindingKind.COMPACT_IRI_LITERAL in {
+        record.kind for record in state.applied_repairs
+    }

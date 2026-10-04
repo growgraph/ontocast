@@ -470,6 +470,10 @@ class RunManifestPrompting(BaseModel):
         default=None,
         description="Wire format the model emitted graphs in.",
     )
+    llm_output_layout: str | None = Field(
+        default=None,
+        description="Whitespace the model was asked to use in its responses.",
+    )
     ontology_chapter_format: str | None = Field(
         default=None,
         description=(

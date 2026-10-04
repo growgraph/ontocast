@@ -399,8 +399,8 @@ def test_target_sections_selects_only_the_requested_section():
     assert "spin coating" not in body
 
 
-def test_unlabeled_chunks_from_distinct_sections_are_not_merged():
-    """A run of unresolved chunks must not be merged back together."""
+def test_undersized_unlabeled_chunks_merge_and_stay_unlabeled():
+    """Unresolved neighbours are sized together; the result claims no label."""
     doc = doc_from_markdown_lines(
         "# Notes\nFirst unnamed section body text here.\n\n"
         "# Vocabulary\nSecond unnamed section body text here.\n"
@@ -409,8 +409,39 @@ def test_unlabeled_chunks_from_distinct_sections_are_not_merged():
         _prepare(doc, min_size=5000, max_size=8000, options=PrepareOptions())
     )
 
-    unlabeled = [chunk for chunk in chunks if chunk.section_label is None]
-    assert len(unlabeled) == 2
+    assert len(chunks) == 1
+    assert chunks[0].section_label is None
+    assert "First unnamed" in chunks[0].text
+    assert "Second unnamed" in chunks[0].text
+
+
+def test_unlabeled_chunk_is_not_merged_into_a_labeled_one():
+    """Size never smears a label onto text no tier recognised."""
+    doc = doc_from_markdown_lines(
+        "# Introduction\nWe survey prior work on knowledge graphs.\n\n"
+        "# Vocabulary\nSecond unnamed section body text here.\n"
+    )
+    chunks = asyncio.run(
+        _prepare(doc, min_size=5000, max_size=8000, options=PrepareOptions())
+    )
+
+    assert [chunk.section_label for chunk in chunks] == ["introduction", None]
+
+
+def test_bare_heading_joins_the_text_it_titles():
+    """A heading with no body is no unit; it opens the next one, under its label."""
+    doc = doc_from_markdown_lines(
+        "# Introduction\nWe survey prior work on knowledge graphs.\n\n"
+        "# Methods\n"
+        "# Vocabulary\nSecond unnamed section body text here.\n"
+    )
+    chunks = asyncio.run(
+        _prepare(doc, min_size=1, max_size=8000, options=PrepareOptions())
+    )
+
+    assert [chunk.section_label for chunk in chunks] == ["introduction", None]
+    assert chunks[1].text.startswith("## Methods")
+    assert "Second unnamed" in chunks[1].text
 
 
 # --- empty section selection -------------------------------------------------

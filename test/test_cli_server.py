@@ -826,7 +826,8 @@ def test_dump_run_manifest_records_cost_and_configuration(tmp_path) -> None:
     # them. Two runs used to be able to differ several-fold in tokens with
     # nothing in either manifest to say why.
     assert payload["prompting"] == {
-        "llm_graph_format": "jsonld",
+        "llm_graph_format": "turtle",
+        "llm_output_layout": "compact",
         "ontology_chapter_format": "inherit",
         "ontology_context_scope": "unit",
         "fanout_warmup_units": 0,

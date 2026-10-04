@@ -34,7 +34,12 @@ os.environ.setdefault("LLM_API_KEY", "sk-test-placeholder-not-a-real-key")
 #: a stray RENDER_MODE=facts skips the entire ontology block while the suite
 #: still reports green -- so they are checked, and the ~200 storage/tuning
 #: settings are not.
-_PIPELINE_MODE_SELECTORS = ("render_mode", "ontology_context_mode", "llm_graph_format")
+_PIPELINE_MODE_SELECTORS = (
+    "render_mode",
+    "ontology_context_mode",
+    "llm_graph_format",
+    "llm_output_layout",
+)
 
 
 def _assert_pipeline_config_not_leaked() -> None:

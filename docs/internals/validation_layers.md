@@ -112,6 +112,7 @@ machine can decide without the model:
 |---|---|
 | Numeric retyping | An untyped number on a property with a numeric range gets that datatype |
 | `rdf:type` literal coercion | A type written as a string becomes the class IRI when it resolves unambiguously |
+| Compact-IRI literal coercion | A plain string such as `"unit:NanoM"` on another predicate becomes the IRI, when its prefix is bound and either the schema says the predicate takes an IRI or the IRI is a catalog or fallback-vocabulary term. Critic and completion patches get the same repair before they are judged |
 | Near-miss predicate rewrite | A predicate not in the catalog is rewritten to the one catalog term whose name tokens contain, are contained in, or equal its own. `FACTS_PROPERTY_ALIAS_MIN_RATIO` only breaks ties among such candidates; string similarity alone never triggers a rewrite. A predicate the full catalog declares is never rewritten, even when the unit's snapshot lacks it |
 | Code resolution | A node carrying a code from `FACTS_CODE_PREDICATES` (such as `qudt:ucumCode "d"`) but no link to the coded individual gains that link, when exactly one catalog individual declares the code. The linking property comes from the schema's domain and range, or else from how the graph already links such nodes |
 | Degenerate bounds | Equal lower and upper bounds become one value, when the quantity fallback vocabulary names `numeric_value`, `lower_bound` and `upper_bound` |
@@ -121,7 +122,7 @@ to the critic for repair: typed literals whose lexical form is invalid for the
 datatype, and string literals on a property whose range is a class
 (`FACTS_OBJECT_PROPERTY_LITERAL_CHECK`).
 
-Type coercions, predicate rewrites and code resolutions are recorded as
+Type and compact-IRI coercions, predicate rewrites and code resolutions are recorded as
 `GraphRepairRecord`s and returned per unit as `facts_repairs`, so a consumer can
 tell a machine rewrite from what the model asserted. Ambiguity is never
 resolved by guessing: two catalog terms claiming one code means no repair.

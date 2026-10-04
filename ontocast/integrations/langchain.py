@@ -497,6 +497,7 @@ def _extract(tools: "ToolBox", max_chars: int) -> BaseTool:
             ),
             ontology_user_instruction=instruction,
             facts_user_instruction=instruction,
+            llm_graph_format=tools.config.server.llm_graph_format,
             **({"current_domain": domain} if domain else {}),
         )
         onto_result, facts_result = await run_unit_pipeline(state, tools)

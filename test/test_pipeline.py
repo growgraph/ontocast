@@ -21,6 +21,7 @@ from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
 from ontocast.onto.enum import (
     LLMGraphFormat,
+    LLMOutputLayout,
     OntologyContextMode,
     RenderMode,
     Status,
@@ -135,6 +136,7 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
                     facts_critic_passes=1,
                     ontology_critic_passes=1,
                     facts_patch_policy=CriticPatchPolicy(),
+                    quantity_fallback_vocabulary=None,
                     ontology_patch_policy=CriticPatchPolicy(),
                     additional_standard_namespaces=(),
                     validation_policy=None,
@@ -1267,6 +1269,7 @@ async def test_consolidate_ontology_node_applies_delta_on_map_stage_artifact(
         enable_ontology_consolidation = True
         ontology_max_triples = None
         ontology_context_max_triples = 4000
+        llm_output_layout = LLMOutputLayout.COMPACT
 
     class DummyConfig:
         server = DummyServerConfig()

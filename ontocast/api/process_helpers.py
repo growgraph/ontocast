@@ -346,6 +346,7 @@ def dump_run_manifest(
         ),
         prompting=RunManifestPrompting(
             llm_graph_format=str(config.server.llm_graph_format),
+            llm_output_layout=str(config.server.llm_output_layout),
             ontology_chapter_format=str(config.server.ontology_chapter_format),
             # Null on the single-unit path rather than echoed back: both
             # settings are read only by the document fan-out node, so recording

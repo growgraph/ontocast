@@ -6,6 +6,7 @@ from rdflib import URIRef
 
 from ontocast.onto.docling_helpers import plain_text_to_docling_doc
 from ontocast.onto.enum import (
+    LLMOutputLayout,
     OntologyAssemblyMode,
     OntologyChapterFormat,
     OntologyContextScope,
@@ -98,6 +99,7 @@ async def test_run_unit_pipeline_feeds_ontology_loop_output_to_facts(
                     ontology_max_triples=50_000,
                     ontology_context_max_triples=4000,
                     ontology_chapter_format=OntologyChapterFormat.INHERIT,
+                    llm_output_layout=LLMOutputLayout.COMPACT,
                     ontology_text_caps=TextCaps(),
                     ontology_context_scope=OntologyContextScope.UNIT,
                     fanout_warmup_units=0,
@@ -161,6 +163,7 @@ async def test_run_unit_pipeline_uses_agent_state_max_visits(monkeypatch) -> Non
                     ontology_max_triples=50_000,
                     ontology_context_max_triples=4000,
                     ontology_chapter_format=OntologyChapterFormat.INHERIT,
+                    llm_output_layout=LLMOutputLayout.COMPACT,
                     ontology_text_caps=TextCaps(),
                     ontology_context_scope=OntologyContextScope.UNIT,
                     fanout_warmup_units=0,

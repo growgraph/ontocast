@@ -49,6 +49,7 @@ from ontocast.tool.facts_validation import (
     expand_vocabulary_terms,
     normalize_literals_against_schema,
     promote_degenerate_bounds_from_vocabulary,
+    repair_compact_iri_literals,
     repair_literal_type_objects,
     repair_property_aliases,
     resolve_code_literals,
@@ -95,14 +96,19 @@ def _normalize_and_repair_graph(
     started = time.perf_counter()
     retyped = normalize_literals_against_schema(graph, ontology_context_graph)
     type_repaired, _type_findings, type_records = repair_literal_type_objects(graph)
+    vocabulary_terms = expand_vocabulary_terms(
+        tools.quantity_fallback_vocabulary, graph, ontology_context_graph
+    )
+    catalog_terms = tools.catalog_terms()
+    iri_repaired, iri_records = repair_compact_iri_literals(
+        graph, ontology_context_graph, catalog_terms | vocabulary_terms
+    )
     rewritten, _alias_findings, alias_records = repair_property_aliases(
         graph,
         ontology_context_graph,
         min_ratio=tools.property_alias_min_ratio,
-        exempt_terms=expand_vocabulary_terms(
-            tools.quantity_fallback_vocabulary, graph, ontology_context_graph
-        ),
-        full_catalog_terms=tools.catalog_terms(),
+        exempt_terms=vocabulary_terms,
+        full_catalog_terms=catalog_terms,
     )
     resolved, code_records = resolve_code_literals(
         graph, ontology_context_graph, tools.code_predicates
@@ -114,16 +120,18 @@ def _normalize_and_repair_graph(
         budget_tracker.add_duration(
             "repair/deterministic", time.perf_counter() - started
         )
-    if retyped or rewritten or type_repaired or resolved:
+    if retyped or rewritten or type_repaired or iri_repaired or resolved:
         logger.info(
             "Deterministic graph repair: retyped %d literal(s), coerced %d "
-            "rdf:type literal(s), rewrote %d alias triple(s), resolved %d code(s)",
+            "rdf:type literal(s), coerced %d compact-IRI literal(s), rewrote %d "
+            "alias triple(s), resolved %d code(s)",
             retyped,
             type_repaired,
+            iri_repaired,
             rewritten,
             resolved,
         )
-    return graph, [*type_records, *alias_records, *code_records]
+    return graph, [*type_records, *iri_records, *alias_records, *code_records]
 
 
 async def render_facts(
@@ -336,6 +344,7 @@ async def render_facts_fresh(
     profile = get_graph_format_profile(
         state.llm_graph_format,
         ontology_chapter_format=state.ontology_chapter_format,
+        output_layout=state.llm_output_layout,
     )
     parser = PydanticOutputParser(pydantic_object=FactsRenderReport)
 
