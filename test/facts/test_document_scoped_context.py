@@ -18,6 +18,7 @@ from rdflib import URIRef
 
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import (
+    LLMOutputLayout,
     OntologyAssemblyMode,
     OntologyChapterFormat,
     OntologyContextMode,
@@ -84,6 +85,7 @@ def _tools(*, scope: OntologyContextScope, warmup: int = 0) -> ToolBox:
                     parallel_workers=4,
                     ontology_context_max_triples=4000,
                     ontology_chapter_format=OntologyChapterFormat.INHERIT,
+                    llm_output_layout=LLMOutputLayout.COMPACT,
                     ontology_text_caps=TextCaps(),
                     ontology_context_scope=scope,
                     fanout_warmup_units=warmup,

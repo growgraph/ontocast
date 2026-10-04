@@ -9,9 +9,11 @@ document it is reading, and how you choose the sections to extract.
 
 While chunking, OntoCast gives every content unit the label of the section it
 came from, such as `methods`, `results` or `risk_factors`. Units never span two
-sections, so each has at most one label. A unit OntoCast cannot place confidently
-gets no label at all: an unlabeled unit is merely never selected by a filter,
-while a wrongly labeled one would be dropped or kept by mistake.
+labeled sections, so each has at most one label. A unit OntoCast cannot place
+confidently gets no label at all: an unlabeled unit is merely never selected by
+a filter, while a wrongly labeled one would be dropped or kept by mistake. For
+the same reason, size never joins unlabeled text to a labeled unit; neighbouring
+unlabeled sections are joined with each other instead.
 
 Labels are recorded in the facts' [provenance](ontologies_and_facts.md#provenance),
 together with how each was decided and how confident that decision was.

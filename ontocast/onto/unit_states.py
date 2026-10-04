@@ -11,6 +11,7 @@ from ontocast.onto.content_unit import ContentUnit, SourceUnit
 from ontocast.onto.enum import (
     FailureStage,
     LLMGraphFormat,
+    LLMOutputLayout,
     OntologyAssemblyMode,
     OntologyChapterFormat,
     Status,
@@ -92,10 +93,18 @@ class UnitState(BasePydanticModel):
     #: budget rather than per-unit state.
     max_visits_per_node: int = Field(default=1, ge=1)
     llm_graph_format: LLMGraphFormat = Field(
-        default=LLMGraphFormat.JSONLD,
+        default=LLMGraphFormat.TURTLE,
         description=(
             "Format used by the LLM for emitting RDF graph payloads: "
-            "'jsonld' (default) or 'turtle' (legacy)."
+            "'turtle' (default) or 'jsonld'."
+        ),
+    )
+    llm_output_layout: LLMOutputLayout = Field(
+        default=LLMOutputLayout.COMPACT,
+        description=(
+            "Whitespace the LLM is asked to use in its structured responses. "
+            "Threaded from ServerConfig like ontology_context_max_triples; "
+            "read by both loops."
         ),
     )
     ontology_context_max_triples: int | None = Field(

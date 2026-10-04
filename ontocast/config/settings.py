@@ -22,6 +22,7 @@ from ontocast.onto.constants import (
 )
 from ontocast.onto.enum import (
     LLMGraphFormat,
+    LLMOutputLayout,
     OntologyChapterFormat,
     OntologyContextMode,
     OntologyContextScope,
@@ -990,10 +991,24 @@ class ServerConfig(BaseSettings):
         description="Rendering mode: ontology, facts, or ontology_and_facts.",
     )
     llm_graph_format: LLMGraphFormat = Field(
-        default=LLMGraphFormat.JSONLD,
+        default=LLMGraphFormat.TURTLE,
         description=(
-            "Format the LLM writes RDF graphs in: 'jsonld' (compact JSON-LD "
-            "objects) or 'turtle' (Turtle strings)."
+            "Format the LLM writes RDF graphs in: 'turtle' (Turtle strings) or "
+            "'jsonld' (compact JSON-LD objects). Turtle spends fewer tokens per "
+            "triple and cannot write an IRI object as a string by accident; "
+            "'jsonld' suits providers whose structured output handles long "
+            "strings worse than nested objects."
+        ),
+    )
+    llm_output_layout: LLMOutputLayout = Field(
+        default=LLMOutputLayout.COMPACT,
+        description=(
+            "Whitespace the LLM is asked to use in its structured responses: "
+            "'compact' asks for minified JSON and one-line-per-subject Turtle "
+            "without indentation; 'free' gives no instruction (models "
+            "typically indent JSON). Indentation is billed as output tokens "
+            "and carries nothing the parser reads. Applies to every call that "
+            "emits a graph payload."
         ),
     )
     ontology_chapter_format: OntologyChapterFormat = Field(

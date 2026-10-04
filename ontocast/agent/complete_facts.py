@@ -105,6 +105,7 @@ async def complete_facts(
     profile = get_graph_format_profile(
         state.llm_graph_format,
         ontology_chapter_format=state.ontology_chapter_format,
+        output_layout=state.llm_output_layout,
     )
     parser = PydanticOutputParser(pydantic_object=FactsCompletionReport)
 

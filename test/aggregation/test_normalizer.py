@@ -53,6 +53,31 @@ def test_create_representation_collects_metadata(normalizer: EntityNormalizer) -
     assert representation.core_representation.startswith("test entity")
 
 
+def test_create_representation_ignores_triples_not_mentioning_entity(
+    normalizer: EntityNormalizer,
+) -> None:
+    ex = Namespace("http://example.org/")
+    own = [
+        (ex.A, RDF.type, ex.Thing),
+        (ex.A, RDFS.label, Literal("Alpha")),
+        (ex.A, ex.knows, ex.A),
+        (ex.B, ex.knows, ex.A),
+        (ex.B, ex.A, Literal("1")),
+    ]
+    alone = RDFGraph()
+    crowded = RDFGraph()
+    for triple in own:
+        alone.add(triple)
+        crowded.add(triple)
+    for i in range(50):
+        crowded.add((ex[f"N{i}"], RDF.type, ex.Thing))
+        crowded.add((ex[f"N{i}"], RDFS.label, Literal(f"Alpha {i}")))
+
+    assert normalizer.create_representation(
+        ex.A, crowded
+    ) == normalizer.create_representation(ex.A, alone)
+
+
 def test_create_representation_uses_alt_labels_when_no_rdfs_label(
     normalizer: EntityNormalizer,
 ) -> None:

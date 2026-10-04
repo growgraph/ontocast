@@ -26,6 +26,7 @@ from ontocast.onto.rdfgraph import (
     RDFGraph,
 )
 from ontocast.tool.facts_validation.terms import (
+    _COMPACT_IRI,
     _alias_candidates,
     _declared_domains,
     _local_name,
@@ -39,6 +40,8 @@ from ontocast.tool.facts_validation.terms import (
     expand_vocabulary_terms,
     resolve_unique_surface,
 )
+from ontocast.tool.llm import record_active_count
+from ontocast.tool.validate import _predicate_expects_iri_object
 from ontocast.util.numeric_inventory import canonical_number
 
 logger = logging.getLogger(__name__)
@@ -220,6 +223,78 @@ def repair_literal_type_objects(
             )
         )
     return rewritten, findings, applied
+
+
+def repair_compact_iri_literals(
+    graph: RDFGraph,
+    ontology_context_graph: RDFGraph,
+    known_terms: set[str],
+) -> tuple[int, list[GraphRepairRecord]]:
+    """Coerce plain-string compact IRIs on IRI-valued positions into IRIs.
+
+    A JSON-LD bare string (``"qudt:unit": "unit:NanoM"``) parses as a literal,
+    so the node loses its link and reads as missing the property. A literal is
+    rewritten only when every condition holds: it is plain (no language tag,
+    no datatype or ``xsd:string``); the predicate is not ``rdf:type`` (that is
+    :func:`repair_literal_type_objects`); the lexical form is a compact IRI
+    whose prefix the graph or the known-prefix context binds; and either the
+    schema says the predicate takes an IRI or the expanded IRI is a known term.
+    Prose such as ``"time: 10 minutes"`` never matches the compact-IRI form.
+
+    Args:
+        graph: Facts graph, repaired in place.
+        ontology_context_graph: Schema that says which predicates take IRIs.
+        known_terms: IRIs the catalog and fallback vocabulary declare; covers
+            predicates whose range the vendored vocabulary leaves undeclared.
+
+    Returns:
+        Tuple of (number of rewritten triples, applied-repair records).
+    """
+    prefix_map = dict(RDFGraph.get_known_prefixes() or {})
+    prefix_map.update(
+        {prefix: str(namespace) for prefix, namespace in graph.namespaces() if prefix}
+    )
+    replacements: list[tuple[tuple[Node, Node, Node], URIRef, str]] = []
+    expects_iri: dict[URIRef, bool] = {}
+    for subject, predicate, obj in graph:
+        if predicate == RDF.type or not isinstance(obj, Literal):
+            continue
+        if obj.language or obj.datatype not in (None, XSD.string):
+            continue
+        lexical = str(obj).strip()
+        match = _COMPACT_IRI.match(lexical)
+        if match is None:
+            continue
+        namespace = prefix_map.get(match.group(1))
+        if not namespace:
+            continue
+        expanded = f"{namespace}{match.group(2)}"
+        if expanded not in known_terms:
+            if not isinstance(predicate, URIRef):
+                continue
+            if predicate not in expects_iri:
+                expects_iri[predicate] = _predicate_expects_iri_object(
+                    predicate, ontology_context_graph
+                )[0]
+            if not expects_iri[predicate]:
+                continue
+        replacements.append(((subject, predicate, obj), URIRef(expanded), lexical))
+
+    applied: list[GraphRepairRecord] = []
+    for (subject, predicate, obj), iri, lexical in replacements:
+        graph.remove((subject, predicate, obj))
+        graph.add((subject, predicate, iri))
+        applied.append(
+            GraphRepairRecord(
+                kind=FactsUnitFindingKind.COMPACT_IRI_LITERAL,
+                source=lexical,
+                target=str(iri),
+            )
+        )
+        logger.info("Repaired compact-IRI literal %r -> <%s>", lexical, iri)
+    if applied:
+        record_active_count("repair/compact_iri_literal", len(applied))
+    return len(applied), applied
 
 
 def _folded_name(local: str) -> str:

@@ -68,6 +68,11 @@ def make_ontocast_node(
 
     async def ontocast_node(state: Any, config: RunnableConfig) -> dict[str, Any]:
         initial = to_agent_state(state)
+        # The format is read off the state, not the toolbox, so a mapping that
+        # leaves it unset would run on the class default instead of the
+        # deployment's LLM_GRAPH_FORMAT.
+        if "llm_graph_format" not in initial.model_fields_set:
+            initial.llm_graph_format = tools.config.server.llm_graph_format
         # Merge rather than replace: the caller's config carries callbacks,
         # tags and run metadata that tracing depends on.
         merged: RunnableConfig = {**(config or {})}

@@ -9,9 +9,10 @@ It creates normalized string representations r(e) that include:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import chain
 from typing import TYPE_CHECKING
 
-from rdflib import RDF, RDFS, Literal, URIRef
+from rdflib import RDF, RDFS, Graph, Literal, URIRef
 from rdflib.term import Node
 
 from ontocast.onto.constants import DEFAULT_IRI
@@ -86,6 +87,23 @@ class EntityRepresentation:
             self.representation = combine_embedding_text(self)
 
     ontology_iri: str | None = None
+
+
+def triples_mentioning(entity: Node, graph: Graph) -> list[tuple[Node, Node, Node]]:
+    """Return the triples of ``graph`` with ``entity`` as subject, predicate or object.
+
+    Reads the graph's indexes, so the cost is the entity's degree, not the
+    graph's size. A triple mentioning the entity twice is returned once.
+    """
+    return list(
+        dict.fromkeys(
+            chain(
+                graph.triples((entity, None, None)),
+                graph.triples((None, entity, None)),
+                graph.triples((None, None, entity)),
+            )
+        )
+    )
 
 
 @dataclass
@@ -180,7 +198,8 @@ class EntityNormalizer:
 
         Args:
             entity: Entity to extract context for
-            graph: RDF graph containing the entity
+            graph: RDF graph containing the entity; only the triples that
+                mention it are read, so it may be arbitrarily large
 
         Returns:
             :class:`EntityContext` with types, properties, labels, alt labels,
@@ -208,8 +227,7 @@ class EntityNormalizer:
         predicate_iri_objects: dict[URIRef, set[URIRef]] = {}
         schema_predicates = {RDF.type, RDFS.label, RDFS.comment}
 
-        # Extract information from triples
-        for s, p, o in graph:
+        for s, p, o in triples_mentioning(entity, graph):
             # When entity is subject
             if s == entity:
                 if isinstance(p, URIRef):
@@ -301,7 +319,7 @@ class EntityNormalizer:
             "as_predicate": set(),
         }
 
-        triples_sorted = stable_sorted_triples(list(graph))
+        triples_sorted = stable_sorted_triples(triples_mentioning(entity, graph))
         for subj, pred, obj in triples_sorted:
             if subj == entity:
                 sentence = (

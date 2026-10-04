@@ -37,7 +37,11 @@ from ontocast.tool.chunk.segment import (
     merge_doc_item_refs,
     starts_with_section_heading,
 )
-from ontocast.tool.chunk.sizing import merge_small_parts, split_by_measurement_density
+from ontocast.tool.chunk.sizing import (
+    DEFAULT_PART_SEPARATOR,
+    merge_small_parts,
+    split_by_measurement_density,
+)
 from ontocast.util.measurement_lexicon import unit_adjacent_numbers
 from ontocast.util.optional import require
 
@@ -463,6 +467,46 @@ def _forward_fill_section_labels(
         )
 
 
+_PLACEHOLDER_LINE = re.compile(r"<!--.*-->")
+
+
+def _is_bare_heading(text: str) -> bool:
+    """True when ``text`` is heading lines (and image placeholders) with no body."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    body = [line for line in lines if not _PLACEHOLDER_LINE.fullmatch(line)]
+    return bool(body) and len(markdown_headings(text)) == len(body)
+
+
+def _attach_bare_headings(segments: list[PrepareSegment]) -> list[PrepareSegment]:
+    """Prepend each body-less heading segment to the segment that follows it.
+
+    A heading titles the text after it, so the joined segment keeps that text's
+    label, headings and confidence: the heading lends it no label, and is
+    filtered with its body instead of becoming a unit with nothing to extract.
+    Trailing headings have no follower and are kept as they are.
+    """
+    attached: list[PrepareSegment] = []
+    pending: list[PrepareSegment] = []
+    for segment in segments:
+        if _is_bare_heading(segment.text):
+            pending.append(segment)
+            continue
+        if pending:
+            refs: tuple[str, ...] = ()
+            for part in (*pending, segment):
+                refs = merge_doc_item_refs(refs, part.doc_item_refs)
+            segment = replace(
+                segment,
+                text=DEFAULT_PART_SEPARATOR.join(
+                    part.text.strip() for part in (*pending, segment)
+                ),
+                doc_item_refs=refs,
+            )
+            pending = []
+        attached.append(segment)
+    return attached + pending
+
+
 @dataclass(frozen=True)
 class SchemaDecision:
     """Which label schema a document is prepared against, and why.
@@ -690,11 +734,6 @@ def _merge_prepared_chunks(
         while index < len(chunks) and chunks[index].section_label == label:
             run.append(chunks[index])
             index += 1
-            # Unlabeled chunks are not known to share a section — they are
-            # merely each unresolved. Merging a run of them would rebuild the
-            # cross-section chunks the outline fix just eliminated.
-            if label is None:
-                break
 
         texts = merge_small_parts(
             [chunk.text for chunk in run],
@@ -945,6 +984,7 @@ async def prepare_content_units(
             batch_size=config.section_llm_batch_size,
         )
     _forward_fill_section_labels(segments, schema)
+    segments = _attach_bare_headings(segments)
 
     unlabeled = sum(1 for s in segments if s.section_label is None)
     if unlabeled:

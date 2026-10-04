@@ -1,14 +1,15 @@
-# OntoCast <img src="https://raw.githubusercontent.com/growgraph/ontocast/refs/heads/main/docs/assets/logo.png" alt="OntoCast logo" style="height: 32px; width:32px;"/>
+# OntoCast <img src="https://raw.githubusercontent.com/growgraph/ontocast/refs/heads/main/docs/assets/logo.png" alt="OntoCast logo" height="32" width="32"/>
 
 **Ontology-guided extraction of RDF knowledge graphs from documents.**
 
-![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)
-[![PyPI version](https://badge.fury.io/py/ontocast.svg)](https://badge.fury.io/py/ontocast)
-[![PyPI Downloads](https://static.pepy.tech/badge/ontocast)](https://pepy.tech/projects/ontocast)
-[![Docs](https://img.shields.io/badge/docs-growgraph.github.io-224777.svg)](https://growgraph.github.io/ontocast/)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![pre-commit](https://github.com/growgraph/ontocast/actions/workflows/pre-commit.yml/badge.svg)](https://github.com/growgraph/ontocast/actions/workflows/pre-commit.yml)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17796467.svg)](https://doi.org/10.5281/zenodo.17796467)
+[![tests](https://img.shields.io/github/actions/workflow/status/growgraph/ontocast/tests.yml?branch=main&label=tests)](https://github.com/growgraph/ontocast/actions/workflows/tests.yml)
+[![pre-commit](https://img.shields.io/github/actions/workflow/status/growgraph/ontocast/pre-commit.yml?branch=main&label=pre-commit)](https://github.com/growgraph/ontocast/actions/workflows/pre-commit.yml)
+[![PyPI](https://img.shields.io/pypi/v/ontocast?color=224777)](https://pypi.org/project/ontocast/)
+[![Python](https://img.shields.io/pypi/pyversions/ontocast?color=224777)](https://pypi.org/project/ontocast/)
+[![Downloads](https://img.shields.io/pepy/dt/ontocast?color=224777)](https://pepy.tech/projects/ontocast)
+[![Docs](https://img.shields.io/badge/docs-growgraph.github.io-224777)](https://growgraph.github.io/ontocast/)
+[![License](https://img.shields.io/pypi/l/ontocast?color=224777)](https://github.com/growgraph/ontocast/blob/main/LICENSE)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.17796467-224777)](https://doi.org/10.5281/zenodo.17796467)
 
 OntoCast reads documents and writes an RDF knowledge graph: an ontology that
 describes the domain, and the facts the documents state in its terms. Give it

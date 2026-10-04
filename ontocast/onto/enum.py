@@ -137,15 +137,31 @@ class RenderMode(StrEnum):
 class LLMGraphFormat(StrEnum):
     """Format used by the LLM when emitting RDF graph payloads.
 
-    - ``jsonld`` (default): graph fields are compact JSON-LD objects embedded
-      directly in the structured LLM response. Internally parsed back into
-      ``RDFGraph``.
-    - ``turtle``: graph fields are Turtle strings (legacy encoding, kept for
-      providers whose structured output handles strings better than objects).
+    - ``turtle`` (default): graph fields are Turtle strings. Fewer tokens per
+      triple than JSON-LD, and an IRI object cannot be written as a string by
+      accident: ``unit:NanoM`` is an IRI, ``"unit:NanoM"`` visibly a literal.
+    - ``jsonld``: graph fields are compact JSON-LD objects embedded directly in
+      the structured LLM response, for providers whose structured output
+      handles long strings worse than nested objects. Internally parsed back
+      into ``RDFGraph``.
     """
 
     TURTLE = "turtle"
     JSONLD = "jsonld"
+
+
+class LLMOutputLayout(StrEnum):
+    """Whitespace the LLM is asked to use in its structured responses.
+
+    - ``compact`` (default): the JSON response is minified, and a Turtle graph
+      string keeps each subject on one line without indentation. Indentation
+      is billed as output tokens and carries nothing the parser reads.
+    - ``free``: no layout instruction; the model chooses, and typically
+      pretty-prints JSON with indentation.
+    """
+
+    FREE = "free"
+    COMPACT = "compact"
 
 
 class OntologyChapterFormat(StrEnum):

@@ -11,7 +11,7 @@ from typing import TypeVar
 from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel
 
-from ontocast.onto.enum import LLMGraphFormat, OntologyChapterFormat
+from ontocast.onto.enum import LLMGraphFormat, LLMOutputLayout, OntologyChapterFormat
 from ontocast.onto.llm_graph_payload import llm_graph_format_ctx
 from ontocast.onto.ontology_condense import (
     CondenseReport,
@@ -76,7 +76,8 @@ Provide each RDF graph field as a compact JSON-LD **object** (not a string) with
 4. Typed literals MUST use the value/type form: {"@value": "2024-01-15", "@type": "xsd:date"}.
    Language-tagged literals use {"@value": "...", "@language": "en"}.
 5. Multi-valued predicates use a JSON array of objects/values.
-6. Object references use {"@id": "prefix:local"} (or a plain compact IRI string when unambiguous).
+6. Object references ALWAYS use {"@id": "prefix:local"}. A bare string ("prefix:local")
+   is a literal, not an IRI: the triple loses its link.
 7. No comments, no trailing prose - output strictly valid JSON.
 8. Never use Turtle syntax (no ^^, no @prefix) inside JSON values.
 """
@@ -131,8 +132,9 @@ Provide `insert_graph` and `delete_graph` each as a compact JSON-LD **object**
 3. Use compact IRIs (`prefix:local`) throughout - never expand to full URIs in the body.
 4. Typed literals MUST use the value/type form: {"@value": "...", "@type": "xsd:date"}.
    Language-tagged literals use {"@value": "...", "@language": "en"}.
-5. No comments, no trailing prose - output strictly valid JSON.
-6. NEVER use UPDATE query syntax or Turtle ^^/@prefix inside JSON values.
+5. Object references ALWAYS use {"@id": "prefix:local"}. A bare string is a literal.
+6. No comments, no trailing prose - output strictly valid JSON.
+7. NEVER use UPDATE query syntax or Turtle ^^/@prefix inside JSON values.
 
 Shape of the whole response — `insert_graph` sits at the top level, and its object is
 closed with `}` before the response's final `}`:
@@ -192,7 +194,27 @@ Provide `correct_value` as a **string** with valid JSON for one subject node
 (inline `@context` or compact IRIs only):
 Example: "{\\"@context\\": {\\"schema\\": \\"https://schema.org/\\"}, \\"@id\\": \\"cd:alice\\", \\"schema:worksFor\\": {\\"@id\\": \\"cd:acme\\"}}"
 Use `{"@value": "...", "@type": "xsd:date"}` for typed literals and `{"@value": "...", "@language": "en"}`
-for language-tagged literals. Never use Turtle ^^ syntax inside these JSON strings.
+for language-tagged literals, and `{"@id": "prefix:local"}` for every IRI object -- a bare
+string is a literal. Never use Turtle ^^ syntax inside these JSON strings.
+"""
+)
+
+
+# Appended to the response format instructions, so it reaches every call that
+# emits a graph payload. The examples above stay indented for the reader; the
+# clause says so, or a model copies their layout.
+_LAYOUT_INSTRUCTION_COMPACT_JSON = """
+
+# RESPONSE LAYOUT
+
+Write the whole JSON response minified: no line breaks and no indentation
+between JSON tokens. Examples in this prompt are indented for reading only.
+"""
+
+_LAYOUT_INSTRUCTION_COMPACT_TURTLE = (
+    _LAYOUT_INSTRUCTION_COMPACT_JSON
+    + """Inside a Turtle string, write each subject and all its predicate-object pairs
+on one line (`s p1 o1 ; p2 o2 .`), with no indentation.
 """
 )
 
@@ -212,6 +234,9 @@ class GraphFormatProfile:
     #: context from the wire the model writes on. Nothing else on the profile
     #: -- output instructions, the facts chapter, parsing -- reads it.
     ontology_chapter_format: OntologyChapterFormat = OntologyChapterFormat.INHERIT
+    #: Whitespace the response is asked to use. Read only by
+    #: :meth:`format_instructions`; parsing is layout-blind.
+    output_layout: LLMOutputLayout = LLMOutputLayout.FREE
 
     @property
     def renders_term_sheet(self) -> bool:
@@ -467,11 +492,19 @@ class GraphFormatProfile:
         *,
         web_search_enabled: bool = True,
     ) -> str:
-        return format_instructions_for_model(
+        instructions = format_instructions_for_model(
             report_cls,
             self.format,
             web_search_enabled=web_search_enabled,
         )
+        return instructions + self._layout_instruction()
+
+    def _layout_instruction(self) -> str:
+        if self.output_layout == LLMOutputLayout.FREE:
+            return ""
+        if self.format == LLMGraphFormat.TURTLE:
+            return _LAYOUT_INSTRUCTION_COMPACT_TURTLE
+        return _LAYOUT_INSTRUCTION_COMPACT_JSON
 
     def parse_report(self, report_cls: type[T], text: str) -> T:
         token = llm_graph_format_ctx.set(self.format)
@@ -504,11 +537,16 @@ class _LLMGraphFormatContext(AbstractContextManager[LLMGraphFormat]):
 #: render mode before anything reaches here. A profile for it would silently
 #: serve whichever chapter its fallback happened to be, on a run whose manifest
 #: recorded the unresolved name.
-_PROFILES: dict[tuple[LLMGraphFormat, OntologyChapterFormat], GraphFormatProfile] = {
-    (fmt, chapter): GraphFormatProfile(format=fmt, ontology_chapter_format=chapter)
+_PROFILES: dict[
+    tuple[LLMGraphFormat, OntologyChapterFormat, LLMOutputLayout], GraphFormatProfile
+] = {
+    (fmt, chapter, layout): GraphFormatProfile(
+        format=fmt, ontology_chapter_format=chapter, output_layout=layout
+    )
     for fmt in LLMGraphFormat
     for chapter in OntologyChapterFormat
     if chapter is not OntologyChapterFormat.AUTO
+    for layout in LLMOutputLayout
 }
 
 
@@ -516,6 +554,7 @@ def get_graph_format_profile(
     fmt: LLMGraphFormat,
     *,
     ontology_chapter_format: OntologyChapterFormat = OntologyChapterFormat.INHERIT,
+    output_layout: LLMOutputLayout = LLMOutputLayout.FREE,
 ) -> GraphFormatProfile:
     """The profile for a wire format.
 
@@ -526,6 +565,7 @@ def get_graph_format_profile(
             deployment's ``ONTOLOGY_CHAPTER_FORMAT``; callers that leave it at
             ``INHERIT`` get a chapter in ``fmt``. ``AUTO`` is rejected -- it is
             resolved against the render mode when the configuration is built.
+        output_layout: Whitespace the response is asked to use.
 
     Raises:
         ValueError: If ``ontology_chapter_format`` is ``AUTO``.
@@ -536,4 +576,4 @@ def get_graph_format_profile(
             "when the configuration is built and must not reach a prompt "
             "profile; pass the resolved value."
         )
-    return _PROFILES[(fmt, ontology_chapter_format)]
+    return _PROFILES[(fmt, ontology_chapter_format, output_layout)]

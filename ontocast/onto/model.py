@@ -641,6 +641,9 @@ class FactsUnitFindingKind(StrEnum):
     PROPERTY_ALIAS = "property_alias"
     CLOSED_RANGE_LITERAL = "closed_range_literal"
     LITERAL_TYPE_OBJECT = "literal_type_object"
+    #: A compact IRI written as a plain string on an IRI-valued position,
+    #: coerced back to the IRI. Repair-only: never raised as a finding.
+    COMPACT_IRI_LITERAL = "compact_iri_literal"
     NUMERIC_COVERAGE = "numeric_coverage"
     LABEL_ONLY_NUMBER = "label_only_number"
     SCALAR_AS_BOUNDS = "scalar_as_bounds"

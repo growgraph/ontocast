@@ -57,6 +57,7 @@ def _tools(critic_passes: int = 1, *, critic_min_triples: int = 0) -> ToolBox:
                 SimpleNamespace(
                     facts_critic_passes=critic_passes,
                     facts_patch_policy=CriticPatchPolicy(),
+                    quantity_fallback_vocabulary=None,
                     ontology_critic_passes=critic_passes,
                     ontology_patch_policy=CriticPatchPolicy(),
                     additional_standard_namespaces=(),

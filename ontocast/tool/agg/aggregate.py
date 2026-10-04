@@ -573,7 +573,8 @@ class _EntityCollectionState(BaseModel):
     known_entities: set[URIRef]
     entities: set[URIRef] = Field(default_factory=set)
     source_entities: set[URIRef] = Field(default_factory=set)
-    entity_graphs: dict[URIRef, RDFGraph] = Field(default_factory=dict)
+    # Every unit triple, once: the shared context of all collected entities.
+    context: RDFGraph = Field(default_factory=RDFGraph)
     entity_doc_iris: dict[URIRef, URIRef] = Field(default_factory=dict)
     entity_classification: dict[URIRef, EntityClassification] = Field(
         default_factory=dict
@@ -1462,11 +1463,6 @@ class EmbeddingBasedAggregator:
             return 2
         return 1
 
-    @staticmethod
-    def _merge_into_context_graph(target: RDFGraph, source: RDFGraph) -> None:
-        """Merge source triples/namespaces into a per-entity context graph."""
-        target += source
-
     def _register_entity(
         self,
         *,
@@ -1474,13 +1470,9 @@ class EmbeddingBasedAggregator:
         unit: ContentUnit,
         state: _EntityCollectionState,
     ) -> None:
-        """Register one URI entity with merged context and stable classification."""
+        """Register one URI entity with its document and stable classification."""
         state.entities.add(entity)
         state.source_entities.add(entity)
-        if entity not in state.entity_graphs:
-            state.entity_graphs[entity] = unit.graph.copy()
-        else:
-            self._merge_into_context_graph(state.entity_graphs[entity], unit.graph)
         state.entity_doc_iris.setdefault(entity, unit.doc_iri)
         current = state.entity_classification.get(entity, EntityClassification.FACT)
         candidate = self._classify_entity_for_unit(entity, unit, state.known_entities)
@@ -1517,21 +1509,25 @@ class EmbeddingBasedAggregator:
     ]:
         """Collect all entities from all content unit graphs.
 
-        Each entity is associated with the graph it was found in and the
-        ``doc_iri`` of the :class:`ContentUnit` that produced it.  When an
-        entity appears in several units the *last-seen* ``doc_iri`` wins (in
+        Each entity is associated with a graph holding its triples and the
+        ``doc_iri`` of the first :class:`ContentUnit` that mentions it (in
         practice most pipelines aggregate chunks of the same document, so all
         ``doc_iri`` values are identical).
 
         Args:
             units: List of content units to aggregate.
+            known_ontology_entities: Entities of the selected ontology, used
+                for classification.
 
         Returns:
             Tuple of (
                 entities,
+                source_entities,
                 entity_to_graph,
                 entity_to_doc_iri,
-                entity_to_is_ontology,
+                entity_to_classification,
+                direct_relation_pairs,
+                object_groups,
             ).
         """
         state = _EntityCollectionState(known_entities=known_ontology_entities or set())
@@ -1543,7 +1539,9 @@ class EmbeddingBasedAggregator:
             # Keep collection in the same URI space that rewrite/merge consumes
             # (unit.graph). Using graph_absolute here causes mapping keys to miss
             # during rewrite, because unit.graph still contains the original terms.
-            for s, p, o in unit.graph:
+            for triple in unit.graph:
+                state.context.add(triple)
+                s, p, o = triple
                 if isinstance(s, URIRef) and isinstance(o, URIRef):
                     # Structural guards key on *names*, as they did before
                     # unit scoping: a subject mentioned in two units points at
@@ -1560,10 +1558,12 @@ class EmbeddingBasedAggregator:
                     if isinstance(term, URIRef):
                         self._register_entity(entity=term, unit=unit, state=state)
 
+        # One graph serves every entity: a representation reads only the
+        # triples that mention its entity, through the graph's indexes.
         return (
             list(state.entities),
             state.source_entities,
-            state.entity_graphs,
+            dict.fromkeys(state.entities, state.context),
             state.entity_doc_iris,
             state.entity_classification,
             state.direct_relation_pairs,

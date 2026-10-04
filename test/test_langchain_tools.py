@@ -290,3 +290,24 @@ def test_explicit_lancedb_backend_gets_the_bm25_tool(
     ToolBox(config, llm=STUB_LLM)
 
     assert captured["sparse_embedding"] is sentinel
+
+
+@pytest.mark.anyio
+async def test_extract_runs_on_the_configured_wire_format(
+    toolbox: ToolBox, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tool builds its own state, so it must carry LLM_GRAPH_FORMAT over."""
+    from ontocast.integrations import langchain as module
+    from ontocast.onto.enum import LLMGraphFormat
+    from ontocast.stategraph import unit_pipeline
+
+    seen: dict[str, LLMGraphFormat] = {}
+
+    async def fake_pipeline(state, _tools):
+        seen["format"] = state.llm_graph_format
+        return None, None
+
+    monkeypatch.setattr(unit_pipeline, "run_unit_pipeline", fake_pipeline)
+    toolbox.config.server.llm_graph_format = LLMGraphFormat.JSONLD
+    await module._extract(toolbox, 1000).ainvoke({"text": "a short text"})
+    assert seen["format"] is LLMGraphFormat.JSONLD

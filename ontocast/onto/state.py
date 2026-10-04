@@ -771,11 +771,11 @@ class AgentState(BasePydanticModel):
         description=("Rendering mode: ontology, facts, or ontology_and_facts."),
     )
     llm_graph_format: LLMGraphFormat = Field(
-        default=LLMGraphFormat.JSONLD,
+        default=LLMGraphFormat.TURTLE,
         description=(
             "Format used by the LLM for emitting RDF graph payloads: "
-            "'jsonld' (default; compact JSON-LD objects embedded directly in the "
-            "structured response) or 'turtle' (legacy Turtle strings)."
+            "'turtle' (default; Turtle strings) or 'jsonld' (compact JSON-LD "
+            "objects embedded directly in the structured response)."
         ),
     )
     ontology_context_mode: OntologyContextMode = Field(

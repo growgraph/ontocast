@@ -99,6 +99,9 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `llm/parse_retry` | `ontocast/agent/common.py` | Calls re-sent because the previous answer did not parse or validate |
 | `llm/json_bracket_repair` | `ontocast/agent/common.py` | Answers recovered by correcting mismatched closing brackets |
 | `llm/parse_abandoned` | `ontocast/agent/common.py` | Calls given up after the retries ran out or the same JSON error recurred |
+| `rdf/turtle_repair` | `ontocast/onto/rdfgraph.py` | Turtle payloads that parsed only after repair (truncated statement, unknown prefix, update-query wrapper) |
+| `rdf/jsonld_rdflib_fallback` | `ontocast/onto/rdfgraph.py` | JSON-LD payloads that failed URDNA2015 normalization and were parsed by rdflib instead |
+| `repair/compact_iri_literal` | `ontocast/tool/facts_validation/literal_repair.py` | Compact IRIs written as plain strings on an IRI-valued position and coerced back to IRIs, in renders and in critic and completion patches |
 | `llm/ontology_selection` | `ontocast/agent/select_ontology_catalog.py` | Ontology selection calls, one per unit in `selected_single_ontology` mode |
 | `chapter/text_chars_before` | `ontocast/agent/render_facts.py` | Summed length of capped text literals before the text caps |
 | `chapter/text_chars_after` | `ontocast/agent/render_facts.py` | The same after the caps |
@@ -204,7 +207,7 @@ left out.
 | `ontocast_version`, `render_mode`, `current_domain`, `doc_iri`, `tenant`, `project` | What ran, and where its IRIs and graphs went |
 | `loops` | The effective `max_visits`, `facts_critic_passes`, `ontology_critic_passes` |
 | `llm` | Provider, model, temperature, the Ollama and reasoning settings, `requests_per_second`, `max_retries`, `prompt_cache_key`, `max_inflight` |
-| `prompting` | `llm_graph_format`, the resolved `ontology_chapter_format`, `ontology_context_scope`, `fanout_warmup_units`, `parallel_workers`, `embedding_model_name`. Scope and warm-up are left out on the single-unit path |
+| `prompting` | `llm_graph_format`, `llm_output_layout`, the resolved `ontology_chapter_format`, `ontology_context_scope`, `fanout_warmup_units`, `parallel_workers`, `embedding_model_name`. Scope and warm-up are left out on the single-unit path |
 | `budget` | The full budget, as above |
 | `critic`, `ontology_critic` | Per loop: `calls`, `accepted`, score minimum, median, maximum and histogram, fix severity histograms, `accept_reason_histogram`, `incumbent_accepted`, patch passes, fix outcomes (`fixes_applied`, `fixes_noop`, `fixes_rolled_back`, `fixes_junk_refused`, `fixes_unresolved_prefix`, `patches_rolled_back`), `units_unreviewed`, `units_skipped`, triples deleted and inserted |
 | `completion` | `calls`, `units`, `subjects_inserted`, `subjects_rolled_back`, `triples_inserted`, `measurements_recovered` |

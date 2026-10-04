@@ -83,19 +83,37 @@ Every lever below changes the prompt text, so the first run after a change
 misses the [LLM response cache](llm_caching.md). [How prompts are
 built](../internals/prompt_construction.md) describes the mechanics.
 
-### How much a triple costs
+### How the model reads and writes the graph
+
+The defaults pair what the model reads with what it writes:
+
+| Run | Ontology the model reads | Graph the model writes |
+|---|---|---|
+| `RENDER_MODE=facts` | A term sheet ([below](#the-ontology-chapter-as-a-term-sheet)) | Turtle, compact layout |
+| `ontology` or `ontology_and_facts` | Turtle: its chapter follows the output format, because the loop patches what it reads | Turtle, compact layout |
 
 [`LLM_GRAPH_FORMAT`](../reference/configuration/pipeline.md#llm_graph_format)
-sets the syntax the model writes graphs in: `jsonld` (default) or `turtle`.
-Turtle spends fewer characters per triple and changes nothing about what is
-extracted. The two fail differently: a JSON-LD answer with mismatched brackets
-is repaired or lost, while in Turtle an IRI the model builds from a phrase
-containing a delimiter is invalid. Run both on your documents and compare
-`llm/parse_retry` and `llm/parse_abandoned`. On a reasoning model, read
-`reasoning_share_of_output` first: when most output tokens are reasoning, the
-encoding matters less than the reasoning budget
-([`LLM_REASONING_EFFORT`](../reference/configuration/llm.md#llm_reasoning_effort)).
-The format can also be set per request.
+sets the syntax the model writes graphs in. **Keep the default, `turtle`.** It
+spends fewer tokens per triple than JSON-LD, and an IRI object cannot turn into
+a string by accident: `unit:NanoM` is an IRI and `"unit:NanoM"` is visibly a
+literal. In JSON-LD a bare `"unit:NanoM"` is a literal too, and nothing in the
+syntax warns the model. Switch to `jsonld` for a provider whose structured
+output handles long strings worse than nested objects: escaping or truncating
+a long string shows up as `llm/parse_retry` and `rdf/turtle_repair`. Read those
+counters on your own documents before and after switching. The format can also
+be set per request.
+
+[`LLM_OUTPUT_LAYOUT`](../reference/configuration/pipeline.md#llm_output_layout)
+sets the whitespace of the response. **Keep the default, `compact`.** It asks
+for minified JSON and, under Turtle, one line per subject. Without it, models
+indent their JSON, and every indentation token is billed output that the parser
+discards. `free` exists to compare against; it changes no content, so compare
+`output_tokens` with the layout on and off.
+
+On a reasoning model, read `reasoning_share_of_output` first: reasoning tokens
+are output that no encoding touches, so when they dominate, the reasoning budget
+([`LLM_REASONING_EFFORT`](../reference/configuration/llm.md#llm_reasoning_effort))
+matters more than either setting.
 
 ### The ontology chapter as a term sheet
 

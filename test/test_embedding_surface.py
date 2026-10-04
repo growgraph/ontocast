@@ -288,3 +288,43 @@ def test_none_backend_disables_retrieval(tmp_path) -> None:
     tools = ToolBox(_config(tmp_path, VectorStoreBackend.NONE), llm=STUB_LLM)
     assert tools.vector_store is None
     assert tools.patch_retriever is None
+
+
+class _EchoGraph:
+    """Stands in for a compiled OntoCast graph: returns the state it was given."""
+
+    async def ainvoke(self, state: AgentState, _config: Any) -> AgentState:
+        return state
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_node_runs_on_the_configured_wire_format(
+    toolbox: ToolBox, explicit: bool
+) -> None:
+    """A mapping that leaves the format unset gets LLM_GRAPH_FORMAT; one that sets it wins."""
+    from ontocast.integrations.langgraph import make_ontocast_node
+    from ontocast.onto.enum import LLMGraphFormat
+
+    toolbox.config.server.llm_graph_format = LLMGraphFormat.JSONLD
+    seen: dict[str, LLMGraphFormat] = {}
+
+    def to_state(_parent: Any) -> AgentState:
+        if explicit:
+            return AgentState(llm_graph_format=LLMGraphFormat.TURTLE)
+        return AgentState()
+
+    def from_state(final: AgentState, _parent: Any) -> dict[str, Any]:
+        seen["format"] = final.llm_graph_format
+        return {}
+
+    node = make_ontocast_node(
+        toolbox,
+        to_agent_state=to_state,
+        from_agent_state=from_state,
+        recursion_limit=10,
+        graph=cast(CompiledStateGraph, _EchoGraph()),
+    )
+    await node({}, {})
+    expected = LLMGraphFormat.TURTLE if explicit else LLMGraphFormat.JSONLD
+    assert seen["format"] is expected

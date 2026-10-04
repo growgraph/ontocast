@@ -42,9 +42,11 @@ A document is too long for one prompt, so OntoCast cuts it into parts (content
 units) of between
 [`CHUNK_MIN_SIZE`](../reference/configuration/chunking.md#chunk_min_size) and
 [`CHUNK_MAX_SIZE`](../reference/configuration/chunking.md#chunk_max_size)
-characters. Cuts follow the document's sections, so no unit spans two of them,
-and every unit carries the label of the section it came from, such as
-`methods` or `results`.
+characters. Cuts follow the document's sections, so no unit spans two labeled
+sections, and every unit carries the label of the section it came from, such as
+`methods` or `results`. Neighbouring sections that got no label are joined
+until the unit reaches the minimum size, and a heading with no text of its own
+opens the unit that follows it.
 
 Section labels decide what is extracted at all: reference lists are skipped by
 default, and you can ask for only some sections of a document. [Structured

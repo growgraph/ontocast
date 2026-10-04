@@ -93,6 +93,7 @@ def _atomic(*, completion_passes: int = 1) -> AtomicToolBox:
         SimpleNamespace(
             facts_completion_passes=completion_passes,
             facts_patch_policy=CriticPatchPolicy(),
+            quantity_fallback_vocabulary=dict(DEFAULT_QUANTITY_FALLBACK_VOCABULARY),
             additional_standard_namespaces=(),
             validation_policy=ValidationPolicy(
                 quantity_fallback_vocabulary=dict(DEFAULT_QUANTITY_FALLBACK_VOCABULARY)
@@ -277,6 +278,7 @@ def _facts_tools(*, completion_passes: int) -> object:
         SimpleNamespace(
             facts_critic_passes=0,
             facts_patch_policy=CriticPatchPolicy(),
+            quantity_fallback_vocabulary=None,
             additional_standard_namespaces=(),
             validation_policy=None,
             acceptance_policy=None,
