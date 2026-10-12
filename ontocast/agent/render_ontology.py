@@ -45,7 +45,7 @@ from ontocast.prompt.render_ontology import (
 )
 from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
 from ontocast.tool.atomic import AtomicToolBox
-from ontocast.tool.llm import LLMConfigurationError
+from ontocast.tool.llm import RUN_STOPPING_ERRORS
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +228,7 @@ async def render_ontology_fresh(
         state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.SUCCESS)
         return state
 
-    except LLMConfigurationError:
+    except RUN_STOPPING_ERRORS:
         # The provider rejects the request itself, not this attempt at
         # it: every other unit is about to be rejected identically.
         # Failing one unit here turns a configuration fault into an
@@ -329,14 +329,14 @@ async def render_ontology_update(
         applied = state.update_ontology()
         if not applied:
             # The ONTOLOGY_MAX_TRIPLES backstop discarded the whole update, so
-            # this billed render changed nothing. Returning SUCCESS with an
+            # this render changed nothing. Returning SUCCESS with an
             # unchanged graph is not a lie the run can see, and a validator run
             # afterwards would inspect the *previous* graph and report it clean.
             # The status stays SUCCESS -- the pre-update graph is intact and a
             # re-render would hit the same ceiling -- but the discard is counted.
             logger.warning(
                 "Ontology update discarded: applying it would exceed "
-                "ONTOLOGY_MAX_TRIPLES=%s. The render was billed and had no "
+                "ONTOLOGY_MAX_TRIPLES=%s. The render was sent and had no "
                 "effect on the working graph.",
                 state.ontology_max_triples,
             )
@@ -362,7 +362,7 @@ async def render_ontology_update(
         state.set_node_status(WorkflowNode.TEXT_TO_ONTOLOGY, Status.SUCCESS)
         return state
 
-    except LLMConfigurationError:
+    except RUN_STOPPING_ERRORS:
         # The provider rejects the request itself, not this attempt at
         # it: every other unit is about to be rejected identically.
         # Failing one unit here turns a configuration fault into an

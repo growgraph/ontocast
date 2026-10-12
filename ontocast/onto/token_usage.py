@@ -15,7 +15,7 @@ class TokenUsage(BaseModel):
     """Token counts for one LLM call, as far as the provider reports them.
 
     Every field is optional because reporting is provider-dependent: the totals
-    arrive from most providers, the detail fields only from those that bill
+    arrive from most providers, the detail fields only from those that report
     reasoning or prompt-cache reads separately. ``None`` means *not reported*,
     which is not the same as zero -- a run whose provider stays silent should
     not look like a run that used no tokens.
@@ -35,7 +35,7 @@ class TokenUsage(BaseModel):
         default=None,
         description=(
             "Prompt tokens served from the *provider's* cache, counted inside "
-            "input_tokens and billed at a fraction of the fresh rate. Unrelated "
+            "input_tokens. Unrelated "
             "to OntoCast's own on-disk response cache."
         ),
     )

@@ -27,12 +27,13 @@ every key.
 |---|---|
 | `calls_count` | Calls sent to the provider |
 | `cache_hits` | Calls answered from the [LLM response cache](llm_caching.md) |
-| `input_tokens`, `output_tokens` | Tokens billed for the calls sent |
-| `cached_input_tokens`, `cached_output_tokens` | Tokens of cached answers: what those calls cost when they were first made. Not added to the billed totals |
-| `reasoning_tokens` | Reasoning tokens, included in the output totals |
-| `cache_read_input_tokens` | Input tokens the provider served from its own prompt cache, included in the input totals |
-| `prefix_cache_hit_rate` | `cache_read_input_tokens` over all input tokens |
-| `reasoning_share_of_output` | `reasoning_tokens` over all output tokens |
+| `input_tokens`, `output_tokens` | Tokens of the calls sent to the provider |
+| `cached_input_tokens`, `cached_output_tokens` | Tokens of cached answers: what those calls cost when they were first made. Not added to the provider totals |
+| `reasoning_tokens` | Reasoning tokens of the calls sent, included in `output_tokens` |
+| `cache_read_input_tokens` | Input tokens of the calls sent that the provider served from its own prompt cache, included in `input_tokens` |
+| `replayed_reasoning_tokens`, `replayed_cache_read_input_tokens` | The same for cached answers |
+| `prefix_cache_hit_rate` | Provider-cache reads over all input tokens, sent and cached |
+| `reasoning_share_of_output` | Reasoning tokens over all output tokens, sent and cached |
 
 Providers report tokens differently, and one that reports none leaves the
 token fields at `0` and both ratios at `null`. A `null` ratio means
@@ -41,6 +42,10 @@ unmeasured, not zero. The two ratios say where to aim a cost change: a high
 `prefix_cache_hit_rate` at prompt reuse; see [Performance
 tuning](performance.md#what-makes-a-prompt-expensive). OntoCast reports tokens,
 not money.
+
+`budget` is complete once the run ends. To follow usage while the run is in
+progress, or to stop the run at a limit, bind a `RunMeter`; see [Limit what a run
+spends](embedding.md#limit-a-runs-tokens).
 
 Before reading cost or quality, check three counters in `budget.counters`:
 
@@ -189,4 +194,4 @@ through to every step. See [Embedding OntoCast in your agent](embedding.md).
 !!! note "Cached calls leave no LLM span"
     A call answered from the LLM response cache never reaches the provider, so
     it produces no LLM span, while `budget` still counts it. For a complete
-    trace, set `LLM_CACHE_ENABLED=false`; every call is then billed.
+    trace, set `LLM_CACHE_ENABLED=false`; every call is then sent to the provider.

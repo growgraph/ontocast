@@ -1226,6 +1226,81 @@ def test_a_rejected_request_aborts_the_batch_and_writes_nothing(tmp_path) -> Non
     assert list(out_dir.iterdir()) == []
 
 
+class _SpendingWorkflow:
+    """A workflow whose provider calls spend past any token cap."""
+
+    def __init__(self) -> None:
+        self.meters: list = []
+
+    def astream(self, *args, **kwds):
+        from ontocast.onto.run_meter import TokenTotals, active_run_meter
+
+        async def _stream():
+            meter = active_run_meter()
+            self.meters.append(meter)
+            assert meter is not None, "the batch binds a meter per document"
+            meter.record("m", TokenTotals(input=100, calls=1))
+            meter.check()
+            yield {}  # pragma: no cover - check() raises first
+
+        return _stream()
+
+
+def _run_spending_batch(tmp_path, tools, workflow) -> list:
+    from ontocast.api.process_helpers import process_files_input
+
+    files = []
+    for name in ("a.txt", "b.txt"):
+        path = tmp_path / name
+        path.write_text("some text", encoding="utf-8")
+        files.append(path)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    failed = asyncio.run(
+        process_files_input(
+            files,
+            config=tools.config,
+            head_chunks=None,
+            use_unit_pipeline=False,
+            tools=tools,
+            workflow=cast(CompiledStateGraph, workflow),
+            ontology_context_mode_value=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
+            tenant=None,
+            project=None,
+            output_dir=out_dir,
+        )
+    )
+    assert list(out_dir.iterdir()) == []
+    return failed
+
+
+def test_a_document_token_cap_fails_that_document_only(tmp_path) -> None:
+    """Each document gets a fresh meter; a capped one is a failed file."""
+    tools = _batch_toolbox()
+    tools.config.server.max_input_tokens_per_document = 10
+    workflow = _SpendingWorkflow()
+
+    failed = _run_spending_batch(tmp_path, tools, workflow)
+
+    assert [path.name for path in failed] == ["a.txt", "b.txt"]
+    assert len(workflow.meters) == 2
+    assert workflow.meters[0] is not workflow.meters[1]
+
+
+def test_a_caller_bound_meter_spans_and_aborts_the_batch(tmp_path) -> None:
+    from ontocast.onto.run_meter import BudgetExceededError, RunMeter, use_run_meter
+
+    tools = _batch_toolbox()
+    workflow = _SpendingWorkflow()
+    meter = RunMeter(token_caps={"input": 10})
+
+    with pytest.raises(BudgetExceededError):
+        with use_run_meter(meter):
+            _run_spending_batch(tmp_path, tools, workflow)
+
+    assert workflow.meters == [meter], "the second file never started"
+
+
 class _AllUnitsFailedWorkflow:
     """A workflow that ran to the end with every unit dead."""
 

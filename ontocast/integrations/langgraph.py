@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
+from ontocast.onto.run_meter import run_meter_scope
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.create import create_agent_graph
 
@@ -47,6 +48,11 @@ def make_ontocast_node(
     builder = StateGraph(MyState)
     builder.add_node("extract", node)
     ```
+
+    Each invocation runs under ``MAX_INPUT_TOKENS_PER_DOCUMENT`` /
+    ``MAX_OUTPUT_TOKENS_PER_DOCUMENT`` unless the caller has bound a
+    :class:`~ontocast.onto.run_meter.RunMeter`; a cap reached raises
+    :class:`~ontocast.onto.run_meter.BudgetExceededError` out of the node.
 
     Args:
         tools: The dependency container. The graph is compiled once here, not
@@ -80,7 +86,12 @@ def make_ontocast_node(
 
         # `ainvoke`, not `astream`: the HTTP layer streams because it wants
         # intermediate node output, and an embedded node does not.
-        result = await compiled.ainvoke(initial, merged)
+        server = tools.config.server
+        with run_meter_scope(
+            max_input_tokens=server.max_input_tokens_per_document,
+            max_output_tokens=server.max_output_tokens_per_document,
+        ):
+            result = await compiled.ainvoke(initial, merged)
 
         # LangGraph hands back a plain dict for a pydantic state schema.
         final = (

@@ -92,16 +92,16 @@ class BudgetTracker(BasePydanticModel):
         description="LLM calls satisfied from disk cache (no provider tokens)",
     )
     input_tokens: int = Field(
-        default=0, description="Billed input tokens (when reported by provider)"
+        default=0, description="Input tokens of provider calls (when reported)"
     )
     output_tokens: int = Field(
-        default=0, description="Billed output tokens (when reported by provider)"
+        default=0, description="Output tokens of provider calls (when reported)"
     )
 
-    # Kept apart from the billed totals rather than folded in: a cache-replayed
-    # run costs nothing, so adding these to input_tokens/output_tokens would
-    # report spend that never happened. Reported together they answer the other
-    # question -- what the workload costs cold.
+    # Kept apart from the provider totals rather than folded in: a replayed
+    # response makes no provider call, so adding these to input_tokens /
+    # output_tokens would report calls that never happened. Summed with them
+    # they give the size of the workload run cold.
     cached_input_tokens: int = Field(
         default=0, description="Input tokens replayed from the OntoCast disk cache"
     )
@@ -109,22 +109,35 @@ class BudgetTracker(BasePydanticModel):
         default=0, description="Output tokens replayed from the OntoCast disk cache"
     )
 
-    # Detail keys from LangChain's UsageMetadata, summed over billed and
-    # replayed calls alike: they describe the shape of the workload, and a
-    # reasoning model's thinking tokens matter whether or not this particular
-    # run paid for them.
+    # Detail keys from LangChain's UsageMetadata. The unprefixed ones count
+    # provider calls only, like input_tokens/output_tokens; the replayed_* ones
+    # are their disk-cache counterparts. The ratios below sum both, since they
+    # describe the shape of the workload rather than this run's provider calls.
     reasoning_tokens: int = Field(
-        default=0, description="Thinking tokens, counted inside the output totals"
+        default=0,
+        description="Thinking tokens of provider calls, counted inside output_tokens",
     )
     cache_read_input_tokens: int = Field(
         default=0,
         description=(
-            "Input tokens served from the provider's own prompt cache, counted "
-            "inside the input totals and billed at a reduced rate"
+            "Input tokens of provider calls served from the provider's own "
+            "prompt cache, counted inside input_tokens"
         ),
     )
     cache_creation_input_tokens: int = Field(
-        default=0, description="Input tokens written to the provider's prompt cache"
+        default=0,
+        description="Input tokens of provider calls written to the provider's prompt cache",
+    )
+    replayed_reasoning_tokens: int = Field(
+        default=0, description="Thinking tokens inside cached_output_tokens"
+    )
+    replayed_cache_read_input_tokens: int = Field(
+        default=0,
+        description="Provider-cache reads recorded with replayed responses",
+    )
+    replayed_cache_creation_input_tokens: int = Field(
+        default=0,
+        description="Provider-cache writes recorded with replayed responses",
     )
 
     # Triple generation tracking
@@ -215,13 +228,13 @@ class BudgetTracker(BasePydanticModel):
             float | None: Ratio in ``[0.0, 1.0]``, or ``None`` when no input
             tokens were reported at all.
         """
-        # Denominator spans billed *and* replayed input: cache_read_input_tokens
-        # is accumulated for both (see _add_usage_detail), so dividing by
-        # input_tokens alone would exceed 1.0 on a partially replayed run.
         total_input = self.input_tokens + self.cached_input_tokens
         if total_input <= 0:
             return None
-        return self.cache_read_input_tokens / total_input
+        cache_read = (
+            self.cache_read_input_tokens + self.replayed_cache_read_input_tokens
+        )
+        return cache_read / total_input
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -229,11 +242,10 @@ class BudgetTracker(BasePydanticModel):
         """Share of output tokens the model spent on thinking.
 
         ``reasoning_tokens`` are counted *inside* the output totals, so this is
-        a decomposition of what was already paid for, never an addition to it.
-        A high share says the cost lever is the model's reasoning budget rather
-        than anything about the prompt; a share of ``0.0`` says the model is
-        not a reasoning model, and no reasoning-effort setting will change its
-        bill.
+        a decomposition of the output, never an addition to it. A high share
+        says the output is driven by the model's reasoning budget rather than
+        anything about the prompt; a share of ``0.0`` says the model is not a
+        reasoning model, and no reasoning-effort setting will change its output.
 
         Returns:
             float | None: Ratio in ``[0.0, 1.0]``, or ``None`` when no output
@@ -242,16 +254,20 @@ class BudgetTracker(BasePydanticModel):
         total_output = self.output_tokens + self.cached_output_tokens
         if total_output <= 0:
             return None
-        return self.reasoning_tokens / total_output
+        return (self.reasoning_tokens + self.replayed_reasoning_tokens) / total_output
 
-    def _add_usage_detail(self, usage: TokenUsage) -> None:
-        """Accumulate the provider-detail keys shared by billed and cached calls."""
-        if usage.reasoning_tokens is not None:
-            self.reasoning_tokens += usage.reasoning_tokens
-        if usage.cache_read_input_tokens is not None:
-            self.cache_read_input_tokens += usage.cache_read_input_tokens
-        if usage.cache_creation_input_tokens is not None:
-            self.cache_creation_input_tokens += usage.cache_creation_input_tokens
+    def _add_usage_detail(self, usage: TokenUsage, *, replayed: bool) -> None:
+        """Accumulate the provider-detail keys of a provider call or a replay."""
+        if replayed:
+            self.replayed_reasoning_tokens += usage.reasoning_tokens or 0
+            self.replayed_cache_read_input_tokens += usage.cache_read_input_tokens or 0
+            self.replayed_cache_creation_input_tokens += (
+                usage.cache_creation_input_tokens or 0
+            )
+            return
+        self.reasoning_tokens += usage.reasoning_tokens or 0
+        self.cache_read_input_tokens += usage.cache_read_input_tokens or 0
+        self.cache_creation_input_tokens += usage.cache_creation_input_tokens or 0
 
     def add_usage(
         self,
@@ -260,7 +276,7 @@ class BudgetTracker(BasePydanticModel):
         *,
         usage: TokenUsage | None = None,
     ) -> None:
-        """Record a billed provider call.
+        """Record a provider call.
 
         Args:
             chars_sent: Prompt length in characters.
@@ -276,7 +292,7 @@ class BudgetTracker(BasePydanticModel):
             self.input_tokens += usage.input_tokens
         if usage.output_tokens is not None:
             self.output_tokens += usage.output_tokens
-        self._add_usage_detail(usage)
+        self._add_usage_detail(usage, replayed=False)
 
     def add_cache_hit(
         self,
@@ -303,7 +319,7 @@ class BudgetTracker(BasePydanticModel):
             self.cached_input_tokens += usage.input_tokens
         if usage.output_tokens is not None:
             self.cached_output_tokens += usage.output_tokens
-        self._add_usage_detail(usage)
+        self._add_usage_detail(usage, replayed=True)
 
     def add_ontology_update(self, num_operations: int, num_triples: int) -> None:
         """Add ontology update statistics.
@@ -338,6 +354,11 @@ class BudgetTracker(BasePydanticModel):
         self.reasoning_tokens += other.reasoning_tokens
         self.cache_read_input_tokens += other.cache_read_input_tokens
         self.cache_creation_input_tokens += other.cache_creation_input_tokens
+        self.replayed_reasoning_tokens += other.replayed_reasoning_tokens
+        self.replayed_cache_read_input_tokens += other.replayed_cache_read_input_tokens
+        self.replayed_cache_creation_input_tokens += (
+            other.replayed_cache_creation_input_tokens
+        )
         self.ontology_triples_generated += other.ontology_triples_generated
         self.facts_triples_generated += other.facts_triples_generated
         self.ontology_operations_count += other.ontology_operations_count
@@ -370,12 +391,25 @@ class BudgetTracker(BasePydanticModel):
                 f"{self.cached_output_tokens:,} out tokens replayed"
             )
 
+        # Provider calls and replays together, like the ratios below: the
+        # shape of the workload, however much of it this run sent.
         detail = [
             f"{value:,} {label}"
             for label, value in (
-                ("reasoning", self.reasoning_tokens),
-                ("provider-cache read", self.cache_read_input_tokens),
-                ("provider-cache write", self.cache_creation_input_tokens),
+                (
+                    "reasoning",
+                    self.reasoning_tokens + self.replayed_reasoning_tokens,
+                ),
+                (
+                    "provider-cache read",
+                    self.cache_read_input_tokens
+                    + self.replayed_cache_read_input_tokens,
+                ),
+                (
+                    "provider-cache write",
+                    self.cache_creation_input_tokens
+                    + self.replayed_cache_creation_input_tokens,
+                ),
             )
             if value > 0
         ]

@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`RunMeter`**, bound with `use_run_meter`: counts provider and cache-replayed tokens per model
+  across a run while it is in progress, with optional `token_caps`, a caller's `limit` policy
+  checked before each provider call, and a throttled `on_usage` callback.
+- **`BudgetExceededError`**: raised before a provider call once a limit is reached; stops the
+  whole run after its parallel units finish, and carries the meter's `snapshot`.
+- **`MAX_INPUT_TOKENS_PER_DOCUMENT` / `MAX_OUTPUT_TOKENS_PER_DOCUMENT`**: per-document token caps
+  for `ontocast process`, `/process`, `/process_unit` and `make_ontocast_node`. A capped route
+  answers `422` with `error_code` `budget_exceeded`; a capped batch file is recorded as failed.
+- **Budget fields** `replayed_reasoning_tokens`, `replayed_cache_read_input_tokens` and
+  `replayed_cache_creation_input_tokens`.
+
+### Fixed
+
+- **`reasoning_tokens`, `cache_read_input_tokens` and `cache_creation_input_tokens`** count
+  provider calls only; cache replays go to the new `replayed_*` fields. The two ratios are
+  unchanged.
+
 ## [0.6.7]
 
 ### Added
@@ -2647,7 +2668,7 @@ BASE_RECURSION_LIMIT=1000
 
 See [docs/user_guide/](docs/user_guide/) for full guides.
 
-[Unreleased]: https://github.com/growgraph/ontocast/compare/v0.6.4...HEAD
+[Unreleased]: https://github.com/growgraph/ontocast/compare/v0.6.7...HEAD
 [0.6.4]: https://github.com/growgraph/ontocast/compare/v0.6.2...v0.6.4
 [0.6.2]: https://github.com/growgraph/ontocast/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/growgraph/ontocast/compare/v0.6.0...v0.6.1

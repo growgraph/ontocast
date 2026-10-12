@@ -292,6 +292,7 @@ an upload route called without `file`, gets FastAPI's standard `422` with a
 | `422` | The uploaded file could not be converted (`/process_unit`) | `conversion_failed:<stage>` |
 | `422` | The single unit failed (`/process_unit`) | none |
 | `422` | A section selection (`target_sections`, `summarize_sections`, or `exclude_sections` including the schema's default exclusions) removed every part of the document, with [`CHUNK_SECTION_FILTER_ON_EMPTY`](configuration/chunking.md#chunk_section_filter_on_empty)`=error`; with the default `warn`, the run continues with nothing to extract (`/process`) | `empty_section_selection:<name>` |
+| `422` | The document reached [`MAX_INPUT_TOKENS_PER_DOCUMENT`](configuration/pipeline.md#max_input_tokens_per_document) or [`MAX_OUTPUT_TOKENS_PER_DOCUMENT`](configuration/pipeline.md#max_output_tokens_per_document); `error_details.run_meter` holds the usage | `budget_exceeded` |
 | `500` | Any other failure during processing or in a store | none |
 | `503` | `/health` only: the LLM client is missing | none |
 

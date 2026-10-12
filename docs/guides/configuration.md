@@ -95,7 +95,7 @@ document you run twice with the same prompts costs nothing the second time; see
 For reasoning models,
 [`LLM_REASONING_EFFORT`](../reference/configuration/llm.md#llm_reasoning_effort)
 sets how much the model thinks before answering, from `none` to `max` (OpenAI, Gemini 3 and later);
-reasoning tokens are billed as output. For local models through Ollama, raise
+reasoning tokens count as output. For local models through Ollama, raise
 [`LLM_NUM_CTX`](../reference/configuration/llm.md#llm_num_ctx): Ollama's default
 context window is too small for most OntoCast prompts.
 

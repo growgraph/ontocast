@@ -71,7 +71,7 @@ from ontocast.tool.facts_validation.critic_patch import (
     FixPatch,
     compile_critic_fixes,
 )
-from ontocast.tool.llm import LLMConfigurationError
+from ontocast.tool.llm import RUN_STOPPING_ERRORS
 from ontocast.tool.ontology_validation import collect_ontology_unit_findings
 from ontocast.toolbox import ToolBox
 
@@ -1132,7 +1132,7 @@ async def run_unit_loop(
 
             skip_reason = phase.critic_skip_reason(unit_state, atomic)
             if skip_reason is not None:
-                # No call is billed, and the record says why: an empty render
+                # No call is made, and the record says why: an empty render
                 # reviewed by the critic scores perfect for nothing, and a
                 # citation-metadata unit has no domain facts to review.
                 logger.info(
@@ -1231,17 +1231,18 @@ async def run_unit_loop(
                 "%d mandatory deterministic finding(s) remain unresolved", mandatory
             )
         return unit_state
-    except (OntologyContextConfigError, LLMConfigurationError):
-        # Not a unit failure. Both describe the deployment, not the unit, and
-        # are identical for every other unit in the document: an unresolvable
+    except (OntologyContextConfigError, *RUN_STOPPING_ERRORS):
+        # Not a unit failure. Each describes the run, not the unit, and is
+        # identical for every other unit in the document: an unresolvable
         # ontology context (the whole point of ONTOLOGY_CONTEXT_REQUIRED is
-        # that the run stops rather than emitting an ungrounded graph), or a
-        # request the provider refuses outright. Recording either per unit
+        # that the run stops rather than emitting an ungrounded graph), a
+        # request the provider refuses outright, or a call the run meter
+        # refuses. Recording any of them per unit
         # instead let the fan-out finish, write a zero-triple manifest and exit
         # successfully -- the vacuous pass these errors exist to prevent, now
         # with a traceback per unit to bury the cause.
         logger.error(
-            "Deployment fault while running %s units; stopping the run",
+            "Run-stopping fault while running %s units; stopping the run",
             phase.name,
         )
         raise

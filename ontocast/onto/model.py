@@ -858,9 +858,9 @@ class LoopAttempt(BaseModel):
         earlier releases, when a separate finding-driven repair render existed.
 
     ``kind="critic_skipped"`` records a pass the loop decided not to spend --
-        no call was billed -- with the reason in ``accept_reason``
+        no call was made -- with the reason in ``accept_reason``
         (``empty_render``, ``citation_metadata``). A ``critic`` record whose
-        ``accept_reason`` is ``critic_unavailable`` is a billed call that
+        ``accept_reason`` is ``critic_unavailable`` is a call made that
         produced no critique; the unit leaves the loop unreviewed.
         ``kind="completion"`` is the insert-only completion pass.
     """

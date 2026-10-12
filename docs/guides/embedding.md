@@ -214,6 +214,66 @@ builder = build_agent_graph(tools)  # uncompiled, to add your own nodes
 `name` when you embed the graph as a subgraph; otherwise it appears as
 `LangGraph` in traces.
 
+## Limit a run's tokens
+
+A `RunMeter` counts tokens while a run is in progress, across all of its content
+units, and stops the run at a limit. Bind it around the run:
+
+```python
+from ontocast import BudgetExceededError, RunMeter, use_run_meter
+
+meter = RunMeter(
+    token_caps={"input": 400_000, "output": 60_000},
+    on_usage=report_progress,  # receives meter.snapshot()
+    min_interval_s=5.0,
+)
+try:
+    with use_run_meter(meter):
+        async for chunk in workflow.astream(state, stream_mode="values"):
+            final = chunk
+except BudgetExceededError as exc:
+    report_usage(exc.snapshot)
+else:
+    report_usage(meter.snapshot())
+```
+
+- Usage is kept per model as `TokenTotals`. `input`, `cache_read`,
+  `cache_write`, `output` and `reasoning` count provider calls, as the provider
+  reports them: `cache_read` and `cache_write` are included in `input`, and
+  `reasoning` in `output`. `replayed_input` and `replayed_output` count answers
+  replayed from the [LLM response cache](llm_caching.md), for which no provider
+  call is made.
+- `token_caps` limits counts summed over models, keyed by field name.
+- `limit` is your own policy: a function given a copy of the counts per model
+  before each provider call, returning a reason to stop or `None`. The meter
+  holds no prices; a caller that budgets in money prices the counts here:
+
+  ```python
+  def within_budget(usage):
+      spent = sum(price(model, totals) for model, totals in usage.items())
+      return f"spent {spent:.2f}" if spent >= budget else None
+
+
+  meter = RunMeter(limit=within_budget)
+  ```
+
+- The limit is checked before each provider call. The first call that would
+  go past it is not sent, and the run raises `BudgetExceededError` with the
+  meter's `snapshot` once its parallel units have finished. Calls already in
+  flight complete and are recorded, so the final usage can go over the limit
+  by what those calls used.
+- `on_usage` is called with a snapshot at most once every `min_interval_s`
+  seconds, and once more when the `use_run_meter` block exits.
+
+When no meter is bound, `ontocast process`, the `/process` and `/process_unit`
+routes, and `make_ontocast_node` apply
+[`MAX_INPUT_TOKENS_PER_DOCUMENT`](../reference/configuration/pipeline.md#max_input_tokens_per_document)
+and
+[`MAX_OUTPUT_TOKENS_PER_DOCUMENT`](../reference/configuration/pipeline.md#max_output_tokens_per_document)
+to each document. The routes answer `422` with `error_code`
+`budget_exceeded`, and `ontocast process` records the document as failed and
+goes on to the next one. A meter you bind yourself replaces these settings.
+
 ## Several tenants in one process
 
 A `ToolBox` serves one partition of the stores. To serve another:

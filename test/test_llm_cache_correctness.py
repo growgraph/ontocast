@@ -169,7 +169,9 @@ def test_cache_hit_replays_token_usage(tmp_path) -> None:
             800,
             200,
         )
-        assert replayed.reasoning_tokens == 150
+        # Detail keys of a replay stay out of the billed fields.
+        assert replayed.reasoning_tokens == 0
+        assert replayed.replayed_reasoning_tokens == 150
         # And the message itself carries usage, so LangChain-native tracers see
         # the replayed call the same way they saw the live one.
         assert message.usage_metadata is not None

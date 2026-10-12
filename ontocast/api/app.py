@@ -34,6 +34,7 @@ from ontocast.api.process_request import (
     load_parsed_process_request,
 )
 from ontocast.api.responses import (
+    budget_exceeded_response,
     document_conversion_error_response,
     ontology_context_config_error_response,
     request_param_error_response,
@@ -61,6 +62,7 @@ from ontocast.onto.retrieval_capabilities import (
     OntologyContextConfigError,
     validate_ontology_context_mode,
 )
+from ontocast.onto.run_meter import BudgetExceededError, run_meter_scope
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import create_agent_graph
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
@@ -457,12 +459,16 @@ def create_app(
                 max_visits_per_node=initial_state.max_visits,
             )
 
-            async for chunk in workflow_for(scoped_tools).astream(
-                initial_state,
-                stream_mode="values",
-                config=RunnableConfig(recursion_limit=request_recursion_limit),
+            with run_meter_scope(
+                max_input_tokens=server_config.max_input_tokens_per_document,
+                max_output_tokens=server_config.max_output_tokens_per_document,
             ):
-                workflow_state = chunk
+                async for chunk in workflow_for(scoped_tools).astream(
+                    initial_state,
+                    stream_mode="values",
+                    config=RunnableConfig(recursion_limit=request_recursion_limit),
+                ):
+                    workflow_state = chunk
 
             if workflow_state is None:
                 raise ValueError("Workflow did not return a valid state")
@@ -588,6 +594,8 @@ def create_app(
             return section_selection_empty_response(e)
         except DocumentConversionError as e:
             return document_conversion_error_response(e, e.stage)
+        except BudgetExceededError as e:
+            return budget_exceeded_response(e)
         except Exception as e:
             logger.error("Error processing document: %s", e)
             logger.error("Error type: %s", type(e))
@@ -644,9 +652,13 @@ def create_app(
             scoped_tools, initial_state, loaded = prepared
 
             try:
-                onto_result, facts_result = await run_unit_pipeline(
-                    initial_state, scoped_tools
-                )
+                with run_meter_scope(
+                    max_input_tokens=server_config.max_input_tokens_per_document,
+                    max_output_tokens=server_config.max_output_tokens_per_document,
+                ):
+                    onto_result, facts_result = await run_unit_pipeline(
+                        initial_state, scoped_tools
+                    )
             except DocumentConversionError as exc:
                 return document_conversion_error_response(exc, exc.stage)
             failed_unit_state = None
@@ -761,6 +773,8 @@ def create_app(
 
         except RequestParamError as e:
             return request_param_error_response(e)
+        except BudgetExceededError as e:
+            return budget_exceeded_response(e)
         except Exception as e:
             logger.error("Error in process_unit: %s", e)
             logger.error("Error type: %s", type(e))

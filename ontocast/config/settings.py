@@ -437,7 +437,7 @@ class LLMConfig(BaseSettings):
             " medium, high, xhigh or max. Sent to OpenAI reasoning models as "
             "reasoning_effort and to Gemini 3+ as thinking_level; which "
             "levels a model accepts is the provider's decision, and a "
-            "rejected level fails the request. Reasoning tokens are billed as"
+            "rejected level fails the request. Reasoning tokens are counted as"
             " output (reasoning_share_of_output in the budget). Unset keeps "
             "the provider default. Part of the LLM cache key. Ollama and "
             "Anthropic ignore it with a warning."
@@ -506,7 +506,7 @@ class LLMConfig(BaseSettings):
         The Gemini API treats ``thinking_level`` and ``thinking_budget`` as
         mutually exclusive and the client resolves the clash by dropping the
         budget with a warning. Absorbing that silently is worse here than
-        failing: the run would bill one reasoning setting while the manifest
+        failing: the run would send one reasoning setting while the manifest
         recorded the other, and every arm read off that manifest afterwards
         would be attributing cost to a budget that never applied.
         """
@@ -1006,7 +1006,7 @@ class ServerConfig(BaseSettings):
             "Whitespace the LLM is asked to use in its structured responses: "
             "'compact' asks for minified JSON and one-line-per-subject Turtle "
             "without indentation; 'free' gives no instruction (models "
-            "typically indent JSON). Indentation is billed as output tokens "
+            "typically indent JSON). Indentation counts as output tokens "
             "and carries nothing the parser reads. Applies to every call that "
             "emits a graph payload."
         ),
@@ -1176,6 +1176,26 @@ class ServerConfig(BaseSettings):
             "provider rate-limits. If a stage's loop_lag_total in "
             "budget.node_durations is a large share of its wall-clock time, "
             "more workers will slow it down."
+        ),
+    )
+    max_input_tokens_per_document: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Stop processing a document once its provider calls have used this "
+            "many input tokens. Checked before each call, so calls already in "
+            "flight finish. Responses replayed from the LLM cache do not count. "
+            "Applies to `ontocast process`, the server routes and "
+            "make_ontocast_node, unless the caller binds its own RunMeter. "
+            "None means unlimited."
+        ),
+    )
+    max_output_tokens_per_document: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Output-token counterpart of MAX_INPUT_TOKENS_PER_DOCUMENT; "
+            "reasoning tokens count as output. None means unlimited."
         ),
     )
     enable_ontology_consolidation: bool = Field(

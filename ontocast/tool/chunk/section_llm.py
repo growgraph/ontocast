@@ -25,7 +25,7 @@ from ontocast.prompt.section_classification import (
     document_type_context,
     format_batch_items,
 )
-from ontocast.tool.llm import LLMConfigurationError, record_active_span
+from ontocast.tool.llm import RUN_STOPPING_ERRORS, record_active_span
 
 if TYPE_CHECKING:
     from ontocast.toolbox import ToolBox
@@ -139,7 +139,7 @@ async def classify_sections_batched(
         try:
             response = await tools.llm(prompt)
             parsed = parser.parse(response.content or "")
-        except LLMConfigurationError:
+        except RUN_STOPPING_ERRORS:
             # Falling back to the per-segment path is pointless when the
             # provider rejects the request itself -- it rejects that one too.
             raise
@@ -256,7 +256,7 @@ async def llm_backfill_section_labels(
                     document_type_hint=document_type_hint,
                 )
                 return index, label
-            except LLMConfigurationError:
+            except RUN_STOPPING_ERRORS:
                 # An unlabeled segment is survivable; a deployment that rejects
                 # every request is not, and every sibling task is about to hit
                 # it identically.
@@ -283,7 +283,7 @@ async def llm_backfill_section_labels(
         )
     }
     for item in results:
-        if isinstance(item, LLMConfigurationError):
+        if isinstance(item, RUN_STOPPING_ERRORS):
             # return_exceptions captures the guard above as a value, so the
             # re-raise has to happen here. Once the gather has drained, so
             # nothing is orphaned.

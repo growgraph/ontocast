@@ -3,11 +3,12 @@
 from fastapi.responses import JSONResponse
 
 from ontocast.api.parse import RequestParamError
-from ontocast.api.schemas import StatusErrorBody
+from ontocast.api.schemas import ProcessErrorResponse, StatusErrorBody
 from ontocast.onto.retrieval_capabilities import (
     OntologyContextConfigError,
     VectorStoreUnavailableError,
 )
+from ontocast.onto.run_meter import BudgetExceededError
 from ontocast.tool.chunk.prepare import SectionSelectionEmptyError
 
 
@@ -93,5 +94,21 @@ def ontology_context_config_error_response(
             error=str(error),
             error_type=type(error).__name__,
             error_code=error_code,
+        ).model_dump(),
+    )
+
+
+def budget_exceeded_response(error: BudgetExceededError) -> JSONResponse:
+    """422 when a document reached its token cap before it finished.
+
+    ``error_details.run_meter`` carries the meter's usage at the refusal.
+    """
+    return JSONResponse(
+        status_code=422,
+        content=ProcessErrorResponse(
+            error=str(error),
+            error_type="BudgetExceededError",
+            error_code="budget_exceeded",
+            error_details={"run_meter": dict(error.snapshot)},
         ).model_dump(),
     )

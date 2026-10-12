@@ -120,7 +120,7 @@ class AtomicToolBox:
         self.facts_critic_passes = facts_validation.critic_passes
         self.ontology_critic_passes = ontology_validation.critic_passes
         # Below this many rendered triples the facts critic is skipped: a
-        # review of an empty graph is a billed call that changes nothing.
+        # review of an empty graph is a call that changes nothing.
         self.facts_critic_min_triples = facts_validation.critic_min_triples
         # Insert-only completion passes after the critic loop, each a provider
         # call, taken only while measurements are still missing.

@@ -139,9 +139,9 @@ def test_ratios_are_none_when_nothing_was_measured() -> None:
 
 
 def test_prefix_cache_hit_rate_counts_replayed_input_in_the_denominator() -> None:
-    # The trap this guards: cache_read_input_tokens accumulates on billed *and*
-    # replayed calls, while input_tokens counts billed only. Dividing by
-    # input_tokens alone reports 180% cache hits on this workload.
+    # The ratio describes the workload: billed and replayed cache reads over
+    # billed and replayed input. Mixing a combined numerator with a billed-only
+    # denominator would report 180% cache hits on this workload.
     tracker = BudgetTracker()
     tracker.add_usage(
         10, 5, usage=TokenUsage(input_tokens=1000, cache_read_input_tokens=400)

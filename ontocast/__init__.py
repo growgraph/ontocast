@@ -21,7 +21,10 @@ from ontocast._version import __version__
 
 __all__ = [
     "AgentState",
+    "BudgetExceededError",
     "Config",
+    "RunMeter",
+    "TokenTotals",
     "ToolBox",
     "__version__",
     "build_agent_graph",
@@ -34,6 +37,7 @@ __all__ = [
     "ontology_loop",
     "run_unit_pipeline",
     "text_in_turtle_out",
+    "use_run_meter",
 ]
 
 # Everything is resolved lazily so `import ontocast` stays cheap: ToolBox pulls
@@ -41,6 +45,10 @@ __all__ = [
 # just to read __version__.
 _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "AgentState": ("ontocast.onto.state", "AgentState"),
+    "BudgetExceededError": ("ontocast.onto.run_meter", "BudgetExceededError"),
+    "RunMeter": ("ontocast.onto.run_meter", "RunMeter"),
+    "TokenTotals": ("ontocast.onto.run_meter", "TokenTotals"),
+    "use_run_meter": ("ontocast.onto.run_meter", "use_run_meter"),
     "Config": ("ontocast.config", "Config"),
     "ToolBox": ("ontocast.toolbox", "ToolBox"),
     "build_agent_graph": ("ontocast.stategraph.create", "build_agent_graph"),
