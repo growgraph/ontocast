@@ -50,7 +50,7 @@ from ontocast.stategraph.helpers import (
     reconcile_fresh_ontologies,
 )
 from ontocast.stategraph.unit_context import UnitLoopContext
-from ontocast.tool.llm import LLMConfigurationError
+from ontocast.tool.llm import RUN_STOPPING_ERRORS
 from ontocast.tool.ontology_validation import (
     apply_minted_duplicate_rewrites,
     detect_minted_duplicates,
@@ -63,11 +63,11 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-#: Failures that describe the deployment rather than the content unit: an
-#: ontology context the run cannot resolve, and a request the provider refuses
-#: outright. Both are identical for every sibling unit, so _gather_units
-#: re-raises them instead of counting N of them as unit errors.
-_DEPLOYMENT_FAULTS = (OntologyContextConfigError, LLMConfigurationError)
+#: Failures that describe the run rather than the content unit: an ontology
+#: context the run cannot resolve, a request the provider refuses outright, and a
+#: call the run meter refuses. Each is identical for every sibling unit, so
+#: _gather_units re-raises them instead of counting N of them as unit errors.
+_DEPLOYMENT_FAULTS = (OntologyContextConfigError, *RUN_STOPPING_ERRORS)
 
 
 @asynccontextmanager
@@ -105,12 +105,13 @@ async def _gather_units(
     own errors, but the code around them (state construction, context
     projection) does not, and a bare ``gather`` would let one such error abort
     the node while its siblings kept running as orphans -- their provider spend
-    billed and then discarded.
+    made and then discarded.
 
-    Two classes of failure are deliberately not isolated -- ``_DEPLOYMENT_FAULTS``.
-    :class:`~ontocast.onto.retrieval_capabilities.OntologyContextConfigError`
-    and :class:`~ontocast.tool.llm.LLMConfigurationError` both describe the
-    deployment, not the unit, so they are identical for every sibling and
+    Three classes of failure are deliberately not isolated -- ``_DEPLOYMENT_FAULTS``.
+    :class:`~ontocast.onto.retrieval_capabilities.OntologyContextConfigError`,
+    :class:`~ontocast.tool.llm.LLMConfigurationError` and
+    :class:`~ontocast.onto.run_meter.BudgetExceededError` describe the run,
+    not the unit, so they are identical for every sibling and
     isolating them turns a configuration fault into N unit failures and a
     successful, empty run. They are re-raised once the gather has drained, which
     orphans nothing -- every sibling has already been awaited. Note that
@@ -894,7 +895,7 @@ def make_render_facts_node(tools: ToolBox):
         state.retrieval_metrics[RetrievalMetric.FACTS_CRITIC_ACCEPTED] = sum(
             1 for attempt in critic_attempts if attempt.success
         )
-        # What the critique actually bought, split by how it was paid for. The
+        # What the critique actually produced, split by outcome. The
         # loop used to discard every fix on an accepted render, so the honest
         # value of these two together was once "far less than the call count
         # suggests" -- and nothing recorded it.
@@ -927,7 +928,7 @@ def make_render_facts_node(tools: ToolBox):
             critic_units_skipped
         )
         # The insert-only completion pass, read off the attempt log like the
-        # critic's own ledger: calls billed, inserts that stayed, and missed
+        # critic's own ledger: calls made, inserts that stayed, and missed
         # measurements the inventory stopped listing.
         completion_attempts = [a for a in all_attempts if a.kind == "completion"]
         state.retrieval_metrics[RetrievalMetric.FACTS_COMPLETION_CALLS] = len(

@@ -99,7 +99,7 @@ class RetrievalMetric(StrEnum):
     FACTS_CRITIC_FIXES_ROLLED_BACK = "facts_critic_fixes_rolled_back"
     FACTS_CRITIC_FIXES_JUNK_REFUSED = "facts_critic_fixes_junk_refused"
     FACTS_CRITIC_FIXES_UNRESOLVED_PREFIX = "facts_critic_fixes_unresolved_prefix"
-    #: The insert-only completion pass: calls billed, triples that stayed
+    #: The insert-only completion pass: calls made, triples that stayed
     #: in, and missed measurements the inventory no longer lists afterwards.
     FACTS_COMPLETION_CALLS = "facts_completion_calls"
     FACTS_COMPLETION_TRIPLES_INSERTED = "facts_completion_triples_inserted"
@@ -155,7 +155,7 @@ class LLMOutputLayout(StrEnum):
 
     - ``compact`` (default): the JSON response is minified, and a Turtle graph
       string keeps each subject on one line without indentation. Indentation
-      is billed as output tokens and carries nothing the parser reads.
+      counts as output tokens and carries nothing the parser reads.
     - ``free``: no layout instruction; the model chooses, and typically
       pretty-prints JSON with indentation.
     """

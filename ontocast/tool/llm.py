@@ -55,6 +55,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field, PrivateAttr, SecretStr
 
 from ontocast.config import LLMConfig, LLMProvider
+from ontocast.onto.run_meter import BudgetExceededError, TokenTotals, active_run_meter
 from ontocast.onto.token_usage import TokenUsage
 from ontocast.util.loop import require_no_running_loop
 from ontocast.util.optional import require
@@ -114,6 +115,16 @@ class LLMConfigurationError(RuntimeError):
     base: an ``except (timeout, configuration)`` clause would re-issue a request
     the provider has already said it will never accept.
     """
+
+
+#: Errors that stop the whole run rather than fail one content unit: a request
+#: the provider refuses as configured, and a call the run meter refuses. Both
+#: hold for every sibling unit, so best-effort steps and unit loops re-raise
+#: them instead of recording a unit failure.
+RUN_STOPPING_ERRORS: tuple[type[Exception], ...] = (
+    LLMConfigurationError,
+    BudgetExceededError,
+)
 
 
 @contextmanager
@@ -868,6 +879,16 @@ class LLMTool(Tool):
         bt = self._current_budget_tracker()
         if bt is not None:
             bt.add_cache_hit(len(prompt_str), len(content_str), usage=usage)
+        meter = active_run_meter()
+        if meter is not None:
+            meter.record(
+                str(self.config.model_name),
+                TokenTotals(
+                    replayed_input=(usage.input_tokens or 0) if usage else 0,
+                    replayed_output=(usage.output_tokens or 0) if usage else 0,
+                    replays=1,
+                ),
+            )
 
     def record_span(self, name: str, seconds: float) -> None:
         """Charge a latency span to this call's budget tracker.
@@ -885,15 +906,31 @@ class LLMTool(Tool):
         if bt is not None:
             bt.add_duration(name, seconds)
 
-    def _record_api_usage(self, prompt_str: str, result: Any) -> None:
+    def _record_api_usage(
+        self, prompt_str: str, result: Any, usage: TokenUsage
+    ) -> None:
         self._cache_misses += 1
+        meter = active_run_meter()
+        if meter is not None:
+            # A provider that reports no usage is metered as a call only.
+            meter.record(
+                str(self.config.model_name),
+                TokenTotals(
+                    input=usage.input_tokens or 0,
+                    cache_read=usage.cache_read_input_tokens or 0,
+                    cache_write=usage.cache_creation_input_tokens or 0,
+                    output=usage.output_tokens or 0,
+                    reasoning=usage.reasoning_tokens or 0,
+                    calls=1,
+                ),
+            )
         bt = self._current_budget_tracker()
         if bt is None:
             return
         bt.add_usage(
             len(prompt_str),
             _chars_received_from_result(result),
-            usage=_usage_from_llm_result(result),
+            usage=usage,
         )
 
     def get_cache_stats(
@@ -980,6 +1017,11 @@ class LLMTool(Tool):
         max_inflight = max(1, self.config.llm_max_inflight)
         wait_start = time.perf_counter()
         async with _inflight_semaphore(max_inflight):
+            # Checked once the slot is held, not before queueing for it: calls
+            # that waited behind the cap see what the calls ahead of them spent.
+            meter = active_run_meter()
+            if meter is not None:
+                meter.check()
             provider_start = time.perf_counter()
             self.record_span("llm/inflight_wait", provider_start - wait_start)
             timeout = self.config.request_timeout_seconds
@@ -1065,11 +1107,11 @@ class LLMTool(Tool):
         bt = self._current_budget_tracker()
         if bt is not None:
             bt.incr("llm/calls_timed")
-        self._record_api_usage(prompt_str, response)
+        usage = _usage_from_llm_result(response)
+        self._record_api_usage(prompt_str, response, usage)
 
         content_str = _content_to_str(response.content)
         response_metadata = getattr(response, "response_metadata", {}) or {}
-        usage = _usage_from_llm_result(response)
         if self.config.cache_enabled and not self.config.cache_read_only:
             entry = CachedResponse(
                 content=content_str,

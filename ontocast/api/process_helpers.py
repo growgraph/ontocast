@@ -27,6 +27,11 @@ from ontocast.onto.run_manifest import (
     summarize_completion,
     summarize_loop,
 )
+from ontocast.onto.run_meter import (
+    BudgetExceededError,
+    active_run_meter,
+    run_meter_scope,
+)
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.facts_gate import run_facts_gate
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
@@ -763,6 +768,12 @@ async def process_files_input(
 ) -> list[pathlib.Path]:
     """Process each input file, isolating per-file failures.
 
+    Each document runs under a meter capped by ``MAX_INPUT_TOKENS_PER_DOCUMENT``
+    / ``MAX_OUTPUT_TOKENS_PER_DOCUMENT``; a document stopped at a cap is a
+    failed file and gets no dumps. When the caller has bound its own
+    :class:`~ontocast.onto.run_meter.RunMeter`, that meter spans the batch and
+    :class:`~ontocast.onto.run_meter.BudgetExceededError` aborts it.
+
     Returns:
         The files that failed, in input order. Empty on full success. Callers
         use this to set a non-zero exit code -- previously every failure was
@@ -781,6 +792,7 @@ async def process_files_input(
     facts_dir, ontology_dir = resolve_batch_output_dirs(
         output_dir, facts_output_dir, ontology_output_dir
     )
+    outer_meter = active_run_meter()
     for file_path in files:
         try:
             states = expand_input_to_states(
@@ -801,41 +813,64 @@ async def process_files_input(
                 facts_user_instruction=facts_user_instruction,
             )
             for state_index, state in enumerate(states):
-                if use_unit_pipeline:
-                    try:
-                        onto_result, facts_result = await run_unit_pipeline(
-                            state, tools
-                        )
-                    except DocumentConversionError as exc:
-                        logger.error("Error processing %s: %s", file_path, exc)
-                        if file_path not in failed_files:
-                            failed_files.append(file_path)
-                        continue
-                    await persist_unit_pipeline_outputs(
-                        state, onto_result, facts_result, tools
+                try:
+                    with run_meter_scope(
+                        max_input_tokens=config.server.max_input_tokens_per_document,
+                        max_output_tokens=config.server.max_output_tokens_per_document,
+                    ):
+                        if use_unit_pipeline:
+                            try:
+                                onto_result, facts_result = await run_unit_pipeline(
+                                    state, tools
+                                )
+                            except DocumentConversionError as exc:
+                                logger.error("Error processing %s: %s", file_path, exc)
+                                if file_path not in failed_files:
+                                    failed_files.append(file_path)
+                                continue
+                            await persist_unit_pipeline_outputs(
+                                state, onto_result, facts_result, tools
+                            )
+                        else:
+                            workflow_state: AgentState | dict | None = None
+                            try:
+                                async for chunk in workflow.astream(
+                                    state,
+                                    stream_mode="values",
+                                    config=RunnableConfig(
+                                        recursion_limit=recursion_limit
+                                    ),
+                                ):
+                                    workflow_state = chunk
+                            except SectionSelectionEmptyError as exc:
+                                # Batch semantics: one unmatched selection must not kill
+                                # the other files. cli/server.py turns a non-empty
+                                # failed_files into a non-zero exit, so the `error` mode
+                                # is scriptable without new CLI code.
+                                logger.error("Error processing %s: %s", file_path, exc)
+                                if file_path not in failed_files:
+                                    failed_files.append(file_path)
+                                continue
+                            if workflow_state is not None:
+                                state = _merge_workflow_state_into_agent_state(
+                                    state, workflow_state
+                                )
+                except BudgetExceededError as exc:
+                    if outer_meter is not None:
+                        # The caller's meter spans the batch: every later file
+                        # would be refused too.
+                        raise
+                    # A per-document cap: the next file starts a fresh meter.
+                    # This one gets no dumps; its output is incomplete.
+                    logger.error(
+                        "Stopped %s at its token cap: %s (usage %s)",
+                        file_path,
+                        exc,
+                        exc.snapshot["totals"],
                     )
-                else:
-                    workflow_state: AgentState | dict | None = None
-                    try:
-                        async for chunk in workflow.astream(
-                            state,
-                            stream_mode="values",
-                            config=RunnableConfig(recursion_limit=recursion_limit),
-                        ):
-                            workflow_state = chunk
-                    except SectionSelectionEmptyError as exc:
-                        # Batch semantics: one unmatched selection must not kill
-                        # the other files. cli/server.py turns a non-empty
-                        # failed_files into a non-zero exit, so the `error` mode
-                        # is scriptable without new CLI code.
-                        logger.error("Error processing %s: %s", file_path, exc)
-                        if file_path not in failed_files:
-                            failed_files.append(file_path)
-                        continue
-                    if workflow_state is not None:
-                        state = _merge_workflow_state_into_agent_state(
-                            state, workflow_state
-                        )
+                    if file_path not in failed_files:
+                        failed_files.append(file_path)
+                    continue
                 if state.status == Status.FAILED:
                     # Every unit failed. The dumps below still run -- an empty
                     # facts graph next to its manifest is the diagnostic -- but
@@ -903,6 +938,10 @@ async def process_files_input(
                 "Aborting the batch at %s: the provider rejects every request",
                 file_path,
             )
+            raise
+        except BudgetExceededError:
+            # Reached only with a caller-bound meter, which spans the batch.
+            logger.error("Aborting the batch at %s: the run budget is spent", file_path)
             raise
         except Exception:
             logger.exception("Error processing %s", file_path)

@@ -33,7 +33,7 @@ from ontocast.tool.facts_validation import (
     accept_reason,
     material_defects,
 )
-from ontocast.tool.llm import LLMConfigurationError
+from ontocast.tool.llm import RUN_STOPPING_ERRORS
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +248,7 @@ async def criticise_facts(
 
         return state
 
-    except LLMConfigurationError:
+    except RUN_STOPPING_ERRORS:
         # A rejected request is not a critic that failed to answer: the
         # next unit's critic will be rejected the same way.
         raise
@@ -256,7 +256,7 @@ async def criticise_facts(
         # A critic that did not answer -- timeout, transport error, a response
         # that never parsed -- is not a critic that accepted. The unit leaves
         # the loop FAILED at the critique stage with its render intact, and
-        # the attempt is on the record as a billed call that produced no
+        # the attempt is on the record as a call that produced no
         # critique; the loop reads ``critic_outcome`` and applies no patch.
         logger.error(f"Failed to criticize facts: {str(e)}")
         state.critic_outcome = "unavailable"

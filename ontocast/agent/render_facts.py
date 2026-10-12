@@ -54,7 +54,7 @@ from ontocast.tool.facts_validation import (
     repair_property_aliases,
     resolve_code_literals,
 )
-from ontocast.tool.llm import LLMConfigurationError
+from ontocast.tool.llm import RUN_STOPPING_ERRORS
 from ontocast.tool.validate import partition_object_property_literal_triples
 
 logger = logging.getLogger(__name__)
@@ -432,7 +432,7 @@ async def render_facts_fresh(
         state.set_node_status(WorkflowNode.TEXT_TO_FACTS, Status.SUCCESS)
         return state
 
-    except LLMConfigurationError:
+    except RUN_STOPPING_ERRORS:
         # The provider rejects the request itself, not this attempt at
         # it: every other unit is about to be rejected identically.
         # Failing one unit here turns a configuration fault into an

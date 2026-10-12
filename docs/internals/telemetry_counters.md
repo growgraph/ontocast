@@ -18,11 +18,12 @@ unit finishes: fields and counters are summed, and duration keys ending in
 | `calls_count` | Calls sent to the provider, including calls that timed out |
 | `cache_hits` | Calls answered from the LLM response cache |
 | `chars_sent`, `chars_received` | Prompt and answer characters, for sent and cached calls alike. A timed-out call adds its prompt |
-| `input_tokens`, `output_tokens` | Tokens billed for sent calls |
+| `input_tokens`, `output_tokens` | Tokens of calls sent to the provider |
 | `cached_input_tokens`, `cached_output_tokens` | Tokens stored with cached answers. Cache entries written without usage add nothing |
-| `reasoning_tokens` | Reasoning tokens, inside the output totals; sent and cached calls |
-| `cache_read_input_tokens` | Input tokens served from the provider's prompt cache, inside the input totals; sent and cached calls |
-| `cache_creation_input_tokens` | Input tokens written to the provider's prompt cache; sent and cached calls |
+| `reasoning_tokens` | Reasoning tokens of sent calls, inside `output_tokens` |
+| `cache_read_input_tokens` | Input tokens of sent calls served from the provider's prompt cache, inside `input_tokens` |
+| `cache_creation_input_tokens` | Input tokens of sent calls written to the provider's prompt cache |
+| `replayed_reasoning_tokens`, `replayed_cache_read_input_tokens`, `replayed_cache_creation_input_tokens` | The same three, stored with cached answers |
 | `ontology_triples_generated`, `ontology_operations_count` | Triples and update operations the ontology renders produced |
 | `facts_triples_generated`, `facts_operations_count` | The same for facts renders |
 | `node_durations` | Seconds per key; see [Duration keys](#duration-keys) |
@@ -32,12 +33,11 @@ Two fields are derived when the budget is serialized:
 
 | Field | Formula | `null` when |
 |---|---|---|
-| `prefix_cache_hit_rate` | `cache_read_input_tokens / (input_tokens + cached_input_tokens)` | No input tokens were reported |
-| `reasoning_share_of_output` | `reasoning_tokens / (output_tokens + cached_output_tokens)` | No output tokens were reported |
+| `prefix_cache_hit_rate` | `(cache_read_input_tokens + replayed_cache_read_input_tokens) / (input_tokens + cached_input_tokens)` | No input tokens were reported |
+| `reasoning_share_of_output` | `(reasoning_tokens + replayed_reasoning_tokens) / (output_tokens + cached_output_tokens)` | No output tokens were reported |
 
-The denominators include cached tokens because the numerators do. Dividing by
-`input_tokens` alone can exceed 1 on a run that was partly answered from the
-cache.
+Both ratios cover sent and cached calls together: they describe the workload,
+not what this run paid for.
 
 ## Duration keys
 
@@ -113,7 +113,7 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `ontology/update_rejected_over_budget` | `ontocast/agent/render_ontology.py` | Ontology updates discarded for exceeding `ONTOLOGY_MAX_TRIPLES` |
 
 `calls_count` equals `llm/calls_timed + llm/timeouts`: a call that raised for
-any other reason is not billed and not counted in `calls_count`. The
+any other reason is not counted in `calls_count`. The
 `chapter/*` counters are recorded once per chapter built, not per call that
 reads it, and only when at least one text cap is set; [How prompts are
 built](prompt_construction.md#text-caps) describes the caps.

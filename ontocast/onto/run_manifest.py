@@ -213,7 +213,7 @@ class RunManifestCritic(BaseModel):
     A run must carry its own evidence for the decisions it made.
     """
 
-    calls: int = Field(default=0, description="Critic calls billed for this document.")
+    calls: int = Field(default=0, description="Critic calls made for this document.")
     accepted: int = Field(
         default=0, description="Calls whose verdict let the unit exit the loop."
     )
@@ -317,7 +317,7 @@ class RunManifestCritic(BaseModel):
         default=0,
         description=(
             "Units the loop did not send to the critic: render below "
-            "FACTS_CRITIC_MIN_TRIPLES, or citation metadata. No call billed."
+            "FACTS_CRITIC_MIN_TRIPLES, or citation metadata. No call made."
         ),
     )
     triples_deleted: int = Field(default=0)
@@ -333,7 +333,7 @@ class RunManifestCompletion(BaseModel):
     on its own when it leaves the unit worse.
     """
 
-    calls: int = Field(default=0, description="Completion calls billed.")
+    calls: int = Field(default=0, description="Completion calls made.")
     units: int = Field(default=0, description="Units that ran at least one pass.")
     subjects_inserted: int = Field(
         default=0, description="New subject closures that stayed in the graph."

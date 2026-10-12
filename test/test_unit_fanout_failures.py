@@ -76,3 +76,19 @@ async def test_a_rejected_request_is_not_isolated() -> None:
                 _ok(3),
             ],
         )
+
+
+@pytest.mark.anyio
+async def test_a_budget_stop_is_not_isolated() -> None:
+    """The run meter refuses every sibling's next call too."""
+    from ontocast.onto.run_meter import BudgetExceededError, RunMeter
+
+    state = AgentState()
+    snapshot = RunMeter().snapshot()
+
+    with pytest.raises(BudgetExceededError):
+        await _gather_units(
+            WorkflowNode.RENDER_FACTS,
+            state,
+            [_ok(1), _boom(BudgetExceededError("spent", snapshot)), _ok(3)],
+        )

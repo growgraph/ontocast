@@ -106,7 +106,7 @@ be set per request.
 [`LLM_OUTPUT_LAYOUT`](../reference/configuration/pipeline.md#llm_output_layout)
 sets the whitespace of the response. **Keep the default, `compact`.** It asks
 for minified JSON and, under Turtle, one line per subject. Without it, models
-indent their JSON, and every indentation token is billed output that the parser
+indent their JSON, and every indentation token is output that the parser
 discards. `free` exists to compare against; it changes no content, so compare
 `output_tokens` with the layout on and off.
 
