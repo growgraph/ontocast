@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.9]
+
+### Added
+
+- **`AGG_ENABLED`**: `false` turns facts consolidation off. Every entity stays its own node,
+  naming and provenance still run, and the aggregation encoder is not loaded. Requires
+  `AGG_UNIT_SCOPED_FACT_IRIS=true`.
+- **`CHUNK_CHUNKING_MODE`** (`semantic` | `naive`): selects the chunker's mode, which no setting
+  reached before.
+- **`ONTOLOGY_UPDATE_MODE`** (`insert_delete` | `insert_only`): `insert_only` drops every
+  ontology delete (render, consolidation, critic) before it is applied, counted in
+  `ontology/deletes_dropped_insert_only`. Prompts are unchanged.
+- **`effective_config`** and **`chunking_mode`** in the run manifest: every setting keyed by
+  environment variable with credentials redacted, and the chunker's mode after any fallback.
+- **`GET /config`**: the same settings record for a running server.
+
 ## [0.6.8]
 
 ### Added

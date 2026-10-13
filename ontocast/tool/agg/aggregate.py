@@ -656,6 +656,7 @@ class EmbeddingBasedAggregator:
         self.natural_key_merge = cfg.natural_key_merge
         self.type_guard_untyped = str(cfg.type_guard_untyped)
         self.unit_scoped_fact_iris = cfg.unit_scoped_fact_iris
+        self.enabled = cfg.enabled
         if candidate_similarity_threshold is None:
             self._warn_inert_similarity_threshold(cfg)
 
@@ -1636,12 +1637,16 @@ class EmbeddingBasedAggregator:
             for entity, decision in decisions.items()
             if decision.classification == EntityClassification.TENTATIVE_ONTOLOGY
         ]
-        anchor_candidates = self._select_ontology_anchor_candidates(
-            tentative_entities=tentative_entities,
-            tentative_representations=representations,
-            tentative_doc_iris=entity_doc_iris,
-            ontology_graph=ontology_graph,
-            known_ontology_entities=known_ontology_entities,
+        anchor_candidates = (
+            self._select_ontology_anchor_candidates(
+                tentative_entities=tentative_entities,
+                tentative_representations=representations,
+                tentative_doc_iris=entity_doc_iris,
+                ontology_graph=ontology_graph,
+                known_ontology_entities=known_ontology_entities,
+            )
+            if self.enabled
+            else {}
         )
         if anchor_candidates:
             for ontology_entity, anchor_doc_iri in anchor_candidates.items():
@@ -1683,28 +1688,38 @@ class EmbeddingBasedAggregator:
                 len(tentative_entities),
             )
 
-        candidate_clusters, embeddings = self._cluster_entities_by_role(representations)
         key_pairs: set[frozenset[URIRef]] = set()
-        if self.natural_key_merge:
-            key_pairs = self._collect_natural_key_pairs(
-                representations, schema_functional_predicates
+        clusters: list[list[URIRef]]
+        rejected_merges: list[tuple[URIRef, URIRef, float | None, tuple[str, ...]]]
+        if self.enabled:
+            candidate_clusters, embeddings = self._cluster_entities_by_role(
+                representations
             )
-            if key_pairs:
-                logger.info(
-                    "Natural-key evidence proposed %d candidate pair(s)",
-                    len(key_pairs),
+            if self.natural_key_merge:
+                key_pairs = self._collect_natural_key_pairs(
+                    representations, schema_functional_predicates
                 )
-                candidate_clusters = self._merge_candidate_clusters_by_key_pairs(
-                    candidate_clusters, key_pairs
-                )
-        clusters, rejected_merges = self._build_identity_clusters(
-            candidate_clusters=candidate_clusters,
-            representations=representations,
-            embeddings=embeddings,
-            direct_relation_pairs=direct_relation_pairs,
-            guard_context=guard_context,
-            key_pairs=key_pairs or None,
-        )
+                if key_pairs:
+                    logger.info(
+                        "Natural-key evidence proposed %d candidate pair(s)",
+                        len(key_pairs),
+                    )
+                    candidate_clusters = self._merge_candidate_clusters_by_key_pairs(
+                        candidate_clusters, key_pairs
+                    )
+            clusters, rejected_merges = self._build_identity_clusters(
+                candidate_clusters=candidate_clusters,
+                representations=representations,
+                embeddings=embeddings,
+                direct_relation_pairs=direct_relation_pairs,
+                guard_context=guard_context,
+                key_pairs=key_pairs or None,
+            )
+        else:
+            # Consolidation off: every entity is its own cluster, so nothing is
+            # embedded or merged; naming and provenance below still run.
+            clusters = [[entity] for entity in representations]
+            rejected_merges = []
         if rejected_merges:
             logger.info(
                 "Rejected %d candidate merges after symbolic validation",

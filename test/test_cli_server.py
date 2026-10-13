@@ -809,12 +809,19 @@ def test_dump_run_manifest_records_cost_and_configuration(tmp_path) -> None:
         )
     )
 
-    out = dump_run_manifest(state, src, config=config, output_dir=out_dir)
+    out = dump_run_manifest(
+        state, src, config=config, output_dir=out_dir, chunking_mode="naive"
+    )
     assert out is not None
     assert out == out_dir / "paper.run.json"
 
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["source"] == "paper.pdf"
+    # Settings that make no LLM call are recorded too, and the chunker's mode
+    # after any fallback, since the configured one may not have applied.
+    assert payload["effective_config"]["AGG_ENABLED"] is True
+    assert payload["effective_config"]["CHUNK_CHUNKING_MODE"] == "semantic"
+    assert payload["chunking_mode"] == "naive"
     assert payload["llm"] == {
         "provider": "ollama",
         "model_name": "kimi-k3",

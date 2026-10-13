@@ -13,6 +13,7 @@ from ontocast.config import (
     LLMConfig,
     LLMProvider,
     OllamaModel,
+    OntologyValidationConfig,
     PathConfig,
     ToolConfig,
     WebSearchConfig,
@@ -1273,6 +1274,9 @@ async def test_consolidate_ontology_node_applies_delta_on_map_stage_artifact(
 
     class DummyConfig:
         server = DummyServerConfig()
+
+        def get_tool_config(self):
+            return SimpleNamespace(ontology_validation=OntologyValidationConfig())
 
     class DummyTools:
         config = DummyConfig()

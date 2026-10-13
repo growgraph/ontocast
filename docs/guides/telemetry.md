@@ -128,13 +128,17 @@ block is the same for the ontology loop, whose critic is off by default.
 `ontocast process` writes one run manifest per document. It records the
 settings, the cost and the outcome, so you can compare two runs by diffing
 their manifests instead of rerunning them. The HTTP routes return the same
-`budget` and `retrieval_metrics` but write no manifest.
+`budget` and `retrieval_metrics` but write no manifest; `GET /config` returns
+the server's `effective_config`.
 
 ```json
 {
   "source": "paper.pdf",
   "ontocast_version": "<version>",
   "render_mode": "ontology_and_facts",
+  "effective_config": {"AGG_ENABLED": true, "CHUNK_CHUNKING_MODE": "semantic",
+                       "LLM_API_KEY": "<redacted>"},
+  "chunking_mode": "semantic",
   "loops": {"max_visits": 1, "facts_critic_passes": 1, "ontology_critic_passes": 0},
   "llm": {"provider": "<provider>", "model_name": "<model>", "temperature": 0.0, "max_inflight": 16},
   "prompting": {"llm_graph_format": "turtle", "llm_output_layout": "compact",
@@ -160,6 +164,8 @@ The blocks you read most:
 | Block | Answers |
 |---|---|
 | `llm`, `loops`, `prompting` | Which model and settings produced the run, as actually applied |
+| `effective_config` | Every setting, keyed by environment variable, credentials redacted. Diff two manifests' blocks to see every setting that differed, including those that make no LLM call |
+| `chunking_mode` | The mode the chunker ran in. `naive` under a `semantic` setting means the semantic-chunking extra is missing. Absent on the single-unit path, which does not chunk |
 | `budget` | Cost and time, as above |
 | `selection` | Which sections the run was given, how many units carried a section label, and how many were skipped as bibliography, too short or not content. An exclusion list cannot act on units that carry no label |
 | `critic`, `ontology_critic`, `completion` | What the review and completion passes did |

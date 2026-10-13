@@ -17,6 +17,7 @@ FastAPI serves interactive documentation at `/docs` and the OpenAPI schema at
 |---|---|
 | `GET /health` | Liveness probe |
 | `GET /info` | Version, accepted input types, cache statistics |
+| `GET /config` | Every setting the server runs with, credentials redacted |
 | `POST /process` | Extract an ontology and facts from one document |
 | `POST /process_unit` | Extract from a short text as a single content unit, without chunking |
 | `GET /ontologies` | List the catalog's ontologies |
@@ -61,6 +62,24 @@ Returns `name`, `version`, `description`, `capabilities`, `input_types` (the
 file extensions this install can convert), `output_types`, `llm_cache` (cache
 statistics) and `max_concurrent_processes`
 ([`MAX_CONCURRENT_PROCESSES`](configuration/pipeline.md#max_concurrent_processes)).
+
+### `GET /config`
+
+Returns the settings the server was started with, keyed by environment
+variable, and the mode the chunker runs in. It is the same record a batch run
+writes as `effective_config` in its run manifest. Credentials read `<redacted>`
+(`null` when unset), and a `user:password@` in a URL is replaced the same way.
+Per-request parameters of `/process` and `/process_unit` override some settings
+for that request only; they are not reflected here.
+
+```json
+{"version": "...", "chunking_mode": "semantic",
+ "settings": {"AGG_ENABLED": true, "CHUNK_CHUNKING_MODE": "semantic", "LLM_API_KEY": "<redacted>"}}
+```
+
+`chunking_mode` is `naive` when
+[`CHUNK_CHUNKING_MODE`](configuration/chunking.md#chunk_chunking_mode) asks for
+`semantic` but the semantic-chunking extra is not installed.
 
 ## Extraction
 

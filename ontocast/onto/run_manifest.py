@@ -521,6 +521,21 @@ class RunManifest(BaseModel):
     )
     ontocast_version: str
     render_mode: str
+    effective_config: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Every setting the run was configured with, keyed by environment "
+            "variable, credentials redacted. Covers the settings that make no "
+            "LLM call, which call counts cannot confirm."
+        ),
+    )
+    chunking_mode: str | None = Field(
+        default=None,
+        description=(
+            "Mode the chunker ran in: CHUNK_CHUNKING_MODE, or 'naive' when "
+            "semantic chunking was unavailable in the environment."
+        ),
+    )
     loops: RunManifestLoops | None = None
     critic: RunManifestCritic | None = None
     ontology_critic: RunManifestCritic | None = None

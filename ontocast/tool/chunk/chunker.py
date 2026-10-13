@@ -65,7 +65,10 @@ class ChunkerTool(Tool):
     )
     chunking_mode: Literal["semantic", "naive"] = Field(
         default="semantic",
-        description="Chunking mode: semantic (requires sentence-transformers) or naive (fallback)",
+        description=(
+            "Effective chunking mode: CHUNK_CHUNKING_MODE, or 'naive' when "
+            "semantic chunking is unavailable in this environment"
+        ),
     )
     cache: Any = Field(default=None, exclude=True)
 
@@ -100,6 +103,7 @@ class ChunkerTool(Tool):
         # Override config if provided
         if chunk_config is not None:
             self.config = chunk_config
+        self.chunking_mode = self.config.chunking_mode
 
         # Probe heavy deps only when semantic mode is requested
         if self.chunking_mode == "semantic" and not _semantic_chunking_available():

@@ -111,6 +111,7 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `ctx/union_document_ontology.calls` | `ontocast/stategraph/context_resolver.py` | Union chapters built; `1` per facts-only document with a document scope |
 | `<node>/unit_errors` | `ontocast/stategraph/node_factories.py` | Units of a fan-out node that raised |
 | `ontology/update_rejected_over_budget` | `ontocast/agent/render_ontology.py` | Ontology updates discarded for exceeding `ONTOLOGY_MAX_TRIPLES` |
+| `ontology/deletes_dropped_insert_only` | `ontocast/agent/render_ontology.py`, `ontocast/stategraph/node_factories.py` | Ontology delete triples dropped under `ONTOLOGY_UPDATE_MODE=insert_only` |
 
 `calls_count` equals `llm/calls_timed + llm/timeouts`: a call that raised for
 any other reason is not counted in `calls_count`. The

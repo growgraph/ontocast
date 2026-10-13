@@ -28,7 +28,7 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
-from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.atomic import AtomicLLMProvider, AtomicToolBox
 from test.snapshot_helpers import snapshot_from_ontology
 
 pytestmark = [pytest.mark.anyio, pytest.mark.unit]
@@ -88,6 +88,7 @@ def _tools() -> AtomicToolBox:
             citation_vocabulary={},
             quantity_fallback_vocabulary=None,
             acceptance_policy=None,
+            ontology_insert_only=False,
         ),
     )
 
@@ -196,3 +197,51 @@ def test_empty_sides_contribute_no_operation() -> None:
     report = GraphUpdateRenderReport(insert_graph=_graph(GOOD_TTL))
     assert [op.type for op in report.to_graph_update().triple_operations] == ["insert"]
     assert GraphUpdateRenderReport().to_graph_update().triple_operations == []
+
+
+def _stub_patch(monkeypatch, module, insert_ttl: str, delete_ttl: str) -> None:
+    async def fake_call_llm_with_retry(**kwargs):
+        return GraphUpdateRenderReport(
+            insert_graph=_graph(insert_ttl), delete_graph=_graph(delete_ttl)
+        )
+
+    monkeypatch.setattr(module, "call_llm_with_retry", fake_call_llm_with_retry)
+
+
+@pytest.mark.parametrize("insert_only", [False, True])
+async def test_insert_only_mode_drops_rendered_deletes(
+    monkeypatch, insert_only: bool
+) -> None:
+    """ONTOLOGY_UPDATE_MODE=insert_only applies the inserts and no delete."""
+    tools = _tools()
+    cast(SimpleNamespace, tools).ontology_insert_only = insert_only
+    _stub_patch(monkeypatch, render_ontology_module, GOOD_TTL, ONTO_TTL)
+
+    ontology = await render_ontology_module.render_ontology_update(
+        _ontology_state(), tools
+    )
+
+    declared = (
+        URIRef("https://example.com/onto#CompanyOntology"),
+        URIRef("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+        URIRef("http://www.w3.org/2002/07/owl#Ontology"),
+    )
+    dropped = ontology.budget_tracker.counters.get(
+        "ontology/deletes_dropped_insert_only", 0
+    )
+    assert (declared in ontology.working_graph) is insert_only
+    assert dropped == (1 if insert_only else 0)
+    assert len(ontology.working_graph & _graph(GOOD_TTL)) == 1
+
+
+def test_insert_only_mode_gives_the_critic_no_delete_allowance() -> None:
+    from ontocast.config import OntologyValidationConfig
+
+    tools = AtomicToolBox(
+        llm_provider=cast(AtomicLLMProvider, None),
+        ontology_validation_config=OntologyValidationConfig(update_mode="insert_only"),
+    )
+
+    assert tools.ontology_insert_only is True
+    assert tools.ontology_patch_policy.max_delete_share == 0.0
+    assert tools.ontology_patch_policy.min_deletes == 0

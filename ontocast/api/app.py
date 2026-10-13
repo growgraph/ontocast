@@ -41,6 +41,7 @@ from ontocast.api.responses import (
     section_selection_empty_response,
 )
 from ontocast.api.schemas import (
+    ConfigResponse,
     FlushOkResponse,
     HealthErrorResponse,
     HealthOkResponse,
@@ -57,6 +58,7 @@ from ontocast.api.tenancy_resolution import (
     resolve_tenant_project,
 )
 from ontocast.config import ServerConfig
+from ontocast.config.snapshot import config_snapshot
 from ontocast.onto.enum import OntologyContextMode, RenderMode, Status
 from ontocast.onto.retrieval_capabilities import (
     OntologyContextConfigError,
@@ -275,6 +277,13 @@ def create_app(
             input_types=sorted(
                 ext.lstrip(".") for ext in get_supported_input_extensions(tools)
             ),
+        )
+
+    @app.get("/config", response_model=ConfigResponse, summary="Effective settings")
+    async def effective_config():
+        return ConfigResponse(
+            settings=config_snapshot(tools.config),
+            chunking_mode=tools.chunker.chunking_mode,
         )
 
     @app.post("/match/entities", response_model=AlignEntitiesResponse)

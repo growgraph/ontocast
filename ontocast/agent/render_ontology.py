@@ -322,6 +322,12 @@ async def render_ontology_update(
         # unit-code resolution) and have no ontology counterpart. The ontology
         # side's deterministic validator runs in the loop instead, against the
         # net delta -- see stategraph/atomic.py::_collect_ontology_findings.
+        if tools.ontology_insert_only and len(render_report.delete_graph):
+            state.budget_tracker.incr(
+                "ontology/deletes_dropped_insert_only",
+                len(render_report.delete_graph),
+            )
+            render_report.delete_graph = RDFGraph()
         graph_update, rejected = finalize_update_report(render_report)
         state.quarantined_literal_triples = rejected
         log_quarantine("Ontology", rejected)

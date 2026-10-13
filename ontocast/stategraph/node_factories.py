@@ -45,6 +45,7 @@ from ontocast.stategraph.facts_gate import run_facts_gate
 from ontocast.stategraph.helpers import (
     all_unit_patch_source_iris,
     build_document_excerpt,
+    drop_all_deletes,
     enforce_redeclared_deletes,
     merge_unit_deltas,
     reconcile_fresh_ontologies,
@@ -68,6 +69,18 @@ T = TypeVar("T")
 #: call the run meter refuses. Each is identical for every sibling unit, so
 #: _gather_units re-raises them instead of counting N of them as unit errors.
 _DEPLOYMENT_FAULTS = (OntologyContextConfigError, *RUN_STOPPING_ERRORS)
+
+
+def _insert_only(tools: ToolBox) -> bool:
+    """Whether ``ONTOLOGY_UPDATE_MODE=insert_only`` is in force."""
+    return (
+        tools.config.get_tool_config().ontology_validation.update_mode == "insert_only"
+    )
+
+
+def _count_insert_only_drops(state: AgentState, dropped: int) -> None:
+    if dropped:
+        state.budget_tracker.incr("ontology/deletes_dropped_insert_only", dropped)
 
 
 @asynccontextmanager
@@ -383,6 +396,8 @@ def make_render_ontology_node(tools: ToolBox):
 
         # Document-level insert/delete consensus + namespace apply onto catalog bases.
         merged_delta = merge_unit_deltas(unit_deltas)
+        if _insert_only(tools):
+            _count_insert_only_drops(state, drop_all_deletes(merged_delta))
 
         # Single-ontology modes are untouched by the delete policy: there the
         # model saw the whole graph, so its deletes were judged on full
@@ -585,6 +600,8 @@ def make_consolidate_ontology_node(tools: ToolBox):
         result = await render_ontology_update(consolidation_state, atomic_tools)
         if result.status == Status.SUCCESS and result.working_graph_changed():
             delta = result.build_delta()
+            if _insert_only(tools):
+                _count_insert_only_drops(state, drop_all_deletes(delta))
             if not delta.is_empty() and primary.iri:
                 # The consolidation delta is a complement of `primary` (the
                 # map-stage artifact), so it must be applied on top of exactly

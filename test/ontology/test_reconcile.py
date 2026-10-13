@@ -19,6 +19,7 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_apply import OntologyDelta, apply_partitioned_updates
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.stategraph.helpers import (
+    drop_all_deletes,
     enforce_redeclared_deletes,
     reconcile_fresh_ontologies,
 )
@@ -129,6 +130,21 @@ def test_unredeclared_deletes_are_dropped_redeclared_kept() -> None:
     assert dropped == 1
     assert (sample, RDFS.label, Literal("Sample")) in delta.deletes
     assert not list(delta.deletes.triples((has_part, None, None)))
+
+
+def test_insert_only_drops_every_delete_and_keeps_inserts() -> None:
+    sample = URIRef(f"{ONTO}Sample")
+    delta = OntologyDelta(
+        inserts=_graph((sample, RDFS.label, Literal("Material sample"))),
+        deletes=_graph(
+            (sample, RDFS.label, Literal("Sample")),
+            (sample, RDF.type, OWL.Class),
+        ),
+    )
+    assert drop_all_deletes(delta) == 2
+    assert len(delta.deletes) == 0
+    assert len(delta.inserts) == 1
+    assert drop_all_deletes(delta) == 0
 
 
 def _fresh(iri: str, *triples) -> Ontology:

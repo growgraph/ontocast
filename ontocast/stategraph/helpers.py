@@ -125,6 +125,21 @@ def enforce_redeclared_deletes(delta: OntologyDelta) -> int:
     return dropped
 
 
+def drop_all_deletes(delta: OntologyDelta) -> int:
+    """Empty the delete side of ``delta`` (``ONTOLOGY_UPDATE_MODE=insert_only``).
+
+    The render path already drops rendered deletes; this guards the apply
+    step against a delete reaching it from any other path.
+
+    Returns:
+        Number of delete triples dropped.
+    """
+    dropped = len(delta.deletes)
+    if dropped:
+        delta.deletes = RDFGraph()
+    return dropped
+
+
 def reconcile_fresh_ontologies(
     fresh_ontologies: list[Ontology],
 ) -> tuple[list[Ontology], dict[str, int]]:

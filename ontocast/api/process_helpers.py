@@ -13,6 +13,7 @@ from langgraph.graph.state import CompiledStateGraph
 from ontocast._version import __version__
 from ontocast.agent.serialize import serialize as serialize_agent_state
 from ontocast.config import Config, ServerConfig
+from ontocast.config.snapshot import config_snapshot
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import OntologyContextMode, Status
 from ontocast.onto.ontology import Ontology
@@ -279,6 +280,7 @@ def dump_run_manifest(
     shapes_triples: int | None = None,
     shapes_prompt_selection: bool | None = None,
     fanout_settings_apply: bool = True,
+    chunking_mode: str | None = None,
 ) -> pathlib.Path | None:
     """Write the run's cost and configuration beside the facts TTL.
 
@@ -286,6 +288,9 @@ def dump_run_manifest(
     so a batch run left no record of the model, the settings, or the tokens
     behind its own output -- and no way to compare two dumps except by rerunning
     them. One small JSON per document closes that.
+
+    ``chunking_mode`` is the chunker's mode after any fallback, which the
+    configured ``CHUNK_CHUNKING_MODE`` alone does not show.
     """
     llm_config = config.tool_config.llm_config
     tool_config = config.get_tool_config()
@@ -303,6 +308,8 @@ def dump_run_manifest(
         line_number=line_number,
         ontocast_version=__version__,
         render_mode=str(state.render_mode),
+        effective_config=config_snapshot(config),
+        chunking_mode=chunking_mode,
         loops=RunManifestLoops(
             max_visits=state.max_visits,
             facts_critic_passes=facts_critic_passes,
@@ -927,6 +934,9 @@ async def process_files_input(
                     ),
                     shapes_prompt_selection=selection_pending,
                     fanout_settings_apply=not use_unit_pipeline,
+                    chunking_mode=(
+                        None if use_unit_pipeline else tools.chunker.chunking_mode
+                    ),
                 )
         except LLMConfigurationError:
             # Batch semantics stop here: the provider refuses the request as
