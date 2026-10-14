@@ -89,6 +89,13 @@ class ProcessResultMetadata(BaseModel):
     chunks_remaining: int
     budget: dict
     retrieval_metrics: dict = Field(default_factory=dict)
+    unit_context_sources: dict[str, dict[int, list[str]]] = Field(
+        default_factory=dict,
+        description=(
+            "Ontology IRIs each unit's prompt context was drawn from, by lane "
+            "('ontology', 'facts') and unit index."
+        ),
+    )
     facts_repairs: dict[int, list[dict]] = Field(
         default_factory=dict,
         description=(

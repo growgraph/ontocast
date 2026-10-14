@@ -14,6 +14,7 @@ from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.agent.update_common import finalize_update_report, log_quarantine
 from ontocast.onto.enum import (
     FailureStage,
+    LLMPhase,
     OntologyAssemblyMode,
     Status,
     WorkflowNode,
@@ -184,6 +185,7 @@ async def render_ontology_fresh(
         llm_tool = await tools.get_llm_tool(state.budget_tracker)
         render_report: OntologyRenderReport = await call_llm_with_retry(
             llm_tool=llm_tool,
+            phase=LLMPhase.ONTOLOGY_RENDER,
             prompt=prompt,
             parser=parser,
             prompt_kwargs={
@@ -293,6 +295,7 @@ async def render_ontology_update(
 
         render_report: GraphUpdateRenderReport = await call_llm_with_retry(
             llm_tool=llm_tool,
+            phase=LLMPhase.ONTOLOGY_RENDER,
             prompt=prompt,
             parser=parser,
             prompt_kwargs={

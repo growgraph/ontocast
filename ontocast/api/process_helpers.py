@@ -185,6 +185,97 @@ def dump_facts_ttl(
     return output_path
 
 
+async def dump_catalog_nquads(
+    tools: ToolBox,
+    file_path: pathlib.Path,
+    *,
+    line_number: int | None = None,
+    output_dir: pathlib.Path | None = None,
+) -> pathlib.Path:
+    """Write the whole ontology catalog as it stands after this document.
+
+    Every ontology's current version, read back from the triple store -- the
+    catalog the next document is extracted against -- as N-Quads with the
+    ontology IRI as graph name, provenance stripped and lines sorted, so two
+    consecutive dumps diff statement by statement. Blank-node labels are
+    assigned per dump, so statements about blank nodes do not line up across
+    dumps without canonicalising them.
+
+    Returns:
+        The path written.
+    """
+    ontologies = await tools.ontology_manager.aget_ontologies_by_iri([])
+    lines: list[str] = []
+    for ontology in ontologies:
+        graph = TripleStoreManager.strip_provenance(ontology.graph)
+        ntriples = graph.serialize(format="nt")
+        graph_name = f"<{ontology.iri}>"
+        for line in ntriples.splitlines():
+            line = line.strip()
+            if line.endswith(" ."):
+                lines.append(f"{line[:-2]} {graph_name} .")
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    name = _ttl_basename(file_path, line_number=line_number, kind="catalog")
+    output_path = (output_dir or file_path.parent) / f"{name.removesuffix('.ttl')}.nq"
+    output_path.write_text(
+        "".join(f"{line}\n" for line in sorted(lines)), encoding="utf-8"
+    )
+    logger.info(
+        "Dumped the ontology catalog (%d ontolog(ies), %d statements) to %s",
+        len(ontologies),
+        len(lines),
+        output_path,
+    )
+    return output_path
+
+
+def dump_units_jsonl(
+    state: AgentState,
+    file_path: pathlib.Path,
+    *,
+    line_number: int | None = None,
+    output_dir: pathlib.Path | None = None,
+) -> pathlib.Path | None:
+    """Write the document's content units beside its facts, one JSON per line.
+
+    Kept provenance names each fact's source unit by IRI (``<doc_iri>/<hid>``)
+    only; this file holds the text behind each IRI, so a statement can be
+    traced to the passage it came from. ``text`` is the unit as chunked;
+    ``summarized`` is true when the model was shown a summary of it instead.
+
+    Returns:
+        The path written, or None when the document has no units.
+    """
+    if not state.content_units:
+        return None
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    facts_path = facts_ttl_output_path(
+        file_path, line_number=line_number, output_dir=output_dir
+    )
+    output_path = facts_path.with_name(
+        f"{facts_path.name.removesuffix('.facts.ttl')}.units.jsonl"
+    )
+    rows = (
+        {
+            "index": unit.index,
+            "hid": unit.hid,
+            "iri": unit.iri_absolute,
+            "section_label": unit.section_label,
+            "summarized": unit.summary is not None,
+            "text": unit.text,
+        }
+        for unit in state.content_units
+    )
+    output_path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    logger.info("Dumped %d content units to %s", len(state.content_units), output_path)
+    return output_path
+
+
 def dump_validation_report(
     state: AgentState,
     file_path: pathlib.Path,
@@ -386,6 +477,7 @@ def dump_run_manifest(
             len(serialized_facts) if serialized_facts is not None else 0
         ),
         retrieval_metrics=dict(state.retrieval_metrics),
+        unit_context_sources=state.unit_context_sources,
     )
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -729,6 +821,11 @@ def _merge_workflow_state_into_agent_state(
     content_units = workflow_state.get("content_units")
     if content_units is not None:
         state.content_units = list(content_units)
+    context_sources = workflow_state.get("unit_context_sources")
+    if context_sources:
+        state.unit_context_sources = {
+            lane: dict(sources) for lane, sources in context_sources.items()
+        }
     unit_failures = workflow_state.get("unit_failures")
     if unit_failures is not None:
         state.unit_failures = list(unit_failures)
@@ -772,6 +869,7 @@ async def process_files_input(
     facts_output_dir: pathlib.Path | None = None,
     ontology_output_dir: pathlib.Path | None = None,
     strip_provenance: bool = True,
+    dump_catalog: bool = False,
 ) -> list[pathlib.Path]:
     """Process each input file, isolating per-file failures.
 
@@ -909,12 +1007,26 @@ async def process_files_input(
                     output_dir=facts_dir,
                     strip_provenance=strip_provenance,
                 )
+                if not strip_provenance:
+                    dump_units_jsonl(
+                        state,
+                        file_path,
+                        line_number=line_number,
+                        output_dir=facts_dir,
+                    )
                 dump_ontology_ttls(
                     state,
                     file_path,
                     line_number=line_number,
                     output_dir=ontology_dir,
                 )
+                if dump_catalog:
+                    await dump_catalog_nquads(
+                        tools,
+                        file_path,
+                        line_number=line_number,
+                        output_dir=ontology_dir,
+                    )
                 dump_validation_report(
                     state,
                     file_path,

@@ -9,7 +9,7 @@ from langchain_core.output_parsers import BaseOutputParser, PydanticOutputParser
 from langchain_core.prompts import BasePromptTemplate
 from pydantic import BaseModel
 
-from ontocast.onto.enum import LLMGraphFormat, WorkflowNode
+from ontocast.onto.enum import LLMGraphFormat, LLMPhase, WorkflowNode
 from ontocast.onto.model import Suggestions
 from ontocast.prompt.common import (
     suggestion_concrete_template,
@@ -23,6 +23,7 @@ from ontocast.tool.llm import (
     LLMRequestTimeoutError,
     _content_to_str,
     record_active_count,
+    use_llm_phase,
 )
 
 logger = logging.getLogger(__name__)
@@ -385,6 +386,7 @@ async def call_llm_with_retry(
     max_retries: int = 3,
     retry_error_feedback: bool = True,
     llm_graph_format: LLMGraphFormat | None = None,
+    phase: LLMPhase | None = None,
 ) -> T:
     """Call LLM and parse response with automatic retry on parsing failures.
 
@@ -426,6 +428,8 @@ async def call_llm_with_retry(
         retry_error_feedback: Whether to include error feedback in retry prompts (default: True).
         llm_graph_format: When set, passed explicitly to ``model_validate`` as
             ``context={"llm_graph_format": ...}`` so graph wire fields coerce correctly.
+        phase: The step's :class:`LLMPhase`; every call made here, retries
+            included, is charged to it in ``BudgetTracker.tokens_by_phase``.
 
     Returns:
         The parsed output of type T.
@@ -434,6 +438,17 @@ async def call_llm_with_retry(
         Exception: The provider's error on a transport failure, or the last
             parsing error once retries are exhausted.
     """
+    if phase is not None:
+        with use_llm_phase(phase):
+            return await call_llm_with_retry(
+                llm_tool,
+                prompt,
+                parser,
+                prompt_kwargs,
+                max_retries=max_retries,
+                retry_error_feedback=retry_error_feedback,
+                llm_graph_format=llm_graph_format,
+            )
     last_error: Exception | None = None
     last_sanitized_content: str | None = None
     last_json_error_msg: str | None = None

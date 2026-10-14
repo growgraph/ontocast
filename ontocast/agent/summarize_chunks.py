@@ -6,7 +6,8 @@ from typing import Any
 from langchain_core.prompts import ChatPromptTemplate
 
 from ontocast.onto.content_unit import ContentUnit
-from ontocast.tool.llm import RUN_STOPPING_ERRORS, use_budget_tracker
+from ontocast.onto.enum import LLMPhase
+from ontocast.tool.llm import RUN_STOPPING_ERRORS, use_budget_tracker, use_llm_phase
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -112,7 +113,7 @@ async def summarize_chunk(
         section_label=section_label,
         text=unit.text,
     )
-    with use_budget_tracker(budget_tracker):
+    with use_budget_tracker(budget_tracker), use_llm_phase(LLMPhase.UNIT_SUMMARY):
         response = await tools.llm(prompt)
     summary = (response.content or "").strip()
     if not summary:

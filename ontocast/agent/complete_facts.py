@@ -20,6 +20,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry
+from ontocast.onto.enum import LLMPhase
 from ontocast.onto.model import FactsCompletionReport, TripleFix
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.prompt.common import text_template, user_template
@@ -144,6 +145,7 @@ async def complete_facts(
     try:
         report: FactsCompletionReport = await call_llm_with_retry(
             llm_tool=llm_tool,
+            phase=LLMPhase.FACTS_COMPLETION,
             prompt=_build_prompt(),
             parser=parser,
             prompt_kwargs=prompt_data,

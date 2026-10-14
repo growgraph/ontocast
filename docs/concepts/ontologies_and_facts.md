@@ -116,7 +116,9 @@ you get back:
 - over HTTP, pass `strip_provenance=true` to `/process` (provenance is kept by
   default);
 - with `ontocast process`, the files are written without it by default; pass
-  `--keep-provenance` to keep it.
+  `--keep-provenance` to keep it, together with `<name>.units.jsonl`, the text
+  of each unit the provenance points at (see [Reading run
+  telemetry](../guides/telemetry.md#tracing-a-fact-to-its-text-and-the-catalog-across-a-batch)).
 
 A graph without provenance has no link back to the text, so nothing in it can
 be checked against the source.

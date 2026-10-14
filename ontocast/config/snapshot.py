@@ -43,7 +43,9 @@ def config_snapshot(settings: BaseSettings) -> dict[str, Any]:
         settings: Usually the run's :class:`~ontocast.config.settings.Config`.
 
     Returns:
-        ``{ENV_NAME: value}`` with JSON-safe values, in declaration order.
+        ``{ENV_NAME: value}`` with JSON-safe values, in declaration order. A
+        setting read from several names (an alias) appears under each, so a
+        record can be looked up by whichever name configured it.
     """
     snapshot: dict[str, Any] = {}
     for field, value in iter_settings_values(settings):
@@ -51,5 +53,6 @@ def config_snapshot(settings: BaseSettings) -> dict[str, Any]:
             value = None if value is None else REDACTED
         elif isinstance(value, str):
             value = _strip_url_credentials(value)
-        snapshot[field.env_name] = to_jsonable_python(value)
+        for name in field.env_names:
+            snapshot[name] = to_jsonable_python(value)
     return snapshot

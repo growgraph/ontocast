@@ -581,6 +581,7 @@ def create_app(
                     chunks_remaining=chunks_remaining,
                     budget=budget_tracker_data,
                     retrieval_metrics=workflow_state.get("retrieval_metrics", {}),
+                    unit_context_sources=workflow_state.get("unit_context_sources", {}),
                     facts_repairs=facts_repairs,
                     failed_units=unit_failures,
                     improvement_suggestions=list(
@@ -768,6 +769,7 @@ def create_app(
                     chunks_remaining=0,
                     budget=budget_tracker_data,
                     retrieval_metrics=initial_state.retrieval_metrics,
+                    unit_context_sources=initial_state.unit_context_sources,
                     facts_conformance=dict(initial_state.facts_conformance or {}),
                     facts_validation_findings=[
                         finding.model_dump(mode="json")

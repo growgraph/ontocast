@@ -8,7 +8,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry
-from ontocast.onto.enum import WorkflowNode
+from ontocast.onto.enum import LLMPhase, WorkflowNode
 from ontocast.onto.model import (
     ExternalEvidenceCacheEntry,
     ExternalEvidenceHit,
@@ -259,6 +259,7 @@ async def plan_external_evidence_for_node(
     try:
         planned: ExternalEvidencePlan = await call_llm_with_retry(
             llm_tool=llm_tool,
+            phase=LLMPhase.EVIDENCE_PLANNING,
             prompt=prompt,
             parser=parser,
             prompt_kwargs={

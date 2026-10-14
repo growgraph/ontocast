@@ -342,3 +342,23 @@ def test_report_is_published_even_when_the_caps_are_inert() -> None:
     (report,) = seen
     assert report.literals_clipped == 0
     assert report.text_chars_before == report.text_chars_after > 0
+
+
+def test_an_oversized_chapter_is_counted_without_text_caps() -> None:
+    """A whole catalog in the prompt passes through over budget; that is counted.
+
+    Without the counter, the only trace of an overflowing context was a log line.
+    """
+    from ontocast.agent.render_facts import _record_chapter_report
+    from ontocast.onto.ontology_condense import CondenseReport
+    from ontocast.onto.state import BudgetTracker
+
+    profile = get_graph_format_profile(LLMGraphFormat.TURTLE)
+    seen: list[CondenseReport] = []
+    profile.format_ontology_chapter(_catalog(), max_triples=5, on_report=seen.append)
+    tracker = BudgetTracker()
+
+    _record_chapter_report(seen[0], tracker)
+
+    assert seen[0].over_budget
+    assert tracker.counters == {"chapter/triples_over_budget": 1}

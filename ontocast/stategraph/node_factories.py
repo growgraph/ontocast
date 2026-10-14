@@ -12,6 +12,7 @@ from ontocast.agent.render_ontology import render_ontology_update
 from ontocast.agent.summarize_chunks import ensure_unit_summary
 from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
 from ontocast.onto.enum import (
+    LLMPhase,
     OntologyAssemblyMode,
     OntologyContextMode,
     OntologyContextScope,
@@ -51,7 +52,7 @@ from ontocast.stategraph.helpers import (
     reconcile_fresh_ontologies,
 )
 from ontocast.stategraph.unit_context import UnitLoopContext
-from ontocast.tool.llm import RUN_STOPPING_ERRORS
+from ontocast.tool.llm import RUN_STOPPING_ERRORS, use_llm_phase
 from ontocast.tool.ontology_validation import (
     apply_minted_duplicate_rewrites,
     detect_minted_duplicates,
@@ -351,6 +352,10 @@ def make_render_ontology_node(tools: ToolBox):
         _, state.unit_patch_sources, _, primary_counts = aggregate_writable_metrics(
             unit_contexts
         )
+        state.unit_context_sources = {
+            **state.unit_context_sources,
+            "ontology": dict(state.unit_patch_sources),
+        }
         state.retrieval_metrics[RetrievalMetric.ONTOLOGY_WRITABLE_COUNT] = len(
             seen_writable
         )
@@ -597,7 +602,8 @@ def make_consolidate_ontology_node(tools: ToolBox):
             working_graph=snap.graph.copy(),
             assembly_anchor_iri=primary.iri or "",
         )
-        result = await render_ontology_update(consolidation_state, atomic_tools)
+        with use_llm_phase(LLMPhase.ONTOLOGY_CONSOLIDATION):
+            result = await render_ontology_update(consolidation_state, atomic_tools)
         if result.status == Status.SUCCESS and result.working_graph_changed():
             delta = result.build_delta()
             if _insert_only(tools):
@@ -870,6 +876,10 @@ def make_render_facts_node(tools: ToolBox):
         _, state.unit_patch_sources, _, anchor_counts = aggregate_writable_metrics(
             unit_contexts
         )
+        state.unit_context_sources = {
+            **state.unit_context_sources,
+            "facts": dict(state.unit_patch_sources),
+        }
         state.retrieval_metrics[RetrievalMetric.FACTS_ANCHOR_COUNT] = len(anchor_counts)
         state.retrieval_metrics[RetrievalMetric.FACTS_ANCHOR_UNITS] = sum(
             anchor_counts.values()

@@ -13,6 +13,7 @@ from rdflib import URIRef
 from ontocast.agent.common import call_llm_with_retry
 from ontocast.onto.enum import (
     FailureStage,
+    LLMPhase,
     OntologyAssemblyMode,
     Status,
     WorkflowNode,
@@ -151,6 +152,7 @@ async def criticise_ontology(
     try:
         critique: OntologyCritiqueReport = await call_llm_with_retry(
             llm_tool=llm_tool,
+            phase=LLMPhase.ONTOLOGY_CRITIC,
             prompt=prompt,
             parser=parser,
             prompt_kwargs={

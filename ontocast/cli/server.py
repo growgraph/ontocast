@@ -618,6 +618,18 @@ def serve(
     ),
 )
 @click.option(
+    "--dump-catalog",
+    "dump_catalog",
+    is_flag=True,
+    default=False,
+    help=(
+        "After each document, write the whole ontology catalog as it stands "
+        "(<name>.catalog.nq: one named graph per ontology IRI, sorted N-Quads), "
+        "so the catalog's evolution over a batch can be diffed document by "
+        "document."
+    ),
+)
+@click.option(
     "--document-metadata",
     type=str,
     default=None,
@@ -649,6 +661,7 @@ def process(
     document_type_hint: str | None,
     section_schema_id: str | None,
     keep_provenance: bool,
+    dump_catalog: bool,
     document_metadata: str | None,
 ) -> None:
     """Process local files through the extraction pipeline (no HTTP server)."""
@@ -737,6 +750,7 @@ def process(
                 facts_output_dir=facts_dir,
                 ontology_output_dir=ontology_out_dir,
                 strip_provenance=not keep_provenance,
+                dump_catalog=dump_catalog,
             )
         )
     except LLMConfigurationError as exc:

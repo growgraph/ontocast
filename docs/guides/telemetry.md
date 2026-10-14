@@ -10,8 +10,8 @@ every key.
 
 | Where | What you get |
 |---|---|
-| `/process` and `/process_unit` responses | `metadata`: `status`, `budget`, `retrieval_metrics`, `failed_units`, `facts_conformance`, `facts_validation_findings`, `facts_repairs`, `facts_gate_repairs`, `improvement_suggestions` |
-| `ontocast process` | Per document, beside `<name>.facts.ttl`: `<name>.run.json`, the run manifest, and `<name>.facts.validation.json` when validation has something to report |
+| `/process` and `/process_unit` responses | `metadata`: `status`, `budget`, `retrieval_metrics`, `unit_context_sources`, `failed_units`, `facts_conformance`, `facts_validation_findings`, `facts_repairs`, `facts_gate_repairs`, `improvement_suggestions` |
+| `ontocast process` | Per document, beside `<name>.facts.ttl`: `<name>.run.json`, the run manifest, and `<name>.facts.validation.json` when validation has something to report. With `--keep-provenance`, also `<name>.units.jsonl`; with `--dump-catalog`, `<name>.catalog.nq` beside the ontology files |
 | The log | A summary of calls, tokens, durations and effective workers at `INFO` when a document finishes |
 
 `ontocast process` writes these files into `--output-dir` (or
@@ -42,6 +42,17 @@ unmeasured, not zero. The two ratios say where to aim a cost change: a high
 `prefix_cache_hit_rate` at prompt reuse; see [Performance
 tuning](performance.md#what-makes-a-prompt-expensive). OntoCast reports tokens,
 not money.
+
+`budget.tokens_by_phase` splits the same counts by what each call was for:
+`facts_render`, `facts_critic`, `facts_completion`, `ontology_render`,
+`ontology_critic`, `ontology_consolidation`, `ontology_selection`,
+`evidence_planning`, `unit_summary` and `section_classification`. Each entry
+holds `calls`, `replays`, `input`, `output`, `reasoning`, `cache_read`,
+`cache_write`, `replayed_input` and `replayed_output`, in the same terms as a
+`RunMeter`. Across phases they add up to the totals above, so a run's cost can be
+attributed to its steps without reading prompt caches. An `unlabeled` entry
+means a call the pipeline does not name. A content unit that fails keeps its
+calls out of `budget` altogether; a `RunMeter` still counts them.
 
 `budget` is complete once the run ends. To follow usage while the run is in
 progress, or to stop the run at a limit, bind a `RunMeter`; see [Limit what a run
@@ -100,6 +111,11 @@ document.
 | `ontology_snapshot_triples` | How large the context was. Compare it with [`ONTOLOGY_CONTEXT_MAX_TRIPLES`](../reference/configuration/pipeline.md#ontology_context_max_triples): at or above it, the context was condensed or passed through oversized |
 | `empty_snapshot_reason` | Why a unit's context was empty. Only the last unit's reason is kept |
 | `patch_retrieval` | In `selected_vector_search_ontology` mode, what retrieval matched: query count, terms kept (`atoms_final`), terms per ontology, and which whole small vocabularies were included or left out |
+
+`unit_context_sources` lists, per unit, the ontology IRIs its context was drawn
+from, by lane: `ontology` for the ontology stage, `facts` for the facts stage. Use
+it to check which ontologies each unit could see; the per-unit values in
+`retrieval_metrics` keep only the last unit's.
 
 Set [`ONTOLOGY_PATCH_DUMP_ONTOLOGY_RANKS`](../reference/configuration/ontology-retrieval.md#ontology_patch_dump_ontology_ranks)
 to add a per-query ranking of the ontologies to `patch_retrieval`.
@@ -164,6 +180,7 @@ The blocks you read most:
 | Block | Answers |
 |---|---|
 | `llm`, `loops`, `prompting` | Which model and settings produced the run, as actually applied |
+| `unit_context_sources` | Ontology IRIs behind each unit's context, by lane and unit index |
 | `effective_config` | Every setting, keyed by environment variable, credentials redacted. Diff two manifests' blocks to see every setting that differed, including those that make no LLM call |
 | `chunking_mode` | The mode the chunker ran in. `naive` under a `semantic` setting means the semantic-chunking extra is missing. Absent on the single-unit path, which does not chunk |
 | `budget` | Cost and time, as above |
@@ -177,6 +194,29 @@ The blocks you read most:
     `facts_triples_serialized` counts what the file holds after provenance is
     removed. Compare runs on `facts_triples_serialized` when the question is
     about extracted content.
+
+## Tracing a fact to its text, and the catalog across a batch
+
+Two `ontocast process` options write files for checking a run against its
+input:
+
+- `--keep-provenance` keeps, in `<name>.facts.ttl`, the unit each statement came
+  from (`prov:wasDerivedFrom <doc_iri>/<hid>`), and writes `<name>.units.jsonl`:
+  one row per content unit with `index`, `hid`, `iri`, `section_label`,
+  `summarized` and `text`. A statement's unit IRI is a row's `iri`. `text` is the
+  unit as chunked, from the converted document, so markup the converter added
+  is part of it; `summarized` is true when the model was shown a summary
+  instead.
+- `--dump-catalog` writes `<name>.catalog.nq` after each document: every ontology
+  in the catalog at that point, as the next document will see it, in sorted
+  N-Quads with the ontology IRI as graph name. Comparing consecutive dumps shows
+  how the catalog changed. Blank-node labels differ between dumps, so canonicalise
+  them before comparing statements about blank nodes.
+
+A batch run on the default in-memory store starts from the seed directory
+alone, so seeding a run with a saved catalog is how to run against it frozen
+(`RENDER_MODE=facts`). On Fuseki, an ontology already stored under an IRI is
+kept over a seed with the same IRI: use a fresh tenant or project for that.
 
 ## External tracing
 

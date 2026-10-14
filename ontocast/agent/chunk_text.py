@@ -12,6 +12,7 @@ from ontocast.onto.state import AgentState
 from ontocast.tool.chunk.bibliography import is_bibliography_unit
 from ontocast.tool.chunk.non_content import first_line, is_non_content_unit
 from ontocast.tool.chunk.prepare import PrepareOptions, prepare_content_units
+from ontocast.tool.llm import use_budget_tracker
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -32,13 +33,16 @@ async def chunk_text(state: AgentState, tools: ToolBox) -> AgentState:
         summarize_sections=state.summarize_sections,
         exclude_sections=state.exclude_sections,
     )
-    prepared = await prepare_content_units(
-        state.docling_doc,
-        tools.chunker,
-        tools.chunker.config,
-        options,
-        tools,
-    )
+    # Bound here because no other tracker is bound this early in the run: LLM
+    # section classification and its worker waits would be charged nowhere.
+    with use_budget_tracker(state.budget_tracker):
+        prepared = await prepare_content_units(
+            state.docling_doc,
+            tools.chunker,
+            tools.chunker.config,
+            options,
+            tools,
+        )
 
     if state.max_chunks is not None:
         prepared = prepared[: state.max_chunks]

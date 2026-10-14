@@ -14,7 +14,7 @@ from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry
 from ontocast.onto.constants import DEFAULT_IRI
-from ontocast.onto.enum import FailureStage, Status, WorkflowNode
+from ontocast.onto.enum import FailureStage, LLMPhase, Status, WorkflowNode
 from ontocast.onto.model import (
     FactsRenderReport,
     GraphRepairRecord,
@@ -182,7 +182,13 @@ def _record_chapter_report(
     before/after even when nothing was clipped, which is the case that tells a
     deployment its caps are inert.
     """
-    if budget_tracker is None or not report.text_chars_before:
+    if budget_tracker is None:
+        return
+    if report.over_budget:
+        # Condensing never drops labels, types, hierarchy or domain/range, so an
+        # oversized catalog reaches the prompt anyway; count that it did.
+        budget_tracker.incr("chapter/triples_over_budget")
+    if not report.text_chars_before:
         return
     budget_tracker.incr("chapter/text_chars_before", report.text_chars_before)
     budget_tracker.incr("chapter/text_chars_after", report.text_chars_after)
@@ -383,6 +389,7 @@ async def render_facts_fresh(
 
         render_report: FactsRenderReport = await call_llm_with_retry(
             llm_tool=llm_tool,
+            phase=LLMPhase.FACTS_RENDER,
             prompt=prompt,
             parser=parser,
             prompt_kwargs={

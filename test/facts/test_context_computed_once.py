@@ -331,3 +331,20 @@ def test_union_keeps_namespace_bindings() -> None:
 
 def test_union_of_nothing_is_empty() -> None:
     assert len(node_factories._union_unit_ontology_context([])) == 0
+
+
+async def test_unit_context_sources_keep_both_lanes(monkeypatch) -> None:
+    """The facts stage records its lane without erasing the ontology lane."""
+    _install_recording_facts_loop(monkeypatch)
+    state = _state(3)
+    state.unit_context_sources = {"ontology": {0: ["https://example.org/onto/a"]}}
+
+    await node_factories.make_render_facts_node(_tools())(state)
+
+    facts_lane = state.unit_context_sources["facts"]
+    assert set(facts_lane) == {0, 1, 2}
+    assert all(
+        set(sources) == {"https://example.org/onto/a", "https://example.org/onto/b"}
+        for sources in facts_lane.values()
+    )
+    assert state.unit_context_sources["ontology"] == {0: ["https://example.org/onto/a"]}

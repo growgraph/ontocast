@@ -37,8 +37,19 @@ def _env_name(group_name: str, field_name: str) -> str:
 def test_every_setting_is_recorded_and_json_safe() -> None:
     snapshot = config_snapshot(Config())
 
-    assert set(snapshot) == {field.env_name for field in iter_settings_fields(Config)}
+    assert set(snapshot) == {
+        name for field in iter_settings_fields(Config) for name in field.env_names
+    }
     json.dumps(snapshot)
+
+
+def test_an_alias_is_recorded_under_each_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A record must be readable by the name that configured the setting."""
+    monkeypatch.setenv("MAX_VISITS", "3")
+
+    snapshot = config_snapshot(Config())
+
+    assert snapshot["MAX_VISITS"] == snapshot["MAX_VISITS_PER_NODE"] == 3
 
 
 def test_records_the_settings_that_make_no_llm_call(

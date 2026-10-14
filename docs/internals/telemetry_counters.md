@@ -28,6 +28,7 @@ unit finishes: fields and counters are summed, and duration keys ending in
 | `facts_triples_generated`, `facts_operations_count` | The same for facts renders |
 | `node_durations` | Seconds per key; see [Duration keys](#duration-keys) |
 | `counters` | Event counts per key; see [Budget counters](#budget-counters) |
+| `tokens_by_phase` | Per `LLMPhase` (`ontocast/onto/enum.py`): `calls`, `replays` and the token counts of a `RunMeter` `TokenTotals`. The phase is set with `use_llm_phase` (`ontocast/tool/llm.py`), and an enclosing phase wins over an inner one |
 
 Two fields are derived when the budget is serialized:
 
@@ -107,6 +108,7 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `chapter/text_chars_after` | `ontocast/agent/render_facts.py` | The same after the caps |
 | `chapter/literals_clipped` | `ontocast/agent/render_facts.py` | Literals the caps shortened |
 | `chapter/text_over_budget` | `ontocast/agent/render_facts.py` | Chapters still over `ONTOLOGY_TEXT_TOTAL_BUDGET` after every role was tightened |
+| `chapter/triples_over_budget` | `ontocast/agent/render_facts.py` | Facts chapters still over `ONTOLOGY_CONTEXT_MAX_TRIPLES` after condensing, passed through whole |
 | `ctx/merge_document_ontology.calls` | `ontocast/stategraph/context_resolver.py` | Document ontology merges; `1` per document |
 | `ctx/union_document_ontology.calls` | `ontocast/stategraph/context_resolver.py` | Union chapters built; `1` per facts-only document with a document scope |
 | `<node>/unit_errors` | `ontocast/stategraph/node_factories.py` | Units of a fan-out node that raised |
@@ -218,6 +220,8 @@ left out.
 | `graph_metrics` | The written facts graph: `nodes`, `edges`, `components`, `largest_component`, `isolated_nodes` |
 | `ontology_triples`, `facts_triples`, `facts_triples_serialized` | Ontology triples written; facts triples in memory, provenance included; facts triples in the `.facts.ttl` file |
 | `retrieval_metrics` | The same mapping `/process` returns |
+| `unit_context_sources` | Ontology IRIs behind each unit's context, by lane (`ontology`, `facts`) and unit index |
+| `effective_config`, `chunking_mode` | Every setting keyed by environment variable, credentials redacted; the chunker's mode after any fallback |
 
 Score buckets in `score_histogram` are decades keyed like `"70-79"`; an empty
 histogram with `calls` above zero means the critic returned no score that

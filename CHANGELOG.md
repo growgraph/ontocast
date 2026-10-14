@@ -18,8 +18,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ontology delete (render, consolidation, critic) before it is applied, counted in
   `ontology/deletes_dropped_insert_only`. Prompts are unchanged.
 - **`effective_config`** and **`chunking_mode`** in the run manifest: every setting keyed by
-  environment variable with credentials redacted, and the chunker's mode after any fallback.
+  each environment name it is read from (aliases included), credentials redacted, and the
+  chunker's mode after any fallback.
 - **`GET /config`**: the same settings record for a running server.
+- **`budget.tokens_by_phase`**: calls and tokens per `LLMPhase` (facts render, critic and
+  completion; ontology render, critic, consolidation and selection; evidence planning; unit
+  summary; section classification). Set with `use_llm_phase`; `call_llm_with_retry` takes `phase`.
+- **`unit_context_sources`** in the run manifest and in `/process` metadata: the ontology IRIs
+  behind each unit's context, by lane (`ontology`, `facts`).
+- **`chapter/triples_over_budget`** counter: a facts chapter still over
+  `ONTOLOGY_CONTEXT_MAX_TRIPLES` after condensing.
+- **`<name>.units.jsonl`** with `ontocast process --keep-provenance`: the text, section label and
+  IRI of every content unit that provenance points at.
+- **`ontocast process --dump-catalog`**: writes `<name>.catalog.nq` after each document, the whole
+  ontology catalog as the next document sees it.
+
+### Fixed
+
+- **Section classification is charged to the document's `budget`**: LLM classification calls
+  during chunking were counted by no tracker.
+- **Retrieval metrics are per content unit**: concurrent units shared one record, so a unit could
+  read another unit's expanded ontologies and treat them as writable.
 
 ## [0.6.8]
 

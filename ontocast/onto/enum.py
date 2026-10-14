@@ -264,6 +264,27 @@ class WorkflowNode(StrEnum):
     CONSISTENCY_CRITIC = "Consistency Critic"
 
 
+class LLMPhase(StrEnum):
+    """What an LLM call was for: the key of ``BudgetTracker.tokens_by_phase``.
+
+    A phase covers every provider call its step makes, parse retries and
+    re-renders included. ``UNLABELED`` collects calls made outside any labelled
+    step; in a pipeline run it should stay empty.
+    """
+
+    FACTS_RENDER = "facts_render"
+    FACTS_CRITIC = "facts_critic"
+    FACTS_COMPLETION = "facts_completion"
+    ONTOLOGY_RENDER = "ontology_render"
+    ONTOLOGY_CRITIC = "ontology_critic"
+    ONTOLOGY_CONSOLIDATION = "ontology_consolidation"
+    ONTOLOGY_SELECTION = "ontology_selection"
+    EVIDENCE_PLANNING = "evidence_planning"
+    UNIT_SUMMARY = "unit_summary"
+    SECTION_CLASSIFICATION = "section_classification"
+    UNLABELED = "unlabeled"
+
+
 class VectorStoreBackend(StrEnum):
     """Which vector store implementation backs ontology patch retrieval.
 

@@ -586,6 +586,13 @@ class RunManifest(BaseModel):
             "in either number explaining it."
         ),
     )
+    unit_context_sources: dict[str, dict[int, list[str]]] = Field(
+        default_factory=dict,
+        description=(
+            "Ontology IRIs each unit's prompt context was drawn from, by lane "
+            "('ontology', 'facts') and unit index."
+        ),
+    )
     retrieval_metrics: dict[str, Any] = Field(
         default_factory=dict,
         description=(
