@@ -809,12 +809,19 @@ def test_dump_run_manifest_records_cost_and_configuration(tmp_path) -> None:
         )
     )
 
-    out = dump_run_manifest(state, src, config=config, output_dir=out_dir)
+    out = dump_run_manifest(
+        state, src, config=config, output_dir=out_dir, chunking_mode="naive"
+    )
     assert out is not None
     assert out == out_dir / "paper.run.json"
 
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["source"] == "paper.pdf"
+    # Settings that make no LLM call are recorded too, and the chunker's mode
+    # after any fallback, since the configured one may not have applied.
+    assert payload["effective_config"]["AGG_ENABLED"] is True
+    assert payload["effective_config"]["CHUNK_CHUNKING_MODE"] == "semantic"
+    assert payload["chunking_mode"] == "naive"
     assert payload["llm"] == {
         "provider": "ollama",
         "model_name": "kimi-k3",
@@ -1368,3 +1375,137 @@ def test_derived_store_names_are_not_reported() -> None:
     assert store_names_replaced_by_tenancy(config, "acme", "p1") == []
     scoped = config.for_tenancy("acme", "p1")
     assert store_names_replaced_by_tenancy(scoped, "acme", "p1") == []
+
+
+class _UnitsWorkflow:
+    """A workflow that finishes one document with two units and their facts."""
+
+    def astream(self, state, *args, **kwds):
+        from rdflib import Literal
+
+        from ontocast.config import AggregationConfig
+        from ontocast.onto.constants import DEFAULT_IRI
+        from ontocast.onto.content_unit import ContentUnit, OutputType
+        from ontocast.onto.enum import Status
+        from ontocast.tool import EmbeddingBasedAggregator
+
+        units = []
+        for index, label in enumerate(("Sample A", "Sample B")):
+            unit = ContentUnit(
+                text=f"{label} was annealed.",
+                index=index,
+                doc_iri=state.doc_iri,
+                type=OutputType.FACTS,
+            )
+            unit.graph.add(
+                (
+                    URIRef(f"{DEFAULT_IRI}s{index}"),
+                    URIRef("http://www.w3.org/2000/01/rdf-schema#label"),
+                    Literal(label),
+                )
+            )
+            units.append(unit)
+        aggregator = EmbeddingBasedAggregator(AggregationConfig(enabled=False))
+        facts = aggregator.postprocess_facts_units(
+            [unit.model_copy(deep=True) for unit in units], RDFGraph()
+        ).graph
+        self.facts = facts
+
+        async def _stream():
+            yield {
+                "status": Status.SUCCESS,
+                "aggregated_facts": facts,
+                "content_units": units,
+            }
+
+        return _stream()
+
+
+@pytest.mark.parametrize("strip_provenance", [True, False])
+def test_kept_provenance_resolves_through_the_units_sidecar(
+    tmp_path, strip_provenance: bool
+) -> None:
+    """Every unit a kept-provenance dump cites is a row of ``.units.jsonl``."""
+    import json
+
+    from ontocast.api.process_helpers import process_files_input
+    from ontocast.onto.constants import PROV
+
+    tools = _batch_toolbox()
+    workflow = _UnitsWorkflow()
+    src = tmp_path / "a.txt"
+    src.write_text("Sample A was annealed. Sample B was annealed.", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    failed = asyncio.run(
+        process_files_input(
+            [src],
+            config=tools.config,
+            head_chunks=None,
+            use_unit_pipeline=False,
+            tools=tools,
+            workflow=cast(CompiledStateGraph, workflow),
+            ontology_context_mode_value=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
+            tenant=None,
+            project=None,
+            output_dir=out_dir,
+            strip_provenance=strip_provenance,
+        )
+    )
+    assert failed == []
+
+    sidecars = list(out_dir.rglob("a.units.jsonl"))
+    if strip_provenance:
+        assert sidecars == []
+        return
+    rows = [json.loads(line) for line in sidecars[0].read_text().splitlines()]
+    by_iri = {row["iri"]: row for row in rows}
+    assert "wasDerivedFrom" in next(out_dir.rglob("a.facts.ttl")).read_text()
+    sources = {str(o) for o in workflow.facts.objects(None, PROV.wasDerivedFrom)}
+    assert sources and sources <= set(by_iri)
+    assert {row["text"] for row in rows} == {
+        "Sample A was annealed.",
+        "Sample B was annealed.",
+    }
+    assert all(row["summarized"] is False for row in rows)
+
+
+def test_dump_catalog_writes_one_catalog_per_document(tmp_path) -> None:
+    from ontocast.api.process_helpers import process_files_input
+
+    tools = _batch_toolbox()
+    src = tmp_path / "a.txt"
+    src.write_text("Sample A was annealed.", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    failed = asyncio.run(
+        process_files_input(
+            [src],
+            config=tools.config,
+            head_chunks=None,
+            use_unit_pipeline=False,
+            tools=tools,
+            workflow=cast(CompiledStateGraph, _UnitsWorkflow()),
+            ontology_context_mode_value=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
+            tenant=None,
+            project=None,
+            output_dir=out_dir,
+            dump_catalog=True,
+        )
+    )
+
+    assert failed == []
+    assert [p.name for p in out_dir.rglob("*.catalog.nq")] == ["a.catalog.nq"]
+
+
+def test_process_cli_offers_the_validation_dumps() -> None:
+    from click.testing import CliRunner
+
+    from ontocast.cli.server import process
+
+    result = CliRunner().invoke(process, ["--help"])
+
+    assert "--dump-catalog" in result.output
+    assert "--keep-provenance" in result.output

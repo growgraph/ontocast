@@ -561,6 +561,15 @@ class ChunkConfig(BaseSettings):
             "HybridChunker structural segments."
         ),
     )
+    chunking_mode: Literal["semantic", "naive"] = Field(
+        default="semantic",
+        description=(
+            "How the chunker splits text: 'semantic' clusters sentence "
+            "embeddings (needs the semantic-chunking extra, else it falls "
+            "back to 'naive' with a warning); 'naive' splits by size alone. "
+            "Part of the chunk cache key."
+        ),
+    )
     section_classifier: Literal["llm", "heuristic", "heading", "off"] = Field(
         default="heuristic",
         description=(
@@ -1576,6 +1585,17 @@ class SiblingGuardScope(StrEnum):
 class AggregationConfig(BaseSettings):
     """Aggregation settings for entity clustering/disambiguation."""
 
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Run identity consolidation over the facts units: ontology "
+            "anchoring, embedding clustering, natural-key pairs and the "
+            "lexical/symbolic merge tiers. Off keeps every entity its own "
+            "cluster -- naming, provenance and document metadata still run, "
+            "and the aggregation encoder is never loaded. Requires "
+            "AGG_UNIT_SCOPED_FACT_IRIS, or units fuse by local name anyway."
+        ),
+    )
     embedding_model: str = Field(
         default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         description=(
@@ -1700,6 +1720,22 @@ class AggregationConfig(BaseSettings):
             "carry the suffix. Off reproduces name-keyed fusion."
         ),
     )
+
+    @model_validator(mode="after")
+    def validate_off_is_merge_free(self) -> "AggregationConfig":
+        """Reject consolidation off with unit scoping off.
+
+        Without scoping, two units minting the same local name are one node
+        before aggregation runs, so a run configured as merge-free would still
+        fuse entities -- by name, and without any record of it.
+        """
+        if not self.enabled and not self.unit_scoped_fact_iris:
+            raise ValueError(
+                "AGG_ENABLED=false requires AGG_UNIT_SCOPED_FACT_IRIS=true: "
+                "without unit scoping, same-named entities from different "
+                "units fuse by name before aggregation."
+            )
+        return self
 
     model_config = SettingsConfigDict(
         env_prefix="AGG_",
@@ -3007,6 +3043,16 @@ class OntologyValidationConfig(BaseSettings):
             "replaces the minted IRI with the catalog IRI in the merged "
             "update (enable it once 'detect' shows the matches are true "
             "duplicates); 'off' skips the check."
+        ),
+    )
+    update_mode: Literal["insert_delete", "insert_only"] = Field(
+        default="insert_delete",
+        description=(
+            "Which side of an ontology patch is applied. 'insert_only' drops "
+            "every delete -- from renders, consolidation and the critic -- "
+            "before it reaches the working graph or the catalog, and counts "
+            "the dropped triples in 'ontology/deletes_dropped_insert_only'. "
+            "Prompts are unchanged, so the model may still propose deletes."
         ),
     )
     critic_passes: int = Field(

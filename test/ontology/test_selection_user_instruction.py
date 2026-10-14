@@ -66,8 +66,10 @@ async def test_selector_passes_selection_instruction_into_prompt_kwargs(
         ),
     )
 
-    async def _fake_call_llm_with_retry(*, llm_tool, prompt, parser, prompt_kwargs):
-        _ = (llm_tool, prompt, parser)
+    async def _fake_call_llm_with_retry(
+        *, llm_tool, prompt, parser, prompt_kwargs, phase
+    ):
+        _ = (llm_tool, prompt, parser, phase)
         captured.update(prompt_kwargs)
         return SimpleNamespace(answer_index=1)
 

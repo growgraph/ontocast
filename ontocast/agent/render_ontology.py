@@ -14,6 +14,7 @@ from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.agent.update_common import finalize_update_report, log_quarantine
 from ontocast.onto.enum import (
     FailureStage,
+    LLMPhase,
     OntologyAssemblyMode,
     Status,
     WorkflowNode,
@@ -184,6 +185,7 @@ async def render_ontology_fresh(
         llm_tool = await tools.get_llm_tool(state.budget_tracker)
         render_report: OntologyRenderReport = await call_llm_with_retry(
             llm_tool=llm_tool,
+            phase=LLMPhase.ONTOLOGY_RENDER,
             prompt=prompt,
             parser=parser,
             prompt_kwargs={
@@ -293,6 +295,7 @@ async def render_ontology_update(
 
         render_report: GraphUpdateRenderReport = await call_llm_with_retry(
             llm_tool=llm_tool,
+            phase=LLMPhase.ONTOLOGY_RENDER,
             prompt=prompt,
             parser=parser,
             prompt_kwargs={
@@ -322,6 +325,12 @@ async def render_ontology_update(
         # unit-code resolution) and have no ontology counterpart. The ontology
         # side's deterministic validator runs in the loop instead, against the
         # net delta -- see stategraph/atomic.py::_collect_ontology_findings.
+        if tools.ontology_insert_only and len(render_report.delete_graph):
+            state.budget_tracker.incr(
+                "ontology/deletes_dropped_insert_only",
+                len(render_report.delete_graph),
+            )
+            render_report.delete_graph = RDFGraph()
         graph_update, rejected = finalize_update_report(render_report)
         state.quarantined_literal_triples = rejected
         log_quarantine("Ontology", rejected)

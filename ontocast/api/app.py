@@ -41,6 +41,7 @@ from ontocast.api.responses import (
     section_selection_empty_response,
 )
 from ontocast.api.schemas import (
+    ConfigResponse,
     FlushOkResponse,
     HealthErrorResponse,
     HealthOkResponse,
@@ -57,6 +58,7 @@ from ontocast.api.tenancy_resolution import (
     resolve_tenant_project,
 )
 from ontocast.config import ServerConfig
+from ontocast.config.snapshot import config_snapshot
 from ontocast.onto.enum import OntologyContextMode, RenderMode, Status
 from ontocast.onto.retrieval_capabilities import (
     OntologyContextConfigError,
@@ -275,6 +277,13 @@ def create_app(
             input_types=sorted(
                 ext.lstrip(".") for ext in get_supported_input_extensions(tools)
             ),
+        )
+
+    @app.get("/config", response_model=ConfigResponse, summary="Effective settings")
+    async def effective_config():
+        return ConfigResponse(
+            settings=config_snapshot(tools.config),
+            chunking_mode=tools.chunker.chunking_mode,
         )
 
     @app.post("/match/entities", response_model=AlignEntitiesResponse)
@@ -572,6 +581,7 @@ def create_app(
                     chunks_remaining=chunks_remaining,
                     budget=budget_tracker_data,
                     retrieval_metrics=workflow_state.get("retrieval_metrics", {}),
+                    unit_context_sources=workflow_state.get("unit_context_sources", {}),
                     facts_repairs=facts_repairs,
                     failed_units=unit_failures,
                     improvement_suggestions=list(
@@ -759,6 +769,7 @@ def create_app(
                     chunks_remaining=0,
                     budget=budget_tracker_data,
                     retrieval_metrics=initial_state.retrieval_metrics,
+                    unit_context_sources=initial_state.unit_context_sources,
                     facts_conformance=dict(initial_state.facts_conformance or {}),
                     facts_validation_findings=[
                         finding.model_dump(mode="json")

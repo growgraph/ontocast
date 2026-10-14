@@ -137,6 +137,35 @@ def use_budget_tracker(budget_tracker: Any):
         _active_budget_tracker.reset(token)
 
 
+#: The :class:`~ontocast.onto.enum.LLMPhase` usage is charged to. Task-local for
+#: the same reason as the tracker: sibling units label their own calls.
+_active_llm_phase: ContextVar[str | None] = ContextVar(
+    "ontocast_active_llm_phase", default=None
+)
+
+
+def current_llm_phase() -> str | None:
+    """The phase LLM usage is charged to in the running task, if any."""
+    return _active_llm_phase.get()
+
+
+@contextmanager
+def use_llm_phase(phase: str):
+    """Charge LLM usage inside this block to ``phase``.
+
+    An enclosing phase wins: a step that runs another step's agent (ontology
+    consolidation runs the ontology render) keeps its own label.
+    """
+    if _active_llm_phase.get() is not None:
+        yield
+        return
+    token = _active_llm_phase.set(str(phase))
+    try:
+        yield
+    finally:
+        _active_llm_phase.reset(token)
+
+
 def record_active_span(name: str, seconds: float) -> None:
     """Charge a latency span to the running task's budget tracker, if any.
 
@@ -878,7 +907,12 @@ class LLMTool(Tool):
         self._cache_hits += 1
         bt = self._current_budget_tracker()
         if bt is not None:
-            bt.add_cache_hit(len(prompt_str), len(content_str), usage=usage)
+            bt.add_cache_hit(
+                len(prompt_str),
+                len(content_str),
+                usage=usage,
+                phase=current_llm_phase(),
+            )
         meter = active_run_meter()
         if meter is not None:
             meter.record(
@@ -931,6 +965,7 @@ class LLMTool(Tool):
             len(prompt_str),
             _chars_received_from_result(result),
             usage=usage,
+            phase=current_llm_phase(),
         )
 
     def get_cache_stats(
@@ -1043,7 +1078,7 @@ class LLMTool(Tool):
                     # request the provider processed rather than only those
                     # that returned -- otherwise a run of timeouts reads as a
                     # run of few, cheap calls.
-                    bt.add_usage(len(prompt_str), 0)
+                    bt.add_usage(len(prompt_str), 0, phase=current_llm_phase())
                 # Re-raised as a plain error so the unit loop's handler treats
                 # it as a failed render rather than a cancellation: letting a
                 # bare TimeoutError escape asyncio.gather would abort the whole

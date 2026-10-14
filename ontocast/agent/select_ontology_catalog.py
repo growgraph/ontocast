@@ -6,6 +6,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry
+from ontocast.onto.enum import LLMPhase
 from ontocast.onto.model import create_ontology_selector_report_model
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
@@ -61,6 +62,7 @@ async def select_catalog_ontology_for_excerpt(
     record_active_count("llm/ontology_selection")
     selector = await call_llm_with_retry(
         llm_tool=llm_tool,
+        phase=LLMPhase.ONTOLOGY_SELECTION,
         prompt=prompt,
         parser=parser,
         prompt_kwargs={

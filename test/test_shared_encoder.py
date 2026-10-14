@@ -287,6 +287,28 @@ def test_chunker_probe_requires_clustering_dependencies(
     assert tool.embed_texts(["heading"]) == [[1.0, 1.0, 1.0, 1.0]]
 
 
+def test_chunking_mode_comes_from_the_config(
+    monkeypatch: pytest.MonkeyPatch, clean_encoder_cache, tmp_path
+) -> None:
+    """CHUNK_CHUNKING_MODE=naive splits by size without touching the encoder."""
+    from ontocast.config import Config
+    from ontocast.tool.cache import Cacher
+
+    monkeypatch.setattr(chunker_module, "_semantic_chunking_available", lambda: True)
+    monkeypatch.setenv("CHUNK_CHUNKING_MODE", "naive")
+    config = Config().tool_config.chunk_config
+    tool = ChunkerTool(chunk_config=config, cache=Cacher(cache_dir=tmp_path))
+
+    def no_encoder(self):
+        raise AssertionError("naive chunking loaded the encoder")
+
+    monkeypatch.setattr(ChunkerTool, "embeddings", no_encoder)
+
+    assert config.chunking_mode == "naive"
+    assert tool.chunking_mode == "naive"
+    assert tool("First sentence. Second sentence.")
+
+
 def test_chunker_embed_texts_returns_none_without_a_model(
     monkeypatch: pytest.MonkeyPatch, clean_encoder_cache
 ) -> None:

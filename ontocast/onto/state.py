@@ -12,6 +12,7 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import (
     FailureStage,
     LLMGraphFormat,
+    LLMPhase,
     OntologyContextMode,
     RenderMode,
     Status,
@@ -26,6 +27,7 @@ from ontocast.onto.model import (
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.run_meter import TokenTotals
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.token_usage import TokenUsage
 from ontocast.util.hash import render_text_hash
@@ -165,6 +167,14 @@ class BudgetTracker(BasePydanticModel):
             "Summed on merge, like node_durations."
         ),
     )
+    tokens_by_phase: dict[str, TokenTotals] = Field(
+        default_factory=dict,
+        description=(
+            "Token counts per LLMPhase. Across phases, calls add up to "
+            "calls_count, replays to cache_hits, and input/output to the "
+            "provider and replayed token totals."
+        ),
+    )
 
     def add_duration(self, name: str, seconds: float) -> None:
         """Accumulate seconds for a named node or stage.
@@ -275,6 +285,7 @@ class BudgetTracker(BasePydanticModel):
         chars_received: int,
         *,
         usage: TokenUsage | None = None,
+        phase: str | None = None,
     ) -> None:
         """Record a provider call.
 
@@ -282,10 +293,23 @@ class BudgetTracker(BasePydanticModel):
             chars_sent: Prompt length in characters.
             chars_received: Response length in characters.
             usage: Token counts, when the provider reported any.
+            phase: The :class:`LLMPhase` the call belongs to; ``None`` counts
+                as ``unlabeled``.
         """
         self.chars_sent += chars_sent
         self.chars_received += chars_received
         self.calls_count += 1
+        self._add_phase(
+            phase,
+            TokenTotals(
+                input=(usage.input_tokens or 0) if usage else 0,
+                cache_read=(usage.cache_read_input_tokens or 0) if usage else 0,
+                cache_write=(usage.cache_creation_input_tokens or 0) if usage else 0,
+                output=(usage.output_tokens or 0) if usage else 0,
+                reasoning=(usage.reasoning_tokens or 0) if usage else 0,
+                calls=1,
+            ),
+        )
         if usage is None:
             return
         if usage.input_tokens is not None:
@@ -300,6 +324,7 @@ class BudgetTracker(BasePydanticModel):
         chars_received: int,
         *,
         usage: TokenUsage | None = None,
+        phase: str | None = None,
     ) -> None:
         """Record a disk-cache hit (does not increment calls_count).
 
@@ -309,10 +334,19 @@ class BudgetTracker(BasePydanticModel):
             usage: Token counts stored with the cache entry. ``None`` for
                 entries written before usage was persisted, which report as
                 unknown rather than as zero.
+            phase: The :class:`LLMPhase` the replayed call belongs to.
         """
         self.cache_hits += 1
         self.chars_sent += chars_sent
         self.chars_received += chars_received
+        self._add_phase(
+            phase,
+            TokenTotals(
+                replayed_input=(usage.input_tokens or 0) if usage else 0,
+                replayed_output=(usage.output_tokens or 0) if usage else 0,
+                replays=1,
+            ),
+        )
         if usage is None:
             return
         if usage.input_tokens is not None:
@@ -320,6 +354,10 @@ class BudgetTracker(BasePydanticModel):
         if usage.output_tokens is not None:
             self.cached_output_tokens += usage.output_tokens
         self._add_usage_detail(usage, replayed=True)
+
+    def _add_phase(self, phase: str | None, totals: TokenTotals) -> None:
+        key = str(phase) if phase else LLMPhase.UNLABELED.value
+        self.tokens_by_phase.setdefault(key, TokenTotals()).add(totals)
 
     def add_ontology_update(self, num_operations: int, num_triples: int) -> None:
         """Add ontology update statistics.
@@ -367,6 +405,8 @@ class BudgetTracker(BasePydanticModel):
             self.add_duration(name, seconds)
         for name, count in other.counters.items():
             self.incr(name, count)
+        for phase, totals in other.tokens_by_phase.items():
+            self._add_phase(phase, totals)
 
     def get_summary(self) -> str:
         """Get a summary of LLM usage and generated triples."""
@@ -565,6 +605,15 @@ class AgentState(BasePydanticModel):
     unit_patch_sources: dict[int, list[str]] = Field(
         default_factory=dict,
         description="Retrieved ontology source IRIs per content unit index.",
+    )
+    unit_context_sources: dict[str, dict[int, list[str]]] = Field(
+        default_factory=dict,
+        description=(
+            "Ontology IRIs each unit's prompt context was drawn from, keyed by "
+            "lane ('ontology', 'facts') and unit index. Unlike "
+            "unit_patch_sources, the facts stage does not overwrite the "
+            "ontology lane."
+        ),
     )
     retrieval_metrics: dict[str, int | float | str | dict[str, Any]] = Field(
         default_factory=dict,

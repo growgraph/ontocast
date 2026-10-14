@@ -7,6 +7,7 @@ import logging
 import math
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
+from contextvars import ContextVar
 from typing import Any
 
 from pydantic import Field, PrivateAttr
@@ -1061,6 +1062,14 @@ def _merge_lexical_trigger_atoms(
     return out, promoted, appended
 
 
+#: Metrics of the running task's last retrieval. The retriever is one shared
+#: instance and units retrieve concurrently, so an instance attribute let one
+#: unit read -- and derive writable IRIs from -- another unit's expansion.
+_RETRIEVAL_METRICS: ContextVar[dict[str, Any] | None] = ContextVar(
+    "ontocast_retrieval_metrics", default=None
+)
+
+
 class OntologyPatchRetriever(Tool):
     """Combines vector retrieval into one composite ontology graph."""
 
@@ -1073,7 +1082,6 @@ class OntologyPatchRetriever(Tool):
         default_factory=PatchRetrievalConfig,
         exclude=True,
     )
-    _last_retrieval_metrics: dict[str, Any] = PrivateAttr(default_factory=dict)
     _surface_index: CatalogSurfaceIndex | None = PrivateAttr(default=None)
     # Whole-module graphs for the small-module closure, keyed by ontology IRI.
     # The catalog is stable for the life of a run, and every content unit hits
@@ -1085,7 +1093,24 @@ class OntologyPatchRetriever(Tool):
     _small_module_cache_scope: str = PrivateAttr(default="")
 
     @property
+    def _last_retrieval_metrics(self) -> dict[str, Any]:
+        metrics = _RETRIEVAL_METRICS.get()
+        if metrics is None:
+            metrics = {}
+            _RETRIEVAL_METRICS.set(metrics)
+        return metrics
+
+    @_last_retrieval_metrics.setter
+    def _last_retrieval_metrics(self, value: dict[str, Any]) -> None:
+        _RETRIEVAL_METRICS.set(value)
+
+    @property
     def last_retrieval_metrics(self) -> dict[str, Any]:
+        """Metrics of the last retrieval made by the running task.
+
+        Task-local: the retriever is shared by concurrent content units, and
+        each unit reads back the metrics of its own retrieval.
+        """
         return self._last_retrieval_metrics
 
     def _match_query_unit_signals(self, trigger_source: str) -> dict[str, str]:

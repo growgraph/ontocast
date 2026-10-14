@@ -7,6 +7,7 @@ declares a ``validation_alias``: those names bypass the prefix.
 """
 
 from collections.abc import Iterator
+from typing import Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict
 from pydantic.fields import FieldInfo
@@ -48,6 +49,28 @@ def env_names(group: type[BaseSettings], field_name: str) -> tuple[str, ...]:
         return (alias.upper(),)
     prefix = str(group.model_config.get("env_prefix", ""))
     return ((prefix + field_name).upper(),)
+
+
+def iter_settings_values(
+    settings: BaseSettings,
+) -> Iterator[tuple[SettingsField, Any]]:
+    """Yield every leaf field of a settings *instance* with its current value.
+
+    The instance counterpart of :func:`iter_settings_fields`: same order, same
+    descent into nested ``BaseSettings`` groups.
+    """
+    group = type(settings)
+    for name, info in group.model_fields.items():
+        value = getattr(settings, name)
+        if isinstance(value, BaseSettings):
+            yield from iter_settings_values(value)
+            continue
+        yield (
+            SettingsField(
+                group=group, name=name, info=info, env_names=env_names(group, name)
+            ),
+            value,
+        )
 
 
 def iter_settings_fields(root: type[BaseSettings]) -> Iterator[SettingsField]:

@@ -521,6 +521,21 @@ class RunManifest(BaseModel):
     )
     ontocast_version: str
     render_mode: str
+    effective_config: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Every setting the run was configured with, keyed by environment "
+            "variable, credentials redacted. Covers the settings that make no "
+            "LLM call, which call counts cannot confirm."
+        ),
+    )
+    chunking_mode: str | None = Field(
+        default=None,
+        description=(
+            "Mode the chunker ran in: CHUNK_CHUNKING_MODE, or 'naive' when "
+            "semantic chunking was unavailable in the environment."
+        ),
+    )
     loops: RunManifestLoops | None = None
     critic: RunManifestCritic | None = None
     ontology_critic: RunManifestCritic | None = None
@@ -569,6 +584,13 @@ class RunManifest(BaseModel):
             "actually holds. facts_triples counts the raw aggregated graph, "
             "so the two routinely differ by a factor of several, with nothing "
             "in either number explaining it."
+        ),
+    )
+    unit_context_sources: dict[str, dict[int, list[str]]] = Field(
+        default_factory=dict,
+        description=(
+            "Ontology IRIs each unit's prompt context was drawn from, by lane "
+            "('ontology', 'facts') and unit index."
         ),
     )
     retrieval_metrics: dict[str, Any] = Field(

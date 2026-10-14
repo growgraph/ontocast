@@ -1,5 +1,7 @@
 """Pydantic models for the OntoCast HTTP API."""
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from ontocast._version import __version__
@@ -14,6 +16,24 @@ class HealthOkResponse(BaseModel):
 class HealthErrorResponse(BaseModel):
     status: str = "unhealthy"
     error: str
+
+
+class ConfigResponse(BaseModel):
+    version: str = __version__
+    settings: dict[str, Any] = Field(
+        description=(
+            "Every setting the server was started with, keyed by environment "
+            "variable, credentials redacted. Per-request parameters of "
+            "/process and /process_unit override some of these for that "
+            "request only."
+        ),
+    )
+    chunking_mode: str = Field(
+        description=(
+            "Mode the chunker runs in: CHUNK_CHUNKING_MODE, or 'naive' when "
+            "semantic chunking is unavailable in this environment."
+        ),
+    )
 
 
 class InfoResponse(BaseModel):
@@ -69,6 +89,13 @@ class ProcessResultMetadata(BaseModel):
     chunks_remaining: int
     budget: dict
     retrieval_metrics: dict = Field(default_factory=dict)
+    unit_context_sources: dict[str, dict[int, list[str]]] = Field(
+        default_factory=dict,
+        description=(
+            "Ontology IRIs each unit's prompt context was drawn from, by lane "
+            "('ontology', 'facts') and unit index."
+        ),
+    )
     facts_repairs: dict[int, list[dict]] = Field(
         default_factory=dict,
         description=(

@@ -10,7 +10,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry
-from ontocast.onto.enum import FailureStage, Status, WorkflowNode
+from ontocast.onto.enum import FailureStage, LLMPhase, Status, WorkflowNode
 from ontocast.onto.model import (
     FactsCritiqueReport,
     LoopAttempt,
@@ -165,6 +165,7 @@ async def criticise_facts(
     try:
         critique: FactsCritiqueReport = await call_llm_with_retry(
             llm_tool=llm_tool,
+            phase=LLMPhase.FACTS_CRITIC,
             prompt=prompt,
             parser=parser,
             prompt_kwargs=prompt_data,

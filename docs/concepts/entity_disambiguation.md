@@ -71,6 +71,13 @@ every subject in the document uses it once.
 - A guard that is switched off shows its effect as a change in
   `facts_rejected_merges`, which is how to measure what it does on your
   documents.
+- To see what merging does at all, run once with
+  [`AGG_ENABLED=false`](../reference/configuration/aggregation.md#agg_enabled):
+  every entity stays its own node, with its provenance, and no candidate is
+  formed. It needs `AGG_UNIT_SCOPED_FACT_IRIS=true`, or same-named entities
+  from different units fuse by name anyway. Validation can still rewrite the
+  merged graph; set `FACTS_MERGE_REPAIR_PASSES=0` for a graph that only
+  extraction shaped.
 
 ## Comparing two graphs
 

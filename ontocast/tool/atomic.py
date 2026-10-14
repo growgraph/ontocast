@@ -130,9 +130,20 @@ class AtomicToolBox:
             min_deletes=facts_validation.critic_min_deletes,
             allow_subject_rename=facts_validation.critic_allow_subject_rename,
         )
+        # Insert-only: rendered deletes are dropped before apply, and the
+        # critic gets no delete allowance, so no path removes a triple.
+        self.ontology_insert_only = ontology_validation.update_mode == "insert_only"
         self.ontology_patch_policy = CriticPatchPolicy(
-            max_delete_share=ontology_validation.critic_max_delete_share,
-            min_deletes=ontology_validation.critic_min_deletes,
+            max_delete_share=(
+                0.0
+                if self.ontology_insert_only
+                else ontology_validation.critic_max_delete_share
+            ),
+            min_deletes=(
+                0
+                if self.ontology_insert_only
+                else ontology_validation.critic_min_deletes
+            ),
             allow_subject_rename=False,
         )
         # Numeric-coverage knobs for the deterministic per-unit validator.

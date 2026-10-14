@@ -12,6 +12,7 @@ from ontocast.agent.render_ontology import render_ontology_update
 from ontocast.agent.summarize_chunks import ensure_unit_summary
 from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
 from ontocast.onto.enum import (
+    LLMPhase,
     OntologyAssemblyMode,
     OntologyContextMode,
     OntologyContextScope,
@@ -45,12 +46,13 @@ from ontocast.stategraph.facts_gate import run_facts_gate
 from ontocast.stategraph.helpers import (
     all_unit_patch_source_iris,
     build_document_excerpt,
+    drop_all_deletes,
     enforce_redeclared_deletes,
     merge_unit_deltas,
     reconcile_fresh_ontologies,
 )
 from ontocast.stategraph.unit_context import UnitLoopContext
-from ontocast.tool.llm import RUN_STOPPING_ERRORS
+from ontocast.tool.llm import RUN_STOPPING_ERRORS, use_llm_phase
 from ontocast.tool.ontology_validation import (
     apply_minted_duplicate_rewrites,
     detect_minted_duplicates,
@@ -68,6 +70,18 @@ T = TypeVar("T")
 #: call the run meter refuses. Each is identical for every sibling unit, so
 #: _gather_units re-raises them instead of counting N of them as unit errors.
 _DEPLOYMENT_FAULTS = (OntologyContextConfigError, *RUN_STOPPING_ERRORS)
+
+
+def _insert_only(tools: ToolBox) -> bool:
+    """Whether ``ONTOLOGY_UPDATE_MODE=insert_only`` is in force."""
+    return (
+        tools.config.get_tool_config().ontology_validation.update_mode == "insert_only"
+    )
+
+
+def _count_insert_only_drops(state: AgentState, dropped: int) -> None:
+    if dropped:
+        state.budget_tracker.incr("ontology/deletes_dropped_insert_only", dropped)
 
 
 @asynccontextmanager
@@ -338,6 +352,10 @@ def make_render_ontology_node(tools: ToolBox):
         _, state.unit_patch_sources, _, primary_counts = aggregate_writable_metrics(
             unit_contexts
         )
+        state.unit_context_sources = {
+            **state.unit_context_sources,
+            "ontology": dict(state.unit_patch_sources),
+        }
         state.retrieval_metrics[RetrievalMetric.ONTOLOGY_WRITABLE_COUNT] = len(
             seen_writable
         )
@@ -383,6 +401,8 @@ def make_render_ontology_node(tools: ToolBox):
 
         # Document-level insert/delete consensus + namespace apply onto catalog bases.
         merged_delta = merge_unit_deltas(unit_deltas)
+        if _insert_only(tools):
+            _count_insert_only_drops(state, drop_all_deletes(merged_delta))
 
         # Single-ontology modes are untouched by the delete policy: there the
         # model saw the whole graph, so its deletes were judged on full
@@ -582,9 +602,12 @@ def make_consolidate_ontology_node(tools: ToolBox):
             working_graph=snap.graph.copy(),
             assembly_anchor_iri=primary.iri or "",
         )
-        result = await render_ontology_update(consolidation_state, atomic_tools)
+        with use_llm_phase(LLMPhase.ONTOLOGY_CONSOLIDATION):
+            result = await render_ontology_update(consolidation_state, atomic_tools)
         if result.status == Status.SUCCESS and result.working_graph_changed():
             delta = result.build_delta()
+            if _insert_only(tools):
+                _count_insert_only_drops(state, drop_all_deletes(delta))
             if not delta.is_empty() and primary.iri:
                 # The consolidation delta is a complement of `primary` (the
                 # map-stage artifact), so it must be applied on top of exactly
@@ -853,6 +876,10 @@ def make_render_facts_node(tools: ToolBox):
         _, state.unit_patch_sources, _, anchor_counts = aggregate_writable_metrics(
             unit_contexts
         )
+        state.unit_context_sources = {
+            **state.unit_context_sources,
+            "facts": dict(state.unit_patch_sources),
+        }
         state.retrieval_metrics[RetrievalMetric.FACTS_ANCHOR_COUNT] = len(anchor_counts)
         state.retrieval_metrics[RetrievalMetric.FACTS_ANCHOR_UNITS] = sum(
             anchor_counts.values()

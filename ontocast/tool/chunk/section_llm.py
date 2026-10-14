@@ -17,7 +17,7 @@ from ontocast.config.section_labels import (
     normalise_llm_label,
     resolve_section_schema_id,
 )
-from ontocast.onto.enum import SectionLabelSource
+from ontocast.onto.enum import LLMPhase, SectionLabelSource
 from ontocast.onto.model import BasePydanticModel
 from ontocast.prompt.section_classification import (
     CHUNK_SECTION_BATCH_CLASSIFICATION_PROMPT,
@@ -25,7 +25,11 @@ from ontocast.prompt.section_classification import (
     document_type_context,
     format_batch_items,
 )
-from ontocast.tool.llm import RUN_STOPPING_ERRORS, record_active_span
+from ontocast.tool.llm import (
+    RUN_STOPPING_ERRORS,
+    record_active_span,
+    use_llm_phase,
+)
 
 if TYPE_CHECKING:
     from ontocast.toolbox import ToolBox
@@ -90,7 +94,8 @@ async def classify_section_with_llm(
         document_context=document_type_context(document_type_hint),
         fragment=fragment,
     )
-    response = await tools.llm(prompt)
+    with use_llm_phase(LLMPhase.SECTION_CLASSIFICATION):
+        response = await tools.llm(prompt)
     parsed = parser.parse(response.content or "")
     return normalise_llm_label(parsed.label, schema)
 
@@ -137,7 +142,8 @@ async def classify_sections_batched(
             items=format_batch_items(batch),
         )
         try:
-            response = await tools.llm(prompt)
+            with use_llm_phase(LLMPhase.SECTION_CLASSIFICATION):
+                response = await tools.llm(prompt)
             parsed = parser.parse(response.content or "")
         except RUN_STOPPING_ERRORS:
             # Falling back to the per-segment path is pointless when the
