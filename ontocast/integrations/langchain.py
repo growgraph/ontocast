@@ -60,7 +60,7 @@ from ontocast.integrations.serialize import (
 from ontocast.onto.enum import LLMGraphFormat
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
-from ontocast.onto.state import AgentState
+from ontocast.onto.state import AgentState, InputDocument
 from ontocast.onto.tenancy import StoreKind
 from ontocast.util.optional import is_available
 
@@ -491,15 +491,18 @@ def _extract(tools: "ToolBox", max_chars: int) -> BaseTool:
         from ontocast.stategraph.unit_pipeline import run_unit_pipeline
 
         state = AgentState(
-            raw_input={"input.txt": text.encode("utf-8")},
+            input_document=InputDocument(
+                filename="input.txt", data=text.encode("utf-8")
+            ),
             render_mode=parse_render_mode_param(
                 render_mode, tools.config.server.render_mode
             ),
             ontology_user_instruction=instruction,
             facts_user_instruction=instruction,
             llm_graph_format=tools.config.server.llm_graph_format,
-            **({"current_domain": domain} if domain else {}),
         )
+        if domain:
+            state.current_domain = domain
         onto_result, facts_result = await run_unit_pipeline(state, tools)
 
         parts: list[str] = []

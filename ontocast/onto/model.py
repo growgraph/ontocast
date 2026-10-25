@@ -1,7 +1,7 @@
 import re
 from collections.abc import Sequence
 from enum import StrEnum
-from typing import Literal
+from typing import Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -657,7 +657,10 @@ class FactsUnitFindingKind(StrEnum):
     CRITIC_FIX = "critic_fix"
 
 
-class UnitFinding(BaseModel):
+FindingKindT = TypeVar("FindingKindT", bound=StrEnum)
+
+
+class UnitFinding(BaseModel, Generic[FindingKindT]):
     """One deterministic, machine-found issue in a rendered unit graph.
 
     Base shape shared by the facts and ontology validators; the subclasses
@@ -666,12 +669,10 @@ class UnitFinding(BaseModel):
     adjudicates item by item.
     """
 
-    #: Declared here as a plain string so code serving both phases -- the
-    #: acceptance policy, the findings prompt block -- can read it without
-    #: knowing which enum it came from. Each subclass narrows it to its own
-    #: ``StrEnum``, whose members *are* strings, so nothing is widened in
-    #: practice and no kind from one phase can satisfy the other's annotation.
-    kind: str
+    #: Each subclass binds this to its own ``StrEnum``, so no kind from one
+    #: phase satisfies the other's annotation; code serving both phases -- the
+    #: acceptance policy, the findings prompt block -- reads it as a string.
+    kind: FindingKindT
     mandatory: bool = True
     message: str
     subject: str = ""
@@ -688,10 +689,8 @@ class UnitFinding(BaseModel):
     )
 
 
-class FactsUnitFinding(UnitFinding):
+class FactsUnitFinding(UnitFinding[FactsUnitFindingKind]):
     """One deterministic, machine-found issue in a rendered facts graph."""
-
-    kind: FactsUnitFindingKind
 
 
 class OntologyUnitFindingKind(StrEnum):
@@ -731,10 +730,8 @@ class OntologyUnitFindingKind(StrEnum):
     FOREIGN_DELETE = "foreign_delete"
 
 
-class OntologyUnitFinding(UnitFinding):
+class OntologyUnitFinding(UnitFinding[OntologyUnitFindingKind]):
     """One deterministic, machine-found issue in a unit's ontology delta."""
-
-    kind: OntologyUnitFindingKind
 
 
 def format_findings_for_prompt(

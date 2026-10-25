@@ -27,7 +27,7 @@ from ontocast.api.responses import missing_fixed_catalog_ontology_id_response
 from ontocast.api.schemas import StatusErrorBody
 from ontocast.config import ServerConfig
 from ontocast.onto.enum import OntologyContextMode
-from ontocast.onto.state import AgentState
+from ontocast.onto.state import AgentState, InputDocument
 
 logger = logging.getLogger(__name__)
 
@@ -107,9 +107,13 @@ def _apply_source(values: dict[str, Any], source: Mapping[str, Any]) -> None:
 
 @dataclass(frozen=True)
 class ParsedProcessRequest:
-    """Fields shared by ``/process`` and ``/process_unit`` after reading the body."""
+    """Fields shared by ``/process`` and ``/process_unit`` after reading the body.
 
-    files_dict: dict[str, bytes]
+    ``documents`` holds at least one document, in upload order; every other
+    field applies to each of them alike.
+    """
+
+    documents: list[InputDocument]
     max_visits: int
     strip_provenance: bool
     ontology_user_instruction: str
@@ -174,7 +178,7 @@ async def load_parsed_process_request(
     if content_type.startswith("application/json"):
         bytes_data = await request.body()
         logger.debug("%s JSON body length: %s", log_label, len(bytes_data))
-        files_dict = {"input.json": bytes_data}
+        documents = [InputDocument(filename="input.json", data=bytes_data)]
         try:
             parsed_obj = json.loads(bytes_data.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -187,30 +191,30 @@ async def load_parsed_process_request(
                 _apply_source(values, parsed_obj)
     elif content_type.startswith("multipart/form-data"):
         form = await request.form()
-        files_dict = {}
+        documents = []
         form_values: dict[str, Any] = {}
         for key, value in form.multi_items():
-            if isinstance(value, StarletteUploadFile):
-                files_dict[key] = await value.read()
-            else:
+            if not isinstance(value, StarletteUploadFile):
                 form_values[key] = str(value)
+                continue
+            # The filename, not the form field, names the document: its
+            # suffix picks the converter.
+            if not value.filename:
+                return _validation_error("Every uploaded file needs a filename")
+            documents.append(
+                InputDocument(filename=value.filename, data=await value.read())
+            )
         _apply_source(values, form_values)
-        if not files_dict:
-            return JSONResponse(
-                status_code=400,
-                content=StatusErrorBody(
-                    error="No file provided",
-                    error_type="ValidationError",
-                ).model_dump(),
+        if not documents:
+            return _validation_error("No file provided")
+        if len(documents) > server_config.max_files_per_request:
+            return _validation_error(
+                f"{len(documents)} files sent; at most "
+                f"{server_config.max_files_per_request} per request",
+                error_code="too_many_files",
             )
     else:
-        return JSONResponse(
-            status_code=400,
-            content=StatusErrorBody(
-                error=f"Unsupported content type: {content_type}",
-                error_type="ValidationError",
-            ).model_dump(),
-        )
+        return _validation_error(f"Unsupported content type: {content_type}")
 
     ontology_context_mode_value: OntologyContextMode = (
         parse_ontology_context_mode_param(
@@ -233,7 +237,7 @@ async def load_parsed_process_request(
             return missing_fixed_catalog_ontology_id_response()
 
     return ParsedProcessRequest(
-        files_dict=files_dict,
+        documents=documents,
         max_visits=values["max_visits"],
         strip_provenance=values["strip_provenance"],
         ontology_user_instruction=values["ontology_user_instruction"],
@@ -255,15 +259,15 @@ async def load_parsed_process_request(
     )
 
 
-def build_agent_state_from_parsed(
+def build_agent_states_from_parsed(
     parsed: ParsedProcessRequest,
     *,
     server_config: ServerConfig,
     resolved_tenant: str,
     resolved_project: str,
     max_chunks: int | None,
-) -> AgentState:
-    """Construct ``AgentState`` after tenancy resolution and enum parsing."""
+) -> list[AgentState]:
+    """One ``AgentState`` per document, after tenancy resolution and enum parsing."""
     render_mode_value = parse_render_mode_param(
         parsed.render_mode,
         server_config.render_mode,
@@ -272,24 +276,36 @@ def build_agent_state_from_parsed(
         parsed.llm_graph_format,
         server_config.llm_graph_format,
     )
-    return AgentState(
-        raw_input=parsed.files_dict,
-        max_visits=parsed.max_visits,
-        max_chunks=max_chunks,
-        render_mode=render_mode_value,
-        llm_graph_format=llm_graph_format_value,
-        ontology_context_mode=parsed.ontology_context_mode_value,
-        tenant=resolved_tenant,
-        project=resolved_project,
-        ontology_user_instruction=parsed.ontology_user_instruction,
-        ontology_selection_user_instruction=parsed.ontology_selection_user_instruction,
-        facts_user_instruction=parsed.facts_user_instruction,
-        ontology_context_fixed_ontology_id=parsed.ontology_context_fixed_ontology_id,
-        target_sections=parsed.target_sections,
-        exclude_sections=parsed.exclude_sections,
-        summarize_sections=parsed.summarize_sections,
-        summary_max_sentences=parsed.summary_max_sentences,
-        document_type_hint=parsed.document_type_hint,
-        section_schema_id=parsed.section_schema_id,
-        document_metadata=dict(parsed.document_metadata),
+    return [
+        AgentState(
+            input_document=document,
+            max_visits=parsed.max_visits,
+            max_chunks=max_chunks,
+            render_mode=render_mode_value,
+            llm_graph_format=llm_graph_format_value,
+            ontology_context_mode=parsed.ontology_context_mode_value,
+            tenant=resolved_tenant,
+            project=resolved_project,
+            ontology_user_instruction=parsed.ontology_user_instruction,
+            ontology_selection_user_instruction=parsed.ontology_selection_user_instruction,
+            facts_user_instruction=parsed.facts_user_instruction,
+            ontology_context_fixed_ontology_id=parsed.ontology_context_fixed_ontology_id,
+            target_sections=parsed.target_sections,
+            exclude_sections=parsed.exclude_sections,
+            summarize_sections=parsed.summarize_sections,
+            summary_max_sentences=parsed.summary_max_sentences,
+            document_type_hint=parsed.document_type_hint,
+            section_schema_id=parsed.section_schema_id,
+            document_metadata=dict(parsed.document_metadata),
+        )
+        for document in parsed.documents
+    ]
+
+
+def _validation_error(message: str, *, error_code: str | None = None) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content=StatusErrorBody(
+            error=message, error_type="ValidationError", error_code=error_code
+        ).model_dump(),
     )

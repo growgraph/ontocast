@@ -1734,7 +1734,9 @@ class OntologyPatchRetriever(Tool):
             limit = embedding_tool.sequence_limit
             if limit is not None:
                 self._last_retrieval_metrics["query_sequence_limit"] = limit
-                over = embedding_tool.count_over_limit(queries)
+                # Off the loop: counting waits on the encoder lock while other
+                # units encode.
+                over = await asyncio.to_thread(embedding_tool.count_over_limit, queries)
                 if over is not None:
                     self._last_retrieval_metrics["queries_truncated"] = over
         if pc.dump_ontology_ranks:

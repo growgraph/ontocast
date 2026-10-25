@@ -95,14 +95,13 @@ def _fail_when_fixed_catalog_ontology_missing(state: AgentState) -> AgentState |
 
 
 def convert_document(state: AgentState, tools: ToolBox) -> AgentState:
-    """Convert a single raw input payload on the state into a DoclingDocument.
+    """Convert the state's input document into a DoclingDocument.
 
-    Strict 1-in / 1-out agent node: ``state.raw_input`` must contain exactly
-    one ``{filename: bytes}`` entry. Batch fan-out (e.g. JSONL) is the caller's
-    responsibility and must happen before this node is invoked.
+    One state is one document; a caller with several (a batch request, JSONL
+    lines) builds one state per document before this node runs.
 
     Args:
-        state: The current agent state with a single raw input payload.
+        state: The current agent state, carrying ``input_document``.
         tools: The toolbox instance providing utility functions.
 
     Returns:
@@ -112,17 +111,13 @@ def convert_document(state: AgentState, tools: ToolBox) -> AgentState:
     logger.debug("Converting document")
 
     state.status = Status.SUCCESS
-    raw_input = state.raw_input
-
-    if len(raw_input) != 1:
-        logger.error(
-            "convert_document expects exactly one raw input entry, received %d",
-            len(raw_input),
-        )
+    if state.input_document is None:
+        logger.error("convert_document needs an input document; the state has none")
         state.status = Status.FAILED
         return state
 
-    filename, file_content = next(iter(raw_input.items()))
+    filename = state.input_document.filename
+    file_content = state.input_document.data
     file_extension = pathlib.Path(filename).suffix.lower()
     logger.debug("Converting %s with extension %s", filename, file_extension)
 

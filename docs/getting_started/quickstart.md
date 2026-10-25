@@ -80,25 +80,35 @@ long document takes a while.
 
 ## 5. Read the result
 
-The response is JSON. The graphs are Turtle strings:
+The response is JSON with one result per document; you sent one. The graphs
+are Turtle strings:
 
 ```json
 {
-  "data": {
-    "facts": "@prefix cd: <...> . ...",
-    "ontology_artifacts": [
-      {"iri": "https://...", "ontology_id": "...", "title": "...", "triples": 42, "ttl": "..."}
-    ]
-  },
-  "metadata": {"status": "...", "chunks_processed": 7, "budget": {...}, "failed_units": [], ...}
+  "results": [
+    {
+      "filename": "input.json",
+      "status_code": 200,
+      "outcome": {
+        "status": "success",
+        "data": {
+          "facts": "@prefix cd: <...> . ...",
+          "ontology_artifacts": [
+            {"iri": "https://...", "ontology_id": "...", "title": "...", "triples": 42, "ttl": "..."}
+          ]
+        },
+        "metadata": {"status": "...", "chunks_processed": 7, "budget": {...}, "failed_units": [], ...}
+      }
+    }
+  ]
 }
 ```
 
 Save the facts to a file you can load into any RDF tool:
 
 ```bash
-jq -r .data.facts result.json > facts.ttl
-jq -r '.data.ontology_artifacts[0].ttl' result.json > ontology.ttl
+jq -r '.results[0].outcome.data.facts' result.json > facts.ttl
+jq -r '.results[0].outcome.data.ontology_artifacts[0].ttl' result.json > ontology.ttl
 ```
 
 `metadata` says what the run cost and where it struggled: `budget` counts LLM

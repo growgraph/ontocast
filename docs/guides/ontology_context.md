@@ -197,7 +197,7 @@ retrieval works](../internals/retrieval.md) explains the rest.
 
 ## See what a unit was shown {#diagnostics}
 
-The `/process` response carries `metadata.retrieval_metrics`, and a batch run
+Each `/process` result carries `outcome.metadata.retrieval_metrics`, and a batch run
 writes the same object into its run manifest. The keys to read:
 
 | Key | What it tells you |

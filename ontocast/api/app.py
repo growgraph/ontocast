@@ -11,6 +11,7 @@ from langgraph.graph.state import CompiledStateGraph
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ontocast._version import __version__
+from ontocast.api.batch import run_documents
 from ontocast.api.match_models import (
     AlignEntitiesRequest,
     AlignEntitiesResponse,
@@ -30,15 +31,12 @@ from ontocast.api.process_helpers import (
 )
 from ontocast.api.process_request import (
     ParsedProcessRequest,
-    build_agent_state_from_parsed,
+    build_agent_states_from_parsed,
     load_parsed_process_request,
 )
 from ontocast.api.responses import (
-    budget_exceeded_response,
-    document_conversion_error_response,
     ontology_context_config_error_response,
     request_param_error_response,
-    section_selection_empty_response,
 )
 from ontocast.api.schemas import (
     ConfigResponse,
@@ -46,6 +44,7 @@ from ontocast.api.schemas import (
     HealthErrorResponse,
     HealthOkResponse,
     InfoResponse,
+    ProcessBatchResponse,
     ProcessErrorResponse,
     ProcessOkResponse,
     ProcessResultData,
@@ -64,14 +63,13 @@ from ontocast.onto.retrieval_capabilities import (
     OntologyContextConfigError,
     validate_ontology_context_mode,
 )
-from ontocast.onto.run_meter import BudgetExceededError, run_meter_scope
+from ontocast.onto.run_meter import run_meter_scope
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import create_agent_graph
-from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
+from ontocast.stategraph.unit_pipeline import run_unit_pipeline
 from ontocast.tool.agg.match_derivation import derive_pair_matches
 from ontocast.tool.agg.match_models import TaggedGraph
 from ontocast.tool.agg.triple_evaluator import TripleSetEvaluator
-from ontocast.tool.chunk.prepare import SectionSelectionEmptyError
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.toolbox import ToolBox
 
@@ -166,14 +164,13 @@ def create_app(
         *,
         log_label: str,
         max_chunks: int | None,
-    ) -> tuple[ToolBox, AgentState, ParsedProcessRequest] | JSONResponse:
+    ) -> tuple[ToolBox, list[AgentState], ParsedProcessRequest] | JSONResponse:
         """Parse, scope and validate one extraction request.
 
         ``/process`` and ``/process_unit`` share this entire preamble -- read
         the body, bind the request's tenancy, check the ontology-context mode
-        against the scoped tools, build the state -- and differ only in
-        ``max_chunks``. It was written out twice, so a fix to one route's
-        tenancy or validation wiring silently missed the other.
+        against the scoped tools, build one state per document -- and differ
+        only in ``max_chunks``.
 
         Args:
             request: The incoming request.
@@ -182,10 +179,24 @@ def create_app(
                 single-unit route.
 
         Returns:
-            The scoped ToolBox, the initial state, and the parsed request
-            (whose ``strip_provenance`` the response assembly still needs), or
-            a ``JSONResponse`` when parsing or validation rejected the request.
+            The scoped ToolBox, one initial state per document, and the parsed
+            request (whose ``strip_provenance`` the response assembly still
+            needs), or a ``JSONResponse`` when parsing or validation rejected
+            the request.
         """
+        try:
+            return await _prepare_extraction_request(
+                request, log_label=log_label, max_chunks=max_chunks
+            )
+        except RequestParamError as e:
+            return request_param_error_response(e)
+
+    async def _prepare_extraction_request(
+        request: Request,
+        *,
+        log_label: str,
+        max_chunks: int | None,
+    ) -> tuple[ToolBox, list[AgentState], ParsedProcessRequest] | JSONResponse:
         loaded = await load_parsed_process_request(
             request, server_config, log_label=log_label
         )
@@ -216,14 +227,14 @@ def create_app(
         except OntologyContextConfigError as e:
             return ontology_context_config_error_response(e)
 
-        initial_state = build_agent_state_from_parsed(
+        states = build_agent_states_from_parsed(
             loaded,
             server_config=server_config,
             resolved_tenant=resolved_tenant,
             resolved_project=resolved_project,
             max_chunks=max_chunks,
         )
-        return scoped_tools, initial_state, loaded
+        return scoped_tools, states, loaded
 
     process_semaphore: asyncio.Semaphore | None = None
     if server_config.max_concurrent_processes is not None:
@@ -436,38 +447,37 @@ def create_app(
 
     @app.post(
         "/process",
-        response_model=ProcessOkResponse,
+        response_model=ProcessBatchResponse,
         responses={
             400: {"model": StatusErrorBody},
             409: {"model": StatusErrorBody},
-            422: {"model": StatusErrorBody},
-            500: {"model": ProcessErrorResponse},
         },
-        summary="Extract ontology and facts from a document",
+        summary="Extract ontology and facts from documents",
     )
     async def process(request: Request):
-        """Run the full chunked pipeline over an uploaded document.
+        """Run the full chunked pipeline over each uploaded document.
 
-        Accepts multipart form data (``file=@doc.pdf``) or a JSON body. Request
+        Accepts multipart form data (one or more files) or a JSON body. Request
         parameters are documented in the API user guide; they are read from the
-        query string, form fields, or JSON body interchangeably.
+        query string, form fields, or JSON body interchangeably, and apply to
+        every document. Answers one result per document, in upload order.
         """
-        workflow_state: dict | None = None
-        if process_semaphore is not None:
-            await process_semaphore.acquire()
-        try:
-            prepared = await prepare_extraction_request(
-                request, log_label="process", max_chunks=head_chunks
-            )
-            if isinstance(prepared, JSONResponse):
-                return prepared
-            scoped_tools, initial_state, loaded = prepared
+        prepared = await prepare_extraction_request(
+            request, log_label="process", max_chunks=head_chunks
+        )
+        if isinstance(prepared, JSONResponse):
+            return prepared
+        scoped_tools, states, loaded = prepared
+
+        async def run_one(
+            initial_state: AgentState,
+        ) -> ProcessOkResponse | ProcessErrorResponse:
+            workflow_state: dict | None = None
             request_recursion_limit = calculate_recursion_limit(
                 head_chunks,
                 server_config,
                 max_visits_per_node=initial_state.max_visits,
             )
-
             with run_meter_scope(
                 max_input_tokens=server_config.max_input_tokens_per_document,
                 max_output_tokens=server_config.max_output_tokens_per_document,
@@ -545,21 +555,17 @@ def create_app(
             ]
 
             if workflow_state["status"] == Status.FAILED:
-                # Every unit failed, or conversion did. Returning 200 here made
-                # a total failure look identical to a document with nothing to
-                # extract.
-                return JSONResponse(
-                    status_code=422,
-                    content=ProcessErrorResponse(
-                        error="Extraction produced no output for any content unit",
-                        error_type="PipelineError",
-                        error_code="no_units_extracted",
-                        error_details={
-                            "stage": workflow_state.get("failure_stage"),
-                            "reason": workflow_state.get("failure_reason"),
-                            "unit_failures": unit_failures,
-                        },
-                    ).model_dump(),
+                # Every unit failed, or conversion did: an error, not a document
+                # with nothing to extract.
+                return ProcessErrorResponse(
+                    error="Extraction produced no output for any content unit",
+                    error_type="PipelineError",
+                    error_code="no_units_extracted",
+                    error_details={
+                        "stage": workflow_state.get("failure_stage"),
+                        "reason": workflow_state.get("failure_reason"),
+                        "unit_failures": unit_failures,
+                    },
                 )
 
             return ProcessOkResponse(
@@ -595,102 +601,60 @@ def create_app(
                 ),
             )
 
-        except RequestParamError as e:
-            # Malformed input is the client's error, not ours.
-            return request_param_error_response(e)
-        except SectionSelectionEmptyError as e:
-            # Well-formed parameters that match nothing in *this* document.
-            # /process_unit never chunks, so only this route can raise it.
-            return section_selection_empty_response(e)
-        except DocumentConversionError as e:
-            return document_conversion_error_response(e, e.stage)
-        except BudgetExceededError as e:
-            return budget_exceeded_response(e)
-        except Exception as e:
-            logger.error("Error processing document: %s", e)
-            logger.error("Error type: %s", type(e))
-            logger.error("Error traceback:", exc_info=True)
-
-            error_details = None
-            if workflow_state:
-                error_details = {
-                    "stage": workflow_state.get("failure_stage", "unknown"),
-                    "reason": workflow_state.get("failure_reason", "unknown"),
-                }
-
-            return JSONResponse(
-                status_code=500,
-                content=ProcessErrorResponse(
-                    error=str(e),
-                    error_type=type(e).__name__,
-                    error_details=error_details,
-                ).model_dump(),
-            )
-        finally:
-            if process_semaphore is not None:
-                process_semaphore.release()
+        return await run_documents(states, run_one, process_semaphore)
 
     @app.post(
         "/process_unit",
-        response_model=ProcessOkResponse,
+        response_model=ProcessBatchResponse,
         responses={
             400: {"model": StatusErrorBody},
             409: {"model": StatusErrorBody},
-            422: {"model": StatusErrorBody},
-            500: {"model": ProcessErrorResponse},
         },
-        summary="Extract from a single small document without chunking",
+        summary="Extract from small documents without chunking",
     )
     async def process_unit(request: Request):
-        """Process the whole input as one content unit.
+        """Process each uploaded document as one content unit.
 
         Skips chunking, section tagging, summarization, and normalization, so
         ``max_chunks`` and the section-selection parameters have no effect
         here. The post-aggregation validation gate (invariant findings, SHACL,
         LLM-free autofix) does run, minus the un-merge repair, which is
         meaningless for a single unit. Use ``/process`` for anything larger
-        than a single passage.
+        than a single passage. Answers one result per document, in upload order.
         """
-        if process_semaphore is not None:
-            await process_semaphore.acquire()
-        try:
-            prepared = await prepare_extraction_request(
-                request, log_label="process_unit", max_chunks=1
-            )
-            if isinstance(prepared, JSONResponse):
-                return prepared
-            scoped_tools, initial_state, loaded = prepared
+        prepared = await prepare_extraction_request(
+            request, log_label="process_unit", max_chunks=1
+        )
+        if isinstance(prepared, JSONResponse):
+            return prepared
+        scoped_tools, states, loaded = prepared
 
-            try:
-                with run_meter_scope(
-                    max_input_tokens=server_config.max_input_tokens_per_document,
-                    max_output_tokens=server_config.max_output_tokens_per_document,
-                ):
-                    onto_result, facts_result = await run_unit_pipeline(
-                        initial_state, scoped_tools
-                    )
-            except DocumentConversionError as exc:
-                return document_conversion_error_response(exc, exc.stage)
+        async def run_one(
+            initial_state: AgentState,
+        ) -> ProcessOkResponse | ProcessErrorResponse:
+            with run_meter_scope(
+                max_input_tokens=server_config.max_input_tokens_per_document,
+                max_output_tokens=server_config.max_output_tokens_per_document,
+            ):
+                onto_result, facts_result = await run_unit_pipeline(
+                    initial_state, scoped_tools
+                )
             failed_unit_state = None
             if onto_result is not None and onto_result.status == Status.FAILED:
                 failed_unit_state = onto_result
             elif facts_result is not None and facts_result.status == Status.FAILED:
                 failed_unit_state = facts_result
             if failed_unit_state is not None:
-                return JSONResponse(
-                    status_code=422,
-                    content=ProcessErrorResponse(
-                        error=failed_unit_state.failure_reason
-                        or "Unit processing failed",
-                        error_type="PipelineError",
-                        error_details={
-                            "stage": (
-                                str(failed_unit_state.failure_stage)
-                                if failed_unit_state.failure_stage is not None
-                                else None
-                            )
-                        },
-                    ).model_dump(),
+                return ProcessErrorResponse(
+                    error=failed_unit_state.failure_reason or "Unit processing failed",
+                    error_type="PipelineError",
+                    error_details={
+                        "stage": (
+                            str(failed_unit_state.failure_stage)
+                            if failed_unit_state.failure_stage is not None
+                            else None
+                        )
+                    },
                 )
 
             budget_tracker_data: dict = initial_state.budget_tracker.model_dump()
@@ -782,24 +746,6 @@ def create_app(
                 ),
             )
 
-        except RequestParamError as e:
-            return request_param_error_response(e)
-        except BudgetExceededError as e:
-            return budget_exceeded_response(e)
-        except Exception as e:
-            logger.error("Error in process_unit: %s", e)
-            logger.error("Error type: %s", type(e))
-            logger.error("Error traceback:", exc_info=True)
-            return JSONResponse(
-                status_code=500,
-                content=ProcessErrorResponse(
-                    error=str(e),
-                    error_type=type(e).__name__,
-                    error_details=None,
-                ).model_dump(),
-            )
-        finally:
-            if process_semaphore is not None:
-                process_semaphore.release()
+        return await run_documents(states, run_one, process_semaphore)
 
     return app

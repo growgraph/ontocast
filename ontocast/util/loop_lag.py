@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
@@ -53,7 +53,7 @@ class LoopLag:
 @asynccontextmanager
 async def loop_lag(
     interval: float = DEFAULT_SAMPLE_INTERVAL,
-) -> AsyncIterator[LoopLag]:
+) -> AsyncGenerator[LoopLag, None]:
     """Sample event-loop lag for the duration of the block.
 
     Args:

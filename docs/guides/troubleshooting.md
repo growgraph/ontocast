@@ -44,8 +44,8 @@ may narrow them.
 
 A `200` with an empty `data.facts` has different causes:
 
-- `RENDER_MODE=ontology`, which never extracts facts. `metadata.chunks_remaining` is `0` and the run manifest shows `render_mode`.
-- Some parts failed. `metadata.failed_units` lists them with the stage and reason.
+- `RENDER_MODE=ontology`, which never extracts facts. `outcome.metadata.chunks_remaining` is `0` and the run manifest shows `render_mode`.
+- Some parts failed. `outcome.metadata.failed_units` lists them with the stage and reason.
 - Facts-only run against an empty or wrong catalog; see [below](#facts-only-run-produced-nothing).
 
 ## Empty ontology context

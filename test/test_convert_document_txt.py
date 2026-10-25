@@ -6,7 +6,7 @@ import pytest
 
 from ontocast.agent.convert_document import convert_document
 from ontocast.onto.enum import Status
-from ontocast.onto.state import AgentState
+from ontocast.onto.state import AgentState, InputDocument
 from ontocast.tool.converter import ConverterTool
 from ontocast.toolbox import ToolBox
 
@@ -16,7 +16,9 @@ pytestmark = pytest.mark.unit
 def test_convert_document_txt_is_plain_text_not_json() -> None:
     # A plain-text .txt payload is not valid JSON; it must not be json.loads'd.
     state = AgentState(
-        raw_input={"note.txt": b"Hello world. This is plain text, not JSON."}
+        input_document=InputDocument(
+            filename="note.txt", data=b"Hello world. This is plain text, not JSON."
+        )
     )
     tools = ToolBox.__new__(ToolBox)
     tools.converter = ConverterTool.model_construct(supported_extensions=set())
@@ -40,7 +42,9 @@ def test_converted_upload_reaches_the_converter_with_its_name() -> None:
             calls.append((content, filename))
             return plain_text_to_docling_doc("converted", filename or "doc")
 
-    state = AgentState(raw_input={"note.md": b"# Title"})
+    state = AgentState(
+        input_document=InputDocument(filename="note.md", data=b"# Title")
+    )
     tools = ToolBox.__new__(ToolBox)
     tools.converter = cast(ConverterTool, _Converter())
 

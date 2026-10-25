@@ -108,7 +108,7 @@ def test_distinct_names_get_distinct_encoders_and_locks(
     second = get_shared_encoder("model-b")
 
     assert first is not second
-    assert first.model is not second.model
+    assert first._model is not second._model
     # The point of per-handle locks: a single process-wide lock would make two
     # unrelated checkpoints queue behind one another for nothing.
     assert first._lock is not second._lock
@@ -124,8 +124,8 @@ def test_device_is_part_of_the_cache_key(
     pinned = get_shared_encoder("m", device="cpu")
 
     assert auto is not pinned
-    assert auto.model.kwargs == {}
-    assert pinned.model.kwargs == {"device": "cpu"}
+    assert auto._model.kwargs == {}
+    assert pinned._model.kwargs == {"device": "cpu"}
     assert created == ["m", "m"]
 
 
@@ -162,6 +162,84 @@ def test_encodes_serialize_per_model(
     assert all(isinstance(exc, threading.BrokenBarrierError) for exc in errors)
 
 
+class _Overlap:
+    """Records whether two calls were ever inside the shared tokenizer at once."""
+
+    def __init__(self) -> None:
+        self._inside = 0
+        self._guard = threading.Lock()
+        self.overlapped = False
+
+    def enter(self) -> None:
+        with self._guard:
+            self._inside += 1
+            self.overlapped |= self._inside > 1
+        # Widen the window, so an unguarded caller is caught reliably.
+        threading.Event().wait(0.002)
+        with self._guard:
+            self._inside -= 1
+
+
+def _model_with_shared_tokenizer(overlap: _Overlap) -> type:
+    class _Tokenizer:
+        def __call__(self, texts: list[str], **kwargs: Any) -> dict[str, Any]:
+            overlap.enter()
+            return {"input_ids": [[0] * (len(text.split()) + 2) for text in texts]}
+
+    class _Model(_FakeModel):
+        max_seq_length = 3
+
+        def __init__(self, model_name: str, **kwargs: Any) -> None:
+            super().__init__(model_name, **kwargs)
+            self.tokenizer = _Tokenizer()
+
+        def encode(self, texts: list[str], **kwargs: Any) -> Any:
+            # SentenceTransformer.encode tokenizes through the same object.
+            overlap.enter()
+            return super().encode(texts, **kwargs)
+
+    return _Model
+
+
+def test_token_counting_and_encoding_never_overlap(
+    monkeypatch: pytest.MonkeyPatch, clean_encoder_cache
+) -> None:
+    """The tokenizer is shared mutable state; counting must take the encode lock."""
+    overlap = _Overlap()
+    _install_fake_sentence_transformers(
+        monkeypatch, model_cls=_model_with_shared_tokenizer(overlap)
+    )
+    tool = HuggingFaceEmbeddingTool(config=EmbeddingConfig(model_name="m"))
+
+    def run(call) -> None:
+        for _ in range(50):
+            call()
+
+    threads = [
+        threading.Thread(target=run, args=(lambda: tool.embed_query(["a b c"]),)),
+        threading.Thread(target=run, args=(lambda: tool.token_lengths(["a b c d"]),)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not overlap.overlapped, "tokenizer used by two threads at once"
+
+
+def test_token_lengths_and_limit_come_from_the_handle(
+    monkeypatch: pytest.MonkeyPatch, clean_encoder_cache
+) -> None:
+    _install_fake_sentence_transformers(
+        monkeypatch, model_cls=_model_with_shared_tokenizer(_Overlap())
+    )
+    tool = HuggingFaceEmbeddingTool(config=EmbeddingConfig(model_name="m"))
+
+    assert tool.sequence_limit == 3
+    assert tool.token_lengths(["a b", "a b c"]) == [4, 5]
+    assert tool.count_over_limit(["a", "a b c"]) == 1
+
+
 def test_encodes_do_not_serialize_across_models(
     monkeypatch: pytest.MonkeyPatch, clean_encoder_cache
 ) -> None:
@@ -194,36 +272,6 @@ def test_encodes_do_not_serialize_across_models(
         thread.join()
 
     assert not errors, f"unrelated checkpoints serialized against each other: {errors}"
-
-
-def test_serialize_false_leaves_encodes_unguarded(
-    monkeypatch: pytest.MonkeyPatch, clean_encoder_cache
-) -> None:
-    """The GPU opt-out, where concurrency is parallelism rather than contention."""
-    barrier = threading.Barrier(2, timeout=5.0)
-
-    class _Rendezvous(_FakeModel):
-        def encode(self, texts: list[str], **kwargs: Any) -> Any:
-            barrier.wait()
-            return super().encode(texts, **kwargs)
-
-    _install_fake_sentence_transformers(monkeypatch, model_cls=_Rendezvous)
-    encoder = get_shared_encoder("m", serialize=False)
-    errors: list[BaseException] = []
-
-    def run() -> None:
-        try:
-            encoder.encode(["x"])
-        except BaseException as exc:  # noqa: BLE001 - recording for assertion
-            errors.append(exc)
-
-    threads = [threading.Thread(target=run) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-
-    assert not errors
 
 
 def test_adapter_satisfies_semantic_chunker_contract(
@@ -269,7 +317,7 @@ def test_adapter_collapses_newlines_like_langchain(
 
     adapter.embed_documents(["a\nb", "plain"])
 
-    assert encoder.model.seen == [["a b", "plain"]]
+    assert encoder._model.seen == [["a b", "plain"]]
 
 
 def test_chunker_probe_requires_clustering_dependencies(

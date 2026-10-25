@@ -26,10 +26,7 @@ from ontocast.tool.vector_store.core import (
     OntologySearchHitsByChannel,
     VectorStoreManager,
 )
-from ontocast.tool.vector_store.embedding import (
-    EmbeddingTool,
-    FastembedBm25SparseTool,
-)
+from ontocast.tool.vector_store.embedding import FastembedBm25SparseTool
 from ontocast.tool.vector_store.lexical_trigger import LexicalTriggerIndex
 from ontocast.tool.vector_store.util import (
     atom_from_payload,
@@ -68,7 +65,6 @@ class LanceDBVectorStoreManager(VectorStoreManager):
 
     store_config: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
     lancedb_config: LanceDBConfig = Field(default_factory=LanceDBConfig)
-    embedding: EmbeddingTool = Field(..., exclude=True)
     sparse_embedding: FastembedBm25SparseTool | None = Field(default=None, exclude=True)
     atomizer: GraphAtomizer = Field(default_factory=GraphAtomizer, exclude=True)
     _lexical_trigger_index: LexicalTriggerIndex | None = PrivateAttr(default=None)

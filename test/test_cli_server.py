@@ -22,7 +22,7 @@ from ontocast.api.process_helpers import (
 )
 from ontocast.api.process_request import (
     ParsedProcessRequest,
-    build_agent_state_from_parsed,
+    build_agent_states_from_parsed,
 )
 from ontocast.api.responses import ontology_context_config_error_response
 from ontocast.api.schemas import ProcessResultData
@@ -37,7 +37,7 @@ from ontocast.onto.retrieval_capabilities import (
     VectorStoreUnavailableError,
     validate_ontology_context_mode,
 )
-from ontocast.onto.state import AgentState
+from ontocast.onto.state import AgentState, InputDocument
 from ontocast.tool.agg.aggregate import AggregationResult
 from ontocast.tool.converter import ConverterTool
 from ontocast.toolbox import ToolBox
@@ -111,9 +111,9 @@ def test_recursion_limit_does_not_vary_with_document_or_visit_budget() -> None:
     )
 
 
-def test_build_agent_state_from_parsed_sets_max_visits() -> None:
+def test_build_agent_states_from_parsed_sets_max_visits() -> None:
     parsed = ParsedProcessRequest(
-        files_dict={"input.json": b'{"text": "hello"}'},
+        documents=[InputDocument(filename="input.json", data=b'{"text": "hello"}')],
         max_visits=6,
         strip_provenance=False,
         ontology_user_instruction="",
@@ -131,7 +131,7 @@ def test_build_agent_state_from_parsed_sets_max_visits() -> None:
         section_schema_id=None,
         document_metadata={},
     )
-    state = build_agent_state_from_parsed(
+    [state] = build_agent_states_from_parsed(
         parsed,
         server_config=ServerConfig(max_visits_per_node=2),
         resolved_tenant="t",
@@ -141,9 +141,9 @@ def test_build_agent_state_from_parsed_sets_max_visits() -> None:
     assert state.max_visits == 6
 
 
-def test_build_agent_state_from_parsed_sets_document_metadata() -> None:
+def test_build_agent_states_from_parsed_sets_document_metadata() -> None:
     parsed = ParsedProcessRequest(
-        files_dict={"input.json": b'{"text": "hello"}'},
+        documents=[InputDocument(filename="input.json", data=b'{"text": "hello"}')],
         max_visits=1,
         strip_provenance=False,
         ontology_user_instruction="",
@@ -164,7 +164,7 @@ def test_build_agent_state_from_parsed_sets_document_metadata() -> None:
             "identifiers": [{"scheme": "erp:doc", "value": "INV-1"}],
         },
     )
-    state = build_agent_state_from_parsed(
+    [state] = build_agent_states_from_parsed(
         parsed,
         server_config=ServerConfig(max_visits_per_node=1),
         resolved_tenant="t",
@@ -1148,7 +1148,10 @@ def test_process_unit_route_runs_the_validation_gate(
     )
 
     assert response.status_code == 200, response.text
-    payload = response.json()
+    [result] = response.json()["results"]
+    assert result["filename"] == "input.json"
+    assert result["status_code"] == 200, result
+    payload = result["outcome"]
     metadata = payload["metadata"]
     assert metadata["facts_conformance"]["shacl_evaluated"] is True
     assert metadata["facts_conformance"]["conforms"] is True
@@ -1160,6 +1163,54 @@ def test_process_unit_route_runs_the_validation_gate(
         str(XSD.decimal) in payload["data"]["facts"]
         or "xsd:decimal" in (payload["data"]["facts"])
     )
+
+
+def test_process_unit_route_runs_each_uploaded_file_separately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ontocast.stategraph.unit_pipeline import DocumentConversionError
+
+    seen: list[str] = []
+
+    async def fake_run_unit_pipeline(state, _tools):
+        seen.append(state.input_document.filename)
+        if state.input_document.filename == "scan.pdf":
+            raise DocumentConversionError("unreadable", stage="convert")
+        return None, None
+
+    monkeypatch.setattr(app_module, "run_unit_pipeline", fake_run_unit_pipeline)
+    monkeypatch.setattr(
+        app_module, "create_agent_graph", lambda _tools, **_kwargs: SimpleNamespace()
+    )
+    tools = cast(
+        ToolBox,
+        SimpleNamespace(ontology_manager=SimpleNamespace(catalog_terms=lambda: set())),
+    )
+    app = create_app(
+        tools=tools,
+        server_config=ServerConfig(),
+        active_tenant="tenant-a",
+        active_project="project-a",
+    )
+
+    response = TestClient(app).post(
+        "/process_unit?ontology_context_mode=selected_single_ontology",
+        files=[
+            ("file", ("a.txt", b"one", "text/plain")),
+            ("file", ("scan.pdf", b"%PDF", "application/pdf")),
+            ("file", ("b.txt", b"two", "text/plain")),
+        ],
+    )
+
+    assert response.status_code == 200, response.text
+    results = response.json()["results"]
+    assert seen == ["a.txt", "scan.pdf", "b.txt"]
+    assert [(r["filename"], r["status_code"]) for r in results] == [
+        ("a.txt", 200),
+        ("scan.pdf", 422),
+        ("b.txt", 200),
+    ]
+    assert results[1]["outcome"]["error_code"] == "conversion_failed:convert"
 
 
 def _batch_toolbox() -> ToolBox:

@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import TypedDict
@@ -284,7 +284,7 @@ def active_run_meter() -> RunMeter | None:
 
 
 @contextmanager
-def use_run_meter(meter: RunMeter) -> Iterator[RunMeter]:
+def use_run_meter(meter: RunMeter) -> Generator[RunMeter, None, None]:
     """Meter every provider call made inside this block with ``meter``.
 
     On exit the meter is flushed. If the meter refused a call inside the block
@@ -308,7 +308,7 @@ def run_meter_scope(
     *,
     max_input_tokens: int | None = None,
     max_output_tokens: int | None = None,
-) -> Iterator[RunMeter | None]:
+) -> Generator[RunMeter | None, None, None]:
     """Bind a token-capped meter for one document unless one is already bound.
 
     An already-bound meter is yielded unchanged and the caps are ignored: the

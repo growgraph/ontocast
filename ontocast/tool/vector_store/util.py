@@ -82,8 +82,7 @@ def atom_scope_fingerprint(store_config: VectorStoreConfig) -> str | None:
         parts.append(f"x:{prefix}")
 
     def _diverges(name: str) -> bool:
-        factory = defaults[name].default_factory
-        default = factory() if factory is not None else defaults[name].default
+        default = defaults[name].get_default(call_default_factory=True)
         return getattr(store_config, name) != default
 
     # The surface-form and trigger settings are pushed into the atomizer and

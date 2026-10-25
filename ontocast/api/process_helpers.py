@@ -33,7 +33,7 @@ from ontocast.onto.run_meter import (
     active_run_meter,
     run_meter_scope,
 )
-from ontocast.onto.state import AgentState
+from ontocast.onto.state import AgentState, InputDocument
 from ontocast.stategraph.facts_gate import run_facts_gate
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
 from ontocast.tool.chunk.prepare import SectionSelectionEmptyError
@@ -639,7 +639,9 @@ def expand_input_to_states(
     if file_path.suffix.lower() != ".jsonl":
         return [
             AgentState(
-                raw_input={file_path.as_posix(): file_bytes},
+                input_document=InputDocument(
+                    filename=file_path.as_posix(), data=file_bytes
+                ),
                 document_metadata=_resolve_document_metadata(
                     file_path, document_metadata
                 ),
@@ -656,7 +658,9 @@ def expand_input_to_states(
         virtual_path = f"{file_path.as_posix()}:{line_number}.json"
         states.append(
             AgentState(
-                raw_input={virtual_path: line.encode("utf-8")},
+                input_document=InputDocument(
+                    filename=virtual_path, data=line.encode("utf-8")
+                ),
                 document_metadata=_resolve_document_metadata(
                     file_path,
                     document_metadata,
@@ -990,8 +994,10 @@ async def process_files_input(
                         failed_files.append(file_path)
                 line_number: int | None = None
                 if file_path.suffix.lower() == ".jsonl" and len(states) > 1:
-                    # Recover line from virtual raw_input key "...:N.json"
-                    raw_key = next(iter(state.raw_input), "")
+                    # Recover line from the virtual filename "...:N.json"
+                    raw_key = (
+                        state.input_document.filename if state.input_document else ""
+                    )
                     marker = f"{file_path.as_posix()}:"
                     if raw_key.startswith(marker) and raw_key.endswith(".json"):
                         try:

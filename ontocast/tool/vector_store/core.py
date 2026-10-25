@@ -141,7 +141,7 @@ class VectorStoreManager(Tool):
     """Abstract interface for vector store implementations."""
 
     store_config: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
-    embedding: EmbeddingTool | None = Field(default=None, exclude=True)
+    embedding: EmbeddingTool = Field(..., exclude=True)
     sparse_embedding: FastembedBm25SparseTool | None = Field(default=None, exclude=True)
 
     @abc.abstractmethod

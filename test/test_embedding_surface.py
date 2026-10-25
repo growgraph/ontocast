@@ -19,7 +19,7 @@ from ontocast.config.settings import PathConfig
 from ontocast.integrations.langgraph import text_in_turtle_out
 from ontocast.onto.enum import VectorStoreBackend, WorkflowNode
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.state import AgentState
+from ontocast.onto.state import AgentState, InputDocument
 from ontocast.stategraph import build_agent_graph, create_agent_graph
 from ontocast.stategraph.create import _timed
 from ontocast.tool.llm import LLMTool
@@ -204,7 +204,9 @@ def test_text_in_turtle_out_maps_both_directions() -> None:
 
     state = to_state({"input": "some source text"})
     assert isinstance(state, AgentState)
-    assert state.raw_input == {"input.txt": b"some source text"}
+    assert state.input_document == InputDocument(
+        filename="input.txt", data=b"some source text"
+    )
 
     graph = RDFGraph()
     graph.parse(data=ONTOLOGY_TTL, format="turtle")
@@ -218,7 +220,9 @@ def test_text_in_turtle_out_honours_custom_keys() -> None:
     to_state, from_state = text_in_turtle_out(
         text_key="doc", ontology_key="onto", facts_key="triples"
     )
-    assert to_state({"doc": "x"}).raw_input == {"doc.txt": b"x"}
+    assert to_state({"doc": "x"}).input_document == InputDocument(
+        filename="doc.txt", data=b"x"
+    )
     assert set(from_state(AgentState(), {"doc": "x"})) == {"onto", "triples"}
 
 

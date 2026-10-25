@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from functools import lru_cache
@@ -52,6 +53,8 @@ if TYPE_CHECKING:
     from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
+
+_HYBRID_CHUNKER_LOCK = threading.Lock()
 
 # Relative trust in each classification tier, used when merging chunks: the
 # merged chunk inherits the weakest evidence in the run.
@@ -251,7 +254,11 @@ def _hybrid_segments(
     docling_doc: DoclingDocument, hybrid_chunker: HybridChunker
 ) -> list[PrepareSegment]:
     segments: list[PrepareSegment] = []
-    for chunk in hybrid_chunker.chunk(docling_doc):
+    # Cached chunkers share one fast tokenizer, whose state concurrent calls
+    # would corrupt; ``chunk`` is lazy, so the lock covers draining it.
+    with _HYBRID_CHUNKER_LOCK:
+        chunks = list(hybrid_chunker.chunk(docling_doc))
+    for chunk in chunks:
         text = chunk.text.strip()
         if not text:
             continue

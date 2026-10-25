@@ -84,7 +84,7 @@ def _apply(tools: ToolBox, point: dict[str, Any]) -> dict[str, Any]:
         target = targets[section]
         for field, value in overrides.items():
             info = type(target).model_fields.get(field)
-            if info is None:
+            if info is None or info.annotation is None:
                 raise ValueError(f"{section}: no such setting {field!r}")
             # Validate through the field's own annotation rather than assigning the
             # raw JSON value. A grid is plain JSON, so an enum arrives as a string

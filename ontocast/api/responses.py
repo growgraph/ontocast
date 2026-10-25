@@ -28,41 +28,27 @@ def request_param_error_response(error: RequestParamError) -> JSONResponse:
     )
 
 
-def document_conversion_error_response(
-    error: Exception, stage: str | None
-) -> JSONResponse:
-    """422 when an uploaded document could not be converted.
-
-    Both /process and /process_unit answer this way; previously only
-    /process_unit did, so the same unreadable file produced 422 on one route
-    and 500 on the other.
-    """
-    return JSONResponse(
-        status_code=422,
-        content=StatusErrorBody(
-            error=str(error),
-            error_type="DocumentConversionError",
-            error_code=f"conversion_failed:{stage}" if stage else "conversion_failed",
-        ).model_dump(),
+def conversion_failure(error: Exception, stage: str | None) -> ProcessErrorResponse:
+    """A document that could not be converted (its item answers 422)."""
+    return ProcessErrorResponse(
+        error=str(error),
+        error_type="DocumentConversionError",
+        error_code=f"conversion_failed:{stage}" if stage else "conversion_failed",
     )
 
 
-def section_selection_empty_response(
+def section_selection_failure(
     error: SectionSelectionEmptyError,
-) -> JSONResponse:
-    """422 when a section selection matched nothing in this document.
+) -> ProcessErrorResponse:
+    """A section selection that matched nothing in this document (422).
 
     Not 400: the parameters are individually well-formed and only fail against
-    this particular document once it has been classified — the same
-    unprocessable-entity reading a conversion failure gets.
+    this particular document once it has been classified.
     """
-    return JSONResponse(
-        status_code=422,
-        content=StatusErrorBody(
-            error=str(error),
-            error_type="SectionSelectionEmpty",
-            error_code=f"empty_section_selection:{error.param}",
-        ).model_dump(),
+    return ProcessErrorResponse(
+        error=str(error),
+        error_type="SectionSelectionEmpty",
+        error_code=f"empty_section_selection:{error.param}",
     )
 
 
@@ -98,17 +84,14 @@ def ontology_context_config_error_response(
     )
 
 
-def budget_exceeded_response(error: BudgetExceededError) -> JSONResponse:
-    """422 when a document reached its token cap before it finished.
+def budget_failure(error: BudgetExceededError) -> ProcessErrorResponse:
+    """A document that reached its token cap before it finished (422).
 
     ``error_details.run_meter`` carries the meter's usage at the refusal.
     """
-    return JSONResponse(
-        status_code=422,
-        content=ProcessErrorResponse(
-            error=str(error),
-            error_type="BudgetExceededError",
-            error_code="budget_exceeded",
-            error_details={"run_meter": dict(error.snapshot)},
-        ).model_dump(),
+    return ProcessErrorResponse(
+        error=str(error),
+        error_type="BudgetExceededError",
+        error_code="budget_exceeded",
+        error_details={"run_meter": dict(error.snapshot)},
     )

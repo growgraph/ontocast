@@ -23,6 +23,7 @@ __all__ = [
     "AgentState",
     "BudgetExceededError",
     "Config",
+    "InputDocument",
     "RunMeter",
     "TokenTotals",
     "ToolBox",
@@ -45,6 +46,7 @@ __all__ = [
 # just to read __version__.
 _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "AgentState": ("ontocast.onto.state", "AgentState"),
+    "InputDocument": ("ontocast.onto.state", "InputDocument"),
     "BudgetExceededError": ("ontocast.onto.run_meter", "BudgetExceededError"),
     "RunMeter": ("ontocast.onto.run_meter", "RunMeter"),
     "TokenTotals": ("ontocast.onto.run_meter", "TokenTotals"),

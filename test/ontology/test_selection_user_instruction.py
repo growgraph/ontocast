@@ -12,7 +12,7 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.state import AgentState
+from ontocast.onto.state import AgentState, InputDocument
 from ontocast.stategraph import context_resolver as cr
 from ontocast.stategraph.context_resolver import resolve_unit_ontology_context
 from ontocast.stategraph.unit_context import UnitLoopContext
@@ -43,7 +43,11 @@ def test_convert_document_sets_ontology_selection_user_instruction_from_json() -
         "text": "Hello world",
         "ontology_selection_user_instruction": "Prefer legal ontologies",
     }
-    state = AgentState(raw_input={"input.json": json.dumps(payload).encode("utf-8")})
+    state = AgentState(
+        input_document=InputDocument(
+            filename="input.json", data=json.dumps(payload).encode("utf-8")
+        )
+    )
     tools = ToolBox.__new__(ToolBox)
     tools.converter = ConverterTool.model_construct(supported_extensions=set())
 

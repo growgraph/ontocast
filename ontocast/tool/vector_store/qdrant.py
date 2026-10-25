@@ -31,10 +31,7 @@ from ontocast.tool.vector_store.core import (
     OntologySearchHitsByChannel,
     VectorStoreManager,
 )
-from ontocast.tool.vector_store.embedding import (
-    EmbeddingTool,
-    FastembedBm25SparseTool,
-)
+from ontocast.tool.vector_store.embedding import FastembedBm25SparseTool
 from ontocast.tool.vector_store.lexical_trigger import LexicalTriggerIndex
 from ontocast.tool.vector_store.util import (
     META_EMBEDDING_MODEL,
@@ -88,7 +85,6 @@ class QdrantVectorStoreManager(VectorStoreManager):
 
     store_config: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
     qdrant_config: QdrantConfig = Field(default_factory=QdrantConfig)
-    embedding: EmbeddingTool = Field(..., exclude=True)
     sparse_embedding: FastembedBm25SparseTool | None = Field(default=None, exclude=True)
     atomizer: GraphAtomizer = Field(default_factory=GraphAtomizer, exclude=True)
     _client: QdrantClient | None = PrivateAttr(default=None)

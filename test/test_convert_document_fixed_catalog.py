@@ -4,7 +4,7 @@ import pytest
 
 from ontocast.agent.convert_document import convert_document
 from ontocast.onto.enum import OntologyContextMode, Status
-from ontocast.onto.state import AgentState
+from ontocast.onto.state import AgentState, InputDocument
 from ontocast.tool.converter import ConverterTool
 from ontocast.toolbox import ToolBox
 
@@ -13,7 +13,7 @@ pytestmark = pytest.mark.unit
 
 def test_convert_document_fails_when_fixed_mode_missing_catalog_id() -> None:
     state = AgentState(
-        raw_input={"input.json": b'{"text": "hello"}'},
+        input_document=InputDocument(filename="input.json", data=b'{"text": "hello"}'),
         ontology_context_mode=OntologyContextMode.FIXED_SINGLE_ONTOLOGY,
         ontology_context_fixed_ontology_id="",
     )

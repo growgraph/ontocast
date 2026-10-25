@@ -517,6 +517,20 @@ class BudgetTracker(BasePydanticModel):
         return "Effective workers: " + ", ".join(parts)
 
 
+class InputDocument(BasePydanticModel):
+    """One document to extract from.
+
+    Attributes:
+        filename: Its name; the suffix selects the converter.
+        data: Its bytes.
+    """
+
+    filename: str = Field(
+        min_length=1, description="Name; the suffix selects the converter."
+    )
+    data: bytes = Field(description="The document's bytes.")
+
+
 class AgentState(BasePydanticModel):
     """State for the ontology-based knowledge graph agent.
 
@@ -527,7 +541,7 @@ class AgentState(BasePydanticModel):
         docling_doc: Parsed document in native Docling format.
         current_domain: IRI used for forming document namespace.
         doc_hid: An almost unique hash/id for the parent document.
-        raw_input: Single raw input payload as {filename: bytes}.
+        input_document: The one document this run extracts from.
         failure_stage: Stage where failure occurred.
         failure_reason: Reason for failure.
         status: Current workflow status.
@@ -554,9 +568,9 @@ class AgentState(BasePydanticModel):
         description="An almost unique hash / id for the parent document of the current unit",
         default="default_doc",
     )
-    raw_input: dict[str, bytes] = Field(
-        default_factory=dict,
-        description="Single raw input payload: {filename: bytes}.",
+    input_document: InputDocument | None = Field(
+        default=None,
+        description="The one document this run extracts from.",
     )
     content_units: list[ContentUnit] = Field(
         default_factory=list,

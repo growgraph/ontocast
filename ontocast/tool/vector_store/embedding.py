@@ -159,11 +159,7 @@ class HuggingFaceEmbeddingTool(EmbeddingTool):
         and it is this value that governs: sentence-transformers truncates to it
         before the model sees the text.
         """
-        try:
-            limit = self._get_embedder().model.max_seq_length
-        except Exception:  # noqa: BLE001 - a missing attribute must not break retrieval
-            return None
-        return int(limit) if limit else None
+        return self._get_embedder().max_seq_length
 
     def token_lengths(self, texts: list[str]) -> list[int] | None:
         """Word pieces per text, from the checkpoint's own tokenizer.
@@ -174,13 +170,9 @@ class HuggingFaceEmbeddingTool(EmbeddingTool):
         """
         if not texts:
             return []
-        try:
-            tokenizer = self._get_embedder().model.tokenizer
-            prefixed = self._apply(self.config.query_prefix, texts)
-            encoded = tokenizer(prefixed, add_special_tokens=True)["input_ids"]
-        except Exception:  # noqa: BLE001 - telemetry must never break retrieval
-            return None
-        return [len(ids) for ids in encoded]
+        return self._get_embedder().token_lengths(
+            self._apply(self.config.query_prefix, texts)
+        )
 
 
 class _LangChainEmbeddingTool(EmbeddingTool):
