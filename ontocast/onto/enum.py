@@ -120,6 +120,9 @@ class RetrievalMetric(StrEnum):
     FACTS_SHACL_REPAIRS = "facts_shacl_repairs"
     FACTS_SHACL_AUTOFIX_PASSES = "facts_shacl_autofix_passes"
     FACTS_SHACL_AUTOFIX_REVERTED = "facts_shacl_autofix_reverted"
+    #: Fact-namespace instances dropped for carrying no concrete type after
+    #: aggregation; the IRIs are on ``AgentState.facts_untyped_dropped``.
+    FACTS_UNTYPED_DROPPED = "facts_untyped_dropped"
 
     # Post-aggregation checks.
     STRUCTURAL_ONTOLOGY_COMPONENTS_MAX = "structural_ontology_components_max"
@@ -247,6 +250,7 @@ class WorkflowNode(StrEnum):
 
     CONVERT_TO_TEXT = "Convert to Text"
     CHUNK = "Chunk Text"
+    RESOLVE_HOME_ONTOLOGY = "Resolve Home Ontology"
     TEXT_TO_ONTOLOGY = "Text to Ontology"
     TEXT_TO_FACTS = "Text to Facts"
     CRITICISE_ONTOLOGY = "Criticise Ontology"
@@ -275,6 +279,7 @@ class LLMPhase(StrEnum):
     FACTS_RENDER = "facts_render"
     FACTS_CRITIC = "facts_critic"
     FACTS_COMPLETION = "facts_completion"
+    ONTOLOGY_IDENTITY = "ontology_identity"
     ONTOLOGY_RENDER = "ontology_render"
     ONTOLOGY_CRITIC = "ontology_critic"
     ONTOLOGY_CONSOLIDATION = "ontology_consolidation"

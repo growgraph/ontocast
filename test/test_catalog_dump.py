@@ -21,6 +21,7 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.triple_manager.in_memory import InMemoryTripleStoreManager
 from ontocast.toolbox import ToolBox
+from test.ontology_helpers import next_version, stamped_ontology
 
 pytestmark = pytest.mark.unit
 
@@ -34,7 +35,7 @@ def _seed() -> Ontology:
     graph.add((URIRef(IRI), RDF.type, OWL.Ontology))
     graph.add((THING, RDF.type, OWL.Class))
     graph.add((THING, RDFS.label, Literal("Thing")))
-    return Ontology(graph=graph, iri=IRI, ontology_id="seed", version="1.0.0")
+    return stamped_ontology(graph, ontology_id="seed")
 
 
 def _toolbox(ontology_directory: Path | None = None) -> ToolBox:
@@ -70,9 +71,7 @@ def test_each_dump_is_the_current_catalog(tmp_path) -> None:
     evolved_graph = seed.graph.copy()
     evolved_graph.add((GADGET, RDF.type, OWL.Class))
     asyncio.run(
-        toolbox.triple_store_manager.aserialize(
-            seed.derive_updated_version(evolved_graph)
-        )
+        toolbox.triple_store_manager.aserialize(next_version(seed, evolved_graph))
     )
     second = _dump(toolbox, tmp_path, 2)
 
@@ -81,9 +80,9 @@ def test_each_dump_is_the_current_catalog(tmp_path) -> None:
     assert gadget in second
     thing_lines = {line for line in first if line.startswith(f"<{THING}>")}
     assert thing_lines and thing_lines <= set(second)
-    hashes = [line for line in second if "dc/terms/identifier" in line]
-    assert len(hashes) == 1, "one version per ontology, not every version"
-    assert hashes[0] not in first
+    version_iris = [line for line in second if f"<{OWL.versionIRI}>" in line]
+    assert len(version_iris) == 1, "one version per ontology, not every version"
+    assert version_iris[0] not in first
     assert second == sorted(second)
     assert all(line.endswith(f"<{IRI}> .") for line in second)
 
@@ -102,9 +101,7 @@ def test_a_fresh_in_memory_run_sees_only_its_seed() -> None:
         evolved = seed.graph.copy()
         evolved.add((GADGET, RDF.type, OWL.Class))
         asyncio.run(
-            earlier.triple_store_manager.aserialize(
-                seed.derive_updated_version(evolved)
-            )
+            earlier.triple_store_manager.aserialize(next_version(seed, evolved))
         )
 
         fresh = _toolbox(seeds)

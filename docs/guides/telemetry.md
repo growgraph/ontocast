@@ -44,9 +44,10 @@ tuning](performance.md#what-makes-a-prompt-expensive). OntoCast reports tokens,
 not money.
 
 `budget.tokens_by_phase` splits the same counts by what each call was for:
-`facts_render`, `facts_critic`, `facts_completion`, `ontology_render`,
-`ontology_critic`, `ontology_consolidation`, `ontology_selection`,
-`evidence_planning`, `unit_summary` and `section_classification`. Each entry
+`facts_render`, `facts_critic`, `facts_completion`, `ontology_identity`,
+`ontology_render`, `ontology_critic`, `ontology_consolidation`,
+`ontology_selection`, `evidence_planning`, `unit_summary` and
+`section_classification`. Each entry
 holds `calls`, `replays`, `input`, `output`, `reasoning`, `cache_read`,
 `cache_write`, `replayed_input` and `replayed_output`, in the same terms as a
 `RunMeter`. Across phases they add up to the totals above, so a run's cost can be

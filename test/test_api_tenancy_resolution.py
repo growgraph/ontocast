@@ -1,6 +1,7 @@
 """Tests for shared API tenancy resolution."""
 
 import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
@@ -313,19 +314,34 @@ def test_ontology_delete_with_tenant_query_uses_scoped_toolbox(
     startup_delete.assert_not_called()
 
 
-def test_list_ontologies_returns_terminal_versions_of_the_scope() -> None:
+def test_list_ontologies_returns_the_heads_of_the_scope() -> None:
     from ontocast.onto.ontology_header import OntologyHeader
 
+    iri = "https://example.org/onto"
+    rooted = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    updated = datetime(2024, 2, 1, tzinfo=timezone.utc)
     old = OntologyHeader(
-        iri="https://example.org/onto", ontology_id="ex", version="1.0.0", hash="h1"
+        graph_uri=f"{iri}#h1",
+        iri=iri,
+        ontology_id="ex",
+        title="Example",
+        version="1.0.0",
+        hash="h1",
+        version_iri=f"{iri}#h1",
+        created_at=rooted,
+        modified_at=rooted,
     )
     new = OntologyHeader(
-        iri="https://example.org/onto",
+        graph_uri=f"{iri}#h2",
+        iri=iri,
         ontology_id="ex",
         title="Example",
         version="1.1.0",
         hash="h2",
-        parent_hashes=["h1"],
+        version_iri=f"{iri}#h2",
+        prior_version_iris=[f"{iri}#h1"],
+        created_at=rooted,
+        modified_at=updated,
     )
     scoped = SimpleNamespace(
         ontology_manager=SimpleNamespace(
@@ -352,16 +368,23 @@ def test_list_ontologies_returns_terminal_versions_of_the_scope() -> None:
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["ontologies"] == [
-        {
-            "iri": "https://example.org/onto",
-            "ontology_id": "ex",
-            "title": "Example",
-            "description": None,
-            "version": "1.1.0",
-            "hash": "h2",
-        }
-    ]
+    rows = response.json()["ontologies"]
+    assert len(rows) == 1
+    (head,) = rows[0].pop("heads")
+    assert rows[0] == {
+        "iri": iri,
+        "ontology_id": "ex",
+        "title": "Example",
+        "description": None,
+        "versions": 2,
+        "diverged": False,
+    }
+    assert head["version_iri"] == f"{iri}#h2"
+    assert head["version"] == "1.1.0"
+    assert head["prior_version_iris"] == [f"{iri}#h1"]
+    assert head["removed"] is False
+    assert datetime.fromisoformat(head["created_at"]) == rooted
+    assert datetime.fromisoformat(head["modified_at"]) == updated
 
 
 def test_shapes_routes_use_the_scoped_toolbox() -> None:

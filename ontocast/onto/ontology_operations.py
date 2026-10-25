@@ -1,121 +1,76 @@
-import logging
-from datetime import datetime, timezone
+"""Algorithmic operations over ontology versions."""
 
-from ontocast.onto.ontology import Ontology
+import logging
+from collections import defaultdict
+
+from rdflib import URIRef
+
+from ontocast.onto.ontology import Ontology, OntologyHeader
 from ontocast.onto.rdfgraph import RDFGraph
 
 logger = logging.getLogger(__name__)
 
 
 def merge_ontologies(onto1: Ontology, onto2: Ontology) -> Ontology:
-    """Merge two ontologies algorithmically.
+    """The union of two versions of one ontology, as an unstamped merge artifact.
 
-    This performs a union merge of the two ontology graphs, mapping contradictions.
-    The result has both ontologies as parents. This is similar to a git merge:
-    - Takes union of all triples from both ontologies
-    - Detects contradictions (same subject-predicate with different objects)
-    - Creates a new ontology with both parents
-    - Sets created_at to merge time
-
-    Args:
-        onto1: First ontology to merge
-        onto2: Second ontology to merge
-
-    Returns:
-        Ontology: Merged ontology with both parents
+    Takes every triple of both, reports contradictions (one subject and
+    predicate with different objects) and keeps both sides of each. The result
+    has both inputs as bases, so stamping it yields a version with two priors.
 
     Raises:
-        ValueError: If ontologies have different IRIs
+        ValueError: the inputs are versions of different ontologies, or either
+            was never stamped.
     """
-    # Validate that both ontologies have the same IRI
     if onto1.iri != onto2.iri:
         raise ValueError(
             f"Cannot merge ontologies with different IRIs: {onto1.iri} != {onto2.iri}"
         )
+    bases: list[OntologyHeader] = []
+    for onto in (onto1, onto2):
+        bases.append(
+            onto.bases[0]
+            if len(onto.bases) == 1 and onto.bases[0].version_iri == onto.version_iri
+            else OntologyHeader.from_ontology(onto)
+        )
 
-    # Ensure both ontologies have hashes
-    if not onto1.hash:
-        onto1._compute_and_set_hash()
-    if not onto2.hash:
-        onto2._compute_and_set_hash()
-
-    if not onto1.hash or not onto2.hash:
-        raise ValueError("Cannot merge ontologies without hashes")
-
-    # Create merged graph (union) - use RDFGraph's __add__ operator
     merged_graph = onto1.graph + onto2.graph
-
-    # Map contradictions (same subject-predicate with different objects)
     contradictions = _find_contradictions(onto1.graph, onto2.graph)
     if contradictions:
-        logger.warning(f"Found {len(contradictions)} contradictions in merge")
-        for (s, p), (obj1_set, obj2) in contradictions.items():
-            logger.debug(f"Contradiction: {s} {p} -> {obj1_set} vs {obj2}")
-            # For now, keep both objects (RDF allows multiple values)
-            # In future LLM-based merge, this would be resolved intelligently
+        logger.warning("Found %d contradictions in merge", len(contradictions))
+        for (s, p), (objects1, objects2) in contradictions.items():
+            logger.debug("Contradiction: %s %s -> %s vs %s", s, p, objects1, objects2)
 
-    # Create merged ontology
-    # Note: sync_properties_to_graph() will remove existing versionInfo triples,
-    # so we need to preserve them manually after creation
-    merged_ontology = Ontology(
-        graph=merged_graph,
-        iri=onto1.iri,  # Use IRI from first ontology (should be same)
+    merged = Ontology(
+        ontology_id=onto1.ontology_id or onto2.ontology_id,
+        iri=onto1.iri,
         title=onto1.title or onto2.title,
         description=onto1.description or onto2.description,
-        ontology_id=onto1.ontology_id or onto2.ontology_id,
-        version=onto1.version or onto2.version or "1.0.0",
-        parent_hashes=[onto1.hash, onto2.hash],
-        created_at=datetime.now(timezone.utc),
+        graph=merged_graph,
+        bases=bases,
     )
-
-    # Compute hash for merged ontology
-    # Note: Hash excludes metadata (version, title, description, created_at, hash, parent_hash)
-    # so it only reflects the actual ontology content (classes, properties, etc.)
-    merged_ontology._compute_and_set_hash()
-
+    merged.content_hash()
     logger.info(
-        f"Merged ontologies {onto1.hash[:8]}... "
-        f"and {onto2.hash[:8]}... "
-        f"-> {merged_ontology.hash[:8] if merged_ontology.hash else 'None'}..."
+        "Merged %s and %s -> %s",
+        onto1.version_iri,
+        onto2.version_iri,
+        merged.hash,
     )
+    return merged
 
-    return merged_ontology
 
-
-def _find_contradictions(graph1: RDFGraph, graph2: RDFGraph) -> dict:
-    """Find contradictions between two graphs.
-
-    Contradictions are triples with the same subject-predicate but different objects.
-    Note: RDF allows multiple values for the same property, so this detects potential
-    conflicts that might need resolution in an LLM-based merge.
-
-    Args:
-        graph1: First graph
-        graph2: Second graph
-
-    Returns:
-        dict: Dictionary mapping (subject, predicate) to (set of objects from graph1, object from graph2) tuples
-    """
-    contradictions = {}
-
-    # Build index of graph1: (subject, predicate) -> set of objects
-    graph1_index: dict[tuple, set] = {}
+def _find_contradictions(
+    graph1: RDFGraph, graph2: RDFGraph
+) -> dict[tuple[URIRef, URIRef], tuple[set, set]]:
+    """Subject-predicate pairs whose objects differ between the two graphs."""
+    objects1: dict[tuple, set] = defaultdict(set)
+    objects2: dict[tuple, set] = defaultdict(set)
     for s, p, o in graph1:
-        key = (s, p)
-        if key not in graph1_index:
-            graph1_index[key] = set()
-        # Use string representation for comparison
-        graph1_index[key].add(str(o))
-
-    # Check graph2 against graph1
+        objects1[(s, p)].add(o)
     for s, p, o in graph2:
-        key = (s, p)
-        if key in graph1_index:
-            # Check if objects differ
-            graph1_objects = graph1_index[key]
-            obj2_str = str(o)
-            if obj2_str not in graph1_objects:
-                # Contradiction found - different object values
-                contradictions[key] = (graph1_objects, obj2_str)
-
+        objects2[(s, p)].add(o)
+    contradictions: dict[tuple[URIRef, URIRef], tuple[set, set]] = {}
+    for key in objects1.keys() & objects2.keys():
+        if objects1[key] != objects2[key]:
+            contradictions[key] = (objects1[key], objects2[key])
     return contradictions

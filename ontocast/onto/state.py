@@ -17,6 +17,12 @@ from ontocast.onto.enum import (
     RenderMode,
     Status,
 )
+from ontocast.onto.identity import (
+    OntologyIdentity,
+    OntologyVersionRecord,
+    VersionRef,
+    validate_current_domain,
+)
 from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.model import (
     BasePydanticModel,
@@ -558,12 +564,19 @@ class AgentState(BasePydanticModel):
     )
     current_domain: str = Field(
         description=(
-            "IRI used for forming the document namespace. Defaults to the "
+            "IRI stem document and ontology IRIs are minted under: absolute "
+            "http(s), no fragment, no trailing slash. Defaults to the "
             "CURRENT_DOMAIN environment variable, then to DEFAULT_DOMAIN; an "
             "explicit constructor argument always wins."
         ),
         default_factory=lambda: os.getenv("CURRENT_DOMAIN") or DEFAULT_DOMAIN,
     )
+
+    @field_validator("current_domain")
+    @classmethod
+    def _validate_current_domain(cls, value: str) -> str:
+        return validate_current_domain(value)
+
     doc_hid: str = Field(
         description="An almost unique hash / id for the parent document of the current unit",
         default="default_doc",
@@ -695,9 +708,28 @@ class AgentState(BasePydanticModel):
         ),
     )
 
-    ontology_updates_applied: list[GraphUpdate] = Field(
+    ontology_updates_by_iri: dict[str, list[GraphUpdate]] = Field(
+        default_factory=dict,
+        description=(
+            "Graph updates applied onto each catalog ontology, by IRI; each "
+            "IRI's version label is bumped from its own updates."
+        ),
+    )
+    home_ontology: OntologyIdentity | None = Field(
+        default=None,
+        description=(
+            "Where this document mints new vocabulary: an existing catalog "
+            "ontology it extends, or a new one minted for it. Resolved once per "
+            "document before the ontology fan-out; None for facts-only runs."
+        ),
+    )
+    ontology_versions_written: list[OntologyVersionRecord] = Field(
         default_factory=list,
-        description="A list of graph update that improve the current ontology",
+        description="Ontology versions this run stored, in serialization order.",
+    )
+    ontology_versions_read: list[VersionRef] = Field(
+        default_factory=list,
+        description="Catalog versions this run extracted against without changing.",
     )
 
     facts_units: list[ContentUnit] = Field(
@@ -787,6 +819,16 @@ class AgentState(BasePydanticModel):
             "(shape-driven retyping, code resolution, placeholder pruning). "
             "Document-level counterpart of facts_repairs_applied, which is "
             "per unit."
+        ),
+    )
+
+    facts_untyped_dropped: list[str] = Field(
+        default_factory=list,
+        description=(
+            "IRIs of fact-namespace instances the validation gate dropped for "
+            "carrying no concrete rdf:type after aggregation, with every "
+            "triple that mentioned them. Capped at 200; the full count is "
+            "the facts_untyped_dropped retrieval metric."
         ),
     )
 

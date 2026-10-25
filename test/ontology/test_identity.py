@@ -8,8 +8,20 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.util import derive_ontology_id, normalize_ontology_iri
 from ontocast.tool.ontology_manager import OntologyManager
+from test.ontology_helpers import stamped_ontology
 
 pytestmark = pytest.mark.unit
+
+
+def _with_author_prefix(ontology: Ontology, prefix: str) -> Ontology:
+    """Rebind the ontology's own namespace to an author prefix after stamping.
+
+    A stamp binds the id as the prefix; a caller may still hand the catalog a
+    graph bound under another name, which registers as an alias.
+    """
+    ontology.graph.bind(prefix, ontology.namespace, override=True, replace=True)
+    assert ontology.prefix == prefix
+    return ontology
 
 
 def test_derive_ontology_id_skos_conventional() -> None:
@@ -86,18 +98,33 @@ def test_rdfgraph_add_preserves_conflicting_prefixes() -> None:
     assert "https://example.org/b#" in bindings.values()
 
 
-def test_ontology_manager_aliases_prefix_and_id() -> None:
-    graph = RDFGraph._from_turtle_str(
+def test_adopting_binds_the_id_as_the_prefix_of_the_own_namespace() -> None:
+    """The author's ``obs:`` is replaced: the id is the preferred prefix."""
+    ontology = stamped_ontology(
         """
         @prefix obs: <https://growgraph.dev/ontologies/observation#> .
         @prefix owl: <http://www.w3.org/2002/07/owl#> .
         <https://growgraph.dev/ontologies/observation> a owl:Ontology .
-        """
-    )
-    ontology = Ontology(
-        graph=graph,
-        iri="https://growgraph.dev/ontologies/observation",
+        obs:Reading a owl:Class .
+        """,
         ontology_id="observation",
+    )
+    assert ontology.prefix == "observation"
+    bound = {p for p, u in ontology.graph.namespaces() if str(u) == ontology.namespace}
+    assert bound == {"observation"}
+
+
+def test_ontology_manager_aliases_prefix_and_id() -> None:
+    ontology = _with_author_prefix(
+        stamped_ontology(
+            """
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            <https://growgraph.dev/ontologies/observation> a owl:Ontology .
+            <https://growgraph.dev/ontologies/observation#Reading> a owl:Class .
+            """,
+            ontology_id="observation",
+        ),
+        "obs",
     )
     mgr = OntologyManager()
     mgr.add_ontology(ontology)
@@ -106,25 +133,23 @@ def test_ontology_manager_aliases_prefix_and_id() -> None:
     assert mgr.resolve_ontology_ref("obs") == ontology.iri
     assert mgr.resolve_ontology_ref(ontology.iri) == ontology.iri
     assert "obs" in mgr
-    freshest = mgr.get_freshest_terminal_ontology(ontology_id="obs")
-    assert freshest is not None
-    assert freshest.iri == ontology.iri
+    head = mgr.get_head(ontology_id="obs")
+    assert head is not None
+    assert head.iri == ontology.iri
 
 
 def test_ontology_manager_allows_prefix_differing_from_ontology_id() -> None:
-    graph = RDFGraph._from_turtle_str(
-        """
-        @prefix life: <https://growgraph.dev/ontologies/lifecycle#> .
-        @prefix owl: <http://www.w3.org/2002/07/owl#> .
-        <https://growgraph.dev/ontologies/lifecycle> a owl:Ontology .
-        """
+    ontology = _with_author_prefix(
+        stamped_ontology(
+            """
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            <https://growgraph.dev/ontologies/lifecycle> a owl:Ontology .
+            <https://growgraph.dev/ontologies/lifecycle#Stage> a owl:Class .
+            """,
+            ontology_id="lifecycle",
+        ),
+        "life",
     )
-    ontology = Ontology(
-        graph=graph,
-        iri="https://growgraph.dev/ontologies/lifecycle",
-        ontology_id="lifecycle",
-    )
-    assert ontology.prefix == "life"
     mgr = OntologyManager()
     mgr.add_ontology(ontology)  # must not raise
     assert mgr.resolve_ontology_ref("life") == ontology.iri
@@ -132,30 +157,23 @@ def test_ontology_manager_allows_prefix_differing_from_ontology_id() -> None:
 
 
 def test_ontology_manager_rejects_same_iri_different_ontology_id() -> None:
-    base_graph = RDFGraph._from_turtle_str(
+    ontology_a = stamped_ontology(
         """
         @prefix owl: <http://www.w3.org/2002/07/owl#> .
         <https://example.org/finance> a owl:Ontology .
-        """
-    )
-    ontology_a = Ontology(
-        graph=base_graph,
-        iri="https://example.org/finance",
+        <https://example.org/finance#Account> a owl:Class .
+        """,
         ontology_id="finance",
     )
     mgr = OntologyManager()
     mgr.add_ontology(ontology_a)
 
-    conflicting_graph = RDFGraph._from_turtle_str(
+    ontology_b = stamped_ontology(
         """
         @prefix owl: <http://www.w3.org/2002/07/owl#> .
         <https://example.org/finance> a owl:Ontology .
         <https://example.org/finance#extra> a owl:Class .
-        """
-    )
-    ontology_b = Ontology(
-        graph=conflicting_graph,
-        iri="https://example.org/finance",
+        """,
         ontology_id="accounting",
     )
     with pytest.raises(ValueError, match="already bound to identity"):
@@ -163,29 +181,23 @@ def test_ontology_manager_rejects_same_iri_different_ontology_id() -> None:
 
 
 def test_ontology_manager_rejects_alias_across_iris() -> None:
-    graph_a = RDFGraph._from_turtle_str(
+    ontology_a = stamped_ontology(
         """
         @prefix owl: <http://www.w3.org/2002/07/owl#> .
         <https://example.org/finance> a owl:Ontology .
-        """
-    )
-    ontology_a = Ontology(
-        graph=graph_a,
-        iri="https://example.org/finance",
+        <https://example.org/finance#Account> a owl:Class .
+        """,
         ontology_id="finance",
     )
     mgr = OntologyManager()
     mgr.add_ontology(ontology_a)
 
-    graph_b = RDFGraph._from_turtle_str(
+    ontology_b = stamped_ontology(
         """
         @prefix owl: <http://www.w3.org/2002/07/owl#> .
         <https://example.com/finance> a owl:Ontology .
-        """
-    )
-    ontology_b = Ontology(
-        graph=graph_b,
-        iri="https://example.com/finance",
+        <https://example.com/finance#Ledger> a owl:Class .
+        """,
         ontology_id="finance",
     )
     with pytest.raises(ValueError, match="already bound to IRI"):
@@ -193,39 +205,33 @@ def test_ontology_manager_rejects_alias_across_iris() -> None:
 
 
 def test_ontology_manager_prefix_collision_degrades_to_iri_addressing() -> None:
-    """Two ontologies binding the same author prefix can coexist in one catalog.
+    """Two ontologies bound under the same author prefix coexist in one catalog.
 
     The colliding prefix alias is skipped (first binding wins); the second
-    ontology stays addressable by IRI and ontology_id. Regression: the
-    A corpus that binds ``onto:`` in every ontology could not be
-    ingested at all.
+    ontology stays addressable by IRI and ontology_id.
     """
-    graph_a = RDFGraph._from_turtle_str(
-        """
-        @prefix onto: <https://example.org/music#> .
-        @prefix owl: <http://www.w3.org/2002/07/owl#> .
-        <https://example.org/music> a owl:Ontology .
-        """
+    ontology_a = _with_author_prefix(
+        stamped_ontology(
+            """
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            <https://example.org/music> a owl:Ontology .
+            <https://example.org/music#Song> a owl:Class .
+            """,
+            ontology_id="music",
+        ),
+        "onto",
     )
-    ontology_a = Ontology(
-        graph=graph_a,
-        iri="https://example.org/music",
-        ontology_id="music",
+    ontology_b = _with_author_prefix(
+        stamped_ontology(
+            """
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            <https://example.org/film> a owl:Ontology .
+            <https://example.org/film#Movie> a owl:Class .
+            """,
+            ontology_id="film",
+        ),
+        "onto",
     )
-    graph_b = RDFGraph._from_turtle_str(
-        """
-        @prefix onto: <https://example.org/film#> .
-        @prefix owl: <http://www.w3.org/2002/07/owl#> .
-        <https://example.org/film> a owl:Ontology .
-        """
-    )
-    ontology_b = Ontology(
-        graph=graph_b,
-        iri="https://example.org/film",
-        ontology_id="film",
-    )
-    assert ontology_a.prefix == "onto"
-    assert ontology_b.prefix == "onto"
 
     mgr = OntologyManager()
     mgr.add_ontology(ontology_a)
@@ -250,4 +256,5 @@ def test_no_owl_ontology_does_not_promote_prefix() -> None:
     )
     ontology = Ontology(graph=graph)
     assert ontology.ontology_id is None
+    assert ontology.is_null()
     assert list(ontology.graph.triples((None, RDF.type, OWL.Ontology))) == []

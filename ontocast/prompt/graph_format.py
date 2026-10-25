@@ -18,6 +18,7 @@ from ontocast.onto.ontology_condense import (
     TextCaps,
     condense_graph_for_prompt,
 )
+from ontocast.onto.ontology_header import without_version_header
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.triple_index import TripleIndex, build_triple_index
 from ontocast.prompt.facts_guidelines import format_facts_operational_guidelines
@@ -331,7 +332,9 @@ class GraphFormatProfile:
         catalog reaches one at all is a property of that catalog, not something
         a default can be chosen for in advance.
         """
-        condensed, report = condense_graph_for_prompt(graph, max_triples, text_caps)
+        condensed, report = condense_graph_for_prompt(
+            without_version_header(graph), max_triples, text_caps
+        )
         if on_report is not None:
             on_report(report)
         if self.renders_term_sheet:

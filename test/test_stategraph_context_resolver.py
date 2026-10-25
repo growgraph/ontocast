@@ -465,9 +465,7 @@ def test_resolver_fixed_single_ontology_resolves_from_manager() -> None:
     class _StubOntologyManager:
         preferred_namespace_prefixes: dict[str, str] = {}
 
-        def get_freshest_terminal_ontology(
-            self, ontology_id: str | None = None
-        ) -> Ontology | None:
+        def get_head(self, ontology_id: str | None = None) -> Ontology | None:
             if ontology_id == "finance":
                 return finance_ontology
             return None

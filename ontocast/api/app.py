@@ -518,6 +518,17 @@ def create_app(
                 workflow_state.get("ontology_artifacts", [])
             )
 
+            ontology_versions = [
+                {**record.model_dump(mode="json")}
+                for record in workflow_state.get("ontology_versions_written", [])
+            ] + [
+                {**ref.model_dump(mode="json"), "role": "read"}
+                for ref in workflow_state.get("ontology_versions_read", [])
+            ]
+            written_by_iri = {
+                record.iri: record
+                for record in workflow_state.get("ontology_versions_written", [])
+            }
             ontology_artifact_payloads: list[dict] = []
             for artifact in ontology_artifacts:
                 out_graph = (
@@ -525,11 +536,14 @@ def create_app(
                     if loaded.strip_provenance
                     else artifact.graph
                 )
+                written = written_by_iri.get(artifact.iri)
                 ontology_artifact_payloads.append(
                     {
                         "iri": artifact.iri,
                         "ontology_id": artifact.ontology_id,
                         "title": artifact.title,
+                        "version": written.version if written else None,
+                        "version_iri": written.version_iri if written else None,
                         "triples": len(out_graph),
                         "ttl": out_graph.serialize_canonical_turtle(),
                     }
@@ -598,6 +612,7 @@ def create_app(
                     ),
                     facts_validation_findings=validation_findings,
                     facts_gate_repairs=gate_repairs,
+                    ontology_versions=ontology_versions,
                 ),
             )
 
@@ -742,6 +757,14 @@ def create_app(
                     facts_gate_repairs=[
                         record.model_dump(mode="json")
                         for record in initial_state.facts_gate_repairs
+                    ],
+                    ontology_versions=[
+                        record.model_dump(mode="json")
+                        for record in initial_state.ontology_versions_written
+                    ]
+                    + [
+                        {**ref.model_dump(mode="json"), "role": "read"}
+                        for ref in initial_state.ontology_versions_read
                     ],
                 ),
             )

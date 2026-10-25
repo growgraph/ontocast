@@ -1,287 +1,195 @@
-"""Tests for ontology merging functionality."""
+"""Merging two versions of one ontology into an artifact with two bases."""
 
-import logging
 from datetime import datetime, timezone
 
 import pytest
-from rdflib import DCTERMS, OWL, PROV, RDF, RDFS, Literal, URIRef
+from rdflib import OWL, RDF, RDFS, Literal, URIRef
 
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_header import (
+    DivergedOntologyError,
+    stamp_version,
+    without_version_header,
+)
+from ontocast.onto.ontology_operations import merge_ontologies
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.ontology_manager import OntologyManager
+from test.ontology_helpers import next_version, stamped_ontology
 
 pytestmark = pytest.mark.unit
 
-logger = logging.getLogger(__name__)
+T0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+T1 = datetime(2024, 1, 2, tzinfo=timezone.utc)
+T2 = datetime(2024, 1, 3, tzinfo=timezone.utc)
+T3 = datetime(2024, 1, 4, tzinfo=timezone.utc)
+
+IRI = "http://example.org/test"
+
+
+def _class(graph: RDFGraph, local: str, label: str) -> URIRef:
+    term = URIRef(f"{IRI}#{local}")
+    graph.add((term, RDF.type, OWL.Class))
+    graph.add((term, RDFS.label, Literal(label)))
+    return term
+
+
+def _root_graph() -> RDFGraph:
+    graph = RDFGraph()
+    graph.add((URIRef(IRI), RDF.type, OWL.Ontology))
+    graph.add((URIRef(IRI), RDFS.label, Literal("Test Ontology")))
+    _class(graph, "Class1", "Class 1")
+    return graph
 
 
 @pytest.fixture
-def ontology_manager():
-    """Create an ontology manager for testing."""
+def ontology_manager() -> OntologyManager:
     return OntologyManager()
 
 
 @pytest.fixture
-def base_ontology():
-    """Create a base ontology for testing."""
-    graph = RDFGraph()
-    iri = URIRef("http://example.org/test")
-    graph.add((iri, RDF.type, OWL.Ontology))
-    graph.add((iri, RDFS.label, Literal("Test Ontology")))
-
-    # Add some classes
-    class1 = URIRef("http://example.org/test#Class1")
-    graph.add((class1, RDF.type, OWL.Class))
-    graph.add((class1, RDFS.label, Literal("Class 1")))
-
-    ontology = Ontology(
-        graph=graph,
-        iri=str(iri),
-        ontology_id="test",
-        title="Test Ontology",
-        version="1.0.0",
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
-    )
-    # Ensure hash is computed
-    if not ontology.hash:
-        ontology._compute_and_set_hash()
-    return ontology
+def base_ontology() -> Ontology:
+    return stamped_ontology(_root_graph(), ontology_id="test", now=T0)
 
 
 @pytest.fixture
-def branch1_ontology(base_ontology):
-    """Create a branch 1 ontology (child of base)."""
-    # Create a copy of the base graph
+def branch1_ontology(base_ontology: Ontology) -> Ontology:
     graph = base_ontology.graph.copy()
-
-    # Add new class
-    class2 = URIRef("http://example.org/test#Class2")
-    graph.add((class2, RDF.type, OWL.Class))
-    graph.add((class2, RDFS.label, Literal("Class 2")))
-
-    ontology = Ontology(
-        graph=graph,
-        iri=base_ontology.iri,
-        ontology_id=base_ontology.ontology_id,
-        title=base_ontology.title,
-        version="1.1.0",
-        parent_hashes=[base_ontology.hash] if base_ontology.hash else [],
-        created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
-    )
-    return ontology
+    _class(graph, "Class2", "Class 2")
+    return next_version(base_ontology, graph, now=T1)
 
 
 @pytest.fixture
-def branch2_ontology(base_ontology):
-    """Create a branch 2 ontology (child of base)."""
-    # Create a copy of the base graph
+def branch2_ontology(base_ontology: Ontology) -> Ontology:
     graph = base_ontology.graph.copy()
-
-    # Add different new class
-    class3 = URIRef("http://example.org/test#Class3")
-    graph.add((class3, RDF.type, OWL.Class))
-    graph.add((class3, RDFS.label, Literal("Class 3")))
-
-    ontology = Ontology(
-        graph=graph,
-        iri=base_ontology.iri,
-        ontology_id=base_ontology.ontology_id,
-        title=base_ontology.title,
-        version="1.2.0",
-        parent_hashes=[base_ontology.hash] if base_ontology.hash else [],
-        created_at=datetime(2024, 1, 3, tzinfo=timezone.utc),
-    )
-    return ontology
+    _class(graph, "Class3", "Class 3")
+    return next_version(base_ontology, graph, now=T2)
 
 
-def test_merge_ontologies_basic(ontology_manager, branch1_ontology, branch2_ontology):
-    """Test basic ontology merging."""
-    from ontocast.onto.ontology_operations import merge_ontologies
-
-    # Ensure hashes are computed
-    if not branch1_ontology.hash:
-        branch1_ontology._compute_and_set_hash()
-    if not branch2_ontology.hash:
-        branch2_ontology._compute_and_set_hash()
-
-    # Merge
+def test_merge_ontologies_has_both_bases_and_all_content(
+    branch1_ontology: Ontology, branch2_ontology: Ontology
+) -> None:
     merged = merge_ontologies(branch1_ontology, branch2_ontology)
 
-    # Check that merged ontology has both parents
-    assert merged.parent_hashes == [branch1_ontology.hash, branch2_ontology.hash]
+    assert [base.version_iri for base in merged.bases] == [
+        branch1_ontology.version_iri,
+        branch2_ontology.version_iri,
+    ]
+    assert merged.version_iri is None, "a merge artifact is unstamped"
     assert merged.iri == branch1_ontology.iri
-    assert merged.created_at is not None
     assert merged.hash is not None
 
-    # Check that merged graph contains content triples from both (excluding metadata)
-    # Metadata (version, title, description, created_at, hash, parent_hash) is not compared
-    # as it may differ in the merged ontology
-    def get_content_triples(graph, onto_iri):
-        """Get content triples (excluding metadata) from a graph."""
-        content_triples = set()
-        onto_iri_ref = URIRef(onto_iri)
-        for s, p, o in graph:
-            # Skip metadata triples for the ontology IRI
-            if s == onto_iri_ref:
-                if (
-                    p == DCTERMS.identifier
-                    and isinstance(o, Literal)
-                    and str(o).startswith("hash:")
-                ):
-                    continue
-                if p == PROV.wasDerivedFrom:
-                    continue
-                if p == DCTERMS.created:
-                    continue
-                if p == OWL.versionInfo:
-                    continue
-                if p == RDFS.label:
-                    continue
-                if p == DCTERMS.title:
-                    continue
-                if p == DCTERMS.description:
-                    continue
-                if p == RDFS.comment:
-                    continue
-            content_triples.add((s, p, o))
-        return content_triples
-
-    branch1_content = get_content_triples(branch1_ontology.graph, branch1_ontology.iri)
-    branch2_content = get_content_triples(branch2_ontology.graph, branch2_ontology.iri)
-    merged_content = get_content_triples(merged.graph, merged.iri)
-
-    # All content triples from both branches should be in merged
-    assert branch1_content.issubset(merged_content), (
-        f"Missing triples from branch1: {branch1_content - merged_content}"
-    )
-    assert branch2_content.issubset(merged_content), (
-        f"Missing triples from branch2: {branch2_content - merged_content}"
-    )
+    for branch in (branch1_ontology, branch2_ontology):
+        content = set(without_version_header(branch.graph))
+        missing = content - set(merged.graph)
+        assert not missing, f"missing triples from {branch.version_iri}: {missing}"
 
 
-def test_merge_ontologies_with_contradictions(ontology_manager):
-    """Test merging ontologies with contradictions."""
-    from ontocast.onto.ontology_operations import merge_ontologies
+def test_stamped_merge_names_both_priors_and_bumps_the_higher_label(
+    base_ontology: Ontology, branch1_ontology: Ontology, branch2_ontology: Ontology
+) -> None:
+    merged = stamp_version(merge_ontologies(branch1_ontology, branch2_ontology), now=T3)
 
-    # Create two ontologies with conflicting property values
+    assert merged is not None
+    assert merged.prior_version_iris == [
+        branch1_ontology.version_iri,
+        branch2_ontology.version_iri,
+    ]
+    assert branch1_ontology.version == branch2_ontology.version == "1.0.1"
+    assert merged.version == "1.0.2"
+    assert merged.created_at == base_ontology.created_at, "the lineage start"
+    assert merged.modified_at == T3
+    assert [base.version_iri for base in merged.bases] == [merged.version_iri]
+
+
+def test_merge_ontologies_keeps_both_sides_of_a_contradiction() -> None:
+    class1 = URIRef(f"{IRI}#Class1")
+
     graph1 = RDFGraph()
-    iri = URIRef("http://example.org/test")
-    graph1.add((iri, RDF.type, OWL.Ontology))
-    class1 = URIRef("http://example.org/test#Class1")
+    graph1.add((URIRef(IRI), RDF.type, OWL.Ontology))
     graph1.add((class1, RDF.type, OWL.Class))
-    graph1.add((class1, RDFS.label, Literal("Class One")))  # Different label
-
+    graph1.add((class1, RDFS.label, Literal("Class One")))
     graph2 = RDFGraph()
-    graph2.add((iri, RDF.type, OWL.Ontology))
+    graph2.add((URIRef(IRI), RDF.type, OWL.Ontology))
     graph2.add((class1, RDF.type, OWL.Class))
-    graph2.add((class1, RDFS.label, Literal("Class 1")))  # Different label
+    graph2.add((class1, RDFS.label, Literal("Class 1")))
+    onto1 = stamped_ontology(graph1, ontology_id="test", now=T0)
+    onto2 = stamped_ontology(graph2, ontology_id="test", now=T1)
 
-    onto1 = Ontology(
-        graph=graph1,
-        iri=str(iri),
-        ontology_id="test",
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
-    )
-    onto2 = Ontology(
-        graph=graph2,
-        iri=str(iri),
-        ontology_id="test",
-        created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
-    )
-
-    # Merge should succeed (both values kept in RDF)
     merged = merge_ontologies(onto1, onto2)
 
-    # Both label values should be in merged graph
-    labels = [o for _, _, o in merged.graph.triples((class1, RDFS.label, None))]
-    assert len(labels) == 2
-    label_strings = {str(label) for label in labels}
-    assert "Class One" in label_strings or '"Class One"' in label_strings
-    assert "Class 1" in label_strings or '"Class 1"' in label_strings
+    labels = {str(o) for _, _, o in merged.graph.triples((class1, RDFS.label, None))}
+    assert labels == {"Class One", "Class 1"}
 
 
-def test_merge_terminal_ontologies_pairwise(
-    ontology_manager, base_ontology, branch1_ontology, branch2_ontology
-):
-    """Test merging terminal ontologies pair-wise."""
-    from ontocast.onto.ontology_operations import merge_ontologies
-
-    # Add all ontologies to manager
+def test_merging_the_heads_leaves_one_head(
+    ontology_manager: OntologyManager,
+    base_ontology: Ontology,
+    branch1_ontology: Ontology,
+    branch2_ontology: Ontology,
+) -> None:
     ontology_manager.add_ontology(base_ontology)
     ontology_manager.add_ontology(branch1_ontology)
     ontology_manager.add_ontology(branch2_ontology)
 
-    # Get terminal ontologies (should be branch1 and branch2)
-    terminals = ontology_manager.get_terminal_ontologies_by_iri(base_ontology.iri)
-    assert len(terminals) == 2
+    heads = ontology_manager.get_heads_by_iri(base_ontology.iri)
+    assert {head.version_iri for head in heads} == {
+        branch1_ontology.version_iri,
+        branch2_ontology.version_iri,
+    }
+    with pytest.raises(DivergedOntologyError):
+        ontology_manager.get_head_by_iri(base_ontology.iri)
 
-    # Sort by created_at
-    terminals.sort(
-        key=lambda x: x.created_at or datetime.min.replace(tzinfo=timezone.utc)
-    )
-
-    # Merge the two terminals
-    merged = merge_ontologies(terminals[0], terminals[1])
-
-    # Add merged to manager
+    merged = stamp_version(merge_ontologies(heads[0], heads[1]), now=T3)
+    assert merged is not None
     ontology_manager.add_ontology(merged)
 
-    # Check that we now have one terminal
-    new_terminals = ontology_manager.get_terminal_ontologies_by_iri(base_ontology.iri)
-    assert len(new_terminals) == 1
-    assert new_terminals[0].hash == merged.hash
+    new_heads = ontology_manager.get_heads_by_iri(base_ontology.iri)
+    assert [head.version_iri for head in new_heads] == [merged.version_iri]
+    assert ontology_manager.get_head_by_iri(base_ontology.iri) is new_heads[0]
 
 
-def test_merge_ontologies_preserves_namespaces(ontology_manager):
-    """Test that merging preserves namespace bindings."""
-    from ontocast.onto.ontology_operations import merge_ontologies
-
+def test_merge_ontologies_preserves_namespaces() -> None:
     graph1 = RDFGraph()
-    graph1.bind("ex", "http://example.org/")
-    iri = URIRef("http://example.org/test")
-    graph1.add((iri, RDF.type, OWL.Ontology))
+    graph1.bind("exa", "http://example.org/a/")
+    graph1.add((URIRef(IRI), RDF.type, OWL.Ontology))
+    _class(graph1, "Class1", "Class 1")
 
     graph2 = RDFGraph()
-    graph2.bind("test", "http://test.org/")
-    graph2.add((iri, RDF.type, OWL.Ontology))
+    graph2.bind("exb", "http://example.org/b/")
+    graph2.add((URIRef(IRI), RDF.type, OWL.Ontology))
+    _class(graph2, "Class2", "Class 2")
 
-    onto1 = Ontology(graph=graph1, iri=str(iri), created_at=datetime.now(timezone.utc))
-    onto2 = Ontology(graph=graph2, iri=str(iri), created_at=datetime.now(timezone.utc))
+    onto1 = stamped_ontology(graph1, ontology_id="test", now=T0)
+    onto2 = stamped_ontology(graph2, ontology_id="test", now=T1)
 
     merged = merge_ontologies(onto1, onto2)
 
-    # Check that both namespaces are present
     namespaces = dict(merged.graph.namespaces())
-    assert "ex" in namespaces
-    assert "test" in namespaces
+    assert "exa" in namespaces
+    assert "exb" in namespaces
 
 
-def test_merge_ontologies_created_at_set(ontology_manager):
-    """Test that merged ontology has created_at set to merge time."""
-    from ontocast.onto.ontology_operations import merge_ontologies
-
-    graph1 = RDFGraph()
-    iri = URIRef("http://example.org/test")
-    graph1.add((iri, RDF.type, OWL.Ontology))
-
-    graph2 = RDFGraph()
-    graph2.add((iri, RDF.type, OWL.Ontology))
-
-    onto1 = Ontology(
-        graph=graph1,
-        iri=str(iri),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+def test_merge_ontologies_refuses_different_iris(base_ontology: Ontology) -> None:
+    other = stamped_ontology(
+        RDFGraph._from_turtle_str(
+            """
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            <http://example.org/other> a owl:Ontology .
+            <http://example.org/other#A> a owl:Class .
+            """
+        ),
+        now=T0,
     )
-    onto2 = Ontology(
-        graph=graph2,
-        iri=str(iri),
-        created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
-    )
+    with pytest.raises(ValueError, match="different IRIs"):
+        merge_ontologies(base_ontology, other)
 
-    before_merge = datetime.now(timezone.utc)
-    merged = merge_ontologies(onto1, onto2)
-    after_merge = datetime.now(timezone.utc)
 
-    # Created_at should be set to merge time (between before and after)
-    assert merged.created_at is not None
-    assert before_merge <= merged.created_at <= after_merge
+def test_merge_ontologies_refuses_an_unstamped_input(
+    base_ontology: Ontology, branch1_ontology: Ontology
+) -> None:
+    graph = base_ontology.graph.copy()
+    _class(graph, "Loose", "Loose")
+    unstamped = base_ontology.derive_updated_version(graph)
+
+    with pytest.raises(ValueError, match="not stamped"):
+        merge_ontologies(branch1_ontology, unstamped)

@@ -18,6 +18,7 @@ from ontocast.onto.ontology_access import (
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
+from test.ontology_helpers import stamped_ontology
 from test.snapshot_helpers import empty_snapshot, snapshot_from_ontology
 
 pytestmark = pytest.mark.unit
@@ -31,7 +32,8 @@ def _source_unit() -> SourceUnit:
     )
 
 
-def _real_ontology(iri: str = "https://example.org/o") -> Ontology:
+def _real_ontology(iri: str = "https://example.org/onto") -> Ontology:
+    """A stamped root at ``iri`` with one class; its id is the IRI's tail."""
     g = RDFGraph()
     g.add(
         (
@@ -40,7 +42,14 @@ def _real_ontology(iri: str = "https://example.org/o") -> Ontology:
             URIRef("http://www.w3.org/2002/07/owl#Ontology"),
         )
     )
-    return Ontology(graph=g, iri=iri)
+    g.add(
+        (
+            URIRef(f"{iri}#Thing"),
+            URIRef("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+            URIRef("http://www.w3.org/2002/07/owl#Class"),
+        )
+    )
+    return stamped_ontology(g, ontology_id=iri.rsplit("/", 1)[-1])
 
 
 def test_document_serialization_targets_prefers_artifacts() -> None:
@@ -84,7 +93,7 @@ def test_agent_state_ontology_ids_exposes_all_artifact_ids() -> None:
     a1 = _real_ontology("https://example.org/a1")
     a2 = _real_ontology("https://example.org/a2")
     state = AgentState(ontology_artifacts=[a1, a2])
-    assert len(state.ontology_ids) == 2
+    assert state.ontology_ids == ["a1", "a2"]
 
 
 def test_unit_ontology_access_seed_and_effective() -> None:

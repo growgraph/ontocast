@@ -1,5 +1,6 @@
 """Pydantic models for the OntoCast HTTP API."""
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -144,6 +145,14 @@ class ProcessResultMetadata(BaseModel):
             "Per-unit repairs are in facts_repairs."
         ),
     )
+    ontology_versions: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "Ontology versions this run wrote (role 'created' or 'updated', "
+            "with iri, version_iri, ontology_id, version, prior_version_iris) "
+            "and read without changing (role 'read', with iri and version_iri)."
+        ),
+    )
 
 
 class ProcessOkResponse(BaseModel):
@@ -180,32 +189,73 @@ class ProcessBatchResponse(BaseModel):
 class OntologyMutationResponse(BaseModel):
     status: str = "success"
     iri: str
-    ontology_id: str | None = None
-    version: str | None = None
-    hash: str | None = None
+    ontology_id: str
+    version: str
+    version_iri: str
+
+
+class OntologyVersionSummary(BaseModel):
+    """The header of one stored version."""
+
+    version_iri: str
+    version: str
+    prior_version_iris: list[str]
+    created_at: datetime
+    modified_at: datetime
+    removed: bool = False
 
 
 class OntologySummary(BaseModel):
-    """Header of the current version of one catalog ontology."""
+    """One catalog ontology with its head(s)."""
 
     iri: str
-    ontology_id: str | None = None
-    title: str | None = None
+    ontology_id: str
+    title: str
     description: str | None = None
-    version: str | None = None
-    hash: str | None = None
+    versions: int
+    heads: list[OntologyVersionSummary]
+    diverged: bool = False
 
 
 class OntologyListResponse(BaseModel):
-    """Current version of every ontology in the partition's catalog."""
+    """Every ontology in the partition's catalog."""
 
     status: str = "success"
     ontologies: list[OntologySummary]
 
 
+class OntologyVersionsResponse(BaseModel):
+    """The version DAG of one ontology, newest first."""
+
+    status: str = "success"
+    iri: str
+    ontology_id: str
+    versions: list[OntologyVersionSummary]
+
+
 class OntologyDeleteResponse(BaseModel):
     status: str = "success"
     iri: str
+
+
+class OntologyVersionDeleteResponse(BaseModel):
+    """One version tombstoned; the ontology's new heads."""
+
+    status: str = "success"
+    version_iri: str
+    heads: list[OntologyVersionSummary]
+
+
+class OntologyDiffResponse(BaseModel):
+    """Content triples added and removed between two versions."""
+
+    status: str = "success"
+    from_iri: str
+    to_iri: str
+    added: list[str]
+    removed: list[str]
+    added_count: int
+    removed_count: int
 
 
 class ShapesMutationResponse(BaseModel):

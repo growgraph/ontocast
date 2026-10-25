@@ -20,9 +20,13 @@ FastAPI serves interactive documentation at `/docs` and the OpenAPI schema at
 | `GET /config` | Every setting the server runs with, credentials redacted |
 | `POST /process` | Extract an ontology and facts from each uploaded document |
 | `POST /process_unit` | Extract from short texts, each as a single content unit, without chunking |
-| `GET /ontologies` | List the catalog's ontologies |
+| `GET /ontologies` | List the catalog's ontologies with their head version(s) |
+| `GET /ontologies/{ontology_id}/versions` | The version history of one ontology |
+| `GET /ontologies/{ontology_id}/versions/{key}` | One version as Turtle |
+| `DELETE /ontologies/{ontology_id}/versions/{key}` | Tombstone one version |
+| `GET /ontologies/{ontology_id}/diff` | Content triples added and removed between two versions |
 | `POST /ontologies` | Add an ontology to the catalog |
-| `PUT /ontologies/{iri}` | Replace a catalog ontology |
+| `PUT /ontologies/{iri}` | Upload a new version of an ontology |
 | `DELETE /ontologies/{iri}` | Remove a catalog ontology |
 | `GET /shapes` | List stored SHACL shapes documents |
 | `POST /shapes` | Add a SHACL shapes document |
@@ -174,7 +178,7 @@ document, in upload order:
           "facts": "@prefix cd: <...> . ...",
           "ontology": null,
           "ontology_artifacts": [
-            {"iri": "https://...", "ontology_id": "...", "title": "...", "triples": 42, "ttl": "..."}
+            {"iri": "https://...", "ontology_id": "...", "title": "...", "version": "1.0.1", "version_iri": "https://...#...", "triples": 42, "ttl": "..."}
           ]
         },
         "metadata": {"status": "...", "chunks_processed": 7, "chunks_remaining": 0, "budget": {}, "...": "..."}
@@ -193,7 +197,10 @@ output), and `500` on an unexpected error. A failed `outcome` has
 
 In a successful `outcome`, `data.facts` is the merged facts graph in Turtle; it
 is empty in `ontology` mode. `data.ontology_artifacts` holds one entry per
-ontology the run created or changed. `data.ontology` is always `null`.
+ontology the run created or changed (`iri`, `ontology_id`, `title`, `version`,
+`version_iri`, `triples`, `ttl`); `version` and `version_iri` are `null` when
+the run changed nothing for that ontology, so no version was written.
+`data.ontology` is always `null`.
 
 | `metadata` field | Content |
 |---|---|
@@ -207,6 +214,7 @@ ontology the run created or changed. `data.ontology` is always `null`.
 | `facts_conformance` | Validation summary of the returned facts: whether SHACL ran and the graph conforms, counts by finding kind, constraint and shape, repairs applied; see [Validation](../guides/validation.md) |
 | `facts_validation_findings` | The findings behind that summary, after every repair |
 | `facts_gate_repairs` | LLM-free repairs applied to the merged graph |
+| `ontology_versions` | The ontology versions the run wrote (`role` `created` or `updated`, with `iri`, `version_iri`, `ontology_id`, `version`, `prior_version_iris`) and read without changing (`role` `read`, with `iri` and `version_iri`) |
 
 A document in which no content unit produced output is a `422` result
 (`error_code` `no_units_extracted`), not an empty success.
@@ -236,16 +244,29 @@ are Turtle files in a `file` form field. The path IRI is URL-encoded.
 
 | Route | Behavior |
 |---|---|
-| `GET /ontologies` | Lists the current version of each ontology: `iri`, `ontology_id`, `title`, `description`, `version` and `hash` |
-| `POST /ontologies` | Adds the ontology. Returns `iri`, `ontology_id`, `version` and `hash` |
-| `PUT /ontologies/{iri}` | Replaces the ontology. The uploaded file must declare the same ontology IRI as the path, or the call returns `400` |
-| `DELETE /ontologies/{iri}` | Removes the ontology. Returns its `iri` |
+| `GET /ontologies` | Lists every ontology: `iri`, `ontology_id`, `title`, `description`, `versions` (how many are stored), `heads` and `diverged` (`true` when it has more than one head and is read-only until merged). Each head is a version summary: `version_iri`, `version`, `prior_version_iris`, `created_at`, `modified_at`, `removed` |
+| `GET /ontologies/{ontology_id}/versions` | The version history of the ontology the id (or IRI, or prefix) names, newest first: `iri`, `ontology_id` and one summary per version, as above. `404` for an unknown ontology |
+| `GET /ontologies/{ontology_id}/versions/{key}` | The named graph of that version as Turtle. `{key}` is the fragment of `version_iri` (`<iri>#<key>`). A tombstone returns its header only. `404` when the version is unknown |
+| `DELETE /ontologies/{ontology_id}/versions/{key}` | Tombstones the version: content dropped, header kept, typed `oc:RemovedVersion`. Returns `version_iri` and the ontology's new `heads` (nearest live ancestors become heads when a head is removed). `404` when the version is unknown |
+| `GET /ontologies/{ontology_id}/diff?from=<key>&to=<key>` | Content triples added and removed between two versions, header excluded: `from_iri`, `to_iri`, `added` and `removed` as sorted N-Triples lines, plus their counts. `404` when either version is unknown |
+| `POST /ontologies` | Adds the ontology as the root version of a new ontology. Returns `iri`, `ontology_id`, `version` and `version_iri`. `409` when an ontology with that IRI already exists: delete it first, or use `PUT` |
+| `PUT /ontologies/{iri}` | Uploads a new version whose prior is the current single head. Unchanged content writes nothing and returns the head. An ontology with no live head is adopted as a new root. The file must declare the same ontology IRI as the path (`400` otherwise). `409` when the ontology has several heads |
+| `DELETE /ontologies/{iri}` | Removes the ontology, every version included. Returns its `iri` |
 
 ```bash
 curl "http://127.0.0.1:8999/ontologies?tenant=acme&project=reports"
 
+curl "http://127.0.0.1:8999/ontologies/obs/versions"
+
+curl "http://127.0.0.1:8999/ontologies/obs/versions/<key>"
+
+curl "http://127.0.0.1:8999/ontologies/obs/diff?from=<key>&to=<key>"
+
 curl -X POST "http://127.0.0.1:8999/ontologies?tenant=acme&project=reports" \
   -F "file=@my-ontology.ttl"
+
+curl -X PUT "http://127.0.0.1:8999/ontologies/https%3A%2F%2Fexample.org%2Fonto" \
+  -F "file=@my-ontology-v2.ttl"
 
 curl -X DELETE "http://127.0.0.1:8999/ontologies/https%3A%2F%2Fexample.org%2Fonto"
 ```
@@ -329,6 +350,7 @@ an upload route called without `file`, gets FastAPI's standard `422` with a
 | `400` | `fixed_single_ontology` mode with no ontology id in the request or in `ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID` | none |
 | `400` | No store configured on `/flush`; a Turtle file that does not parse, or whose ontology IRI does not match the path, on `/ontologies` or `/shapes` | none |
 | `409` | `selected_vector_search_ontology` requested but no vector store is configured and ready | `VECTOR_STORE_UNAVAILABLE` |
+| `409` | `POST /ontologies` with an IRI the catalog already holds; `PUT /ontologies/{iri}` when the ontology has several heads | none |
 | `422` | No content unit produced output, including when the document could not be converted (`/process`) | `no_units_extracted` |
 | `422` | The uploaded file could not be converted (`/process_unit`) | `conversion_failed:<stage>` |
 | `422` | The single unit failed (`/process_unit`) | none |

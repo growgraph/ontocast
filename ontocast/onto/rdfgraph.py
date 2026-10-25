@@ -2257,7 +2257,7 @@ class RDFGraph(Graph):
         URDNA2015 runs, because URDNA2015 canonicalizes blank node labels only.
         Without that step a graph re-hashes differently after a triple-store
         round trip -- stores normalise literals on insert -- which breaks the
-        content-addressed ``versioned_iri`` identity the catalog is built on.
+        content-addressed version identity the catalog is built on.
 
         Canonicalization is applied to a throwaway copy; the graph itself is
         never mutated, so what gets stored, served, and shown to the LLM is

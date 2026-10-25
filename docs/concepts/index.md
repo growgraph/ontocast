@@ -20,7 +20,7 @@ setting changes which step.
 |---|---|---|
 | Convert | The file becomes text | None |
 | Chunk | The text is cut into content units and labeled by section | None, unless `CHUNK_SECTION_CLASSIFIER=llm` |
-| Ontology block | Each unit proposes changes to the ontology; the changes are merged and saved | At least one per unit |
+| Ontology block | The document's home ontology is resolved; each unit proposes changes to the ontology; the changes are merged and saved | One per document, then at least one per unit |
 | Facts block | Each unit's facts are extracted, then merged into one graph and validated | At least one per unit |
 | Serialize | The graphs are stored and returned | None |
 
@@ -63,29 +63,35 @@ The ontology block grows the ontology the facts will be expressed in. It runs
 when [`RENDER_MODE`](../reference/configuration/pipeline.md#render_mode) is
 `ontology` or `ontology_and_facts`.
 
-1. **Choose the ontology context.** Each unit is shown the slice of the catalog
+1. **Resolve the home ontology.** One LLM call per document names where its
+   new vocabulary goes: an existing catalog ontology the document extends, or
+   a new one, whose IRI OntoCast mints under `CURRENT_DOMAIN`. See [The home
+   ontology](ontologies_and_facts.md#the-home-ontology).
+2. **Choose the ontology context.** Each unit is shown the slice of the catalog
    it needs: one ontology the model picks, the terms vector retrieval finds, or
    one fixed ontology, depending on
    [`ONTOLOGY_CONTEXT_MODE`](../reference/configuration/pipeline.md#ontology_context_mode).
    See [Choosing ontology context](../guides/ontology_context.md).
-2. **Render.** The model reads the unit and its ontology context and proposes
+3. **Render.** The model reads the unit and its ontology context and proposes
    new classes and properties as a patch: triples to insert and triples to
-   delete. With an empty catalog it starts a new ontology.
-3. **Review.** An optional critic reviews the patch; see [the per-unit
+   delete. With an empty context it renders the terms of a new ontology under
+   the home ontology.
+4. **Review.** An optional critic reviews the patch; see [the per-unit
    loop](#the-per-unit-loop) below.
-4. **Merge and save.** When every unit is done, their patches are merged into
+5. **Merge and save.** When every unit is done, their patches are merged into
    one change per ontology. A triple one unit inserts wins over another unit's
    delete of it. Each new term goes to the ontology that owns its namespace,
-   and every ontology that changed becomes a new version. What each unit
-   contributed is kept apart from the ontology itself, as provenance.
-5. **Consolidate (optional).** With
+   and every ontology that changed becomes a new version; one that did not
+   change gets none. What each unit contributed is kept apart from the
+   ontology itself, as provenance.
+6. **Consolidate (optional).** With
    [`ENABLE_ONTOLOGY_CONSOLIDATION`](../reference/configuration/pipeline.md#enable_ontology_consolidation),
    one more LLM call refines the ontology against an excerpt of the whole
    document. It runs only when the document produced exactly one ontology.
-6. **Structural check.** OntoCast checks the ontology for disconnected parts and
+7. **Structural check.** OntoCast checks the ontology for disconnected parts and
    properties without labels. It changes nothing; problems are reported in
    `improvement_suggestions`.
-7. **Consistency check.** In `selected_vector_search_ontology` mode, the new
+8. **Consistency check.** In `selected_vector_search_ontology` mode, the new
    terms are searched against the whole catalog to find near-duplicates in
    ontologies the document did not touch. This is a retrieval, not an LLM call,
    and its findings are also reported in `improvement_suggestions`. In the other

@@ -2,7 +2,7 @@
 
 import logging
 
-from rdflib import OWL, RDF, BNode, Node, URIRef
+from rdflib import OWL, RDF, BNode, Node
 
 from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit
@@ -62,6 +62,9 @@ def split_ontology_and_provenance_graph(
         for subject, _, _ in graph.triples((None, RDF_REIFIES, None))
         if isinstance(subject, BNode)
     }
+    ontology_subjects: set[Node] = {
+        subject for subject, _, _ in graph.triples((None, RDF.type, OWL.Ontology))
+    }
     chunk_nodes: set[Node] = set()
 
     def is_schema_chunk_metadata(predicate: Node) -> bool:
@@ -85,8 +88,8 @@ def split_ontology_and_provenance_graph(
         if predicate == RDF_REIFIES:
             return True
         if predicate == PROV.wasDerivedFrom:
-            # Keep ontology lineage hashes in the clean ontology graph.
-            if isinstance(obj, URIRef) and str(obj).startswith("urn:hash:"):
+            # The header's source-document link stays with the ontology.
+            if subject in ontology_subjects:
                 return False
             return True
         if predicate == PROV.generatedAtTime or is_schema_chunk_metadata(predicate):
@@ -184,16 +187,16 @@ def normalize_ontology_units(
             if graph_changed:
                 result = base_ontology.derive_updated_version(updated_graph)
             else:
+                # Nothing changed: the base stays the artifact, and the update
+                # is not reported as applied, so no version is stamped for it.
                 result = base_ontology.model_copy(deep=True)
-                result.graph = updated_graph
+                merged_update = None
         else:
             result = base_ontology.model_copy(deep=True)
-        result.sync_properties_to_graph()
         cleaned_graph, provenance_graph = split_ontology_and_provenance_graph(
             result.graph
         )
         result.graph = cleaned_graph
-        result.sync_properties_to_graph()
         applied = [merged_update] if merged_update else []
         return result, applied, provenance_graph
 
@@ -231,7 +234,6 @@ def normalize_ontology_units(
             iri=anchor if anchor != NULL_ONTOLOGY.iri else NULL_ONTOLOGY.iri,
             title=None,
             description=None,
-            skip_graph_identity_sync=True,
         )
     applied = [merged_update] if merged_update else []
     return result, applied, provenance_graph

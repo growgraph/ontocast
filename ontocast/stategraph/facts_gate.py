@@ -18,13 +18,20 @@ other entry path.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 
-from rdflib import URIRef
+from rdflib import BNode, URIRef
+from rdflib.term import Node
 
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import RetrievalMetric
-from ontocast.onto.model import FactsValidationFinding, FactsValidationFindingKind
-from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.model import (
+    FactsGateRepairKind,
+    FactsValidationFinding,
+    FactsValidationFindingKind,
+    GraphRepairRecord,
+)
+from ontocast.onto.rdfgraph import RDFGraph, drop_reifiers_mentioning
 from ontocast.onto.state import AgentState
 from ontocast.tool.agg.aggregate import AggregationResult
 from ontocast.tool.facts_validation import (
@@ -38,11 +45,15 @@ from ontocast.tool.facts_validation import (
     record_facts_gate_metrics,
     shacl_catalog_contradictions,
     summarize_conformance,
+    untyped_instances,
     validate_aggregated_facts,
 )
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
+
+#: How many dropped instance IRIs the state keeps; the metric holds the count.
+_UNTYPED_DROPPED_STATE_CAP = 200
 
 #: Finding kinds the un-merge repair can actually act on. Scoring the loop on
 #: *all* errors let SHACL findings -- which un-merging cannot fix -- decide
@@ -92,6 +103,77 @@ def vetoes_from_findings(
     return vetoes
 
 
+def _remove_orphaned_blank_nodes(
+    graph: RDFGraph, candidates: set[BNode]
+) -> tuple[set[BNode], int]:
+    """Remove blank nodes nothing references any more, cascading.
+
+    A blank node is reachable only through its incoming triples; once those
+    are gone, its own triples describe nothing, and the blank nodes *they*
+    point at may be orphaned in turn.
+
+    Returns:
+        Tuple of (removed blank nodes, removed triple count).
+    """
+    removed: set[BNode] = set()
+    removed_triples = 0
+    pending = list(candidates)
+    while pending:
+        node = pending.pop()
+        if node in removed or (None, None, node) in graph:
+            continue
+        removed.add(node)
+        for triple in list(graph.triples((node, None, None))):
+            graph.remove(triple)
+            removed_triples += 1
+            if isinstance(triple[2], BNode):
+                pending.append(triple[2])
+    return removed, removed_triples
+
+
+def drop_untyped_instances(
+    graph: RDFGraph, fact_namespaces: Sequence[str]
+) -> tuple[RDFGraph, list[str]]:
+    """Remove every instance that has no concrete type, with its triples.
+
+    Runs on the aggregated graph so a type asserted in any unit counts. An
+    untyped instance (:func:`untyped_instances`: a fact-namespace IRI in
+    subject or IRI-object position whose ``rdf:type`` names no class outside
+    the fact namespaces other than a metaclass or ``owl:Thing``) loses every
+    triple it is the subject or the object of; blank nodes reachable only
+    through those triples go with them, and so do the RDF 1.2 reifiers
+    quoting any removed statement. A typed neighbour keeps everything else.
+
+    Args:
+        graph: Aggregated facts graph, mutated in place.
+        fact_namespaces: Namespaces holding minted instances.
+
+    Returns:
+        Tuple of (the same graph, dropped instance IRIs ordered by IRI).
+    """
+    untyped = untyped_instances(graph, fact_namespaces)
+    if not untyped:
+        return graph, []
+    orphan_candidates: set[BNode] = set()
+    removed_nodes: set[Node] = set(untyped)
+    for instance in untyped:
+        for triple in [
+            *graph.triples((instance, None, None)),
+            *graph.triples((None, None, instance)),
+        ]:
+            graph.remove(triple)
+            for term in (triple[0], triple[2]):
+                if isinstance(term, BNode):
+                    orphan_candidates.add(term)
+    orphaned, _ = _remove_orphaned_blank_nodes(graph, orphan_candidates)
+    removed_nodes |= orphaned
+    drop_reifiers_mentioning(graph, removed_nodes)
+    logger.info(
+        "Dropped %d untyped instance(s) from the aggregated facts", len(untyped)
+    )
+    return graph, [str(instance) for instance in untyped]
+
+
 def run_facts_gate(
     state: AgentState,
     ontology_graph: RDFGraph,
@@ -110,7 +192,9 @@ def run_facts_gate(
     resulted from an identity merge turn the offending cluster into pair vetoes
     and the retained facts units are re-aggregated, up to
     ``FACTS_MERGE_REPAIR_PASSES`` times. Then, on both paths, SHACL autofix
-    (``FACTS_SHACL_AUTOFIX``) repairs constraint violations in code. Residual
+    (``FACTS_SHACL_AUTOFIX``) repairs constraint violations in code, and
+    instances still untyped after aggregation are dropped
+    (:func:`drop_untyped_instances`; ``facts_untyped_dropped``). Residual
     findings stay on the state as telemetry.
 
     Args:
@@ -300,10 +384,28 @@ def run_facts_gate(
         )
         if repair_result.records:
             state.aggregated_facts = repair_result.graph
-            report = run_validation()
 
-    if dedupe_records or repair_result.records:
-        state.facts_gate_repairs = dedupe_records + repair_result.records
+    # Every instance the served graph holds is typed: whatever is still
+    # untyped once all units have contributed their types is removed.
+    _, untyped_dropped = drop_untyped_instances(state.aggregated_facts, fact_namespaces)
+    untyped_records = [
+        GraphRepairRecord(
+            kind=FactsGateRepairKind.UNTYPED_DROPPED, source=iri, target=""
+        )
+        for iri in untyped_dropped
+    ]
+    state.facts_untyped_dropped = untyped_dropped[:_UNTYPED_DROPPED_STATE_CAP]
+    state.retrieval_metrics[RetrievalMetric.FACTS_UNTYPED_DROPPED] = len(
+        untyped_dropped
+    )
+
+    if repair_result.records or untyped_dropped:
+        report = run_validation()
+
+    if dedupe_records or repair_result.records or untyped_records:
+        state.facts_gate_repairs = (
+            dedupe_records + repair_result.records + untyped_records
+        )
 
     state.facts_validation_findings = report.findings
     state.facts_conformance = summarize_conformance(

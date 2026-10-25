@@ -115,6 +115,7 @@ machine can decide without the model:
 | Compact-IRI literal coercion | A plain string such as `"unit:NanoM"` on another predicate becomes the IRI, when its prefix is bound and either the schema says the predicate takes an IRI or the IRI is a catalog or fallback-vocabulary term. Critic and completion patches get the same repair before they are judged |
 | Near-miss predicate rewrite | A predicate not in the catalog is rewritten to the one catalog term whose name tokens contain, are contained in, or equal its own. `FACTS_PROPERTY_ALIAS_MIN_RATIO` only breaks ties among such candidates; string similarity alone never triggers a rewrite. A predicate the full catalog declares is never rewritten, even when the unit's snapshot lacks it |
 | Code resolution | A node carrying a code from `FACTS_CODE_PREDICATES` (such as `qudt:ucumCode "d"`) but no link to the coded individual gains that link, when exactly one catalog individual declares the code. The linking property comes from the schema's domain and range, or else from how the graph already links such nodes |
+| Entailed types | A subject of a predicate with an `rdfs:domain`, or an IRI object of one with a class `rdfs:range`, gains that class as `rdf:type` when it has no type or the class specialises one it has. A type that would contradict the asserted ones is not added; that is the domain-violation finding's. Critic and completion patches get the same repair |
 | Degenerate bounds | Equal lower and upper bounds become one value, when the quantity fallback vocabulary names `numeric_value`, `lower_bound` and `upper_bound` |
 
 Two kinds of triple are then **quarantined**, removed from the graph and shown
@@ -122,7 +123,7 @@ to the critic for repair: typed literals whose lexical form is invalid for the
 datatype, and string literals on a property whose range is a class
 (`FACTS_OBJECT_PROPERTY_LITERAL_CHECK`).
 
-Type and compact-IRI coercions, predicate rewrites and code resolutions are recorded as
+Type and compact-IRI coercions, predicate rewrites, code resolutions and entailed types are recorded as
 `GraphRepairRecord`s and returned per unit as `facts_repairs`, so a consumer can
 tell a machine rewrite from what the model asserted. Ambiguity is never
 resolved by guessing: two catalog terms claiming one code means no repair.
@@ -140,6 +141,7 @@ fix. Every kind is mandatory except numeric coverage:
 | `unknown_term` | A term under `example.org`, a predicate or class minted in the facts namespace, or a term missing from a closed catalog namespace |
 | `literal_type_object` | An `rdf:type` written as a string that layer 1 could not resolve |
 | `domain_violation` | A predicate asserted on a subject whose stated type contradicts the predicate's `rdfs:domain` |
+| `untyped_instance` | A facts-namespace IRI in subject or IRI-object position with no `rdf:type` naming a concrete class: one outside the facts namespaces that is neither a metaclass (`owl:Class`, `rdf:Property`, `owl:NamedIndividual`, …) nor vacuous (`owl:Thing`, `rdfs:Resource`, `schema:Thing`). Blank nodes and the chunk and document nodes are not instances. Suggestions are the domain and range classes of the predicates the instance carries, then catalog classes sharing a name token with its label |
 | `domain_adherence` | Too few of the render's schema terms come from the ontology context (`FACTS_DOMAIN_ADHERENCE_MIN_SHARE`, judged from `FACTS_DOMAIN_ADHERENCE_MIN_TERMS` terms up); not judged on citation or non-content units |
 | `scalar_as_bounds` | One value written into two single-valued numeric properties of one node |
 | `label_only_number` | A value node with a unit but no numeric literal, whose number sits only in its label |
@@ -306,7 +308,14 @@ The passes stop as soon as nothing is missing.
    prune leaves empty, and repairs touch only nodes in the facts namespaces.
    Rewrites move the statement's RDF 1.2 reifier onto the replacement; prunes
    delete it.
-5. **Summary**: `facts_conformance`, `facts_validation_findings` and
+5. **Untyped instances** (`drop_untyped_instances`): every instance still
+   without a concrete type (the `untyped_instance` rule, over the aggregated
+   graph so a type asserted in any unit counts) is removed with every triple it
+   is the subject or object of, the blank nodes reachable only through those
+   triples, and the reifiers quoting them. Each drop is a `facts_gate_repairs`
+   record of kind `untyped_dropped`; the IRIs are on `facts_untyped_dropped`
+   (capped at 200) and the count is the `facts_untyped_dropped` metric.
+6. **Summary**: `facts_conformance`, `facts_validation_findings` and
    `facts_gate_repairs`, plus the gate counters in `retrieval_metrics`.
 
 SHACL runs on a copy of the data graph with the ontology context mixed in and
@@ -318,19 +327,21 @@ gate without step 3, since one unit has nothing to un-merge.
 
 The per-unit snapshot under `selected_vector_search_ontology` is a retrieved
 subset of the catalog, so judgments that need the whole catalog run at the
-reduce step, where the full catalog terminals are loaded:
+reduce step, where the catalog heads are loaded:
 
 | Policy | Behavior | Counter |
 |---|---|---|
 | Minted-term reconciliation (`ONTOLOGY_RECONCILE_MINTED_TERMS`, default `detect`) | A new term whose label, preferred label or notation exactly matches a catalog term of compatible role is a re-mint of a term retrieval did not surface. `detect` logs the pairs, `rewrite` substitutes the catalog IRI in the merged update, `off` skips the check | `minted_duplicates`, `minted_duplicate_pairs`, `minted_duplicates_rewritten` |
 | Delete policy (vector mode only) | A merged delete whose subject the merged inserts do not redeclare is dropped: it was judged on partial evidence and would change shared catalog terms | `deletes_dropped_unredeclared` |
-| Fresh-ontology reconciliation | Units that each created an ontology under the same IRI are union-merged into one; overlap between different fresh IRIs is counted, not merged | `fresh_ontologies_merged`, `fresh_minted_duplicates` |
+| Fresh-ontology reconciliation | Units that rendered fresh each produced terms under the document's one home ontology; their graphs are unioned into one root. A fresh unit under any other IRI is a fault and stops the run | `fresh_ontologies_merged` |
 
 Applying the merged delta also counts where the unit's view and the catalog
 diverged: `apply_deletes_no_match` (delete triples absent from the catalog at
-apply time, typically a stale vector index) and
+apply time, typically a stale vector index),
 `unattributed_insert_triples` / `unattributed_delete_triples` (triples no
-writable ontology claims, the loss `foreign_namespace` predicts).
+writable ontology claims, the loss `foreign_namespace` predicts) and
+`apply_header_triples_dropped` (triples on the ontology IRI itself, dropped
+because the version header is written by code, never by a render).
 
 These counters are kept in `AgentState.ontology_reduce_metrics` and written to
 the run manifest of `ontocast process` under `ontology_reduce_metrics`. The

@@ -51,9 +51,10 @@ A `200` with an empty `data.facts` has different causes:
 ## Empty ontology context
 
 Each part of a document (content unit) is shown a slice of your ontologies, its
-ontology context. When that slice is empty, an ontology part creates a new
-ontology from the text, which is how OntoCast starts without a catalog. A facts
-part has nothing to do that with: it falls back on generic vocabulary.
+ontology context. When that slice is empty, an ontology part renders new terms
+under the document's home ontology, which is how OntoCast starts without a
+catalog. A facts part has nothing to do that with: it falls back on generic
+vocabulary.
 
 With [`ONTOLOGY_CONTEXT_REQUIRED=true`](../reference/configuration/pipeline.md#ontology_context_required)
 an empty context for a facts part stops the run with `EmptyOntologyContextError`

@@ -6,7 +6,6 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_apply import OntologyDelta
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
-from ontocast.tool.ontology_validation import detect_minted_duplicates
 
 logger = logging.getLogger(__name__)
 
@@ -143,54 +142,24 @@ def drop_all_deletes(delta: OntologyDelta) -> int:
 def reconcile_fresh_ontologies(
     fresh_ontologies: list[Ontology],
 ) -> tuple[list[Ontology], dict[str, int]]:
-    """Reconcile the fresh-create fan-out's N independent ontologies.
+    """Union the fresh fan-out's per-unit graphs into one root per IRI.
 
-    Units on the fresh path each return a whole ontology. Same-IRI artifacts
-    are union-merged (the reduce used to keep whichever indexed last,
-    silently dropping the others' content); across *different* fresh IRIs,
-    minted duplicates are detected pairwise so the overlap is at least
-    visible — no LLM harmonization is attempted.
+    Every fresh unit of a document mints under the document's home ontology,
+    so there is one IRI and the union is the ontology. A unit that minted
+    under any other IRI is a fault in the fresh path and raises.
 
     Returns:
         The reconciled artifact list and the metrics to record
-        (``fresh_ontologies_merged``, ``fresh_minted_duplicates``; keys
-        present only when non-zero).
+        (``fresh_ontologies_merged``, present only when non-zero).
     """
     metrics: dict[str, int] = {}
     if len(fresh_ontologies) <= 1:
         return fresh_ontologies, metrics
-
-    by_iri: dict[str, list[Ontology]] = {}
-    for fresh in fresh_ontologies:
-        by_iri.setdefault(fresh.iri, []).append(fresh)
-    merged: list[Ontology] = []
-    same_iri_merges = 0
-    for group in by_iri.values():
-        if len(group) == 1:
-            merged.append(group[0])
-            continue
-        same_iri_merges += len(group) - 1
-        logger.warning(
-            "%d unit(s) produced fresh ontologies under the same IRI %s; "
-            "union-merging instead of keeping the last one",
-            len(group),
-            group[0].iri,
+    iris = {fresh.iri for fresh in fresh_ontologies}
+    if len(iris) != 1:
+        raise RuntimeError(
+            f"fresh units minted under {len(iris)} IRIs ({sorted(iris)}); "
+            "a document has one home ontology"
         )
-        merged.append(group[0].union_fresh(group[1:]))
-    if same_iri_merges:
-        metrics["fresh_ontologies_merged"] = same_iri_merges
-
-    if len(merged) > 1:
-        cross_duplicates = 0
-        for index, fresh in enumerate(merged):
-            other_graphs = {other.iri: other.graph for other in merged[index + 1 :]}
-            cross_duplicates += len(detect_minted_duplicates(fresh.graph, other_graphs))
-        if cross_duplicates:
-            metrics["fresh_minted_duplicates"] = cross_duplicates
-            logger.warning(
-                "%d term(s) overlap across %d distinct fresh ontologies — "
-                "consider a shared seed ontology",
-                cross_duplicates,
-                len(merged),
-            )
-    return merged, metrics
+    metrics["fresh_ontologies_merged"] = len(fresh_ontologies) - 1
+    return [fresh_ontologies[0].union_fresh(fresh_ontologies[1:])], metrics

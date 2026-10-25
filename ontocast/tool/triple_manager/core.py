@@ -31,6 +31,18 @@ class TripleStoreUnavailableError(RuntimeError):
     """
 
 
+class TripleStoreWriteError(RuntimeError):
+    """A write the store refused. Nothing downstream may treat it as done."""
+
+    def __init__(self, graph_uri: str, status: int | str, detail: str = "") -> None:
+        self.graph_uri = graph_uri
+        self.status = status
+        self.detail = detail[:500]
+        super().__init__(
+            f"the triple store refused graph {graph_uri} ({status}): {self.detail}"
+        )
+
+
 class TripleStoreManager(Tool):
     """Base class for managing RDF triple stores.
 
@@ -67,22 +79,29 @@ class TripleStoreManager(Tool):
         return await asyncio.to_thread(self.fetch_ontologies)
 
     @abc.abstractmethod
-    def serialize_graph(self, graph: Graph, **kwargs: Any) -> bool:
-        """Store an RDF graph in the triple store."""
-        pass
+    def serialize_graph(self, graph: Graph, **kwargs: Any) -> None:
+        """Store an RDF graph as a named graph.
 
-    async def aserialize_graph(self, graph: Graph, **kwargs: Any) -> bool:
+        Raises:
+            TripleStoreWriteError: the store refused the write.
+        """
+
+    async def aserialize_graph(self, graph: Graph, **kwargs: Any) -> None:
         """Async serialize helper for backends without native async I/O."""
-        return await asyncio.to_thread(self.serialize_graph, graph, **kwargs)
+        await asyncio.to_thread(self.serialize_graph, graph, **kwargs)
 
     @abc.abstractmethod
-    def serialize(self, o: Ontology | RDFGraph, **kwargs: Any) -> bool:
-        """Store an Ontology or RDFGraph in the triple store."""
-        pass
+    def serialize(self, o: Ontology | RDFGraph, **kwargs: Any) -> None:
+        """Store a stamped ontology version, or a graph.
 
-    async def aserialize(self, o: Ontology | RDFGraph, **kwargs: Any) -> bool:
+        Raises:
+            TripleStoreWriteError: the store refused the write.
+            ValueError: an ontology that was never stamped (no ``version_iri``).
+        """
+
+    async def aserialize(self, o: Ontology | RDFGraph, **kwargs: Any) -> None:
         """Async serialize helper for backends without native async I/O."""
-        return await asyncio.to_thread(self.serialize, o, **kwargs)
+        await asyncio.to_thread(self.serialize, o, **kwargs)
 
     async def async_init(self) -> None:
         """Backend warmup (e.g. ensure datasets exist). No-op by default."""
@@ -109,6 +128,32 @@ class TripleStoreManager(Tool):
         """Drop a single named graph."""
         raise NotImplementedError(
             f"{type(self).__name__} does not support drop_named_graph()"
+        )
+
+    async def afetch_named_graph(
+        self, graph_uri: str, *, store: StoreKind = "ontologies"
+    ) -> RDFGraph | None:
+        """The named graph ``graph_uri``, or None when it is not stored."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support afetch_named_graph()"
+        )
+
+    async def aremove_version(self, version_iri: str) -> None:
+        """Replace a version's content with a tombstone (header kept).
+
+        Raises:
+            ValueError: no graph is stored under ``version_iri``.
+            CatalogContractError: the graph is not a version of an ontology.
+            TripleStoreWriteError: the store refused the write.
+        """
+        from ontocast.onto.ontology_header import tombstone_graph
+
+        graph = await self.afetch_named_graph(version_iri, store="ontologies")
+        if graph is None:
+            raise ValueError(f"no version stored at {version_iri}")
+        tombstone = tombstone_graph(graph, version_iri)
+        await self.aserialize_graph(
+            tombstone, graph_uri=version_iri, store="ontologies"
         )
 
     async def drop_all_ontology_graphs_for_iri(
@@ -269,20 +314,15 @@ class TripleStoreManager(Tool):
         )
 
     async def afetch_ontology_catalog(self) -> list[OntologyHeader]:
-        """Fetch per-named-graph ontology header metadata.
+        """One header per stored version, without the graphs.
 
-        Headers carry the lineage fields terminal-version selection needs without
-        the graphs themselves. The default implementation materializes the catalog
-        and derives headers from it; SPARQL-capable backends should override with a
-        single SELECT.
+        Headers carry the lineage fields head selection needs. The default
+        derives them from :meth:`afetch_ontologies`, so it sees only heads;
+        SPARQL-capable backends override it with one SELECT over every stored
+        version. Callers select heads over the result either way.
 
-        Note the default returns one header per *terminal* ontology (whatever
-        :meth:`afetch_ontologies` returns), while a native implementation returns
-        one per *stored version*. Callers that re-run terminal selection over the
-        result are correct either way; that is why they should.
-
-        Returns:
-            list[OntologyHeader]: Header metadata for stored ontologies.
+        Raises:
+            TripleStoreUnavailableError: the store could not answer.
         """
         return [
             OntologyHeader.from_ontology(onto)

@@ -28,6 +28,7 @@ from ontocast.tool.facts_validation.gate import (
 )
 from ontocast.tool.facts_validation.literal_repair import (
     dedupe_literal_variants,
+    materialize_entailed_types,
     normalize_literals_against_schema,
     promote_degenerate_bounds,
     promote_degenerate_bounds_from_vocabulary,
@@ -49,13 +50,17 @@ from ontocast.tool.facts_validation.terms import (
     build_surface_index,
     collect_catalog_terms,
     collect_declared_namespaces,
+    concrete_types,
     expand_vocabulary_terms,
+    fact_instances,
     resolve_unique_surface,
+    untyped_instances,
 )
 from ontocast.tool.facts_validation.unit_findings import (
     collect_unit_findings,
     domain_violation_findings,
     unit_numeric_inventory,
+    untyped_instance_findings,
 )
 
 __all__ = [
@@ -76,10 +81,13 @@ __all__ = [
     "collect_shacl_shapes",
     "collect_unit_findings",
     "compile_critic_fixes",
+    "concrete_types",
     "dedupe_literal_variants",
     "domain_violation_findings",
     "expand_vocabulary_terms",
+    "fact_instances",
     "material_defects",
+    "materialize_entailed_types",
     "normalize_literals_against_schema",
     "promote_degenerate_bounds",
     "promote_degenerate_bounds_from_vocabulary",
@@ -94,5 +102,7 @@ __all__ = [
     "count_shacl_focus_nodes",
     "summarize_conformance",
     "unit_numeric_inventory",
+    "untyped_instance_findings",
+    "untyped_instances",
     "validate_aggregated_facts",
 ]

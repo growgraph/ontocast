@@ -9,6 +9,7 @@ from collections.abc import Sequence
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
+from rdflib import OWL, RDF
 
 from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.agent.update_common import finalize_update_report, log_quarantine
@@ -20,8 +21,8 @@ from ontocast.onto.enum import (
     WorkflowNode,
 )
 from ontocast.onto.model import (
+    FreshOntologyRenderReport,
     GraphUpdateRenderReport,
-    OntologyRenderReport,
     Suggestions,
 )
 from ontocast.onto.ontology import Ontology
@@ -30,6 +31,7 @@ from ontocast.onto.ontology_access import (
     build_llm_prefix_map,
     ontology_access_for_unit_ontology,
 )
+from ontocast.onto.ontology_header import mint_ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitOntologyState
 from ontocast.prompt.common import system_preamble_ontology as system_preamble
@@ -144,15 +146,31 @@ async def render_ontology_fresh(
     tools: AtomicToolBox,
     supplemental_ontologies: Sequence[Ontology] | None = None,
 ) -> UnitOntologyState:
-    """Create a brand-new catalog ontology from text (empty seed path)."""
+    """Render the unit's terms under the document's home ontology (empty seed).
 
+    The identity was resolved once for the document; this renders terms only
+    and mints the root artifact from them.
+
+    Raises:
+        RuntimeError: the unit has no home ontology to mint under.
+    """
+
+    identity = state.home_ontology
+    if identity is None:
+        raise RuntimeError(
+            "render_ontology_fresh needs the document's home ontology; "
+            "resolve it before the ontology fan-out"
+        )
     profile = get_graph_format_profile(
         state.llm_graph_format, output_layout=state.llm_output_layout
     )
-    parser = PydanticOutputParser(pydantic_object=OntologyRenderReport)
-    logger.info("Rendering fresh ontology")
+    parser = PydanticOutputParser(pydantic_object=FreshOntologyRenderReport)
+    logger.info("Rendering fresh ontology %s", identity.iri)
     intro_instruction = intro_instruction_fresh.format(
-        current_domain=state.current_domain
+        ontology_id=identity.ontology_id,
+        title=identity.title,
+        description=identity.description,
+        namespace=identity.namespace,
     )
     output_instruction = profile.render_fresh_output_instruction(target="ontology")
     ontology_ttl = ""
@@ -178,12 +196,13 @@ async def render_ontology_fresh(
         access.ontology_graph_for_prefixes(),
         supplemental_ontologies or (),
     )
+    known_prefixes[identity.ontology_id] = identity.namespace
 
     previous_prefixes = RDFGraph.get_known_prefixes()
     try:
-        RDFGraph.set_known_prefixes(known_prefixes if known_prefixes else None)
+        RDFGraph.set_known_prefixes(known_prefixes)
         llm_tool = await tools.get_llm_tool(state.budget_tracker)
-        render_report: OntologyRenderReport = await call_llm_with_retry(
+        render_report: FreshOntologyRenderReport = await call_llm_with_retry(
             llm_tool=llm_tool,
             phase=LLMPhase.ONTOLOGY_RENDER,
             prompt=prompt,
@@ -199,7 +218,7 @@ async def render_ontology_fresh(
                 "text": text_chapter,
                 "external_evidence": external_evidence,
                 "format_instructions": profile.format_instructions(
-                    OntologyRenderReport,
+                    FreshOntologyRenderReport,
                     web_search_enabled=web_search_enabled,
                 ),
             },
@@ -211,13 +230,22 @@ async def render_ontology_fresh(
             render_report.external_evidence_request,
             web_search_enabled,
         )
-        ontology = render_report.ontology
-        ontology.graph.sanitize_prefixes_namespaces()
+        graph = render_report.graph
+        graph.sanitize_prefixes_namespaces()
+        header_triples = sum(
+            1
+            for s, _, _ in graph.triples((None, RDF.type, OWL.Ontology))
+            for _ in graph.triples((s, None, None))
+        )
+        if header_triples:
+            state.budget_tracker.incr(
+                "ontology/model_header_triples_dropped", header_triples
+            )
+        ontology = mint_ontology(identity, graph)
         state.fresh_ontology = ontology
         state.working_graph = ontology.graph.copy()
-        if ontology.iri:
-            state.writable_iris = [ontology.iri]
-            state.assembly_anchor_iri = ontology.iri
+        state.writable_iris = [ontology.iri]
+        state.assembly_anchor_iri = ontology.iri
 
         num_triples = len(state.working_graph)
         logger.info(f"New ontology created with {num_triples} triple(s).")

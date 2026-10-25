@@ -1367,7 +1367,8 @@ class DomainConfig(BaseSettings):
         default=DEFAULT_DOMAIN,
         validation_alias=AliasChoices("current_domain", "CURRENT_DOMAIN"),
         description=(
-            "IRI stem from which document namespaces are formed. Used by "
+            "IRI stem document and ontology IRIs are minted under: an absolute "
+            "http(s) IRI with no fragment, query or trailing slash. Used by "
             "AgentState when no explicit value is supplied."
         ),
     )
@@ -1375,6 +1376,13 @@ class DomainConfig(BaseSettings):
     model_config = SettingsConfigDict(
         case_sensitive=False,
     )
+
+    @field_validator("current_domain")
+    @classmethod
+    def _validate_current_domain(cls, value: str) -> str:
+        from ontocast.onto.identity import validate_current_domain
+
+        return validate_current_domain(value)
 
 
 class PathConfig(BaseSettings):

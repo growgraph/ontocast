@@ -22,6 +22,7 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.toolbox import ToolBox
+from test.ontology_helpers import stamped_ontology
 
 pytestmark = pytest.mark.unit
 
@@ -311,14 +312,11 @@ def test_ingest_ontology_ttl_rejects_identity_conflict_before_persisting() -> No
         config = Config(tool_config=tool_config)
         ontology_manager = OntologyManager()
 
-        existing = Ontology(
-            graph=RDFGraph._from_turtle_str(
-                """
-                @prefix owl: <http://www.w3.org/2002/07/owl#> .
-                <https://example.org/finance> a owl:Ontology .
-                """
-            ),
-            iri="https://example.org/finance",
+        existing = stamped_ontology(
+            """
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            <https://example.org/finance> a owl:Ontology .
+            """,
             ontology_id="finance",
         )
         ontology_manager.add_ontology(existing)
@@ -573,17 +571,20 @@ def _tenancy_toolbox(tmp: str) -> ToolBox:
 
 
 def _tenant_ontology(iri: str, ontology_id: str) -> Ontology:
-    graph = RDFGraph._from_turtle_str(
+    return stamped_ontology(
         f"""
         @prefix owl: <http://www.w3.org/2002/07/owl#> .
         @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix vann: <http://purl.org/vocab/vann/> .
         @prefix ex: <{iri}#> .
 
-        <{iri}> a owl:Ontology ; rdfs:label "Tenant ontology" .
+        <{iri}> a owl:Ontology ;
+            rdfs:label "Tenant ontology" ;
+            vann:preferredNamespacePrefix "{ontology_id}" .
         ex:Thing a owl:Class .
-        """
+        """,
+        ontology_id=ontology_id,
     )
-    return Ontology(graph=graph, iri=iri, ontology_id=ontology_id)
 
 
 @pytest.mark.integration

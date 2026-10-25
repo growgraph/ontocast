@@ -8,12 +8,13 @@ from rdflib import URIRef
 
 from ontocast.config import WebSearchConfig
 from ontocast.onto.content_unit import ContentUnit
+from ontocast.onto.identity import OntologyIdentity
 from ontocast.onto.model import (
     FactsCritiqueReport,
     FactsRenderReport,
+    FreshOntologyRenderReport,
     GraphUpdateRenderReport,
     OntologyCritiqueReport,
-    OntologyRenderReport,
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
@@ -90,10 +91,15 @@ def _assert_no_search_surface(prompt_kwargs: dict[str, object]) -> None:
 _DISABLED_SEARCH_CASES = [
     pytest.param(
         lambda: render_ontology_module,
-        lambda: OntologyRenderReport(ontology=_build_ontology()),
+        lambda: FreshOntologyRenderReport(graph=_build_ontology().graph),
         lambda: UnitOntologyState(
             content_unit=_build_content_unit(),
             ontology_snapshot=snapshot_from_ontology(_build_ontology()),
+            home_ontology=OntologyIdentity(
+                ontology_id="company",
+                iri="https://example.com/onto",
+                title="Company ontology",
+            ),
         ),
         "render_ontology_fresh",
         id="render_ontology_fresh",

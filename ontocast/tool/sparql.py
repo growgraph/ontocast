@@ -266,7 +266,7 @@ def select_relevant_ontologies(
         ontologies: Candidate catalog ontologies or headers.
         ontology_iris: Allowed ontology IRIs, or empty/None for all.
         ontology_version_filters: Allowed semantic versions per ontology IRI.
-        ontology_hash_filters: Allowed content hashes per ontology IRI.
+        ontology_hash_filters: Allowed version keys per ontology IRI.
 
     Returns:
         list: The surviving records, in input order.
@@ -313,7 +313,9 @@ def select_relevant_ontologies(
         if ontology_hash_filters and iri in ontology_hash_filters:
             allowed_hashes = ontology_hash_filters[iri]
             hash_pass = [
-                ontology for ontology in version_pass if ontology.hash in allowed_hashes
+                ontology
+                for ontology in version_pass
+                if (ontology.version_key or ontology.hash) in allowed_hashes
             ]
             if not hash_pass:
                 logger.warning(

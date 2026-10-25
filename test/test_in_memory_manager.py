@@ -6,46 +6,75 @@ import asyncio
 
 import pyoxigraph as ox
 import pytest
-from rdflib import Literal, URIRef
+from rdflib import OWL, RDF, RDFS, Literal, URIRef
 from rdflib.graph import DATASET_DEFAULT_GRAPH_ID
-from rdflib.namespace import RDFS
 
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_header import CatalogContractError
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.triple_manager.in_memory import (
     InMemoryTripleStoreManager,
     _rdflib_graph_to_quads,
 )
-from ontocast.tool.triple_manager.util import dedupe_terminal_ontologies
+from ontocast.tool.triple_manager.util import head_headers
+from test.ontology_helpers import next_version, stamped_ontology
 
 pytestmark = pytest.mark.unit
 
+_SAMPLE_IRI = "https://example.org/test"
+
 
 def _sample_ontology() -> Ontology:
-    graph = RDFGraph._from_turtle_str(
-        """
+    return stamped_ontology(
+        f"""
         @prefix owl: <http://www.w3.org/2002/07/owl#> .
         @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-        @prefix ex: <https://example.org/test#> .
+        @prefix ex: <{_SAMPLE_IRI}#> .
 
-        <https://example.org/test> a owl:Ontology ;
+        <{_SAMPLE_IRI}> a owl:Ontology ;
             rdfs:label "Test Ontology" .
 
         ex:Thing a rdfs:Class ;
             rdfs:label "Thing" .
-        """
+        """,
+        ontology_id="test",
     )
-    return Ontology(graph=graph, iri="https://example.org/test")
+
+
+def _versioned_ontology(
+    iri: str, extra_classes: int, base: Ontology | None
+) -> Ontology:
+    """A root, or the stamped child of ``base``, whose content grows with size."""
+    graph = RDFGraph()
+    graph.add((URIRef(iri), RDF.type, OWL.Ontology))
+    graph.add((URIRef(iri), RDFS.label, Literal("Versioned Ontology")))
+    for n in range(extra_classes):
+        thing = URIRef(f"{iri}#Thing{n}")
+        graph.add((thing, RDF.type, RDFS.Class))
+        graph.add((thing, RDFS.label, Literal(f"Thing {n}")))
+    if base is None:
+        return stamped_ontology(graph, ontology_id=iri.rsplit("/", 1)[-1])
+    return next_version(base, graph)
 
 
 def test_in_memory_roundtrip_ontology() -> None:
     manager = InMemoryTripleStoreManager()
     ontology = _sample_ontology()
-    assert manager.serialize(ontology) is True
+    manager.serialize(ontology)
     fetched = manager.fetch_ontologies()
     assert len(fetched) == 1
     assert fetched[0].iri == ontology.iri
+    assert fetched[0].version_iri == ontology.version_iri
+    assert fetched[0].ontology_id == ontology.ontology_id
     assert len(fetched[0].graph) == len(ontology.graph)
+
+
+def test_in_memory_refuses_an_unstamped_ontology() -> None:
+    manager = InMemoryTripleStoreManager()
+    unstamped = Ontology(graph=_sample_ontology().graph, iri=_SAMPLE_IRI)
+    with pytest.raises(ValueError, match="not stamped as a version"):
+        manager.serialize(unstamped)
+    assert manager.fetch_ontologies() == []
 
 
 def test_in_memory_serializes_facts_graph() -> None:
@@ -57,7 +86,7 @@ def test_in_memory_serializes_facts_graph() -> None:
         """
     )
     graph_uri = "https://example.org/facts/graph1"
-    assert manager.serialize(facts, graph_uri=graph_uri) is True
+    manager.serialize(facts, graph_uri=graph_uri)
     partition = manager._active_partition()
     assert len(partition.facts) > 0
 
@@ -120,26 +149,6 @@ def test_in_memory_supports_tenancy_partition() -> None:
     assert manager.supports_tenancy_partition() is True
 
 
-def _versioned_ontology(iri: str, extra_classes: int, parents: list[str]) -> Ontology:
-    """Build an ontology whose content -- and therefore hash -- varies with size."""
-    classes = "\n".join(
-        f'        ex:Thing{n} a rdfs:Class ; rdfs:label "Thing {n}" .'
-        for n in range(extra_classes)
-    )
-    graph = RDFGraph._from_turtle_str(
-        f"""
-        @prefix owl: <http://www.w3.org/2002/07/owl#> .
-        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-        @prefix ex: <{iri}#> .
-
-        <{iri}> a owl:Ontology ;
-            rdfs:label "Versioned Ontology" .
-{classes}
-        """
-    )
-    return Ontology(graph=graph, iri=iri, parent_hashes=parents)
-
-
 def test_in_memory_supports_sparql_select() -> None:
     assert InMemoryTripleStoreManager().supports_sparql_select() is True
 
@@ -165,7 +174,7 @@ def test_aselect_returns_lexical_values_and_omits_unbound() -> None:
 
         assert len(rows) == 1
         # IRIs and literals both arrive as their lexical form, no <> or quotes.
-        assert rows[0]["onto"] == "https://example.org/test"
+        assert rows[0]["onto"] == _SAMPLE_IRI
         assert rows[0]["label"] == "Test Ontology"
         assert "missing" not in rows[0]
 
@@ -183,7 +192,7 @@ def test_aselect_rejects_non_select_query() -> None:
 
 
 def test_ontology_catalog_matches_materialized_catalog() -> None:
-    """Headers must reproduce lineage well enough to pick the same terminals.
+    """Headers must reproduce lineage well enough to pick the same heads.
 
     Everything that avoids materializing graphs rests on this equivalence.
     """
@@ -191,32 +200,72 @@ def test_ontology_catalog_matches_materialized_catalog() -> None:
     async def main() -> None:
         manager = InMemoryTripleStoreManager()
         iri = "https://example.org/versioned"
-        v1 = _versioned_ontology(iri, extra_classes=1, parents=[])
-        v2 = _versioned_ontology(iri, extra_classes=2, parents=[str(v1.hash)])
+        v1 = _versioned_ontology(iri, extra_classes=1, base=None)
+        v2 = _versioned_ontology(iri, extra_classes=2, base=v1)
         standalone = _sample_ontology()
         for onto in (v1, v2, standalone):
             manager.serialize(onto)
 
         headers = await manager.afetch_ontology_catalog()
-        # One header per stored *version*, not per terminal ontology.
+        # One header per stored *version*, not per head.
         assert len(headers) == 3
         by_graph = {header.graph_uri: header for header in headers}
-        assert by_graph[v1.versioned_iri].hash == v1.hash
-        assert by_graph[v2.versioned_iri].hash == v2.hash
-        assert by_graph[v2.versioned_iri].parent_hashes == [str(v1.hash)]
-        assert by_graph[v1.versioned_iri].iri == iri
-        assert by_graph[v2.versioned_iri].version == v2.version
+        assert v1.version_iri and v2.version_iri
+        assert by_graph[v1.version_iri].version_iri == v1.version_iri
+        assert by_graph[v1.version_iri].prior_version_iris == []
+        assert by_graph[v2.version_iri].prior_version_iris == [v1.version_iri]
+        assert by_graph[v1.version_iri].iri == iri
+        assert by_graph[v2.version_iri].version == v2.version
+        assert by_graph[v2.version_iri].ontology_id == v2.ontology_id
 
-        terminal_headers = dedupe_terminal_ontologies(headers)
-        terminal_ontologies = dedupe_terminal_ontologies(
-            await manager.afetch_ontologies()
+        head_graphs = {header.graph_uri for header in head_headers(headers)}
+        materialized = {onto.version_iri for onto in await manager.afetch_ontologies()}
+        assert head_graphs == materialized
+        # v1 is a prior of v2, so only v2 survives.
+        assert v2.version_iri in head_graphs
+        assert v1.version_iri not in head_graphs
+
+    asyncio.run(main())
+
+
+def test_fetch_ontologies_returns_only_heads() -> None:
+    """Two stored versions of one ontology materialize as its one head."""
+    manager = InMemoryTripleStoreManager()
+    iri = "https://example.org/versioned"
+    v1 = _versioned_ontology(iri, extra_classes=1, base=None)
+    v2 = _versioned_ontology(iri, extra_classes=2, base=v1)
+    manager.serialize(v1)
+    manager.serialize(v2)
+
+    fetched = manager.fetch_ontologies()
+
+    assert [onto.version_iri for onto in fetched] == [v2.version_iri]
+    assert fetched[0].prior_version_iris == [v1.version_iri]
+    assert fetched[0].hash == v2.hash
+
+
+def test_a_non_version_graph_in_the_ontologies_dataset_is_a_fault() -> None:
+    """A graph without the version header is a contract error, never a gap."""
+
+    async def main() -> None:
+        manager = InMemoryTripleStoreManager()
+        manager.serialize(_sample_ontology())
+        foreign = RDFGraph._from_turtle_str(
+            """
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            <https://example.org/foreign> a owl:Ontology ;
+                owl:versionInfo "1.0.0" .
+            """
         )
-        assert {header.graph_uri for header in terminal_headers} == {
-            onto.versioned_iri for onto in terminal_ontologies
-        }
-        # v1 is a parent of v2, so only v2 survives.
-        assert v2.versioned_iri in {header.graph_uri for header in terminal_headers}
-        assert v1.versioned_iri not in {header.graph_uri for header in terminal_headers}
+        manager.serialize_graph(
+            foreign, graph_uri="https://example.org/foreign", store="ontologies"
+        )
+
+        with pytest.raises(CatalogContractError) as excinfo:
+            await manager.afetch_ontology_catalog()
+        assert excinfo.value.graph_uri == "https://example.org/foreign"
+        with pytest.raises(CatalogContractError):
+            await manager.afetch_ontologies()
 
     asyncio.run(main())
 
@@ -225,9 +274,7 @@ def test_afetch_ontologies_by_iri_restricts_and_materializes() -> None:
     async def main() -> None:
         manager = InMemoryTripleStoreManager()
         wanted = _sample_ontology()
-        other = _versioned_ontology(
-            "https://example.org/other", extra_classes=1, parents=[]
-        )
+        other = _versioned_ontology("https://example.org/other", 1, base=None)
         manager.serialize(wanted)
         manager.serialize(other)
 
@@ -264,11 +311,11 @@ def test_catalog_reads_respect_tenancy() -> None:
 
 
 def test_catalog_normalizes_non_semantic_version() -> None:
-    """A store holding ``owl:versionInfo "1.0"`` must not fail header validation."""
+    """An author's ``owl:versionInfo "1.0"`` is stored and read as ``1.0.0``."""
 
     async def main() -> None:
         manager = InMemoryTripleStoreManager()
-        graph = RDFGraph._from_turtle_str(
+        loose = stamped_ontology(
             """
             @prefix owl: <http://www.w3.org/2002/07/owl#> .
             @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
@@ -277,13 +324,10 @@ def test_catalog_normalizes_non_semantic_version() -> None:
             <https://example.org/loose> a owl:Ontology ;
                 owl:versionInfo "1.0" .
             ex:Thing a rdfs:Class .
-            """
+            """,
+            ontology_id="loose",
         )
-        manager.serialize_graph(
-            graph,
-            graph_uri="https://example.org/loose",
-            store="ontologies",
-        )
+        manager.serialize(loose)
 
         headers = await manager.afetch_ontology_catalog()
         assert [header.version for header in headers] == ["1.0.0"]
@@ -300,20 +344,16 @@ def test_aconstruct_returns_typed_terms() -> None:
 
     async def main() -> None:
         manager = InMemoryTripleStoreManager()
-        manager.serialize(_sample_ontology())
+        sample = _sample_ontology()
+        manager.serialize(sample)
 
         graph = await manager.aconstruct(
             "CONSTRUCT { ?s ?p ?o } WHERE { GRAPH ?g { ?s ?p ?o } }"
         )
-        # Serialization persists author @prefix bindings as one sh:declare
-        # blank node (3 triples) on top of the ontology's own content.
-        assert len(graph) == len(_sample_ontology().graph) + 3
-        labels = list(
-            graph.objects(
-                URIRef("https://example.org/test#Thing"),
-                RDFS.label,
-            )
-        )
+        # The stored graph is the stamped version graph, header and prefix
+        # declarations included.
+        assert len(graph) == len(sample.graph)
+        labels = list(graph.objects(URIRef(f"{_SAMPLE_IRI}#Thing"), RDFS.label))
         assert labels == [Literal("Thing")]
 
     asyncio.run(main())

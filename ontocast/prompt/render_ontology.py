@@ -22,10 +22,36 @@ template_prompt = """
 {format_instructions}
 """
 
+#: Fills the home-ontology step: one proposal per document, before the
+#: per-unit fan-out. The catalog clause lists the ids a document may extend.
+home_ontology_instruction = """
+Decide which ontology this document's new vocabulary belongs to.
+
+The document is an example of its domain: name and scope the ontology at least one level of abstraction above the document itself.
+
+{catalog_clause}
+
+Return:
+- `ontology_id`: the short lowercase handle (2-32 characters: letters, digits, `_` or `-`, starting with a letter), for example `abc` for a hypothetical A... B... of C... Ontology. Return an EXISTING id from the catalog above when one covers the document's domain; otherwise a new one.
+- `title`: a short noun phrase.
+- `description`: 3-4 sentences on domain, purpose, scope and applicability.
+
+Do not return an IRI: it is derived from the id.
+"""
+
+home_ontology_catalog_clause_empty = "The catalog holds no ontology yet."
+
+home_ontology_catalog_clause = """The catalog holds these ontologies (id: title):
+{catalog_list}
+"""
+
+#: The fresh render: terms only, under the home ontology minted by code.
 intro_instruction_fresh = """
-1. Develop a new domain ontology based on the provided document. When deciding on the name and scope, remember that the document you are given is an example, so the ontology name, ontology identifier and scope should be at least one level of abstraction above the scope of the document.
-2. Propose a domain specific and succinct specifier if for the new ontology, which should be an abbreviation, consistent with the Ontology property `ontology_id`, for example it could be `abc` for a hypothetical A... B... of C... Ontology.
-3. From the proposed `ontology_id` derive an IRI (URI) using domain {current_domain}, for example `{current_domain}/abc`
+Develop the domain ontology `{ontology_id}` ({title}) from the provided document.
+
+{description}
+
+Every new class and property lives under the namespace <{namespace}>, bound to the prefix `{ontology_id}:`. Do NOT write an `owl:Ontology` header, version, title or description triples: identity and versioning are added by the system.
 """
 
 

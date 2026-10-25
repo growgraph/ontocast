@@ -12,7 +12,7 @@ import re
 from collections.abc import Callable, Sequence
 from difflib import SequenceMatcher
 
-from rdflib import RDF, RDFS, Literal, URIRef
+from rdflib import RDF, RDFS, BNode, Literal, URIRef
 from rdflib.namespace import XSD
 from rdflib.term import Node
 
@@ -27,6 +27,7 @@ from ontocast.onto.rdfgraph import (
 )
 from ontocast.tool.facts_validation.terms import (
     _COMPACT_IRI,
+    _VACUOUS_TYPES,
     _alias_candidates,
     _declared_domains,
     _local_name,
@@ -294,6 +295,118 @@ def repair_compact_iri_literals(
         logger.info("Repaired compact-IRI literal %r -> <%s>", lexical, iri)
     if applied:
         record_active_count("repair/compact_iri_literal", len(applied))
+    return len(applied), applied
+
+
+def _declared_class_ranges(ontology_graph: RDFGraph) -> dict[URIRef, set[URIRef]]:
+    """Predicate -> its declared ``rdfs:range`` classes, named classes only.
+
+    A datatype range (XSD, ``rdfs:Literal``, a declared ``rdfs:Datatype``)
+    types a literal, not a node, and is left out.
+    """
+    datatypes = {
+        subject
+        for subject in ontology_graph.subjects(RDF.type, RDFS.Datatype)
+        if isinstance(subject, URIRef)
+    }
+    ranges: dict[URIRef, set[URIRef]] = {}
+    for predicate, _, range_iri in ontology_graph.triples((None, RDFS.range, None)):
+        if not isinstance(predicate, URIRef) or not isinstance(range_iri, URIRef):
+            continue
+        if range_iri in datatypes or range_iri in (RDFS.Literal, RDF.langString):
+            continue
+        if str(range_iri).startswith(str(XSD)):
+            continue
+        ranges.setdefault(predicate, set()).add(range_iri)
+    return ranges
+
+
+def materialize_entailed_types(
+    graph: RDFGraph, ontology_graph: RDFGraph | None
+) -> tuple[int, list[GraphRepairRecord]]:
+    """Assert the types the ontology context entails on the graph's nodes.
+
+    For every triple ``x p y``: when the context declares ``p rdfs:domain D``
+    with ``D`` a named class, ``x a D`` is added; when it declares
+    ``p rdfs:range R`` with ``R`` a named class and ``y`` an IRI, ``y a R``
+    is added. ``owl:Thing`` and the other vacuous classes are never asserted,
+    nor is a type on a node the context itself types (a catalog individual).
+
+    A type is added only where it is consistent with what the node already
+    asserts: when the node has no type, or when the entailed class
+    specialises one of its asserted types. Nothing is added when the entailed
+    class is already in the asserted types' superclass closure (redundant),
+    or when every asserted type is unrelated to it -- that contradiction is
+    the ``DOMAIN_VIOLATION`` finding's to report, and materialising the
+    domain there would hide it.
+
+    Args:
+        graph: Facts graph, repaired in place.
+        ontology_graph: Ontology context declaring domains and ranges.
+
+    Returns:
+        Tuple of (number of added triples, applied-repair records).
+    """
+    if ontology_graph is None or not len(ontology_graph):
+        return 0, []
+    domains = _declared_domains(ontology_graph)
+    ranges = _declared_class_ranges(ontology_graph)
+    if not domains and not ranges:
+        return 0, []
+
+    closures: dict[URIRef, set[URIRef]] = {}
+
+    def closure(class_iri: URIRef) -> set[URIRef]:
+        if class_iri not in closures:
+            closures[class_iri] = _superclass_closure(class_iri, ontology_graph)
+        return closures[class_iri]
+
+    def admissible(node: Node, entailed: URIRef) -> bool:
+        if entailed in _VACUOUS_TYPES or not isinstance(node, (URIRef, BNode)):
+            return False
+        if (node, RDF.type, None) in ontology_graph:
+            return False
+        asserted = {
+            value
+            for value in graph.objects(node, RDF.type)
+            if isinstance(value, URIRef) and value not in _VACUOUS_TYPES
+        }
+        if not asserted:
+            return True
+        if any(entailed in closure(value) for value in asserted):
+            return False
+        return any(value in closure(entailed) for value in asserted)
+
+    additions: dict[tuple[Node, URIRef], URIRef] = {}
+    for subject, predicate, obj in graph:
+        if not isinstance(predicate, URIRef) or predicate == RDF.type:
+            continue
+        for entailed in domains.get(predicate, ()):
+            if admissible(subject, entailed):
+                additions.setdefault((subject, entailed), predicate)
+        if not isinstance(obj, URIRef):
+            continue
+        for entailed in ranges.get(predicate, ()):
+            if admissible(obj, entailed):
+                additions.setdefault((obj, entailed), predicate)
+
+    applied: list[GraphRepairRecord] = []
+    for (node, entailed), predicate in sorted(
+        additions.items(), key=lambda item: (str(item[0][0]), str(item[0][1]))
+    ):
+        if (node, RDF.type, entailed) in graph:
+            continue
+        graph.add((node, RDF.type, entailed))
+        applied.append(
+            GraphRepairRecord(
+                kind=FactsUnitFindingKind.ENTAILED_TYPE,
+                source=f"{node} {predicate}",
+                target=str(entailed),
+            )
+        )
+        logger.info("Materialised entailed type <%s> on <%s>", entailed, node)
+    if applied:
+        record_active_count("repair/entailed_type", len(applied))
     return len(applied), applied
 
 

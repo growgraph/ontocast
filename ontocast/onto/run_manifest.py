@@ -593,6 +593,13 @@ class RunManifest(BaseModel):
             "('ontology', 'facts') and unit index."
         ),
     )
+    ontology_versions: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Ontology versions the run wrote (role 'created' or 'updated') and "
+            "read without changing (role 'read'), each with iri and version_iri."
+        ),
+    )
     retrieval_metrics: dict[str, Any] = Field(
         default_factory=dict,
         description=(

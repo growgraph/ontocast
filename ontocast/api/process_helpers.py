@@ -478,6 +478,13 @@ def dump_run_manifest(
         ),
         retrieval_metrics=dict(state.retrieval_metrics),
         unit_context_sources=state.unit_context_sources,
+        ontology_versions=[
+            record.model_dump(mode="json") for record in state.ontology_versions_written
+        ]
+        + [
+            {**ref.model_dump(mode="json"), "role": "read"}
+            for ref in state.ontology_versions_read
+        ],
     )
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)

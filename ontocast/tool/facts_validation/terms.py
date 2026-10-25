@@ -14,7 +14,7 @@ from difflib import SequenceMatcher
 
 from pydantic import BaseModel
 from rdflib import OWL, RDF, RDFS, SKOS, Literal, URIRef
-from rdflib.namespace import DCTERMS, XSD
+from rdflib.namespace import DCTERMS, PROV, XSD
 from rdflib.term import Node
 
 from ontocast.onto.rdfgraph import (
@@ -419,3 +419,135 @@ def _in_fact_scope(subject: URIRef, fact_namespaces: list[str]) -> bool:
         return True
     text = str(subject)
     return any(text.startswith(namespace) for namespace in fact_namespaces if namespace)
+
+
+# Classes that type nothing: every resource is one of these, so an instance
+# whose only ``rdf:type`` is here is untyped for the facts contract.
+_VACUOUS_TYPES: frozenset[URIRef] = frozenset(
+    {
+        OWL.Thing,
+        RDFS.Resource,
+        URIRef("http://schema.org/Thing"),
+        URIRef("https://schema.org/Thing"),
+    }
+)
+
+# Schema metaclasses: a fact-namespace node typed only as one of these is a
+# class or property the renderer tried to declare, not a typed instance.
+_SCHEMA_METACLASSES: frozenset[URIRef] = frozenset(
+    {
+        RDFS.Class,
+        OWL.Class,
+        RDF.Property,
+        OWL.ObjectProperty,
+        OWL.DatatypeProperty,
+        OWL.AnnotationProperty,
+        OWL.NamedIndividual,
+    }
+)
+
+# Pipeline scaffolding: a node typed as one of these, or carrying one of these
+# predicates, is a chunk or document node the pipeline mints, never an
+# extracted instance.
+_SCAFFOLDING_TYPES: frozenset[URIRef] = frozenset(
+    {
+        PROV.Entity,
+        URIRef("http://schema.org/Text"),
+        URIRef("https://schema.org/Text"),
+    }
+)
+_SCAFFOLDING_PREDICATES: frozenset[URIRef] = frozenset(
+    {
+        PROV.generatedAtTime,
+        URIRef("http://schema.org/identifier"),
+        URIRef("https://schema.org/identifier"),
+        URIRef("http://schema.org/position"),
+        URIRef("https://schema.org/position"),
+    }
+)
+
+# Objects of these predicates are alias or lineage handles, not instances.
+_HANDLE_PREDICATES: frozenset[URIRef] = frozenset({OWL.sameAs, PROV.wasDerivedFrom})
+
+
+def _scaffolding_nodes(graph: RDFGraph) -> set[Node]:
+    """Document and chunk nodes the pipeline mints around the facts."""
+    nodes: set[Node] = set()
+    for scaffolding_type in _SCAFFOLDING_TYPES:
+        nodes.update(graph.subjects(RDF.type, scaffolding_type))
+    for predicate in _SCAFFOLDING_PREDICATES:
+        nodes.update(graph.subjects(predicate, None))
+    return nodes
+
+
+def fact_instances(graph: RDFGraph, fact_namespaces: Sequence[str]) -> set[URIRef]:
+    """The instances a facts graph asserts.
+
+    An instance is a ``URIRef`` in one of ``fact_namespaces`` that occurs as a
+    subject, or as the IRI object of a triple other than ``rdf:type``,
+    ``owl:sameAs`` and ``prov:wasDerivedFrom``. Blank nodes are never
+    instances, and neither are the document and chunk scaffolding nodes the
+    pipeline mints (typed ``prov:Entity`` / ``schema:Text``, or carrying
+    ``schema:identifier``, ``schema:position`` or ``prov:generatedAtTime``).
+
+    Args:
+        graph: Facts graph for one unit or the aggregated document.
+        fact_namespaces: Namespaces holding minted instances.
+
+    Returns:
+        set[URIRef]: The instances, in no particular order.
+    """
+    namespaces = [ns for ns in fact_namespaces if ns]
+    if not namespaces:
+        return set()
+    scaffolding = _scaffolding_nodes(graph)
+    instances: set[URIRef] = set()
+    for subject, predicate, obj in graph:
+        if isinstance(subject, URIRef) and _in_fact_scope(subject, namespaces):
+            instances.add(subject)
+        if (
+            isinstance(obj, URIRef)
+            and predicate != RDF.type
+            and predicate not in _HANDLE_PREDICATES
+            and _in_fact_scope(obj, namespaces)
+        ):
+            instances.add(obj)
+    return instances - scaffolding
+
+
+def concrete_types(
+    graph: RDFGraph, node: Node, fact_namespaces: Sequence[str]
+) -> set[URIRef]:
+    """The asserted ``rdf:type`` objects of ``node`` that count as a type.
+
+    A type counts when it is an IRI outside ``fact_namespaces`` (a class
+    minted beside the instances is no class), not a schema metaclass
+    (``rdfs:Class``, ``owl:Class``, ``rdf:Property``, the OWL property
+    classes, ``owl:NamedIndividual``) and not vacuous (``owl:Thing``,
+    ``rdfs:Resource``, ``schema:Thing``).
+    """
+    namespaces = [ns for ns in fact_namespaces if ns]
+    return {
+        value
+        for value in graph.objects(node, RDF.type)
+        if isinstance(value, URIRef)
+        and value not in _VACUOUS_TYPES
+        and value not in _SCHEMA_METACLASSES
+        and not (namespaces and _in_fact_scope(value, namespaces))
+    }
+
+
+def untyped_instances(graph: RDFGraph, fact_namespaces: Sequence[str]) -> list[URIRef]:
+    """Instances of ``graph`` (:func:`fact_instances`) with no concrete type.
+
+    Returns:
+        list[URIRef]: The untyped instances, ordered by IRI.
+    """
+    return sorted(
+        (
+            instance
+            for instance in fact_instances(graph, fact_namespaces)
+            if not concrete_types(graph, instance, fact_namespaces)
+        ),
+        key=str,
+    )

@@ -2,13 +2,14 @@
 
 Regression guard for catalog identity drift: the hash written at load time must
 equal the hash recomputed after the graph has been through the store, or the
-content-addressed ``versioned_iri`` identity the catalog is built on breaks and
+content-addressed ``version_iri`` identity the catalog is built on breaks and
 ``select_relevant_ontologies`` falls back a rung on every retrieval.
 """
 
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from ontocast.tool.triple_manager.in_memory import (
     InMemoryTripleStoreManager,
     _list_named_graph_uris,
 )
+from test.ontology_helpers import stamped_ontology
 
 pytestmark = pytest.mark.unit
 
@@ -147,12 +149,13 @@ def _round_trip(ontology: Ontology) -> tuple[Ontology, int]:
 
 @pytest.mark.unit
 def test_drift_prone_ontology_survives_store_round_trip() -> None:
-    ontology = Ontology(graph=RDFGraph._from_turtle_str(DRIFT_PRONE_TURTLE))
+    ontology = stamped_ontology(DRIFT_PRONE_TURTLE)
     assert ontology.hash
 
     fetched, graph_count = _round_trip(ontology)
 
     assert fetched.hash == ontology.hash
+    assert fetched.version_iri == ontology.version_iri
     assert graph_count == 1, "hash drift created a duplicate named graph"
 
 
@@ -192,20 +195,17 @@ def test_shipped_ontologies_survive_store_round_trip(ttl_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_stale_hash_literal_is_refreshed() -> None:
-    """``<iri>#<hash>`` and the advertised ``hash:`` literal cannot disagree."""
-    from rdflib.namespace import DCTERMS
+def test_header_fields_do_not_move_the_content_hash() -> None:
+    """Title, description, label and dates are header, never content."""
+    plain = stamped_ontology(
+        DRIFT_PRONE_TURTLE, now=datetime(2024, 1, 1, tzinfo=timezone.utc)
+    )
+    retitled = stamped_ontology(
+        DRIFT_PRONE_TURTLE.replace('"Drift Probe"', '"Drift Probe, renamed"'),
+        now=datetime(2024, 6, 1, tzinfo=timezone.utc),
+    )
 
-    ontology = Ontology(graph=RDFGraph._from_turtle_str(DRIFT_PRONE_TURTLE))
-    onto_iri = URIRef(ontology.iri)
-    ontology.graph.remove((onto_iri, DCTERMS.identifier, None))
-    ontology.graph.add((onto_iri, DCTERMS.identifier, Literal("hash:stale")))
-
-    ontology.sync_properties_to_graph()
-
-    identifiers = {
-        str(obj)
-        for obj in ontology.graph.objects(onto_iri, DCTERMS.identifier)
-        if str(obj).startswith("hash:")
-    }
-    assert identifiers == {f"hash:{ontology.hash}"}
+    assert retitled.title != plain.title
+    assert retitled.modified_at != plain.modified_at
+    assert retitled.hash == plain.hash
+    assert retitled.version_iri == plain.version_iri

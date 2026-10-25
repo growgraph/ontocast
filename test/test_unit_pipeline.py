@@ -1,3 +1,4 @@
+import importlib
 from types import SimpleNamespace
 from typing import cast
 
@@ -13,6 +14,8 @@ from ontocast.onto.enum import (
     RenderMode,
     Status,
 )
+from ontocast.onto.identity import OntologyIdentity
+from ontocast.onto.model import OntologyIdentityProposal
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_condense import TextCaps
 from ontocast.onto.rdfgraph import RDFGraph
@@ -20,10 +23,58 @@ from ontocast.onto.state import AgentState, InputDocument
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph import unit_pipeline
 from ontocast.stategraph.context_resolver import UnitOntologyContext
+from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.toolbox import ToolBox
 from test.snapshot_helpers import snapshot_from_ontology
 
 pytestmark = pytest.mark.unit
+
+resolve_home_ontology_module = importlib.import_module(
+    "ontocast.agent.resolve_home_ontology"
+)
+
+
+def _fake_tools(*, max_visits_per_node: int) -> ToolBox:
+    """A toolbox for the unit pipeline: config, an empty catalog, a stub LLM."""
+
+    async def get_llm_tool(_budget_tracker: object) -> object:
+        return object()
+
+    return cast(
+        ToolBox,
+        SimpleNamespace(
+            config=SimpleNamespace(
+                server=SimpleNamespace(
+                    max_visits_per_node=max_visits_per_node,
+                    ontology_max_triples=50_000,
+                    ontology_context_max_triples=4000,
+                    ontology_chapter_format=OntologyChapterFormat.INHERIT,
+                    llm_output_layout=LLMOutputLayout.COMPACT,
+                    ontology_text_caps=TextCaps(),
+                    ontology_context_scope=OntologyContextScope.UNIT,
+                    fanout_warmup_units=0,
+                )
+            ),
+            shapes_prompt_contract=lambda: ("", (), False),
+            ontology_manager=OntologyManager(),
+            get_llm_tool=get_llm_tool,
+        ),
+    )
+
+
+def _fake_identity_call(monkeypatch) -> None:
+    """The home-ontology step's one model call answers with a fixed proposal."""
+
+    async def fake_call_llm_with_retry(**_kwargs) -> OntologyIdentityProposal:
+        return OntologyIdentityProposal(
+            ontology_id="acme",
+            title="ACME ontology",
+            description="Who works where.",
+        )
+
+    monkeypatch.setattr(
+        resolve_home_ontology_module, "call_llm_with_retry", fake_call_llm_with_retry
+    )
 
 
 def _build_ontology(iri: str = "https://example.com/onto") -> Ontology:
@@ -58,10 +109,13 @@ async def test_run_unit_pipeline_feeds_ontology_loop_output_to_facts(
     evolved = _build_ontology("https://example.com/onto/evolved")
     captured_context: UnitOntologyContext | None = None
     captured_ontology: Ontology | None = None
+    captured_home: OntologyIdentity | None = None
 
     async def fake_ontology_loop(
         state: UnitOntologyState, tools: ToolBox, document_state: AgentState
     ) -> UnitOntologyState:
+        nonlocal captured_home
+        captured_home = state.home_ontology
         state.status = Status.SUCCESS
         state.ontology_snapshot = snapshot_from_ontology(
             _build_ontology("https://example.com/onto/seed")
@@ -90,26 +144,10 @@ async def test_run_unit_pipeline_feeds_ontology_loop_output_to_facts(
     monkeypatch.setattr(unit_pipeline, "convert_document", lambda _s, _t: None)
     monkeypatch.setattr(unit_pipeline, "ontology_loop", fake_ontology_loop)
     monkeypatch.setattr(unit_pipeline, "facts_loop", fake_facts_loop)
+    _fake_identity_call(monkeypatch)
 
     agent_state = _minimal_agent_state()
-    tools = cast(
-        ToolBox,
-        SimpleNamespace(
-            config=SimpleNamespace(
-                server=SimpleNamespace(
-                    max_visits_per_node=3,
-                    ontology_max_triples=50_000,
-                    ontology_context_max_triples=4000,
-                    ontology_chapter_format=OntologyChapterFormat.INHERIT,
-                    llm_output_layout=LLMOutputLayout.COMPACT,
-                    ontology_text_caps=TextCaps(),
-                    ontology_context_scope=OntologyContextScope.UNIT,
-                    fanout_warmup_units=0,
-                )
-            ),
-            shapes_prompt_contract=lambda: ("", (), False),
-        ),
-    )
+    tools = _fake_tools(max_visits_per_node=3)
 
     onto_result, facts_result = await unit_pipeline.run_unit_pipeline(
         agent_state, tools
@@ -117,6 +155,10 @@ async def test_run_unit_pipeline_feeds_ontology_loop_output_to_facts(
 
     assert onto_result is not None
     assert facts_result is not None
+    # The home ontology is resolved once, before the loop, and handed to it.
+    assert agent_state.home_ontology is not None
+    assert agent_state.home_ontology.iri == f"{agent_state.current_domain}/acme"
+    assert captured_home == agent_state.home_ontology
     ctx = captured_context
     assert ctx is not None
     assert captured_ontology is None
@@ -153,27 +195,11 @@ async def test_run_unit_pipeline_uses_agent_state_max_visits(monkeypatch) -> Non
     monkeypatch.setattr(unit_pipeline, "convert_document", lambda _s, _t: None)
     monkeypatch.setattr(unit_pipeline, "ontology_loop", fake_ontology_loop)
     monkeypatch.setattr(unit_pipeline, "facts_loop", fake_facts_loop)
+    _fake_identity_call(monkeypatch)
 
     agent_state = _minimal_agent_state()
     agent_state.max_visits = 7
-    tools = cast(
-        ToolBox,
-        SimpleNamespace(
-            config=SimpleNamespace(
-                server=SimpleNamespace(
-                    max_visits_per_node=2,
-                    ontology_max_triples=50_000,
-                    ontology_context_max_triples=4000,
-                    ontology_chapter_format=OntologyChapterFormat.INHERIT,
-                    llm_output_layout=LLMOutputLayout.COMPACT,
-                    ontology_text_caps=TextCaps(),
-                    ontology_context_scope=OntologyContextScope.UNIT,
-                    fanout_warmup_units=0,
-                )
-            ),
-            shapes_prompt_contract=lambda: ("", (), False),
-        ),
-    )
+    tools = _fake_tools(max_visits_per_node=2)
 
     await unit_pipeline.run_unit_pipeline(agent_state, tools)
 
